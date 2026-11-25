@@ -197,7 +197,7 @@ async function subject(mode: "auto" | "default" = "auto") {
       }),
       ...overrides,
     };
-    return { request, result: track(gate.requestAndWait(request)) };
+    return { request, result: track(requestBoundShellCard(gate, request, root)) };
   };
   return { root, audit, auditLog, windowA, windowB, gate, manager, registry, executeAll, execute, complete, selectComplete, pause, start, cards, waitForCard, hold, holdNextPreToolUse, queueCard, setOwner: (next: AppWindow | undefined) => { owner = next; } };
 }
@@ -716,3 +716,4 @@ describe("live native approval ownership", () => {
     ]);
   });
 });
+import { requestBoundShellCard } from "../../../__tests__/support/host-shell-approval.js";

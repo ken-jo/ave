@@ -4,7 +4,7 @@ import { approvalReasonFields, isHostApprovalRejectedDecision, type ApprovalDeci
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
 import { getHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
 import { getHostShellExecutionPlanAuditProjection, requiresUnsandboxedShellAsk, type HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
-import { buildHostShellExecutionPermitBinding, mintHostShellExecutionPermit, consumeHostShellExecutionPermit, recordHostShellPolicyAuthorization } from "../permissions/host-shell-execution-permit.js";
+import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, mintHostShellExecutionPermit, consumeHostShellExecutionPermit, recordHostShellPolicyAuthorization } from "../permissions/host-shell-execution-permit.js";
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { buildPermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
@@ -21,6 +21,7 @@ export type HookCommandAuthorizer = (
   payload: ScriptHookStdin,
   cwd: string,
   projectDir?: string,
+  attachWorkingDirectory?: (cwd: string, dispose: () => void) => void,
 ) => Promise<{ decision: "allow" | "deny"; reason: string; plan?: HostShellExecutionPlan; assertAllowed?: () => void; refreshAllowed?: () => Promise<void> }>;
 
 // Enrollment supplies executable identity; the shared pipeline supplies authority.
@@ -28,7 +29,7 @@ export function createHookCommandAuthorizer(deps: {
   permissionManager: Pick<PermissionManager, "ensureProjectRulesLoaded" | "checkDetailed" | "dispatchReviewer" | "resolveReviewedPermission" | "getPolicyEpoch" | "getPolicyContextEpoch" | "getMode">;
   approvalGate: Pick<ApprovalGate, "requestAndWait"> & Partial<Pick<ApprovalGate, "allowsPolicyTransition">>;
 }): HookCommandAuthorizer {
-  return async (hook, payload, cwd, projectDir = cwd) => {
+  return async (hook, payload, cwd, projectDir = cwd, attachWorkingDirectory) => {
     const command = hook.command.map(expandLeadingTilde).map(shellQuote).join(" ");
     const turnPolicy = turnExtensionPolicyContext.getStore();
     const abortSignal = turnPolicy?.abortSignal;
@@ -40,10 +41,12 @@ export function createHookCommandAuthorizer(deps: {
     const cwdIdentity = captureShellWorkingDirectoryIdentity(cwd);
     if (!cwdIdentity) return { decision: "deny", reason: "Hook working directory is unavailable" };
     const plan = getHostShellExecutionPlan();
-    await deps.permissionManager.ensureProjectRulesLoaded(projectDir);
+    const projectRulesCwd = projectDir === cwd ? cwdIdentity.realpath : projectDir;
+    await deps.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     const context = {
       ruleSubject: { kind: "shell", dialect: "bash", command, cwd },
-      projectRulesCwd: projectDir,
+      projectRulesCwd,
+      hostShellCwdIdentity: cwdIdentity,
       sessionId: payload.sessionId,
       headless: turnPolicy?.headless,
       ownerUnattended: turnPolicy?.ownerUnattended,
@@ -83,10 +86,15 @@ export function createHookCommandAuthorizer(deps: {
     }
     if (abortSignal?.aborted) return { decision: "deny", reason: "Hook command was cancelled" };
     if (result.decision === "deny") return { decision: "deny", reason: result.reason };
-    const binding = plan.requiresExplicitUserApproval ? buildHostShellExecutionPermitBinding({
+    const binding = buildHostShellExecutionPermitBinding({
       plan, toolName: "bash", toolUseId: id, rawInput: args, executionCwd: cwd, extraAllowedDirectories: [],
-    }) : undefined;
-    if (plan.requiresExplicitUserApproval && !binding) return { decision: "deny", reason: "Hook host execution binding is invalid" };
+    });
+    if (!binding?.cwdIdentity || !matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity)) {
+      return { decision: "deny", reason: "Hook working directory changed during approval" };
+    }
+    const directory = createShellApprovalDirectory(binding);
+    let transferred = false;
+    try {
     let approval: ApprovalDecision | undefined;
     const humanApproved = result.decision === "ask";
     const opened = answerEpochsOf(deps.permissionManager);
@@ -103,7 +111,8 @@ export function createHookCommandAuthorizer(deps: {
         ...(result.forceModal ? { forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false,
           ...(offersFloorSessionAllow(result) ? { floorSessionAllowed: true as const } : {}) } : {}),
         executionPlan: getHostShellExecutionPlanAuditProjection(plan),
-        ...(binding ? { hostShellExecutionPermitBinding: binding } : {}),
+        processCwd: { directory },
+        ...(plan.requiresExplicitUserApproval ? { hostShellExecutionPermitBinding: binding } : {}),
       });
       if (abortSignal?.aborted) return { decision: "deny", reason: "Hook command was cancelled" };
       if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId) || !controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
@@ -120,7 +129,7 @@ export function createHookCommandAuthorizer(deps: {
     })) return { decision: "deny", reason: "Permission policy changed during hook approval" };
     if (effectIdentity(current) !== requestedEffect) return { decision: "deny", reason: "Hook command effect changed during approval" };
     if (!matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity)) return { decision: "deny", reason: "Hook working directory changed during approval" };
-    if (binding) {
+    if (plan.requiresExplicitUserApproval) {
       if (!humanApproved && !requiresUnsandboxedShellAsk(plan)) recordHostShellPolicyAuthorization(binding);
       // `current` carries the proof of a non-human pass of the sandbox-unavailable ask: the session grant or an exact saved rule.
       const permit = mintHostShellExecutionPermit({ plan, approvalDecision: approval, allowRuleDecision: current, floorSessionDecision: current, permissionManager: deps.permissionManager, binding });
@@ -139,6 +148,14 @@ export function createHookCommandAuthorizer(deps: {
       if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId)) throw new Error("remote-controller-revoked");
       assertAllowed();
     };
+    if (attachWorkingDirectory) {
+      if (abortSignal?.aborted) return { decision: "deny", reason: "Hook command was cancelled" };
+      attachWorkingDirectory(cwdIdentity.realpath, () => directory.dispose());
+      transferred = true;
+    }
     return { decision: "allow", reason: humanApproved ? "user approved hook command" : result.reason, plan, assertAllowed, refreshAllowed };
+    } finally {
+      if (!transferred) directory.dispose();
+    }
   };
 }

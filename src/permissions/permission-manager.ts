@@ -1731,9 +1731,9 @@ export class PermissionManager {
       !matchesShellWorkingDirectoryIdentity(requestedRuleSubject.cwd, boundCwd))) {
       admissionDenial ??= { code: "shell-cwd-changed", reason: "The shell working directory changed or could not be verified. Request authorization again." };
     }
-    const cwdIdentity = context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined
-      ? boundCwd === undefined ? captureShellWorkingDirectoryIdentity(requestedRuleSubject.cwd) : boundCwd ?? undefined
-      : undefined;
+    const cwdIdentity = boundCwd !== undefined ? boundCwd ?? undefined
+      : context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined
+        ? captureShellWorkingDirectoryIdentity(requestedRuleSubject.cwd) : undefined;
     const ruleSubject = requestedRuleSubject === undefined ? undefined : {
       ...requestedRuleSubject, ...(cwdIdentity ? { cwd: cwdIdentity.realpath } : {}),
     };

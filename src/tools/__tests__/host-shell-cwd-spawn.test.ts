@@ -27,8 +27,8 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import { buildHostShellExecutionPermitBinding, mintHostShellExecutionPermit } from "../../permissions/host-shell-execution-permit.js";
-import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan } from "../../permissions/sandbox-capability.js";
+import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, mintHostShellExecutionPermit } from "../../permissions/host-shell-execution-permit.js";
+import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { BashTool } from "../shell-tools.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -42,9 +42,9 @@ beforeEach(() => {
   spawnBoundary.mutate = undefined;
   spawnBoundary.cwd = undefined;
 });
-afterEach(() => {
+afterEach(async () => {
   spawnBoundary.mutate = undefined;
-  cleanupTmpDir(directory);
+  await cleanupTmpDir(directory);
 });
 
 async function authorizedContext(cwd: string, command = "touch marker", rulePatterns: readonly string[] = ["Bash(touch marker)"]) {
@@ -64,15 +64,21 @@ async function authorizedContext(cwd: string, command = "touch marker", rulePatt
   if (decision.decision !== "allow") {
     const webContents = { isDestroyed: vi.fn(() => false), send: vi.fn() };
     const gate = new ApprovalGate(webContents as never);
+    const directory = createShellApprovalDirectory(binding);
+    try {
     const pending = gate.requestAndWait({
       id: "cwd-spawn-approval", category: "tool", toolName: "bash", toolCategory: "shell", args: input,
       reason: "Approve the one host command used by the cwd race fixture", source: "builtin", createdAt: Date.now(),
       allowedChoices: ["allow-once", "deny-once"], forceExplicit: true, hostShellExecutionPermitBinding: binding,
+      processCwd: { directory },
     });
     const request = webContents.send.mock.calls[0]?.[1] as ApprovalRequest | undefined;
     if (!request?.nonce || !request.hmac) throw new Error("ApprovalGate did not publish a sealed request");
     gate.resolveFromDesktopRenderer("cwd-spawn-approval", { requestId: "cwd-spawn-approval", choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, webContents as never);
     approvalDecision = await pending;
+    } finally {
+      directory.dispose();
+    }
   }
   const permit = mintHostShellExecutionPermit({
     plan, binding, approvalDecision,
@@ -86,7 +92,8 @@ async function authorizedContext(cwd: string, command = "touch marker", rulePatt
 const COMPOUND_RULES = ["Bash(printf command-ran)", "Bash(printf C)", "Bash(exit 0)", "Bash(exit 197)"];
 
 describe("host cwd approval", () => {
-  it("refuses to launch after the approved directory alias is retargeted", async () => {
+  it.each(["explicit", "ordinary"] as const)("refuses to launch after the %s card's directory alias is retargeted", async (cardKind) => {
+    if (cardKind === "ordinary") setShellSandboxRequestedAtBoot(false);
     const first = join(directory, "first");
     const second = join(directory, "second");
     const alias = join(directory, "alias");
@@ -104,10 +111,11 @@ describe("host cwd approval", () => {
     const executor = new ToolExecutor(registry, undefined, manager, undefined, gate);
     const abort = new AbortController();
     try {
-      const pending = executor.executeAll([{ id: "cwd-consent", name: "bash", input: {
-        command: "touch marker", cwd: "alias", executionMode: "host", justification: "Use the workspace fixture",
+      const invoke = (id: string) => executor.executeAll([{ id, name: "bash", input: {
+        command: "touch marker", cwd: "alias",
+        ...(cardKind === "explicit" ? { executionMode: "host", justification: "Use the workspace fixture" } : {}),
       } }], { sessionId: "cwd-consent", executionCwd: directory, abortSignal: abort.signal, permissionContext: { trustOrigin: "llm-tool-arg" } });
-      const card = await Promise.race([
+      const awaitCard = (pending: ReturnType<typeof invoke>) => Promise.race([
         vi.waitFor(() => {
           const request = webContents.send.mock.calls.find(([channel]) => channel === "ave:approval:request")?.[1] as ApprovalRequest | undefined;
           if (!request) throw new Error("No host approval request");
@@ -115,6 +123,10 @@ describe("host cwd approval", () => {
         }),
         pending.then(([result]) => { throw new Error(result?.content); }),
       ]);
+      const pending = invoke("cwd-consent");
+      const card = await awaitCard(pending);
+      if (cardKind === "ordinary") expect(card.allowedChoices).toBeUndefined();
+      expect(card.executionCwd).toBe(first);
       unlinkSync(alias);
       symlinkSync(second, alias, "junction");
       gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac }, webContents as never);
@@ -122,6 +134,17 @@ describe("host cwd approval", () => {
       expect.soft(launch).not.toHaveBeenCalled();
       expect(result?.is_error).toBe(true);
       expect(result?.content).toMatch(/working directory.*changed/i);
+
+      webContents.send.mockClear();
+      const retry = invoke("cwd-consent-retry");
+      const fresh = await awaitCard(retry);
+      expect(fresh.id).not.toBe(card.id);
+      expect(fresh.executionCwd).toBe(second);
+      gate.resolveFromDesktopRenderer(fresh.id, { requestId: fresh.id, choice: "allow-once", nonce: fresh.nonce, hmac: fresh.hmac }, webContents as never);
+      const [completed] = await retry;
+      expect(completed?.content).toContain("mock launch");
+      expect(completed?.is_error).not.toBe(true);
+      expect(launch).toHaveBeenCalledTimes(1);
     } finally {
       abort.abort();
     }

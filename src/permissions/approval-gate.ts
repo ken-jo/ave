@@ -43,7 +43,9 @@ import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import {
   type HostShellExecutionPermitBinding,
+  type ShellApprovalDirectory,
 } from "./host-shell-execution-permit.js";
+import { isBrokerGuestRoutePlan, isIssuedExecutionPlan, type ExecutionPlan } from "./execution-router.js";
 import {
   getHostShellExecutionPlanAuditProjection,
   isIssuedHostShellExecutionPlanAuditProjection,
@@ -103,6 +105,14 @@ function maskApprovalPurposeForDisplay(
 // Permission policy.5 — discriminated kinds for the approval dock. Default `"tool"` is the normal Layer 3 ask; `"out-of-allowed-dir"` is the Layer 1 directory-confirm variant; and `"agent-action"` is a plugin-origin host approval request that does not correspond to a host tool execution.
 type ApprovalKind =
   "tool" | "out-of-allowed-dir" | "agent-action" | "egress-host" | "extension-start";
+
+const PROCESS_CWD_CARD_KINDS = {
+  "tool": true,
+  "out-of-allowed-dir": true,
+  "agent-action": false,
+  "egress-host": false,
+  "extension-start": false,
+} satisfies Record<ApprovalKind, boolean>;
 
 // The egress-host ask's payload (`kind: "egress-host"`): a sandboxed shell call or workspace terminal tab wants to reach `host:port`, and the person picks how long an allow lasts from `scopes`. Built by `egress-approval.ts`.
 interface EgressHostApproval {
@@ -329,6 +339,7 @@ export type ApprovalRequestInput = Omit<
   readonly durableApprovalRecordAllowed?: boolean;
   // Host-only binding for an explicit plain-shell fallback permit. It is retained only in the pending entry and never serialized to the renderer or audit payload.
   readonly hostShellExecutionPermitBinding?: HostShellExecutionPermitBinding;
+  readonly processCwd?: { readonly directory: ShellApprovalDirectory } | { readonly guestRoute: ExecutionPlan };
   // Host-only: the forced card answers the sandbox-unavailable floor alone (`offersFloorSessionAllow`), so later shells and hooks of this conversation may also pass that floor.
   readonly floorSessionAllowed?: true;
   // Host-only: this request types one command into the user's own host terminal. Only the desktop window answers it (no remote, plugin,
@@ -543,7 +554,7 @@ function matchesHostShellExecutionPermitBindingRequest(
 ): boolean {
   if (
     request.category !== "tool" ||
-    (request.kind !== undefined && request.kind !== "tool") ||
+    (request.kind !== undefined && request.kind !== "tool" && request.kind !== "out-of-allowed-dir") ||
     request.source !== "builtin" ||
     request.toolCategory !== "shell" ||
     request.toolName !== binding.toolName ||
@@ -1135,6 +1146,7 @@ export class ApprovalGate {
       toolApprovalWait,
       durableApprovalRecordAllowed: requestedDurableApprovalRecordAllowed,
       hostShellExecutionPermitBinding,
+      processCwd,
       floorSessionAllowed: requestedFloorSessionAllowed,
       hostTerminal,
       hostTerminalAfterExternalContent: _requestedAfterExternalContent,
@@ -1270,6 +1282,24 @@ export class ApprovalGate {
       return rejectBeforeAnswer("execution plan did not match the host shell binding", request, boundExecutionPlan);
     }
     const executionPlanAudit = boundExecutionPlan ?? suppliedExecutionPlan;
+    let shellDirectory: ShellApprovalDirectory | undefined;
+    if (req.source === "builtin" && req.toolCategory === "shell" &&
+      (req.toolName === "bash" || req.toolName === "powershell")) {
+      if (!PROCESS_CWD_CARD_KINDS[req.kind ?? "tool"]) {
+        throw new Error("approval: shell card has a card kind that cannot bind a working directory");
+      }
+      if (processCwd && "guestRoute" in processCwd) {
+        if (!isIssuedExecutionPlan(processCwd.guestRoute) || !isBrokerGuestRoutePlan(processCwd.guestRoute) ||
+          req.toolName !== "bash" || hostShellExecutionPermitBinding !== undefined) {
+          throw new Error("approval: shell guest route was not issued for this request");
+        }
+      } else {
+        if (processCwd === undefined || !matchesHostShellExecutionPermitBindingRequest(request, processCwd.directory.binding)) {
+          throw new Error("approval: shell card is missing its working directory binding");
+        }
+        shellDirectory = processCwd.directory;
+      }
+    }
     if (executionPlanAudit?.executionRequest === "host" &&
       (oneShotPermitBinding === undefined ||
         this.liveSurfaceFor(req.sessionId, req.egressHost?.terminalTabId) === null)) {
@@ -1303,16 +1333,17 @@ export class ApprovalGate {
       : undefined;
     const riskCeilingAtApproval = verifiedApprovalBasis?.ruleVerdict;
     // One-shot requests never persist a working-directory identity. Do not make their approval depend on validating an unrelated persistent-store scope.
+    const boundShellCwd = shellDirectory?.binding.cwdIdentity?.realpath;
+    const shellRuleCwd = boundShellCwd ?? req.evaluationContext?.executionCwd;
     const workingDirectory = canRememberRequest
-      ? verifiedApprovalBasis?.workingDirectory ?? (req.evaluationContext?.executionCwd
-          ? captureApprovalWorkingDirectory(req.evaluationContext.executionCwd) : undefined)
+      ? verifiedApprovalBasis?.workingDirectory ?? (shellRuleCwd
+          ? captureApprovalWorkingDirectory(shellRuleCwd) : undefined)
       : undefined;
     const persistentAllowAllowed = canRememberRequest && workingDirectory !== undefined;
     const readjudication = persistentAllowAllowed && verdictAtApproval === "high" &&
       req.source === "plugin" && req.evaluationContext?.headless === false &&
       !assessmentUnavailable && matchesPluginReadjudicationBasis(readjudicationBasis, req)
       ? Object.freeze({ ...readjudicationBasis.evidence }) : undefined;
-    const shellRuleCwd = req.evaluationContext?.executionCwd;
     // Ordinary shell cards may save a rule; forced one-shot cards cannot create remembered authority.
     const shellRuleSaveAllowed = hasShellRuleApprovalContract && !hasOneShotApprovalChoiceContract || floorSessionGrant !== undefined;
     const shellRuleDialect = req.toolName === "bash" || req.toolName === "powershell" ? req.toolName : undefined;
@@ -1360,9 +1391,7 @@ export class ApprovalGate {
       ...(executionPlanAudit === undefined
         ? {}
         : { executionPlan: executionPlanAudit }),
-      ...(oneShotPermitBinding === undefined
-        ? {}
-        : { executionCwd: oneShotPermitBinding.resolvedCwd }),
+      ...(boundShellCwd === undefined ? {} : { executionCwd: boundShellCwd }),
       reason: req.reason,
       // A sealed execution plan is the only renderer-safe authority description for canonical host shells. Its projection deliberately excludes the host capability's free-form reason, so never retain or inject the raw capability alongside it.
       ...(executionPlanAudit === undefined
@@ -1413,11 +1442,11 @@ export class ApprovalGate {
     // Above the away answer, the OS notification and the renderer send, all for one reason: none of them should happen on behalf of a turn that is already over. An away grant in particular has a finite budget, and spending a unit of it to answer a dead turn spends it on nothing.
     if (isAborted()) return denyForAbortedTurn(fullReq, executionPlanAudit);
 
-    if (oneShotPermitBinding !== undefined) {
+    if (shellDirectory !== undefined) {
       const displayedArgs = maskArgsForDisplay(fullReq.args, new Set<string>());
-      const displayedCwd = maskSensitiveData(oneShotPermitBinding.resolvedCwd).masked;
-      if (canonicalStringify(displayedArgs) !== canonicalStringify(fullReq.args) ||
-          displayedCwd !== oneShotPermitBinding.resolvedCwd) {
+      const cwd = boundShellCwd ?? shellDirectory.binding.resolvedCwd;
+      if ((oneShotPermitBinding !== undefined && canonicalStringify(displayedArgs) !== canonicalStringify(fullReq.args)) ||
+          maskSensitiveData(cwd).masked !== cwd) {
         // Exact host consent cannot authorize bytes hidden by display masking. Preserve masking and reject before signing or parking the request.
         const reason = "Host execution cannot be approved because sensitive-data masking would hide part of the command, working directory, or justification.";
         this.auditLogger?.log({
@@ -1428,6 +1457,11 @@ export class ApprovalGate {
         });
         return rejectBeforeAnswer(reason, fullReq, executionPlanAudit);
       }
+    }
+
+    if (shellDirectory !== undefined) {
+      if (shellDirectory.binding.cwdIdentity === undefined) throw new Error("approval: shell card is missing its working directory binding");
+      if (!shellDirectory.hold()) return rejectBeforeAnswer("Shell working directory changed before the card opened", fullReq, executionPlanAudit);
     }
 
     // surface a system notification when an approval is about to block the user. Approval is the most user-visible gate, so the OS toast is critical; its sound is the renderer's approval-needed accessibility signal.

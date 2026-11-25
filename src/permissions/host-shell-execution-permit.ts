@@ -1,7 +1,7 @@
 // Plans describe substrates, not authorization. Bind proof privately to one final action and consume it before plain-host spawn.
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
-import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, sameShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
+import { captureShellWorkingDirectoryIdentity, holdShellWorkingDirectory, matchesShellWorkingDirectoryIdentity, sameShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
 import {
   parseHostShellExecutionInput,
   exactRulePassesUnsandboxedShellAsk,
@@ -64,6 +64,28 @@ interface PermitRecord extends HostShellExecutionPermitBinding {
 export interface HostShellSpawnAuthorization {
   readonly cwdIdentity: ShellWorkingDirectoryIdentity;
 }
+
+export function createShellApprovalDirectory(binding: HostShellExecutionPermitBinding) {
+  let release: (() => void) | undefined;
+  return {
+    binding,
+    get held() { return release !== undefined; },
+    hold(): boolean {
+      const { cwdIdentity, resolvedCwd } = binding;
+      if (cwdIdentity === undefined) return false;
+      if (release !== undefined) return matchesShellWorkingDirectoryIdentity(resolvedCwd, cwdIdentity);
+      release = holdShellWorkingDirectory(resolvedCwd, cwdIdentity);
+      return release !== undefined;
+    },
+    dispose(): void {
+      const close = release;
+      release = undefined;
+      close?.();
+    },
+  };
+}
+
+export type ShellApprovalDirectory = ReturnType<typeof createShellApprovalDirectory>;
 
 const permits = new WeakMap<HostShellExecutionPermit, PermitRecord>();
 const pendingHandoffs = new WeakMap<HostShellSpawnAuthorization, PermitRecord>();
@@ -181,7 +203,7 @@ export function mintHostShellExecutionPermit(input: {
     )
   ) return undefined;
   // Any receipt-bearing mint attempt consumes its receipt before checking plan compatibility, so a mismatch cannot be probed or replayed.
-  if (!requiresExplicitHostShellApproval(input.plan, input.binding.toolName)) return undefined;
+  if (!requiresExplicitHostShellApproval(input.plan, input.binding.toolName) && !policyApproved) return undefined;
   // On a plan under the sandbox-unavailable floor a saved rule stands in for fresh consent only as the exact-rule pass issued on this very plan
   // (tree T:128); policy records are made only after a human card. A pass proof answers no other plan.
   if (allowRuleAuthorization !== undefined && (requiresUnsandboxedShellAsk(input.plan)
@@ -259,10 +281,20 @@ export function withHostShellExecutionHandoff<T>(
   return withShellPolicyHandoff(() => {
     if (record === undefined ||
       (record.allowRuleAuthorization !== undefined && !isShellAllowRulePolicyCurrent(record.allowRuleAuthorization)) ||
-      !matchesShellWorkingDirectoryIdentity(record.cwdIdentity.realpath, record.cwdIdentity)) return undefined;
+      !matchesShellWorkingDirectoryIdentity(record.resolvedCwd, record.cwdIdentity)) return undefined;
     // This host's persisted policy mutations share this queue. Uncoordinated external edits after this final validation apply from the next command. The synchronous handoff grants the waiting child (or spawns it on platforms without a child guard); it must never await between validation and grant.
     return handoff();
   }, prepare);
+}
+
+export function assertHostShellSpawnDirectory(authorization: HostShellSpawnAuthorization | undefined): void {
+  if (authorization === undefined) return;
+  const record = pendingHandoffs.get(authorization);
+  if (record === undefined ||
+      !matchesShellWorkingDirectoryIdentity(record.resolvedCwd, record.cwdIdentity)) {
+    throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
+  }
+  pendingHandoffs.delete(authorization);
 }
 
 export function consumeHostShellExecutionPermit(

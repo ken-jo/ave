@@ -108,6 +108,7 @@ export interface AuthorizationStageContext {
   // Relaxations of the selected execution-route plan (execution-router).
   hostShellPathPolicyRelaxations: readonly DisposablePathPolicyRelaxation[] | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
+  processCwd?: import("../permissions/approval-gate.js").ApprovalRequestInput["processCwd"];
   hostShellApprovalDecision: ApprovalDecision | undefined;
   finalInput: Record<string, unknown>;
   invocationAllowedScope: { directories: string[] };
@@ -188,6 +189,7 @@ export async function authorizeToolInvocation(
     hostShellExecutionPlanAudit,
     hostShellPathPolicyRelaxations,
     hostShellExecutionPermitBinding,
+    processCwd,
     finalInput,
     invocationAllowedScope,
     sensitivePathPattern,
@@ -920,7 +922,6 @@ export async function authorizeToolInvocation(
           });
         const approvalRuleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true && !permissionResult.pipelineRequest?.userOwnedSurface
           ? classifyCurrentRule() : undefined;
-        const approvalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
         const approvalAnswerEpochs = services.permissionManager ? answerEpochsOf(services.permissionManager) : undefined;
         const readjudicationAssessment = source === "plugin" && context.pluginRuntimeInstance !== undefined &&
           permissionResult.forceModal !== true && !evaluationContext.headless &&
@@ -947,7 +948,8 @@ export async function authorizeToolInvocation(
                 ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}),
               }
             : {}),
-          ...(hostShellExecutionPermitBinding === undefined ? {} : { hostShellExecutionPermitBinding }),
+          ...(hostShellExecutionPermitBinding === undefined || !hostShellRequiresExplicitApproval ? {} : { hostShellExecutionPermitBinding }),
+          ...(processCwd === undefined ? {} : { processCwd }),
           // A guest-routed shell shows the substrate the reviewer graded, not
           // the host plan of a child that never spawns.
           ...(hostShellExecutionPlanAudit === undefined
@@ -1112,7 +1114,7 @@ export async function authorizeToolInvocation(
             // instead of holding the turn's lease until its own timer expires.
             ...(abortSignal === undefined ? {} : { abortSignal }),
           });
-          if (hostShellExecutionPermitBinding !== undefined) {
+          if (hostShellExecutionPermitBinding !== undefined && hostShellRequiresExplicitApproval) {
             hostShellApprovalDecision = decision;
           }
         } catch (approvalErr) {
@@ -1359,7 +1361,8 @@ export async function authorizeToolInvocation(
   }
 
   const ruleProofStands = hostShellAllowRuleDecision !== undefined && permissionResult === hostShellAllowRuleDecision;
-  if (hostShellExecutionPermitBinding !== undefined &&
+  const boundCard = processCwd !== undefined && "directory" in processCwd && processCwd.directory.held;
+  if (hostShellExecutionPermitBinding !== undefined && (hostShellRequiresExplicitApproval || boundCard) &&
       hostShellApprovalDecision === undefined && !ruleProofStands &&
       permissionResult?.decision === "allow" &&
       (humanApproved || !requiresUnsandboxedShellAsk(hostShellExecutionPermitBinding.plan))) {

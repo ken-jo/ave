@@ -121,6 +121,7 @@ import {
   HOST_SHELL_AUTHORIZATION_REVOKED_ERROR,
   resolveHostShellWorkingDirectory,
   withHostShellExecutionHandoff,
+  assertHostShellSpawnDirectory,
   type HostShellSpawnAuthorization,
 } from "../permissions/host-shell-execution-permit.js";
 import { hostShellWorkingDirectoryPrelude } from "./host-shell-cwd-guard.js";
@@ -1770,7 +1771,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     // Its opaque permit follows the current policy decision for this exact
     // command/cwd/tool-use tuple and is consumed before spawn.
     let hostSpawnAuthorization: HostShellSpawnAuthorization | undefined;
-    if (!disposableExecution && requiresExplicitHostShellApproval(hostShellPlan)) {
+    if (ctx.hostShellExecutionPermit || !disposableExecution && requiresExplicitHostShellApproval(hostShellPlan)) {
       const spawnAuthorization = consumeHostShellExecutionPermitForSpawn({
         permit: ctx.hostShellExecutionPermit,
         plan: hostShellPlan,
@@ -1820,6 +1821,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       };
     }
     if (hostShellPlan.mode === "asrt") {
+      const spawnCwd = hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd;
       // The executor binds before approval. Direct tool callers bind after the
       // same path check; an existing binding never consults ambient state again.
       bindPreparedShellExecutableReadPaths(prepared);
@@ -1831,14 +1833,14 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
         ...(ctx.ownerPluginSandboxRoot !== undefined
           ? { ownerPluginSandboxRoot: ctx.ownerPluginSandboxRoot }
           : {}),
-        allowedDirectories: [resolvedCwd, ...ctx.extraAllowedDirectories],
+        allowedDirectories: [spawnCwd, ...ctx.extraAllowedDirectories],
       });
       const checked = await checkedShellResult(() => spawnWithSandbox(
         input.command,
-        resolvedCwd,
+        spawnCwd,
         writePaths,
         input.timeoutSeconds, prepared, ctx.abortSignal, outputCapture,
-        outputProgress, holdsOutput, boundarySessionOf(ctx),
+        outputProgress, holdsOutput, boundarySessionOf(ctx), hostSpawnAuthorization,
       ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
       if (checked.refused) return checked.result;
       return withBackgroundUnavailable(
@@ -1862,7 +1864,8 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     ) {
       await refreshShellRemoteAuthority();
       assertShellRemoteAuthority();
-      const result = spawnBackground(input.command, resolvedCwd, sessionIdFromContext(ctx), prepared, shellObservationSandbox(hostShellPlan, disposableExecution));
+      const result = await spawnBackground(input.command, hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd,
+        sessionIdFromContext(ctx), prepared, shellObservationSandbox(hostShellPlan, disposableExecution), hostSpawnAuthorization, ctx.abortSignal);
       return disposableExecution ? withDisposableExecutionMetadata(result) : result;
     }
 
@@ -2173,11 +2176,12 @@ async function startBrokeredBash(
  * environment as {@link spawnWithTimeout}; `timeoutSeconds` does not apply — a
  * background shell runs until it exits, bash_kill, session end, or app quit.
  */
-function spawnBackground(command: string, cwd: string, sessionId: string, prepared: PreparedShellInvocation,
-  sandbox: AgentTerminalObservationInput["sandbox"]): SpawnResult {
+async function spawnBackground(command: string, cwd: string, sessionId: string, prepared: PreparedShellInvocation,
+  sandbox: AgentTerminalObservationInput["sandbox"], authorization?: HostShellSpawnAuthorization, signal?: AbortSignal): Promise<SpawnResult> {
   const releaseClaim = claimPreparedShellInvocation(prepared);
   try {
-  const { shell, argv, environment: env } = preparedShellCommand(prepared);
+   const prelude = authorization === undefined ? undefined : hostShellWorkingDirectoryPrelude(authorization.cwdIdentity, "bash", process.platform);
+   const { shell, argv, environment: env } = preparedShellCommand(prepared, prelude);
   if (process.platform === "win32" && shell.windowsFlavor !== "msys") {
     return {
       output: "Background Bash requires a confirmed native Windows shell. Process ownership is unavailable for this interpreter; this command was not started.",
@@ -2189,15 +2193,23 @@ function spawnBackground(command: string, cwd: string, sessionId: string, prepar
   const observation = startShellObservation(command, cwd, sandbox);
   let child: ChildProcess;
   try {
-    child = process.platform === "win32"
+    const launch = () => process.platform === "win32"
       ? spawnWindowsJobProcess(shell.cmd, [...argv], { cwd, env })
       : spawn(shell.cmd, [...argv], {
         cwd,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
         env,
         shell: false,
         detached: true,
       });
+    signal?.throwIfAborted();
+    const launched = authorization === undefined || prelude !== undefined ? launch()
+      : await withHostShellExecutionHandoff(authorization, () => {
+          assertShellRemoteAuthority();
+          return launch();
+        }, refreshShellRemoteAuthority);
+    if (launched === undefined) throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
+    child = launched;
   } catch (error) { observation?.finish(null, "failed"); throw error; }
   const cleanup = transferPreparedShellInvocation(prepared);
   child.once("close", cleanup);
@@ -2209,6 +2221,14 @@ function spawnBackground(command: string, cwd: string, sessionId: string, prepar
     killProcessGroup: process.platform !== "win32",
     observation,
   });
+  if (prelude !== undefined && authorization !== undefined) {
+    const timeout = AbortSignal.timeout(TOOL_TIMEOUT_POLICY.shellCeilingGraceMs);
+    const control = attachHostShellControlChannel(child, authorization, signal === undefined ? timeout : AbortSignal.any([signal, timeout]));
+    if (!await control.ready) {
+      control.dispose();
+      throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
+    }
+  }
   return {
     output: JSON.stringify({
       backgrounded: true,
@@ -2550,6 +2570,7 @@ export async function spawnWithSandbox(
   progress?: ToolOutputProgressSink,
   waitForClose = false,
   sessionId?: string,
+  spawnAuthorization?: HostShellSpawnAuthorization,
 ): Promise<SpawnResult> {
   const releaseClaim = claimPreparedShellInvocation(prepared);
   try {
@@ -2638,6 +2659,7 @@ export async function spawnWithSandbox(
       if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
       assertManagedChildProcessAdmissionOpen("tool:bash:asrt");
       assertSrtWinSpawnIntegrity(cmd);
+      assertHostShellSpawnDirectory(spawnAuthorization);
       child = spawn(cmd, args, {
         windowsHide: true,
         detached: process.platform !== "win32",
@@ -3438,7 +3460,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     const outputProgress = holdsOutput ? undefined : toolOutputProgressFromMetadata(ctx.metadata);
     let hostSpawnAuthorization: HostShellSpawnAuthorization | undefined;
     const authorizeHostSpawn = (): void => {
-      if (!disposableExecution && requiresExplicitHostShellApproval(hostShellPlan, "powershell")) {
+      if (ctx.hostShellExecutionPermit || !disposableExecution && requiresExplicitHostShellApproval(hostShellPlan, "powershell")) {
         const spawnAuthorization = consumeHostShellExecutionPermitForSpawn({
           permit: ctx.hostShellExecutionPermit,
           plan: hostShellPlan,
@@ -3522,13 +3544,14 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       };
     }
     if (hostShellPlan.mode === "asrt") {
+      const spawnCwd = hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd;
       // Namespace-scoped write-jail (owner plugin sandbox root ∪ allowed
       // directories), not the bare cwd. cwd stays readable.
       const writePaths = deriveSandboxWritePaths({
         ...(ctx.ownerPluginSandboxRoot !== undefined
           ? { ownerPluginSandboxRoot: ctx.ownerPluginSandboxRoot }
           : {}),
-        allowedDirectories: [resolvedCwd, ...ctx.extraAllowedDirectories],
+        allowedDirectories: [spawnCwd, ...ctx.extraAllowedDirectories],
       });
       const runtimeReads = powerShellHostScriptReadPaths(commandAst, input.command);
       const command = runtimeReads.length > 0 ? awaitedHostScriptCommand(input.command, commandAst.commands[0]!) : input.command;
@@ -3536,12 +3559,12 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       if (hostShellPlan.substrate === "mxc") {
         const checked = await checkedShellResult(() => spawnPowerShellInMxc(
           command,
-          resolvedCwd,
+          spawnCwd,
           writePaths,
           input.timeoutSeconds, ctx.abortSignal, outputCapture,
           outputProgress,
           typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
-          undefined, runtimeReads, verified, boundarySessionOf(ctx),
+          undefined, runtimeReads, verified, boundarySessionOf(ctx), hostSpawnAuthorization,
         ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
         const block = sandboxBlockForResult(checked.result);
         if (block !== undefined && block.command !== input.command) attachSandboxBlock(checked.result, issueFilesystemSandboxBlock(input.command, resolvedCwd));
@@ -3549,12 +3572,12 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       }
       const checked = await checkedShellResult(() => spawnPowerShellWithSandbox(
         command,
-        resolvedCwd,
+        spawnCwd,
         writePaths,
         input.timeoutSeconds, ctx.abortSignal, outputCapture,
         outputProgress,
         typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
-        runtimeReads, verified, boundarySessionOf(ctx),
+        runtimeReads, verified, boundarySessionOf(ctx), hostSpawnAuthorization,
       ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
       const block = sandboxBlockForResult(checked.result);
       if (block !== undefined && block.command !== input.command) attachSandboxBlock(checked.result, issueFilesystemSandboxBlock(input.command, resolvedCwd));
@@ -3911,6 +3934,7 @@ async function spawnPowerShellWithSandbox(
   runtimeReadPaths: readonly string[] = [],
   verified?: VerifiedPowerShellExecution,
   sessionId?: string,
+  spawnAuthorization?: HostShellSpawnAuthorization,
 ): Promise<ToolExecutionResult> {
   const waitForClose = verified !== undefined && verifiedShellRequiresResultCheck(verified.handle, verified.identity);
   signal?.throwIfAborted();
@@ -4018,6 +4042,7 @@ async function spawnPowerShellWithSandbox(
       if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
       assertManagedChildProcessAdmissionOpen("tool:powershell:asrt");
       assertSrtWinSpawnIntegrity(cmd);
+      assertHostShellSpawnDirectory(spawnAuthorization);
       child = spawn(cmd, args, {
         windowsHide: true,
         detached: process.platform !== "win32",
@@ -4145,6 +4170,7 @@ async function spawnPowerShellInMxc(
   runtimeReadPaths: readonly string[] = [],
   verified?: VerifiedPowerShellExecution,
   sessionId?: string,
+  spawnAuthorization?: HostShellSpawnAuthorization,
 ): Promise<ToolExecutionResult> {
   if (detectMxcShellCapability() === undefined) {
     return mxcSpawnFailure("container shell route is no longer available");
@@ -4228,6 +4254,7 @@ async function spawnPowerShellInMxc(
     if (cmd === undefined) throw new Error("Container launcher is missing");
     launch.activate();
     try {
+      assertHostShellSpawnDirectory(spawnAuthorization);
       child = spawn(cmd, args, {
         // The launcher runs from its own (per-machine, admin-only) directory, so
         // nothing in the workspace sits beside it; the container's working

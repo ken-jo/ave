@@ -17,6 +17,7 @@ import { updatePermissionsFile } from "../permissions-store.js";
 import { __resetWindowsSandboxSubstrateForTest } from "../sandbox-capability.js";
 import {
   buildHostShellExecutionPermitBinding,
+  createShellApprovalDirectory,
   resolveHostShellWorkingDirectory,
   consumeHostShellExecutionPermit,
   consumeHostShellExecutionPermitForSpawn,
@@ -82,6 +83,8 @@ async function issueHostApprovedDecision(
   const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
   const gate = new ApprovalGate(wc as never);
   const id = `partial-shell-permit-${++approvalSequence}`;
+  const directory = createShellApprovalDirectory(binding);
+  try {
   const pending = gate.requestAndWait({
     id,
     category: "tool",
@@ -101,6 +104,7 @@ async function issueHostApprovedDecision(
     allowedChoices: ["allow-once", "deny-once"],
     forceExplicit: true,
     hostShellExecutionPermitBinding: binding,
+    processCwd: { directory },
   });
   const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest | undefined;
   if (!request?.nonce || !request.hmac) {
@@ -112,7 +116,10 @@ async function issueHostApprovedDecision(
     nonce: request.nonce,
     hmac: request.hmac,
   }, wc as never);
-  return pending;
+  return await pending;
+  } finally {
+    directory.dispose();
+  }
 }
 
 function permitInput(

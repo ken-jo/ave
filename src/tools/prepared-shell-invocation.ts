@@ -131,11 +131,12 @@ export function preparedShellExecutableReadPaths(handle: PreparedShellInvocation
   if (!paths) throw new Error("Shell executable reads were not bound before execution");
   return paths;
 }
-export function preparedShellCommand(handle: PreparedShellInvocation): Readonly<{
+export function preparedShellCommand(handle: PreparedShellInvocation, prelude?: string): Readonly<{
   shell: Readonly<ResolvedShellCommand>; argv: readonly string[]; environment: Readonly<Record<string, string>>; homePath?: string; hostHome?: string;
 }> {
   const state = stateOf(handle);
-  return Object.freeze({ shell: state.shell, argv: state.argv, environment: state.environment, homePath: state.home?.path, hostHome: state.hostHome });
+  const argv = prelude === undefined ? state.argv : Object.freeze(state.shell.shellArgs(prelude + state.executionCommand));
+  return Object.freeze({ shell: state.shell, argv, environment: state.environment, homePath: state.home?.path, hostHome: state.hostHome });
 }
 
 /** Foreground argv carrying the host's cwd probe, with the delimiters the caller strips from stderr; the plain

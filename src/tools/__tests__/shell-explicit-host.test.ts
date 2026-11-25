@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, isHostApprovalRejectedDecision, type ApprovalRequest, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
-import { buildHostShellExecutionPermitBinding, mintHostShellExecutionPermit } from "../../permissions/host-shell-execution-permit.js";
+import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, mintHostShellExecutionPermit } from "../../permissions/host-shell-execution-permit.js";
 import { buildHostShellExecutionPlan, getHostShellExecutionPlanAuditProjection, getHostShellExecutionPlanCacheIdentity, parseHostShellExecutionInput } from "../../permissions/host-shell-execution-plan.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -12,6 +12,7 @@ import { approvalFailureOutcome } from "../pipeline/approval-outcome.js";
 
 const HOST_INPUT = { command: "printf approved > host-marker.txt", executionMode: "host" as const, justification: "Verify the explicitly requested host route", timeoutSeconds: 5 };
 const temporaryDirectories: string[] = [];
+const approvalDirectories: ReturnType<typeof createShellApprovalDirectory>[] = [];
 function prepare() {
   const cwd = mkdtempSync(join(tmpdir(), "host-shell-approval-"));
   temporaryDirectories.push(cwd);
@@ -21,12 +22,15 @@ function prepare() {
   const binding = buildHostShellExecutionPermitBinding({ plan, toolName: "bash", toolUseId: "host-once", rawInput: HOST_INPUT, executionCwd: cwd, extraAllowedDirectories: [] })!;
   const webContents = { send: vi.fn(), isDestroyed: () => false };
   const gate = new ApprovalGate(webContents as never);
-  const request: ApprovalRequestInput = { id: "host-once", category: "tool", toolCategory: "shell", toolName: "bash", args: HOST_INPUT, source: "builtin", createdAt: Date.now(), reason: "Explicit host execution", allowedChoices: ["allow-once", "deny-once"], forceExplicit: true, hostShellExecutionPermitBinding: binding };
+  const directory = createShellApprovalDirectory(binding);
+  approvalDirectories.push(directory);
+  const request: ApprovalRequestInput = { id: "host-once", category: "tool", toolCategory: "shell", toolName: "bash", args: HOST_INPUT, source: "builtin", createdAt: Date.now(), reason: "Explicit host execution", allowedChoices: ["allow-once", "deny-once"], forceExplicit: true, hostShellExecutionPermitBinding: binding, processCwd: { directory } };
   return { cwd, plan, binding, webContents, gate, request };
 }
 afterEach(async () => {
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
+  for (const directory of approvalDirectories.splice(0)) directory.dispose();
   for (const dir of temporaryDirectories.splice(0)) await cleanupTmpDir(dir);
 });
 
@@ -39,7 +43,9 @@ describe("explicit host shell authorization", () => {
       const input = { ...HOST_INPUT, executionMode,
         [field]: field === "command" ? "printf unchanged > live-abcdefgh" : field === "cwd" ? join(cwd, "live-abcdefgh") : "Use live-abcdefgh" };
       const binding = buildHostShellExecutionPermitBinding({ plan, toolName: "bash", toolUseId: request.id, rawInput: input, executionCwd: cwd, extraAllowedDirectories: [] })!;
-      const decision = await gate.requestAndWait({ ...request, args: input, hostShellExecutionPermitBinding: binding });
+      const directory = createShellApprovalDirectory(binding);
+      approvalDirectories.push(directory);
+      const decision = await gate.requestAndWait({ ...request, args: input, hostShellExecutionPermitBinding: binding, processCwd: { directory } });
       expect(decision.choice).toBe("deny-once");
       expect(isHostApprovalRejectedDecision(decision)).toBe(true);
       expect(webContents.send.mock.calls.some(([channel]) => channel === IPC_APPROVAL_REQUEST)).toBe(false);

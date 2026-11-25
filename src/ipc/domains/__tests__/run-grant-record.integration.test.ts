@@ -117,7 +117,7 @@ async function subject() {
       }),
       ...overrides,
     };
-    return { request, result: track(gate.requestAndWait(request)) };
+    return { request, result: track(requestBoundShellCard(gate, request, root)) };
   };
   const record = (card: Pick<ApprovalRequest, "id" | "args">, body: Record<string, unknown>) => invoke(PERMISSIONS.userApprovalRecord, {
     requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "run",
@@ -371,3 +371,4 @@ describe("Allow for this run, from the card to node R", () => {
     expect(f.execute).toHaveBeenCalledTimes(1);
   });
 });
+import { requestBoundShellCard } from "../../../__tests__/support/host-shell-approval.js";

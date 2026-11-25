@@ -31,7 +31,7 @@ import { isCanonicalWebFetchTool } from "./web-fetch.js";
 import { runWithEffectGateContext } from "../permissions/effect-enforcement.js";
 import { CHOKEPOINT_EFFECT } from "../permissions/effect-kind.js";
 import type { HostShellExecutionPermitBinding } from "../permissions/host-shell-execution-permit.js";
-import { HOST_SHELL_AUTHORIZATION_REVOKED_ERROR, mintHostShellExecutionPermit } from "../permissions/host-shell-execution-permit.js";
+import { HOST_SHELL_AUTHORIZATION_REVOKED_ERROR, mintHostShellExecutionPermit, recordHostShellPolicyAuthorization } from "../permissions/host-shell-execution-permit.js";
 import { resolveEffectiveCeilingMs, runWithCeiling, type ToolCeilingOutcome } from "./executor-ceiling.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession } from "../shared/chat-origin.js";
@@ -197,6 +197,7 @@ export interface ExecutionStageContext {
   replayRootBinding?: ReplayRootBinding;
   abortSignal: AbortSignal | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
+  processCwd?: import("../permissions/approval-gate.js").ApprovalRequestInput["processCwd"];
   hostShellApprovalDecision: ApprovalDecision | undefined;
   hostShellAllowRuleDecision: PermissionCheckResult | undefined;
   hostShellExecutionPlan: HostShellExecutionPlan | undefined;
@@ -261,6 +262,7 @@ export async function executeAuthorizedToolInvocation(
     humanApproved: initialHumanApproved,
     abortSignal,
     hostShellExecutionPermitBinding,
+    processCwd,
     hostShellApprovalDecision,
     hostShellAllowRuleDecision,
     hostShellExecutionPlan,
@@ -663,7 +665,10 @@ export async function executeAuthorizedToolInvocation(
   // and is consumed once by the plain explicit-host / Plan-B spawn path. Its
   // authority is either the user's allow-once receipt or, for an explicit host
   // request only, the matching exact allow-rule decision (owner 2026-10-25, unsandboxed shell exact-rule requirement).
+  const requiresShellPermit = () => hostShellRequiresExplicitApproval ||
+    (processCwd !== undefined && "directory" in processCwd && processCwd.directory.held);
   const hostShellExecutionPermit =
+    requiresShellPermit() &&
     hostShellExecutionPlan !== undefined &&
     hostShellExecutionPermitBinding !== undefined
       ? mintHostShellExecutionPermit({
@@ -676,10 +681,10 @@ export async function executeAuthorizedToolInvocation(
         })
       : undefined;
   if (
-    hostShellRequiresExplicitApproval &&
+    requiresShellPermit() &&
     hostShellExecutionPermit === undefined
   ) {
-    const msg = `Unsandboxed shell execution blocked: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`;
+    const msg = `Shell execution blocked: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`;
     const durationMs = Date.now() - startTime;
     emitToolStart(callbacks, toolUse.name, finalInput, meta);
     callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
@@ -1088,7 +1093,8 @@ export async function executeAuthorizedToolInvocation(
       ...(invocationPermissionContext.approvalMemory ? { approvalMemory: invocationPermissionContext.approvalMemory } : {}),
       ...(approvalPurpose ? { approvalPurpose } : {}),
       ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
-      ...(hostShellExecutionPermitBinding ? { hostShellExecutionPermitBinding } : {}),
+      ...(hostShellRequiresExplicitApproval && hostShellExecutionPermitBinding ? { hostShellExecutionPermitBinding } : {}),
+      ...(processCwd === undefined ? {} : { processCwd }),
       reviewerVerdict: permissionResult.reviewer?.verdict,
       reviewerOutcome: permissionResult.reviewer?.outcome,
       reviewerApprovalBasis: permissionResult.reviewer?.approvalBasis,
@@ -1153,10 +1159,11 @@ export async function executeAuthorizedToolInvocation(
     }
     if (humanApproved) permissionResult = { ...permissionResult, decision: "allow", reason: `user approved approval request (${decision.choice})` };
     approvedPolicyEpoch = currentEpoch;
-    if (hostShellExecutionPlan && hostShellExecutionPermitBinding) {
-      const permit = mintHostShellExecutionPermit({ plan: hostShellExecutionPlan, approvalDecision: decision,
+    if (hostShellExecutionPlan && hostShellExecutionPermitBinding && requiresShellPermit()) {
+      if (!hostShellRequiresExplicitApproval) recordHostShellPolicyAuthorization(hostShellExecutionPermitBinding);
+      const permit = mintHostShellExecutionPermit({ plan: hostShellExecutionPlan, approvalDecision: hostShellRequiresExplicitApproval ? decision : undefined,
         permissionManager: services.permissionManager, binding: hostShellExecutionPermitBinding });
-      if (hostShellRequiresExplicitApproval && !permit) throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
+      if (!permit) throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
       executionContext.hostShellExecutionPermit = permit;
     }
   };

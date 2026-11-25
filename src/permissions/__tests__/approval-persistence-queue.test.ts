@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { requestBoundShellCard } from "../../__tests__/support/host-shell-approval.js";
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import * as homeTrust from "../../shared/ave-home-trust.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
@@ -40,11 +41,11 @@ it.each(["exact approval", "user rule", "project rule"] as const)("refuses a des
   const authority = invocationApprovalPersistenceGuard(binding, sessionId);
   const wc = makeMockWebContents();
   const gate = new ApprovalGate(wc as never);
-  const decision = gate.requestAndWait({
+  const decision = requestBoundShellCard(gate, {
     id: "queued-approval", category: "tool", toolName: "bash", toolCategory: "shell",
-    source: "builtin", sessionId, createdAt: Date.now(), args: {}, reason: "Needs approval",
+    source: "builtin", sessionId, createdAt: Date.now(), args: { command: "printf queued" }, reason: "Needs approval",
     remoteControllerAuthority: binding, remoteControllerOrigin: binding.kind,
-  });
+  }, home);
   await vi.waitFor(() => expect(sentApprovalCards(wc)).toHaveLength(1));
   const [card] = sentApprovalCards<ApprovalRequest>(wc);
   await gate.resolveFromDesktopRendererWithFreshIdentity(card.id, {
