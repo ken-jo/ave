@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
+import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
 import { admitMxcLists, rankAdmittedMxcLists, rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 import type { MxcShellPolicyLists } from "../../tools/mxc-shell-launch.js";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -26,6 +27,8 @@ function withMxcWorkspace(run: (root: string) => void): void {
   try {
     run(root);
   } finally {
+    // A forced recursive removal stops silently at a junction whose target it already removed.
+    removeLinksUnder(root);
     rmSync(root, { recursive: true, force: true });
   }
 }
