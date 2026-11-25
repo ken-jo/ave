@@ -125,6 +125,7 @@ function approvalAskReason(
     case "project-escape": return translate(request.target?.canonicalPath ? "toolApprovalDialog.reasonProjectEscape" : "toolApprovalDialog.reasonProjectEscapeOperand");
     case "secret-read": return translate("toolApprovalDialog.reasonSecretRead");
     case "file-write": return translate("toolApprovalDialog.reasonFileWrite");
+    case "shell-analysis-limit": return translate("toolApprovalDialog.reasonShellAnalysisLimit");
     case "protected-path": {
       const entry = request.reasonDetail?.protectedEntry;
       if (entry === undefined) return translate("toolApprovalDialog.reasonProtectedPathGeneric");
@@ -1164,7 +1165,7 @@ export function ToolApprovalContent({
                   ) : null}
                   {request.executionPlan ? (
                     <div className="mt-1 space-y-0.5 text-xs text-muted-foreground" data-testid="tool-approval-shell-environment">
-                      {shellExecutionEnvironmentLines(request.executionPlan).map((line) => <p key={line}>{line}</p>)}
+                      {shellExecutionEnvironmentLines(request.executionPlan, { oneTimeApproval: request.reasonCode === "shell-analysis-limit" }).map((line) => <p key={line}>{line}</p>)}
                     </div>
                   ) : null}
                   {requiresHostConsent ? (

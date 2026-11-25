@@ -128,16 +128,14 @@ export interface ApprovalRequestTarget {
 }
 
 // The tree stages whose card reason the renderer words itself; any other stage keeps the host's reason text.
-const APPROVAL_REASON_CODES = ["protected-path", "project-escape", "secret-read", "file-write"] as const;
+const APPROVAL_REASON_CODES = ["protected-path", "project-escape", "secret-read", "file-write", "shell-analysis-limit"] as const;
 
-// The card's reason fields for a permission result, sent only for a card about a file target: the same codes are raised for
-// shell commands and for write tools that name no file, and those cards keep the host's own reason text. A folder card states
-// its ordinary reason in its headline, so it carries a floor code only. The protected entry is named only on its own floor's
-// card; a matched secret pattern is named on any file card for that read, a reviewed one included.
+// File reasons use a target. The analysis-limit reason applies to the entire shell command.
 export function approvalReasonFields(
   result: { readonly reasonCode?: string; readonly pipelineRequest?: Pick<PermissionDecisionRequest, "pathFacts"> },
   card: { readonly fileTarget: boolean; readonly folderCard?: true },
 ): Pick<ApprovalRequest, "reasonCode" | "reasonDetail"> {
+  if (result.reasonCode === "shell-analysis-limit") return { reasonCode: result.reasonCode };
   if (!card.fileTarget) return {};
   const reasonCode = APPROVAL_REASON_CODES.find((code) => code === result.reasonCode
     && (card.folderCard === undefined || code === "protected-path" || code === "project-escape"));
@@ -190,7 +188,7 @@ export interface ApprovalRequest {
   // its session). Display-only: the record handler checks the membership and the request again. Never an approval capability.
   runStage?: { readonly stageId: string; readonly stageName: string; readonly runAllowOffered: boolean };
   id: string;
-  // Display-only: the code of the pipeline decision that asked, so the card can word its reason in the user's language instead of the host's English `reason`. A user-owned-surface card gets its surface decision's code; a card about a file target gets one of `APPROVAL_REASON_CODES`, the tree stage that raised it. Never an approval capability, and never read back from a decision.
+  // Display-only code for localizing the permission reason. The gate never reads it from an answer.
   reasonCode?: string;
   userOwnedSurface?: UserOwnedSurface;
   userOwnedSurfaceReviewFallback?: true;

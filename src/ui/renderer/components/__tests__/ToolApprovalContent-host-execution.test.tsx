@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { describe, expect, it } from "vitest";
-import { t } from "../../../../i18n/runtime.js";
+import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
+import { SHELL_ANALYSIS_LIMIT_REASON } from "../../../../permissions/decision-pipeline.js";
 import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import { buildHostShellExecutionPlan, getHostShellExecutionPlanAuditProjection } from "../../../../permissions/host-shell-execution-plan.js";
@@ -37,6 +38,30 @@ describe("explicit host execution approval", () => {
     const { container } = renderApproval(request(false), () => undefined);
     expect(container.querySelector('[data-testid="tool-approval-host-execution"]')).toBeNull();
     expect(container.querySelector('[data-testid="tool-approval-shell-environment"]')?.textContent).toContain(t("shellExecution.temporaryHome"));
+  });
+
+  it.each([
+    ["en", /exceeded the analysis limit/u],
+    ["ko", /분석 한도를 초과했습니다/u],
+  ] as const)("shows the analysis-limit reason in %s without offering a sandbox waiver", (locale, copy) => {
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      const approval = request(false);
+      approval.reason = SHELL_ANALYSIS_LIMIT_REASON;
+      approval.reasonCode = "shell-analysis-limit";
+      approval.executionPlan = getHostShellExecutionPlanAuditProjection(buildHostShellExecutionPlan({
+        platform: "linux", requestedSandbox: true,
+        activeCapability: { reason: "Fixture sandbox unavailable", kind: "none", confidence: "verified", platform: "linux" },
+      }));
+      const { container } = renderApproval(approval, () => undefined);
+      expect(container.querySelector('[data-testid="approval-ask-reason"]')?.textContent).toMatch(copy);
+      const environment = container.querySelector('[data-testid="tool-approval-shell-environment"]')?.textContent;
+      expect(environment).toContain(t("shellExecution.sandboxUnavailableOneTime"));
+      expect(environment).not.toContain(t("shellExecution.sandboxUnavailableAsk"));
+    } finally {
+      setLocale(previous);
+    }
   });
 
   // An unavailable sandbox is a forced ask: the card says the sandbox is unavailable and shows the host warning, without the explicit-request justification.
