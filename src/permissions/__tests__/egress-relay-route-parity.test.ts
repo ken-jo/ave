@@ -309,35 +309,59 @@ describe.skipIf(process.platform !== "win32").each(["shell", "extension"] as con
     expect(asked).toEqual([]);
   });
 
-  // The bind of [::1]:P fails with the given code instead of reaching the host.
-  function failIpv6Hold(code: string): void {
+  // The first `times` binds of [::1]:P fail with the given code instead of reaching the host. Returns the ports they asked for.
+  function failIpv6Hold(code: string, times = Number.POSITIVE_INFINITY): number[] {
     const listen = net.Server.prototype.listen;
+    const ports: number[] = [];
     vi.spyOn(net.Server.prototype, "listen").mockImplementation(function (this: net.Server, ...args: unknown[]) {
-      const options = args[0] as { host?: string } | null;
-      if (typeof options !== "object" || options === null || options.host !== "::1") {
+      const options = args[0] as { host?: string; port?: number } | null;
+      if (typeof options !== "object" || options === null || options.host !== "::1" || ports.length >= times) {
         return listen.apply(this, args as Parameters<typeof listen>);
       }
+      ports.push(options.port ?? 0);
       queueMicrotask(() => this.emit("error", Object.assign(new Error(`listen ${code}`), { code })));
       return this;
     });
+    return ports;
   }
 
   // A host with no IPv6 loopback address has nothing there for another process to own, so the endpoint opens without the hold.
-  it.each(["EADDRNOTAVAIL", "EAFNOSUPPORT"])("opens without the IPv6 hold when the address is unavailable (%s), and says so once", async (code) => {
+  it("opens without the IPv6 hold when the address is unavailable, and says so once", async () => {
     __resetIpv6HoldNoticeForTest();
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
-    failIpv6Hold(code);
+    const tried = failIpv6Hold("EADDRNOTAVAIL");
     const first = await openRoute();
     expect(await refusal(first.port)).toMatch(/^HTTP\/1\.[01] 200 /u);
     expect(await probe("::1", first.port)).toBe("ECONNREFUSED");
     await openRoute();
+    expect(tried).toHaveLength(2);
     const lines = warned.mock.calls.map((call) => String(call[0])).filter((line) => line.includes("IPv6 loopback"));
     expect(lines).toHaveLength(1);
   });
 
-  it.each(["EADDRINUSE", "EACCES", "EINVAL"])("refuses to open when the IPv6 hold fails with %s", async (code) => {
-    failIpv6Hold(code);
-    await expect(openRoute()).rejects.toThrow(new RegExp(`could not hold \\[::1\\]:\\d+ \\(${code}\\)`, "u"));
+  it("refuses at once, with no other port tried, when the IPv6 loopback port is taken", async () => {
+    const tried = failIpv6Hold("EADDRINUSE");
+    await expect(openRoute()).rejects.toThrow(/could not hold \[::1\]:\d+ \(EADDRINUSE\)/u);
+    expect(tried).toHaveLength(1);
+    await expect.poll(() => probe("127.0.0.1", tried[0] ?? 0)).toBe("ECONNREFUSED");
+    expect(asked).toEqual([]);
+  });
+
+  it.each(["EACCES", "EAFNOSUPPORT"])("releases both ports and tries a fresh pair when the IPv6 hold fails with %s", async (code) => {
+    const tried = failIpv6Hold(code, 2);
+    const opened = await openRoute();
+    expect(tried).toHaveLength(2);
+    expect(tried).not.toContain(opened.port);
+    for (const port of tried) expect(await probe("127.0.0.1", port)).toBe("ECONNREFUSED");
+    expect(await probe("::1", opened.port)).toBe("dropped");
+    expect(await refusal(opened.port)).toMatch(/^HTTP\/1\.[01] 200 /u);
+  });
+
+  it("refuses after four retries when the IPv6 hold keeps failing, and leaves no IPv4 endpoint behind", async () => {
+    const tried = failIpv6Hold("EACCES");
+    await expect(openRoute()).rejects.toThrow(/could not hold an IPv6 loopback port after 4 retries \(EACCES\)/u);
+    expect(tried).toHaveLength(5);
+    for (const port of tried) expect(await probe("127.0.0.1", port)).toBe("ECONNREFUSED");
     expect(asked).toEqual([]);
   });
 });

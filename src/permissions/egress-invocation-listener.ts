@@ -120,8 +120,9 @@ const DEFAULT_MAX_UPSTREAM_HEAD_BYTES = 16 * 1024;
 const MAX_LISTENER_BIND_ATTEMPTS = 16;
 
 const log = createLogger("egress-invocation-listener");
-// Bind failures that mean the address does not exist on this host, as opposed to someone else having the port.
-const IPV6_LOOPBACK_ABSENT: ReadonlySet<string> = new Set(["EADDRNOTAVAIL", "EAFNOSUPPORT"]);
+// The one bind failure that means the address does not exist on this host, as opposed to someone else having the port.
+const IPV6_LOOPBACK_ABSENT = "EADDRNOTAVAIL";
+const MAX_IPV6_HOLD_RETRIES = 4;
 let ipv6HoldNoticeLogged = false;
 
 export function __resetIpv6HoldNoticeForTest(): void {
@@ -312,48 +313,63 @@ export async function openInvocationProxyListener(
   options.admission?.signal.addEventListener("abort", revoke, { once: true });
   let port: number | undefined;
   try {
-    for (let attempt = 0; attempt < MAX_LISTENER_BIND_ATTEMPTS; attempt++) {
-      options.admission?.assertCanBind();
-      if (closeRequested) throw new Error("invocation proxy listener closed while binding");
-      binding = new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(0, "127.0.0.1", () => {
-          server.off("error", reject);
+    // Each pass binds a fresh port pair. Where the IPv6 bind fails for a reason that is neither a taken port nor an absent
+    // address, both ports are released and another pair is tried.
+    for (let retry = 0; port === undefined; retry++) {
+      let candidate: number | undefined;
+      for (let attempt = 0; attempt < MAX_LISTENER_BIND_ATTEMPTS; attempt++) {
+        options.admission?.assertCanBind();
+        if (closeRequested) throw new Error("invocation proxy listener closed while binding");
+        binding = new Promise<void>((resolve, reject) => {
+          server.once("error", reject);
+          server.listen(0, "127.0.0.1", () => {
+            server.off("error", reject);
+            resolve();
+          });
+        });
+        await binding;
+        const address = server.address();
+        if (address === null || typeof address === "string") throw new Error("invocation proxy listener has no TCP address");
+        if (address.port < excludedStart || address.port > excludedEnd) {
+          candidate = address.port;
+          break;
+        }
+        await unbind();
+      }
+      if (candidate === undefined) throw new Error("invocation proxy listener could not bind outside shared proxy port range");
+      const held = candidate;
+      let failure: string | undefined;
+      binding = new Promise<void>((resolve) => {
+        const failed = (error: NodeJS.ErrnoException): void => {
+          failure = error.code ?? "bind failed";
+          resolve();
+        };
+        hold.once("error", failed);
+        hold.listen({ host: "::1", port: held, ipv6Only: true, exclusive: true }, () => {
+          hold.off("error", failed);
           resolve();
         });
       });
       await binding;
-      const address = server.address();
-      if (address === null || typeof address === "string") throw new Error("invocation proxy listener has no TCP address");
-      if (address.port < excludedStart || address.port > excludedEnd) {
-        port = address.port;
-        break;
-      }
-      await unbind();
-    }
-    if (port === undefined) throw new Error("invocation proxy listener could not bind outside shared proxy port range");
-    const held = port;
-    // No retry on another port: a launch whose IPv6 loopback port someone else has, or whose bind fails for a reason not known to
-    // mean an absent address, is refused. Where the host has no such address there is nothing to own, and the endpoint opens without it.
-    binding = new Promise<void>((resolve, reject) => {
-      const failed = (error: NodeJS.ErrnoException): void => {
-        if (error.code !== undefined && IPV6_LOOPBACK_ABSENT.has(error.code)) {
-          if (!ipv6HoldNoticeLogged) {
-            ipv6HoldNoticeLogged = true;
-            log.warn(`This host has no IPv6 loopback address (${error.code}): contained egress endpoints hold their IPv4 port only`);
-          }
-          resolve();
-          return;
+      if (failure === undefined) {
+        port = held;
+      } else if (failure === IPV6_LOOPBACK_ABSENT) {
+        // The host has no such address, so there is nothing there to own: the endpoint opens without the hold.
+        if (!ipv6HoldNoticeLogged) {
+          ipv6HoldNoticeLogged = true;
+          log.warn(`This host has no IPv6 loopback address (${failure}): contained egress endpoints hold their IPv4 port only`);
         }
-        reject(new Error(`invocation proxy listener could not hold [::1]:${held} (${error.code ?? "bind failed"})`));
-      };
-      hold.once("error", failed);
-      hold.listen({ host: "::1", port: held, ipv6Only: true, exclusive: true }, () => {
-        hold.off("error", failed);
-        resolve();
-      });
-    });
-    await binding;
+        port = held;
+      } else if (failure === "EADDRINUSE") {
+        // Someone else has it: no other port is tried and no IPv4-only endpoint is left.
+        throw new Error(`invocation proxy listener could not hold [::1]:${held} (${failure})`);
+      } else {
+        await unbind();
+        if (retry >= MAX_IPV6_HOLD_RETRIES) {
+          throw new Error(`invocation proxy listener could not hold an IPv6 loopback port after ${MAX_IPV6_HOLD_RETRIES} retries (${failure})`);
+        }
+      }
+    }
     options.admission?.assertCanBind();
     if (closeRequested) throw new Error("invocation proxy listener closed while binding");
   } catch (error) {
