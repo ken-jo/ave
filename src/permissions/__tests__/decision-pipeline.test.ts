@@ -128,6 +128,44 @@ describe("ordered admission, floors and explicit rules", () => {
   }
 });
 
+describe("automatic terminal review after the floor", () => {
+  const evidence = request({
+    tool: { name: "terminal_run", source: "builtin", kind: "shell" },
+    floor: { code: "sandbox-unavailable", reason: "No sandbox." },
+    floorSessionEligible: true,
+    rules: { exactHostRule: "Bash(printf ready)" },
+    userOwnedSurface: { kind: "host-terminal", choice: "auto" },
+  });
+
+  it("asks for review after the exact rule answers the floor", () => {
+    expect(decidePermission(evidence)).toMatchObject({
+      outcome: "ask", reasonCode: "user-owned-surface-review", reviewRequired: true,
+    });
+  });
+
+  it.each([
+    [{ status: "success", level: "low" }, "allow", "exact-host-rule"],
+    [{ status: "success", level: "high" }, "ask", "user-owned-surface-human-required"],
+    [{ status: "error", level: "low" }, "ask", "user-owned-surface-human-required"],
+    [{ status: "success", level: "low", breakerOpen: true }, "ask", "user-owned-surface-human-required"],
+  ] as const)("uses the review outcome %j only once the exact rule answers the floor", (reviewer, outcome, reasonCode) => {
+    expect(decidePermission({ ...evidence, reviewer })).toMatchObject({ outcome, reasonCode });
+    expect(decidePermission({ ...evidence, reviewer, rules: {} })).toMatchObject({
+      outcome: "ask-forced", reasonCode: "sandbox-unavailable",
+    });
+  });
+
+  it("asks the person when automation is paused after an exact rule answers the floor", () => {
+    expect(decidePermission({ ...evidence, automationPause: { kind: "consecutive", reason: "Paused." } }))
+      .toMatchObject({ outcome: "ask", reasonCode: "automation-paused" });
+  });
+
+  it("keeps the forced card for a session waiver with Auto", () => {
+    expect(decidePermission({ ...evidence, rules: { floorSession: "Session grant." }, reviewer: { status: "success", level: "low" } }))
+      .toMatchObject({ outcome: "ask-forced", reasonCode: "sandbox-unavailable" });
+  });
+});
+
 describe("reviewer and human availability", () => {
   it("exports the exact no-approver message", () => {
     expect(NO_APPROVER_MESSAGE).toBe(EXPECTED_NO_APPROVER_MESSAGE);

@@ -29,6 +29,8 @@ import type { OperatorContainerCapability } from "../../permissions/operator-con
 import type { ToolPermissionContext } from "../executor.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL } from "../../permissions/host-shell-execution-plan.js";
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
+import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 
 // A published operator container makes the host rebuild shell effects onto a disposable route; the harness lets a test publish one mid-command.
 const operatorHarness = vi.hoisted(() => ({ current: null as object | null, issued: new WeakSet<object>(), leases: new WeakMap<object, object>(), unreadable: false }));
@@ -75,10 +77,11 @@ const ORIGINAL_PLATFORM = process.platform;
 const WINDOW = 7;
 const HOST = "terminal:0000c0de-1";
 const mark = terminalMarker;
+const resources = new PermissionTestResources();
 
 let dir: string;
 beforeEach(() => { dir = realpathSync(mkdtempSync(join(tmpdir(), "ave-terminal-run-host-"))); });
-afterEach(() => {
+afterEach(async () => {
   vi.unstubAllEnvs();
   setProcessPlatform(ORIGINAL_PLATFORM);
   operatorHarness.current = null;
@@ -88,6 +91,7 @@ afterEach(() => {
   __resetTerminalBlocksForTest();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
+  await resources.cleanup();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -108,6 +112,7 @@ async function run(command: string, options: {
   /** Runs inside the PTY layer before its first pre-write effect check. */
   duringTyping?: () => void | Promise<void>;
   afterEffectCheck?: () => void | Promise<void>;
+  logicalReview?: () => Promise<{ consistent: boolean; reason: string }>;
 } = {}) {
   const sessionId = options.sessionId ?? "pane";
   const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
@@ -118,7 +123,12 @@ async function run(command: string, options: {
   pm.setMode(options.mode ?? "default");
   for (const rule of options.rules ?? []) await pm.addRulePersist(rule, { kind: "user" });
   if (options.surfaceChoice) pm.setUserOwnedSurfaceChoice(sessionId, "host-terminal", options.surfaceChoice);
+  if (options.logicalReview !== undefined) setReviewerForTest(pm, {
+    classifier: { classify: () => ({ level: "high", reason: "The command requires review." }), reviewUserOwnedSurface: options.logicalReview },
+    cache: resources.makeVerdictCache(join(resources.makeTmpDir("ave-terminal-review-"), "verdicts.jsonl")),
+  });
   const review = vi.spyOn(pm, "dispatchReviewer").mockClear();
+  const resolvedReview = vi.spyOn(pm, "resolveReviewedPermission").mockClear();
   const check = vi.spyOn(pm, "checkDetailed").mockClear();
   const typed: string[] = [];
   const refusals: string[] = [];
@@ -172,7 +182,8 @@ async function run(command: string, options: {
       [{ id: "terminal-run-host", name: "terminal_run", input: { command, waitSeconds: 0 } }],
       // A user-typed turn's tool calls carry the model's own arguments (`llm-tool-arg`), as the query loop passes them.
       { sessionId, permissionContext: userPermissionContext({
-        trustOrigin: "llm-tool-arg", ...(options.headless ? { headless: true } : {}), ...options.permissionContext,
+        trustOrigin: "llm-tool-arg", userIntent: "Print ready in this terminal.", currentTaskStep: "Print the requested text.",
+        ...(options.headless ? { headless: true } : {}), ...options.permissionContext,
       }) },
     ));
   });
@@ -183,6 +194,7 @@ async function run(command: string, options: {
     requestAndWait,
     surfaceChoice: pm.getUserOwnedSurfaceChoice(sessionId, "host-terminal"),
     review,
+    resolvedReview,
     typed,
     refusals,
     result: result!,
@@ -370,6 +382,80 @@ describe("terminal_run without Windows shell containment", () => {
     }
   });
 
+  const lowReview = async () => ({ consistent: true, reason: "The command matches the user's request." });
+  const pauseAutoApproval = (manager: PermissionManager) => {
+    for (let index = 0; index < 3; index++) manager.getJudgeBreaker().record("pane", "ask", `another-call-${index}`);
+    expect(manager.isAutomatedApprovalPaused("pane")).toBe(true);
+  };
+
+  it("types on one low automatic review after an exact rule answers the floor", async () => {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
+    const logicalReview = vi.fn(lowReview);
+    const result = await run(command, { rules: [exactRule], surfaceChoice: "auto", logicalReview });
+    expect(result.decision).toMatchObject({ decision: "ask", reasonCode: "user-owned-surface-review" });
+    expect(result.resolvedReview.mock.results[0]?.value).toMatchObject({
+      decision: "allow", reasonCode: "exact-host-rule", reviewer: { verdict: { level: "low" } },
+    });
+    expect(result.review).toHaveBeenCalledOnce();
+    expect(logicalReview).toHaveBeenCalledOnce();
+    expect(result.requestAndWait).not.toHaveBeenCalled();
+    expect(result.typed).toEqual([command]);
+  });
+
+  it.each([
+    ["uncertain and approved", async () => ({ consistent: false, reason: "The action is uncertain." }), "allow-once"],
+    ["uncertain and denied", async () => ({ consistent: false, reason: "The action is uncertain." }), "deny-once"],
+    ["review failure", async () => { throw new Error("Review unavailable"); }, "deny-once"],
+    ["review unavailable", undefined, "deny-once"],
+  ] as const)("opens an ordinary card for %s after the exact rule", async (_label, logicalReview, choice) => {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
+    const result = await run(command, { rules: [exactRule], surfaceChoice: "auto", logicalReview, choice });
+    expect(result.review).toHaveBeenCalledOnce();
+    expect(result.requestAndWait).toHaveBeenCalledOnce();
+    expect(result.request).toMatchObject({ userOwnedSurface: "host-terminal", userOwnedSurfaceReviewFallback: true });
+    expect(result.request?.forceExplicit).toBeUndefined();
+    expect(result.typed).toEqual(choice === "allow-once" ? [command] : []);
+  });
+
+  it.each([false, true])("keeps Auto from reviewing a forced floor or a headless request (headless=%s)", async (headless) => {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
+    const logicalReview = vi.fn(lowReview);
+    const result = await run(command, { rules: headless ? [exactRule] : [], surfaceChoice: "auto", logicalReview, headless });
+    expect(result.review).not.toHaveBeenCalled();
+    expect(logicalReview).not.toHaveBeenCalled();
+    expect(result.typed).toEqual([]);
+    if (headless) {
+      expect(result.decision?.decision).toBe("deny");
+      expect(result.requestAndWait).not.toHaveBeenCalled();
+    } else {
+      expect(result.decision).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable", forceModal: true });
+      expect(result.requestAndWait).toHaveBeenCalledOnce();
+    }
+  });
+
+  it.each([
+    ["the exact rule is removed", (manager: PermissionManager) => manager.removeRulePersist(exactRule, { kind: "user" }), "deny-once", true],
+    ["automatic approval is paused", pauseAutoApproval, "deny-once", undefined],
+    ["automatic approval is paused and the person approves", pauseAutoApproval, "allow-once", undefined],
+  ] as const)("asks for a fresh human decision when %s after a reviewed allow", async (_label, change, choice, forced) => {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
+    const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+    const afterEffectCheck = vi.fn<() => Promise<void>>().mockImplementationOnce(async () => { await change(permissionManager); });
+    const result = await run(command, {
+      permissionManager, rules: [exactRule], surfaceChoice: "auto", logicalReview: lowReview, afterEffectCheck, choice,
+    });
+    expect(result.resolvedReview.mock.results[0]?.value).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
+    expect(afterEffectCheck).toHaveBeenCalledTimes(choice === "allow-once" ? 2 : 1);
+    expect(result.refusals).toHaveLength(1);
+    expect(result.requestAndWait).toHaveBeenCalledOnce();
+    expect(result.request?.forceExplicit).toBe(forced);
+    if (!forced) {
+      expect(result.request).toMatchObject({ userOwnedSurface: "host-terminal", userOwnedSurfaceReviewFallback: true });
+    }
+    expect(result.typed).toEqual(choice === "allow-once" ? [command] : []);
+    expect(Boolean(result.result.is_error)).toBe(choice === "deny-once");
+  });
+
   it("keeps the terminal surface answer across an unrelated memory-only allow when an exact rule passes the floor", async () => {
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
     const permissionManager = new PermissionManager(join(dir, "permissions.json"));
@@ -445,7 +531,7 @@ describe("terminal_run without Windows shell containment", () => {
   });
 
   it("keeps the host route when another server is wrapped", async () => {
-    const result = await run(command, { choice: "allow-once", duringTyping: () => markMcpServerWrapped("other-server") });
+    const result = await run(command, { choice: "allow-once", duringTyping: () => { markMcpServerWrapped("other-server"); } });
     expect(result.typed).toEqual([command]);
   });
 
@@ -467,8 +553,8 @@ describe("terminal_run without Windows shell containment", () => {
   it.each([
     ["the mode changes", (manager: PermissionManager) => manager.setMode("allow")],
     ["an unrelated allow is saved", (manager: PermissionManager) => manager.addRulePersist({ pattern: "Bash(printf example)", action: "allow" }, { kind: "user" })],
-    ["the exact rule is removed", (manager: PermissionManager) => manager.removeRulePersist(exactRule.pattern, "allow")],
-    ["an unrelated deny is removed", (manager: PermissionManager) => manager.removeRulePersist("Bash(printf example)", "deny")],
+    ["the exact rule is removed", (manager: PermissionManager) => manager.removeRulePersist(exactRule, { kind: "user" })],
+    ["an unrelated deny is removed", (manager: PermissionManager) => manager.removeRulePersist({ pattern: "Bash(printf example)", action: "deny" }, { kind: "user" })],
     ["the rules file is deleted", () => unlinkSync(join(dir, "permissions.json"))],
     ["the surface choice changes", (manager: PermissionManager) => manager.setUserOwnedSurfaceChoice("pane", "host-terminal", "ask")],
   ] as const)("refuses an exact-rule write when %s after the final async check", async (_label, change) => {

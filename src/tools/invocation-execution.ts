@@ -89,6 +89,7 @@ import {
   type ToolUseBlock,
 } from "./executor-contract.js";
 import type { RationaleResumeExecutionContext } from "./invocation-runner.js";
+import type { AuthorizedInvocation } from "./invocation-authorization.js";
 import type { ResolvedPluginOperation } from "./plugin-operation-governance.js";
 import {
   PluginOperationExecutionLeaseAbortedError,
@@ -202,7 +203,7 @@ export interface ExecutionStageContext {
   executionRouteGrant?: ExecutionGrant;
   finalizeExecutionRouteGrant?: () => Promise<ExecutionGrant | undefined>;
   hostTerminalRoute?: { recheck(): Promise<void>; decidedBackend: string; backendIdentity(): string | undefined };
-  checkCurrentHostTerminalPermission?: () => PermissionCheckResult;
+  checkCurrentHostTerminalPermission?: AuthorizedInvocation["checkCurrentHostTerminalPermission"];
   preparedShellInvocation?: import("./prepared-shell-invocation.js").PreparedShellInvocation;
   verifiedShellCommand?: import("../permissions/verified-shell-command.js").VerifiedShellCommand;
   hostShellRequiresExplicitApproval: boolean;
@@ -303,6 +304,8 @@ export async function executeAuthorizedToolInvocation(
   let humanApproved = initialHumanApproved;
   let approvedPolicyEpoch = context.approvedPolicyEpoch;
   let terminalWriteAuthority: HostTerminalWriteAuthority | undefined;
+  let terminalWriteRefused = false;
+  let terminalWriteNeedsHumanApproval = false;
   const issueTerminalWriteAuthority = (): void => {
     const manager = services.permissionManager;
     const check = context.checkCurrentHostTerminalPermission;
@@ -310,7 +313,8 @@ export async function executeAuthorizedToolInvocation(
     terminalWriteAuthority = issueHostTerminalWriteAuthority({
       manager, check, settled: permissionResult,
       human: humanApproved, cardForced: humanApproved && permissionResult.forceModal === true,
-      reviewed: permissionResult.reasonCode === "user-owned-surface-reviewed" && permissionResult.reviewer?.verdict !== undefined,
+      reviewed: permissionResult.pipelineRequest?.userOwnedSurface?.choice === "auto" && permissionResult.reviewer?.verdict !== undefined &&
+        (permissionResult.reasonCode === "user-owned-surface-reviewed" || permissionResult.reasonCode === EXACT_HOST_RULE_REASON_CODE),
       decidedBackend: hostTerminalRoute.decidedBackend, backendIdentity: hostTerminalRoute.backendIdentity,
     });
   };
@@ -845,7 +849,12 @@ export async function executeAuthorizedToolInvocation(
     ...(executionRouteGrant ? { executionRouteGrant } : {}),
     ...(hostTerminalRoute ? { hostTerminalRoute: {
       recheck: hostTerminalRoute.recheck,
-      refusal: () => terminalWriteAuthority === undefined ? HOST_TERMINAL_PERMISSION_CHANGED : terminalWriteAuthority.refusal(),
+      refusal: () => {
+        if (terminalWriteAuthority === undefined) return HOST_TERMINAL_PERMISSION_CHANGED;
+        const refusal = terminalWriteAuthority.refusal();
+        if (refusal !== undefined) terminalWriteRefused = true;
+        return refusal;
+      },
     } } : {}),
     ...(preparedShellInvocation ? { preparedShellInvocation } : {}),
     ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
@@ -1117,7 +1126,9 @@ export async function executeAuthorizedToolInvocation(
 
   const requestLateApproval = async (request: ApprovalRequestInput): Promise<void> => {
     abortSignal?.throwIfAborted();
-    if (permissionResult?.decision !== "ask" || !(permissionResult.pipelineRequest?.automationPause || permissionResult.forceModal && permissionResult.pipelineRequest?.floor)) {
+    if (permissionResult?.decision !== "ask" || !(permissionResult.pipelineRequest?.automationPause ||
+        permissionResult.forceModal && permissionResult.pipelineRequest?.floor ||
+        terminalWriteNeedsHumanApproval && permissionResult.pipelineRequest?.userOwnedSurface?.kind === "host-terminal")) {
       throw new Error("Late approval requires an issued human approval decision");
     }
     assertLateApprovalPolicyCurrent();
@@ -1131,10 +1142,13 @@ export async function executeAuthorizedToolInvocation(
       ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
       reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${permissionResult.reason}` : permissionResult.reason,
       ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
-        ...(lateApprovalPolicyEpoch !== undefined && offersFloorSessionAllow(permissionResult)
+        ...(lateApprovalPolicyEpoch !== undefined && offersFloorSessionAllow(permissionResult) &&
+          !(terminalWriteNeedsHumanApproval && permissionResult.pipelineRequest?.manualRerun)
           ? { floorSessionAllowed: true as const, floorSessionPolicyEpoch: lateApprovalPolicyEpoch } : {}) } : {}),
       ...hostTerminalApprovalFacts(tool, invocationPermissionContext.approvalMemory, finalInput.command),
       ...userOwnedSurfaceCardFacts(permissionResult),
+      ...(terminalWriteNeedsHumanApproval && !permissionResult.forceModal
+        ? { userOwnedSurfaceReviewFallback: true as const, reasonCode: undefined } : {}),
     };
     let decision = await services.approvalGate!.requestAndWait(liveRequest);
     abortSignal?.throwIfAborted();
@@ -1167,6 +1181,7 @@ export async function executeAuthorizedToolInvocation(
     if (humanApproved) permissionResult = { ...permissionResult, decision: "allow", reason: `user approved approval request (${decision.choice})` };
     approvedPolicyEpoch = currentEpoch;
     issueTerminalWriteAuthority();
+    terminalWriteNeedsHumanApproval = false;
     if (hostShellExecutionPlan && hostShellExecutionPermitBinding) {
       const permit = mintHostShellExecutionPermit({ plan: hostShellExecutionPlan, approvalDecision: decision,
         permissionManager: services.permissionManager, binding: hostShellExecutionPermitBinding });
@@ -1176,6 +1191,7 @@ export async function executeAuthorizedToolInvocation(
   };
 
   const attemptHandler = async (signal: AbortSignal): Promise<Awaited<ReturnType<Tool["execute"]>>> => {
+    terminalWriteRefused = false;
     // Renew route admission after every asynchronous wait, including a card.
     const finalExecutionRouteGrant = finalizeExecutionRouteGrant === undefined
       ? executionRouteGrant
@@ -1226,6 +1242,23 @@ export async function executeAuthorizedToolInvocation(
           ),
         ),
       );
+      if (hostTerminalRoute) {
+        const result = await execution;
+        const check = context.checkCurrentHostTerminalPermission;
+        if (result.isError && terminalWriteRefused && !humanApproved && check &&
+            hostTerminalRoute.backendIdentity() === hostTerminalRoute.decidedBackend) {
+          signal.throwIfAborted();
+          let fresh = check();
+          if (fresh.decision === "allow") fresh = check(true);
+          if (fresh.decision === "ask" && fresh.pipelineRequest?.userOwnedSurface?.kind === "host-terminal") {
+            permissionResult = fresh;
+            terminalWriteAuthority = undefined;
+            terminalWriteNeedsHumanApproval = true;
+            throw new HandlerPermissionAskError();
+          }
+        }
+        return result;
+      }
     } catch (error) {
       if (error instanceof HandlerPermissionAskError) {
         // Hook and required ask-audit work retain the attempt's cancellation

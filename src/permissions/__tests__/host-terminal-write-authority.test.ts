@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { partialWindowsAsrt } from "../../__tests__/support/host-shell-sandbox-fixtures.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { noteToolResultsReturnedToModel, runWithHostTerminalTurn } from "../../tools/host-terminal-turn.js";
@@ -17,7 +18,7 @@ const ORIGINAL_PLATFORM = process.platform;
 const COMMAND = "printf ready";
 const EXACT_RULE = { pattern: `Bash(${COMMAND})`, action: "allow" as const };
 const OTHER_RULE = "Bash(printf example)";
-const SOURCES = ["ordinary card", "forced card", "floor waiver", "exact rule"] as const;
+const SOURCES = ["ordinary card", "forced card", "floor waiver", "exact rule", "reviewed exact rule"] as const;
 type Source = typeof SOURCES[number];
 
 let directory: string;
@@ -47,11 +48,13 @@ async function withAuthority(source: Source, test: (refusal: () => string | unde
     terminalSessionId: "terminal-instance", sessionId: "alice", turnId: "typed-turn", shell: "zsh",
     cwd: directory, physicalCwd: directory, cwdDevice: "1", cwdInode: "2", controlGeneration: 1, cwdForMatch: directory,
   };
-  const exact = source === "ordinary card" || source === "exact rule";
+  const reviewed = source === "reviewed exact rule";
+  const exact = source === "ordinary card" || source === "exact rule" || reviewed;
   if (exact) await manager.addRulePersist(EXACT_RULE, { kind: "user" });
   await manager.addRulePersist({ pattern: OTHER_RULE, action: "allow" }, { kind: "user" });
+  await manager.addRulePersist({ pattern: "Bash(printf blocked)", action: "deny" }, { kind: "user" });
   if (source === "floor waiver") manager.addFloorSessionGrant("alice", { code: "sandbox-unavailable" });
-  manager.setUserOwnedSurfaceChoice("alice", "host-terminal", source === "ordinary card" ? "ask" : "allow");
+  manager.setUserOwnedSurfaceChoice("alice", "host-terminal", reviewed ? "auto" : source === "ordinary card" ? "ask" : "allow");
   await manager.ensurePermissionRulesLoaded(directory);
   const plan = getHostShellExecutionPlan("host");
   const check = () => manager.areLoadedPermissionRulesCurrent(directory)
@@ -62,14 +65,18 @@ async function withAuthority(source: Source, test: (refusal: () => string | unde
       })
     : { decision: "deny" as const, reason: "Permission rules changed before typing." };
   await runWithHostTerminalTurn({ sessionId: scope.sessionId, turnId: scope.turnId }, async () => {
-    const settled = check();
+    const fresh = check();
+    const settled = reviewed ? manager.resolveReviewedPermission(fresh, {
+      verdict: { level: "low", reason: "The action matches the request." }, outcome: "fresh", cacheReason: "miss-not-found",
+      judge: reviewerJudgeOutcomeForTest("allow", "The action matches the request."),
+    }) : fresh;
     expect("reasonCode" in settled && settled.reasonCode).toBe({
       "ordinary card": "user-owned-surface-ask", "forced card": "sandbox-unavailable",
-      "floor waiver": "floor-session-allow", "exact rule": "exact-host-rule",
+      "floor waiver": "floor-session-allow", "exact rule": "exact-host-rule", "reviewed exact rule": "exact-host-rule",
     }[source]);
     let backend = plan.identity;
     const authority = issueHostTerminalWriteAuthority({
-      manager, settled, human: settled.decision === "ask", cardForced: "forceModal" in settled && settled.forceModal === true, reviewed: false,
+      manager, settled, human: settled.decision === "ask", cardForced: "forceModal" in settled && settled.forceModal === true, reviewed,
       decidedBackend: backend, check, backendIdentity: () => backend,
     });
     await test(authority.refusal, () => { backend = "different host plan"; });
@@ -92,7 +99,8 @@ describe.each(SOURCES)("terminal authority from %s", (source) => {
 
   it.each([
     ["a deny was added", () => manager.addRulePersist({ ...EXACT_RULE, action: "deny" }, { kind: "user" })],
-    ["an unrelated allow was removed", () => manager.removeRulePersist(OTHER_RULE, "allow")],
+    ["an unrelated deny was removed", () => manager.removeRulePersist({ pattern: "Bash(printf blocked)", action: "deny" }, { kind: "user" })],
+    ["an unrelated allow was removed", () => manager.removeRulePersist({ pattern: OTHER_RULE, action: "allow" }, { kind: "user" })],
     ["an unrelated allow was saved", () => manager.addRulePersist({ pattern: "Bash(printf bob)", action: "allow" }, { kind: "user" })],
     ["the permission mode changed", () => manager.setMode("allow")],
     ["an unrelated conversation gained a floor waiver", () => manager.addFloorSessionGrant("bob", { code: "sandbox-unavailable" })],
@@ -115,3 +123,12 @@ describe.each(SOURCES)("terminal authority from %s", (source) => {
     else expect(refusal()).toEqual(expect.any(String));
   }));
 });
+
+it.each(["ordinary card", "reviewed exact rule"] as const)("keeps only the person's answer when automation pauses after a %s", (source) =>
+  withAuthority(source, (refusal) => {
+    if (source === "ordinary card") manager.setUserOwnedSurfaceChoice("alice", "host-terminal", "auto");
+    for (let index = 0; index < 3; index++) manager.getJudgeBreaker().record("alice", "ask", `another-call-${index}`);
+    expect(manager.isAutomatedApprovalPaused("alice")).toBe(true);
+    if (source === "ordinary card") expect(refusal()).toBeUndefined();
+    else expect(refusal()).toEqual(expect.any(String));
+  }));

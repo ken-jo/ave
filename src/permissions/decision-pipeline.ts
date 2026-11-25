@@ -91,13 +91,14 @@ export function decidePermission(request: PermissionDecisionRequest): Permission
     if (request.headless) return { outcome: "deny", reasonCode: "no-approver", reason: NO_APPROVER_MESSAGE };
     if (request.floor.code === "sandbox-unavailable" && request.floorSessionEligible && request.rules?.exactHostRule !== undefined &&
       request.rules.ask === undefined && !request.manualRerun && !request.exfiltration) {
-      const { floor: _floor, floorSessionEligible: _eligible, reviewer: _reviewer, ...ordinary } = request;
+      const { floor: _floor, floorSessionEligible: _eligible, ...ordinary } = request;
       const hostTerminal = request.userOwnedSurface?.kind === "host-terminal" && request.tool.source === "builtin" && request.tool.name === "terminal_run";
       const decided = decidePermission({ ...ordinary, rules: { ...ordinary.rules, allow: request.rules.exactHostRule } });
-      if (decided.reasonCode === "rule-allow" || hostTerminal && decided.reasonCode === "user-owned-surface-allow") {
+      if (decided.reasonCode === "rule-allow" || hostTerminal &&
+          (decided.reasonCode === "user-owned-surface-allow" || decided.reasonCode === "user-owned-surface-reviewed")) {
         return { outcome: "allow", reasonCode: EXACT_HOST_RULE_REASON_CODE, reason: `Saved exact rule ${request.rules.exactHostRule} allows this command without the OS sandbox.` };
       }
-      if (hostTerminal && decided.reasonCode === "user-owned-surface-ask") return decided;
+      if (hostTerminal && decided.outcome === "ask") return decided;
     }
     if (request.floor.code === "sandbox-unavailable" && request.floorSessionEligible && request.rules?.floorSession !== undefined &&
       request.rules.ask === undefined && !request.manualRerun && !request.exfiltration) {

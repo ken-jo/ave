@@ -161,7 +161,7 @@ export interface AuthorizedInvocation {
   humanApproved: boolean;
   approvedPolicyEpoch?: string;
   permissionRecheckResult?: PermissionCheckResult;
-  checkCurrentHostTerminalPermission?: () => PermissionCheckResult;
+  checkCurrentHostTerminalPermission?: (requireHuman?: true) => PermissionCheckResult;
   permissionResult: PermissionCheckResult | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
   /** Host-issued allow-rule decision that authorized an explicit host shell. */
@@ -378,7 +378,7 @@ export async function authorizeToolInvocation(
       if (hostTerminalScope) await services.permissionManager.ensurePermissionRulesLoaded(projectRulesCwd);
       else await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     }
-    const checkPermission = (): PermissionCheckResult => services.permissionManager
+    const checkPermission = (requireHuman?: true): PermissionCheckResult => services.permissionManager
       ? services.permissionManager.checkDetailed(
           toolUse.name,
           source,
@@ -386,6 +386,7 @@ export async function authorizeToolInvocation(
           overlayTriggerOrigin,
           {
             ...invocationPermissionContext,
+            ...(requireHuman ? { manualRerun: true as const } : {}),
             decisionOverride: metaOverride,
             fileWritePolicy: context.fileWritePolicy,
             floor,
@@ -416,11 +417,11 @@ export async function authorizeToolInvocation(
     checkCurrentPermission = checkPermission;
     if (hostTerminalScope && services.permissionManager) {
       const manager = services.permissionManager;
-      checkCurrentHostTerminalPermission = () => {
+      checkCurrentHostTerminalPermission = (requireHuman) => {
         if (!manager.areLoadedPermissionRulesCurrent(projectRulesCwd)) {
           return { decision: "deny", reason: "Permission rules changed before typing." };
         }
-        return checkPermission();
+        return checkPermission(requireHuman);
       };
     }
   }
