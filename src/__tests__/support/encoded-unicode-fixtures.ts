@@ -122,38 +122,49 @@ export function useEncodedUnicodeFixture() {
 
 // Each partition proves its chunks at the lexical layers. The census tier adds all four layers per code point.
 // Physical files let the normal suite sharding and worker pool distribute the census.
+// Each test checks its own points against the representative classes, so no test depends on another.
 export function registerEncodedUnicodePartition(dialect: Dialect, position: Position, half: "first" | "second"): void {
   const { traceCommand } = useEncodedUnicodeFixture();
   const cases = codePointCases.filter(row => row.position === position && row.half === half);
-  const lexicalClasses = new Map<string, number>();
-  it.each(cases)("rejects every code point of chunk $chunk at the lexical layers ($position, $half half)", ({ points }) => {
+  const once = <T>(build: () => T) => { let value: T | undefined; return () => (value ??= build()); };
+  const representedClasses = (trace: (point: number) => { failure: string | null; key: string }) => () => {
+    const classes = new Set<string>();
+    for (const point of representativeCodePoints) {
+      const { failure, key } = trace(point);
+      if (failure !== null) throw new Error(`representative ${hex(point)} ${position}: ${failure}`);
+      classes.add(key);
+    }
+    if (classes.size === 0) throw new Error("the representatives reach no class");
+    return classes;
+  };
+  const lexicalClasses = once(representedClasses((point) => lexicalRejection(dialect, optionWith(point, position))));
+  const decisionClasses = once(representedClasses((point) => {
+    const { failure, decision } = traceCommand(dialect, optionWith(point, position));
+    return { failure, key: decision };
+  }));
+
+  it.each(cases)("rejects every code point of chunk $chunk at the lexical layers, within the representative classes ($position, $half half)", ({ points }) => {
+    const represented = lexicalClasses();
+    expect(points.length).toBeGreaterThan(0);
     for (const point of points) {
       const { failure, key } = lexicalRejection(dialect, optionWith(point, position));
       if (failure !== null) throw new Error(`${hex(point)} ${position}: ${failure}`);
-      if (!lexicalClasses.has(key)) lexicalClasses.set(key, point);
+      if (!represented.has(key)) throw new Error(`${hex(point)} ${position}: no full-pipeline representative for ${key}`);
     }
   }, 300_000);
 
-  it("has a full-pipeline representative for every lexical rejection class of its chunks", () => {
-    const represented = new Set(representativeCodePoints.map((point) => lexicalRejection(dialect, optionWith(point, position)).key));
-    for (const [key, point] of lexicalClasses) expect(represented.has(key), `${hex(point)}: ${key}`).toBe(true);
-  });
-
   describe.runIf(CENSUS_TIER)("complete four-layer census", () => {
-    const decisions = new Map<string, number>();
-    it.each(cases)("rejects assigned separator or other code points in chunk $chunk at the $position half $half", ({ position, points, chunk, half }) => {
+    it.each(cases)("rejects assigned separator or other code points in chunk $chunk at the $position half $half, within the representative decisions", ({ position, points, chunk, half }) => {
+      const represented = decisionClasses();
+      expect(points.length).toBeGreaterThan(0);
+      const decisions = new Set<string>();
       for (const point of points) {
         const { failure, decision } = traceCommand(dialect, optionWith(point, position));
         if (failure !== null) throw new Error(`${hex(point)} ${position}: ${failure}`);
-        if (!decisions.has(decision)) decisions.set(decision, point);
+        if (!represented.has(decision)) throw new Error(`${hex(point)} ${position}: ${decision} is not a representative decision`);
+        decisions.add(decision);
       }
-      console.info(JSON.stringify({ dialect, position, half, chunk, checkedCodePoints: points.length }));
+      console.info(JSON.stringify({ dialect, position, half, chunk, checkedCodePoints: points.length, censusDecisions: [...decisions].sort(), representativeDecisions: [...represented].sort() }));
     }, 1_800_000);
-
-    it("reaches only decisions that the representatives also reach", () => {
-      const represented = new Set(representativeCodePoints.map((point) => traceCommand(dialect, optionWith(point, position)).decision));
-      console.info(JSON.stringify({ dialect, position, half, censusDecisions: [...decisions.keys()].sort(), representativeDecisions: [...represented].sort() }));
-      for (const [decision, point] of decisions) expect(represented.has(decision), `${hex(point)}: ${decision}`).toBe(true);
-    });
   });
 }
