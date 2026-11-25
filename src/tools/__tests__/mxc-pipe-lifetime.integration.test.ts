@@ -28,7 +28,7 @@ describe.runIf(process.platform === "win32")("native pipe policy lifetime", () =
     let launch: Awaited<ReturnType<typeof prepareOwnedMxcShellLaunch>> | undefined;
     let egress: ReturnType<typeof openEgressInvocation> | undefined;
     try {
-      await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } });
+      await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } }, async () => false);
       egress = openEgressInvocation({ kind: "shell", toolName: "powershell", toolUseId: undefined, requiresListener: true,
         context: { sessionId: undefined, workspaceRoot: directory, approvalSurface: "unavailable" } });
       const executable = resolveTrustedPowerShellExecutable()!.executable;

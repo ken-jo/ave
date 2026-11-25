@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { configureHostResources } from "../../main/host-resources.js";
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
+import * as aveHome from "../../shared/ave-home.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { SandboxManager, type SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
@@ -13,7 +14,7 @@ import { initializeAsrtSandbox, resetAsrtSandbox } from "../asrt-sandbox.js";
 import { openHostEgressListener } from "../egress-host-listener.js";
 import { openInvocationProxyListener } from "../egress-invocation-listener.js";
 import { openEgressInvocation, type EgressInvocation } from "../egress-invocations.js";
-import { createEgressAskRuntimeCallback, listEgressGrants, revokeEgressGrant } from "../egress-runtime.js";
+import { createEgressAskRuntimeCallback, listEgressGrants, revokeEgressGrant, setWorkerEgressAllowlists } from "../egress-runtime.js";
 import { PermissionManager } from "../permission-manager.js";
 import type { EgressGrantScope } from "../../shared/egress-grant-scopes.js";
 
@@ -38,6 +39,7 @@ afterEach(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
   for (const grant of await listEgressGrants()) await revokeEgressGrant(grant);
+  setWorkerEgressAllowlists({ byExtension: new Map(), modelEndpointHosts: [] });
   vi.restoreAllMocks();
 });
 
@@ -103,9 +105,13 @@ async function startRuntime(answerScope: () => EgressGrantScope = () => "session
     approvalGate: { requestAndWait },
     shellAskEnabled: () => true,
   });
+  // The background start: the shared proxy and the relay service run side by side while the isolation stamp is pending.
+  vi.spyOn(SandboxManager, "initializeWindowsIsolation").mockReturnValue(new Promise(() => {}));
+  // Home privacy is not this file's subject.
+  vi.spyOn(aveHome, "assertAveHomePrivacyForConfinement").mockImplementation(() => {});
   await initializeAsrtSandbox({
     allowedDomains: [],
-    windows: { externalConfinement: true, proxyPortRange: [42000, 42009] },
+    windows: { backgroundInitialization: true, proxyPortRange: [42000, 42009] },
     upstreamRouter: async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: upstream.port }] }),
   }, async (destination, context) => {
     observed.push({ host: destination.host, context });
@@ -134,14 +140,16 @@ async function invocationFrontend(token: string) {
   return frontend;
 }
 
-function connect(port: number, authorization?: string) {
+// CONNECT by default; "GET" sends the plain-HTTP absolute-URI form for the same authority.
+function connect(port: number, authorization?: string, authority = `${DESTINATION.host}:${DESTINATION.port}`, method: "CONNECT" | "GET" = "CONNECT") {
   let response = "";
   let answered: (text: string) => void = () => {};
   // The status line, or whatever arrived before the socket closed.
   const status = new Promise<string>((resolve) => { answered = resolve; });
   const socket = track(net.connect(port, "127.0.0.1", () => {
     const auth = authorization === undefined ? "" : `Proxy-Authorization: ${authorization}\r\n`;
-    socket.write(`CONNECT ${DESTINATION.host}:${DESTINATION.port} HTTP/1.1\r\nHost: ${DESTINATION.host}:${DESTINATION.port}\r\n${auth}\r\n`);
+    const target = method === "GET" ? `http://${authority}/` : authority;
+    socket.write(`${method} ${target} HTTP/1.1\r\nHost: ${authority}\r\n${auth}\r\n`);
   }));
   socket.on("data", (chunk: Buffer) => {
     response += chunk.toString("latin1");
@@ -152,7 +160,7 @@ function connect(port: number, authorization?: string) {
 }
 
 async function expectResponse(client: ReturnType<typeof connect>, status: number): Promise<void> {
-  expect(await client.status).toMatch(new RegExp(`^HTTP/1\\.1 ${status}\\b`, "u"));
+  expect(await client.status).toMatch(new RegExp(`^HTTP/1\\.[01] ${status}\\b`, "u"));
 }
 
 describe.skipIf(process.platform !== "win32")("native proxy with production egress callback", () => {
@@ -253,5 +261,49 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
     expect(runtime.requestAndWait.mock.calls[0]?.[0].egressHost?.scopes).toEqual(["once", "session"]);
     expect(runtime.upstream.received).toEqual([]);
     expect(await listEgressGrants()).toEqual([]);
+  });
+
+  // The front listener asks for no credential and its relay speaks as the shell, so neither port is a destination for anyone else.
+  // The extension's own allowlist admits every loopback port: without the refusal it would egress as the shell.
+  it.each(["127.0.0.1", "localhost", "[::1]"])("refuses shared proxy destinations on frontend and relay ports before asking, for an extension whose allowlist admits %s", async (host) => {
+    setWorkerEgressAllowlists({ byExtension: new Map([["fixture", ["127.0.0.1", "localhost", "::1"]]]), modelEndpointHosts: [] });
+    const runtime = await startRuntime();
+    const shell = openShell();
+    const relay = await openHostEgressListener(shell.token);
+    listeners.push(relay);
+    const frontend = await openInvocationProxyListener({
+      upstream: () => ({ host: "127.0.0.1", port: relay.port, proxyAuthorization: relay.proxyAuthorization }),
+      onRefused: relay.recordRefusal,
+    });
+    relay.registerPort(frontend.port);
+    listeners.push(frontend);
+    const worker = openEgressInvocation({ kind: "worker", role: "worker", pluginId: "fixture" });
+    invocations.push(worker);
+    const authorization = proxyAuthorization(worker.token, runtime.credential);
+
+    for (const port of [frontend.port, relay.port]) {
+      await expectResponse(connect(runtime.sharedPort, authorization, `${host}:${port}`), 403);
+    }
+    expect(runtime.observed).toEqual([]);
+    expect(runtime.requestAndWait).not.toHaveBeenCalled();
+    expect(runtime.upstream.received).toEqual([]);
+
+    // The same entry still reaches a loopback port that is no shell's: the refusal is the port's, not the address's.
+    await connect(runtime.sharedPort, authorization, `${host}:${runtime.upstream.port}`).status;
+    expect(runtime.observed.length).toBeGreaterThan(0);
+  });
+
+  // Plain HTTP reaches the same refusal as CONNECT: the shared filter serves both.
+  it("refuses a plain-HTTP absolute-URI request to a frontend port before asking", async () => {
+    setWorkerEgressAllowlists({ byExtension: new Map([["fixture", ["127.0.0.1"]]]), modelEndpointHosts: [] });
+    const runtime = await startRuntime();
+    const frontend = await invocationFrontend(openShell().token);
+    const worker = openEgressInvocation({ kind: "worker", role: "worker", pluginId: "fixture" });
+    invocations.push(worker);
+
+    await expectResponse(connect(runtime.sharedPort, proxyAuthorization(worker.token, runtime.credential), `127.0.0.1:${frontend.port}`, "GET"), 403);
+    expect(runtime.observed).toEqual([]);
+    expect(runtime.requestAndWait).not.toHaveBeenCalled();
+    expect(runtime.upstream.received).toEqual([]);
   });
 });

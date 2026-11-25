@@ -6,7 +6,7 @@ import { openMxcEgressLease } from "../egress-host-listener.js";
 import { egressIdentityStrength } from "../egress-identity.js";
 
 const runtime = vi.hoisted(() => ({ open: vi.fn() }));
-vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js", () => ({ openHostInvocationProxy: runtime.open }));
+vi.mock("../egress-relay/relay.js", () => ({ openEgressRelay: runtime.open }));
 vi.mock("../asrt-sandbox.js", () => ({ getWindowsProxyPortRange: () => [60080, 60089] }));
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); runtime.open.mockReset(); });

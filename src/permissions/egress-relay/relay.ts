@@ -8,10 +8,9 @@ import net from "node:net";
 import type { Duplex } from "node:stream";
 import tls from "node:tls";
 import type { InvocationProxyAdmission } from "../egress-invocation-listener.js";
-import { isLoopbackName } from "./address-set.js";
+import { isLoopbackAddress, isLoopbackName } from "./address-set.js";
 import {
   canonicalRelayHost,
-  isLoopbackAddress,
   isReservedAddress,
   isThisHostAddress,
   isValidRelayHost,
@@ -63,17 +62,6 @@ export interface EgressRelayServiceOptions {
   readonly allow?: readonly string[];
   readonly resolve?: EgressRelayResolver;
   readonly maxRelays?: number;
-  // Tests shorten a route's hold-back; production uses ENDED_PORT_HOLD.
-  readonly endedPortHold?: Partial<Record<RelayKind, EndedPortHold>>;
-}
-
-// Which route the relay serves: one invocation's own listener, or the listener of a wrapped command.
-type RelayKind = "invocation" | "wrapped-command";
-
-interface EndedPortHold {
-  readonly ms: number;
-  readonly maxMs: number;
-  readonly groupAlive?: (group: number) => boolean;
 }
 
 export interface EgressRelay {
@@ -83,16 +71,10 @@ export interface EgressRelay {
   // A loopback port that forwards to this relay; it is never a destination.
   registerPort(port: number): void;
   recordRefusal(host: string, port: number | undefined, reason: string): void;
-  // The relay stops at once. On a route with a hold-back its ports stay bound and refused as destinations for it, longer while `processGroup` has a process.
-  close(options?: { readonly processGroup?: number }): Promise<void>;
+  // The relay stops at once and its ports are freed.
+  close(): Promise<void>;
 }
 
-// Per route: how long an ended relay's ports are held back, and the bound on extending that for a live process group. None means freed at close.
-const ENDED_PORT_HOLD: Readonly<Record<RelayKind, EndedPortHold | undefined>> = {
-  invocation: undefined,
-  "wrapped-command": { ms: 30 * 60 * 1000, maxMs: 24 * 60 * 60 * 1000 },
-};
-const MAX_BIND_ATTEMPTS = 32;
 const MAX_RELAYS = 4096;
 const MIN_TOKEN_LENGTH = 22;
 const MAX_ROUTING_ATTEMPTS = 32;
@@ -132,7 +114,6 @@ interface Service {
   readonly allow: readonly RelayAllowEntry[];
   readonly resolve: EgressRelayResolver;
   readonly maxRelays: number;
-  readonly endedPortHold: Readonly<Record<RelayKind, EndedPortHold | undefined>>;
   router: EgressRelayRouter | undefined;
   routerInstalls: number;
 }
@@ -155,9 +136,6 @@ class StaleRoute extends Error {}
 let service: Service | undefined;
 const lanes = new Map<string, Lane & { close(): Promise<void> }>();
 const retiredKeys = new Set<string>();
-const heldBack = new Set<{ readonly ports: ReadonlySet<number>; release(): Promise<void> }>();
-// Port numbers of listeners whose hold-back has passed: refused as destinations and never a relay's port again while the service runs.
-const retiredPorts = new Set<number>();
 const liveConnections = new Map<string, Set<Duplex>>();
 let violations: EgressRelayViolation[] = [];
 const violationListeners = new Set<(violations: readonly EgressRelayViolation[]) => void>();
@@ -187,6 +165,12 @@ export function subscribeEgressRelayViolations(listener: (violations: readonly E
   };
 }
 
+// The retained refusals and failures recorded for this invocation, oldest first.
+export function egressRelayViolationLines(token: string): string[] {
+  const encodedKey = Buffer.from(token).toString("base64");
+  return violations.filter((violation) => violation.encodedCommand === encodedKey).map((violation) => violation.line);
+}
+
 function deny(lane: Lane, host: string, port: number, reason: string, unattributed = false): Refusal {
   addViolation(`deny network-outbound ${host}:${port} (${oneLine(reason)})`, unattributed ? undefined : lane.encodedKey);
   return new Refusal(oneLine(reason));
@@ -202,7 +186,6 @@ export function startEgressRelayService(options: EgressRelayServiceOptions): voi
     allow: (options.allow ?? []).map(parseRelayAllowEntry),
     resolve: options.resolve ?? ((name) => lookup(name, { all: true, verbatim: true })),
     maxRelays,
-    endedPortHold: { ...ENDED_PORT_HOLD, ...options.endedPortHold },
     router: options.router,
     routerInstalls: 0,
   };
@@ -210,13 +193,18 @@ export function startEgressRelayService(options: EgressRelayServiceOptions): voi
 
 export async function stopEgressRelayService(): Promise<void> {
   service = undefined;
+  // Nothing of the ended service is left for the next one to count.
+  closeAllEgressRelayConnections();
   const results = await Promise.allSettled([...lanes.values()].map((lane) => lane.close()));
-  await Promise.allSettled([...heldBack].map((held) => held.release()));
-  retiredPorts.clear();
   retiredKeys.clear();
   violations = [];
   const failed = results.find((result) => result.status === "rejected");
   if (failed !== undefined) throw failed.reason;
+}
+
+// Whether a relay of this service holds, or held, the invocation's key.
+export function egressRelayOwnsKey(token: string): boolean {
+  return lanes.has(token) || retiredKeys.has(token);
 }
 
 export function setEgressRelayRouter(router: EgressRelayRouter | undefined): void {
@@ -237,14 +225,20 @@ function routingIsCurrent(current: Service, stamp: RoutingStamp): boolean {
 
 function relayPorts(): Set<number> {
   const ports = new Set<number>();
-  for (const owner of [...lanes.values(), ...heldBack]) for (const port of owner.ports) ports.add(port);
-  for (const port of retiredPorts) ports.add(port);
+  for (const lane of lanes.values()) for (const port of lane.ports) ports.add(port);
   return ports;
 }
 
 function isRelayListener(canonical: string, port: number): boolean {
   if (!relayPorts().has(port)) return false;
   return isLoopbackName(canonical) || (net.isIP(canonical) !== 0 && isThisHostAddress(canonical, localInterfaceAddresses()));
+}
+
+// Whether a destination, as any proxy of this process is asked for it, is a live relay port or a port registered with one.
+export function isEgressRelayListener(host: string, port: number | undefined): boolean {
+  if (port === undefined) return false;
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  return isRelayListener(bare.toLowerCase(), port);
 }
 
 function connectionKey(key: string, host: string, port: number): string {
@@ -821,26 +815,15 @@ async function handleRequest(lane: Lane, req: http.IncomingMessage, res: http.Se
   req.pipe(forward);
 }
 
-// Whether any process is left in the group; only "no such process" means none.
-function processGroupAlive(group: number): boolean {
-  if (process.platform === "win32") return false;
-  try {
-    process.kill(-group, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
-
 // Open the invocation's relay. Throws unless the service is started (which requires the ask callback); a token has one relay for the session.
-export async function openEgressRelay(token: string, admission?: InvocationProxyAdmission, kind: RelayKind = "invocation"): Promise<EgressRelay> {
+export async function openEgressRelay(token: string, admission?: InvocationProxyAdmission): Promise<EgressRelay> {
   const current = service;
   if (current === undefined) throw new Error("egress relay: the service is not started");
   if (typeof token !== "string" || token.length < MIN_TOKEN_LENGTH || token.length > 100 || !/^[\x21-\x7e]+$/u.test(token)) {
     throw new Error("egress relay: the invocation token is not usable");
   }
   admission?.assertCanBind();
-  if (lanes.size + heldBack.size >= current.maxRelays) throw new Error("egress relay: too many invocation relays");
+  if (lanes.size >= current.maxRelays) throw new Error("egress relay: too many invocation relays");
   if (retiredKeys.has(token) || lanes.has(token)) throw new Error("egress relay: the invocation already had a relay");
   const state: Lane = {
     key: token,
@@ -889,47 +872,12 @@ export async function openEgressRelay(token: string, admission?: InvocationProxy
     if (!server.listening) return resolve();
     server.close((error) => (error === undefined || (error as NodeJS.ErrnoException).code === "ERR_SERVER_NOT_RUNNING" ? resolve() : reject(error)));
   });
-  // The ended relay keeps its port bound, answering nothing, so no later listener gets it and it stays refused as a destination.
-  const holdBack = (hold: EndedPortHold, processGroup: number | undefined): void => {
-    const endedAt = Date.now();
-    const ownPort = (server.address() as net.AddressInfo).port;
-    let timer: NodeJS.Timeout;
-    const held = {
-      ports: state.ports,
-      release: async (): Promise<void> => {
-        clearTimeout(timer);
-        heldBack.delete(held);
-        await unbind();
-      },
-    };
-    const arm = (): void => {
-      timer = setTimeout(() => {
-        const alive = processGroup !== undefined && (hold.groupAlive ?? processGroupAlive)(processGroup);
-        if (alive && Date.now() - endedAt + hold.ms <= hold.maxMs) {
-          arm();
-          return;
-        }
-        // The number outlives the hold; the forwarding ports do not.
-        retiredPorts.add(ownPort);
-        void held.release().catch(() => {});
-      }, hold.ms);
-      timer.unref();
-    };
-    heldBack.add(held);
-    arm();
-  };
-  const close = (options?: { readonly processGroup?: number }): Promise<void> => {
+  const close = (): Promise<void> => {
     revoke();
     admission?.signal.removeEventListener("abort", revoke);
     closing ??= (async () => {
       await binding?.catch(() => {});
-      const hold = service === current ? current.endedPortHold[kind] : undefined;
-      if (server.listening && hold !== undefined && hold.ms > 0) {
-        const group = options?.processGroup;
-        holdBack(hold, Number.isInteger(group) && (group as number) > 1 ? group : undefined);
-      } else {
-        await unbind();
-      }
+      await unbind();
       if (lanes.get(token) === lane) lanes.delete(token);
     })().catch((error: unknown) => {
       // The port may still be bound: a later close tries again.
@@ -945,7 +893,7 @@ export async function openEgressRelay(token: string, admission?: InvocationProxy
   admission?.signal.addEventListener("abort", revoke, { once: true });
   let port: number;
   try {
-    const listen = (): Promise<number> => new Promise<number>((resolve, reject) => {
+    const bound = new Promise<number>((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => {
         server.off("error", reject);
@@ -954,15 +902,6 @@ export async function openEgressRelay(token: string, admission?: InvocationProxy
         else resolve(address.port);
       });
     });
-    // A retired number is never a relay's port again: bind another.
-    const bound = (async (): Promise<number> => {
-      for (let attempt = 0; attempt < MAX_BIND_ATTEMPTS; attempt++) {
-        const candidate = await listen();
-        if (!retiredPorts.has(candidate)) return candidate;
-        await unbind();
-      }
-      throw new Error("egress relay: no port outside the retired ones");
-    })();
     // Settles either way: the opener gets the failure, close only waits.
     binding = bound.then(() => {}, () => {});
     port = await bound;

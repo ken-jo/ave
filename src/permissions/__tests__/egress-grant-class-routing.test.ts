@@ -12,6 +12,13 @@ import { openEgressInvocation, type EgressInvocationOwner } from "../egress-invo
 import { egressIdentityStrength } from "../egress-identity.js";
 import { startEgressDenyMonitor } from "../egress-deny-monitor.js";
 import { openHostEgressListener } from "../egress-host-listener.js";
+import {
+  egressRelayViolationLines,
+  setEgressRelayRouter,
+  startEgressRelayService,
+  stopEgressRelayService,
+  subscribeEgressRelayViolations,
+} from "../egress-relay/relay.js";
 import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
 import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry, SandboxEgressFailureAuditEntry } from "../../audit/sandbox-audit.js";
 import { createUpstreamProxyRouter } from "../upstream-proxy.js";
@@ -218,8 +225,13 @@ describe.runIf(process.platform === "win32")("egress grant class on Windows with
 describe.runIf(process.platform === "win32")("egress grant class through the container lane", () => {
   registerMxcShellLaunchAdmissionFixture(TOKEN, "fedcba9876543210fedcba9876543210");
 
+  // The relay's resolver, answered by the test.
+  let resolveName: (name: string) => Promise<Array<{ address: string; family: number }>>;
+  beforeEach(() => { resolveName = async () => []; });
+  afterEach(stopEgressRelayService);
+
   async function initializeProxy(callback: SandboxAskCallback) {
-    await SandboxManager.initialize(proxyOnlyConfig(), callback);
+    startEgressRelayService({ ask: callback, resolve: (name) => resolveName(name) });
   }
 
   async function launchFor(token: string) {
@@ -248,10 +260,10 @@ describe.runIf(process.platform === "win32")("egress grant class through the con
     await initializeProxy(approval.callback);
     const launch = await launchFor(TOKEN);
     try {
-      setDestinationResolverForTesting(async () => [{ address: "203.0.113.10", family: 4 }]);
+      resolveName = async () => [{ address: "203.0.113.10", family: 4 }];
       const routing = routingFixture(upstream.port, "manual");
       routing.useUpstream(true);
-      SandboxManager.setParentProxyRouter(routing.router);
+      setEgressRelayRouter(routing.router);
       expect(await wireRequest(laneFor(launch.proxyPort), "GET")).toMatch(/^HTTP\/1\.1 200/u);
       expect(approval.requests).toHaveLength(2);
       expect(approval.requests.every((request) => request.origin === "shell" && request.toolUseId === "egress-tool")).toBe(true);
@@ -268,21 +280,18 @@ describe.runIf(process.platform === "win32")("egress grant class through the con
     const invocation = openEgressInvocation({ ...SHELL, requiresListener: true });
     const approval = approvalFixture("shell", invocation.token);
     const rows: (SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry | SandboxEgressFailureAuditEntry)[] = [];
-    const store = SandboxManager.getSandboxViolationStore();
-    store.clear();
+    await initializeProxy(approval.callback);
     const stop = await startEgressDenyMonitor({
-      subscribe: async (listener) => store.subscribe(listener),
+      subscribe: async (listener) => subscribeEgressRelayViolations(listener),
       emit: async (entry) => { rows.push(entry); },
       capability: () => ({ kind: "asrt", confidence: "verified" }),
     });
-    await initializeProxy(approval.callback);
     const launch = await launchFor(invocation.token);
     try {
       expect(await wireRequest(laneFor(launch.proxyPort), "CONNECT", { host: "localhost", port: 443 }))
         .toMatch(/^HTTP\/1\.1 403/u);
       expect(approval.requests).toEqual([]);
-      expect(store.getViolationsForCommand(invocation.token)).toHaveLength(1);
-      expect(SandboxManager.annotateStderrWithSandboxFailures(invocation.token, "")).toContain("loopback destination");
+      expect(egressRelayViolationLines(invocation.token)).toEqual(["deny http-request CONNECT localhost (loopback destination)"]);
       expect(rows.filter((row) => row.entryKind === "egress-deny")).toMatchObject([
         { invocation: { kind: "shell", toolUseId: "egress-tool" }, deny: { host: "localhost", reason: "loopback destination" } },
       ]);
@@ -294,22 +303,22 @@ describe.runIf(process.platform === "win32")("egress grant class through the con
     }
   });
 
-  it("masks refusal data before it enters the shared violation store", async () => {
+  it("masks refusal data before it enters the violation record", async () => {
     await initializeProxy(async () => true);
     const relay = await openHostEgressListener(TOKEN);
     const secret = `ghp_${"a1B2c3D4e5".repeat(4).slice(0, 36)}`;
     try {
       relay.recordRefusal(`${secret}.example:443`, `refused ${secret}`);
-      const violations = SandboxManager.getSandboxViolationStore().getViolationsForCommand(TOKEN);
-      expect(violations.at(-1)?.line).toContain("deny network-outbound");
-      expect(violations.at(-1)?.line).not.toContain(secret);
-      expect(violations.at(-1)?.line).toContain("REDACTED");
+      const line = egressRelayViolationLines(TOKEN).at(-1);
+      expect(line).toContain("deny network-outbound");
+      expect(line).not.toContain(secret);
+      expect(line).toContain("REDACTED");
     } finally {
       await relay.close();
     }
   });
 
-  it("refuses a shared proxy credential at the host relay without asking", async () => {
+  it("refuses a credential the relay did not issue without asking", async () => {
     const approval = approvalFixture("shell");
     await initializeProxy(approval.callback);
     const relay = await openHostEgressListener(TOKEN);
@@ -317,7 +326,7 @@ describe.runIf(process.platform === "win32")("egress grant class through the con
       const username = `srt.${Buffer.from(TOKEN).toString("base64")}`;
       const shared = new URL(`http://127.0.0.1:${relay.port}`);
       shared.username = username;
-      shared.password = SandboxManager.getProxyAuthToken()!;
+      shared.password = "0".repeat(64);
       expect(await wireRequest({ front: relay.port, proxy: shared })).toMatch(/^HTTP\/1\.1 407/u);
       expect(approval.requests).toEqual([]);
     } finally {
@@ -337,16 +346,14 @@ describe.runIf(process.platform === "win32")("egress grant class through the con
     const second = await launchFor("fedcba9876543210fedcba9876543210");
     let proxyLookups = 0;
     try {
-      setDestinationResolverForTesting(async (name) => [{
+      resolveName = async (name) => [{
         address: name === host && (!rebind || ++proxyLookups > 1) ? "127.0.0.1" : "203.0.113.10", family: 4,
-      }]);
-      SandboxManager.setParentProxyRouter(async () => ({ routes: [{ kind: "http", host, port: second.proxyPort, resolvesNames: !rebind }] }));
+      }];
+      setEgressRelayRouter(async () => ({ routes: [{ kind: "http", host, port: second.proxyPort, resolvesNames: !rebind }] }));
       expect(await wireRequest(laneFor(first.proxyPort), "GET")).toMatch(/^HTTP\/1\.1 403/u);
       expect(approval.requests).toHaveLength(host === "127.0.0.1" ? 1 : 2);
-      expect(SandboxManager.getSandboxViolationStore().getViolationsForCommand(TOKEN).at(-1)?.line)
-        .toContain("sandbox proxy listener");
-      expect(SandboxManager.getSandboxViolationStore().getViolationsForCommand("fedcba9876543210fedcba9876543210"))
-        .toHaveLength(0);
+      expect(egressRelayViolationLines(TOKEN).at(-1)).toContain("sandbox proxy listener");
+      expect(egressRelayViolationLines("fedcba9876543210fedcba9876543210")).toHaveLength(0);
       if (rebind) expect(proxyLookups).toBeGreaterThan(1);
     } finally {
       await first.release();
@@ -369,8 +376,8 @@ describe.runIf(process.platform === "win32")("egress grant class through the con
     });
     const launch = await launchFor(TOKEN);
     try {
-      setDestinationResolverForTesting(async () => [{ address: "203.0.113.10", family: 4 }]);
-      SandboxManager.setParentProxyRouter(routing.router);
+      resolveName = async () => [{ address: "203.0.113.10", family: 4 }];
+      setEgressRelayRouter(routing.router);
       expect(await wireRequest(laneFor(launch.proxyPort), "GET")).toMatch(/^HTTP\/1\.1 403/u);
       expect(approval.requests.map((request) => request.network)).toEqual(["public", "unverified"]);
       expect(approval.requests.at(-1)?.scopes).not.toContain("always");

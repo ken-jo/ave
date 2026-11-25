@@ -7,9 +7,11 @@ import * as runtimePattern from "@anthropic-ai/sandbox-runtime/dist/sandbox/doma
 import * as runtimeHost from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
 import * as runtimePath from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { describe, expect, expectTypeOf, it } from "vitest";
+import { egressDestinationNetwork } from "../egress-grants.js";
 import * as address from "../egress-relay/address-set.js";
+import { isLoopbackAddress } from "../egress-relay/address-set.js";
 import {
-  canonicalRelayHost, formatAuthority, isLoopbackAddress, isReservedAddress, isThisHostAddress, isValidRelayHost, resolvedAddressPermitted,
+  canonicalRelayHost, formatAuthority, isReservedAddress, isThisHostAddress, isValidRelayHost, resolvedAddressPermitted,
 } from "../egress-relay/destination.js";
 import { matchesDomainPatternWithPort } from "../egress-relay/domain-pattern.js";
 import type { EgressRelayRoute, EgressRelayRouter } from "../egress-relay/relay.js";
@@ -96,9 +98,12 @@ describe("address ranges", () => {
   });
 
   it("classifies loopback addresses and names alike", () => {
-    both(address.isLoopbackAddress, runtimeAddress.isLoopbackAddress, one(ADDRESSES));
+    // The helper judges a spelling as written; the runtime's drops a zone first, so the two part on a zoned spelling that is not an address.
+    const zonedNonAddress = ["127.0.0.1%eth0", "::1%"];
+    both(address.isLoopbackAddress, runtimeAddress.isLoopbackAddress, one(ADDRESSES.filter((spelled) => !zonedNonAddress.includes(spelled))));
+    expect(zonedNonAddress.map((spelled) => [address.isLoopbackAddress(spelled), runtimeAddress.isLoopbackAddress(spelled)])).toEqual([[false, true], [false, true]]);
     both(address.isLoopbackName, runtimeAddress.isLoopbackName, one([...HOST_NAMES, ...HOSTS]));
-    expect(ADDRESSES.filter(address.isLoopbackAddress)).toEqual(["127.0.0.1", "127.255.255.254", "::1", "0:0:0:0:0:0:0:1", "::1%lo0", "127.0.0.1%eth0", "::ffff:127.0.0.1", "::ffff:7f00:1", "::1%"]);
+    expect(ADDRESSES.filter(address.isLoopbackAddress)).toEqual(["127.0.0.1", "127.255.255.254", "::1", "0:0:0:0:0:0:0:1", "::1%lo0", "::ffff:127.0.0.1", "::ffff:7f00:1"]);
     expect(HOST_NAMES.filter(address.isLoopbackName)).toEqual(["localhost", "LOCALHOST", "localhost.", "LocalHost.", "a.localhost", "A.B.LOCALHOST.", ".localhost"]);
   });
 
@@ -223,15 +228,16 @@ describe("relay resolved-address check", () => {
     expect(resolvedAddressPermitted(host, resolved, 443, [], [])).toBe(false);
   });
 
-  it.each(["127.0.0.1%eth0", "::1%"])("does not take the zoned spelling %s as loopback, unlike the address-set helper", (zoned) => {
-    expect([isLoopbackAddress(zoned), address.isLoopbackAddress(zoned)]).toEqual([false, true]);
+  it.each(["127.0.0.1%eth0", "::1%"])("does not take the zoned spelling %s as loopback", (zoned) => {
+    expect(isLoopbackAddress(zoned)).toBe(false);
     expect(resolvedAddressPermitted("localhost", zoned, 443, [], [])).toBe(false);
+    expect(() => egressDestinationNetwork("allowed.example", [zoned])).toThrow(/is not an IP address/u);
+    expect(isValidRelayHost(zoned)).toBe(false);
   });
 
-  it("agrees with the address-set helper on unzoned and named-zone loopback", () => {
-    for (const spelled of ["127.0.0.1", "::1", "::1%lo0", "::ffff:127.0.0.1", "10.0.0.1", "::"]) {
-      expect({ spelled, loopback: isLoopbackAddress(spelled) }).toEqual({ spelled, loopback: address.isLoopbackAddress(spelled) });
-    }
+  it("keeps a named-zone loopback address loopback, and local as a grant class", () => {
+    expect(["127.0.0.1", "::1", "::1%lo0", "::ffff:127.0.0.1", "10.0.0.1", "::"].map(isLoopbackAddress)).toEqual([true, true, true, true, false, false]);
+    expect(egressDestinationNetwork("allowed.example", ["::1%lo0"])).toBe("local");
   });
 
   it("keeps the unspecified and loopback addresses in their own classes", () => {
