@@ -429,8 +429,8 @@ check (`assertMxcHolderStaging`) take the staging parent from it.
   - The supervisor's per-user state directory sits beside the staging trees, so
     it is per account, not per Ave home.
   - Staging trees that an earlier version left under `<AVE_HOME>\mxc-staging`
-    are not moved or removed. The Ave home's read re-allow for `mxc-staging`
-    has no producer any more; removing that row is a decision-tree change.
+    are not moved or removed. The Ave home's read boundary no longer re-opens
+    `mxc-staging`, so they are denied like every other unlisted child.
 
 ## Holder adapters (row 5)
 
