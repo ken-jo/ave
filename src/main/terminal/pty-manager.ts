@@ -1687,7 +1687,8 @@ export interface PromptTypingTarget {
   readonly canWithdrawAfterCancellation?: boolean;
 }
 
-type SendPromptInput = (data: string, options?: { beforeBytes?: () => void; withdrawPaste?: true }) => string | undefined;
+type PromptWriteRefusal = { kind: "cancelled" | "effect-refused"; message: string };
+type SendPromptInput = (data: string, options?: { beforeBytes?: () => void; withdrawPaste?: true }) => PromptWriteRefusal | undefined;
 
 /** The typing protocol of {@link typeAgentTerminalCommand}, over any terminal: check, reset (Ctrl-C), wait for the fresh prompt, paste, confirm the edit line, Enter. */
 export async function typeLineAtPrompt(
@@ -1705,11 +1706,11 @@ export async function typeLineAtPrompt(
   const send: SendPromptInput = (data, options) => {
     assertRemoteControllerBound();
     const withdrawPaste = options?.withdrawPaste;
-    const cancelled = "terminal command preparation was cancelled; no further input was sent";
+    const cancelled: PromptWriteRefusal = { kind: "cancelled", message: "terminal command preparation was cancelled; no further input was sent" };
     if ((!withdrawPaste && target.signal?.aborted) || !target.isLive()) return cancelled;
     if (!withdrawPaste) {
       const refusal = target.fence?.();
-      if (refusal !== undefined) return refusal;
+      if (refusal !== undefined) return { kind: "effect-refused", message: refusal };
     }
     options?.beforeBytes?.();
     return target.write(data, withdrawPaste) ? undefined : cancelled;
@@ -1768,7 +1769,7 @@ export async function typeLineAtPrompt(
   const prompt = blocks.promptEndCount();
   const empty = await requestEditLine(blocks, target, prompt, interrupted, send);
   if (target.signal?.aborted) return notTyped("aborted", "terminal command preparation was cancelled; no further input was sent");
-  if (typeof empty === "string") return effectRefused(empty);
+  if (empty && "kind" in empty) return effectRefused(empty.message);
   if (!empty || empty.line !== "" || interrupted()) {
     if (target.isLive() && !await safeToWrite() && !interrupted()) send("\u0003");
     return notTyped("edit-line-mismatch", "the terminal did not confirm an empty editable command buffer; no command was pasted");
@@ -1812,7 +1813,7 @@ export async function typeLineAtPrompt(
   };
   let firstBlockId: number;
   const pasteRefusal = send(`\u001b[200~${line}\u001b[201~`);
-  if (pasteRefusal !== undefined) return interrupted() ?? effectRefused(pasteRefusal);
+  if (pasteRefusal !== undefined) return interrupted() ?? effectRefused(pasteRefusal.message);
   try {
     // 5. Confirm both the display and the editor's actual buffer before Enter.
     const shown = await waitForEditLine(blocks, prompt, line, target.signal);
@@ -1824,7 +1825,7 @@ export async function typeLineAtPrompt(
     if (beforeQuery) return finalizeAfterPaste(beforeQuery);
     const confirmed = await requestEditLine(blocks, target, prompt, interrupted, send);
     if (target.signal?.aborted) return finalizeAfterPaste(notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed"));
-    if (typeof confirmed === "string") return finalizeAfterPaste(effectRefused(confirmed));
+    if (confirmed && "kind" in confirmed) return finalizeAfterPaste(effectRefused(confirmed.message));
     if (!confirmed || confirmed.line !== line || interrupted()) {
       return finalizeAfterPaste(notTyped("edit-line-mismatch", "the terminal's editable command buffer did not match the approved line; Enter was not pressed"));
     }
@@ -1838,7 +1839,10 @@ export async function typeLineAtPrompt(
     }
     firstBlockId = blocks.nextBlockId();
     const enterRefusal = send("\r", { beforeBytes: () => target.onBeforeEnter?.(firstBlockId) });
-    if (enterRefusal !== undefined) return finalizeAfterPaste(interrupted() ?? effectRefused(enterRefusal));
+    if (enterRefusal !== undefined) {
+      const interruption = enterRefusal.kind === "cancelled" ? interrupted() : null;
+      return finalizeAfterPaste(interruption ?? effectRefused(enterRefusal.message));
+    }
   } catch (error) {
     const message = errorMessage(error);
     const failure = message === "remote-controller-revoked" ? effectRefused(message) : notTyped("aborted", message);
@@ -1885,7 +1889,7 @@ async function resetToFreshPrompt(
       const refusal = send("\u0003", { beforeBytes: () => {
         fresh = waitForFreshPrompt(blocks, since, Math.min(RESET_REPEAT_MS, left), () => interrupted() !== null);
       } });
-      if (refusal !== undefined) return interrupted() ?? { ok: false, reason: "effect-refused", message: refusal };
+      if (refusal !== undefined) return interrupted() ?? { ok: false, reason: "effect-refused", message: refusal.message };
       sent++;
       drawn = await fresh ?? false;
     }
@@ -1915,8 +1919,8 @@ function waitForEditorState<T>(
   blocks: TerminalBlockTracker,
   signal: AbortSignal | undefined,
   read: () => T | null | undefined,
-  { includeEditLineOutput, write }: { includeEditLineOutput?: boolean; write?: () => string | undefined } = {},
-): Promise<T | string | null> {
+  { includeEditLineOutput, write }: { includeEditLineOutput?: boolean; write?: () => PromptWriteRefusal | undefined } = {},
+): Promise<T | PromptWriteRefusal | null> {
   return new Promise((resolve, reject) => {
     let done = false;
     let expiresAt = Infinity;
@@ -1931,7 +1935,7 @@ function waitForEditorState<T>(
       cleanup();
       resolve(null);
     };
-    const check = (writeIfPending?: () => string | undefined, deadlineReached = false): void => {
+    const check = (writeIfPending?: () => PromptWriteRefusal | undefined, deadlineReached = false): void => {
       if (done) return;
       try {
         const value = signal?.aborted ? null : read();
@@ -1967,8 +1971,8 @@ async function requestEditLine(
   target: PromptTypingTarget,
   prompt: number,
   interrupted: () => TypeTerminalCommandResult | null,
-  send: (data: string) => string | undefined,
-): Promise<{ readonly generation: number; readonly line: string } | string | null> {
+  send: SendPromptInput,
+): Promise<{ readonly generation: number; readonly line: string } | PromptWriteRefusal | null> {
   const state = blocks.promptState();
   if (!blocks.supportsEditLineQuery() || !target.isLive() || interrupted()
     || blocks.promptEndCount() !== prompt || blocks.typedSincePromptEnd()

@@ -284,6 +284,29 @@ describe("terminal write fence", () => {
     }
   });
 
+  it.each(["user input", "cancellation"] as const)("preserves a final Enter refusal with concurrent %s", async (interruption) => {
+    const terminal = editor();
+    const cancel = new AbortController();
+    const refusal = "permission changed";
+    const fence = () => {
+      if (!terminal.bytes.includes(PASTE) || terminal.bytes.at(-1) !== TERMINAL_EDIT_LINE_QUERY
+        || terminal.order.at(-2) !== "fence") return undefined;
+      if (interruption === "user input") terminal.blocks.recordInput("x");
+      else cancel.abort();
+      return refusal;
+    };
+
+    const result = await terminal.run(fence, undefined, cancel.signal);
+    expect(result).toEqual(interruption === "user input"
+      ? { ok: false, reason: "effect-refused", pasteUncleared: true,
+        message: refusal + "\nThe pasted line could not be cleared. Enter was not pressed." }
+      : { ok: false, reason: "effect-refused", message: refusal });
+    expect(terminal.bytes).toEqual(interruption === "user input"
+      ? [RESET, TERMINAL_EDIT_LINE_QUERY, PASTE, TERMINAL_EDIT_LINE_QUERY]
+      : [RESET, TERMINAL_EDIT_LINE_QUERY, PASTE, TERMINAL_EDIT_LINE_QUERY, RESET]);
+    expect(terminal.onBeforeEnter).not.toHaveBeenCalled();
+  });
+
   it("routes every post-paste exit through the finalizer", () => {
     const path = "pty-manager.ts";
     const text = readFileSync(new URL("../pty-manager.ts", import.meta.url), "utf8");
@@ -320,11 +343,11 @@ describe("terminal write fence", () => {
       'notTyped("edit-line-mismatch", "the terminal\'s line editor did not show exactly the approved line after it was pasted, so Enter was not pressed")',
       "beforeQuery",
       'notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed")',
-      "effectRefused(confirmed)",
+      "effectRefused(confirmed.message)",
       'notTyped("edit-line-mismatch", "the terminal\'s editable command buffer did not match the approved line; Enter was not pressed")',
       "beforeEnter",
       'notTyped("edit-line-mismatch", "the terminal prompt or editor acknowledgement changed before Enter; no further input was sent")',
-      "interrupted() ?? effectRefused(enterRefusal)",
+      "interruption ?? effectRefused(enterRefusal.message)",
       "failure",
       "{ ok: true, firstBlockId }",
     ]);
