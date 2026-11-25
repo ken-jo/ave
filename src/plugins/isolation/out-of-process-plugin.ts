@@ -34,6 +34,7 @@ import {
   protectedReadDenyCovering,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
+  userDenyInsidePierceNotices,
 } from "../../permissions/asrt-sandbox.js";
 import { extensionStartIdentity, pluginChildStartKey, type ExtensionStartAuthority } from "../../permissions/extension-start-consent.js";
 import { holdWindowsFilesystemGrant, type HeldWindowsGrant } from "../../permissions/windows-acl-grant-holder.js";
@@ -89,6 +90,12 @@ import { nativePluginChildFactoryBudgetMs, nativePluginChildStopBudgetMs, TOOL_T
 import { MxcProcessContractError } from "../../permissions/mxc-extension-errors.js";
 
 const log = createLogger("out-of-process-plugin");
+
+// Name, against the plugin, each user read deny that withholds part of one of its host pierces; the wrap then stays silent on it.
+function logUserDeniesInsidePierces(pluginId: string, pierces: readonly string[]): readonly string[] {
+  for (const notice of userDenyInsidePierceNotices(pierces)) log.warn(`[${pluginId}] ${notice}`);
+  return pierces;
+}
 
 /** Host-directory rows grant only literal host-selected reads; user-chosen keys may add read/write only within canonical approved ceilings.
  * Subtract each host row canonically so symlinks cannot turn read grants into write grants; link swaps after derivation remain a check/use residual. */
@@ -550,7 +557,7 @@ export async function spawnConfinedPluginChild(
       // Every other plugin's code and data: the floor does not cover the plugins root, so this spawn does wherever a deny can re-allow.
       ...(process.platform === "win32" ? {} : { denyPluginsRoot: true }),
       // The envelope names a floor-piercing host directory only when the plugin's reviewed declaration asked for it.
-      floorPierces: spec.envelope.read.filter((path) => hostDirectoryFloorPierces().includes(path)),
+      floorPierces: logUserDeniesInsidePierces(spec.pluginId, spec.envelope.read.filter((path) => hostDirectoryFloorPierces().includes(path))),
       // The data root above all: the host keeps resolving it, so a child that could swap it for a link would steer the next storage handle or spawn.
       pinWriteRoots: true,
       baseEnv,
@@ -841,7 +848,7 @@ export function createOutOfProcessPluginFactory(
         // Derived before the planner creates anything, so nothing between its staging and the adapter can strand it.
         const intent = { pluginId, command: process.execPath, args: [childEntryPath], cwd: context.pluginRoot,
           baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }) };
-        const floorPierces = declaredHostDirectoryFloorPierces(spec.manifest.sandbox);
+        const floorPierces = logUserDeniesInsidePierces(pluginId, declaredHostDirectoryFloorPierces(spec.manifest.sandbox));
         const launch = await spec.prepareMxcChild({ ...intent, pluginDataDir: context.pluginDataDir, envelope });
         // The incumbent may have begun terminating, or been quarantined, while admission was awaited:
         // recheck synchronously right before spawn (and again after it) through the registration.

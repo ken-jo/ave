@@ -118,6 +118,30 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
     expect(new Set(reasons)).toEqual(new Set(["user-deny"]));
   });
 
+  it.each(platforms)("on %s, names a user's deny inside the pierce once per session", async (platform) => {
+    await initializeWith([corp()]);
+    const notices = (sessionId: string): string[] => {
+      setProcessPlatform(platform);
+      const seen: string[] = [];
+      createAveHomeBoundarySnapshot(sessionId).run(() => buildPerCommandSandboxCustomConfig({
+        allowRead: [certs(), corp()], denyRead: getDefaultSensitiveReadDenyPaths(), floorPierces: [certs()],
+      }, notice => seen.push(notice)));
+      return seen;
+    };
+    const named = [`Your read deny ${corp()} applies inside ${certs()}, which this launch reads; the launch keeps the rest of it and cannot read what the deny matches.`];
+    expect(notices("session-a")).toEqual(named);
+    expect(notices("session-a")).toEqual([]);
+    expect(notices("session-b")).toEqual(named);
+  });
+
+  it.each(platforms)("on %s, names no deny beside the pierce", async (platform) => {
+    await initializeWith([join(dirname(aveHome()), "unrelated-dir", "secret")]);
+    setProcessPlatform(platform);
+    const seen: string[] = [];
+    buildPerCommandSandboxCustomConfig({ allowRead: [certs(), corp()], denyRead: getDefaultSensitiveReadDenyPaths(), floorPierces: [certs()] }, notice => seen.push(notice));
+    expect(seen).toEqual([]);
+  });
+
   // A character class has no exact reading in the shared grammar; read as any run, it still decides a deny that cannot reach the pierce.
   // Linux Git quarantine refuses every bracket deny on its own, so there only the home reference is composed.
   const bracketElsewhere = () => join(dirname(aveHome()), "unrelated-dir", "[ab].key");

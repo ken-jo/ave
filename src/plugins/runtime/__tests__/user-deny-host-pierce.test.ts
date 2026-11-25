@@ -40,6 +40,7 @@ vi.mock("../../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
 vi.mock("../../../permissions/workspace-authorized-roots.js", () => ({ listAuthorizedWorkspaceRoots: () => [] }));
 
 const spawnNativeChild = vi.hoisted(() => vi.fn());
+const rankedDenies = vi.hoisted(() => [] as string[][]);
 // The container spawn's own admission and rank, on the spec the factory hands it; only the native process is the test's.
 vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../permissions/confined-child.js")>(),
@@ -47,22 +48,27 @@ vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
     const sandbox = await import("../../../permissions/asrt-sandbox.js");
     const { rankMxcFilesystem } = await import("../../../permissions/mxc-windows.js");
     const { admittedMxcChild } = await import("../../../__tests__/support/mxc-plugin-launch.js");
-    rankMxcFilesystem(sandbox.admitMxcExtensionFilesystem({
+    const ranked = rankMxcFilesystem(sandbox.admitMxcExtensionFilesystem({
       allowRead: [...spec.allowRead ?? []], allowWrite: [...spec.allowWrite ?? []], denyWrite: sandbox.getDefaultSensitiveWriteDenyEntries(),
       floorPierces: spec.floorPierces, denyPluginsRoot: true, pinWriteRoots: true,
     }, spec.filesystemOwnership).model);
+    rankedDenies.push([...ranked.denied]);
     return admittedMxcChild(await spawnNativeChild(spec));
   },
   spawnConfinedChild: () => { throw new Error("account route reached"); },
 }));
 
 const runtimeErrors = vi.hoisted(() => [] as string[]);
+const warnings = vi.hoisted(() => [] as string[]);
 vi.mock("../../../lib/logger.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
   return {
     ...actual,
     createLogger: (name: string) => {
       const logger = actual.createLogger(name);
+      if (name === "out-of-process-plugin" || name === "asrt-sandbox") {
+        return Object.assign(Object.create(logger) as typeof logger, { warn: (...args: unknown[]) => void warnings.push(args.map(String).join(" ")) });
+      }
       if (name !== "plugin-runtime" && name !== "plugin-lifecycle") return logger;
       const spelled = (arg: unknown): string => arg instanceof Error ? arg.message
         : typeof arg === "object" && arg !== null ? Object.values(arg).map(spelled).join(" ") : String(arg);
@@ -124,6 +130,8 @@ describe.runIf(hostPlatform === "win32")("a user's read deny over a plugin's cer
   beforeEach(() => {
     setLocale("en");
     runtimeErrors.length = 0;
+    warnings.length = 0;
+    rankedDenies.length = 0;
     testDir = mkdtempSync(join(tmpdir(), "ave-user-deny-pierce-"));
     installedDir = join(testDir, "plugins");
     registryPath = join(installedDir, "registry.json");
@@ -183,5 +191,31 @@ describe.runIf(hostPlatform === "win32")("a user's read deny over a plugin's cer
     } finally {
       await runtime.stopAll();
     }
+  });
+
+  it("starts the certs plugin beside a deny inside its pierce, withholds the match, and names the rule once", async () => {
+    const corp = join(certs(), "corp");
+    mkdirSync(corp, { recursive: true });
+    const rows = [await installPlugin(CERTS_PLUGIN, "certs_reader_ping", { read: [{ kind: "hostDirectory", segments: ["certs"], why: "Read trust anchors" }] })];
+    await writeFile(registryPath, JSON.stringify({ version: 1, plugins: rows }), "utf-8");
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true, denyRead: [corp], windows: { externalConfinement: true } });
+    spawnNativeChild.mockReset().mockImplementation(async () => ownedChild());
+    const notice = `[${CERTS_PLUGIN}] Your read deny ${corp} applies inside ${certs()}, which this launch reads; the launch keeps the rest of it and cannot read what the deny matches.`;
+    for (let launch = 0; launch < 2; launch++) {
+      const runtime = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: installedDir });
+      routeNative(runtime);
+      await runtime.startAll();
+      try {
+        expect(runtime.listPluginIds()).toContain(CERTS_PLUGIN);
+        await expect(runtime.call("certs_reader_ping")).resolves.toBe("pong");
+      } finally {
+        await runtime.stopAll();
+      }
+    }
+    expect(rankedDenies).toHaveLength(2);
+    for (const denied of rankedDenies) expect(denied).toContain(corp);
+    // Named against the plugin on its first launch only; the container admission stays silent on a rule already named.
+    expect(warnings.filter((line) => line.includes(corp))).toEqual([notice]);
+    expect(runtimeErrors).toEqual([]);
   });
 });

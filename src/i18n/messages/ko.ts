@@ -5034,6 +5034,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "sandboxPolicy.scanRouting": "쓰기 가능한 경로 링크가 보호된 저장소 경로를 교체할 수 있습니다",
   "sandboxPolicy.noWriteRoots": "쓰기 가능한 프로젝트 루트 없음",
   "sandboxPolicy.savedSessionReadWithheld": "Windows 셸 샌드박스에서 저장된 세션 저장소 읽기를 차단했습니다.",
+  "sandboxPolicy.pierceUserDenyPart": "읽기 거부 규칙 {rule}이(가) 이 실행이 읽는 {path} 안에 적용됩니다. 나머지는 그대로 읽지만 규칙에 맞는 경로는 읽을 수 없습니다.",
   "sandboxPolicy.sessionReadUserDenyMaybe": "읽기 거부 규칙 {rule}이(가) 저장된 세션 저장소 {path}를 막는지 Ave가 판단할 수 없어 셸 명령이 이를 읽을 수 없습니다.",
   "sandboxPolicy.sessionReadUserDenyPart": "읽기 거부 규칙 {rule}이(가) 저장된 세션 저장소 {path} 안에 적용되어 셸 명령이 해당 경로를 읽을 수 없습니다.",
   "sandboxPolicy.sessionReadUserDenyWhole": "읽기 거부 규칙 {rule}이(가) 저장된 세션 저장소 {path}를 막고 있어 셸 명령이 이를 읽을 수 없습니다.",

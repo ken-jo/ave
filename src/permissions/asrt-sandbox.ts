@@ -937,6 +937,7 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
   const protectedFloor = [...new Set([...literalDenies(floor), ...explicitReadFloor])];
   // The user's denies are stated as their own rows below; the container rank refuses a pierce they cover and withholds what they deny.
   const allowRead = readGrantsOutsideReadDenies(admitted.allowRead, protectedFloor, pierces, []);
+  for (const notice of userDenyInsidePierceNotices(pierces)) log.warn(notice);
   const readDenies = literalDenies([
     ...getDefaultSensitiveReadDenyPaths(), ...admitted.denyRead,
     ...namespaceRoots, ...(pinnedOwnership?.hostStorageRoots ?? []),
@@ -1132,6 +1133,10 @@ export function buildPerCommandSandboxCustomConfig(
         // Restated shared grants keep the shared config's pierces (none, as in buildSandboxConfig); a wrap's own pierces cover only its own grants.
         filesystem.allowRead !== undefined ? (filesystem.floorPierces ?? []) : [],
       ).map((path) => policyGrantRow(path, "ro", "launch-grant", false)));
+      for (const notice of userDenyInsidePierceNotices(filesystem.allowRead !== undefined ? (filesystem.floorPierces ?? []) : [])) {
+        onNotice?.(notice);
+        log.warn(notice);
+      }
       fs.allowRead = lists().allowRead;
     }
     if (Object.keys(fs).length === 0) return undefined;
@@ -1626,20 +1631,36 @@ function userDenyInside(entry: string, root: string): boolean {
   return reaches(0, 0);
 }
 
-// The saved-session notices already shown, per session setup and Ave session: each rule is named once.
-const shownSessionReadNotices = new WeakMap<object, Set<string>>();
+// The user-deny notices already shown, per session setup and Ave session: each rule is named once per read it withholds from.
+const shownUserDenyNotices = new WeakMap<object, Set<string>>();
+
+function firstUserDenyNotice(scope: string, rule: string): boolean {
+  if (_baseTrustedSettings === undefined) return false;
+  const shown = shownUserDenyNotices.get(_baseTrustedSettings) ?? new Set<string>();
+  shownUserDenyNotices.set(_baseTrustedSettings, shown);
+  const key = `${currentAveHomeBoundarySnapshot()?.sessionId ?? ""}\u0000${scope}\u0000${rule}`;
+  if (shown.has(key)) return false;
+  shown.add(key);
+  return true;
+}
 
 function sessionReadUserDenyNotices(root: string | undefined, denies: readonly { readonly rule: string; readonly whole: boolean; readonly certain: boolean }[]): string[] {
-  if (root === undefined || _baseTrustedSettings === undefined || denies.length === 0) return [];
-  const shown = shownSessionReadNotices.get(_baseTrustedSettings) ?? new Set<string>();
-  shownSessionReadNotices.set(_baseTrustedSettings, shown);
-  const session = currentAveHomeBoundarySnapshot()?.sessionId ?? "";
-  return denies.flatMap(({ rule, whole, certain }) => {
-    const key = `${session}\u0000${rule}`;
-    if (shown.has(key)) return [];
-    shown.add(key);
-    return [t(!whole ? "sandboxPolicy.sessionReadUserDenyPart" : certain ? "sandboxPolicy.sessionReadUserDenyWhole" : "sandboxPolicy.sessionReadUserDenyMaybe", { rule, path: root })];
-  });
+  if (root === undefined) return [];
+  return denies.filter(({ rule }) => firstUserDenyNotice(root, rule)).map(({ rule, whole, certain }) =>
+    t(!whole ? "sandboxPolicy.sessionReadUserDenyPart" : certain ? "sandboxPolicy.sessionReadUserDenyWhole" : "sandboxPolicy.sessionReadUserDenyMaybe", { rule, path: root }));
+}
+
+/** The user's read denies inside a host pierce (plugin certs, hooks, workers, host API): the pierce stays and only what each
+ * matches is withheld. Each is named once per session; the saved-session root has its own notice. */
+export function userDenyInsidePierceNotices(pierces: readonly string[]): string[] {
+  const sessionRoot = getConfiguredSessionReadPolicy().allowRead[0];
+  const userDenies = getUserReadDenies();
+  return pierces
+    .filter((pierce) => sessionRoot === undefined || canonicalizePathForMatch(pierce) !== canonicalizePathForMatch(sessionRoot))
+    // A deny that covers the pierce refuses the launch instead.
+    .flatMap((pierce) => userDenies.filter((rule) => userDenyInside(rule, pierce)
+        && userReadDenyCovering([rule])(canonicalizePathForMatch(pierce)) === undefined && firstUserDenyNotice(pierce, rule))
+      .map((rule) => t("sandboxPolicy.pierceUserDenyPart", { rule, path: pierce })));
 }
 
 // Compose broad invocation reads while retaining protected host/private paths. `sandboxHome` is the invocation's own sandbox HOME. The sandbox private roots are read-denied like the rest of the floor, and a read grant under them is dropped — a working directory there must not reopen another process's HOME — except the invocation's own HOME and what is inside it.

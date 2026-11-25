@@ -5032,6 +5032,7 @@ export const en = {
   "sandboxPolicy.scanRouting": "A writable routing link could replace protected repository paths",
   "sandboxPolicy.noWriteRoots": "no writable project roots",
   "sandboxPolicy.savedSessionReadWithheld": "The Windows shell sandbox blocked reading the saved-session store.",
+  "sandboxPolicy.pierceUserDenyPart": "Your read deny {rule} applies inside {path}, which this launch reads; the launch keeps the rest of it and cannot read what the deny matches.",
   "sandboxPolicy.sessionReadUserDenyMaybe": "Ave cannot tell whether your read deny {rule} covers the saved-session store {path}, so shell commands cannot read it.",
   "sandboxPolicy.sessionReadUserDenyPart": "Your read deny {rule} applies inside the saved-session store {path}, so shell commands cannot read what it matches.",
   "sandboxPolicy.sessionReadUserDenyWhole": "Your read deny {rule} covers the saved-session store {path}, so shell commands cannot read it.",
