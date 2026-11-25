@@ -175,9 +175,9 @@ describe("PermissionsTab hook quarantine notice", () => {
       api.permission.setMode.mockResolvedValueOnce({ ok: false, mode: "default" });
       const view = await act(async () => render(<PermissionsTab />));
       await act(async () => { fireEvent.click(screen.getByTestId(execModeTestId("auto"))); });
-      expect(screen.getByTestId("notice-live-assertive")).toHaveTextContent(t("permissionsTab.errorModeChangeFailed"));
+      expect(screen.getByTestId("notice-live-assertive")).toHaveTextContent("실행 모드 변경에 실패했습니다.");
       await act(async () => { await vi.advanceTimersByTimeAsync(LONG_TOAST_TTL_MS * 4); });
-      expect(screen.getByText(t("permissionsTab.errorModeChangeFailed"))).toBeTruthy();
+      expect(screen.getByText("실행 모드 변경에 실패했습니다.")).toBeTruthy();
 
       view.unmount();
       await act(async () => { await vi.advanceTimersByTimeAsync(LONG_TOAST_TTL_MS + 1); });
@@ -256,7 +256,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     );
 
     await waitFor(() => expect(screen.getByTestId("permissions-load-error-policy"))
-      .toHaveTextContent(t("permissionsTab.errorLoadFailed")));
+      .toHaveTextContent("데이터를 불러오지 못했습니다."));
     // The thrown text is logged, not shown.
     expect(screen.getByTestId("permissions-load-error-policy").textContent).not.toContain("settings unavailable");
     expect(screen.getByTestId("exact-deny-draft")).toHaveTextContent("bash");
@@ -624,7 +624,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     await renderPermissionsTab();
 
     expect(await screen.findByTestId("permission-reviewer-model-unavailable"))
-      .toHaveTextContent(t("permissionJudge.reviewerModelUnavailable"));
+      .toHaveTextContent("선택한 검토 모델을 사용할 수 없습니다. 사용 가능한 모델을 고르거나 채팅 모델 따르기로 바꿀 때까지 자동 검토 대신 직접 확인을 요청합니다.");
     expect(screen.getByTestId("permission-reviewer-model")).toHaveTextContent("retired-reviewer");
   });
 
@@ -686,7 +686,7 @@ describe("PermissionsTab hook quarantine notice", () => {
 
     // The mode and reviewer still apply for the session; neither step reports an error over the warning.
     expect(screen.getByTestId(execModeTestId("auto")).className).toContain("border-primary");
-    expect(screen.getAllByText(t("permissionsTab.homeFolderRefusedSessionOnly"))).toHaveLength(1);
+    expect(screen.getAllByText("이번 세션에만 적용됩니다. 내 계정만 Ave 폴더를 바꿀 수 있는지 확인하지 못해 설정을 저장하지 않았습니다. 폴더 권한을 수정한 뒤 Ave를 다시 시작하세요.")).toHaveLength(1);
     expect(screen.queryByText(/이전 설정으로 복원했습니다/)).toBeNull();
   });
 
@@ -883,7 +883,7 @@ describe("PermissionsTab — explicit-approval policy editability", () => {
     api.policy.get.mockResolvedValueOnce(policyGetPayload({ requireExplicitApproval: true, managed: true, source: "admin", adminStatus: "invalid", adminReason: reason }));
     await renderPermissionsTab();
     expect(screen.getByLabelText(CHECKBOX_LABEL)).toBeDisabled();
-    expect(screen.getByText(t("permissionsTab.invalidAdminPolicy", { reason }))).toBeVisible();
+    expect(screen.getByText(`관리자 정책을 신뢰하거나 읽을 수 없습니다. 승인이 필수이며 정책을 수정할 수 없습니다. ${reason}`)).toBeVisible();
   });
 
   it("enables the checkbox when no admin policy is deployed", async () => {
@@ -1012,14 +1012,14 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     const api = await togglePending("shell");
     api.relaunchApp.mockResolvedValue({ ok: false, error: "relaunch-in-progress" });
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.sandboxRestartNow") })); });
-    expect(screen.getAllByRole("alert").find((el) => !el.hasAttribute("data-notice-live"))).toHaveTextContent(t("permissionsTab.sandboxRestartBusy"));
+    expect(screen.getAllByRole("alert").find((el) => !el.hasAttribute("data-notice-live"))).toHaveTextContent("Ave를 다시 시작하고 있습니다. 잠시 기다려 주세요.");
   });
 
   it("keeps a refused restart open with the localized reason", async () => {
     const api = await togglePending("shell");
     api.relaunchApp.mockResolvedValue({ ok: false, error: "update-install-in-progress" });
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.sandboxRestartNow") })); });
-    expect(screen.getByRole("dialog", { name: t("permissionsTab.sandboxRestartTitle") })).toHaveTextContent(t("permissionsTab.sandboxRestartUpdateBusy"));
+    expect(screen.getByRole("dialog", { name: "샌드박스 변경 사항을 적용하려면 Ave를 다시 시작할까요?" })).toHaveTextContent("앱 업데이트를 설치 중입니다. 완료될 때까지 기다려 주세요.");
   });
 
   it("rolls back optimistic enable when settings IPC returns an error", async () => {
@@ -1045,7 +1045,7 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     expect(api.permission.sandboxCapability).toHaveBeenCalledTimes(1);
     expect(toggle).toHaveAttribute("aria-checked", "false");
     // A known code shows its localized copy; main's message is logged, not shown.
-    expect(screen.getByText(t("formatIpcError.writeFailed"))).toBeTruthy();
+    expect(screen.getByText("설정을 저장하지 못했습니다.")).toBeTruthy();
     expect(screen.queryByText("저장 실패")).toBeNull();
   });
 
@@ -1108,8 +1108,8 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
 
     await renderPermissionsTab();
 
-    expect(screen.getByTestId("os-sandbox-runtime-reason")).toHaveTextContent(t("permissionsTab.osSandboxKindNone"));
-    expect(screen.getByTestId("worker-confinement-runtime-reason")).toHaveTextContent(t("permissionsTab.osSandboxKindFull"));
+    expect(screen.getByTestId("os-sandbox-runtime-reason")).toHaveTextContent("OS 격리 없음");
+    expect(screen.getByTestId("worker-confinement-runtime-reason")).toHaveTextContent("파일시스템, 프로세스 및 네트워크 격리");
   });
 
   it("says the environment is deciding worker confinement when its variable is set", async () => {
@@ -1135,7 +1135,7 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     const toggle = screen.getByTestId("worker-confinement-toggle");
     expect(toggle).toBeDisabled();
     expect(screen.getByTestId("worker-confinement-forced")).toHaveTextContent(
-      t("permissionsTab.workerConfinementEnvForced", { envVar: "AVE_PLUGIN_WORKER_CONFINEMENT" }),
+      "AVE_PLUGIN_WORKER_CONFINEMENT 환경 변수로 이번 실행에서 켜져 있습니다.",
     );
   });
 
@@ -1160,10 +1160,10 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     await renderPermissionsTab();
 
     expect(screen.getByTestId("os-sandbox-potential-reason")).toHaveTextContent(
-      t("permissionsTab.osSandboxKindFull"),
+      "파일시스템, 프로세스 및 네트워크 격리",
     );
     expect(screen.getByTestId("os-sandbox-runtime-reason")).toHaveTextContent(
-      t("permissionsTab.osSandboxKindFull"),
+      "파일시스템, 프로세스 및 네트워크 격리",
     );
     expect(screen.queryByRole("button", { name: t("permissionsTab.sandboxRestartNow") })).toBeNull();
   });
@@ -1300,7 +1300,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     await act(async () => { render(<PermissionsTab />); });
     expect(document.body.textContent).not.toContain("EACCES");
     expect(document.body.textContent).not.toContain("AppData");
-    expect(screen.getByText(t("permissionsTab.osSandboxWindowsReloginPending"))).toBeTruthy();
+    expect(screen.getByText("샌드박스 사용자 또는 네트워크 필터가 아직 준비되지 않았습니다. 재설정을 누르고 관리자 확인 창을 허용한 뒤 Ave를 재시작하세요. 로그아웃은 필요하지 않습니다.")).toBeTruthy();
   });
 
   it.each([
@@ -1329,14 +1329,14 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     await act(async () => { render(<PermissionsTab />); });
     const block = screen.getByTestId("os-sandbox-windows-substrate");
     expect(block.dataset.shells).toBe("mxc");
-    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsMxc"));
+    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe("셸(PowerShell): 명령마다 별도 컨테이너에서 작업 공간에 허용된 파일과 전용 프록시 포트를 사용합니다. 호출이 끝나면 컨테이너의 프로세스 트리도 종료됩니다.");
     expect(screen.getByTestId("os-sandbox-windows-shells-limits").textContent).toBe([
-      t("permissionsTab.osSandboxWindowsEgressHostResolver"), t("permissionsTab.osSandboxWindowsEgressRawUnverified"),
-      t("permissionsTab.osSandboxWindowsShellsMxcLimits"),
+      "DNS 조회로 호스트 리졸버를 거쳐 데이터가 외부로 나갈 수 있습니다.", "직접 UDP 53번 포트 통신과 ICMP의 차단 여부는 확인되지 않았습니다.",
+      "들어오는 연결 차단은 보장하지 않습니다.",
     ].join(" "));
     expect(screen.getByTestId("os-sandbox-windows-bash-note")).toBeTruthy();
     expect(document.body.textContent).not.toContain(t("permissionsTab.osSandboxCapabilityWindows"));
-    expect(screen.getByTestId("os-sandbox-windows-substrate-extensions").textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsNone"));
+    expect(screen.getByTestId("os-sandbox-windows-substrate-extensions").textContent).toBe("익스텐션: 격리되지 않음. srt-win(1회 관리자 설치)이 준비되지 않았습니다.");
     expect(screen.queryByTestId("os-sandbox-windows-mxc-reason")).toBeNull();
     expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
   });
@@ -1402,34 +1402,29 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     // The OS sandbox section is mounted (the toggle always renders there; the composer badge pair alone does not prove it).
     expect(screen.getByTestId("os-sandbox-toggle")).toBeTruthy();
 
-    const reason = t("permissionsTab.homePrivacyExtraPrincipals", {
-      principals: "S-1-5-11 (NT AUTHORITY\\Authenticated Users), S-1-5-32-545",
-    });
     expect(screen.getByTestId("os-sandbox-boot-degraded")).toBeTruthy();
     const detail = screen.getByTestId("os-sandbox-boot-degraded-detail");
-    expect(detail.textContent).toBe(`${t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/ave-home", reason })} ${t("permissionsTab.homePrivacyShellAsk")}`);
+    expect(detail.textContent).toBe(`시작 시 AVE_HOME 폴더 보호 검사가 실패했습니다(${homePrivacyError.path}: 다른 주체의 접근 항목이 남아 있음: S-1-5-11 (NT AUTHORITY\\Authenticated Users), S-1-5-32-545. 해당 항목을 제거하거나 AVE_HOME을 옮기세요). 셸 명령은 한 번 또는 이 세션 동안의 승인을 요청합니다.`);
     // The generic dependency hint is false for a folder-permission failure.
-    expect(detail.textContent).not.toBe(t("permissionsTab.osSandboxDiagnosticHint"));
+    expect(detail.textContent).not.toBe("시작 진단에 실패했습니다. 샌드박스 설정을 복구한 뒤 Ave를 재시작하세요.");
     expect(t("permissionsTab.osSandboxBootDegradedHomePrivacy")).not.toBe("permissionsTab.osSandboxBootDegradedHomePrivacy");
 
     const substrate = screen.getByTestId("os-sandbox-windows-substrate");
     expect(substrate).toHaveAttribute("data-shells", "none");
     expect(substrate).toHaveAttribute("data-extensions", "none");
     expect(substrate).toHaveAttribute("data-mxc", "available");
-    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsNone"));
-    expect(screen.getByTestId("os-sandbox-windows-mxc-unused").textContent).toBe(t("permissionsTab.osSandboxWindowsMxcUnused", { build: "10.0.26300.9711" }));
+    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe("셸: 이번 세션은 샌드박스 없이 실행됩니다.");
+    expect(screen.getByTestId("os-sandbox-windows-mxc-unused").textContent).toBe("Microsoft Execution Containers는 사용할 수 있지만(Windows 10.0.26300.9711) 이번 세션에 샌드박스가 시작되지 않았습니다.");
     const extensions = screen.getByTestId("os-sandbox-windows-substrate-extensions");
     expect(extensions).toHaveAttribute("data-readiness", "unavailable");
     expect(extensions).toHaveAttribute("data-selected-backend", "none");
     expect(extensions).toHaveAttribute("data-reason", "native-validation-required");
-    expect(extensions.textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsUnavailable", {
-      reason: t("permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired"),
-    }));
+    expect(extensions.textContent).toBe("익스텐션은 격리되지 않습니다(이 빌드의 익스텐션 컨테이너 네이티브 검증이 아직 끝나지 않았습니다): 이번 세션에는 익스텐션에 Windows 컨테이너도 srt-win 도 쓰이지 않습니다.");
     expect(screen.queryByTestId("os-sandbox-windows-extension-disclosure")).toBeNull();
     expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
 
     const privacy = screen.getByTestId("os-sandbox-windows-home-privacy-error");
-    expect(privacy.textContent).toContain(t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: "D:/ave-home", reason }));
+    expect(privacy.textContent).toContain(`시작 시 AVE_HOME 폴더 보호 검사 실패로 확장 기능이 차단되었습니다(${homePrivacyError.path}: 다른 주체의 접근 항목이 남아 있음: S-1-5-11 (NT AUTHORITY\\Authenticated Users), S-1-5-32-545. 해당 항목을 제거하거나 AVE_HOME을 옮기세요).`);
   });
 
   it("claims no shell outcome when the privacy failure carries no category", async () => {
@@ -1442,7 +1437,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     await act(async () => { render(<PermissionsTab />); });
     // Without a category the shell outcome (ask or off until restart) is unknown, so the line names neither.
     await waitFor(() => expect(screen.getByTestId("os-sandbox-boot-degraded-detail").textContent)
-      .toBe(`${t("permissionsTab.homePrivacyBootFailed")}.`));
+      .toBe("AVE_HOME 비공개 보호를 확인할 수 없어 격리가 꺼져 있음."));
   });
 
   describe("AVE_HOME privacy fix guidance per category", () => {
@@ -1486,6 +1481,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
 
     it.each(rows)("%s: %s", async (locale, category) => {
       setLocale(locale);
+      const boundaryUnverifiedCode = "degrade-ave-home-boundary-unverified";
       const homePrivacyError = {
         path: "D:/ave-home", category,
         ...(category === "extra-principals" ? { extraPrincipals: [{ sid: "S-1-5-11" }] } : {}),
@@ -1498,13 +1494,13 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         runtime: { available: false, kind: "none", reason: "r" }, confines: { filesystem: true, process: false, network: true },
         homePrivacyError,
         // An unverifiable read boundary reaches the same privacy refusal under its own gate reason.
-        boot: { action: "degrade", reason: category.startsWith("boundary-") ? "degrade-ave-home-boundary-unverified" : "degrade-ave-home-privacy-failed",
+        boot: { action: "degrade", reason: category.startsWith("boundary-") ? boundaryUnverifiedCode : "degrade-ave-home-privacy-failed",
           onSignal: "default-settings", causes: ["ave-home-privacy-failed"] },
       } as never);
       await act(async () => { render(<PermissionsTab />); });
       if (category.startsWith("boundary-")) {
         expect(screen.getByTestId("os-sandbox-boot-degraded").textContent)
-          .toContain(t("permissionsTab.osSandboxBootDegradedReason", { reason: "degrade-ave-home-boundary-unverified" }));
+          .toContain(locale === "en" ? `Startup outcome: ${boundaryUnverifiedCode}` : `시작 결과: ${boundaryUnverifiedCode}`);
       }
       const reason = t(REASON[category], { principals: "S-1-5-11" });
       // Every other category forces the shell floor, so its notice says shell commands ask, once or for the session;
@@ -1675,7 +1671,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         ? t("permissionsTab.osSandboxWindowsExtensionsChecking")
         : t("permissionsTab.osSandboxWindowsExtensionsRejected", { reason: t(reason === "request-rejected" ? "permissionsTab.osSandboxWindowsMxcReasonRequestRejected" : "permissionsTab.osSandboxWindowsExtensionReasonAncestorAlreadyAdmitted") }));
       // The pre-row-6 copy said "not confined: srt-win is not ready", which is false for a refusing plan.
-      expect(extensions().textContent).not.toBe(t("permissionsTab.osSandboxWindowsExtensionsNone"));
+      expect(extensions().textContent).not.toBe("익스텐션: 격리되지 않음. srt-win(1회 관리자 설치)이 준비되지 않았습니다.");
       expect(extensions().textContent).not.toMatch(/not confined/u);
       expect(screen.queryByTestId("os-sandbox-windows-extension-disclosure")).toBeNull();
     });
@@ -1684,16 +1680,16 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       const fixture = plan("ready", "ready");
       assertSandboxWindowsExtensionPlan(fixture);
       await renderWithPlan(fixture, "mxc");
-      expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsMxc"));
-      expect(extensions().textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsMxcSelected"));
+      expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe("셸(PowerShell): 명령마다 별도 컨테이너에서 작업 공간에 허용된 파일과 전용 프록시 포트를 사용합니다. 호출이 끝나면 컨테이너의 프로세스 트리도 종료됩니다.");
+      expect(extensions().textContent).toBe("이번 세션에 시작하는 익스텐션 프로세스는 Windows 컨테이너(MXC)에서 프로세스마다 별도 컨테이너로 실행되도록 선택되었습니다. 이는 선택일 뿐 특정 프로세스가 컨테이너 안에서 실행 중이라는 증거가 아니며, 익스텐션별 격리 상태는 해당 익스텐션의 진단 카드에 표시됩니다.");
       const disclosure = screen.getByTestId("os-sandbox-windows-extension-disclosure");
       expect(disclosure).toHaveAttribute("data-egress-identity", "kernel-channel");
       expect(disclosure).toHaveAttribute("data-proxy-owner-verified", "false");
       expect(disclosure).toHaveAttribute("data-host-loopback", "bidirectional");
       expect(disclosure).toHaveAttribute("data-ancestor-access", "query-enumerate-only");
       expect(screen.getByTestId("os-sandbox-windows-extension-disclosure-network").textContent).toBe([
-        t("permissionsTab.osSandboxWindowsExtensionsNetwork"), t("permissionsTab.osSandboxWindowsEgressHostResolver"),
-        t("permissionsTab.osSandboxWindowsEgressRawUnverified"),
+        "각 익스텐션 컨테이너 안의 프로세스는 전용 프록시 엔드포인트를 공유합니다. 엔드포인트의 소유자는 확인되지 않았습니다. 컨테이너는 양방향 루프백을 요청합니다. 인바운드 격리는 확인되지 않았습니다.", "DNS 조회로 호스트 리졸버를 거쳐 데이터가 외부로 나갈 수 있습니다.",
+        "직접 UDP 53번 포트 통신과 ICMP의 차단 여부는 확인되지 않았습니다.",
       ].join(" "));
       for (const [id, key] of [
         ["windows", "permissionsTab.osSandboxWindowsExtensionsWindows"],
@@ -1728,9 +1724,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       const fixture = plan("fallback", "native-validation-required");
       assertSandboxWindowsExtensionPlan(fixture);
       await renderWithPlan(fixture, "approved-host");
-      expect(extensions().textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsFallback", {
-        reason: t("permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired"),
-      }));
+      expect(extensions().textContent).toBe("익스텐션에 Windows 컨테이너를 쓸 수 없어(이 빌드의 익스텐션 컨테이너 네이티브 검증이 아직 끝나지 않았습니다) 익스텐션은 공유 샌드박스 계정 하나로 srt-win 0.0.80 대체 경로에서 실행됩니다.");
       expect(screen.getByTestId("os-sandbox-windows-shared-identity")).toBeTruthy();
       expect(screen.queryByTestId("os-sandbox-windows-extension-disclosure")).toBeNull();
     });
@@ -1813,12 +1807,12 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.getByTestId("os-sandbox-windows-helper-unavailable"))
       .toHaveTextContent(t(messageKey));
     expect(screen.getByTestId("os-sandbox-windows-substrate-shells"))
-      .toHaveTextContent(t("permissionsTab.osSandboxWindowsShellsMxc"));
+      .toHaveTextContent("셸(PowerShell): 명령마다 별도 컨테이너에서 작업 공간에 허용된 파일과 전용 프록시 포트를 사용합니다. 호출이 끝나면 컨테이너의 프로세스 트리도 종료됩니다.");
     expect(screen.getByTestId("os-sandbox-windows-substrate-extensions"))
-      .toHaveTextContent(t("permissionsTab.osSandboxWindowsExtensionsNone"));
+      .toHaveTextContent("익스텐션: 격리되지 않음. srt-win(1회 관리자 설치)이 준비되지 않았습니다.");
     expect(screen.getByTestId("os-sandbox-toggle")).not.toBeDisabled();
     expect(document.querySelector('[data-settings-section="permissions-network"]')).toBeInTheDocument();
-    expect(screen.queryByText(t("permissionsTab.errorLoadFailed"))).toBeNull();
+    expect(screen.queryByText("데이터를 불러오지 못했습니다.")).toBeNull();
     expect(screen.queryByTestId("os-sandbox-windows-install")).toBeNull();
     expect(ave.permission.sandboxWindowsInstall).not.toHaveBeenCalled();
 
@@ -1854,7 +1848,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       if (category === "extra-principals") {
         expect(notice).toHaveTextContent("S-1-1-0 (Everyone)");
         expect(notice).toHaveTextContent("S-1-5-21-100-200-300-9999");
-        expect(notice).toHaveTextContent(t("permissionsTab.homePrivacyExtraPrincipals", { principals: "S-1-1-0 (Everyone), S-1-5-21-100-200-300-9999" }));
+        expect(notice).toHaveTextContent(locale === "en" ? "extra access entries remain for S-1-1-0 (Everyone), S-1-5-21-100-200-300-9999; remove those entries or move AVE_HOME" : "다른 주체의 접근 항목이 남아 있음: S-1-1-0 (Everyone), S-1-5-21-100-200-300-9999. 해당 항목을 제거하거나 AVE_HOME을 옮기세요");
       } else {
         expect(notice).toHaveTextContent({
           "icacls-failed": t("permissionsTab.homePrivacyIcaclsFailed"),
@@ -1957,7 +1951,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     } as never);
     await act(async () => { render(<PermissionsTab />); });
     expect(screen.getByTestId("os-sandbox-windows-substrate").dataset.mxc).toBe("checking");
-    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsChecking"));
+    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe("셸: 컨테이너 사용 가능 여부를 확인하는 중입니다. 그동안 명령은 승인 후 일반 프로세스로 실행되며, 결과는 이 페이지를 다시 열면 보입니다.");
     expect(screen.queryByTestId("os-sandbox-windows-mxc-reason")).toBeNull();
     expect(screen.queryByTestId("os-sandbox-windows-bash-note")).toBeNull();
   });
@@ -1976,7 +1970,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     } as never);
     await act(async () => { render(<PermissionsTab />); });
     expect(screen.getByTestId("os-sandbox-windows-mxc-unused").textContent)
-      .toBe(t("permissionsTab.osSandboxWindowsMxcUnused", { build: "10.0.26300.9711" }));
+      .toBe("Microsoft Execution Containers는 사용할 수 있지만(Windows 10.0.26300.9711) 이번 세션에 샌드박스가 시작되지 않았습니다.");
     expect(screen.queryByTestId("os-sandbox-windows-mxc-reason")).toBeNull();
   });
 
@@ -1993,14 +1987,11 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       },
     } as never);
     await act(async () => { render(<PermissionsTab />); });
-    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsApprovedHost"));
+    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe("셸: 이 PC에서 Microsoft Execution Containers를 쓸 수 없어 명령마다 승인 후 일반 프로세스로 실행됩니다.");
     const reason = screen.getByTestId("os-sandbox-windows-mxc-reason");
     expect(reason.dataset.reason).toBe("container-unavailable");
-    expect(reason.textContent).toBe(t("permissionsTab.osSandboxWindowsMxcUnavailable", {
-      reason: t("permissionsTab.osSandboxWindowsMxcReasonContainerUnavailable"),
-      build: "10.0.22631.4317",
-    }));
-    expect(screen.getByTestId("os-sandbox-windows-shared-identity").textContent).toBe(t("permissionsTab.osSandboxWindowsSharedIdentity"));
+    expect(reason.textContent).toBe("Microsoft Execution Containers 사용 불가: 이 PC 는 Ave 에 필요한 컨테이너 격리를 제공하지 못합니다. Windows 11 을 업데이트하면 지원될 수 있습니다 (Windows 10.0.22631.4317).");
+    expect(screen.getByTestId("os-sandbox-windows-shared-identity").textContent).toBe("익스텐션은 프록시 신원 하나를 공유해, 어느 프로세스가 연결했는지 프록시가 구분하지 못합니다.");
     expect(screen.queryByTestId("os-sandbox-windows-bash-note")).toBeNull();
   });
 
@@ -2451,7 +2442,7 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     } as never);
     await act(async () => { fireEvent.click(screen.getByText(t("permissionsTab.directoryWarningConfirmButton"))); });
     expectNoRaw();
-    expect(screen.getByText(t("permissionsTab.directoryWarningBody"))).toBeTruthy();
+    expect(screen.getByText("이 디렉터리에는 민감한 파일이나 큰 캐시가 포함될 수 있습니다. 의도한 접근인지 확인한 뒤 추가하세요.")).toBeTruthy();
   });
 
   async function addRule() {
@@ -2523,7 +2514,7 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
 
   it.each([
     ["chat-oriented usage text", { ok: false, error: "missing subcommand — usage: /permission dir <allow|deny|list> [path] [--session]" }, "디렉터리를 추가하지 못했습니다.", "usage:"],
-    ["a known IPC code", { ok: false, error: "user-keyboard-required" }, t("formatIpcError.userKeyboardRequired"), "user-keyboard-required"],
+    ["a known IPC code", { ok: false, error: "user-keyboard-required" }, "이 권한 변경은 활성 사용자 입력에서만 실행할 수 있습니다.", "user-keyboard-required"],
   ] as const)("a directory add refused with %s shows localized copy", async (_label, add, shown, raw) => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     dirDispatchFailing({ add });
@@ -2538,7 +2529,7 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
   it.each([
     ["free text", { ok: false, error: "workspace lifecycle unavailable" }, "디렉터리를 제거하지 못했습니다.", "workspace lifecycle"],
     ["an unknown code", { ok: false, error: "dir-locked" }, "디렉터리를 제거하지 못했습니다. (dir-locked)", "-"],
-    ["the frame-trust code", { ok: false, error: "unauthorized-frame" }, t("formatIpcError.unauthorizedFrame"), "unauthorized-frame"],
+    ["the frame-trust code", { ok: false, error: "unauthorized-frame" }, "인증되지 않은 프레임에서의 요청입니다. 창을 새로고침하거나 앱을 다시 시작해 주세요.", "unauthorized-frame"],
   ] as const)("a directory remove refused with %s shows localized copy", async (_label, remove, shown, raw) => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     dirDispatchFailing({ remove });
@@ -2556,12 +2547,13 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const api = installApi([[]]);
     const detail = "unknown subcommand 'llm' — expected show|mode|model";
-    mock(api.permission.setMode).mockResolvedValueOnce({ ok: false, error: "reviewer-mode-change-failed", message: detail });
+    const errorCode = "reviewer-mode-change-failed";
+    mock(api.permission.setMode).mockResolvedValueOnce({ ok: false, error: errorCode, message: detail });
     await renderPermissionsTab();
     await act(async () => { fireEvent.click(screen.getByTestId(execModeTestId("auto"))); });
-    expect(screen.getByText(`${t("permissionsTab.errorModeChangeFailed")} (reviewer-mode-change-failed)`)).toBeTruthy();
+    expect(screen.getByText(`실행 모드 변경에 실패했습니다. (${errorCode})`)).toBeTruthy();
     expect(document.body.textContent).not.toContain("unknown subcommand");
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("mode change failed"), "reviewer-mode-change-failed", detail);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("mode change failed"), errorCode, detail);
     expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith("mode llm");
     warn.mockRestore();
   });
@@ -2571,7 +2563,7 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     installApi([[]]);
     (window.aveApi as unknown as { getSettings: ReturnType<typeof vi.fn> }).getSettings.mockRejectedValueOnce(new Error(RAW));
     await renderPermissionsTab();
-    await waitFor(() => expect(screen.getByTestId("permissions-load-error-os-sandbox-settings")).toHaveTextContent(t("permissionsTab.errorLoadFailed")));
+    await waitFor(() => expect(screen.getByTestId("permissions-load-error-os-sandbox-settings")).toHaveTextContent("데이터를 불러오지 못했습니다."));
     expect(screen.queryByTestId("os-sandbox-toggle")).toBeNull();
     expect(screen.queryByTestId("worker-confinement-toggle")).toBeNull();
     // Owner-away minutes come from the same read, so the approval section waits on it too.
@@ -2590,7 +2582,7 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     const api = installApi([[]]);
     api.permission.getMode.mockRejectedValueOnce(new Error(RAW));
     await renderPermissionsTab();
-    await waitFor(() => expect(screen.getByTestId("permissions-load-error-policy")).toHaveTextContent(t("permissionsTab.errorLoadFailed")));
+    await waitFor(() => expect(screen.getByTestId("permissions-load-error-policy")).toHaveTextContent("데이터를 불러오지 못했습니다."));
     expectNoRaw();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("load failed"), "mode", "Error", RAW);
     warn.mockRestore();
@@ -2683,7 +2675,7 @@ describe("PermissionsTab — per-section reads after the first load", () => {
     await waitFor(() => expect(dirSection().textContent).toContain("/tmp/ave-kept"));
     api.permission.dirDispatch.mockImplementationOnce(reply as never);
     await act(async () => { fireEvent.click(dirRefresh()); });
-    await waitFor(() => expect(screen.getByTestId("permissions-stale-directories")).toHaveTextContent(t("permissionsTab.sectionStale")));
+    await waitFor(() => expect(screen.getByTestId("permissions-stale-directories")).toHaveTextContent("마지막으로 불러온 값을 표시하고 있습니다. 최근 새로고침에 실패했습니다."));
     expect(dirSection().contains(screen.getByTestId("permissions-stale-directories"))).toBe(true);
     expect(dirSection().textContent).toContain("/tmp/ave-kept");
     expect(screen.queryByTestId("permissions-load-error-directories")).toBeNull();
@@ -2786,7 +2778,7 @@ describe("PermissionsTab unified permission rules", () => {
     const table = await screen.findByTestId("permissions-rules-table");
     const reasons = screen.getAllByTestId("permissions-rule-invalid");
     expect(reasons).toHaveLength(1);
-    expect(reasons[0]).toHaveTextContent(t("permissionsTab.ruleInvalidWildcardNotAllowlisted"));
+    expect(reasons[0]).toHaveTextContent(locale === "en" ? "Not in force: this stored wildcard prefix is too broad. Remove it or save a narrower prefix or exact command." : "적용되지 않음: 저장된 와일드카드 접두사의 범위가 너무 넓습니다. 삭제하거나 더 구체적인 접두사 또는 정확한 명령으로 저장하세요.");
     expect(reasons[0].closest("tr")).toHaveTextContent(inert.pattern);
     fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.revokeNamedRule", { pattern: inert.pattern }) }));
     await waitFor(() => expect(api.permission.removeScopedRule).toHaveBeenCalledWith(inert));
@@ -2804,7 +2796,9 @@ describe("PermissionsTab unified permission rules", () => {
     list.mockResolvedValue({ rules: [prefix], errors: [] });
     await act(async () => { render(<PermissionsTab />); });
     const note = await screen.findByTestId("permissions-shell-outside-sandbox");
-    expect(note).toHaveTextContent(t("permissionsTab.shellOutsideSandbox"));
+    expect(note.textContent).toBe(locale === "en"
+      ? "Outside the sandbox, a saved exact or prefix allow rule lets matching commands run without asking."
+      : "샌드박스 밖에서는 정확히 일치하거나 접두사가 일치하는 허용 규칙을 저장하면 일치하는 명령은 다시 묻지 않고 실행됩니다.");
     expect(note.textContent).toMatch(locale === "en" ? /exact or prefix allow rule/ : /정확히 일치하거나 접두사가 일치하는 허용 규칙/);
     expect(note.textContent).not.toMatch(/never|Only an exact|그렇게 하지 않습니다|정확히 일치하는 허용 규칙만/);
   });
@@ -2817,7 +2811,9 @@ describe("PermissionsTab unified permission rules", () => {
     list.mockResolvedValueOnce({ rules: [retired], errors: [] }).mockResolvedValue({ rules: [], errors: [] });
     await act(async () => { render(<PermissionsTab />); });
     const reason = await screen.findByTestId("permissions-rule-invalid");
-    expect(reason).toHaveTextContent(t("permissionsTab.ruleRetiredHostTerminal"));
+    expect(reason).toHaveTextContent(locale === "en"
+      ? "No longer used: host terminal actions use session choices. Delete this stored rule."
+      : "더 이상 사용되지 않음: 호스트 터미널 동작은 세션 선택을 사용합니다. 저장된 이 규칙을 삭제하세요.");
     expect(reason.closest("tr")).toHaveTextContent(retired.pattern);
     fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.revokeNamedRule", { pattern: retired.pattern }) }));
     await waitFor(() => expect(api.permission.removeScopedRule).toHaveBeenCalledWith(retired));
@@ -2851,7 +2847,7 @@ describe("PermissionsTab unified permission rules", () => {
     await act(async () => { render(<PermissionsTab />); });
     const table = await screen.findByTestId("permissions-rules-table");
     expect(table).toHaveTextContent("live-conversation");
-    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.savedApprovalsFile"));
+    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent("저장된 승인 파일(user-approvals.json)");
     fireEvent.click(table.querySelector('tr[data-rule-store="exact"] button')!);
     await waitFor(() => expect(api.userApproval.revokeByKey).toHaveBeenCalledWith(session.key));
     await waitFor(() => expect(screen.queryByTestId("permissions-rules-table")).toBeNull());
@@ -2865,7 +2861,7 @@ describe("PermissionsTab unified permission rules", () => {
     (api.userApproval.listSession as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("session unavailable"));
     await act(async () => { render(<PermissionsTab />); });
     await waitFor(() => expect(api.userApproval.listSession).toHaveBeenCalled());
-    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.savedApprovalsFile"));
+    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent("저장된 승인 파일(user-approvals.json)");
   });
 
   it("shows scoped corruption and exact-store load failures visibly", async () => {
@@ -2874,9 +2870,9 @@ describe("PermissionsTab unified permission rules", () => {
     (api.userApproval.list as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("unreadable store"));
     await act(async () => { render(<PermissionsTab />); });
     await waitFor(() => expect(screen.getByTestId("permissions-rule-load-error")).toBeVisible());
-    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.unifiedRulesLoadError"));
+    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent("일부 권한 항목을 불러오지 못했습니다. 기존 파일은 덮어쓰지 않았습니다.");
     expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent("/ave-home/permissions/projects/project.json");
-    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.savedApprovalsFile"));
+    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent("저장된 승인 파일(user-approvals.json)");
   });
 });
 
@@ -2924,7 +2920,7 @@ describe("owner-away approval auto-skip", () => {
     fireEvent.change(input, { target: { value: draft } });
     fireEvent.blur(input);
     await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(4));
-    expect(screen.getByTestId("owner-away-error")).toHaveTextContent(t("permissionsTab.ownerAwayInvalid", { max: 10080 }));
+    expect(screen.getByTestId("owner-away-error")).toHaveTextContent("0~10080분 범위의 정수를 입력하세요. 저장된 값으로 복원했습니다.");
     expect(settingsApi().updateSettings).not.toHaveBeenCalled();
   });
 
@@ -2993,8 +2989,8 @@ describe("reviewer mode recovery", () => {
 
       await renderPermissionsTab();
 
-      expect(screen.getByTestId("reviewer-mode-fault")).toHaveTextContent(t("permissionsTab.reviewerModeFaultTitle"));
-      expect(screen.getByTestId("reviewer-mode-fault")).toHaveTextContent(t("permissionsTab.reviewerModeFaultDescription"));
+      expect(screen.getByTestId("reviewer-mode-fault")).toHaveTextContent(locale === "en" ? "Choose a supported permission reviewer setting" : "지원되는 권한 리뷰어 설정을 선택하세요");
+      expect(screen.getByTestId("reviewer-mode-fault")).toHaveTextContent(locale === "en" ? "The saved reviewer mode is no longer supported. Automatic review is unavailable until you choose a setting. Your other settings are unchanged." : "저장된 리뷰어 모드는 더 이상 지원되지 않습니다. 설정을 선택하기 전까지 자동 검토를 사용할 수 없습니다. 다른 설정은 유지됩니다.");
       expect(screen.getByTestId("reviewer-mode-repair-llm")).toHaveTextContent(locale === "ko" ? "자동 리뷰 사용" : "Use automatic review");
       expect(screen.getByTestId("reviewer-mode-repair-disabled")).toHaveTextContent(locale === "ko" ? "리뷰 끄기: auto 모드에서도 카드로 확인" : "Turn off review: auto asks with a card");
       const judgeMode = screen.getByLabelText(t("permissionJudge.mode"));
@@ -3070,7 +3066,7 @@ describe("reviewer mode recovery", () => {
     await act(async () => { fireEvent.click(screen.getByTestId("reviewer-mode-repair-llm")); });
 
     expect(screen.queryByTestId("reviewer-mode-fault")).toBeNull();
-    expect(screen.getByText(t("permissionsTab.reviewerModeRecoveryRewireFailed"), { exact: false })).toBeVisible();
+    expect(screen.getByText("리뷰어 선택은 저장했지만 리뷰어를 다시 연결하지 못했습니다. 자동 검토는 계속 사용할 수 없습니다.", { exact: false })).toBeVisible();
     expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", "mode llm", "show"]);
     expect(document.body.textContent).not.toContain("private reviewer transport failure");
     expect(document.querySelector('[data-testid^="permissions-load-error"]')).toBeNull();
@@ -3086,7 +3082,7 @@ describe("PermissionsTab rule editor safeguards", () => {
     fireEvent.change(screen.getByTestId("permissions-rule-pattern-input"), { target: { value: pattern } });
     await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
     expect(api.permission.addRule).not.toHaveBeenCalled();
-    expect(screen.getByTestId("permissions-rule-warning").textContent).toContain(t(pattern === "*" ? "permissionsTab.ruleAllowAllWarning" : "permissionsTab.ruleWildcardWarning"));
+    expect(screen.getByTestId("permissions-rule-warning").textContent).toContain(pattern === "*" ? "이 규칙은 셸 명령, 파일 변경, 네트워크 요청을 포함한 모든 도구를 일반 승인 없이 허용합니다. 거부 규칙과 매번 새 승인이 필요한 작업은 계속 적용됩니다. 이 광범위한 허용 규칙을 추가할까요?" : "이 허용 규칙은 여러 도구나 작업에 적용되며 앞으로 추가되는 도구에도 적용될 수 있습니다. 일치하는 작업이 일반 승인 없이 실행될 수 있습니다. 이 광범위한 허용 규칙을 추가할까요?");
     await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-confirm")); });
     expect(api.permission.addRule).toHaveBeenCalledWith(pattern, "allow");
     expect(screen.queryByTestId("permissions-rule-warning")).toBeNull();
@@ -3102,7 +3098,7 @@ describe("PermissionsTab rule editor safeguards", () => {
     expect(screen.queryByTestId("permissions-rule-warning")).toBeNull();
     await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); });
     expect(api.permission.addRule).not.toHaveBeenCalled();
-    expect(screen.getByTestId("permissions-rule-warning").textContent).toContain(t("permissionsTab.ruleAllowAllWarning"));
+    expect(screen.getByTestId("permissions-rule-warning").textContent).toContain("이 규칙은 셸 명령, 파일 변경, 네트워크 요청을 포함한 모든 도구를 일반 승인 없이 허용합니다. 거부 규칙과 매번 새 승인이 필요한 작업은 계속 적용됩니다. 이 광범위한 허용 규칙을 추가할까요?");
   });
 
   it("shows invalid patterns beside the input and preserves the draft", async () => {
@@ -3112,7 +3108,7 @@ describe("PermissionsTab rule editor safeguards", () => {
     fireEvent.change(input, { target: { value: "bad name!" } });
     await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
     expect(api.permission.addRule).not.toHaveBeenCalled();
-    expect(screen.getByTestId("permissions-rule-input-error").textContent).toBe(t("permissionsTab.rulePatternInvalid"));
+    expect(screen.getByTestId("permissions-rule-input-error").textContent).toBe("영문, 숫자, _, :, ., -, *, ?로 도구 이름이나 패턴을 입력하거나 올바른 명령 규칙을 입력하세요.");
     expect(input.getAttribute("aria-invalid")).toBe("true");
     expect((input as HTMLInputElement).value).toBe("bad name!");
   });
@@ -3121,11 +3117,11 @@ describe("PermissionsTab rule editor safeguards", () => {
     const api = installApi([[]]);
     api.permission.listScopedRules.mockResolvedValue({ rules: [{ pattern: "mcp_*", action: "allow", scope: "user" }], errors: [] } as never);
     await renderPermissionsTab();
-    expect(screen.getByTestId("permissions-rule-broad").textContent).toBe(t("permissionsTab.ruleBroad"));
+    expect(screen.getByTestId("permissions-rule-broad").textContent).toBe("광범위");
     fireEvent.change(screen.getByTestId("permissions-rule-pattern-input"), { target: { value: "mcp_*" } });
     await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
     expect(api.permission.addRule).not.toHaveBeenCalled();
-    expect(screen.getByTestId("permissions-rule-input-error").textContent).toBe(t("permissionsTab.ruleDuplicate"));
+    expect(screen.getByTestId("permissions-rule-input-error").textContent).toBe("이미 있는 규칙입니다. 패턴이나 동작을 변경하세요.");
   });
 
   it("offers Ask and saves it without an allow warning", async () => {
@@ -3146,7 +3142,7 @@ describe("PermissionsTab rule editor safeguards", () => {
     const input = screen.getByTestId("permissions-rule-pattern-input");
     fireEvent.change(input, { target: { value: "Bash(" } });
     await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
-    expect(screen.getByTestId("permissions-rule-input-error").textContent).toBe(t("permissionsTab.rulePatternInvalid"));
+    expect(screen.getByTestId("permissions-rule-input-error").textContent).toBe("영문, 숫자, _, :, ., -, *, ?로 도구 이름이나 패턴을 입력하거나 올바른 명령 규칙을 입력하세요.");
     expect((input as HTMLInputElement).value).toBe("Bash(");
   });
 });
@@ -3203,7 +3199,7 @@ describe("permission settings modified/reset adapters", () => {
       expect(found).toBeTruthy(); return requiredFixture(found);
     });
     fireEvent.click(requiredFixture(row.querySelector('button')));
-    await waitFor(() => expect(row.closest('[data-settings-actions]')).toHaveTextContent(t("settingsEditor.actionFailed")));
+    await waitFor(() => expect(row.closest('[data-settings-actions]')).toHaveTextContent("설정 작업을 완료하지 못했습니다. 저장된 설정은 변경되지 않았습니다."));
     expect(row.dataset.settingModified).toBe("true");
     expect(window.aveApi.updateSettings).not.toHaveBeenCalled();
   });

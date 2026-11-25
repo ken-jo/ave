@@ -6,7 +6,6 @@ import { withApprovalSurface } from "../../../../../test/renderer/helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
-import { t } from "../../../../i18n/runtime.js";
 import type { AveApi } from "../../types.js";
 import type {
   RoutineAttentionApprovalView,
@@ -160,7 +159,7 @@ describe("Work Board — 확인 필요 stack", () => {
     render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     fireEvent.click(await screen.findByTestId("work-approval-proposal-add"));
     const error = await screen.findByTestId("work-approval-action-error");
-    expect(error.textContent).toContain(t("reasonCodes.work-item-ids-unavailable"));
+    expect(error.textContent).toContain("항목을 추가할 수 없습니다. 항목 번호가 두 번 쓰이지 않도록 기록하는 워크플로 실행 파일을 지금 읽거나 저장할 수 없습니다. Ave가 검토를 요청하면 검토한 뒤 다시 시도하세요.");
     expect(error.textContent).not.toContain("work-item-ids-unavailable");
     expect(run).not.toHaveBeenCalled();
   });

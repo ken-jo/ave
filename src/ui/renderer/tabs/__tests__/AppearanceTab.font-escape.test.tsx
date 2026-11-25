@@ -1,4 +1,3 @@
-import { t } from "../../../../i18n/runtime.js";
 import { ok as assertPresent } from "node:assert/strict";
 import { SavedToastProvider } from "../../context/SavedToastContext.js";
 /** Escape must skip the synchronous blur commit via escapingRef; a batched state reset alone leaves the blur closure
@@ -129,7 +128,7 @@ it("steps code metrics, disables at bounds and rolls back failed saves", async (
  notifySaved.mockClear();
  api.updateSettings.mockRejectedValueOnce(new Error("save-failed"));
  fireEvent.click(size.getByRole("button", { name: /−/ }));
- await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(t("appearanceTab.fontSaveFailed")));
+ await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("화면 설정을 저장하지 못했습니다."));
  expect(screen.getByTestId("terminal-font-preview").style).toMatchObject({ fontFamily: "monospace", fontSize: savedSize, lineHeight: savedHeight });
  expect(notifySaved).not.toHaveBeenCalled();
 });

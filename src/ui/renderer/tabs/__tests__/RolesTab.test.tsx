@@ -29,7 +29,7 @@ describe("RolesTab — long-term memory consolidation", () => {
     fireEvent.click(await screen.findByTestId("roles-tab:refresh-long-term-memory"));
 
     await waitFor(() => expect(api.memoryRefreshLongTerm).toHaveBeenCalledOnce());
-    expect(await screen.findByText(t("rolesTab.statusLongTermMemoryConsolidated"))).toBeInTheDocument();
+    expect(await screen.findByText("장기 기억 통합을 완료했습니다.")).toBeInTheDocument();
   });
 
   it("keeps service failures localized instead of exposing host error details", async () => {
@@ -42,7 +42,7 @@ describe("RolesTab — long-term memory consolidation", () => {
 
     fireEvent.click(await screen.findByTestId("roles-tab:refresh-long-term-memory"));
 
-    expect(await screen.findByText(t("rolesTab.errorLongTermMemoryConsolidationUnavailable"))).toBeInTheDocument();
+    expect(await screen.findByText("장기 기억 통합 서비스를 사용할 수 없습니다.")).toBeInTheDocument();
   });
 });
 
@@ -114,7 +114,7 @@ describe("RolesTab — ~/.ave reference doc upgrades", () => {
     expect(screen.getByTestId("roles-tab:agents-section")).toContainElement(
       screen.getByTestId("roles-tab:upgrade-markers"),
     );
-    expect(screen.getByText(t("rolesTab.markerReadOnlyNote"))).toBeInTheDocument();
+    expect(screen.getByText("이 파일은 직접 열어 확인하세요.")).toBeInTheDocument();
     expect(
       screen.queryByTestId("roles-tab:marker-apply:skills/report.md.new"),
     ).not.toBeInTheDocument();
@@ -150,7 +150,7 @@ describe("RolesTab — ~/.ave reference doc upgrades", () => {
     fireEvent.click(await screen.findByTestId("roles-tab:marker-apply:AGENTS.md.new"));
 
     expect(
-      await screen.findByText(t("rolesTab.statusPackagedAppliedWithCustom")),
+      await screen.findByText("배포본을 적용했습니다. 사용자가 쓴 내용은 agents.custom.md 로 옮겼습니다."),
     ).toBeInTheDocument();
   });
 
@@ -196,7 +196,7 @@ describe("RolesTab — ~/.ave reference doc upgrades", () => {
 
     const merged = await screen.findByTestId("roles-tab:merged-result");
     expect(merged).toBeInTheDocument();
-    expect(await screen.findByText(t("rolesTab.statusMerged"))).toBeInTheDocument();
+    expect(await screen.findByText("병합 결과가 준비됐습니다. 확인 후 적용하세요.")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("roles-tab:merged-apply"));
     await waitFor(() => expect(api.homeDocsApplyMerged).toHaveBeenCalledWith("# Agents"));
@@ -210,7 +210,7 @@ describe("RolesTab — ~/.ave reference doc upgrades", () => {
     fireEvent.click(await screen.findByTestId("roles-tab:merge-agents"));
 
     expect(
-      await screen.findByText(t("formatIpcError.agentsDocChanged")),
+      await screen.findByText("병합을 시작한 뒤 문서가 바뀌었습니다. 다시 읽어 온 다음 병합하세요."),
     ).toBeInTheDocument();
     expect(screen.queryByText("agents-doc-changed")).not.toBeInTheDocument();
   });
@@ -228,7 +228,7 @@ describe("RolesTab — ~/.ave reference doc upgrades", () => {
     expect(await screen.findByTestId("roles-tab:merged-result")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("roles-tab:merged-discard"));
     await waitFor(() => expect(api.homeDocsDiscardMerged).toHaveBeenCalledOnce());
-    expect(await screen.findByText(t("rolesTab.statusMergedDiscarded"))).toBeInTheDocument();
+    expect(await screen.findByText("병합한 문서를 버렸습니다.")).toBeInTheDocument();
   });
 
   it("persists the keep-latest toggle through settings", async () => {

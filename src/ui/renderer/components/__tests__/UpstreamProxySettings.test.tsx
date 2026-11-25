@@ -166,7 +166,7 @@ describe("proxy settings reset adapters", () => {
       fireEvent.change(screen.getByTestId("upstream-proxy-url"), { target: { value: "http://synthetic:throwaway@other.test:3128" } });
       const url = await resetRow(container, "upstreamProxy.manualUrl");
       expect(url.querySelector('button')).toBeDisabled();
-      expect(url).toHaveTextContent(t("upstreamProxySettings.switchModeBeforeReset"));
+      expect(url).toHaveTextContent("Switch to System or Off before resetting the required manual proxy URL.");
       const bypass = await resetRow(container, "upstreamProxy.bypass");
       fireEvent.click(within(bypass).getByRole("button", { name: t("settingsEditor.resetLabel", { label: t("upstreamProxySettings.bypassLabel") }) }));
       await waitFor(() => expect(writer).toHaveBeenCalledExactlyOnceWith({ bypass: "" }));
