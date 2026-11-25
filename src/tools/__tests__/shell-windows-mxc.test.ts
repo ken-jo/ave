@@ -31,7 +31,11 @@ vi.mock("node:child_process", async (importOriginal) => {
       ? Reflect.apply(actual.execFileSync, undefined, args) : Reflect.apply(childProcessMock.execFileSync, undefined, args),
   };
 });
-vi.mock("../mxc-shell-launch.js", () => ({ prepareMxcShellLaunch: mxcLaunchMock.prepare }));
+// Only the launch is replaced; the rest of the module stays real so its other exports keep resolving.
+vi.mock("../mxc-shell-launch.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../mxc-shell-launch.js")>(),
+  prepareMxcShellLaunch: mxcLaunchMock.prepare,
+}));
 // Mock Windows profile creation on POSIX so backslash paths cannot become entries in the working tree.
 vi.mock("../../permissions/sandbox-process-home.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../permissions/sandbox-process-home.js")>();

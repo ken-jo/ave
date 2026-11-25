@@ -2,8 +2,10 @@
 // Linux platform and compared with a recorded file, so a change to how the config is composed fails here even when every
 // narrower assertion still holds.
 //
-// The recorded file belongs to the host it was recorded on: path resolution differs between hosts (`/etc` is a link on macOS), so
-// each host platform has its own file. Record one with `AVE_RECORD_SRT_GOLDEN=1` and review the diff before committing it.
+// The recorded file belongs to the host platform it was recorded on: path resolution differs between platforms (`/etc` is a link
+// on macOS), so each has its own file. Within a platform the recording does not depend on the machine: the checkout location, the
+// account, the temporary directory and which system paths happen to exist leave it unchanged. Record one with
+// `AVE_RECORD_SRT_GOLDEN=1` and review the diff before committing it.
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -15,7 +17,8 @@ const fixture = await vi.hoisted(async () => {
   const os = await import("node:os");
   const path = await import("node:path");
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ave-srt-golden-")));
-  return { root, home: path.join(root, "home") };
+  // Not named `home`: its children would read as account names to the repository's home-path check.
+  return { root, home: path.join(root, "account") };
 });
 
 // Every home-anchored row hangs off the fixture home, so the recording does not depend on who runs it.
@@ -71,9 +74,9 @@ afterAll(() => {
   rmSync(fixture.root, { recursive: true, force: true });
 });
 
-/** Replaces every root that differs between machines and runs, in its plain spelling and with its last character as a class. */
-function normalize(text: string): string {
-  const roots: [string, string][] = [
+/** The roots that differ between machines and runs, with the name each is recorded under. */
+function hostRoots(): [string, string][] {
+  return [
     [aveHome(), "<AVE_HOME>"],
     [dirname(aveHome()), "<AVE_HOME_PARENT>"],
     [fixture.root, "<FIXTURE>"],
@@ -83,12 +86,31 @@ function normalize(text: string): string {
     [tmpdir(), "<TMP>"],
     [homedir(), "<HOST_HOME>"],
   ];
-  const json = (value: string): string => JSON.stringify(value).slice(1, -1);
-  for (const [root, name] of roots.sort((left, right) => right[0].length - left[0].length)) {
-    text = text.split(json(`${root.slice(0, -1)}[${root.slice(-1)}]`)).join(`${name}[]`);
-    text = text.split(json(root)).join(name);
-  }
-  return text;
+}
+
+/**
+ * Replaces every root that differs between machines and runs, in its plain spelling and with its last character as a class.
+ * A root is replaced only where it stands as whole path segments: a short root such as `/work` must not match inside `/worktrees`.
+ */
+function normalize(value: unknown, roots: [string, string][] = hostRoots()): unknown {
+  roots.sort((left, right) => right[0].length - left[0].length);
+  const quoted = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const SEGMENT = "[A-Za-z0-9._-]";
+  const text = (input: string): string => {
+    for (const [root, name] of roots) {
+      const before = `(?<!${SEGMENT}|/)`;
+      input = input.replace(new RegExp(`${before}${quoted(`${root.slice(0, -1)}[${root.slice(-1)}]`)}(?!${SEGMENT})`, "g"), `${name}[]`);
+      input = input.replace(new RegExp(`${before}${quoted(root)}(?!${SEGMENT})`, "g"), name);
+    }
+    return input;
+  };
+  const walk = (node: unknown): unknown => {
+    if (typeof node === "string") return text(node);
+    if (Array.isArray(node)) return node.map(walk);
+    if (node && typeof node === "object") return Object.fromEntries(Object.entries(node).map(([key, entry]) => [key, walk(entry)]));
+    return node;
+  };
+  return walk(value);
 }
 
 type Compose = () => unknown;
@@ -139,7 +161,7 @@ function compose(): Record<string, unknown> {
       setProcessPlatform(HOST);
     }
   }
-  return JSON.parse(normalize(JSON.stringify(out))) as Record<string, unknown>;
+  return normalize(JSON.parse(JSON.stringify(out))) as Record<string, unknown>;
 }
 
 describe.runIf(RECORDED_HOSTS.includes(HOST) || RECORDING)("sandbox runtime package config golden", () => {
@@ -153,8 +175,19 @@ describe.runIf(RECORDED_HOSTS.includes(HOST) || RECORDING)("sandbox runtime pack
     expect(existsSync(GOLDEN), `no recorded config for a ${HOST} host`).toBe(true);
     const recorded = JSON.parse(readFileSync(GOLDEN, "utf8")) as Record<string, unknown>;
     expect(Object.keys(composed)).toEqual(Object.keys(recorded));
-    // One comparison per input, so a failure names the input that moved.
-    for (const [name, value] of Object.entries(recorded)) expect(composed[name], name).toEqual(value);
+    // One comparison per input, and every input is compared, so a failure names each input that moved.
+    for (const [name, value] of Object.entries(recorded)) expect.soft(composed[name], name).toEqual(value);
+  });
+
+  it("replaces a machine root only where it stands as whole path segments", () => {
+    const roots: [string, string][] = [["/work", "<REPO>"], ["/work/node_modules", "<REPO>/node_modules"], ["/tmp", "<TMP>"]];
+    expect(normalize({
+      denyRead: ["/work", "/work/src", "/wor[k]/src", "/work/node_modules/pkg", "/data/.git/worktrees", "/workspace/a", "/data/tmp/x", "/tmp-old/x"],
+      refused: "cannot cover /work/src: /tmp is a link",
+    }, roots)).toEqual({
+      denyRead: ["<REPO>", "<REPO>/src", "<REPO>[]/src", "<REPO>/node_modules/pkg", "/data/.git/worktrees", "/workspace/a", "/data/tmp/x", "/tmp-old/x"],
+      refused: "cannot cover <REPO>/src: <TMP> is a link",
+    });
   });
 
   it("composes the same config twice", () => {
