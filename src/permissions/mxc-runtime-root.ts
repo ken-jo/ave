@@ -229,7 +229,37 @@ function nearestExisting(path: string): string {
   }
 }
 
-interface EstablishedRoot { readonly root: string; readonly dev: number; readonly ino: number }
+/** `mark` is a file this process created inside the root when it established it. A filesystem may hand a new
+ * directory the inode of one just removed, so device and inode alone do not tell a replaced root from the original;
+ * a replacement does not contain the file. */
+interface EstablishedRoot { readonly root: string; readonly dev: number; readonly ino: number; readonly mark: string }
+
+const ESTABLISHED_MARK = /^\.established-(\d+)-[0-9a-f]{32}$/u;
+
+/** Create this process's mark in the root, exclusively (a link at the name is refused, never followed), and drop the
+ * marks of processes that are gone. Other running instances of this account share the root and keep theirs. */
+function markEstablished(root: string, host: MxcRuntimeHost): string {
+  try {
+    for (const name of readdirSync(root)) {
+      const pid = Number(ESTABLISHED_MARK.exec(name)?.[1]);
+      if (Number.isSafeInteger(pid) && pid > 0 && pid !== host.pid && !host.processExists(pid)) unlinkSync(posixPath.join(root, name));
+    }
+  } catch (error) {
+    log.warn(`stale container runtime root marks not removed: ${(error as Error).message}`);
+  }
+  const mark = `.established-${host.pid}-${randomBytes(16).toString("hex")}`;
+  try {
+    writeFileSync(posixPath.join(root, mark), "", { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    return refuse("Container runtime root could not be marked as established", error);
+  }
+  return mark;
+}
+
+function holdsMark(known: EstablishedRoot, uid: number): boolean {
+  const entry = lstatSync(posixPath.join(known.root, known.mark), { throwIfNoEntry: false });
+  return entry?.isFile() === true && entry.uid === uid && entry.nlink === 1;
+}
 
 /** One entry per cache directory this process tried to establish a root under: the root, or null when it failed. */
 const established = new Map<string, EstablishedRoot | null>();
@@ -267,9 +297,10 @@ function createRuntimeRoot(host: MxcRuntimeHost): EstablishedRoot {
   const root = ensurePrivateDirectory(posixPath.join(appDirectory, "mxc-runtime"), uid, "Container runtime root");
   // The cache directory was created or replaced between planning and creation: the checked placement is not this one.
   if (root !== planned) refuse("The account's cache directory changed while the container runtime root was established");
+  const mark = markEstablished(root, host);
   try {
     const identity = lstatSync(root);
-    return { root, dev: identity.dev, ino: identity.ino };
+    return { root, dev: identity.dev, ino: identity.ino, mark };
   } catch (error) {
     return refuse("Container runtime root could not be inspected", error);
   }
@@ -316,7 +347,13 @@ export function requireMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntimeHo
   } catch (error) {
     return refuse("Container runtime root is no longer there", error);
   }
-  if (!privateTo(entry, uid) || entry.dev !== known.dev || entry.ino !== known.ino) {
+  let marked: boolean;
+  try {
+    marked = holdsMark(known, uid);
+  } catch (error) {
+    return refuse("Container runtime root could not be inspected", error);
+  }
+  if (!privateTo(entry, uid) || entry.dev !== known.dev || entry.ino !== known.ino || !marked) {
     refuse("Container runtime root is no longer the directory established when the sandbox started");
   }
   assertOutsideAveHome(known.root, host);

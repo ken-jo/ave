@@ -316,8 +316,12 @@ check (`assertMxcHolderStaging`) take the staging parent from it.
     carry no deny for it, because Linux omits a read deny for a path that does
     not exist yet.
   - A run is created only under that root (`requireMxcRuntimeRoot`), and only
-    while it is still the same directory (same device and inode), private and
-    this account's. Nothing on the run path creates it.
+    while it is still the same directory, private and this account's: the same
+    device and inode, and still holding the mark start-up left in it
+    (`.established-<pid>-<random>`, 0600, created exclusively). The mark is
+    what tells a replacement apart, because a filesystem may give a new
+    directory the inode of one just removed. Marks of processes that are gone
+    are dropped at the next start-up. Nothing on the run path creates the root.
   - A root that start-up could not establish stays refused until the app
     restarts, even if it becomes creatable. So does a root that was removed or
     replaced mid-session.

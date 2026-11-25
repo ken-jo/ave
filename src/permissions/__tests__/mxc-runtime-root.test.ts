@@ -286,6 +286,35 @@ describe.runIf(posix)("the root is established at start-up or not at all", () =>
     expect(() => establishMxcRuntimeRoot(host)).toThrow(/no longer the directory established/u);
     expect(readdirSync(root)).toEqual([]);
   });
+
+  it("tells a replaced root by the mark it left inside, whatever inode the replacement got", () => {
+    const host = hostOf();
+    const root = establishMxcRuntimeRoot(host);
+    const marks = readdirSync(root).filter((name) => name.startsWith(".established-"));
+    expect(marks).toEqual([expect.stringMatching(new RegExp(`^\\.established-${process.pid}-[0-9a-f]{32}$`, "u"))]);
+    expect(mode(join(root, marks[0] as string))).toBe(0o600);
+    // The directory itself is untouched, so its device and inode still match; only the mark is gone.
+    rmSync(join(root, marks[0] as string));
+    expect(() => createMxcRunStaging(host)).toThrow(/no longer the directory established/u);
+    // A link under the mark's name is not the mark.
+    writeFileSync(join(scratch, "forged"), "");
+    symlinkSync(join(scratch, "forged"), join(root, marks[0] as string));
+    expect(() => createMxcRunStaging(host)).toThrow(/no longer the directory established/u);
+  });
+
+  it("drops the marks of processes that are gone and keeps those of running ones", () => {
+    mkdirSync(ROOT(), { recursive: true, mode: 0o700 });
+    chmodSync(dirname(ROOT()), 0o700);
+    const gone = `.established-424242-${"a".repeat(32)}`;
+    const running = `.established-424243-${"b".repeat(32)}`;
+    for (const name of [gone, running, "unrelated"]) writeFileSync(join(ROOT(), name), "");
+    processes.set(424243, "another instance");
+    establishMxcRuntimeRoot(hostOf());
+    const names = readdirSync(ROOT());
+    expect(names).not.toContain(gone);
+    expect(names).toEqual(expect.arrayContaining([running, "unrelated"]));
+    expect(names.filter((name) => name.startsWith(`.established-${process.pid}-`))).toHaveLength(1);
+  });
 });
 
 describe.runIf(posix)("run staging layout", () => {
