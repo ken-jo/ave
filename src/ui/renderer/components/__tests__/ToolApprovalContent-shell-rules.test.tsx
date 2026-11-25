@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
+import { approvalSurfaceStub } from "../../../../../test/renderer/helpers.js";
+import { deferred } from "../../../../__tests__/support/deferred.js";
+import { ApprovalSurfaceProvider } from "../../hooks/use-approval.js";
+import { ToolApprovalContent } from "../ToolApprovalContent.js";
 import { renderApproval } from "./support/render-approval.js";
 import { openDecisionMenu, selectDecision } from "./support/decision-bar.js";
 import type { ApprovalRequest } from "../../types.js";
@@ -34,6 +39,16 @@ function shellRequest(overrides: Partial<ApprovalRequest> = {}, rule: Partial<Sh
     shellRule: shellRule(rule),
     ...overrides,
   };
+}
+
+function ApprovalWindow({ request, onDecide }: { request: ApprovalRequest | null; onDecide: () => void }) {
+  const [notice, setNotice] = useState("");
+  return (
+    <ApprovalSurfaceProvider value={{ ...approvalSurfaceStub(), notice: setNotice }}>
+      {request && <ToolApprovalContent conversationLabel="conversation" open request={request} onDecide={onDecide} />}
+      <output>{notice}</output>
+    </ApprovalSurfaceProvider>
+  );
 }
 
 const ALLOW_SCOPES = { "allow-session": "session", "allow-project": "project", "allow-everywhere": "always" } as const;
@@ -280,6 +295,28 @@ describe("shell approval card: the shared decision row", () => {
     selectDecision("allow-project");
     fireEvent.click(screen.getByTestId(TEST_IDS.allowSessionButton));
     await waitFor(() => expect(screen.getByTestId("exact-decision-save-error")).toHaveTextContent(`${t(key)} (${message})`));
+  });
+
+  it.each([
+    ["en", "The project changed. Run the command again for a new approval."],
+    ["ko", "프로젝트가 변경되었습니다. 새 승인을 받으려면 명령을 다시 실행하세요."],
+  ] as const)("shows the project change notice after the card settles in %s", async (locale, message) => {
+    setLocale(locale);
+    const result = deferred<{ ok: false; error: string }>();
+    const record = vi.fn(() => result.promise);
+    const onDecide = vi.fn();
+    const request = shellRequest();
+    vi.stubGlobal("ave", { userApproval: { record } });
+
+    const card = render(<ApprovalWindow request={request} onDecide={onDecide} />);
+    selectDecision("allow-project");
+    fireEvent.click(screen.getByTestId(TEST_IDS.allowSessionButton));
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ rule: { action: "allow", scope: "project" } }));
+    card.rerender(<ApprovalWindow request={null} onDecide={onDecide} />);
+    expect(screen.queryByTestId(TEST_IDS.approveButton)).not.toBeInTheDocument();
+    result.resolve({ ok: false, error: "project-scope-changed" });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(message));
+    expect(onDecide).not.toHaveBeenCalled();
   });
 
   it.each(["en", "ko"] as const)("localizes the row and its dropdowns in %s", (locale) => {

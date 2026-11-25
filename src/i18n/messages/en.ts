@@ -2416,6 +2416,7 @@ export const en = {
   "formatIpcError.commandRuleRequired": "Always allowing a shell command saves a command rule. Choose a rule, or allow once or for this session.",
   "formatIpcError.missingSession": "This request is not tied to a conversation, so it cannot be allowed for the session.",
   "formatIpcError.runScopeUnavailable": "This request does not belong to a run that can be allowed for the run, or its run has ended. Allow it once instead.",
+  "formatIpcError.projectScopeChanged": "The project changed. Run the command again for a new approval.",
   "formatIpcError.ruleSaveFailed": "The rule is valid but could not be written to its rules file. Check that the file is readable and not corrupt, then try again.",
   "formatIpcError.ruleDoesNotMatch": "The edited rule does not cover this request. Edit it so it matches what is being asked, or choose another option.",
   "formatIpcError.ruleRequired": "This request has no rule to save as it is. Edit a rule, or allow or deny it once.",

@@ -2418,6 +2418,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "formatIpcError.commandRuleRequired": "셸 명령을 항상 허용하려면 명령 규칙을 저장해야 합니다. 규칙을 고르거나 한 번만 또는 이번 세션 동안 허용하세요.",
   "formatIpcError.missingSession": "이 요청은 대화에 연결되어 있지 않아 이번 세션 동안 허용할 수 없습니다.",
   "formatIpcError.runScopeUnavailable": "이 요청은 실행 동안 허용할 수 있는 실행에 속하지 않거나 실행이 이미 끝났습니다. 한 번만 허용하세요.",
+  "formatIpcError.projectScopeChanged": "프로젝트가 변경되었습니다. 새 승인을 받으려면 명령을 다시 실행하세요.",
   "formatIpcError.ruleSaveFailed": "규칙은 유효하지만 규칙 파일에 쓰지 못했습니다. 파일을 읽을 수 있고 손상되지 않았는지 확인한 뒤 다시 시도하세요.",
   "formatIpcError.ruleDoesNotMatch": "편집한 규칙이 이 요청에 해당하지 않습니다. 요청된 내용과 일치하도록 고치거나 다른 선택지를 고르세요.",
   "formatIpcError.ruleRequired": "이 요청은 그대로 저장할 규칙이 없습니다. 규칙을 편집하거나 이번만 허용 또는 거부하세요.",

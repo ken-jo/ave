@@ -783,7 +783,9 @@ export function ToolApprovalContent({
           approvalNotice?.(tHook(record.decision === "deny" ? "toolApprovalDialog.homeFolderRefusedDeniedOnce" : "toolApprovalDialog.homeFolderRefusedOnce"));
           answer = respondOnce;
         } else if (!result?.ok) {
-          if (activeRequestIdRef.current === request.id) {
+          if (result?.error === "project-scope-changed" && approvalNotice) {
+            approvalNotice(ruleSaveErrorText(result, tHook(failureKey)));
+          } else if (activeRequestIdRef.current === request.id) {
             setRecordError(record.readjudicate && result?.error === "readjudication-unavailable"
               ? tHook("formatIpcError.readjudicationUnavailable")
               // The run ended, or the session left it, while the card was open: the run allow is gone and the card says so.
