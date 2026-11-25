@@ -36,6 +36,7 @@ import {
 } from "../../permissions/asrt-sandbox.js";
 import { extensionStartIdentity, pluginChildStartKey, type ExtensionStartAuthority } from "../../permissions/extension-start-consent.js";
 import { holdWindowsFilesystemGrant, type HeldWindowsGrant } from "../../permissions/windows-acl-grant-holder.js";
+import { assertWriteGrantsOutsideConfinementState, ConfinementStateWriteGrantError, declaredConfinementStatePaths } from "../../permissions/confinement-state-paths.js";
 import {
   resolvePluginSocketDir,
   writeGrantsReachingHostStorage,
@@ -258,6 +259,12 @@ function resolveUserChosenDirectory(
       `'${target}' resolves outside the plugin's own data directory and no workspace root `
         + `the user approved covers it — approve the directory in the host first`,
     );
+  }
+  // Refused before a backend is chosen and before the launch creates the directory.
+  try { assertWriteGrantsOutsideConfinementState([target], declaredConfinementStatePaths()); }
+  catch (error) {
+    if (error instanceof ConfinementStateWriteGrantError) rejectEnvelopeGrant(inputs.pluginId, grant.configKey, error.message);
+    throw error;
   }
   return target;
 }

@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir, type } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { homedir, tmpdir, type } from "node:os";
+import { basename, dirname, join, win32 } from "node:path";
 
 import { writeExitDiagnostic } from "../shared/exit-diagnostic.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
@@ -262,6 +262,17 @@ export function prepareSrtWinExecutable(source: string, arch = getSrtWinArchitec
 export function srtWinPrivateDirectories(): string[] {
   // The native parent delete-child deny must stay inside the private outer directory.
   return [...copies.values()].map((copy) => dirname(copy.executable));
+}
+
+const isDrivePath = (value: string | undefined): value is string => value !== undefined && /^[A-Za-z]:\\/u.test(value);
+
+/** The helper's own state: its per-user ACL ledger under `%LOCALAPPDATA%` (the runtime spawns it with the host's
+ * environment, passing none of its own), the profile's default for that folder, and the machine store under
+ * `%ProgramData%`. Undefined when either variable is missing or not a drive path. */
+export function srtWinConfinementStatePaths(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] | undefined {
+  const { LOCALAPPDATA: local, ProgramData: programData } = env;
+  if (!isDrivePath(local) || !isDrivePath(programData)) return undefined;
+  return [...new Set([local, win32.join(home, "AppData", "Local"), programData].map((base) => win32.join(base, "sandbox-runtime")))];
 }
 
 // Recheck immediately before each host-controlled helper spawn.

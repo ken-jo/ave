@@ -1000,6 +1000,38 @@ describe("the host decides how far a plugin child reaches", () => {
     }
   });
 
+  it.runIf(process.platform === "win32")("refuses a chosen directory at, inside or above a confinement backend's own state, before the launch creates it", () => {
+    const fx = fixture as NonNullable<typeof fixture>;
+    const inheritedBase = process.env.AVE_TEST_SANDBOX_BASE;
+    const base = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-chosen-state-")));
+    process.env.AVE_TEST_SANDBOX_BASE = base;
+    const local = join(base, "profile", "AppData", "Local");
+    const helperState = join(local, "sandbox-runtime");
+    vi.stubEnv("LOCALAPPDATA", local);
+    try {
+      approveWorkspaceRoot(fx, base);
+      const derive = (chosen: string) => () => derivePluginChildEnvelope({
+        pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
+        pluginRoot: fx.pluginRoot,
+        pluginDataDir: fx.pluginDataDir,
+        configValue: (key) => (key === "indexStorageRoot" ? chosen : undefined),
+      });
+      for (const chosen of [helperState, join(helperState, "child"), local, dirname(mxcRuntimeRootFloorPath())]) {
+        expect(derive(chosen)).toThrow(PluginSandboxGrantError);
+        expect(derive(chosen)).toThrow("(confinement-state-write-grant)");
+        expect(existsSync(chosen)).toBe(false);
+      }
+      mkdirSync(join(local, "SomeTool"), { recursive: true });
+      expect(derive(join(local, "SomeTool"))().write).toContain(join(local, "SomeTool"));
+    } finally {
+      vi.unstubAllEnvs();
+      if (inheritedBase === undefined) delete process.env.AVE_TEST_SANDBOX_BASE;
+      else process.env.AVE_TEST_SANDBOX_BASE = inheritedBase;
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(!canCreateSymlinks())("refuses a declared host root even when it links out of the host's home", () => {
     // WHAT THE `~/.ave` SUBTRACTION ALONE DOES NOT REACH, and the reason the declared host directories are enumerated. A `hostDirectory` grant is a LEXICAL join onto `aveHome()`; the value it is compared against is canonical. Point the granted directory at another volume; the ordinary operational reason being that a
     // multi-gigabyte interpreter tree does not belong on the boot disk; and the two forms stop agreeing, so a home-shaped subtraction stops covering the grant. Both spellings are asked because the plugin can write either: the target's own path, and the link's, which is the one that is byte-identical to what the declaration itself joins.

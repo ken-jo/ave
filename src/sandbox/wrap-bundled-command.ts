@@ -48,7 +48,8 @@ import {
 import { isPathWithin } from "../plugins/plugin-storage-containment.js";
 import { AVE_HOME_RUNTIME_DIRECTORY, AVE_RUNTIME_LAYOUT, aveHome } from "../shared/ave-home.js";
 import { assertMxcHolderStaging } from "../permissions/mxc-filesystem-ownership.js";
-import { mxcStagingParent } from "../permissions/mxc-runtime-root.js";
+import { mxcConfinementStatePaths, mxcStagingParent } from "../permissions/mxc-runtime-root.js";
+import { assertWriteGrantsOutsideConfinementState } from "../permissions/confinement-state-paths.js";
 import { renameDirectory, renameDirectorySyncOnce } from "../lib/transient-fs-lock-retry.js";
 import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "../permissions/egress-invocations.js";
 
@@ -694,6 +695,8 @@ export interface MxcBundledHolder {
   readonly quarantined: boolean;
 }
 
+const mxcStateWithin = (root: string, path: string): boolean => isWindowsPathAtOrUnder(path, root);
+
 /** What a plugin child's planner needs from this adapter: a fresh staging tree. The plugin-child adapter drives row 2
  * itself, so nothing is spawned here. Every refusal comes before the staging tree exists; with no registered
  * release-gate evidence the start is refused, never run another way. */
@@ -716,6 +719,8 @@ export function prepareMxcHolderStart(input: {
   assertMxcHolderNotBashForm(executable);
   assertExecutableAdmissible(executable, input.allowWrite, []);
   assertNoLiveWorkspaceWriter(input.allowWrite, []);
+  // Before the staging root, which the state root holds, joins the writes.
+  assertWriteGrantsOutsideConfinementState(input.allowWrite, mxcConfinementStatePaths(), mxcStateWithin);
   const staging = createHolderStaging();
   return { root: staging.root, home: staging.home, temp: staging.temp, release: () => removeHolderStaging(staging.root) };
 }
@@ -732,6 +737,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
   const workspaceRoots = input.workspaceRoots ?? [];
   assertExecutableAdmissible(executable, input.allowWrite, workspaceRoots);
   assertNoLiveWorkspaceWriter(input.allowWrite, workspaceRoots);
+  assertWriteGrantsOutsideConfinementState(input.allowWrite, mxcConfinementStatePaths(), mxcStateWithin);
   const staging = createHolderStaging();
   const allowWrite = [...new Set([...input.allowWrite, staging.root])];
   const allowRead = [...new Set([...input.allowRead, winPath.dirname(executable)])];

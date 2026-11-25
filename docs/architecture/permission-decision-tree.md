@@ -174,6 +174,7 @@ Notes that are part of the contract:
 - An owner-away turn means the card waits. The default is unlimited; an optional auto-skip after N minutes denies.
 - Reviewed or managed PreToolUse and PermissionRequest hooks may replace input. A changed input restarts the entire invocation at envelope validation and admission, preserving every existing node's order. Three actual replacements are allowed; a further replacement denies. An identical replacement is a no-op. Sealed resumptions and host authentication lifecycles deny a replacement rather than reuse previous authority. A hook allow never grants permission. Hook-provided context is capped and attributed to its exact hook identity.
 - Credential stores owned by the host (encryption keys, credential DBs, cookie/token stores) stay admission-denied.
+- A write grant may not cover the confinement backend's own state.
 - **Ave home sandbox read boundary (owner decision 2026-11-07):** the sandbox read deny covers the Ave home as one directory, not as
   a list of file rows. Every child is denied by default, including children added later. A confined process is re-opened only the
   children `src/permissions/ave-home-read-boundary.ts` lists (workspace, its own sandbox HOME and temp, its own plugin, agent plugin

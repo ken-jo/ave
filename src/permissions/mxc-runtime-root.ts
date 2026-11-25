@@ -190,6 +190,11 @@ export function mxcRuntimeRootFloorPath(cacheHome: string = currentCacheHome(), 
   }
 }
 
+/** The container backend's own state: the runtime root, whose staging and run directories are host-created per holder. */
+export function mxcConfinementStatePaths(): string[] {
+  return [mxcRuntimeRootFloorPath()];
+}
+
 /** The runtime root's planned path, with the cache directory resolved. The app's directory and the root's own name
  * are never resolved: a link at either is refused when the root is established, not followed. */
 function plannedRuntimeRoot(host: MxcRuntimeHost): string {

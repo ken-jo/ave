@@ -29,6 +29,7 @@ const state = vi.hoisted(() => ({
   /** The call to `mxcStagingParent`, counted from 1, at which the refusal starts. */
   stagingParentRefusalFrom: 1,
   stagingParentCalls: 0,
+  statePaths: [] as string[],
   renameFail: new Map<string, string>(),
   probe: vi.fn(),
 }));
@@ -63,6 +64,7 @@ vi.mock("../../permissions/mxc-runtime-root.js", async (original) => {
   const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../__tests__/support/mxc-staging-parent.js");
   return {
     ...await original<typeof import("../../permissions/mxc-runtime-root.js")>(),
+    mxcConfinementStatePaths: () => state.statePaths,
     mxcStagingParent: () => {
       state.stagingParentCalls += 1;
       if (state.stagingParentRefusal !== undefined && state.stagingParentCalls >= state.stagingParentRefusalFrom) throw state.stagingParentRefusal;
@@ -199,6 +201,7 @@ const { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContrac
 const { setProcessPlatform } = await import("../../__tests__/support/process-platform.js");
 const { WorkerTransportUnsupportedError, MxcNativeEntryRequiredError, MxcExtensionReadinessRefusedError } = await import("../../permissions/mxc-extension-errors.js");
 const { PluginChildTerminationUnverifiedError } = await import("../../plugins/isolation/plugin-child-transport.js");
+const { ConfinementStateWriteGrantError } = await import("../../permissions/confinement-state-paths.js");
 const { getLocale, setLocale, t } = await import("../../i18n/runtime.js");
 
 const READY = planWindowsExtensionHolder({ requested: true, mxc: { state: "available" }, fallback: { version: "0.0.80", ready: false } });
@@ -249,6 +252,7 @@ beforeEach(() => {
   state.stagingParentRefusal = undefined;
   state.stagingParentRefusalFrom = 1;
   state.stagingParentCalls = 0;
+  state.statePaths = [SIMULATED_MXC_RUNTIME_ROOT];
   state.renameFail = new Map();
   state.probe.mockReset();
   state.probe.mockResolvedValue(new Map());
@@ -431,6 +435,30 @@ describe("workspace concurrency", () => {
     state.live = ["C:\\ave\\mcp\\fs\\sandbox"];
     await spawnMxcBundledHolder(input());
     expect(state.spawn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the backend's own state", () => {
+  const sibling = winPath.join(winPath.dirname(SIMULATED_MXC_RUNTIME_ROOT), "SomeTool");
+
+  it.each([
+    ["the state root", SIMULATED_MXC_RUNTIME_ROOT],
+    ["a child of it", winPath.join(SIMULATED_MXC_RUNTIME_ROOT, "runs", "other")],
+    ["an ancestor of it", winPath.dirname(winPath.dirname(SIMULATED_MXC_RUNTIME_ROOT))],
+  ])("refuses a caller write grant on %s, before any staging", async (_name, path) => {
+    const refusal = await spawnMxcBundledHolder(input({ allowWrite: [path] })).catch((error: unknown) => error);
+    expect(refusal).toMatchObject({ code: "confinement-state-write-grant", path });
+    expect((refusal as Error).message.endsWith("(confinement-state-write-grant)")).toBe(true);
+    await expect(prepareMxcPluginChildLaunch({ pluginId: "fs", command: NODE, cwd: "C:\\ave\\plugins\\fs\\gen", pluginDataDir: path,
+      baseEnv: { SYSTEMROOT: "C:\\Windows" }, envelope: { read: [], write: [path] } })).rejects.toMatchObject({ code: "confinement-state-write-grant" });
+    expect(state.spawn).not.toHaveBeenCalled();
+    expect([...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir))).toBe(false);
+  });
+
+  it("starts a holder writing an unrelated sibling, and still adds its own staging root inside the state root", async () => {
+    await spawnMxcBundledHolder(input({ allowWrite: [sibling] }));
+    expect(lastSpec().allowWrite[0]).toBe(sibling);
+    expect(lastSpec().allowWrite[1]).toMatch(STAGING_ROOT_PATTERN);
   });
 });
 
@@ -778,6 +806,8 @@ describe("container refusal copy (row 6 disclosure)", () => {
     new MxcNativeEntryRequiredError(),
     new PluginChildTerminationUnverifiedError("demo", {}),
     new MxcExtensionReadinessRefusedError(),
+    new ConfinementStateWriteGrantError("C:\\state"),
+    new ConfinementStateWriteGrantError(undefined),
   ];
 
   it.each(["en", "ko"] as const)("localizes every refusal from a real %s key and keeps its stable code", (locale) => {
@@ -792,7 +822,7 @@ describe("container refusal copy (row 6 disclosure)", () => {
       });
       expect(codes).toEqual(["executable-not-admissible", "holder-workspace-busy", "holder-workspace-busy", "bash-incompatible", "holder-environment-refused",
         "holder-quarantined", "worker-transport-unsupported", "native-entry-required", "plugin-child-termination-unverified",
-        "extension-readiness-refused"]);
+        "extension-readiness-refused", "confinement-state-write-grant", "confinement-state-write-grant"]);
     } finally {
       setLocale(previous);
     }

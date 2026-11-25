@@ -361,6 +361,34 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
   });
 
+  it("refuses a write grant at, inside or above the helper's own state and keeps sibling writes and reads", async () => {
+    // TEMP and the Ave home sit outside this profile, so only the state rule can refuse the ancestor.
+    const local = join(fixture, "alice", "AppData", "Local");
+    const state = join(local, "sandbox-runtime");
+    const sibling = join(local, "SomeTool");
+    for (const directory of [join(state, "child"), sibling]) mkdirSync(directory, { recursive: true });
+    vi.stubEnv("LOCALAPPDATA", local);
+    await initializeAsrtSandbox({});
+    for (const path of [state, join(state, "child"), local]) {
+      await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [path] }))
+        .rejects.toMatchObject({ code: "confinement-state-write-grant", path });
+    }
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+    for (const request of [{ allowWrite: [sibling] }, { allowRead: [state] }]) {
+      const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, ...request });
+      grant.release();
+    }
+    expect(runtime.grantWindowsAcl).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses every write grant, and no read grant, when the helper's state cannot be located", async () => {
+    vi.stubEnv("LOCALAPPDATA", "");
+    await initializeAsrtSandbox({});
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] }))
+      .rejects.toMatchObject({ code: "confinement-state-write-grant", path: undefined });
+    (await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] })).release();
+  });
+
   it("batches every resolved target in each effect-boundary pin", async () => {
     const other = join(fixture, "other");
     mkdirSync(other);
