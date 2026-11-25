@@ -250,8 +250,7 @@ const ROWS: readonly Row[] = [
     observe: () => ({ outcome: ["127.0.0.1", "169.254.169.254"].some(address => resolvedAddressPermitted("name.example", address, 443, [], [])) ? "allow" : "deny",
       reason: "relay:resolved-local-or-reserved" }) },
   { id: "D34.b", point: "a name resolving to a reserved address the allow list names", tree: "no row", unknown: "-",
-    today: { outcome: "allow", reason: "relay:allow-listed-address" },
-    core: { outcome: "deny" },
+    today: { outcome: "deny", reason: "relay:allow-listed-address" },
     observe: () => ({ outcome: resolvedAddressPermitted("name.example", "169.254.169.254", 80, [parseRelayAllowEntry("169.254.169.254:80")], []) ? "allow" : "deny",
       reason: "relay:allow-listed-address" }) },
   // Layer 2: start and launch admission.
@@ -346,7 +345,6 @@ const ROWS: readonly Row[] = [
 const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
   I1: ["D25"],
   I2: ["L5"],
-  I5: ["D34.b"],
   I8: ["L4"], // also carries an uncoded reason (I15); PF2 clears it
   I10: ["L1"],
   I11: ["D26"],
@@ -361,6 +359,7 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
 const INCONSISTENCIES_WITHOUT_ROW: Readonly<Record<string, string>> = {
   I3: "inference child route: spawn path, not driven",
   I4: "lives on the device-path branch, not on main",
+  I5: "closed: D34.b pins the refusal",
   I6: "stage workspaces are not on main",
   I7: "a launch-count budget, not a decision",
   I9: "a checking plan cannot be published (per-holder readiness resolves it), so no start meets it at the gate driven here",
