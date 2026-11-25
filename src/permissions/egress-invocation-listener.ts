@@ -3,6 +3,7 @@
 import http from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
+import { createLogger } from "../lib/logger.js";
 import { getWindowsProxyPortRange } from "./asrt-sandbox.js";
 
 // Where the listener forwards, and as whom. Read once per forwarded request.
@@ -117,6 +118,15 @@ function refuse(socketOrResponse: http.ServerResponse | Duplex, status: number, 
 
 const DEFAULT_MAX_UPSTREAM_HEAD_BYTES = 16 * 1024;
 const MAX_LISTENER_BIND_ATTEMPTS = 16;
+
+const log = createLogger("egress-invocation-listener");
+// Bind failures that mean the address does not exist on this host, as opposed to someone else having the port.
+const IPV6_LOOPBACK_ABSENT: ReadonlySet<string> = new Set(["EADDRNOTAVAIL", "EAFNOSUPPORT"]);
+let ipv6HoldNoticeLogged = false;
+
+export function __resetIpv6HoldNoticeForTest(): void {
+  ipv6HoldNoticeLogged = false;
+}
 
 export async function openInvocationProxyListener(
   options: OpenInvocationProxyListenerOptions,
@@ -323,9 +333,18 @@ export async function openInvocationProxyListener(
     }
     if (port === undefined) throw new Error("invocation proxy listener could not bind outside shared proxy port range");
     const held = port;
-    // No retry on another port and no IPv4-only listener: a launch whose IPv6 loopback port is taken or unavailable is refused.
+    // No retry on another port: a launch whose IPv6 loopback port someone else has, or whose bind fails for a reason not known to
+    // mean an absent address, is refused. Where the host has no such address there is nothing to own, and the endpoint opens without it.
     binding = new Promise<void>((resolve, reject) => {
       const failed = (error: NodeJS.ErrnoException): void => {
+        if (error.code !== undefined && IPV6_LOOPBACK_ABSENT.has(error.code)) {
+          if (!ipv6HoldNoticeLogged) {
+            ipv6HoldNoticeLogged = true;
+            log.warn(`This host has no IPv6 loopback address (${error.code}): contained egress endpoints hold their IPv4 port only`);
+          }
+          resolve();
+          return;
+        }
         reject(new Error(`invocation proxy listener could not hold [::1]:${held} (${error.code ?? "bind failed"})`));
       };
       hold.once("error", failed);

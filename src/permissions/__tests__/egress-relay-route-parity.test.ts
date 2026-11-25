@@ -16,6 +16,7 @@ import {
   type AsrtViolationRecord,
 } from "../asrt-sandbox.js";
 import { openMxcEgressLease } from "../egress-host-listener.js";
+import { __resetIpv6HoldNoticeForTest } from "../egress-invocation-listener.js";
 import { openEgressInvocation } from "../egress-invocations.js";
 import {
   __resetActiveSandboxCapabilityForTest,
@@ -305,6 +306,38 @@ describe.skipIf(process.platform !== "win32").each(["shell", "extension"] as con
     await expect(openRoute()).rejects.toThrow(/could not hold \[::1\]:\d+ \(EADDRINUSE\)/u);
     expect(taken).toBeTypeOf("number");
     await expect.poll(() => probe("127.0.0.1", taken ?? 0)).toBe("ECONNREFUSED");
+    expect(asked).toEqual([]);
+  });
+
+  // The bind of [::1]:P fails with the given code instead of reaching the host.
+  function failIpv6Hold(code: string): void {
+    const listen = net.Server.prototype.listen;
+    vi.spyOn(net.Server.prototype, "listen").mockImplementation(function (this: net.Server, ...args: unknown[]) {
+      const options = args[0] as { host?: string } | null;
+      if (typeof options !== "object" || options === null || options.host !== "::1") {
+        return listen.apply(this, args as Parameters<typeof listen>);
+      }
+      queueMicrotask(() => this.emit("error", Object.assign(new Error(`listen ${code}`), { code })));
+      return this;
+    });
+  }
+
+  // A host with no IPv6 loopback address has nothing there for another process to own, so the endpoint opens without the hold.
+  it.each(["EADDRNOTAVAIL", "EAFNOSUPPORT"])("opens without the IPv6 hold when the address is unavailable (%s), and says so once", async (code) => {
+    __resetIpv6HoldNoticeForTest();
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    failIpv6Hold(code);
+    const first = await openRoute();
+    expect(await refusal(first.port)).toMatch(/^HTTP\/1\.[01] 200 /u);
+    expect(await probe("::1", first.port)).toBe("ECONNREFUSED");
+    await openRoute();
+    const lines = warned.mock.calls.map((call) => String(call[0])).filter((line) => line.includes("IPv6 loopback"));
+    expect(lines).toHaveLength(1);
+  });
+
+  it.each(["EADDRINUSE", "EACCES", "EINVAL"])("refuses to open when the IPv6 hold fails with %s", async (code) => {
+    failIpv6Hold(code);
+    await expect(openRoute()).rejects.toThrow(new RegExp(`could not hold \\[::1\\]:\\d+ \\(${code}\\)`, "u"));
     expect(asked).toEqual([]);
   });
 });
