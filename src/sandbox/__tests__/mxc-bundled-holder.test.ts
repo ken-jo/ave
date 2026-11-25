@@ -521,7 +521,7 @@ describe("teardown", () => {
     const holder = await spawnMxcBundledHolder(input());
     const { home, temp } = lastSpec();
     // Its staging HOME is the one issued to it, until the tree goes.
-    expect(recordIssuedContainerHome).toHaveBeenCalledWith(home);
+    expect(recordIssuedContainerHome).toHaveBeenCalledWith(home, winPath.dirname(SYNTHETIC_MXC_STAGING_PARENT));
     state.links.set(`${temp}\\escape`, "D:\\work");
     await holder.release();
     await holder.release();

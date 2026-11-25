@@ -13,10 +13,9 @@ import { basename, dirname, isAbsolute, join, win32 } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
 import { appOwnedSandboxHomeRoot, ensureSandboxPrivateRoot } from "./asrt-sandbox.js";
-import { t } from "../i18n/index.js";
 import { MxcRuntimeRootError, mxcSandboxHomesParent } from "./mxc-runtime-root.js";
 import { markSandboxHomesUnavailable } from "./sandbox-capability.js";
-import { forgetIssuedContainerHome, liveSandboxProcessHomes, recordIssuedContainerHome } from "./sandbox-home-registry.js";
+import { forgetIssuedContainerHome, liveSandboxProcessHomes, recordIssuedContainerHome, SandboxHomeUnavailableError } from "./sandbox-home-registry.js";
 import { drainAgentObservationHome, registerAgentObservationHome } from "../tools/agent-observation-context.js";
 import { readWindowsProcessRunStates, type ProcessRunStateProbe } from "./windows-process-start-time.js";
 
@@ -51,19 +50,7 @@ function sandboxHomeParent(platform: NodeJS.Platform): string {
   return realpathSync.native(ensureSandboxPrivateRoot(appOwnedSandboxHomeRoot()));
 }
 
-/** No sandbox HOME can be made on this Windows host until a restart proves the container runtime root private, so no
- * process that needs one (terminal, shells, MCP servers, workers, plugins, the memory map) starts. */
-export class SandboxHomeUnavailableError extends Error {
-  readonly code = "sandbox-home-unavailable";
-  constructor(cause: unknown) {
-    super(t("sandboxPolicy.homesUnavailable"), { cause });
-    this.name = "SandboxHomeUnavailableError";
-  }
-}
-
-export function isSandboxHomeUnavailable(error: unknown): error is SandboxHomeUnavailableError {
-  return error instanceof Error && (error as { code?: unknown }).code === "sandbox-home-unavailable";
-}
+export { isSandboxHomeUnavailable } from "./sandbox-home-registry.js";
 
 export interface SandboxHomeOwner {
   readonly pid: number;
@@ -282,7 +269,7 @@ export function createSandboxProcessHome(
     env = Object.freeze(sandboxProcessProfileEnvironment(homePath, platform));
     createProfileDirectories(env);
     mkdirSync(join(homePath, "document-observation"), { mode: 0o700 });
-    if (platform === "win32") recordIssuedContainerHome(homePath);
+    if (platform === "win32") recordIssuedContainerHome(homePath, dirname(parentRoot));
     registerAgentObservationHome(homePath);
   } catch (err) {
     forgetIssuedContainerHome(homePath);

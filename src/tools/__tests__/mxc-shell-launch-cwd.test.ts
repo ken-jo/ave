@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -38,7 +38,7 @@ describe.runIf(process.platform === "win32")("a container shell's working direct
     h.root = join(base, "cache", "mxc-runtime");
     for (const home of [own(), other()]) {
       mkdirSync(home, { recursive: true });
-      recordIssuedContainerHome(home);
+      recordIssuedContainerHome(home, h.root);
     }
     mkdirSync(`${h.root}-other`);
     symlinkSync(h.root, join(base, "link"), "junction");
@@ -77,5 +77,17 @@ describe.runIf(process.platform === "win32")("a container shell's working direct
     ["a junction to its own issued HOME, by the target's identity", () => join(base, "to-own")],
   ])("admits %s", async (_case, cwd) => {
     expect(await launch(cwd())).toMatchObject({ message: PAST_THE_CHECK });
+  });
+
+  it("refuses its own issued HOME with the named reason once the HOME parent is moved away and a junction to it is left in its place", async () => {
+    const homes = join(h.root, "homes");
+    renameSync(homes, `${homes}.moved`);
+    symlinkSync(`${homes}.moved`, homes, "junction");
+    try {
+      expect(await launch(own())).toMatchObject({ code: "sandbox-home-unavailable" });
+    } finally {
+      unlinkSync(homes);
+      renameSync(`${homes}.moved`, homes);
+    }
   });
 });

@@ -23,6 +23,7 @@ const state = vi.hoisted(() => ({
   startRoot: vi.fn((): string => "C:\\ave-cache\\mxc-runtime"),
   // Stands for the issued-HOME identity check (its own suite runs it on real directories): the launch's HOME itself.
   issuedHome: vi.fn((cwd: string, home: string | undefined): boolean => cwd === home),
+  homeInPlace: vi.fn((_home: string | undefined): void => undefined),
 }));
 vi.mock("../mxc-runtime-root.js", async (original) => ({
   ...await original<typeof import("../mxc-runtime-root.js")>(), requireMxcContainerStartRoot: () => state.startRoot(),
@@ -30,6 +31,7 @@ vi.mock("../mxc-runtime-root.js", async (original) => ({
 vi.mock("../sandbox-home-registry.js", async (original) => ({
   ...await original<typeof import("../sandbox-home-registry.js")>(),
   isIssuedContainerHome: (cwd: string, home: string | undefined) => state.issuedHome(cwd, home),
+  assertIssuedContainerHomeInPlace: (home: string | undefined) => state.homeInPlace(home),
 }));
 vi.mock("../asrt-sandbox.js", () => ({
   assertExtensionStartAllowed: () => state.allowed(), admitMxcExtensionFilesystem: (...args: unknown[]) => state.admit(...args),
@@ -489,6 +491,18 @@ describe("the container runtime root", () => {
     await expect(spawnMxcConfinedChild(staged(home))).rejects.toThrow(/working directory is inside the sandbox runtime root/u);
     expect(state.issuedHome).toHaveBeenCalledWith(home, home);
     expect(state.spawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses with the named reason, before admission, egress or the native spawn, once its HOME or a parent of it was replaced", async () => {
+    const { SandboxHomeUnavailableError } = await import("../sandbox-home-registry.js");
+    state.homeInPlace.mockImplementationOnce(() => { throw new SandboxHomeUnavailableError(new Error("replaced")); });
+    const before = liveEgressInvocationCount();
+    const home = String.raw`${STAGING}\home`;
+    await expect(spawnMxcConfinedChild(staged(WORK))).rejects.toMatchObject({ code: "sandbox-home-unavailable" });
+    expect(state.homeInPlace).toHaveBeenCalledWith(home);
+    expect(state.admit).not.toHaveBeenCalled();
+    expect(state.spawn).not.toHaveBeenCalled();
+    expect(liveEgressInvocationCount()).toBe(before);
   });
 });
 

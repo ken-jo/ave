@@ -504,7 +504,7 @@ function createHolderStaging(): HolderStaging {
     throw error;
   }
   // The one directory under the runtime root this holder may use as its working directory.
-  recordIssuedContainerHome(home);
+  recordIssuedContainerHome(home, winPath.dirname(parent));
   return Object.freeze({ root, home, temp });
 }
 

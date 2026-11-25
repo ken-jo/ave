@@ -6,8 +6,8 @@ vi.mock("../sandbox-home-registry.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../sandbox-home-registry.js")>();
   return {
     ...actual,
-    recordIssuedContainerHome: (home: string) => {
-      actual.recordIssuedContainerHome(home);
+    recordIssuedContainerHome: (home: string, root: string) => {
+      actual.recordIssuedContainerHome(home, root);
       registry.recorded.push(home);
     },
     forgetIssuedContainerHome: (home: string) => {

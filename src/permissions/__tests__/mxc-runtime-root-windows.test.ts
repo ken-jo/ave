@@ -478,6 +478,14 @@ describe.runIf(windows)("Windows runtime root", () => {
       writeFileSync(join(root, "staging"), "");
       expect(() => mxcStagingParent("win32", hostOf())).toThrow(MxcRuntimeRootError);
     });
+
+    it("hands out no staging parent once it is moved away and a junction to it is left at its name", () => {
+      establishMxcRuntimeRoot(hostOf());
+      const staging = mxcStagingParent("win32", hostOf());
+      renameSync(staging, `${staging}.moved`);
+      junction(`${staging}.moved`, staging);
+      expect(() => mxcStagingParent("win32", hostOf())).toThrow(MxcRuntimeRootError);
+    });
   });
 
   describe("the sandbox HOME parent", () => {
@@ -533,6 +541,13 @@ describe.runIf(windows)("Windows runtime root", () => {
       rmdirSync(homes);
       mkdirSync(homes);
       expect(() => mxcSandboxHomesParent(hostOf())).toThrow(/no longer the directory first used/u);
+    });
+
+    it("issues no HOME parent once it is moved away and a junction to it is left at its name", () => {
+      const homes = establishMxcSandboxHomesParent(hostOf());
+      renameSync(homes, `${homes}.moved`);
+      junction(`${homes}.moved`, homes);
+      expect(() => mxcSandboxHomesParent(hostOf())).toThrow(MxcRuntimeRootError);
     });
 
     it("is on Windows only", () => {
