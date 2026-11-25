@@ -1587,8 +1587,13 @@ command on this plan takes the `sandbox-unavailable` forced ask on every OS:
 the person approves it once or waives this sandbox ask for the conversation,
 after which rules and mode decide later shells without a reviewer, and an
 ordinary ask keeps this card; nothing is
-saved; saved rules, allow mode and auto review do not stand in for the answer;
-a headless run denies. Deny rules and the other protected floors keep their
+saved; saved prefix rules, allow mode and auto review do not stand in for the
+answer; a headless run denies. One saved rule passes the ask (owner decision
+2026-11-25): a saved user or project rule that is exactly the command, when the
+missing backend is the only forced reason for that command and boot verified
+Ave home privacy. The pass saves nothing, holds no grant, and its audit reason
+names the rule. With home privacy unverified or unpublished at boot, or with a
+second forced reason, the command asks as before. Deny rules and the other protected floors keep their
 place in the decision order, and host credential-store admission denial remains
 authoritative. Such a shell spawns only on the one-shot permit minted from that
 answer; `run_in_background` runs it in the foreground and a timeout does not
