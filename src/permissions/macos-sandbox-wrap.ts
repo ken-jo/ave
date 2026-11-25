@@ -113,16 +113,21 @@ export function followNamedEntry(root: string, entry: string): { physical: strin
 }
 
 // A path as a pattern that also matches its other spellings on a volume that folds case and normalization: each ASCII letter in
-// either case, and each run of other characters as any run within one name. Beneath a write root the root is taken as given (it
-// is a resolved spelling) and only the rest is widened, which keeps the pattern short.
+// either case, and each run of other characters as itself in its composed and decomposed forms and their case pairs. Nothing is
+// widened to a wildcard, so a sibling name never matches. Beneath a write root the root is taken as given (it is a resolved
+// spelling) and only the rest is widened, which keeps the pattern short.
 function foldedPathPattern(path: string, writeRoots: readonly string[]): string {
   const exact = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&").replace(/["\r\n]/gu, ".");
+  const spellings = (run: string): string => {
+    const forms = [...new Set([run, run.toLowerCase(), run.toUpperCase()].flatMap(form => [form.normalize("NFC"), form.normalize("NFD")]))];
+    return forms.length === 1 ? run : `(${forms.join("|")})`;
+  };
   const folded = (text: string): string => text.replace(/\P{ASCII}+|[a-z]|[.*+?^${}()|[\]\\"\r\n]/giu, part =>
-    /^[a-z]$/iu.test(part) ? `[${part.toLowerCase()}${part.toUpperCase()}]` : /["\r\n]/u.test(part) ? "." : part.charCodeAt(0) > 0x7f ? "[^/]+" : `\\${part}`);
+    /^[a-z]$/iu.test(part) ? `[${part.toLowerCase()}${part.toUpperCase()}]` : /["\r\n]/u.test(part) ? "." : /^\P{ASCII}/u.test(part) ? spellings(part) : `\\${part}`);
   const base = writeRoots.map(root => root.replace(/\/+$/u, "")).filter(root => root !== "" && path.startsWith(`${root}/`))
     .sort((left, right) => right.length - left.length)[0];
   const pattern = base === undefined ? folded(path) : `${exact(base)}${folded(path.slice(base.length))}`;
-  if (Buffer.byteLength(pattern) + 8 > MAX_SEATBELT_STRING_BYTES) throw new Error(t("sandboxPolicy.tooLarge"));
+  if (Buffer.byteLength(pattern) + 8 > MAX_SEATBELT_STRING_BYTES) throw new Error(t("sandboxPolicy.linkedEntryPathTooLong"));
   return pattern;
 }
 

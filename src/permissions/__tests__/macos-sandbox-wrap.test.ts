@@ -164,12 +164,23 @@ describe("linked name target rules", () => {
     expect(body(rules[3] ?? "").test("/Users/example/project/Tools")).toBe(true);
     expect(body(rules[3] ?? "").test("/Users/example/project/tools/other.txt")).toBe(false);
     for (const spelling of ["한글", "한글".normalize("NFD")]) expect(body(rules[5] ?? "").test(`/Users/example/project/${spelling}`), spelling).toBe(true);
-    expect(body(rules[5] ?? "").test("/Users/example/project/한글/child")).toBe(false);
+    // The name itself, never a wildcard: a sibling is free.
+    for (const sibling of ["/Users/example/project/한글/child", "/Users/example/project/ordinary", "/Users/example/project/도구", "/Users/example/project/한글2"]) {
+      expect(body(rules[5] ?? "").test(sibling), sibling).toBe(false);
+    }
   });
 
-  it("refuses a path too long to hold in one pattern", () => {
-    expect(() => macLinkedNameTargetRules([`/${"r".repeat(300)}`], [], [])).toThrow(t("sandboxPolicy.tooLarge"));
-    expect(() => macLinkedNameTargetRules([], [`/Users/example/project/${"r".repeat(300)}`], ["/Users/example/project"])).toThrow(t("sandboxPolicy.tooLarge"));
+  it("holds a target beneath a name outside ASCII without catching its siblings", () => {
+    const [target = "", pin = ""] = macLinkedNameTargetRules(["/Users/example/project/도구/agents"], ["/Users/example/project/Éa"], ["/Users/example/project"]).split("\n");
+    for (const held of ["/Users/example/project/도구/agents/skills", `/Users/example/project/${"도구".normalize("NFD")}/AGENTS`]) expect(body(target).test(held), held).toBe(true);
+    for (const free of ["/Users/example/project/other/agents", "/Users/example/project/도구2/agents", "/Users/example/project/도구/other"]) expect(body(target).test(free), free).toBe(false);
+    for (const held of ["Éa", "éA", "Éa".normalize("NFD"), "éa".normalize("NFD")]) expect(body(pin).test(`/Users/example/project/${held}`), held).toBe(true);
+    expect(body(pin).test("/Users/example/project/Ea")).toBe(false);
+  });
+
+  it("refuses a path too long to hold in one pattern, by name", () => {
+    expect(() => macLinkedNameTargetRules([`/${"r".repeat(300)}`], [], [])).toThrow(t("sandboxPolicy.linkedEntryPathTooLong"));
+    expect(() => macLinkedNameTargetRules([], [`/Users/example/project/${"r".repeat(300)}`], ["/Users/example/project"])).toThrow(t("sandboxPolicy.linkedEntryPathTooLong"));
   });
 });
 

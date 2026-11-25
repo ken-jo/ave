@@ -302,6 +302,20 @@ describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())
     for (const untouched of ["real", "fresh/real", "store/cmds"]) expect(readdirSync(join(project, untouched)), untouched).toEqual([]);
   });
 
+  it("pins a linked entry's folder named outside ASCII without closing the root to other names", async () => {
+    const project = join(root, "named");
+    mkdirSync(join(project, "도구", "agents", "skills"), { recursive: true });
+    symlinkSync("도구/agents", join(project, ".agents"));
+    const result = await runConfined([
+      `printf x > ordinary.txt; echo "ordinary=$?"`,
+      `mkdir other && mkdir other/agents && printf x > other/agents/x; echo "sibling=$?"`,
+      `printf x > 도구/notes.txt; echo "beside-target=$?"`,
+      `printf x > .agents/skills/planted 2>/dev/null; echo "plant=$?"`,
+      `mv 도구 moved 2>/dev/null; echo "move-pinned=$?"`,
+    ].join("\n"), project);
+    expect(statuses(result.stdout)).toEqual({ ordinary: "0", sibling: "0", "beside-target": "0", plant: "1", "move-pinned": "1" });
+  });
+
   it("refuses the wrap when an entry links to a work folder or a folder that holds one", async () => {
     const same = join(root, "self");
     mkdirSync(same);
