@@ -1,7 +1,7 @@
 // Each invocation reaches only its own listener, whose identity must reject stolen keys. Linux PID namespaces and macOS process-info/sysctl denies protect other environments; detached sessions separate wraps. Probes print counts only and use an unconfined control.
-import { afterEach, describe, expect, it, type TestContext } from "vitest";
+import { afterEach, describe, expect, it, type TestContext, vi } from "vitest";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -22,6 +22,7 @@ import {
 import { openEgressInvocation, type EgressInvocationOwner } from "../egress-invocations.js";
 import { sandboxCasesRequired, sandboxCasesRun } from "../../plugins/isolation/__tests__/sandbox-cases.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { contentHash } from "../../__tests__/support/content-hash.js";
 import { TEST_SHELL_EGRESS_CONTEXT } from "../../__tests__/support/egress-fixture.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
@@ -31,29 +32,52 @@ afterEach(async () => {
 });
 
 const MAC_PYTHON = "/usr/bin/python3";
+const MAC_VICTIM_PID_FILE = "victim.pid";
+// The kernel can omit a protected system executable's environment even when the query succeeds.
+const MAC_VICTIM_COMMAND = `exec ${MAC_PYTHON} -c ${shellQuote(`
+import os, time
+with open("${MAC_VICTIM_PID_FILE}", "w") as ready:
+    print(os.getpid(), file=ready)
+time.sleep(120)
+`)}`;
 const R1_HOST = "r1.example.invalid";
 const R1_ADDRESS = "203.0.113.10";
 
 // Counts the proxy keys in its own environment and in every other process's arguments and environment; prints counts, never a key.
 const MAC_PROBE = `
-import ctypes, ctypes.util, os, re
+import ctypes, ctypes.util, hashlib, os, re, sys
 libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+buf = ctypes.create_string_buffer(1 << 20)
 def procargs(pid):
-    size = ctypes.c_size_t(1 << 20)
-    buf = ctypes.create_string_buffer(size.value)
+    size = ctypes.c_size_t(len(buf))
     mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2
     if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
-        return None
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
     return buf.raw[: size.value]
-keys = lambda b: set(re.findall(rb"srt\\.([A-Za-z0-9%+/=]+)", b or b""))
+
+keys = lambda b: set(re.findall(rb"srt\\.[A-Za-z0-9%+/=]+", b))
+victim_pid = int(sys.argv[1])
+if len(sys.argv) == 3:
+    try:
+        victim_keys = keys(procargs(victim_pid))
+    except OSError as error:
+        sys.exit(f"KERN_PROCARGS2 failed for victim PID {victim_pid}: {error}")
+    if not any(hashlib.sha256(key).hexdigest() == sys.argv[2] for key in victim_keys):
+        sys.exit(f"KERN_PROCARGS2 returned no expected egress key for victim PID {victim_pid}")
+    print("victim_key=visible")
+    sys.exit(0)
+
 own_keys = keys("\\n".join(os.environ.values()).encode())
-own = os.getpid()
-foreign = 0
-for pid in range(1, 99999):
-    if pid == own:
-        continue
-    if keys(procargs(pid)) - own_keys:
-        foreign += 1
+def has_foreign_key(pid):
+    try:
+        return bool(keys(procargs(pid)) - own_keys)
+    except OSError:
+        # A denied or absent process contributes no readable key.
+        return False
+
+foreign = int(has_foreign_key(victim_pid))
+foreign += sum(has_foreign_key(pid) for pid in range(1, 99999) if pid not in (os.getpid(), victim_pid))
 print(f"own_keys={len(own_keys)} foreign_key_procs={foreign}")
 `;
 
@@ -158,7 +182,7 @@ async function withPair(
   proberSide: ProbeSide,
   context: TestContext,
   body: (pair: Pair) => Promise<void>,
-  options: { readonly workerSockets?: boolean } = {},
+  options: { readonly workerSockets?: boolean; readonly victimCommand?: string } = {},
 ): Promise<void> {
   await requireNativeCase(context);
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "egress-token-r1-")));
@@ -183,7 +207,7 @@ async function withPair(
       await registerWorkerUnixSocketDir(socketDir, {});
     }
     const filesystem = { allowWrite: [dir], allowRead: [dir] };
-    const victimWrap = await victimSide.wrap("sleep 10; echo victim-done", { commandId: victim.token, filesystem });
+    const victimWrap = await victimSide.wrap(options.victimCommand ?? "sleep 10; echo victim-done", { commandId: victim.token, filesystem });
     sleeper = run(victimWrap.argv, victimWrap.env, dir);
     await body({
       dir,
@@ -207,14 +231,21 @@ async function withPair(
 }
 
 async function readCase(victimSide: ProbeSide, proberSide: ProbeSide, context: TestContext): Promise<void> {
-  await withPair(victimSide, proberSide, context, async ({ dir, prober }) => {
+  const isMac = process.platform === "darwin";
+  await withPair(victimSide, proberSide, context, async ({ dir, victim, prober }) => {
     let probeCommand: string;
     let unconfined: string[];
-    if (process.platform === "darwin") {
+    if (isMac) {
+      const readyPath = join(dir, MAC_VICTIM_PID_FILE);
+      const victimPid = await vi.waitFor(() => {
+        const pid = existsSync(readyPath) ? Number(readFileSync(readyPath, "utf8")) : 0;
+        if (!Number.isSafeInteger(pid) || pid <= 1) throw new Error("macOS egress victim did not publish its PID");
+        return String(pid);
+      }, { timeout: 10_000 });
       const script = join(dir, "probe.py");
       writeFileSync(script, MAC_PROBE);
-      probeCommand = `sleep 1; ${MAC_PYTHON} ${shellQuote(script)}`;
-      unconfined = [MAC_PYTHON, script];
+      probeCommand = `${MAC_PYTHON} ${shellQuote(script)} ${victimPid}`;
+      unconfined = [MAC_PYTHON, script, victimPid, contentHash(proxyUrlOf(victim.wrap).username)];
     } else {
       probeCommand = `sleep 1; ${LINUX_PROBE}`;
       unconfined = ["sh", "-c", LINUX_PROBE];
@@ -223,16 +254,20 @@ async function readCase(victimSide: ProbeSide, proberSide: ProbeSide, context: T
     const output = await run(proberWrap.argv, proberWrap.env, dir).done;
     const sandboxed = /own_keys=(\d+) foreign_key_procs=(\d+)/u.exec(output);
     expect(sandboxed, output.slice(0, 500)).not.toBeNull();
-    // Control: unconfined, the same probe finds the concurrent invocation's key, so a zero below is the sandbox's doing, not a broken method.
-    const control = await run(unconfined, process.env, dir).done;
-    const baseline = /foreign_key_procs=(\d+)/u.exec(control);
-    expect(baseline, control.slice(0, 500)).not.toBeNull();
-    expect(Number(baseline![1])).toBeGreaterThan(0);
+    // The unconfined control must demonstrate that the concurrent invocation's key is observable.
+    const control = (await run(unconfined, process.env, dir).done).trim();
+    if (isMac) {
+      expect(control, "Unconfined macOS egress control could not observe the victim key").toBe("victim_key=visible");
+    } else {
+      const baseline = /foreign_key_procs=(\d+)/u.exec(control);
+      expect(baseline, "Unconfined Linux egress control did not report a foreign key count").not.toBeNull();
+      expect(Number(baseline![1]), "Unconfined Linux egress control could not observe a foreign key").toBeGreaterThan(0);
+    }
     // The prober holds a key of its own …
     expect(Number(sandboxed![1])).toBeGreaterThan(0);
     // … and reads no one else's.
     expect(Number(sandboxed![2])).toBe(0);
-  });
+  }, isMac ? { victimCommand: MAC_VICTIM_COMMAND } : {});
 }
 
 async function impersonationCase(
