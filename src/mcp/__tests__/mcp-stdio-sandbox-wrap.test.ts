@@ -377,7 +377,7 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     // The root + tmp are re-allowed for read; HOME is never re-allowed wholesale.
     expect(options.filesystem.allowRead).toContain(sandboxRoot);
     // The worker wrap applies the CENTRALIZED sensitive read DENY-LIST (deny-list, not a read-allow jail): secrets + session/routine history + standard credential stores are all read-DENIED, not just `~/.ave/secrets`.
-    // The floor also read-denies the sandbox private roots; every other principal's temp directory and every other process's HOME are under them, and the terminal's shell handoff fifos, and ASRT's reads are deny-only The container runtime root is one of them.
+    // The floor also read-denies the sandbox private roots; every other principal's temp directory and every other process's HOME are under them, and the terminal's shell handoff fifos, and ASRT's reads are deny-only. The container runtime root is one of them.
     const sensitive = getDefaultSensitiveReadDenyPaths();
     expect(options.filesystem.denyRead).toEqual(sensitive);
     const privateRoots = appOwnedSandboxPrivateRoots();

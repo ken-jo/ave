@@ -294,63 +294,105 @@ check (`assertMxcHolderStaging`) take the staging parent from it.
     (`$XDG_RUNTIME_DIR`) is not meant for. Nothing ages files out of it; macOS
     removes files from the per-user temp directory after days without a read,
     which a long-lived holder would lose.
-  - The path is resolved to its canonical form, because the macOS sandbox
-    matches real paths. The root's own name is never resolved through a link.
+  - Only the cache directory is resolved to its canonical form, because the
+    macOS sandbox matches real paths. The app's directory and the root's own
+    name are never resolved: a link at either is refused, not followed.
+  - The cache directory and every directory above it must be owned by this
+    account or by root, and writable by no one else unless sticky. The app's
+    directory must be this account's and writable by no one else.
   - The root must lie neither inside nor above the Ave home, compared on both
-    the lexical and the canonical home. This is checked before anything is
-    created.
-  - The root and the staging parent are created with mode 0700 and re-verified
-    on every use: a real directory, not a link, owned by this account, closed
-    to every other account. The app's cache directory above the root must be
-    this account's real directory.
+    the lexical home and the home resolved as far as it exists. This is
+    checked before anything is created.
+  - The root and the staging parent are created with mode 0700: a real
+    directory, not a link, owned by this account, closed to every other
+    account.
   - Any failure refuses the start (`MxcRuntimeRootError`). A directory that
     fails is never re-moded, replaced or bypassed, and staging never falls back
     into the Ave home.
+- **Established once, at sandbox start-up.**
+  - Sandbox start-up is the only place that creates the root
+    (`establishMxcRuntimeRoot`), before the first wrap, and the outcome is kept
+    for the life of the process. A wrap built while the root was absent may
+    carry no deny for it, because Linux omits a read deny for a path that does
+    not exist yet.
+  - A run is created only under that root (`requireMxcRuntimeRoot`), and only
+    while it is still the same directory (same device and inode), private and
+    this account's. Nothing on the run path creates it.
+  - A root that start-up could not establish stays refused until the app
+    restarts, even if it becomes creatable. So does a root that was removed or
+    replaced mid-session.
 - **Read floor.** The run directories are Ave-private data, as they were under
   the Ave home, and the move does not open them.
   - The runtime root is one of the confined processes' private roots
     (`appOwnedSandboxPrivateRoots`), so the sandbox read floor denies it to
     every process on the sandbox route, and a read grant inside it is withheld
     like one inside the other private roots.
+  - A plugin's user-chosen directory inside any private root is refused,
+    whatever the user approved. Under the Ave home the home's own exclusion
+    covered that; the rule now covers the roots wherever they live.
   - A container is granted its own run directory and nothing above it, so
-    every other run stays out of its reach.
-  - Sandbox start-up establishes the root before the first wrap, because Linux
-    may omit a read deny for a path that does not exist yet. A root that cannot
-    be established is logged, and container starts stay refused.
+    every other run stays out of its reach. A macOS container policy must not
+    carry the runtime root's deny for the container's own run: there the deny
+    would override the run's own HOME and temp.
+  - Naming the floor's path never fails (`mxcRuntimeRootFloorPath`). With the
+    cache directory resolvable it is the canonical path; otherwise it is the
+    path as spelled. No wrap on the sandbox route re-opens anything inside the
+    root, so its deny is a plain one. A cache directory that cannot hold the
+    root (a file in its place, a link loop, no access) therefore leaves every
+    shell sandboxed as before and refuses container starts only.
 - **Layout.**
   - `<runtime root>/staging/<opaque-id>/{home,temp}`, each 0700. The id is 32
     lowercase hex digits. `<opaque-id>` is the run's only write grant.
   - `<runtime root>/staging/<opaque-id>.owner` records the creating process:
-    its pid and a start identity that differs when a pid is reused. It is
+    its pid, a start identity that differs when a pid is reused, and a value
+    unique to the loaded copy of the module, so a second copy in one process
+    never takes the first copy's live runs for released ones. It is
     written before the run directory exists, so a crash never leaves an
     unmarked tree. It sits in the staging parent, which no container is
     granted, so a container cannot forge or remove it. A run that cannot be
     marked is refused.
   - `<runtime root>/s/<first 8 id digits>` holds the run's unix sockets. It
-    is created on first use, outside the run's write grant, on a short path:
-    a socket address holds 104 bytes on macOS and 108 on Linux. A socket path
-    over the limit is refused. Granting the directory is the backend's
-    decision.
+    is created on first use, outside the run's write grant, on a short path.
+    A sibling `<8 digits>.owner` names the run it belongs to; a directory
+    already there is another run's and refuses this one. Granting the
+    directory is the backend's decision.
+  - A socket address holds 104 bytes on macOS and 108 on Linux. On macOS 62
+    bytes of the path are fixed below the home directory, so a socket name may
+    be as long as 41 bytes less the home directory's length: 31 for
+    `/Users/abc`, 15 for a 20-character account name. A longer path is refused
+    with its byte count before anything binds it.
   - The runtime root, the staging parent and the socket parent are host-only.
 - **Cleanup.**
   - A run's directories are removed only after its exit is confirmed, and only
     by the process that created them. The tree is first renamed to
-    `<opaque-id>.retired`, then removed without following links; the socket
-    directory follows, and the owner marker goes last. A partial removal keeps
-    the marker.
-  - The first run under a staging parent sweeps what earlier runs left. A tree
-    is removed only when its marker is a plain file of this account that names
-    a process that is provably gone, or this process for a run it already
-    released. An entry with no marker, an unreadable marker, a running or
-    undetermined owner, or another account's ownership is kept. A sweep failure
-    only warns and never blocks a start.
+    `<opaque-id>.retired`, then removed without following links. The socket
+    directory follows, only when its marker names this run.
+  - The owner marker goes last, and only once neither tree is left. A removal
+    that was interrupted, or that raced another remover, keeps the marker, so
+    no tree is ever left without the proof of whose it is. An entry another
+    remover already took is skipped.
+  - The removal never enters another filesystem: a directory on another device
+    is a mount point, and the removal stops and keeps the tree. Each directory
+    is checked to be the same one after it is listed. A bind mount of the same
+    filesystem cannot be told apart this way, so a backend that binds host
+    directories must do it inside the container's own mount namespace, where
+    the host never sees them.
+  - The runtime root is per account: every Ave home and every running instance
+    of the account shares it. The first run under a staging parent sweeps what
+    earlier runs left. A tree is removed only when its marker is a plain file
+    of this account that names a process that is provably gone, or this copy of
+    the module in this process for a run it already released. An entry with no
+    marker, an unreadable marker, a running or undetermined owner, or another
+    account's ownership is kept. A sweep failure only warns and never blocks a
+    start.
 - **Windows.** The Windows adapters below keep `<AVE_HOME>\mxc-staging`, their
   own removal and their `retired-*` sweep. Windows honours a write grant nested
   under a denied directory, so that placement works there. Moving it needs a
   per-user location with a protected ACL and is a separate change. The moved
   root must be inside the same read floor: denied to every confined process
   except the container that owns the run. Until then the Ave home's read
-  re-allow for `mxc-staging` stays.
+  re-allow for `mxc-staging` stays, on Windows only: on macOS and Linux no
+  child of the Ave home is re-opened for container staging.
 
 ## Holder adapters (row 5)
 

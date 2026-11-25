@@ -39,7 +39,7 @@ import {
   sandboxTempPrincipalDirName,
   type SandboxTempPrincipal,
 } from "../asrt-sandbox.js";
-import { mxcRuntimeRootPath } from "../mxc-runtime-root.js";
+import { mxcRuntimeRootFloorPath } from "../mxc-runtime-root.js";
 import { sweepSandboxPrivateRoot } from "../../boot/steps/sandbox-init.js";
 import { makeTestTreeWritable } from "../../plugins/__tests__/test-helpers.js";
 import { createSandboxProcessHome } from "../sandbox-process-home.js";
@@ -222,8 +222,10 @@ describe("the private roots in a sandbox read deny", () => {
       expect(denyRead).not.toContain(appOwnedSandboxTempRoot());
       expect(denyRead).not.toContain(appOwnedSandboxHomeRoot());
       expect(denyRead).not.toContain(appOwnedTerminalHandoffRoot());
+      // The container runtime root stays literal: no wrap on this route re-opens anything inside it.
+      expect(denyRead).toContain(mxcRuntimeRootFloorPath());
       const globRoots = new Set([
-        ...appOwnedSandboxPrivateRoots(),
+        appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot(), appOwnedTerminalHandoffRoot(),
         aveHome(),
         ...policyHomeAnchors().map((anchor) => join(anchor, ".ave")),
       ].flatMap((root) => [root, existsSync(root) ? realpathSync(root) : root]));
@@ -250,8 +252,7 @@ describe("the private roots in a sandbox read deny", () => {
       const roots = appOwnedSandboxPrivateRoots().filter((root) => root.startsWith(`${alias}/`));
       expect(roots.map((root) => basename(root))).toEqual(["tmp", "home", "handoff"]);
       const denyRead = buildPerCommandSandboxCustomConfig({ denyRead: getDefaultSensitiveReadDenyPaths() })!.filesystem!.denyRead;
-      const runtimeRoot = mxcRuntimeRootPath();
-      expect(denyRead.some((path) => path === runtimeRoot || path === `${runtimeRoot.slice(0, -1)}[${runtimeRoot.slice(-1)}]`)).toBe(true);
+      expect(denyRead).toContain(mxcRuntimeRootFloorPath());
       for (const root of roots) {
         const canonical = realpathSync(root);
         expect(canonical).not.toBe(root);

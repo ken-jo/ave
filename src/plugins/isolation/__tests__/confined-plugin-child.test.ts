@@ -45,6 +45,7 @@ import {
   PluginSandboxGrantError,
   type ObservedPluginChild,
 } from "../out-of-process-plugin.js";
+import { mxcRuntimeRootFloorPath } from "../../../permissions/mxc-runtime-root.js";
 import {
   appOwnedSandboxHomeRoot,
   appOwnedSandboxTempRoot,
@@ -957,6 +958,44 @@ describe("the host decides how far a plugin child reaches", () => {
           key === "indexStorageRoot" ? join(fx.hostRuntimeDir, "python-envs") : undefined,
       }),
     ).toThrow(/resolves inside the host's own storage namespace/);
+  });
+
+  it.skipIf(process.platform === "win32")("refuses a chosen directory inside the container runtime root, whatever the user approved", () => {
+    // The runtime root holds every container run's HOME and temp. It lives outside `~/.ave`, so the home subtraction does not reach it; it is one of the confined processes' private roots, and the read floor that denies those refuses a grant inside any of them.
+    const fx = fixture as NonNullable<typeof fixture>;
+    // A cache directory of its own, outside the Ave home and every other floor entry, so only the private-root rule can refuse.
+    const inheritedBase = process.env.AVE_TEST_SANDBOX_BASE;
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "ave-chosen-runtime-")));
+    process.env.AVE_TEST_SANDBOX_BASE = base;
+    try {
+      const runtimeRoot = mxcRuntimeRootFloorPath();
+      expect(runtimeRoot.startsWith(`${base}/`)).toBe(true);
+      approveWorkspaceRoot(fx, base);
+      for (const chosen of [runtimeRoot, join(runtimeRoot, "staging", "0123456789abcdef0123456789abcdef", "home")]) {
+        expect(() =>
+          derivePluginChildEnvelope({
+            pluginId: WIDENED_PLUGIN_ID,
+            sandbox: WIDENED_SANDBOX,
+            pluginRoot: fx.pluginRoot,
+            pluginDataDir: fx.pluginDataDir,
+            configValue: (key) => (key === "indexStorageRoot" ? chosen : undefined),
+          }),
+        ).toThrow(`lies under the sandbox read-deny floor entry '${runtimeRoot}`);
+      }
+      // The rule, not the location: a sibling of the runtime root under the same approved root is admitted.
+      mkdirSync(join(base, "sibling"));
+      expect(derivePluginChildEnvelope({
+        pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
+        pluginRoot: fx.pluginRoot,
+        pluginDataDir: fx.pluginDataDir,
+        configValue: (key) => (key === "indexStorageRoot" ? join(base, "sibling") : undefined),
+      }).write).toContain(join(base, "sibling"));
+    } finally {
+      if (inheritedBase === undefined) delete process.env.AVE_TEST_SANDBOX_BASE;
+      else process.env.AVE_TEST_SANDBOX_BASE = inheritedBase;
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 
   it.skipIf(!canCreateSymlinks())("refuses a declared host root even when it links out of the host's home", () => {

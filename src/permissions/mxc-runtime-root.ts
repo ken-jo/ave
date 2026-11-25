@@ -88,14 +88,18 @@ export function mxcCacheHome(platform: NodeJS.Platform, env: Readonly<Record<str
   return xdg !== undefined && posixPath.isAbsolute(xdg) ? xdg : posixPath.join(home, ".cache");
 }
 
+/** Under the test runner the root lives in the run's own directory, never in the account's cache. */
+function currentCacheHome(): string {
+  return AVE_HOME_ISOLATION_GUARD_ACTIVE
+    ? posixPath.join(process.env.AVE_TEST_SANDBOX_BASE ?? tmpdir(), "mxc-cache")
+    : mxcCacheHome(process.platform, process.env, homedir());
+}
+
 export function currentMxcRuntimeHost(): MxcRuntimeHost {
   const platform = process.platform;
   return {
     platform,
-    // Under the test runner the root lives in the run's own directory, never in the account's cache.
-    cacheHome: AVE_HOME_ISOLATION_GUARD_ACTIVE
-      ? posixPath.join(process.env.AVE_TEST_SANDBOX_BASE ?? tmpdir(), "mxc-cache")
-      : mxcCacheHome(platform, process.env, homedir()),
+    cacheHome: currentCacheHome(),
     uid: typeof process.getuid === "function" ? process.getuid() : undefined,
     pid: process.pid,
     aveHome: aveHome(),
@@ -140,70 +144,173 @@ function ensurePrivateDirectory(path: string, uid: number, what: string): string
 const atOrUnder = (child: string, parent: string): boolean =>
   child === parent || child.startsWith(parent.endsWith("/") ? parent : `${parent}/`);
 
-/** `path` with its deepest existing ancestor resolved, so the result is canonical wherever it can be. */
+/** `path` with its deepest existing ancestor resolved, so the result is canonical wherever it can be. Throws what the
+ * filesystem raised for anything but an absent entry. */
 function canonicalWhereItExists(path: string): string {
   const missing: string[] = [];
   for (let current = path; ; current = posixPath.dirname(current)) {
     try {
       return posixPath.join(realpathSync.native(current), ...missing);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || posixPath.dirname(current) === current) {
-        return refuse("Container runtime root could not be resolved", error);
-      }
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || posixPath.dirname(current) === current) throw error;
       missing.unshift(posixPath.basename(current));
     }
   }
 }
 
-/**
- * Where the runtime root is, without creating or verifying it: `<cache home>/<app id>/mxc-runtime`, canonical because
- * the macOS sandbox matches real paths. The sandbox read floor denies this path to every confined process that is not
- * granted its own run directory inside it (`appOwnedSandboxPrivateRoots`): the run directories are Ave-private data,
- * as they were under the Ave home.
- */
-export function mxcRuntimeRootPath(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
-  posixUid(host);
-  if (!posixPath.isAbsolute(host.cacheHome)) refuse("The account's cache directory is not an absolute path");
-  // The root's own name is not resolved: a link there is refused when the root is established, never followed.
-  return posixPath.join(canonicalWhereItExists(posixPath.join(host.cacheHome, AVE_APP_ID)), "mxc-runtime");
-}
+const rootUnder = (cacheHome: string): string => posixPath.join(cacheHome, AVE_APP_ID, "mxc-runtime");
 
 /**
- * The one directory everything a container needs lives under on macOS and Linux: `<cache home>/<app id>/mxc-runtime`,
- * mode 0700, owned by this account, never a link, and neither inside nor above the Ave home. The Ave home is a denied
- * directory, and the macOS sandbox lets a deny override every allow, so a grant nested inside it cannot work there.
- * The root itself is host-only: a container is granted its own run directory beneath it and nothing above that.
- * Every call re-verifies. A failure throws `MxcRuntimeRootError`, before anything is created when the placement
- * itself is refused; no caller may place staging elsewhere instead.
+ * The path the sandbox read floor denies (`appOwnedSandboxPrivateRoots`): the runtime root, `<cache home>/<app id>/
+ * mxc-runtime`, whether or not it exists. The run directories are Ave-private data, as they were under the Ave home,
+ * so every confined process that is not granted its own run directory is denied the whole root. It never throws: the
+ * floor of every sandboxed process is composed from it, and a cache directory that cannot be resolved must refuse
+ * container starts only. With the cache directory resolved the path is canonical, as the macOS sandbox matches real
+ * paths; otherwise it is the path as spelled, and a deny on a path nothing can be created under costs nothing.
  */
-export function ensureMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
-  const uid = posixUid(host);
-  const root = mxcRuntimeRootPath(host);
-  const home = posixPath.resolve(host.aveHome);
-  let canonicalHome = home;
+export function mxcRuntimeRootFloorPath(cacheHome: string = currentCacheHome()): string {
   try {
-    canonicalHome = realpathSync.native(home);
+    return rootUnder(canonicalWhereItExists(cacheHome));
+  } catch {
+    return rootUnder(cacheHome);
+  }
+}
+
+/** The runtime root's planned path, with the cache directory resolved. The app's directory and the root's own name
+ * are never resolved: a link at either is refused when the root is established, not followed. */
+function plannedRuntimeRoot(host: MxcRuntimeHost): string {
+  posixUid(host);
+  if (!posixPath.isAbsolute(host.cacheHome)) refuse("The account's cache directory is not an absolute path");
+  try {
+    return rootUnder(canonicalWhereItExists(host.cacheHome));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") refuse("The Ave home could not be resolved", error);
+    return refuse("The account's cache directory could not be resolved", error);
+  }
+}
+
+function assertOutsideAveHome(root: string, host: MxcRuntimeHost): void {
+  const home = posixPath.resolve(host.aveHome);
+  let canonicalHome: string;
+  try {
+    // Resolved as far as it exists: a home that is not there yet is still compared through its real ancestors.
+    canonicalHome = canonicalWhereItExists(home);
+  } catch (error) {
+    refuse("The Ave home could not be resolved", error);
   }
   // macOS volumes fold case by default; folding refuses more, never less.
   const fold = (path: string): string => host.platform === "darwin" ? path.toLowerCase() : path;
   if ([home, canonicalHome].map(fold).some((path) => atOrUnder(fold(root), path) || atOrUnder(path, fold(root)))) {
     refuse("Container runtime root overlaps the Ave home");
   }
-  const appDirectory = posixPath.dirname(root);
+}
+
+/** Every directory from the cache directory up to the filesystem root must be root's or this account's, and writable
+ * by no one else unless it is sticky: otherwise another account could replace a directory on the way to the root. */
+function assertAncestorsHeld(cacheHome: string, uid: number): void {
+  for (let current = cacheHome; ; current = posixPath.dirname(current)) {
+    let entry: Stats;
+    try {
+      entry = lstatSync(current);
+    } catch (error) {
+      refuse("A directory above the container runtime root could not be inspected", error);
+    }
+    if (!entry.isDirectory() || (entry.uid !== 0 && entry.uid !== uid) || ((entry.mode & 0o022) !== 0 && (entry.mode & 0o1000) === 0)) {
+      refuse(`A directory above the container runtime root is not held by this account or the system: ${current}`);
+    }
+    if (posixPath.dirname(current) === current) return;
+  }
+}
+
+interface EstablishedRoot { readonly root: string; readonly dev: number; readonly ino: number }
+
+/** One entry per cache directory this process tried to establish a root under: the root, or null when it failed. */
+const established = new Map<string, EstablishedRoot | null>();
+
+function createRuntimeRoot(host: MxcRuntimeHost): EstablishedRoot {
+  const uid = posixUid(host);
+  const planned = plannedRuntimeRoot(host);
+  // Before anything is created.
+  assertOutsideAveHome(planned, host);
+  let cacheHome: string;
+  try {
+    mkdirSync(host.cacheHome, { recursive: true, mode: 0o700 });
+    cacheHome = realpathSync.native(host.cacheHome);
+  } catch (error) {
+    return refuse("The account's cache directory could not be created or resolved", error);
+  }
+  assertAncestorsHeld(cacheHome, uid);
+  const appDirectory = posixPath.join(cacheHome, AVE_APP_ID);
   let entry: Stats;
   try {
-    mkdirSync(appDirectory, { recursive: true, mode: 0o700 });
+    try {
+      mkdirSync(appDirectory, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
     entry = lstatSync(appDirectory);
   } catch (error) {
     return refuse("The app's cache directory could not be created", error);
   }
-  // Created just now through a link, or held by another account: the planned path is no longer where the root would be.
-  if (!entry.isDirectory() || entry.uid !== uid || realpathSync.native(appDirectory) !== appDirectory) {
-    refuse("The app's cache directory is a link, not a directory, or not this account's");
+  if (entry.isSymbolicLink() || !entry.isDirectory() || entry.uid !== uid || (entry.mode & 0o022) !== 0) {
+    refuse("The app's cache directory is a link, not a directory, not this account's, or writable by other accounts");
   }
-  return ensurePrivateDirectory(root, uid, "Container runtime root");
+  const root = ensurePrivateDirectory(posixPath.join(appDirectory, "mxc-runtime"), uid, "Container runtime root");
+  // The cache directory was created or replaced between planning and creation: the checked placement is not this one.
+  if (root !== planned) refuse("The account's cache directory changed while the container runtime root was established");
+  try {
+    const identity = lstatSync(root);
+    return { root, dev: identity.dev, ino: identity.ino };
+  } catch (error) {
+    return refuse("Container runtime root could not be inspected", error);
+  }
+}
+
+/**
+ * Establish the one directory everything a container needs lives under on macOS and Linux: `<cache home>/<app id>/
+ * mxc-runtime`, mode 0700, owned by this account, never a link or below one in the app's own directory, below only
+ * directories held by this account or the system, and neither inside nor above the Ave home. The Ave home is a denied
+ * directory, and the macOS sandbox lets a deny override every allow, so a grant nested inside it cannot work there.
+ * The root itself is host-only: a container is granted its own run directory beneath it and nothing above that.
+ *
+ * Sandbox start-up calls this once, before the first wrap, and the outcome is kept for the life of the process. A
+ * sandboxed process started while the root was absent may carry no deny for it (Linux omits a read deny for a path
+ * that does not exist), so a root that was not established then is never created later: a second call returns the
+ * established root or refuses again. A failure throws `MxcRuntimeRootError`, before anything is created when the
+ * placement itself is refused; no caller may place staging elsewhere instead.
+ */
+export function establishMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
+  if (established.has(host.cacheHome)) return requireMxcRuntimeRoot(host);
+  established.set(host.cacheHome, null);
+  const root = createRuntimeRoot(host);
+  established.set(host.cacheHome, root);
+  return root.root;
+}
+
+/** A test stands in for a new process: it forgets what start-up recorded for one cache directory. */
+export function _forgetMxcRuntimeRootForTest(cacheHome: string): void {
+  established.delete(cacheHome);
+}
+
+/**
+ * The runtime root a run may be created under: the one sandbox start-up established, still the same directory. It
+ * creates nothing. A root that was not established at start-up, was removed or replaced since, or is no longer this
+ * account's private directory refuses the run.
+ */
+export function requireMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
+  const uid = posixUid(host);
+  const known = established.get(host.cacheHome);
+  if (known === undefined || known === null) refuse("Container runtime root was not established when the sandbox started");
+  let entry: Stats;
+  try {
+    entry = lstatSync(known.root);
+  } catch (error) {
+    return refuse("Container runtime root is no longer there", error);
+  }
+  if (!privateTo(entry, uid) || entry.dev !== known.dev || entry.ino !== known.ino) {
+    refuse("Container runtime root is no longer the directory established when the sandbox started");
+  }
+  assertOutsideAveHome(known.root, host);
+  return known.root;
 }
 
 /**
@@ -218,7 +325,7 @@ export function mxcStagingParent(platform: NodeJS.Platform = process.platform, h
   if (platform === "win32") return winPath.join(host?.aveHome ?? aveHome(), "mxc-staging");
   const current = host ?? currentMxcRuntimeHost();
   if (current.platform !== platform) refuse("Container staging is resolved on the platform it runs on");
-  return ensurePrivateDirectory(posixPath.join(ensureMxcRuntimeRoot(current), "staging"), posixUid(current), "Container staging parent");
+  return ensurePrivateDirectory(posixPath.join(requireMxcRuntimeRoot(current), "staging"), posixUid(current), "Container staging parent");
 }
 
 /** One run's directories on macOS and Linux. `root` is the run's only write grant; `home` and `temp` lie inside it. */
@@ -231,7 +338,10 @@ export interface MxcRunStaging {
   socketDirectory(): string;
 }
 
-interface RunOwner { readonly pid: number; readonly start: string }
+/** `instance` tells two copies of this module in one process apart: each copy knows only its own live runs. */
+interface RunOwner { readonly pid: number; readonly start: string; readonly instance: string }
+
+const INSTANCE = randomBytes(8).toString("hex");
 
 const OWNER_SUFFIX = ".owner";
 const RETIRED_SUFFIX = ".retired";
@@ -248,7 +358,7 @@ function selfOwner(host: MxcRuntimeHost): RunOwner {
   const start = host.processStart(host.pid);
   // Without it a crash would leave a tree no later run could prove abandoned.
   if (start === null) refuse("This process's start identity is unavailable, so its container directories could not be marked as owned");
-  return { pid: host.pid, start };
+  return { pid: host.pid, start, instance: INSTANCE };
 }
 
 const socketDirectoryOf = (runRoot: string): string =>
@@ -290,10 +400,17 @@ export function createMxcRunStaging(host: MxcRuntimeHost = currentMxcRuntimeHost
       const directory = socketDirectoryOf(root);
       ensurePrivateDirectory(posixPath.dirname(directory), uid, "Container socket parent");
       try {
-        // Exclusive: an existing entry is another run's.
+        // Exclusive: an existing entry is another run's with the same leading digits, and that run alone removes it.
         mkdirSync(directory, { mode: 0o700 });
       } catch (error) {
         return refuse("Container socket directory could not be created", error);
+      }
+      try {
+        // The marker names the run the directory belongs to; only a directory so marked is ever removed with a run.
+        writeFileSync(`${directory}${OWNER_SUFFIX}`, posixPath.basename(root), { flag: "wx", mode: 0o600 });
+      } catch (error) {
+        try { rmdirSync(directory); } catch { /* left unmarked, which nothing ever removes */ }
+        return refuse("Container socket directory could not be marked as this run's", error);
       }
       sockets = directory;
       return directory;
@@ -301,7 +418,10 @@ export function createMxcRunStaging(host: MxcRuntimeHost = currentMxcRuntimeHost
   });
 }
 
-/** A socket path inside the run's socket directory, refused when the platform could not bind it. */
+/** A socket path inside the run's socket directory, refused when the platform could not bind it. On macOS the path
+ * is `<home>/Library/Caches/<app id>/mxc-runtime/s/<8 hex>/<name>` within 103 bytes: 62 of them are fixed, so a name
+ * may be as long as 41 bytes less the home directory's length (31 for `/Users/abc`, 15 for a 20-character account
+ * name). A longer one is refused here, by name and byte count, before anything tries to bind it. */
 export function mxcRunSocketPath(run: MxcRunStaging, name: string, platform: NodeJS.Platform = process.platform): string {
   if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/u.test(name)) throw new MxcProcessContractError("Container socket name must be one plain file name");
   const path = posixPath.join(run.socketDirectory(), name);
@@ -313,30 +433,58 @@ export function mxcRunSocketPath(run: MxcRunStaging, name: string, platform: Nod
   return path;
 }
 
-/** Delete a tree without following links: a confined process may have planted one, and a recursive removal through it
- * would delete its target. A link is unlinked itself. A directory the process closed to its owner is reopened first. */
-function removeTreeWithoutFollowingLinks(path: string): void {
+/**
+ * Delete a tree without following links: a confined process may have planted one, and a recursive removal through it
+ * would delete its target. A link is unlinked itself. A directory the process closed to its owner is reopened first.
+ *
+ * It never descends into another filesystem: a directory whose device differs from the run directory's is a mount
+ * point, and the removal stops there and keeps the tree. Each directory is also checked to be the same one after it is
+ * listed. A bind mount of the same filesystem has the same device and cannot be told apart this way; a backend that
+ * binds host directories must do so inside the container's own mount namespace, where this process never sees them.
+ * An entry another remover already took is skipped.
+ */
+function removeTreeWithoutFollowingLinks(path: string, device: number): void {
   const entry = lstatSync(path);
   if (!entry.isDirectory()) {
     unlinkSync(path);
     return;
   }
+  if (entry.dev !== device) throw new Error(`another filesystem is mounted at ${path}`);
   if ((entry.mode & 0o700) !== 0o700) chmodSync(path, 0o700);
-  for (const name of readdirSync(path)) removeTreeWithoutFollowingLinks(posixPath.join(path, name));
+  const names = readdirSync(path);
+  const listed = lstatSync(path);
+  if (!listed.isDirectory() || listed.dev !== entry.dev || listed.ino !== entry.ino) throw new Error(`${path} was replaced while it was being removed`);
+  for (const name of names) {
+    try {
+      removeTreeWithoutFollowingLinks(posixPath.join(path, name), device);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
   rmdirSync(path);
 }
 
 function removeIfPresent(path: string): void {
-  try {
-    removeTreeWithoutFollowingLinks(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+  const entry = lstatSync(path, { throwIfNoEntry: false });
+  if (entry === undefined) return;
+  removeTreeWithoutFollowingLinks(path, entry.dev);
+}
+
+/** Remove the run's socket directory, only when its marker names this run: a directory with the same leading digits
+ * that another run created is that run's. */
+function removeRunSockets(root: string): void {
+  const directory = socketDirectoryOf(root);
+  const marker = `${directory}${OWNER_SUFFIX}`;
+  const entry = lstatSync(marker, { throwIfNoEntry: false });
+  if (entry === undefined || !entry.isFile() || entry.size > OWNER_MAX_BYTES) return;
+  if (readFileSync(marker, "utf8") !== posixPath.basename(root)) return;
+  removeIfPresent(directory);
+  unlinkSync(marker);
 }
 
 /** Retire, then delete, one run's tree, its socket directory and, last, its owner marker. The rename comes first so
- * nothing reaches the tree by its granted name mid-removal; the marker goes last so an interrupted removal stays
- * provably this owner's for a later sweep. */
+ * nothing reaches the tree by its granted name mid-removal. The marker goes last, and only once neither tree is left:
+ * an interrupted removal, or one that raced another remover, stays provably this owner's for a later sweep. */
 function removeRunTree(root: string): void {
   const retired = `${root}${RETIRED_SUFFIX}`;
   try {
@@ -348,11 +496,14 @@ function removeRunTree(root: string): void {
     removeIfPresent(root);
   }
   removeIfPresent(retired);
-  removeIfPresent(socketDirectoryOf(root));
+  removeRunSockets(root);
+  for (const tree of [root, retired]) {
+    if (lstatSync(tree, { throwIfNoEntry: false }) !== undefined) throw new Error(`${tree} is still there`);
+  }
   try {
     unlinkSync(`${root}${OWNER_SUFFIX}`);
   } catch (error) {
-    // Already removed by an earlier, interrupted pass.
+    // Already removed by another remover of the same tree.
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 }
@@ -377,9 +528,10 @@ function readOwner(markerPath: string, uid: number): RunOwner | null {
     if (!entry.isFile() || entry.uid !== uid || entry.nlink !== 1 || entry.size > OWNER_MAX_BYTES) return null;
     const parsed: unknown = JSON.parse(readFileSync(markerPath, "utf8"));
     if (typeof parsed !== "object" || parsed === null) return null;
-    const { pid, start } = parsed as Record<string, unknown>;
-    if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0 || typeof start !== "string" || start === "") return null;
-    return { pid, start };
+    const { pid, start, instance } = parsed as Record<string, unknown>;
+    if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0 || typeof start !== "string" || start === ""
+        || typeof instance !== "string" || instance === "") return null;
+    return { pid, start, instance };
   } catch {
     return null;
   }
@@ -394,10 +546,13 @@ function ownerIsGone(owner: RunOwner, host: MxcRuntimeHost): boolean {
 }
 
 /**
- * Remove what crashed or interrupted runs left under this account's and this Ave home's staging parent. A tree is
- * removed only when its sibling marker is a plain file of this account naming a process that is provably gone, or
- * naming this process for a run it already released. Entries with no marker, an unreadable marker, a live or
- * undetermined owner, or another account's ownership are kept: nothing unproven to be this owner's is deleted.
+ * Remove what crashed or interrupted runs left under the staging parent. The runtime root is per account, so every Ave
+ * home and every running instance of this account shares it; a tree is another instance's until its marker proves
+ * otherwise. A tree is removed only when its sibling marker is a plain file of this account naming a process that is
+ * provably gone, or naming this copy of this module in this process for a run it already released. Entries with no
+ * marker, an unreadable marker, a live or undetermined owner (another copy of this module in this process included),
+ * or another account's ownership are kept: nothing unproven to be abandoned is deleted. An owner that is gone does not
+ * prove its container is; the removal's own guards (no link followed, no other filesystem entered) hold either way.
  * Failure only warns; a leftover never blocks a start.
  */
 export function sweepMxcRunStaging(host: MxcRuntimeHost = currentMxcRuntimeHost()): void {
@@ -417,7 +572,7 @@ export function sweepMxcRunStaging(host: MxcRuntimeHost = currentMxcRuntimeHost(
     if (liveRuns.has(root)) continue;
     const owner = readOwner(`${root}${OWNER_SUFFIX}`, uid);
     if (owner === null) continue;
-    const own = self !== null && owner.pid === self.pid && owner.start === self.start;
+    const own = self !== null && owner.pid === self.pid && owner.start === self.start && owner.instance === self.instance;
     if (!own && !ownerIsGone(owner, host)) continue;
     try {
       for (const tree of [root, `${root}${RETIRED_SUFFIX}`]) {

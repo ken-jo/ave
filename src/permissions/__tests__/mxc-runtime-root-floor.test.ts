@@ -13,9 +13,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { aveHome } from "../../shared/ave-home.js";
 import {
   appOwnedSandboxPrivateRoots, ensureSandboxTempPrincipalDir, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths,
-  initializeAsrtSandbox, resetAsrtSandbox, wrapWorkerCommand,
+  initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, wrapWorkerCommand,
 } from "../asrt-sandbox.js";
-import { createMxcRunStaging, mxcRuntimeRootPath, removeMxcRunStaging } from "../mxc-runtime-root.js";
+import {
+  AVE_APP_ID, createMxcRunStaging, establishMxcRuntimeRoot, mxcRuntimeRootFloorPath, MxcRuntimeRootError, removeMxcRunStaging,
+} from "../mxc-runtime-root.js";
 import { asrtCanInitialize } from "./test-helpers.js";
 
 const posix = process.platform === "darwin" || process.platform === "linux";
@@ -23,7 +25,7 @@ const darwin = process.platform === "darwin";
 
 describe.runIf(posix)("container runtime root on the sandbox read floor", () => {
   it("is one of the private roots every wrap is denied, and lies outside the Ave home", () => {
-    const root = mxcRuntimeRootPath();
+    const root = mxcRuntimeRootFloorPath();
     expect(appOwnedSandboxPrivateRoots()).toContain(root);
     expect(getDefaultSensitiveReadDenyPaths()).toContain(root);
     const home = aveHome();
@@ -52,6 +54,8 @@ describe.runIf(darwin)("a sandboxed process and a container run's directories", 
       return;
     }
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    // As sandbox start-up does, before the first wrap.
+    establishMxcRuntimeRoot();
     const run = createMxcRunStaging();
     expect(run.root.startsWith(`${outside}/base/`)).toBe(true);
     try {
@@ -61,7 +65,7 @@ describe.runIf(darwin)("a sandboxed process and a container run's directories", 
       const script = [
         `cat '${join(run.home, "state")}' 2>/dev/null; echo "run-read=$?"`,
         `ls '${run.home}' >/dev/null 2>&1; echo "run-list=$?"`,
-        `ls '${mxcRuntimeRootPath()}' >/dev/null 2>&1; echo "root-list=$?"`,
+        `ls '${mxcRuntimeRootFloorPath()}' >/dev/null 2>&1; echo "root-list=$?"`,
         `cat '${join(outside, "control")}' >/dev/null 2>&1; echo "control-read=$?"`,
       ].join("\n");
       const wrapped = await wrapWorkerCommand(script, {
@@ -78,5 +82,53 @@ describe.runIf(darwin)("a sandboxed process and a container run's directories", 
     } finally {
       removeMxcRunStaging(run);
     }
+  });
+});
+
+describe.runIf(posix)("a cache directory that cannot hold the runtime root", () => {
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), "ave-rt-broken-")));
+  const inheritedBase = process.env.AVE_TEST_SANDBOX_BASE;
+  const spelled = join(outside, "base", "mxc-cache", AVE_APP_ID, "mxc-runtime");
+  beforeAll(() => {
+    mkdirSync(join(outside, "base"));
+    // A file where the account's cache directory should be.
+    writeFileSync(join(outside, "base", "mxc-cache"), "");
+    process.env.AVE_TEST_SANDBOX_BASE = join(outside, "base");
+  });
+  afterAll(async () => {
+    await resetAsrtSandbox();
+    if (inheritedBase === undefined) delete process.env.AVE_TEST_SANDBOX_BASE;
+    else process.env.AVE_TEST_SANDBOX_BASE = inheritedBase;
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  it("still composes the read floor, with the root's path as spelled", () => {
+    expect(mxcRuntimeRootFloorPath()).toBe(spelled);
+    expect(appOwnedSandboxPrivateRoots()).toContain(spelled);
+    expect(getDefaultSensitiveReadDenyPaths()).toContain(spelled);
+  });
+
+  it("refuses container starts only", () => {
+    expect(() => establishMxcRuntimeRoot()).toThrow(MxcRuntimeRootError);
+    expect(() => createMxcRunStaging()).toThrow(MxcRuntimeRootError);
+  });
+
+  it.runIf(darwin)("leaves the sandbox initialized and shells sandboxed", async () => {
+    if (!(await asrtCanInitialize())) {
+      if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
+      return;
+    }
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    expect(isAsrtSandboxActive()).toBe(true);
+    writeFileSync(join(outside, "control"), "readable");
+    const { dir: tempDir } = ensureSandboxTempPrincipalDir({ kind: "plugin", id: "runtime-root-broken" });
+    const wrapped = await wrapWorkerCommand(`cat '${join(outside, "control")}'; echo x > '${join(outside, "written")}' 2>/dev/null; echo "write=$?"`, {
+      commandId: TEST_COMMAND_ID,
+      filesystem: { allowWrite: [tempDir], allowRead: [], denyWrite: getDefaultSensitiveWriteDenyPaths(), pinWriteRoots: true },
+    });
+    const [program, ...args] = wrapped.argv;
+    const result = spawnSync(program as string, args, { encoding: "utf8" });
+    // Sandboxed as ever: it runs, reads, and cannot write outside its grant.
+    expect(result.stdout).toMatch(/^readablewrite=[1-9]/u);
   });
 });
