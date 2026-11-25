@@ -724,7 +724,7 @@ export async function resolveHostWxcExecPath(): Promise<string> {
 type HostProbe = (deps: DetectMxcSupportDeps) => Promise<MxcSupport>;
 
 // Run one detection step against this host's shipped binary, in a fresh probe directory.
-async function withHostMxcDeps(step: HostProbe, mayStart?: () => boolean): Promise<MxcSupport> {
+async function withHostMxcDeps(step: HostProbe): Promise<MxcSupport> {
   const [{ execFile }, { existsSync }, { mkdtemp, rm }, os, path, { getHostResources }] = await Promise.all([
     import("node:child_process"),
     import("node:fs"),
@@ -747,10 +747,6 @@ async function withHostMxcDeps(step: HostProbe, mayStart?: () => boolean): Promi
       systemRoot: process.platform === "win32" ? windowsSystemRoot() : "",
       run: (file, args, timeoutMs) =>
         new Promise((resolve, reject) => {
-          if (mayStart !== undefined && !mayStart()) {
-            reject(new Error("Windows shell local-network access is disabled"));
-            return;
-          }
           execFile(file, [...args], { cwd: path.dirname(file), timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
             const code = error === null ? 0 : typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : null;
             if (error !== null && code === null) {
@@ -772,6 +768,6 @@ export async function detectHostMxcPrerequisites(): Promise<MxcSupport> {
 }
 
 // probeMxcPowerShellStart against this host's shipped binary (after boot).
-export async function probeHostMxcPowerShellStart(mayStart: () => boolean): Promise<MxcSupport> {
-  return await withHostMxcDeps(probeMxcPowerShellStart, mayStart);
+export async function probeHostMxcPowerShellStart(): Promise<MxcSupport> {
+  return await withHostMxcDeps(probeMxcPowerShellStart);
 }

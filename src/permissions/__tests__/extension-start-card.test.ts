@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FIXTURE_START_IDENTITY as ID } from "../../__tests__/support/approved-extension-start.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
+import { maskSensitiveData } from "../../shared/dlp.js";
 import { extensionStartApprovalRows, type ExtensionStartChoice } from "../../shared/permissions-events.js";
 import { ApprovalGate, isHostApprovalRejectedDecision, type ApprovalRequest, type ApprovalRequestInput } from "../approval-gate.js";
 import { createExtensionStartAsker } from "../extension-start-asker.js";
@@ -194,6 +195,35 @@ describe("the shared extension-start card", () => {
     gate.resolve(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac });
     await settling;
     expect(spawned).toEqual(["plugin-child:a"]);
+  });
+
+  it("shows the desk each row id as the gate offered it, even one the display masker would rewrite, so the desk answer settles the card", async () => {
+    // A random row id can read as a phone or card number. This one does: the first assertion pins it, so the test cannot pass because the masker changed.
+    const MASKABLE = "77cae1e1-7082-4966-a6fb-301812345678";
+    expect(maskSensitiveData(MASKABLE).masked).not.toBe(MASKABLE);
+    const { wc, gate, audit } = makeGate();
+    const ids = ["row-a", MASKABLE, "row-c"];
+    const answer = gate.requestAndWait({
+      id: "start-1", category: "tool", kind: "extension-start", toolName: "extension_start", reason: "r", createdAt: Date.now(), sessionId: "session-1",
+      args: { isolation: "none", starts: ids.map((id) => ({ id, label: `notes ${id === MASKABLE ? "301812345678" : id}`, kind: "plugin-child", cause: "no-backend" })) },
+      allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false, forceExplicit: true,
+    });
+    const card = await cardSent(wc);
+    // The ids are the keys the answers name; the labels are content and stay masked.
+    expect(rowsOf(card).map((row) => row.id)).toEqual(ids);
+    expect(rowsOf(card)[1]?.label).toBe(maskSensitiveData("notes 301812345678").masked);
+    // Another surface answers two rows first: no, then yes.
+    gate.resolve(card.id, { requestId: card.id, choice: "deny-once", extensionStartRow: "row-a", nonce: card.nonce, hmac: card.hmac }, "platform-bridge");
+    gate.resolve(card.id, { requestId: card.id, choice: "allow-once", extensionStartRow: MASKABLE, nonce: card.nonce, hmac: card.hmac }, "platform-bridge");
+    const resent = await cardSent(wc, 3);
+    // The re-sent card names its answered rows by the same ids it lists.
+    expect(Object.keys(resent.extensionStartAnswered ?? {}).sort()).toEqual(rowsOf(resent).map((row) => row.id).filter((id) => id !== "row-c").sort());
+    // The desk answers every row it was shown; the first answers stand.
+    const settled = gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", extensionStartChoices: answers(resent, ["yes", "no", "yes"]), nonce: card.nonce, hmac: card.hmac }, wc as never);
+    expect(settled).toMatchObject({ choice: "allow-once", extensionStartChoices: { "row-a": "no", [MASKABLE]: "yes", "row-c": "yes" } });
+    await expect(answer).resolves.toBe(settled);
+    expect(audit().filter((row) => row.startsWith("[approval:extension-start-row-late]"))).toHaveLength(2);
+    expect(audit().filter((row) => row.startsWith("[approval:extension-start-answers-rejected]"))).toEqual([]);
   });
 
   it("refuses per-start answers on a request that is not an extension-start card", async () => {

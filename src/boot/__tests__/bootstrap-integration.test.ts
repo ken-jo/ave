@@ -526,9 +526,6 @@ vi.mock("../../plugins/plugin-paths.js", () => ({
 }));
 
 vi.mock("../../permissions/sandbox-capability.js", () => ({
-  bindWindowsShellLocalNetworkAccess: vi.fn(() => () => {}),
-  isWindowsShellLocalNetworkAccessAllowed: vi.fn(() => false),
-  setWindowsShellStartProbe: vi.fn(),
   detectSandboxCapability: vi.fn(() => ({
     kind: "none",
     confidence: "verified",

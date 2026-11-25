@@ -91,6 +91,10 @@ describe("checked repository metadata inputs", () => {
   });
 
   it("changes evidence conservatively when unrelated workspace entries change", () => {
+    // Only the workspace directory's own stat carries this change. Windows reports
+    // directory size 0 and one link, so the signal is mtime/ctime alone, and the
+    // fixture's mkdir of .git may share their timestamp tick.
+    waitForFixtureTimestampAdvance();
     const first = inspectGitRepository(cwd);
     expect(first).not.toBeNull();
     fs.mkdirSync(join(cwd, "ordinary-directory"));
@@ -122,6 +126,17 @@ describe("checked repository metadata inputs", () => {
     const second = inspectGitRepository(cwd);
     expect(second).not.toBeNull();
     expect(second!.stateFingerprint).not.toBe(first!.stateFingerprint);
+  });
+
+  it("cannot distinguish unrelated workspace entry changes with unchanged directory metadata", () => {
+    // Windows directory size and link count are static, so a same-tick change is invisible.
+    // Worktree entries are not inputs to the admitted read-only commands.
+    freezeFileMetadata(cwd);
+    const firstFingerprint = inspectGitRepository(cwd)?.stateFingerprint;
+    expect(firstFingerprint).toBeDefined();
+    fs.mkdirSync(join(cwd, "ordinary-directory"));
+    fs.writeFileSync(join(cwd, "ordinary-output"), "temporary output");
+    expect(inspectGitRepository(cwd)?.stateFingerprint).toBe(firstFingerprint);
   });
 
   it("cannot distinguish a same-object rename and restore with unchanged timestamps", () => {

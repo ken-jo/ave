@@ -40,7 +40,15 @@ import { createContainedShellLifecycle } from "../contained-shell-lifecycle.js";
 import { MXC_REQUEST_CHARACTER_LIMIT } from "../../permissions/mxc-windows.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "../../permissions/egress-invocations.js";
 import * as policyPipe from "../../permissions/mxc-policy-pipe.js";
-import { isWindowsShellLocalNetworkAccessAllowed, setWindowsShellLocalNetworkAccess } from "../../permissions/sandbox-capability.js";
+import * as sandboxCapability from "../../permissions/sandbox-capability.js";
+
+// The container route goes away: no capability, announced as a status change.
+function endRoute(): () => void {
+  const requested = sandboxCapability.isShellSandboxRequestedAtBoot();
+  vi.mocked(sandboxCapability.detectMxcShellCapability).mockReturnValue(undefined);
+  sandboxCapability.setShellSandboxRequestedAtBoot(!requested);
+  return () => sandboxCapability.setShellSandboxRequestedAtBoot(requested);
+}
 
 const WS = String.raw`C:\work\repo`;
 beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
@@ -247,9 +255,9 @@ describe("prepareMxcShellLaunch", () => {
     expect(await probePort(launch.proxyPort)).toBe("refused");
   });
 
-  it.each(["release", "cancel", "consent"] as const)("stops every tunnel at once when %s ends a running invocation, and keeps its ports until the job exits", async (trigger) => {
+  it.each(["release", "cancel", "route"] as const)("stops every tunnel at once when %s ends a running invocation, and keeps its ports until the job exits", async (trigger) => {
     const controller = new AbortController();
-    const consent = isWindowsShellLocalNetworkAccessAllowed();
+    let restoreRoute: (() => void) | undefined;
     const invocation = openEgressInvocation({
       kind: "shell", toolName: "powershell", toolUseId: undefined, requiresListener: true,
       context: { sessionId: undefined, workspaceRoot: undefined, approvalSurface: "unavailable" },
@@ -274,7 +282,7 @@ describe("prepareMxcShellLaunch", () => {
 
       if (trigger === "release") invocation.release();
       else if (trigger === "cancel") controller.abort();
-      else setWindowsShellLocalNetworkAccess(!consent);
+      else restoreRoute = endRoute();
       // Before any await: the token names nobody, admission is closed and the tunnel is torn down.
       expect(lifecycle.signal.aborted).toBe(true);
       expect(egressInvocationOwner(invocation.token)).toBeUndefined();
@@ -300,13 +308,13 @@ describe("prepareMxcShellLaunch", () => {
       await lifecycle.dispose();
       invocation.release();
       await upstream.close();
-      if (trigger === "consent") setWindowsShellLocalNetworkAccess(consent);
+      restoreRoute?.();
     }
   });
 
-  it.skipIf(process.platform !== "win32").each(["release", "cancel", "consent"] as const)("releases the policy pipe even when a release observer throws during %s", async (trigger) => {
+  it.skipIf(process.platform !== "win32").each(["release", "cancel", "route"] as const)("releases the policy pipe even when a release observer throws during %s", async (trigger) => {
     const controller = new AbortController();
-    const consent = isWindowsShellLocalNetworkAccessAllowed();
+    let restoreRoute: (() => void) | undefined;
     const invocation = openEgressInvocation({
       kind: "shell", toolName: "powershell", toolUseId: undefined, requiresListener: true,
       context: { sessionId: undefined, workspaceRoot: undefined, approvalSurface: "unavailable" },
@@ -323,7 +331,7 @@ describe("prepareMxcShellLaunch", () => {
       const launch = await prepareMxcShellLaunch({ ...INPUT, egressToken: invocation.token, commandLine: "x".repeat(25_000) }, lifecycle);
       if (trigger === "release") launch.activate();
       else if (trigger === "cancel") controller.abort();
-      else setWindowsShellLocalNetworkAccess(!consent);
+      else restoreRoute = endRoute();
       const released = await lifecycle.dispose();
       expect(released).toEqual([failure]);
       expect(releasePipe).toHaveBeenCalledOnce();
@@ -336,7 +344,7 @@ describe("prepareMxcShellLaunch", () => {
       unsubscribe();
       await lifecycle.dispose();
       invocation.release();
-      if (trigger === "consent") setWindowsShellLocalNetworkAccess(consent);
+      restoreRoute?.();
     }
   });
 });
