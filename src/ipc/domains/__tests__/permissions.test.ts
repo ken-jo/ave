@@ -14,6 +14,7 @@ import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { UNAUTHORIZED_FRAME } from "../../gated.js";
 import { setWorkspaceRootLifecycle } from "../../../permissions/workspace-root-lifecycle.js";
+import type { ProjectRuleRootBinding } from "../../../permissions/rules/project-rule-files.js";
 import {
   foreignFrameEvent,
   framelessEvent,
@@ -101,6 +102,7 @@ function makeDeps(options: {
   snapshotSource?: string;
   snapshotSessionId?: string | null;
   shellRule?: import("../../../shared/permissions-events.js").ShellRuleApproval;
+  shellRuleProjectRoot?: ProjectRuleRootBinding;
   egress?: { host: string; port: number; network: "public" | "local" | "unverified"; rule: string | null; projectCwd?: string; scopes: readonly ("once" | "session" | "tab" | "project" | "always")[]; terminalTabId?: string };
   mayRecord?: boolean;
   snapshotVerdict?: "low" | "medium" | "high";
@@ -175,8 +177,12 @@ function makeDeps(options: {
       })),
       resolve: vi.fn((_requestId: string, decision: unknown) => decision),
       resolveFromDesktopRendererWithFreshIdentity: vi.fn((_requestId: string, decision: unknown) => decision),
-      capturePendingRequestIdentityGuard: vi.fn(() => ({ refresh: vi.fn(async () => true), isCurrent: vi.fn(() => true) })),
+      capturePendingRequestAuthority: vi.fn(() => ({
+        controller: { refresh: vi.fn(async () => true), isCurrent: vi.fn(() => true) },
+        isWorkingDirectoryCurrent: vi.fn(() => true),
+      })),
       mayRecordFrom: vi.fn(() => options.mayRecord ?? true),
+      cancelPendingRequest: vi.fn(),
       beginApprovalRuleSave: vi.fn(() => Object.freeze({})),
       beginExactApprovalSave: vi.fn(() => Object.freeze({})),
       completeExactApprovalSave: vi.fn(),
@@ -189,6 +195,7 @@ function makeDeps(options: {
         sessionId: options.snapshotSessionId === null ? undefined : options.snapshotSessionId ?? "conversation-1",
         projectCwd: "/srv/project",
         shellRule: options.shellRule,
+        shellRuleProjectRoot: options.shellRuleProjectRoot,
         egress: options.egress,
         toolName: options.snapshotToolName ?? "bash_run",
         args: options.snapshotArgs ?? { command: "ls" },
@@ -858,7 +865,10 @@ describe("human plugin re-adjudication records", () => {
 
   it("does not persist when live authority expires before the answer", async () => {
     const { deps } = await setup(eligible);
-    deps.approvalGate.capturePendingRequestIdentityGuard.mockReturnValueOnce({ refresh: vi.fn(async () => false), isCurrent: vi.fn(() => true) });
+    deps.approvalGate.capturePendingRequestAuthority.mockReturnValueOnce({
+      controller: { refresh: vi.fn(async () => false), isCurrent: vi.fn(() => true) },
+      isWorkingDirectoryCurrent: vi.fn(() => true),
+    });
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "persistent" }))
       .toMatchObject({ ok: false, error: "no-such-request" });
     expect(recordApprovalMock).not.toHaveBeenCalled();
@@ -898,7 +908,10 @@ describe("human plugin re-adjudication records", () => {
 describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => {
   it("refuses remembered answers when fresh controller authority is unavailable", async () => {
     const { deps } = await setup();
-    deps.approvalGate.capturePendingRequestIdentityGuard.mockReturnValueOnce({ refresh: vi.fn(async () => false), isCurrent: vi.fn(() => true) });
+    deps.approvalGate.capturePendingRequestAuthority.mockReturnValueOnce({
+      controller: { refresh: vi.fn(async () => false), isCurrent: vi.fn(() => true) },
+      isWorkingDirectoryCurrent: vi.fn(() => true),
+    });
     const result = await invoke(PERMISSIONS.userApprovalRecord, { requestId: "owner-changed", args: '{}', scope: "persistent", verdictAtApproval: "medium", nlJustification: null });
     expect(result).toMatchObject({ ok: false, error: "no-such-request" });
     expect(recordApprovalMock).not.toHaveBeenCalled();
@@ -1320,14 +1333,16 @@ describe("rules recorded from live approval cards", () => {
   const exactRule = "Bash(printf %s ready)";
   const body = { requestId: "live-shell", args: "{}", scope: "persistent", decision: "allow", verdictAtApproval: "medium", nlJustification: null, rule: { action: "allow", scope: "project" } };
   const shellRule = { dialect: "bash" as const, exactRule, denyRule: exactRule, denyAllowed: true, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: true, sessionAllowed: true };
-  const live = { shellRule, snapshotArgs: { command: "printf %s ready" } };
+  const shellRuleProjectRoot = { path: shellRule.projectRoot, markerPath: null, directory: { realpath: shellRule.projectRoot, dev: 1n, ino: 2n } };
+  const live = { shellRule, shellRuleProjectRoot, snapshotArgs: { command: "printf %s ready" } };
+  const projectScope = { kind: "project", projectCwd: shellRule.projectCwd, expectedProjectRoot: shellRuleProjectRoot };
   const pm = (deps: Awaited<ReturnType<typeof setup>>["deps"]) => deps.conversationLoop.permissionManager;
 
   it("writes only the host's exact project rule and never also records an exact decision", async () => {
     const { deps } = await setup(live);
     const result = await invoke(PERMISSIONS.userApprovalRecord, { ...body, projectCwd: "/different/project" });
     expect(result).toEqual({ ok: true });
-    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "project", projectCwd: "/srv/project" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, projectScope, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
     expect(recordApprovalMock).not.toHaveBeenCalled();
     expect(deps.auditLogger.append).toHaveBeenCalledWith({
       timestamp: expect.any(String), sessionId: "conversation-1", type: "approval",
@@ -1369,7 +1384,7 @@ describe("rules recorded from live approval cards", () => {
     const { deps } = await setup(live);
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern: "Bash(printf %s *)" } }))
       .toEqual({ ok: true, warning: "wildcard-allow-broader-scope" });
-    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf %s *)", action: "allow" }, { kind: "project", projectCwd: "/srv/project" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf %s *)", action: "allow" }, projectScope, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
     expect(deps.auditLogger.append).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("edited=true") }));
   });
 

@@ -1795,15 +1795,22 @@ export class ApprovalGate {
     }).catch((error: unknown) => { retractToast(); throw error; });
   }
 
-  capturePendingRequestIdentityGuard(requestId: string): ApprovalPersistenceGuard | null {
+  capturePendingRequestAuthority(requestId: string): {
+    controller: ApprovalPersistenceGuard;
+    isWorkingDirectoryCurrent(): boolean;
+  } | null {
     const entry = this.pending.get(requestId);
     if (!entry) return null;
     const { shellWorkingDirectory } = entry;
-    const isCurrent = () => this.pending.get(requestId) === entry &&
-      isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId) &&
-      (shellWorkingDirectory === undefined ||
-        matchesShellWorkingDirectoryIdentity(shellWorkingDirectory.path, shellWorkingDirectory.identity));
-    return { refresh: async () => await refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId) && isCurrent(), isCurrent };
+    return {
+      controller: {
+        refresh: () => refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId),
+        isCurrent: () => this.pending.get(requestId) === entry &&
+          isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId),
+      },
+      isWorkingDirectoryCurrent: () => shellWorkingDirectory === undefined ||
+        matchesShellWorkingDirectoryIdentity(shellWorkingDirectory.path, shellWorkingDirectory.identity),
+    };
   }
 
   async resolveWithFreshIdentity(requestId: string, decision: ApprovalDecision, answeredBy: ApprovalAnswerer = "desk"): Promise<ApprovalDecision | null> {

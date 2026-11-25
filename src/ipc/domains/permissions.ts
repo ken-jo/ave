@@ -6,6 +6,7 @@ import { isBrowserSiteChoice, isExtensionStartChoices } from "../../shared/permi
 import { ipcMain, session, type IpcMainInvokeEvent } from "electron";
 import { isRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
+import { matchesProjectRuleRootBinding, ProjectRuleRootChangedError } from "../../permissions/rules/project-rule-files.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
 import { RunGrantError, runGrantKeyOfSession } from "../../permissions/run-grants.js";
 import { loadPolicy, savePolicy, validatePolicyPatch, PolicyWriteError } from "../../permissions/policy-store.js";
@@ -1214,20 +1215,40 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       return { ok: false, error: "no-such-request", message: "user-approval record: no in-flight ApprovalRequest for requestId" };
     }
     if (!approvalGate.canAccessRendererRequest(requestId, e.sender, "desk")) return UNAUTHORIZED_FRAME;
-    const capturedAuthority = approvalGate.capturePendingRequestIdentityGuard(requestId);
-    if (!capturedAuthority) return { ok: false, error: "no-such-request", message: "Approval authority is unavailable" };
-    const authority = {
-      refresh: capturedAuthority.refresh,
-      isCurrent: () => capturedAuthority.isCurrent() && approvalGate.canAccessRendererRequest(requestId, e.sender, "desk"),
+    const capturedAuthority = approvalGate.capturePendingRequestAuthority(requestId);
+    const authorityUnavailable = { ok: false, error: "no-such-request", message: "Approval authority is unavailable" } as const;
+    if (!capturedAuthority) return authorityUnavailable;
+    const rulePayload = body.rule === undefined ? undefined : payloadRecord(body.rule);
+    const projectCwd = snapshot.shellRule?.projectCwd;
+    const expectedProjectRoot = rulePayload?.scope === "project" && rulePayload.action === "allow" &&
+      scope === "persistent" && decision === "allow" && !readjudicate && displayedVerdictAtApproval === snapshot.verdictAtApproval
+      ? snapshot.shellRuleProjectRoot : undefined;
+    const hasProjectScopeChanged = () => expectedProjectRoot !== undefined && projectCwd !== undefined &&
+      !matchesProjectRuleRootBinding(projectCwd, expectedProjectRoot);
+    const isControllerCurrent = () => capturedAuthority.controller.isCurrent() && approvalGate.canAccessRendererRequest(requestId, e.sender, "desk");
+    const settleChangedProject = () => {
+      if (!isControllerCurrent() || !approvalGate.mayRecordFrom(requestId, e.sender)) return authorityUnavailable;
+      approvalGate.cancelPendingRequest(requestId, snapshot.sessionId, "project-scope-changed");
+      return { ok: false, error: "project-scope-changed" } as const;
     };
-    if (!await authority.refresh() || !authority.isCurrent()) {
-      return { ok: false, error: "no-such-request", message: "Approval authority is unavailable" };
+    const authority = {
+      refresh: capturedAuthority.controller.refresh,
+      isCurrent: () => {
+        if (!isControllerCurrent()) return false;
+        if (capturedAuthority.isWorkingDirectoryCurrent()) return true;
+        if (hasProjectScopeChanged()) throw new ProjectRuleRootChangedError();
+        return false;
+      },
+    };
+    if (!await authority.refresh() || !isControllerCurrent()) return authorityUnavailable;
+    if (!capturedAuthority.isWorkingDirectoryCurrent()) {
+      return hasProjectScopeChanged() ? settleChangedProject() : authorityUnavailable;
     }
     if (readjudicate && (decision !== "allow" || snapshot.readjudication === undefined ||
         snapshot.verdictAtApproval !== "high" || body.rule !== undefined)) {
       return { ok: false, error: "readjudication-unavailable", message: "This request is not eligible for re-adjudication" };
     }
-    if (body.rule !== undefined) {
+    if (rulePayload !== undefined) {
       // A card's rule save (owner 2026-10-25, unified approval card): the renderer names the choice's action and scope and, only when the person edited it, the rule text. The host checks an edited rule against the card's own rule grammar and requires it to decide this very request; without one it stores the rule it derived itself.
       if (!approvalGate?.mayRecordFrom(requestId, e.sender)) {
         return { ok: false, error: "not-request-owner", message: "This request is answered from the window that owns its terminal tab" };
@@ -1236,7 +1257,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       const saveToken = manager === undefined ? undefined : approvalGate.beginApprovalRuleSave(requestId, manager.getPolicyEpoch());
       let savedScope: "session" | "run" | "project" | "always" | undefined;
       try {
-        const saved = await saveApprovalCardRule(snapshot, payloadRecord(body.rule), { decision, scope, displayedVerdictAtApproval }, manager, authority, async (rule) => {
+        const saved = await saveApprovalCardRule(snapshot, rulePayload, { decision, scope, displayedVerdictAtApproval }, manager, authority, async (rule) => {
           await auditLogger.append({
             timestamp: new Date().toISOString(),
             sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
@@ -1244,12 +1265,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
             output: `[approval:remembered] store=rules decision=${rule.action} scope=${rule.scope} rule=${JSON.stringify(rule.pattern)} edited=${rule.edited} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
           });
         });
-        if (!saved.ok) {
-          if (saved.error === "project-scope-changed") {
-            approvalGate.cancelPendingRequest(requestId, snapshot.sessionId, "project-scope-changed");
-          }
-          return saved;
-        }
+        if (!saved.ok) return saved.error === "project-scope-changed" ? settleChangedProject() : saved;
         savedScope = saved.scope;
         broadcastPermissionConfigChanged(deps);
         return saved.warning === undefined ? { ok: true } : { ok: true, warning: saved.warning };

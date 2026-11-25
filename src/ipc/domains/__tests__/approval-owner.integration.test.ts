@@ -345,6 +345,8 @@ describe("live native approval ownership", () => {
     "moves its marker while saving",
     "loses its marker without changing its root path",
     "is replaced at the same path",
+    "is replaced with a fresh working directory below it",
+    "is replaced as the working directory",
   ])("refuses This project when the issued repository %s", async (scenario) => {
     const f = await subject("default");
     vi.stubEnv("AVE_HOME", f.root);
@@ -352,7 +354,8 @@ describe("live native approval ownership", () => {
     const outer = join(f.root, "outer");
     const inner = join(outer, "inner");
     const sameRootWithoutMarker = scenario === "loses its marker without changing its root path";
-    const cwd = sameRootWithoutMarker ? inner : join(inner, "work");
+    const replacesCwd = scenario === "is replaced with a fresh working directory below it" || scenario === "is replaced as the working directory";
+    const cwd = sameRootWithoutMarker || scenario === "is replaced as the working directory" ? inner : join(inner, "work");
     mkdirSync(cwd, { recursive: true });
     for (const root of sameRootWithoutMarker ? [inner] : [outer, inner]) {
       const marker = join(root, ".git");
@@ -376,7 +379,7 @@ describe("live native approval ownership", () => {
     const running = invokeShell("nested-project-rule");
     const card = await f.waitForCard();
     expect(card.shellRule).toMatchObject({ persistentAllowed: true, projectRoot: innerStore.projectRoot });
-    const replaced = scenario === "is replaced at the same path";
+    const replaced = replacesCwd || scenario === "is replaced at the same path";
     const currentStore = replaced || sameRootWithoutMarker ? innerStore : outerStore;
     const moveMarker = () => {
       renameSync(join(inner, ".git"), join(inner, "former-marker"));
@@ -388,8 +391,13 @@ describe("live native approval ownership", () => {
       renameSync(inner, former);
       mkdirSync(inner);
       renameSync(join(former, ".git"), join(inner, ".git"));
-      renameSync(join(former, "work"), cwd);
-      expect(captureShellWorkingDirectoryIdentity(cwd)).toEqual(issuedCwd);
+      if (replacesCwd) {
+        if (cwd !== inner) mkdirSync(cwd);
+        expect(captureShellWorkingDirectoryIdentity(cwd)?.ino).not.toBe(issuedCwd?.ino);
+      } else {
+        renameSync(join(former, "work"), cwd);
+        expect(captureShellWorkingDirectoryIdentity(cwd)).toEqual(issuedCwd);
+      }
       expect(projectRulesLocation(f.root, cwd)).toEqual(innerStore);
     } else if (scenario !== "moves its marker while saving") {
       moveMarker();
@@ -402,11 +410,16 @@ describe("live native approval ownership", () => {
       });
     }
 
-    const response = await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+    const record = {
       requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "persistent",
       verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
       rule: { action: "allow", scope: "project" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
-    });
+    };
+    if (replacesCwd) {
+      expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowB), record)).toEqual(UNAUTHORIZED_FRAME);
+      expect(f.gate.getRequestSnapshot(card.id)).not.toBeNull();
+    }
+    const response = await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), record);
     expect.soft(response).toMatchObject({ ok: false, error: "project-scope-changed" });
     expect.soft(existsSync(innerStore.filePath)).toBe(false);
     expect.soft(existsSync(outerStore.filePath)).toBe(false);
