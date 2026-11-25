@@ -2,10 +2,11 @@ vi.mock("../../shared/windows-path-facts.js", async original => (await import(".
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import os from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, parse, resolve } from "node:path";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { registerLinuxWrapperProgramFixtures } from "../../__tests__/support/linux-wrapper-programs.js";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -203,7 +204,10 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
   describe("the shell's saved-session read", () => {
     const shellPlatforms = ["darwin", "linux"] as const;
     const sessionRoot = () => String(getConfiguredSessionReadPolicy().allowRead[0]);
-    const workspace = () => canonicalizePathForMatch(join(dirname(aveHome()), "workspace"));
+    // At the volume root, outside every Ave home: the run home and temp can sit under the account's own `.ave`, whose boundary
+    // withholds a workspace beside them. The workspace is only spelled, never created.
+    const workspaceRoot = join(parse(os.tmpdir()).root, `ave-pierce-workspace-${randomUUID()}`);
+    const workspace = () => canonicalizePathForMatch(workspaceRoot);
     const shellFor = (platform: NodeJS.Platform, sessionId = "session-a") => {
       setProcessPlatform(platform);
       return getBuiltinShellReadPolicy([workspace()], undefined, undefined, createAveHomeBoundarySnapshot(sessionId));
