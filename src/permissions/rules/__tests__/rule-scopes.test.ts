@@ -29,9 +29,25 @@ describe("concurrent project rule loading", () => {
     const states = await Promise.all(Array.from({ length: 8 }, (_, index) =>
       scopes.ensureLoaded(index % 2 === 0 ? project : nested)));
     expect(states.every(state => state === states[0])).toBe(true);
-    expect(scopes.getRevision()).toBe(1);
+    // One shared load, and a first load is no policy change: a second load of the same project would have replaced the first and counted.
+    expect(scopes.getRevision()).toBe(0);
     await scopes.ensureLoaded(project);
-    expect(scopes.getRevision()).toBe(1);
+    expect(scopes.getRevision()).toBe(0);
+  });
+
+  it("a project's first load leaves the revision alone, so it voids no approval pending in another project", async () => {
+    const other = join(directory, "other-project");
+    mkdirSync(other);
+    await scopes.ensureLoaded(project);
+    const pendingAt = scopes.getRevision();
+    expect(await scopes.ensureLoaded(other)).toMatchObject({ ok: true, rules: [] });
+    expect(scopes.getRevision()).toBe(pendingAt);
+    // A change to rules that were already read still counts.
+    await updateProjectRulesFile(projectRulesLocation(directory, other), file => {
+      file.rules.push({ pattern: "Network(example.test:443)", action: "deny" });
+    });
+    await scopes.ensureLoaded(other);
+    expect(scopes.getRevision()).toBe(pendingAt + 1);
   });
 
   it("reloads an edited policy once and retains its new revision and rules", async () => {
@@ -43,7 +59,7 @@ describe("concurrent project rule loading", () => {
     expect(states[0]).toBe(states[1]);
     expect(states[0]).not.toBe(initial);
     expect(states[0]).toMatchObject({ ok: true, rules: [{ pattern: "Network(example.test:443)", action: "deny" }] });
-    expect(scopes.getRevision()).toBe(2);
+    expect(scopes.getRevision()).toBe(1);
     expect(scopes.policyVersionFor(project)).toBeDefined();
   });
 
@@ -56,6 +72,6 @@ describe("concurrent project rule loading", () => {
     rmSync(location.filePath, { recursive: true });
     mkdirSync(dirname(location.filePath), { recursive: true });
     expect(await scopes.ensureLoaded(project)).toMatchObject({ ok: true, rules: [] });
-    expect(scopes.getRevision()).toBe(1);
+    expect(scopes.getRevision()).toBe(0);
   });
 });
