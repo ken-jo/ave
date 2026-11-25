@@ -502,6 +502,18 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(childProcessMock.spawn).not.toHaveBeenCalled();
   });
 
+  it("carries the named refusal, and prepares nothing, when no sandbox HOME can be made", async () => {
+    bootMxcShells();
+    const { SandboxHomeUnavailableError } = await import("../../permissions/sandbox-home-registry.js");
+    const { t } = await import("../../i18n/index.js");
+    sandboxHomeMock.onCreate.mockImplementationOnce(() => { throw new SandboxHomeUnavailableError(new Error("root unproved")); });
+    const result = await executePowerShell(context("ps-mxc-home-unavailable"));
+    expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+    expect(result.output).toBe(`PowerShell spawn failed: could not create isolated HOME: ${t("sandboxPolicy.homesUnavailable")}: root unproved`);
+    expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
+    expect(childProcessMock.spawn).not.toHaveBeenCalled();
+  });
+
   it("refuses the container while the runtime root is not proved, and releases its HOME", async () => {
     bootMxcShells();
     const { prepareMxcShellLaunch } = await vi.importActual<typeof import("../mxc-shell-launch.js")>("../mxc-shell-launch.js");
