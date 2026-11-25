@@ -1,4 +1,9 @@
-import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
+import {
+  exactRulePassesUnsandboxedShellAsk,
+  type HostShellExecutionPlan,
+  type HostShellExecutionPlanAuditProjection,
+  requiresUnsandboxedShellAsk,
+} from "../permissions/host-shell-execution-plan.js";
 import { t } from "../i18n/runtime.js";
 
 type ShellEnvironmentPlan = Pick<HostShellExecutionPlanAuditProjection,
@@ -27,7 +32,7 @@ export function shellExecutionEnvironmentLines(plan: ShellEnvironmentPlan): read
 }
 
 /** Describe the default route; the final per-call plan remains authoritative. */
-export function shellExecutionEnvironmentPrompt(plan: ShellEnvironmentPlan, interactive: boolean): string {
+export function shellExecutionEnvironmentPrompt(plan: ShellEnvironmentPlan, interactive: boolean, hostPlan: HostShellExecutionPlan): string {
   const confines = plan.capability.confines;
   const confinement = confines === undefined
     ? t("shellExecution.confinementUnspecified")
@@ -45,7 +50,11 @@ export function shellExecutionEnvironmentPrompt(plan: ShellEnvironmentPlan, inte
     ...(plan.mode === "asrt" && plan.substrate === "mxc" ? [t("shellExecution.mxcBashUnavailable")] : []),
     // A helper-unavailable plan blocks the host route too, so no host request is offered.
     ...(!interactive ? [t("shellExecution.noInteractiveApproval")]
-      : plan.fallbackReason === "home-privacy-helper-unavailable" ? [] : [t("shellExecution.hostRequest")]),
+      : hostPlan.fallbackReason === "home-privacy-helper-unavailable" ? []
+        : requiresUnsandboxedShellAsk(hostPlan)
+          ? [t("shellExecution.hostRequestFloor"),
+            ...(exactRulePassesUnsandboxedShellAsk(hostPlan) ? [t("shellExecution.hostRequestExactRule")] : [])]
+          : [t("shellExecution.hostRequest")]),
     t("shellExecution.pipelineStatus"),
     "</shell-execution-environment>",
   ].join("\n");

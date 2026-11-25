@@ -5230,6 +5230,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "shellExecution.confinementUnspecified": "이 실행 계획에는 OS 제한의 개별 범위가 기록되어 있지 않습니다.",
   "shellExecution.defaultRoute": "기본 셸 실행 경로에 대한 설명입니다. 각 호출의 최종 실행 계획이 실제 환경을 결정합니다.",
   "shellExecution.hostRequest": "호스트 실행이 필요한 지원 명령은 executionMode=host와 justification으로 요청하세요. 사용자의 허용 규칙이 명령과 일치할 때만 묻지 않고 실행되며, 그렇지 않으면 매번 데스크톱에서 한 번 허용해야 합니다. 헤드리스나 원격 제어에서는 요청할 수 없고, 민감 경로·자격 증명 업로드·금지 명령의 차단은 해제되지 않습니다.",
+  "shellExecution.hostRequestFloor": "호스트에서 실행해야 하는 지원 명령은 executionMode=host와 실행 이유(justification)를 지정해 요청하세요. 데스크톱에서 이번 요청만 승인하거나 이 세션 동안 샌드박스 승인을 면제할 수 있습니다. 이 승인은 규칙으로 저장되지 않습니다. 헤드리스나 원격 제어에서는 호스트 실행을 요청할 수 없습니다. 민감 경로 접근, 자격 증명 업로드 및 금지 명령에 대한 차단은 계속 적용됩니다.",
+  "shellExecution.hostRequestExactRule": "사용 가능한 샌드박스 백엔드가 없고 시작 시 홈 폴더 보호가 확인되었다면, 다른 승인 요건이 없을 때 명령 전체와 정확히 일치하는 저장된 호스트 규칙만 이 승인을 대신할 수 있습니다.",
   "shellExecution.noInteractiveApproval": "헤드리스 실행에서는 대화형 호스트 실행 승인을 받을 수 없습니다.",
   "shellExecution.pipelineStatus": "파이프의 마지막 명령이 성공해도 앞선 명령의 성공을 뜻하지 않습니다. 진단 출력을 보존하고 요청한 작업의 결과를 확인한 뒤 성공을 보고하세요.",
   "shellExecution.mxcBashUnavailable": "이 샌드박스에서는 Bash 를 쓸 수 없습니다: 명령마다 Git Bash 가 시작될 수 없는 Windows 컨테이너에서 실행됩니다. PowerShell 도구를 사용하세요. Git Bash 실행은 executionMode \"host\" 와 사유를 붙여, 사용자 승인 후에만 가능합니다.",
