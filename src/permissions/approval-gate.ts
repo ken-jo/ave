@@ -50,6 +50,7 @@ import {
   requiresUnsandboxedShellAsk,
   type HostShellExecutionPlanAuditProjection,
 } from "./host-shell-execution-plan.js";
+import { isCurrentIssuedHostShellExecutionPlan } from "./host-shell-execution-plan-issuance.js";
 import type { FloorSessionGrant } from "./permission-manager.js";
 import { errorMessage } from "../shared/error-message.js";
 import { resolve as pathResolve } from "node:path";
@@ -1193,11 +1194,15 @@ export class ApprovalGate {
       req.source === "builtin" && (req.toolName === "bash" || req.toolName === "powershell" || hostTerminal !== undefined) && req.toolCategory === "shell" &&
       req.category === "tool" && (req.kind === undefined || req.kind === "tool");
     const hasHostShellApprovalContract = hasOneShotHostShellApprovalContract || hasShellRuleApprovalContract;
-    // The sandbox-unavailable floor card keeps its one-shot answer and permit binding; its only lasting choice is this conversation's later shells and hooks.
+    // A terminal types into an existing shell, so its sealed host route carries a plan without a spawn permit binding.
+    const terminalFloorPlan = hostTerminal !== undefined && hostShellExecutionPlan?.executionRequest === "host" &&
+      isCurrentIssuedHostShellExecutionPlan(hostShellExecutionPlan) ? hostShellExecutionPlan : undefined;
+    const floorSessionPlan = hostTerminal !== undefined
+      ? terminalFloorPlan
+      : req.toolName === "bash" || req.toolName === "powershell" ? hostShellExecutionPermitBinding?.plan : undefined;
     const floorSessionGrant: FloorSessionGrant | undefined = requestedFloorSessionAllowed === true && hasOneShotHostShellApprovalContract &&
-      hostShellExecutionPermitBinding !== undefined && requiresUnsandboxedShellAsk(hostShellExecutionPermitBinding.plan) &&
-      hostTerminal === undefined && typeof req.sessionId === "string" && req.sessionId.length > 0 && req.source === "builtin" &&
-      (req.toolName === "bash" || req.toolName === "powershell") && req.toolCategory === "shell" &&
+      requiresUnsandboxedShellAsk(floorSessionPlan) &&
+      typeof req.sessionId === "string" && req.sessionId.length > 0 && req.source === "builtin" && req.toolCategory === "shell" &&
       req.category === "tool" && (req.kind === undefined || req.kind === "tool")
       ? Object.freeze({ code: "sandbox-unavailable" as const })
       : undefined;
@@ -1303,8 +1308,16 @@ export class ApprovalGate {
       }, req.sessionId, verifiedShellCommand, hostShellExecutionPlan)
       : undefined;
     // The floor's session allow covers this conversation's later shells and hooks on this floor, saved by the host from the pending card: no rule text, no project or global rule.
-    const shellRule = builtShellRule !== undefined && floorSessionGrant !== undefined
-      ? { ...builtShellRule, exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true as const }
+    const terminalFloorContext = hostTerminal !== undefined && floorSessionGrant !== undefined ? {
+      dialect: "bash" as const,
+      denyRule: null,
+      denyAllowed: false,
+      projectCwd: hostTerminal.physicalCwd,
+      projectRoot: hostTerminal.physicalCwd,
+    } : undefined;
+    const floorRuleContext = builtShellRule ?? terminalFloorContext;
+    const shellRule: ShellRuleApproval | undefined = floorRuleContext !== undefined && floorSessionGrant !== undefined
+      ? { ...floorRuleContext, exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true }
       : builtShellRule;
     const fullReq: ApprovalRequest = {
       ...request,

@@ -3,7 +3,7 @@ import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-g
  * The physical directory, current user turn and final route remain independently enforced.
  * Only the host PTY typing and its disclosure are stubs, recording what would have been typed. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -18,9 +18,12 @@ import { ToolRegistry } from "../registry.js";
 import { createTerminalRunTool } from "../terminal-run.js";
 import { TerminalBlockTracker, registerTerminalBlockTracker, __resetTerminalBlocksForTest } from "../../main/terminal/terminal-blocks.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+import { sessionGate } from "../../__tests__/support/forced-shell-card.js";
+import { partialWindowsAsrt } from "../../__tests__/support/host-shell-sandbox-fixtures.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
 import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/terminal-markers.js";
-import { runWithHostTerminalTurn } from "../host-terminal-turn.js";
+import { noteToolResultsReturnedToModel, runWithHostTerminalTurn } from "../host-terminal-turn.js";
 import { PATH_POLICY_DECISION_MISMATCH_ERROR } from "../../permissions/execution-router.js";
 import type { OperatorContainerCapability } from "../../permissions/operator-container-attestation.js";
 import type { ToolPermissionContext } from "../executor.js";
@@ -59,6 +62,7 @@ function publishOperatorContainer(): void {
   operatorHarness.issued.add(capability);
 }
 
+const ORIGINAL_PLATFORM = process.platform;
 const WINDOW = 7;
 const HOST = "terminal:0000c0de-1";
 const mark = terminalMarker;
@@ -67,6 +71,7 @@ let dir: string;
 beforeEach(() => { dir = realpathSync(mkdtempSync(join(tmpdir(), "ave-terminal-run-host-"))); });
 afterEach(() => {
   vi.unstubAllEnvs();
+  setProcessPlatform(ORIGINAL_PLATFORM);
   operatorHarness.current = null;
   _resetAveHomePrivacyForTest();
   __resetTerminalBlocksForTest();
@@ -76,34 +81,39 @@ afterEach(() => {
 });
 
 async function run(command: string, options: {
+  sessionId?: string;
+  permissionManager?: PermissionManager;
+  approvalGate?: ApprovalGate;
   mode?: "allow" | "default" | "strict";
   rules?: Array<{ pattern: string; action: "allow" | "deny" | "ask" }>;
   choice?: "allow-once" | "deny-once";
   surfaceChoice?: "allow" | "auto" | "ask";
   headless?: boolean;
+  afterExternalContent?: boolean;
   /** The turn the call runs in: the user's own typed turn by default; `null` runs it in a turn that is not the user's. */
   turn?: { sessionId: string; turnId: string } | null;
   permissionContext?: Partial<ToolPermissionContext>;
   /** Runs inside the PTY layer before its first pre-write effect check. */
   duringTyping?: () => void;
 } = {}) {
+  const sessionId = options.sessionId ?? "pane";
   const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
   tracker.recordOutput(`${mark("D;0")}${mark(`P;Cwd=${dir};Keys=emacs;Paste=1`)}${mark("A")}% ${mark("B")}`);
   const session = terminalSessionFixture(HOST, "manual");
   registerTerminalBlockTracker(session, tracker, WINDOW);
-  const pm = new PermissionManager(join(dir, "permissions.json"));
+  const pm = options.permissionManager ?? new PermissionManager(join(dir, "permissions.json"));
   pm.setMode(options.mode ?? "default");
   for (const rule of options.rules ?? []) await pm.addRulePersist(rule, { kind: "user" });
-  if (options.surfaceChoice) pm.setUserOwnedSurfaceChoice("pane", "host-terminal", options.surfaceChoice);
-  const review = vi.spyOn(pm, "dispatchReviewer");
-  const check = vi.spyOn(pm, "checkDetailed");
+  if (options.surfaceChoice) pm.setUserOwnedSurfaceChoice(sessionId, "host-terminal", options.surfaceChoice);
+  const review = vi.spyOn(pm, "dispatchReviewer").mockClear();
+  const check = vi.spyOn(pm, "checkDetailed").mockClear();
   const typed: string[] = [];
   const refusals: string[] = [];
   const registry = new ToolRegistry();
   registry.register(createTerminalRunTool({
-    windowIdForHostedSession: (sessionId) => (sessionId === "pane" ? WINDOW : null),
+    windowIdForHostedSession: (candidate) => (candidate === sessionId ? WINDOW : null),
     liveOriginSessionId: () => undefined,
-    boundSurface: (_windowId, sessionId) => (sessionId === "pane" ? { kind: "terminal", tabId: HOST } : undefined),
+    boundSurface: (_windowId, candidate) => (candidate === sessionId ? { kind: "terminal", tabId: HOST } : undefined),
     ensureConversationTerminal: async () => { throw new Error("a pane chat never reaches an isolated terminal"); },
     typeCommand: async () => { throw new Error("a pane chat never types into an isolated terminal"); },
     verifyShell: async () => { throw new Error("unused"); },
@@ -123,7 +133,7 @@ async function run(command: string, options: {
         return { ok: true, firstBlockId: 1 };
       },
       waitDisclosure: async (_ref, _windowId, _sessionId, turnId) => ({
-        requestingSessionId: "pane", turnId, command, cwd: dir, blockId: 1, state: "done", exitCode: 0, output: "done\n", outputChars: 5, truncated: false,
+        requestingSessionId: sessionId, turnId, command, cwd: dir, blockId: 1, state: "done", exitCode: 0, output: "done\n", outputChars: 5, truncated: false,
       }),
     },
   }));
@@ -135,23 +145,26 @@ async function run(command: string, options: {
       ...(choice === "allow-once" && request.userOwnedSurface && !request.userOwnedSurfaceReviewFallback ? { userOwnedSurfaceChoice: "ask" as const } : {}),
     }, owner as never);
   } };
-  const gate = new ApprovalGate(owner as never);
+  const gate = options.approvalGate ?? new ApprovalGate(owner as never);
   const requestAndWait = vi.spyOn(gate, "requestAndWait");
   const executor = new ToolExecutor(registry, undefined, pm, undefined, gate);
-  const turn = options.turn === undefined ? { sessionId: "pane", turnId: "turn-1" } : options.turn ?? undefined;
-  const [result] = await runWithHostTerminalTurn(turn, () => runWithToolExecutionCwd(dir, () => executor.executeAll(
-    [{ id: "terminal-run-host", name: "terminal_run", input: { command, waitSeconds: 0 } }],
-    // A user-typed turn's tool calls carry the model's own arguments (`llm-tool-arg`), as the query loop passes them.
-    { sessionId: "pane", permissionContext: userPermissionContext({
-      trustOrigin: "llm-tool-arg", ...(options.headless ? { headless: true } : {}), ...options.permissionContext,
-    }) },
-  )));
+  const turn = options.turn === undefined ? { sessionId, turnId: "turn-1" } : options.turn ?? undefined;
+  const [result] = await runWithHostTerminalTurn(turn, () => {
+    if (options.afterExternalContent) noteToolResultsReturnedToModel();
+    return runWithToolExecutionCwd(dir, () => executor.executeAll(
+      [{ id: "terminal-run-host", name: "terminal_run", input: { command, waitSeconds: 0 } }],
+      // A user-typed turn's tool calls carry the model's own arguments (`llm-tool-arg`), as the query loop passes them.
+      { sessionId, permissionContext: userPermissionContext({
+        trustOrigin: "llm-tool-arg", ...(options.headless ? { headless: true } : {}), ...options.permissionContext,
+      }) },
+    ));
+  });
   return {
     decision: check.mock.results[0]?.value,
     context: check.mock.calls[0]?.[4],
     request: requestAndWait.mock.calls[0]?.[0] as Record<string, unknown> | undefined,
     requestAndWait,
-    surfaceChoice: pm.getUserOwnedSurfaceChoice("pane", "host-terminal"),
+    surfaceChoice: pm.getUserOwnedSurfaceChoice(sessionId, "host-terminal"),
     review,
     typed,
     refusals,
@@ -291,6 +304,73 @@ describe("terminal_run host permission", () => {
       expect(approved.requestAndWait).toHaveBeenCalledOnce();
       expect(approved.typed).toEqual(["printf ready"]);
     });
+});
+
+
+describe("terminal_run without Windows shell containment", () => {
+  const command = "printf ready";
+  const exactRule = { pattern: hostRule(command), action: "allow" as const };
+
+  beforeEach(partialWindowsAsrt);
+
+  it.each([
+    { label: "an exact saved host rule", rules: [exactRule] },
+    { label: "allow mode", mode: "allow" as const },
+    { label: "the surface allow choice", surfaceChoice: "allow" as const },
+  ])("forces a card despite $label", async ({ label: _label, ...options }) => {
+    const denied = await run(command, options);
+    expect(denied.decision).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable", forceModal: true });
+    expect(denied.requestAndWait).toHaveBeenCalledOnce();
+    expect(denied.request).toMatchObject({
+      forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false,
+    });
+    expect(denied.review).not.toHaveBeenCalled();
+    expect(denied.typed).toEqual([]);
+    expect(denied.result.is_error).toBe(true);
+  });
+
+  it("denies headless with an exact rule, allow mode and the surface allow choice", async () => {
+    const denied = await run(command, {
+      headless: true, mode: "allow", surfaceChoice: "allow", rules: [exactRule],
+    });
+    expect(denied.result.is_error).toBe(true);
+    expect(denied.result.content).toContain("Nobody can approve this request; do not retry.");
+    expect(denied.requestAndWait).not.toHaveBeenCalled();
+    expect(denied.review).not.toHaveBeenCalled();
+    expect(denied.typed).toEqual([]);
+  });
+
+  it("passes the floor for the conversation that waived it and asks again in another", async () => {
+    const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+    const session = sessionGate(permissionManager);
+    const options = { permissionManager, mode: "allow" as const, surfaceChoice: "allow" as const };
+
+    const first = await run(command, { ...options, approvalGate: session.gate });
+    expect(session.cards()[0]).toMatchObject({
+      shellRule: { exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true },
+    });
+    expect(session.saves).toEqual([expect.objectContaining({ ok: true })]);
+    expect(first.typed).toEqual([command]);
+    expect(existsSync(join(dir, "permissions.json"))).toBe(false);
+
+    const later = await run("printf later", options);
+    expect(later.requestAndWait).not.toHaveBeenCalled();
+    expect(later.typed).toEqual(["printf later"]);
+
+    const surfaceAsk = await run(command, { ...options, surfaceChoice: "ask" });
+    expect(surfaceAsk.requestAndWait).toHaveBeenCalledOnce();
+    expect(surfaceAsk.typed).toEqual([]);
+
+    const afterContent = await run(command, { ...options, afterExternalContent: true });
+    expect(afterContent.decision).toMatchObject({ decision: "ask", reasonCode: "other-principal", forceModal: true });
+    expect(afterContent.request).not.toHaveProperty("floorSessionAllowed");
+    expect(afterContent.typed).toEqual([]);
+
+    const other = await run(command, { ...options, sessionId: "other-pane" });
+    expect(other.decision).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable", forceModal: true });
+    expect(other.requestAndWait).toHaveBeenCalledOnce();
+    expect(other.typed).toEqual([]);
+  });
 });
 
 for (const surfaceChoice of ["allow", "auto", "ask"] as const) {
