@@ -7,7 +7,12 @@ const decision: ApprovalDecision = { requestId: "card", choice: "allow-once" };
 
 describe("the policy of a pending tool answer", () => {
   it("keeps the same-card policy transition in the shared check for CD1 cards", () => {
-    for (const file of ["../../tools/invocation-authorization.ts", "../../tools/invocation-execution.ts", "../../hooks/hook-command-policy.ts"]) {
+    for (const file of [
+      "../../tools/invocation-authorization.ts",
+      "../../tools/invocation-execution.ts",
+      "../../tools/pipeline/user-owned-surface.ts",
+      "../../hooks/hook-command-policy.ts",
+    ]) {
       const source = readFileSync(new URL(file, import.meta.url), "utf8");
       expect(source).toMatch(/personAnswerStands\(/);
       expect(source).not.toMatch(/\.allowsPolicyTransition/);
