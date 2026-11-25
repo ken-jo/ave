@@ -3,7 +3,7 @@ import { mxcConfinementStatePaths } from "./mxc-runtime-root.js";
 import { isGrantPathWithin } from "./sandbox-write-policy.js";
 import { srtWinConfinementStatePaths } from "./srt-win-integrity.js";
 
-export const CONFINEMENT_STATE_WRITE_GRANT_CODE = "confinement-state-write-grant";
+const CONFINEMENT_STATE_WRITE_GRANT_CODE = "confinement-state-write-grant";
 
 /** A write grant would equal, sit inside or contain a confinement backend's own state, or that state could not be located. */
 export class ConfinementStateWriteGrantError extends Error {
@@ -34,7 +34,8 @@ export function assertWriteGrantsOutsideConfinementState(
 }
 
 /** Every backend's declared state, for a grant chosen before a backend is selected. An unlocatable declaration is left to
- * that backend's own grant check, which refuses then. */
+ * that backend's own grant check, which refuses then. Both declaring backends grant on Windows only. */
 export function declaredConfinementStatePaths(): string[] {
+  if (process.platform !== "win32") return [];
   return [...(srtWinConfinementStatePaths() ?? []), ...mxcConfinementStatePaths()];
 }

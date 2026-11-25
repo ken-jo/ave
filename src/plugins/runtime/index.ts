@@ -58,7 +58,6 @@ import {
   deferExtensionStart, dropPluginExtensionStarts, isExtensionStartConsentRequired, pluginChildStartKey, pluginStartLabel, takeExtensionStartGrant,
 } from "../../permissions/extension-start-consent.js";
 import { probeExtensionStart } from "../../permissions/asrt-sandbox.js";
-import { CONFINEMENT_STATE_WRITE_GRANT_CODE } from "../../permissions/confinement-state-paths.js";
 import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError, pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../isolation/out-of-process-plugin.js";
 import { PluginChildTerminationUnverifiedError } from "../isolation/plugin-child-transport.js";
 import { bindPluginInstanceIntegrity, recordPluginFactoryIntegrity } from "../runtime-integrity-evidence.js";
@@ -6520,7 +6519,6 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
  * keep the generic text. (A start failure is a child RPC error and never carries one of these host refusals.) */
 const CONTAINER_REFUSAL_CODES = new Set([
   "native-entry-required", "worker-transport-unsupported", "extension-readiness-refused", "plugin-child-termination-unverified",
-  CONFINEMENT_STATE_WRITE_GRANT_CODE,
 ]);
 
 /** A quarantine reason taken from a localized container refusal already ends with that refusal's code; drop it when the

@@ -381,6 +381,21 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     expect(runtime.grantWindowsAcl).toHaveBeenCalledTimes(2);
   });
 
+  it("also refuses the profile's default state folder and the machine store when the variables point elsewhere", async () => {
+    const elsewhere = join(fixture, "relocated");
+    const profileState = join(fixture, "alice", "AppData", "Local", "sandbox-runtime");
+    const machineState = join(fixture, "machine", "sandbox-runtime", "ca");
+    for (const directory of [elsewhere, profileState, machineState]) mkdirSync(directory, { recursive: true });
+    vi.stubEnv("LOCALAPPDATA", elsewhere);
+    vi.stubEnv("ProgramData", join(fixture, "machine"));
+    await initializeAsrtSandbox({});
+    for (const path of [profileState, machineState]) {
+      await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [path] }))
+        .rejects.toMatchObject({ code: "confinement-state-write-grant", path });
+    }
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+  });
+
   it("refuses every write grant, and no read grant, when the helper's state cannot be located", async () => {
     vi.stubEnv("LOCALAPPDATA", "");
     await initializeAsrtSandbox({});

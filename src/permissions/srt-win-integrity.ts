@@ -266,8 +266,8 @@ export function srtWinPrivateDirectories(): string[] {
 
 const isDrivePath = (value: string | undefined): value is string => value !== undefined && /^[A-Za-z]:\\/u.test(value);
 
-/** The helper's own state: its per-user ACL ledger under `%LOCALAPPDATA%` (the runtime spawns it with the host's
- * environment, passing none of its own), the profile's default for that folder, and the machine store under
+/** The helper's own state: its per-user ACL ledger under `%LOCALAPPDATA%` (the runtime's ACL calls inherit the host's
+ * environment, passing none of their own), the profile's default for that folder, and the machine store under
  * `%ProgramData%`. Undefined when either variable is missing or not a drive path. */
 export function srtWinConfinementStatePaths(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] | undefined {
   const { LOCALAPPDATA: local, ProgramData: programData } = env;
