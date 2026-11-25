@@ -74,6 +74,18 @@ describe("a user-owned surface's review fallback card", () => {
 
   it("the person's Deny on the fallback card stands across a sibling's run rule", async () => {
     const { resolving } = await answerFallback("memory rule", {}, "deny-once");
-    expect(await resolving).toMatchObject({ humanApproved: false, decision: { choice: "deny-once" } });
+    expect(await resolving).toMatchObject({ humanApproved: false, decision: { choice: "deny-once" }, permission: { decision: "deny" } });
+  });
+
+  it("a person's Deny is a deny permission whatever the caller's re-check said, on a card of any kind", async () => {
+    const allowed: PermissionCheckResult = { decision: "allow", reason: "a run rule now allows this" };
+    const manager = { recheckPermission: vi.fn() } as unknown as PermissionManager;
+    const request = { id: "plain-card", sessionId: "stage-session", category: "tool", kind: "tool", toolName: "write_probe", toolCategory: "write", args: {}, reason: "paused", createdAt: 0 } as ApprovalRequestInput;
+    const resolved = await resolveUserOwnedSurfaceApproval({
+      manager, gate: {} as ApprovalGate, permission: allowed, decision: { requestId: request.id, choice: "deny-once" }, request, sessionId: "stage-session",
+      review: async permission => permission,
+    });
+    expect(resolved).toMatchObject({ humanApproved: false, permission: { decision: "deny" }, decision: { choice: "deny-once" } });
+    expect(manager.recheckPermission).not.toHaveBeenCalled();
   });
 });

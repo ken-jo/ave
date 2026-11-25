@@ -835,6 +835,51 @@ describe("executor automated approval pause", () => {
     }
   });
 
+  // No host shell receipt stands behind a write tool: only the person's Deny keeps it from running.
+  it.each(["deny", "approve"] as const)("a write tool's late card answered %s, re-checked as allow across a sibling's run rule", async (answer) => {
+    const f = await subject();
+    f.manager.setMode("auto");
+    const execute = vi.fn(async () => "late-write");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const held = heldHandlerFinalizers("late-write", 2);
+    const { gate, cards, approve, deny } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const pending = executor.executeAll([{ id: "late-write", name: "write_probe", input: { path: join(f.root, "late.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    try {
+      await held.waits[0].reached;
+      await f.pause();
+      held.waits[0].release();
+      await vi.waitFor(() => expect(cards).toHaveLength(1));
+      registerRunSession("work-board:7#run-a", "sibling-stage-session", { stageId: "build", stageName: "Build", lane: "attended" });
+      f.manager.addRunRule("sibling-stage-session", "Bash(npm test)");
+      const original = f.manager.recheckPermission.bind(f.manager);
+      vi.spyOn(f.manager, "recheckPermission").mockImplementation((result, options) => {
+        const rechecked = original(result, options);
+        if (options?.acrossMemoryRuleChanges === true) rechecked.decision = "allow";
+        return rechecked;
+      });
+      (answer === "approve" ? approve : deny)(cards[0]);
+      if (answer === "approve") {
+        await held.waits[1].reached;
+        held.waits[1].release();
+      }
+      const [result] = await pending;
+      if (answer === "approve") {
+        expect(result.is_error, result.content).toBeUndefined();
+        expect(execute).toHaveBeenCalledOnce();
+      } else {
+        expect(result.is_error).toBe(true);
+        expect(execute).not.toHaveBeenCalled();
+      }
+    } finally {
+      __resetRunGrantsForTest();
+    }
+  });
+
   it("preserves a rule-issued host permit when the reviewer pauses before the handler", async () => {
     const f = await subject();
     const command = "printf rule-permit";

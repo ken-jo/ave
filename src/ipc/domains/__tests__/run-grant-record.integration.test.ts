@@ -95,6 +95,12 @@ async function subject() {
     [{ id: randomUUID(), name: "write_probe", input: { path: join(root, "shared", "result.txt") } }],
     { sessionId, executionCwd: join(root, stage), permissionContext: userPermissionContext({ additionalDirectories: [root] }) },
   ));
+  /** A write to a folder no stage may write to yet: the folder-access card. */
+  const outside = resources.makeTmpDir("ave-run-grant-outside-");
+  const writeOutside = (sessionId: string, stage: string) => track(executor.executeAll(
+    [{ id: randomUUID(), name: "write_probe", input: { path: join(outside, "result.txt") } }],
+    { sessionId, executionCwd: join(root, stage), permissionContext: userPermissionContext({ additionalDirectories: [root] }) },
+  ));
   /** A host shell command from a stage session, in that stage's own folder. */
   const shellRun = (sessionId: string, stage: string, command: string) => track(executor.executeAll(
     [{ id: randomUUID(), name: "bash", input: { command, executionMode: "host", justification: "Print one local value", timeoutSeconds: 1 } }],
@@ -119,7 +125,7 @@ async function subject() {
   });
   const link = (runKey: string, sessionId: string, stageId: string, lane: "attended" | "unattended" = "attended") =>
     hooks.sessionLinked(runKey, sessionId, { stageId, stageName: stageId, lane });
-  return { root, gate, manager, hooks, registry, execute, invoke, cards, nextCard, write, shellRun, queueCard, record, link };
+  return { root, gate, manager, hooks, registry, execute, invoke, cards, nextCard, write, writeOutside, shellRun, queueCard, record, link };
 }
 
 describe("Allow for this run, from the card to node R", () => {
@@ -278,6 +284,28 @@ describe("Allow for this run, from the card to node R", () => {
     expect(tested?.is_error, JSON.stringify(tested)).toBeUndefined();
     expect(tested?.content).toBe("run-proof");
     expect(ran).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["sibling run rule", "other policy change"] as const)("a folder-access card answered across a policy change: %s", async (change) => {
+    const f = await subject();
+    f.link(RUN, "plan-session", "plan");
+    f.link(RUN, "build-session", "build");
+    const building = f.writeOutside("build-session", "build");
+    const card = await f.nextCard(1);
+    expect(card.kind).toBe("out-of-allowed-dir");
+    const before = f.manager.getPolicyEpoch();
+    if (change === "sibling run rule") f.manager.addRunRule("plan-session", "Bash(npm test)");
+    else f.manager.setRules([{ pattern: "Bash(npm test)", action: "allow" }]);
+    expect(f.manager.getPolicyEpoch()).not.toBe(before);
+    f.invoke(PERMISSIONS.approvalRespond, allowOnceCardAnswer(card));
+    const [built] = await building;
+    if (change === "sibling run rule") {
+      expect(built?.is_error, JSON.stringify(built)).toBeUndefined();
+      expect(f.execute).toHaveBeenCalledTimes(1);
+    } else {
+      expect(built).toMatchObject({ is_error: true, content: "Permission policy changed during approval." });
+      expect(f.execute).not.toHaveBeenCalled();
+    }
   });
 
   it("in auto mode a card the reviewer sent to a person is still answered after a sibling's run rule", async () => {

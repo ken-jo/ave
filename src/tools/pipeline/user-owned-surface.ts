@@ -1,3 +1,4 @@
+import { t } from "../../i18n/runtime.js";
 import { answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince } from "../../permissions/pending-answer-policy.js";
 import { randomUUID } from "node:crypto";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
@@ -31,6 +32,13 @@ export async function resolveUserOwnedSurfaceApproval(input: {
 }): Promise<{ permission: PermissionCheckResult; decision: ApprovalDecision; humanApproved?: boolean }> {
   const { manager, gate, request, sessionId } = input;
   let { permission, decision } = input;
+  // A person's Deny is a deny permission from here on, whatever a re-check of the call said: no caller has to read the choice again
+  // to keep a denied call from running.
+  const personDenied = (answer: ApprovalDecision): { permission: PermissionCheckResult; decision: ApprovalDecision; humanApproved: false } => ({
+    permission: permission.decision === "deny" ? permission : { ...permission, decision: "deny", reason: t("be_executor.approvalDeniedByUser", { name: request.toolName }) },
+    decision: answer, humanApproved: false,
+  });
+  if (decision.choice.startsWith("deny") && !isHostApprovalRejectedDecision(decision)) return personDenied(decision);
   if (!request.userOwnedSurface || !sessionId || !decision.choice.startsWith("allow") || Boolean(isHostApprovalRejectedDecision(decision))) return { permission, decision };
   permission = manager.recheckPermission(permission);
   if (permission.decision === "deny") return { permission, decision: { requestId: decision.requestId, choice: "deny-once" }, humanApproved: false };
@@ -64,5 +72,6 @@ export async function resolveUserOwnedSurfaceApproval(input: {
     if (!answerSurvivesRecheck(permission, fallback.forceExplicit === true)) throw new Error("Permission policy changed while approval was pending.");
   } else permission = manager.recheckPermission(permission);
   if (permission.decision === "deny") throw new Error(permission.reason);
+  if (decision.choice.startsWith("deny") && !isHostApprovalRejectedDecision(decision)) return personDenied(decision);
   return { permission, decision, humanApproved: decision.choice === "allow-once" && !isHostApprovalRejectedDecision(decision) };
 }
