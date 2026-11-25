@@ -43,7 +43,7 @@ describe("native governed XLSX command", () => {
         const policyFixture = join(directory, "policy-home");
         mkdirSync(policyFixture);
         vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([policyFixture]);
-        await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } });
+        await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } }, async () => false);
         const { substrate } = planWindowsSandbox({ shellRequested: true, shellLocalNetworkAccess: true, workerRequested: false,
           mxc: { state: "available" }, windowsBuild: started.windowsBuild, srtWinReady: false });
         setWindowsSandboxSubstrate(substrate, mxcShellCapability());

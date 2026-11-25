@@ -1,6 +1,7 @@
 // One row per permission decision point: what it answers today, in one closed vocabulary.
 // A row whose answer differs from the policy core carries `core` and is listed in EXCEPTIONS; fixing it removes both.
-// LEAD rule: a fix PR that closes an I-id must flip or delete its exception row in the same PR.
+// LEAD rule: a fix PR that closes an I-id must flip or delete its exception row in the same PR, and move the id into RESOLVED
+// with the row that now proves it. Every I-id sits in exactly one of EXCEPTIONS, INCONSISTENCIES_WITHOUT_ROW and RESOLVED.
 // Tree = docs/architecture/permission-decision-tree.md line(s), or "no row".
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,7 +14,8 @@ import {
   decidePermission, NO_APPROVER_MESSAGE, offersFloorSessionAllow,
   type PermissionDecisionRequest, type PermissionFloorCode, type PermissionPipelineOutcome,
 } from "../decision-pipeline.js";
-import { isLoopbackAddress, isReservedAddress, parseRelayAllowEntry, resolvedAddressPermitted } from "../egress-relay/destination.js";
+import { isLoopbackAddress } from "../egress-relay/address-set.js";
+import { isReservedAddress, parseRelayAllowEntry, resolvedAddressPermitted } from "../egress-relay/destination.js";
 import {
   buildHostShellExecutionPlan, HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL, requiresUnsandboxedShellAsk,
   type HostShellExecutionPlan,
@@ -249,8 +251,7 @@ const ROWS: readonly Row[] = [
     observe: () => ({ outcome: ["127.0.0.1", "169.254.169.254"].some(address => resolvedAddressPermitted("name.example", address, 443, [], [])) ? "allow" : "deny",
       reason: "relay:resolved-local-or-reserved" }) },
   { id: "D34.b", point: "a name resolving to a reserved address the allow list names", tree: "no row", unknown: "-",
-    today: { outcome: "allow", reason: "relay:allow-listed-address" },
-    core: { outcome: "deny" },
+    today: { outcome: "deny", reason: "relay:allow-listed-address" },
     observe: () => ({ outcome: resolvedAddressPermitted("name.example", "169.254.169.254", 80, [parseRelayAllowEntry("169.254.169.254:80")], []) ? "allow" : "deny",
       reason: "relay:allow-listed-address" }) },
   // Layer 2: start and launch admission.
@@ -344,7 +345,6 @@ const ROWS: readonly Row[] = [
 // Inconsistency id (policy design, section 3) -> the rows that still answer differently from the policy core.
 const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
   I2: ["L5"],
-  I5: ["D34.b"],
   I8: ["L4"], // also carries an uncoded reason (I15); PF2 clears it
   I10: ["L1"],
   I11: ["D26"],
@@ -353,6 +353,11 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
   I16: ["L18"],
   I18: ["L6"],
   I19: ["D30"],
+};
+
+// Closed inconsistency -> the row that proves it, which answers as the policy core does.
+const RESOLVED: Readonly<Record<string, string>> = {
+  I5: "D34.b",
 };
 
 // Inconsistencies no driven row can show, and why.
@@ -459,7 +464,12 @@ describe("permission vocabulary contract", () => {
     expect(driven.filter(id => id in NOT_DRIVEN)).toEqual([]);
     expect([...driven, ...Object.keys(NOT_DRIVEN)].sort()).toEqual([...points].sort());
     const inconsistencies = Array.from({ length: 28 }, (_, index) => `I${index + 1}`);
-    expect(Object.keys(EXCEPTIONS).filter(id => id in INCONSISTENCIES_WITHOUT_ROW)).toEqual([]);
-    expect([...Object.keys(EXCEPTIONS), ...Object.keys(INCONSISTENCIES_WITHOUT_ROW)].sort()).toEqual([...inconsistencies].sort());
+    expect([...Object.keys(EXCEPTIONS), ...Object.keys(INCONSISTENCIES_WITHOUT_ROW), ...Object.keys(RESOLVED)].sort()).toEqual([...inconsistencies].sort());
+    for (const [id, proof] of Object.entries(RESOLVED)) {
+      const row = ROWS.find(candidate => candidate.id === proof);
+      expect(row, id).toBeDefined();
+      expect(row?.core, id).toBeUndefined();
+      expect(Object.values(EXCEPTIONS).flat(), id).not.toContain(proof);
+    }
   });
 });

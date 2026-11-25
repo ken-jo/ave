@@ -1,4 +1,5 @@
 import net from "node:net";
+import { EOL } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -8,16 +9,20 @@ import * as policyHome from "../../shared/policy-home.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { SandboxManager, type ParentProxyRouter, type SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import {
+  annotateWithSandboxViolations,
   closeAllEgressConnections,
   closeEgressConnections,
   DEFAULT_WINDOWS_PROXY_PORT_RANGE,
   getWindowsProxyPortRange,
   initializeAsrtSandbox,
+  isAsrtSandboxActive,
   resetAsrtSandbox,
+  wrapToolCommand,
 } from "../asrt-sandbox.js";
 import { openInvocationProxyListener, type InvocationProxyListener } from "../egress-invocation-listener.js";
 import { openHostEgressListener } from "../egress-host-listener.js";
 import { EgressGrantStore } from "../egress-grants.js";
+import { startEgressRelayService } from "../egress-relay/relay.js";
 
 const TOKEN = "proxy-only-invocation-token-00001";
 const DESTINATION = { host: "8.8.8.8", port: 443, network: "public" as const };
@@ -235,28 +240,47 @@ describe.skipIf(process.platform !== "win32")("proxy-only connection revocation"
     expect(second.received.join("")).toBe("before-close");
   });
 
-  it("clears the synchronous release manager and configured range on reset", async () => {
-    await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true, proxyPortRange: [42000, 42009] } });
-    const closeAll = vi.spyOn(SandboxManager, "closeAllInvocationConnections").mockReturnValue(7);
-    const closeSome = vi.spyOn(SandboxManager, "closeInvocationConnections").mockReturnValue(3);
-    expect(closeAllEgressConnections()).toBe(7);
-    expect(closeEgressConnections([TOKEN], DESTINATION.host, DESTINATION.port)).toBe(3);
-    await resetAsrtSandbox();
-    closeAll.mockClear();
-    closeSome.mockClear();
+  it("leaves the wrap runtime uninitialized, refuses wraps, and clears the configured range on reset", async () => {
+    const initialize = vi.spyOn(SandboxManager, "initialize");
+    const closeAll = vi.spyOn(SandboxManager, "closeAllInvocationConnections");
+    const closeSome = vi.spyOn(SandboxManager, "closeInvocationConnections");
+    await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true, proxyPortRange: [42000, 42009] } }, async () => true);
+    expect(initialize).not.toHaveBeenCalled();
+    expect(SandboxManager.getProxyPort()).toBeUndefined();
+    expect(isAsrtSandboxActive()).toBe(true);
+    expect(getWindowsProxyPortRange()).toEqual([42000, 42009]);
+    await expect(wrapToolCommand("echo ok", { commandId: TOKEN, toolName: "bash" } as never)).rejects.toThrow("the wrap runtime is not initialized");
     expect(closeAllEgressConnections()).toBe(0);
     expect(closeEgressConnections([TOKEN], DESTINATION.host, DESTINATION.port)).toBe(0);
+    await resetAsrtSandbox();
+    expect(closeAllEgressConnections()).toBe(0);
     expect(closeAll).not.toHaveBeenCalled();
     expect(closeSome).not.toHaveBeenCalled();
+    expect(isAsrtSandboxActive()).toBe(false);
     expect(getWindowsProxyPortRange()).toEqual(DEFAULT_WINDOWS_PROXY_PORT_RANGE);
   });
 
-  it("does not publish a release manager after initialization fails", async () => {
-    vi.spyOn(SandboxManager, "initialize").mockRejectedValueOnce(new Error("proxy startup failed"));
-    const closeAll = vi.spyOn(SandboxManager, "closeAllInvocationConnections");
-    await expect(initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } })).rejects.toThrow("proxy startup failed");
-    expect(closeAllEgressConnections()).toBe(0);
-    expect(closeAll).not.toHaveBeenCalled();
+  it("opens no route without an ask callback", async () => {
+    await initializeAsrtSandbox({ allowedDomains: ["example.com"], windows: { externalConfinement: true } });
+    await expect(openHostEgressListener(TOKEN)).rejects.toThrow("the service is not started");
+  });
+
+  it("annotates a command's output with its relay's refusals", async () => {
+    const relay = await startRelay(async () => ({ routes: [{ kind: "direct" }] }), async () => false);
+    const client = connectClient(relay);
+    await expect.poll(client.output).toContain("403");
+    expect(await annotateWithSandboxViolations(TOKEN, "stderr")).toBe(
+      ["stderr", "<sandbox_violations>", `deny network-outbound ${DESTINATION.host}:${DESTINATION.port} (user denied)`, "</sandbox_violations>"].join(EOL),
+    );
+    expect(await annotateWithSandboxViolations("another-invocation-token-00000002", "stderr")).toBe("stderr");
+  });
+
+  it("discards a session whose initialization fails, and its relay service", async () => {
+    startEgressRelayService({ ask: async () => true });
+    await expect(initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true, proxyPortRange: [42000, 42009] } }, async () => true))
+      .rejects.toThrow("the service is already started");
+    expect(isAsrtSandboxActive()).toBe(false);
+    await expect(openHostEgressListener(TOKEN)).rejects.toThrow("the service is not started");
     expect(getWindowsProxyPortRange()).toEqual(DEFAULT_WINDOWS_PROXY_PORT_RANGE);
   });
 });

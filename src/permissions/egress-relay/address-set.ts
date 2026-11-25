@@ -110,8 +110,10 @@ for (const range of LOOPBACK_RANGES) {
   if (!addRange(LOOPBACK, range)) throw new Error(`invalid address range: ${JSON.stringify(range)}`);
 }
 
+// Strict: the spelling is judged as written, so a zone on a spelling that is not an address (`127.0.0.1%eth0`, `::1%`) is not loopback.
 export function isLoopbackAddress(address: string): boolean {
-  return addressInSet(LOOPBACK, address);
+  const family = familyOf(address);
+  return family !== undefined && LOOPBACK.check(address, family);
 }
 
 export function isLoopbackName(hostname: string): boolean {

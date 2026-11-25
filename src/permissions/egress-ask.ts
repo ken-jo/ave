@@ -214,6 +214,7 @@ type AskAnswer =
   | { readonly allow: false; readonly decision: Decision; readonly humanDenied?: true };
 
 // Whether `host:port` matches one allowlist entry, by ASRT's own `allowedDomains` matcher (`d` exactly, `*.d` strictly under `d`, `*` anything, an optional `:port` suffix), so a worker reaches exactly what the shared allowlist let it reach before the lists were split per extension.
+// Not the relay's RelayAllowEntry: that one requires a port and has no bare `*`, so one grammar for both would widen or narrow extension allowlists.
 export function egressAllowlistMatches(entries: readonly string[], destination: EgressDestination): boolean {
   return entries.some((entry) =>
     typeof entry === "string" && matchesDomainPatternWithPort(destination.host, destination.port, entry));
