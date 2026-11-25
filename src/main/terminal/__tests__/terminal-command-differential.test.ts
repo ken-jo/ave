@@ -512,7 +512,11 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
     recentEvents.push({ at: Date.now(), kind, text: text.slice(-800), prompts: tracker.promptEndCount(), state: tracker.promptState() });
     if (recentEvents.length > 30) recentEvents.shift();
   };
-  const writeInput = (data: string): void => { recordEvent("input", data); pty.write(data); };
+  const writeInput = (data: string): boolean => {
+    recordEvent("input", data);
+    pty.write(data);
+    return true;
+  };
   let editorOutput = "";
   pty.onData((data) => {
     tracker.recordOutput(data);

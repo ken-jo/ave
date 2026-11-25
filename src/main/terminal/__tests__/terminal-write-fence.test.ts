@@ -75,15 +75,16 @@ function editor(editFailure?: { at: "echo" | "acknowledgement"; deny(): void }, 
       } },
     }, "alice");
     const target = {
-      blocks, signal, write, onBeforeEnter, missing: "no terminal",
+      blocks, signal, onBeforeEnter, missing: "no terminal",
+      write: (data: string, withdrawPaste?: true) => {
+        if (withdrawPaste && !canClear) return false;
+        write(data);
+        return true;
+      },
+      canWithdrawAfterCancellation: true,
       isLive: () => true,
       verify: async () => ({ ok: true as const, cwd: CWD }),
       fence: () => { order.push("fence"); return fence(); },
-      clearAfterAbort: () => {
-        if (!canClear) return false;
-        write(RESET);
-        return true;
-      },
     };
     return runWithEffectGateContext({ headless: false, toolName: "terminal_run", sessionId: "alice", permissionContext: { remoteControllerAuthority } },
       () => typeLineAtPrompt(target, COMMAND));
@@ -271,7 +272,7 @@ describe("terminal write fence", () => {
       const writes = [RESET, TERMINAL_EDIT_LINE_QUERY, PASTE, TERMINAL_EDIT_LINE_QUERY];
       if (revoke) {
         expect(result).toEqual({ ok: false, reason: "effect-refused", pasteUncleared: true,
-          message: deny.reason + "\nThe pasted line could not be cleared. Enter was not pressed." });
+          message: `${deny.reason}\nThe pasted line could not be cleared. Enter was not pressed.` });
       } else {
         writes.push(RESET);
         expect(result).toEqual({ ok: false, reason: "effect-refused", message: deny.reason });
@@ -329,13 +330,21 @@ describe("terminal write fence", () => {
     ]);
   });
 
-  it("routes the reset, query, paste and Enter through send", () => {
+  it("routes every protocol write, including host cleanup, through send", () => {
     const source = readFileSync(new URL("../pty-manager.ts", import.meta.url), "utf8");
+    const host = source.slice(source.indexOf("export async function typeHostTerminalCommand("), source.indexOf("export interface HostTerminalTypingRequest"));
     const typing = source.slice(source.indexOf("export async function typeLineAtPrompt("), source.indexOf("const TERMINAL_NOT_READY_MESSAGES"));
-    expect(typing.match(/\b\w+\.write\(/g)).toEqual(["originalTarget.write(", "originalTarget.write("]);
-    expect(typing).toContain('send("\\u0003",');
+    const writeSites = /\b(?:\w+\.)+write\(/g;
+    expect(host.match(writeSites)).toEqual(["session.pty.write("]);
+    expect(host).toMatch(/write: \(data, withdrawPaste\) => \{[^}]*session\.pty\.write\(data\)/);
+    expect(typing.match(writeSites)).toEqual(["target.write("]);
+    const sendBody = typing.slice(typing.indexOf("const send: SendPromptInput"), typing.indexOf("if (!hasOnlyTypeableCharacters("));
+    expect(sendBody).toContain("target.write(data, withdrawPaste)");
+    expect(typing).toContain('send("\\u0003", { beforeBytes:');
     expect(typing).toContain("send(TERMINAL_EDIT_LINE_QUERY)");
     expect(typing).toContain("send(`\\u001b[200~");
-    expect(typing).toContain('send("\\r",');
+    expect(typing).toContain('send("\\r", { beforeBytes:');
+    expect(typing).toContain('send("\\u0003")');
+    expect(typing).toContain('send("\\u0003", { withdrawPaste: true })');
   });
 });

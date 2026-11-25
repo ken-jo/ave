@@ -106,7 +106,10 @@ async function startShell(shellPath: string, options: { notFoundProgram?: string
       return typeLineAtPrompt({
         blocks: tracker,
         isLive: () => !tracker.hasExited(),
-        write: (data) => pty.write(data),
+        write: (data) => {
+          pty.write(data);
+          return true;
+        },
         verify: async (options) => {
           let reading = await readTerminalForeground(pty.pid, options);
           // Permit one real reread when the process-table command fails; semantic refusals and persistent unreadability still fail closed.
