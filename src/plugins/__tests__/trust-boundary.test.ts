@@ -19,6 +19,7 @@ import {
   TestPluginRuntime as PluginRuntime,
   writeTestPluginRegistry,
 } from "./test-helpers.js";
+import { stopTestPluginRuntimes } from "./test-helpers.js";
 import { servedAgentPluginsDocument } from "./test-helpers.js";
 
 const ENTRY_SOURCE = `export default async function createPlugin(ctx) {
@@ -43,8 +44,10 @@ describe("Phase 1 — plugin trust boundary", () => {
   });
 
   afterEach(async () => {
+    const stopped = await stopTestPluginRuntimes();
     await makeTestTreeWritable(testDir);
     await rm(testDir, { recursive: true, force: true });
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   async function writePluginAt(

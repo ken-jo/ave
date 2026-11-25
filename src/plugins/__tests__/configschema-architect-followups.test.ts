@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { TestPluginRuntime as PluginRuntime } from "./test-helpers.js";
+import { stopTestPluginRuntimes } from "./test-helpers.js";
 import { PluginPhase } from "../lifecycle-log.js";
 import {
   emitPluginConfigChange,
@@ -85,8 +86,10 @@ describe("US-3c.2 — PluginRuntime.restartPlugin", () => {
   });
 
   afterEach(async () => {
+    const stopped = await stopTestPluginRuntimes();
     await rm(testDir, { recursive: true, force: true });
     vi.restoreAllMocks();
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   async function writeFakePlugin(id: string): Promise<string> {

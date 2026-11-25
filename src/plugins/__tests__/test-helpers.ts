@@ -547,31 +547,38 @@ export function makeTestPluginRuntime(
   }));
 }
 
-/** Runtimes a file registers so `afterEach` stops them: a started entry plugin is a real child whose sandbox HOME is removed only when it exits. */
-export interface TestPluginRuntimeTracker {
-  track(runtime: PluginRuntime): PluginRuntime;
-  /** Stops every tracked runtime; returns the plugins that did not retire and the sandbox HOMEs (or `.owner` markers) still on disk. */
-  stopAll(): Promise<{ unfinished: string[]; leftHomes: string[] }>;
+// A started entry plugin is a real child whose sandbox HOME is removed only when it exits, so files that start runtimes stop them in `afterEach`.
+const testRuntimes = new Set<PluginRuntime>();
+
+/** Registers a runtime built without `bindTestPluginRuntimeGeneration`, which registers its own. */
+export function trackTestPluginRuntime<T extends PluginRuntime>(runtime: T): T {
+  testRuntimes.add(runtime);
+  return runtime;
 }
 
-export function createTestPluginRuntimeTracker(): TestPluginRuntimeTracker {
-  const runtimes = new Set<PluginRuntime>();
-  return {
-    track(runtime) {
-      runtimes.add(runtime);
-      return runtime;
-    },
-    async stopAll() {
-      const homes = [...sandboxProcessHomesInUse()];
-      const tracked = [...runtimes];
-      runtimes.clear();
-      const unfinished: string[] = [];
-      for (const runtime of tracked) unfinished.push(...(await runtime.stopAll()).unfinished);
-      const leftHomes = [...new Set([...homes, ...sandboxProcessHomesInUse()])].flatMap((home) =>
-        [home, `${home}${SANDBOX_HOME_OWNER_SUFFIX}`].filter((path) => existsSync(path)));
-      return { unfinished, leftHomes };
-    },
-  };
+// HOMEs an earlier call already reported, so one leak fails only the case that made it.
+const reportedHomes = new Set<string>();
+// Covers the HOME removal retries (50/250/1000 ms) and a child exit observed after `stopAll` settles.
+const HOME_REMOVAL_WAIT_MS = 2_000;
+
+/** Stops every registered runtime; returns the plugins that did not retire and the sandbox HOMEs (or `.owner` markers) still on disk. */
+export async function stopTestPluginRuntimes(): Promise<{ unfinished: string[]; leftHomes: string[] }> {
+  const homes = [...sandboxProcessHomesInUse()];
+  const runtimes = [...testRuntimes];
+  testRuntimes.clear();
+  const unfinished: string[] = [];
+  for (const runtime of runtimes) unfinished.push(...(await runtime.stopAll()).unfinished);
+  const remaining = (): string[] => [...new Set([...homes, ...sandboxProcessHomesInUse()])]
+    .filter((home) => !reportedHomes.has(home))
+    .flatMap((home) => [home, `${home}${SANDBOX_HOME_OWNER_SUFFIX}`].filter((path) => existsSync(path)));
+  const deadline = Date.now() + HOME_REMOVAL_WAIT_MS;
+  let leftHomes = remaining();
+  while (leftHomes.length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    leftHomes = remaining();
+  }
+  for (const path of leftHomes) reportedHomes.add(path);
+  return { unfinished, leftHomes };
 }
 
 export function makeTestPluginRuntimeWithAudit(
@@ -587,6 +594,7 @@ export function makeTestPluginRuntimeWithAudit(
 
 /** Runtime unit tests use mutable fixture roots with real coordinator publication; production keeps strict receipt-backed generation binding. */
 export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginRuntime {
+  trackTestPluginRuntime(runtime);
   const active = new Map<string, ActivePluginGeneration<HostPluginGenerationState>>();
   const lifecycleTails = new Map<string, Promise<void>>();
   const lifecycleQueueContext = new AsyncLocalStorage<ReadonlyMap<string, object>>();

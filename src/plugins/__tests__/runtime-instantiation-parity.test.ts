@@ -12,6 +12,7 @@ import {
   writeTestPluginRegistry,
   type TestPluginRuntimeFixture,
 } from "./test-helpers.js";
+import { stopTestPluginRuntimes } from "./test-helpers.js";
 
 const PLUGIN_ID = "parity-plugin";
 const TOOL = "parity_ping";
@@ -58,7 +59,9 @@ describe("PluginRuntime instantiation parity", () => {
   });
 
   afterEach(async () => {
+    const stopped = await stopTestPluginRuntimes();
     await rm(fixture.rootDir, { recursive: true, force: true });
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   it("startAll (load path) and cold addPlugin reach the same registered state", async () => {

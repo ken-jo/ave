@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 import { pureTool, TestPluginRuntime as PluginRuntime } from "./test-helpers.js";
+import { stopTestPluginRuntimes } from "./test-helpers.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { servedAgentPluginsDocument } from "./test-helpers.js";
 import { getLocale, setLocale } from "../../i18n/runtime.js";
@@ -56,7 +57,9 @@ describe("resolveFloatingSurface", () => {
   });
 
   afterEach(async () => {
+    const stopped = await stopTestPluginRuntimes();
     await cleanupTmpDir(tmp);
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   // The fixture ID also forms a tool name, so it must satisfy the tool-name pattern.

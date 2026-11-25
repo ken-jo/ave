@@ -8,6 +8,7 @@ import {
   pureTool,
   TestPluginRuntime as PluginRuntime,
 } from "./test-helpers.js";
+import { stopTestPluginRuntimes } from "./test-helpers.js";
 import { servedAgentPluginsDocument } from "./test-helpers.js";
 
 describe("manifest AJV and Tool visibility guards", () => {
@@ -23,7 +24,9 @@ describe("manifest AJV and Tool visibility guards", () => {
   });
 
   afterEach(async () => {
+    const stopped = await stopTestPluginRuntimes();
     await rm(testDir, { recursive: true, force: true });
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   async function writePlugin(id: string, manifestOverrides: Record<string, unknown> = {}): Promise<void> {

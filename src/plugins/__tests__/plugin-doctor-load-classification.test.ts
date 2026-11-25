@@ -10,6 +10,7 @@ import {
   writeTestPluginRegistry,
   type TestPluginRuntimeFixture,
 } from "./test-helpers.js";
+import { stopTestPluginRuntimes } from "./test-helpers.js";
 import { revocationRegistry } from "../revocation/revocation-registry.js";
 import { isReinstallFixableFailureKind } from "../../shared/plugin-install-failure.js";
 
@@ -37,8 +38,10 @@ describe("PluginRuntime Doctor load-failure classification", () => {
   let fixture: TestPluginRuntimeFixture;
 
   afterEach(async () => {
+    const stopped = await stopTestPluginRuntimes();
     revocationRegistry.resetForTesting();
     if (fixture) await rm(fixture.rootDir, { recursive: true, force: true });
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   // Without a receipt cache root, admission has no provenance evidence.

@@ -7,6 +7,7 @@ import {
   pureTool,
   TestPluginRuntime as PluginRuntime,
 } from "./test-helpers.js";
+import { stopTestPluginRuntimes } from "./test-helpers.js";
 import { agentPluginsDocument, servedAgentPluginsDocument } from "./test-helpers.js";
 import { buildManifestValidator, parsePluginJson } from "../runtime/manifest-validation.js";
 
@@ -26,7 +27,9 @@ describe("runtime manifest validation hardening", () => {
   });
 
   afterEach(async () => {
+    const stopped = await stopTestPluginRuntimes();
     await rm(testDir, { recursive: true, force: true });
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   async function writePlugin(
