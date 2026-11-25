@@ -13,7 +13,9 @@ import { setLocale } from "../../i18n/index.js";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { buildPolicyModel } from "../policy-model.js";
 import { rankMxcFilesystem } from "../mxc-windows.js";
-import { admitMxcExtensionFilesystem, buildPerCommandSandboxCustomConfig, getDefaultSensitiveReadDenyPaths, initializeAsrtSandbox, resetAsrtSandbox } from "../asrt-sandbox.js";
+import { admitMxcExtensionFilesystem, buildPerCommandSandboxCustomConfig, getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, initializeAsrtSandbox, resetAsrtSandbox } from "../asrt-sandbox.js";
+import { createAveHomeBoundarySnapshot } from "../ave-home-boundary-snapshot.js";
+import { canonicalizePathForMatch, getConfiguredSessionReadPolicy } from "../sensitive-paths.js";
 
 // The package wrap only: the session is set up through a stub manager, then each wrap is composed for the platform under test.
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
@@ -171,6 +173,24 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
   it.each(platforms)("on %s, keeps the pierce and its grants with no user deny", async (platform) => {
     await initializeWith([]);
     expect(readFor(platform)).toEqual([certs(), corp()]);
+  });
+
+  // The macOS and Linux shell withholds the saved-session read under a user's deny instead of refusing every command, only where the deny can match.
+  describe("the shell's saved-session read", () => {
+    const shellPlatforms = ["darwin", "linux"] as const;
+    const sessionRoot = () => getConfiguredSessionReadPolicy().allowRead[0]!;
+    const workspace = () => canonicalizePathForMatch(join(dirname(aveHome()), "workspace"));
+    const shellFor = (platform: NodeJS.Platform, sessionId = "session-a") => {
+      setProcessPlatform(platform);
+      return getBuiltinShellReadPolicy([workspace()], undefined, undefined, createAveHomeBoundarySnapshot(sessionId));
+    };
+
+    it.each(shellPlatforms)("on %s, keeps it and the working directory beside an unrelated bracket deny", async (platform) => {
+      await initializeWith([bracketElsewhere()]);
+      const policy = shellFor(platform);
+      expect(policy.allowRead).toEqual([workspace(), sessionRoot()]);
+      expect(policy.floorPierces).toEqual([sessionRoot()]);
+    });
   });
 
   // The container backend states the user's denies as their own rows and refuses in the rank, on the admitted paths.

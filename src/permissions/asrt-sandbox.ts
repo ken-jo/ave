@@ -1582,17 +1582,18 @@ function getBuiltinShellSessionReadPolicyInSnapshot(userDataDir = _baseTrustedSe
   const sessionPolicy = getConfiguredSessionReadPolicy();
   const sessionRoot = sessionPolicy.allowRead[0];
   const children = aveHomeProfileChildren();
-  const otherDenies = [
-    ...getDefaultSensitiveDenyPaths(userDataDir, sessionRoot, true, children),
-    ...(_baseTrustedSettings?.denyRead ?? []),
-  ];
+  const floorDenies = getDefaultSensitiveDenyPaths(userDataDir, sessionRoot, true, children);
+  const userDenies = _baseTrustedSettings?.denyRead ?? [];
+  const otherDenies = [...floorDenies, ...userDenies];
   // Windows shell confinement keeps the saved-session store denied for every command.
   // Elsewhere, a session allowance must stay outside other protected namespaces and trusted custom denies.
   const withheldSessionReadRoot = windowsObligationsApply() ? sessionRoot : undefined;
-  if (sessionRoot !== undefined && (withheldSessionReadRoot !== undefined || readDenyCovering(otherDenies)(sessionRoot) !== undefined)) {
+  const floorCovers = sessionRoot !== undefined && readDenyCovering(floorDenies)(sessionRoot) !== undefined;
+  const userCover = sessionRoot === undefined || withheldSessionReadRoot !== undefined ? undefined : userReadDenyCovering(userDenies)(sessionRoot);
+  if (sessionRoot !== undefined && (withheldSessionReadRoot !== undefined || floorCovers || userCover !== undefined)) {
     return Object.freeze({
       allowRead: Object.freeze([]),
-      denyRead: Object.freeze([...getDefaultSensitiveReadDenyPaths(userDataDir), ...(_baseTrustedSettings?.denyRead ?? [])]),
+      denyRead: Object.freeze([...getDefaultSensitiveReadDenyPaths(userDataDir), ...userDenies]),
       ...(withheldSessionReadRoot === undefined ? {} : { withheldSessionReadRoot }),
     });
   }
@@ -1628,8 +1629,12 @@ function composeBuiltinShellReadPolicy(readPaths: readonly string[], sandboxHome
   // allow this invocation's own HOME; an explicit protected deny keeps priority.
   const protectedDenies = new Set(getProtectedReadDenyPaths());
   const boundaryDenies = new Set(aveHomeReadBoundaryDenies());
-  const sessionDenyCovering = readDenyCovering(sessions.denyRead.filter((denied) =>
-    (!privateRoots.includes(denied) || protectedDenies.has(denied)) && !boundaryDenies.has(denied)));
+  // A user's deny withholds a read only where it can match; the host floor keeps its own reading.
+  const userDenies = new Set(getUserReadDenies());
+  const floorDenyCovering = readDenyCovering(sessions.denyRead.filter((denied) =>
+    !userDenies.has(denied) && (!privateRoots.includes(denied) || protectedDenies.has(denied)) && !boundaryDenies.has(denied)));
+  const userDenyCovering = userReadDenyCovering([...userDenies]);
+  const sessionDenyCovering = (path: string): string | undefined => floorDenyCovering(path) ?? userDenyCovering(path)?.rule;
   const privateRootCovering = readDenyCovering(privateRoots);
   const boundaryCovering = aveHomeReadBoundaryMatcher();
   const allowRead = [...readPaths, ...sessions.allowRead].filter((path) => {
