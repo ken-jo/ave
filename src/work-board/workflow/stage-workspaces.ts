@@ -9,10 +9,10 @@ import type { TemplateStage } from "../../shared/workflow-template-types.js";
 import { isStageId } from "../template-graph.js";
 import { type NameReader, plainFolderIgnore, projectFoldsCase } from "./folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
-import { type FolderId, holdDir, type NodeId, type OwnedDir, OwnedFsError, realDirId, realWithin, type SourceRoot } from "./owned-fs.js";
+import { type FolderId, holdDir, type NodeId, type OwnedDir, OwnedFsError, type Pin, realDirId, realWithin, type SourceRoot } from "./owned-fs.js";
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RemovedRunProject, RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
-import { IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, RUN_MARK, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
+import { ADMIN_MARK, adminPinOf, IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, RUN_MARK, runBranch, runPinOf, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
 import { isRecordFilePath, isWorkspaceRecord, type LiveRepo, type OutputFile, ownerOf, recordFits, type Registration, runFolderOf, type StageEntry, samePath, vetRecordPath, type WorkspaceRecord } from "./workspace-record.js";
 import { copySeedFiles, hashSeedFile, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
 
@@ -93,18 +93,27 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
   }
 
+  const runPin = (at: Pick<Held, "runRoot" | "project">): Pin => ({ dir: at.project, name: runPinOf(basename(at.runRoot)) });
+  /** Unlinks a pin whose anchor is gone, as it then holds nothing; with "any", one whose anchor is still there too. */
+  async function dropPin(dir: OwnedDir, name: string, any?: "any"): Promise<void> {
+    const id = any === "any" ? (dir.isFile(name) ? dir.entryId(name) : undefined) : dir.entryId(name, "single-link-file");
+    if (id !== undefined) await dir.remove(name, id);
+  }
+
   /** The record `open` wrote into this folder, or null: a file of another shape or version, a link, a file that has a second name, or a
-   * record that does not name this very folder as its own directs nothing. */
-  function readRunFile(runRoot: string, run: OwnedDir): WorkspaceRecord | null {
+   * record that does not name this very folder, by its pinned anchor, as its own directs nothing. */
+  function readRunFile(at: Pick<Held, "runRoot" | "project" | "run">): WorkspaceRecord | null {
     try {
-      const text = run.readFile(RUN_FILE);
+      const text = at.run.readFile(RUN_FILE);
       if (text === undefined) return null;
       const file: unknown = JSON.parse(EXACT_TEXT.decode(text));
-      return isWorkspaceRecord(file) && recordFits(aveHome(), { path: runRoot, id: run.id, self: run.mark(RUN_MARK) }, file) ? file : null;
+      return isWorkspaceRecord(file) && recordFits(aveHome(), { path: at.runRoot, id: at.run.id, self: at.run.mark(RUN_MARK, runPin(at)) }, file) ? file : null;
     } catch {
       return null;
     }
   }
+
+  const noLink = (error: unknown): boolean => error instanceof OwnedFsError && error.reason === "no-link";
 
   function writeRunFile(at: Pick<Held, "run">, file: WorkspaceRecord): void {
     at.run.writeFileAtomic(RUN_FILE, JSON.stringify(file));
@@ -137,7 +146,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
     for (const runRoot of candidates) {
       const chain = chainOf(runRoot);
-      const file = chain === null ? null : readRunFile(runRoot, chain.run);
+      const file = chain === null ? null : readRunFile({ runRoot, ...chain });
       if (chain === null || file === null || file.runId !== run.runId || file.itemId !== run.itemId) continue;
       roots.set(slug, runRoot);
       return { runRoot, file, ...chain, ...liveOf(file, run.projectRoot) };
@@ -159,38 +168,47 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (gitDir === undefined || at.file.repo === undefined) throw new OwnedFsError("not-plain", "the record's repository is not the open project's");
     return holdDir(gitDir, at.file.repo.id).existing("worktrees");
   }
+  const adminPin = (at: Held, key: string): Pin => ({ dir: at.project, name: adminPinOf(basename(at.runRoot), key) });
 
   /**
    * The registration git made for a folder of the run, read from the folder's `.git` file and taken only when the two name each other by
    * identity: the admin folder lies in this repository's `worktrees`, and its `gitdir` file points into this very folder of this very run
    * folder. Any other is not the run's.
    */
-  function captureRegistration(at: Held, key: string, folder: OwnedDir): Registration | undefined {
+  function captureRegistration(at: Held, key: string, folder: OwnedDir): { worktrees: OwnedDir; held: OwnedDir; admin: string; gitdir: string } | undefined {
     try {
       const admin = vetRecordPath("link", exactText(folder.readFile(".git")) ?? "", at.live);
       if (admin === undefined) return undefined;
-      const held = repoWorktrees(at)?.existing(basename(admin));
+      const worktrees = repoWorktrees(at);
+      const held = worktrees?.existing(basename(admin));
       const text = exactText(held?.readFile("gitdir"));
-      if (held === undefined || text === undefined) return undefined;
+      if (worktrees === undefined || held === undefined || text === undefined) return undefined;
       const gitdir = resolve(admin, gitdirOf(text));
       // A registration no later call would take is not recorded.
       const own = runFolderOf(at.run, key, gitdir);
-      return own !== undefined && realDirId(own) === folder.id ? { admin, id: held.id, gitdir } : undefined;
+      return own !== undefined && realDirId(own) === folder.id ? { worktrees, held, admin, gitdir } : undefined;
     } catch {
       return undefined;
     }
   }
 
-  /** Records the registration of a folder git was asked to fill, whatever git then answered; a stop between git's write and the host's is
-   * made up for the same way before the folder is removed. */
-  function recordRegistration(at: Held, key: string, folder: OwnedDir | undefined): Registration | undefined {
+  /** Records the registration of a folder git was asked to fill, whatever git then answered, held by an anchor the host makes in its
+   * admin folder; a stop between git's write and the host's is made up for the same way before the folder is removed. One that cannot
+   * be held goes at once, by the identity it was just read with, and the throw is passed on. */
+  async function recordRegistration(at: Held, key: string, folder: OwnedDir | undefined): Promise<Registration | undefined> {
     const known = at.file.registrations[key];
     if (known !== undefined || folder === undefined) return known;
-    const registration = captureRegistration(at, key, folder);
-    if (registration !== undefined) {
-      at.file.registrations[key] = registration;
-      writeRunFile(at, at.file);
+    const found = captureRegistration(at, key, folder);
+    if (found === undefined) return undefined;
+    let id: FolderId;
+    try { id = found.held.anchor(ADMIN_MARK, adminPin(at, key)); } catch (error) {
+      await found.worktrees.remove(basename(found.admin), found.held.id).catch(() => undefined);
+      await dropPin(at.project, adminPin(at, key).name).catch(() => undefined);
+      throw error;
     }
+    const registration: Registration = { admin: found.admin, id, gitdir: found.gitdir };
+    at.file.registrations[key] = registration;
+    writeRunFile(at, at.file);
     return registration;
   }
 
@@ -206,16 +224,12 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const own = runFolderOf(at.run, key, registration.gitdir);
     if (own === undefined) throw new OwnedFsError("changed", "the registration points outside the run's folder");
     // Asked of the held run folder: one that took its place would show the folder gone while it is still there.
-    const recorded = key === JOIN_DIR ? at.file.joinDir : at.file.stages[key]?.dir;
-    if (at.run.entryId(basename(own)) !== undefined) {
-      let made = false;
-      try { made = recorded !== undefined && at.run.child(basename(own), recorded) !== undefined; } catch (error) {
-        if (!(error instanceof OwnedFsError) || error.reason !== "changed") throw error;
-      }
-      if (!made) throw new OwnedFsError("changed", "the registration points at a folder the run did not make");
-    }
+    const folder = at.run.entryId(basename(own));
+    if (folder !== undefined && folder !== (key === JOIN_DIR ? at.file.joinDir : at.file.stages[key]?.dir)) throw new OwnedFsError("changed", "the registration points at a folder the run did not make");
     if (worktrees.entryId(name) === undefined) return undefined;
-    const text = exactText(worktrees.child(name, registration.id)?.readFile("gitdir"));
+    const held = worktrees.child(name, registration.id);
+    held?.mark(ADMIN_MARK, adminPin(at, key));
+    const text = exactText(held?.readFile("gitdir"));
     if (text === undefined || !samePath(resolve(admin, gitdirOf(text)), registration.gitdir)) throw new OwnedFsError("changed", "the registration no longer points at the run's folder");
     return { worktrees, name };
   }
@@ -228,6 +242,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     await assertRepository(at);
     const found = ownRegistration(at, key, registration);
     if (found !== undefined) await found.worktrees.remove(found.name, registration.id);
+    await dropPin(at.project, adminPin(at, key).name);
     delete at.file.registrations[key];
     writeRunFile(at, at.file);
   }
@@ -489,9 +504,11 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       return refused("home-boundary-unverified");
     }
     let self: FolderId;
-    try { self = await chain.run.anchor(RUN_MARK, "make"); } catch {
+    // The pin is made before the record: no record is written for a folder nothing pins.
+    try { self = chain.run.anchor(RUN_MARK, runPin({ runRoot, ...chain })); } catch (error) {
       await chain.project.remove(basename(runRoot), chain.run.id).catch(() => undefined);
-      return refused("workspace-unavailable");
+      await dropPin(chain.project, runPin({ runRoot, ...chain }).name).catch(() => undefined);
+      return refused(noLink(error) ? "volume-unsupported" : "workspace-unavailable");
     }
     const file: WorkspaceRecord = {
       v: 2, runId: run.runId, itemId: run.itemId, kind: gitRun !== undefined ? "git" : "folder", self,
@@ -525,22 +542,20 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       await assertRepository(at);
       joined.check();
       const added = await git.run(project.root, ["worktree", "add", "--no-checkout", END_OF_OPTIONS, joined.path, branch], { drivers: [...gitRun.drivers.config, ...ABSOLUTE_LINKS], requiresFloor: true }).catch(() => undefined);
-      if (recordRegistration(at, JOIN_DIR, at.run.child(JOIN_DIR, joined.id)) === undefined || added?.code !== 0) throw new Error("the integration worktree was not made");
+      if (await recordRegistration(at, JOIN_DIR, at.run.child(JOIN_DIR, joined.id)) === undefined || added?.code !== 0) throw new Error("the integration worktree was not made");
       joined.check();
       await checkOut(at, JOIN_DIR, joined, gitRun.drivers.requiredFilters);
       joined.check();
       if (answered(["symbolic-ref"], await gitIn(at, JOIN_DIR, joined)(["symbolic-ref", "-q", "HEAD"])).trim() !== ref) throw new Error("the integration worktree is not on the run's branch");
-      file.joinDir = await joined.anchor(".git");
-      writeRunFile(at, file);
       roots.set(basename(runRoot), runRoot);
       return { ok: true, workspace: { kind: "git", runRoot, branch, baseCommit } };
-    } catch {
+    } catch (error) {
       // What this call made goes the way a release takes it, by the record as far as it was written; a folder that got no record is
       // still the directory this call made.
       if (recorded) await releaseIn(at, "all", "drop").catch(() => undefined);
       else await at.project.remove(basename(runRoot), at.run.id).catch(() => undefined);
       roots.delete(basename(runRoot));
-      return refused(project !== undefined ? "git-unavailable" : "workspace-unavailable");
+      return refused(noLink(error) ? "volume-unsupported" : project !== undefined ? "git-unavailable" : "workspace-unavailable");
     }
   }
 
@@ -553,11 +568,18 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const dir = file.stages[stageId]?.dir;
     if (repo && file.kind === "git") {
       await assertRepository(at);
-      if (dir !== undefined) recordRegistration(at, stageId, at.run.child(name, dir));
+      if (dir !== undefined) await recordRegistration(at, stageId, at.run.child(name, dir));
       const registration = file.registrations[stageId];
       if (registration !== undefined) ownRegistration(at, stageId, registration);
     }
     await at.run.remove(name, dir);
+    // Written before the registration goes: a folder made at the name after a stop is then none the run made, whatever id it got.
+    const entry = file.stages[stageId];
+    if (entry?.dir !== undefined) {
+      entry.ready = false;
+      delete entry.dir;
+      writeRunFile(at, file);
+    }
     if (repo) await removeRegistration(at, stageId);
     delete file.stages[stageId];
     writeRunFile(at, file);
@@ -574,7 +596,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       await assertRepository(at);
       held.check();
       const added = await git.run(root, ["worktree", "add", "--detach", "--no-checkout", END_OF_OPTIONS, held.path, head], { drivers: [...drivers.config, ...ABSOLUTE_LINKS], requiresFloor: true }).catch(() => undefined);
-      if (recordRegistration(at, stage.id, at.run.child(stageDirName(stage.id), held.id)) === undefined || added?.code !== 0) throw new Error("the stage worktree was not made");
+      if (await recordRegistration(at, stage.id, at.run.child(stageDirName(stage.id), held.id)) === undefined || added?.code !== 0) throw new Error("the stage worktree was not made");
       held.check();
       await checkOut(at, stage.id, held, drivers.requiredFilters);
       held.check();
@@ -589,12 +611,12 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const link = exactText(held.readFile(".git"));
       if (link === undefined) throw new Error("the stage folder has no worktree link");
       const entry = file.stages[stage.id];
-      if (entry) Object.assign(entry, { ready: true, base: head, link, dir: await held.anchor(".git") });
+      if (entry) Object.assign(entry, { ready: true, base: head, link });
       writeRunFile(at, file);
       return null;
-    } catch {
+    } catch (error) {
       await removeStage(at, stage.id).catch(() => undefined);
-      return "git-unavailable";
+      return noLink(error) ? "volume-unsupported" : "git-unavailable";
     }
   }
 
@@ -965,7 +987,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   function hostMismatches(at: Held): Mismatch[] {
     const { file } = at;
     try { at.run.check(); } catch { return [{ field: "self", side: "host" }]; }
-    if (readRunFile(at.runRoot, at.run) === null) return [{ field: "record", side: "host" }];
+    if (readRunFile(at) === null) return [{ field: "record", side: "host" }];
     const found: Mismatch[] = [];
     const node = (field: string, name: string, id: NodeId | undefined): void => {
       if (id === undefined) return;
@@ -1016,8 +1038,12 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     for (const stageId of Object.keys(file.stages)) await removeStage(at, stageId, repo);
     await clearIgnoreFolders(at);
     if (file.kind === "git") {
-      if (repo && file.joinDir !== undefined) recordRegistration(at, JOIN_DIR, at.run.child(JOIN_DIR, file.joinDir));
+      if (repo && file.joinDir !== undefined) await recordRegistration(at, JOIN_DIR, at.run.child(JOIN_DIR, file.joinDir));
       await at.run.remove(JOIN_DIR, file.joinDir);
+      if (file.joinDir !== undefined) {
+        delete file.joinDir;
+        writeRunFile(at, file);
+      }
       if (repo) {
         await removeRegistration(at, JOIN_DIR);
         await deleteRunRefs(at);
@@ -1030,8 +1056,11 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     await at.run.remove(`${RUN_FILE}.tmp`);
     await at.run.remove(RUN_FILE);
     await at.run.remove(RUN_MARK);
-    // Only empty folders go from here on: the run folder, then the project folder while the levels above it are still the same.
+    // The run's pins go with its record, those of registrations left in a repository too, and so does any pin a stop left that holds
+    // nothing. Only empty folders go from here on: the run folder, then the project folder while the levels above it are still the same.
     try {
+      const own = `${basename(at.runRoot)}.`;
+      for (const name of at.project.list()) if (name.endsWith(".pin")) await dropPin(at.project, name, name.startsWith(own) ? "any" : undefined);
       if (at.run.removeSelfIfEmpty()) at.project.removeSelfIfEmpty();
     } catch { /* what could not go stays */ }
     return undefined;
@@ -1097,7 +1126,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
             }
             if (run === undefined) { unread.add(slug.toLowerCase()); continue; }
             const runRoot = join(worktreesRoot(), name, slug);
-            const file = readRunFile(runRoot, run);
+            const file = readRunFile({ runRoot, project, run });
             if (file !== null) { found.push({ runRoot, file, project, run }); continue; }
             unread.add(slug.toLowerCase());
             if (!unreadable.has(runRoot)) {
@@ -1122,7 +1151,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
    * any other, which is then left as it is. */
   function heldStill(seen: Held): Held | null {
     try { seen.run.check(); } catch { return null; }
-    const file = readRunFile(seen.runRoot, seen.run);
+    const file = readRunFile(seen);
     return file !== null && ownerOf(file) === ownerOf(seen.file) ? { ...seen, file } : null;
   }
 

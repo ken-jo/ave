@@ -131,7 +131,7 @@ const repositoryLeft: Row[] = [
   ["project.id", ["project", "id"], () => "1:1"],
   ["repo.id", ["repo", "id"], () => "1:1"],
   ["registrations._join.admin", ["registrations", "_join", "admin"], at => at.userAdmin],
-  ["registrations._join.id", ["registrations", "_join", "id"], () => "1:1"],
+  ["registrations._join.id", ["registrations", "_join", "id"], () => "1:1+ave.id:1"],
 ];
 
 /** A path of the record that is not the open project's by text: nothing is asked of it, and the run stays whole with its record. */

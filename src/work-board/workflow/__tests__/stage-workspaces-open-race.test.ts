@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, parse, resolve } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -6,7 +6,7 @@ import { aveHome } from "../../../shared/ave-home.js";
 import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import type { OwnedDir } from "../owned-fs.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
-import { JOIN_DIR, OUT_DIR, RUN_FILE, runRootOf, runSlug } from "../workspace-layout.js";
+import { ADMIN_MARK, JOIN_DIR, OUT_DIR, RUN_FILE, runRootOf, runSlug } from "../workspace-layout.js";
 import { removeLink, stageOf } from "./stage-fixtures.js";
 import { type GitFixture, type GitHandle, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
 
@@ -33,6 +33,8 @@ const between = vi.hoisted(() => ({
   unread: undefined as string | undefined,
   /** A file that cannot be opened. */
   unopened: undefined as string | undefined,
+  /** A second name the volume does not give: the code it answers with, for names that end so. */
+  unlinked: undefined as { ending: string; code: string } | undefined,
 }));
 
 vi.mock("../../../shared/ave-home.js", async (original) => {
@@ -54,7 +56,11 @@ vi.mock("node:fs", async (original) => {
     if (between.unopened !== undefined && String(path).toLowerCase() === between.unopened.toLowerCase()) throw Object.assign(new Error("fixture: the file cannot be opened"), { code: "EACCES" });
     return (real.openSync as (...args: unknown[]) => number)(path, ...rest);
   }) as typeof real.openSync;
-  return { ...real, lstatSync, openSync, realpathSync: Object.assign((path: string) => real.realpathSync(path), { native }) };
+  const linkSync = ((existing: string, path: string) => {
+    if (between.unlinked !== undefined && String(path).endsWith(between.unlinked.ending)) throw Object.assign(new Error("fixture: no second name"), { code: between.unlinked.code });
+    real.linkSync(existing, path);
+  }) as typeof real.linkSync;
+  return { ...real, linkSync, lstatSync, openSync, realpathSync: Object.assign((path: string) => real.realpathSync(path), { native }) };
 });
 
 vi.mock("../owned-fs.js", async (original) => {
@@ -360,7 +366,7 @@ it("a registration whose stage name another folder took after the removal stays,
   }
 });
 
-it("a stage folder that is still the same directory but whose worktree link is a copy is not the run's to remove", async () => {
+it.each([["the same text", (link: Buffer): Buffer | string => link], ["another text", (): Buffer | string => "gitdir: elsewhere\n"]])("a stage folder whose worktree link was written anew with %s is still the run's own, and goes with its registration", async (_, written) => {
   const fx = gitFixture();
   try {
     const handle = fx.start();
@@ -368,13 +374,30 @@ it("a stage folder that is still the same directory but whose worktree link is a
     if (!open.ok) throw new Error("expected a workspace");
     const stage = await stageRoot(handle, "s1");
     const admin = (JSON.parse(readFileSync(join(open.workspace.runRoot, RUN_FILE), "utf8")) as { registrations: Record<string, { admin: string }> }).registrations.s1?.admin as string;
-    // As where a removed folder's id is handed to the next one made: the directory keeps its id, and its link is a copy.
+    // The stage can write its own folder, its link file too; the admin folder, and the anchor in it, are not the stage's to write.
     const link = readFileSync(join(stage, ".git"));
     rmSync(join(stage, ".git"));
-    writeFileSync(join(stage, ".git"), link);
-    await expect(handle.provider.release(handle.run, ["s1"])).rejects.toThrow();
-    expect(existsSync(stage)).toBe(true);
-    expect(existsSync(admin)).toBe(true);
+    writeFileSync(join(stage, ".git"), written(link));
+    await handle.provider.release(handle.run, ["s1"]);
+    expect([existsSync(stage), existsSync(admin)]).toEqual([false, false]);
+  } finally {
+    await fx.done();
+  }
+});
+
+it("a registration whose admin folder's anchor is a copy is not the run's: nothing of the stage goes, and the release says so", async () => {
+  const fx = gitFixture();
+  try {
+    const handle = fx.start();
+    const open = await handle.provider.open(handle.run, fx.repo);
+    if (!open.ok) throw new Error("expected a workspace");
+    const stage = await stageRoot(handle, "s1");
+    const admin = (JSON.parse(readFileSync(join(open.workspace.runRoot, RUN_FILE), "utf8")) as { registrations: Record<string, { admin: string }> }).registrations.s1?.admin as string;
+    // As where a removed admin folder's id is handed to the next one made: the folder keeps its id, and its anchor is a new file.
+    rmSync(join(admin, ADMIN_MARK));
+    writeFileSync(join(admin, ADMIN_MARK), "");
+    await expect(handle.provider.release(handle.run, ["s1"])).rejects.toThrow("the entry is not the folder that was recorded");
+    expect([existsSync(join(stage, ".git")), existsSync(join(admin, "gitdir"))]).toEqual([true, true]);
   } finally {
     await fx.done();
   }
@@ -425,12 +448,6 @@ interface Recorded {
 const onWindows = it.skipIf(process.platform !== "win32");
 /** Git hides the link file, and a hidden file is not written over: it is put there anew. */
 const relink = (stage: string, link: string): void => { rmSync(join(stage, ".git")); writeFileSync(join(stage, ".git"), link); };
-/** A git folder of the run as a record names it once git wrote its link file: the folder, held by that file. */
-const anchored = (folder: string): string => {
-  const dir = lstatSync(folder, { bigint: true });
-  const link = lstatSync(join(folder, ".git"), { bigint: true });
-  return `${dir.dev}:${dir.ino}+.git:${link.ino}:${link.birthtimeNs > 0n ? link.birthtimeNs : link.ctimeNs}`;
-};
 const slashed = (path: string, volume: string): string => path.slice(volume.length).replaceAll("\\", "/");
 
 it.each([
@@ -533,9 +550,8 @@ onWindows("a project on a share keeps the registration a stage folder names by t
     // The repository as the host finds it on a share, with a stop before the host recorded the stage's registration.
     record.repo.gitDir = `\\\\server\\share\\${git.slice(volume.length)}`;
     delete record.registrations.s1;
-    relink(stage, `gitdir: //SERVER/Share/${slashed(admin, volume)}\n`);
-    (record.stages.s1 as { dir?: string }).dir = anchored(stage);
     writeFileSync(recordPath, JSON.stringify(record));
+    relink(stage, `gitdir: //SERVER/Share/${slashed(admin, volume)}\n`);
     await handle.provider.release(handle.run, ["s1"]);
     expect(existsSync(stage)).toBe(false);
     expect(existsSync(admin)).toBe(false);
@@ -596,6 +612,8 @@ async function found(fx: GitFixture, rootAs?: (root: string) => string): Promise
     for (const [key, entry] of Object.entries(record.registrations)) entry.gitdir = join(fits, key, ".git");
     mkdirSync(dirname(fits), { recursive: true });
     renameSync(runRoot, fits);
+    // The run's pins go with it, to beside the folder.
+    for (const pin of readdirSync(dirname(runRoot)).filter(name => name.startsWith(`${basename(runRoot)}.`))) renameSync(join(dirname(runRoot), pin), join(dirname(fits), pin));
     runRoot = fits;
     writeFileSync(join(runRoot, RUN_FILE), JSON.stringify(record));
   }
@@ -685,8 +703,7 @@ onWindows("a folder of the run whose link names another share, a device or a fol
       // The stage's link as the record has it too: the record's text is no more the run's than the file's.
       const link = linkTo(record.registrations.s2?.admin as string);
       relink(stage, link);
-      Object.assign(record.stages.s2 as object, { link, dir: anchored(stage) });
-      Object.assign(record, { joinDir: anchored(joinDir) });
+      (record.stages.s2 as { link?: string }).link = link;
       writeFileSync(recordPath, JSON.stringify(record));
       calls.length = 0;
       await expect(handle.provider.integrate(handle.run, "j1", ["s1"])).rejects.toThrow("the integration worktree is not the run's own");
@@ -696,8 +713,6 @@ onWindows("a folder of the run whose link names another share, a device or a fol
       expect(between.foreign).toEqual([]);
       relink(joinDir, written[0] as string);
       relink(stage, written[1] as string);
-      Object.assign(record.stages.s2 as object, { dir: anchored(stage) });
-      writeFileSync(recordPath, JSON.stringify(Object.assign(record, { joinDir: anchored(joinDir) })));
     } finally {
       await fx.done();
     }
@@ -799,10 +814,9 @@ onWindows("a stage folder that names an admin folder on another share or a devic
     const admins = [record.registrations.s1?.admin as string, record.registrations.s2?.admin as string];
     const volume = parse(admins[0] as string).root;
     record.registrations = {};
+    writeFileSync(recordPath, JSON.stringify(record));
     relink(stages[0] as string, `gitdir: //other/share/${slashed(admins[0] as string, volume)}\n`);
     relink(stages[1] as string, `gitdir: //./${(admins[1] as string).replaceAll("\\", "/")}\n`);
-    for (const [index, id] of ["s1", "s2"].entries()) Object.assign(record.stages[id] as object, { dir: anchored(stages[index] as string) });
-    writeFileSync(recordPath, JSON.stringify(record));
     await handle.provider.release(handle.run, ["s1", "s2"]);
     expect(stages.map(stage => existsSync(stage))).toEqual([false, false]);
     // Neither admin folder was taken as the run's.
@@ -833,6 +847,32 @@ onWindows("a record edited to name an admin folder on another share or a device 
     expect(admins.map(admin => existsSync(admin))).toEqual([true, true]);
     expect(between.foreign).toEqual([]);
   } finally {
+    await fx.done();
+  }
+});
+
+it.each(["EXDEV", "EPERM", "ENOTSUP"])("a volume that gives a file no second name (%s) gets no workspace, and nothing of the attempt stays", async (code) => {
+  const fx = gitFixture();
+  try {
+    const handle = fx.start();
+    const real = realpathSync.native(fx.repo);
+    const projectFolder = dirname(runRootOf(aveHome(), process.platform === "win32" ? real.toLowerCase() : real, 7, handle.run.runId));
+    between.unlinked = { ending: ".pin", code };
+    expect(await handle.provider.open(handle.run, fx.repo)).toEqual({ ok: false, code: "volume-unsupported" });
+    expect(existsSync(projectFolder) ? readdirSync(projectFolder) : []).toEqual([]);
+    expect(fx.userGit(fx.repo, "for-each-ref", "--format=%(refname)", "refs/heads/ave")).toBe("");
+    between.unlinked = undefined;
+    const open = await handle.provider.open(handle.run, fx.repo);
+    if (!open.ok) throw new Error("expected a workspace");
+    const slug = basename(open.workspace.runRoot);
+    // Only a stage's registration is refused its pin: the stage goes, and its admin folder with it.
+    between.unlinked = { ending: ".s1.pin", code };
+    expect(await handle.provider.prepare(handle.run, stageOf("s1"), 1)).toEqual({ ok: false, code: "volume-unsupported" });
+    expect(existsSync(join(open.workspace.runRoot, "s1"))).toBe(false);
+    expect(readdirSync(join(fx.repo, ".git", "worktrees"))).toEqual([JOIN_DIR]);
+    expect(readdirSync(projectFolder).sort()).toEqual([slug, `${slug}.pin`, `${slug}._join.pin`].sort());
+  } finally {
+    between.unlinked = undefined;
     await fx.done();
   }
 });

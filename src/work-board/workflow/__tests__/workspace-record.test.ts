@@ -209,7 +209,7 @@ it("a registration's worktree path is taken only as the named folder of the run 
 it("a folder run's record names a stage's files and the output folder's only by plain relative paths", () => {
   const file = { sha256: "0".repeat(64), size: 1 };
   const record = (where: "manifest" | "out", path: unknown): unknown => ({
-    v: 2, runId: "run", itemId: 1, kind: "folder", self: "1:1+_run.id:5:7", outDir: "1:2", refs: [], registrations: {}, joins: {},
+    v: 2, runId: "run", itemId: 1, kind: "folder", self: "1:1+_run.id:5", outDir: "1:2", refs: [], registrations: {}, joins: {},
     stages: { s1: { ready: true, attempt: 1, dir: "1:3", sealed: true, manifest: where === "manifest" ? [typeof path === "string" ? { path, ...file } : path] : [] } },
     out: where === "out" ? { [path as string]: { ...file, stageId: "s1" } } : {},
   });
@@ -221,4 +221,23 @@ it("a folder run's record names a stage's files and the output folder's only by 
   }
   for (const item of [null, 1, ["a.txt"], {}, { path: 1 }]) expect.soft(isWorkspaceRecord(record("manifest", item)), JSON.stringify(item)).toBe(false);
   expect(isWorkspaceRecord({ ...(record("out", "a.txt") as object), stages: { s1: { ready: false, attempt: 1, manifest: {} } } })).toBe(false);
+});
+
+it("a record holds its run folder and each registration by an anchor, and every other folder by its id alone", () => {
+  const commit = "a".repeat(40);
+  const git = (change: object = {}, stage: object = {}, registration: object = {}): unknown => ({
+    v: 2, runId: "run", itemId: 1, kind: "git", self: "1:1+_run.id:5", joinDir: "1:2", refs: [], joins: {}, out: {},
+    project: { root: resolve("/p"), id: "2:1" }, repo: { gitDir: resolve("/p/.git"), id: "2:2" }, branch: "ave/workflow/x", baseCommit: commit,
+    registrations: { s1: { admin: resolve("/p/.git/worktrees/s1"), id: "2:3+ave.id:9", gitdir: resolve("/w/s1/.git"), ...registration } },
+    stages: { s1: { ready: true, attempt: 1, dir: "1:3", base: commit, link: "gitdir: x", ...stage } },
+    ...change,
+  });
+  expect(isWorkspaceRecord(git())).toBe(true);
+  // What an earlier build wrote: a run folder by its id alone or by a stamped anchor, a folder by its worktree link.
+  for (const self of ["1:1", "1:1+_run.id:5:7", "1:1+.git:5"]) expect.soft(isWorkspaceRecord(git({ self })), self).toBe(false);
+  for (const dir of ["1:3+.git:5:7", "1:3+.git:5", "1:3+_run.id:5"]) {
+    expect.soft(isWorkspaceRecord(git({}, { dir })), `dir ${dir}`).toBe(false);
+    expect.soft(isWorkspaceRecord(git({ joinDir: dir })), `joinDir ${dir}`).toBe(false);
+  }
+  for (const id of ["2:3", "2:3+_run.id:9", "2:3+ave.id:9:1", "2:3+ave.id:0"]) expect.soft(isWorkspaceRecord(git({}, {}, { id })), id).toBe(false);
 });

@@ -2,14 +2,15 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { isStageId } from "../template-graph.js";
 import { type FolderId, isFolderId, type NodeId, realDirId } from "./owned-fs.js";
-import { JOIN_DIR, RUN_MARK, runBranch, runRootOf, stageDirName } from "./workspace-layout.js";
+import { ADMIN_MARK, JOIN_DIR, RUN_MARK, runBranch, runRootOf, stageDirName } from "./workspace-layout.js";
 
 export interface OutputFile { path: string; sha256: string; size: number }
 
 /** One worktree registration the run made in the repository, as it was when the host read it from the folder's `.git` file. */
 export interface Registration {
   admin: string;
-  id: NodeId;
+  /** The admin folder, held by the anchor the host made in it. */
+  id: FolderId;
   /** The admin folder's `gitdir` file, resolved: the `.git` file of the worktree it belongs to. */
   gitdir: string;
 }
@@ -18,8 +19,8 @@ export interface StageEntry {
   /** False while the folder is being made; such a folder is made again. */
   ready: boolean;
   attempt: number;
-  /** Which directory the stage folder is, written right after the host made it; for a ready git stage, held by its worktree link file too. */
-  dir?: FolderId;
+  /** Which directory the stage folder is, written right after the host made it. */
+  dir?: NodeId;
   /** Git: the commit the worktree started from, and the worktree link file as the host wrote it. */
   base?: string;
   link?: string;
@@ -55,9 +56,8 @@ export interface WorkspaceRecord {
   refs: { name: string; oid: string }[];
   /** By `_join` or stage id. */
   registrations: Record<string, Registration>;
-  /** Once the integration worktree is made, held by its worktree link file too. */
-  joinDir?: FolderId;
-  outDir?: FolderId;
+  joinDir?: NodeId;
+  outDir?: NodeId;
   stages: Record<string, StageEntry>;
   /** Git: the seal commit a host merge is in the middle of. */
   merging?: string;
@@ -90,7 +90,7 @@ export function isWorkspaceRecord(value: unknown): value is WorkspaceRecord {
   if ((value.kind !== "git" && value.kind !== "folder") || !isFolderId(value.self, RUN_MARK)) return false;
   if (!optional(value.project, project => located(project, "root")) || !optional(value.repo, repo => located(repo, "gitDir"))) return false;
   if (![value.branch, value.baseCommit].every(field => optional(field, text)) || !optional(value.merging, commit) || !optional(value.ignoreRules, flag => typeof flag === "boolean")) return false;
-  if (!optional(value.joinDir, isFolderId) || !optional(value.outDir, isFolderId)) return false;
+  if (!optional(value.joinDir, isNodeId) || !optional(value.outDir, isNodeId)) return false;
   if (!Array.isArray(value.refs) || !isObject(value.registrations) || !isObject(value.stages) || !isObject(value.joins) || !isObject(value.out)) return false;
   const given = (...fields: unknown[]): boolean => fields.some(field => field !== undefined);
   if (value.kind === "git") {
@@ -98,9 +98,9 @@ export function isWorkspaceRecord(value: unknown): value is WorkspaceRecord {
   } else if (given(value.repo, value.branch, value.baseCommit, value.merging, value.joinDir) || value.refs.length > 0 || Object.keys(value.registrations).length > 0) return false;
   if (!Object.keys(value.out).every(isRecordFilePath)) return false;
   if (!value.refs.every(ref => isObject(ref) && text(ref.name) && text(ref.oid))) return false;
-  if (!Object.entries(value.registrations).every(([key, entry]) => (key === JOIN_DIR || isStageId(key)) && located(entry, "admin") && isObject(entry) && absolute(entry.gitdir))) return false;
+  if (!Object.entries(value.registrations).every(([key, entry]) => (key === JOIN_DIR || isStageId(key)) && isObject(entry) && absolute(entry.admin) && isFolderId(entry.id, ADMIN_MARK) && absolute(entry.gitdir))) return false;
   return Object.entries(value.stages).every(([id, entry]) => isStageId(id) && isObject(entry) && typeof entry.ready === "boolean" && Number.isInteger(entry.attempt)
-    && optional(entry.dir, isFolderId) && (entry.ready !== true || entry.dir !== undefined) && (value.kind !== "git" || entry.ready !== true || isFolderId(entry.dir, ".git")) && optional(entry.base, commit) && optional(entry.sealCommit, commit)
+    && optional(entry.dir, isNodeId) && (entry.ready !== true || entry.dir !== undefined) && optional(entry.base, commit) && optional(entry.sealCommit, commit)
     && optional(entry.manifest, manifest => Array.isArray(manifest) && manifest.every(item => isObject(item) && isRecordFilePath(item.path))));
 }
 

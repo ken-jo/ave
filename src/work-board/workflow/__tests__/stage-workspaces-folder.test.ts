@@ -982,14 +982,14 @@ describe("folder stage workspaces", () => {
     rmSync(handle.runRoot, { recursive: true });
   });
 
-  it("a run folder that is still the same directory but holds copies of its entries is no record", async () => {
+  it.each([["every entry", undefined], ["its anchor alone", [RUN_MARK]]])("a run folder that is still the same directory but holds a copy of %s is no record", async (_, only) => {
     const handle = await start(project);
     write(handle.out, "result.md", "collected\n");
     // As where a removed folder's id is handed to the next one made: the directory keeps its id, and what is in it is a copy.
     const id = diskId(handle.runRoot);
     const away = join(base, "entries-away");
     mkdirSync(away);
-    for (const name of readdirSync(handle.runRoot)) {
+    for (const name of only ?? readdirSync(handle.runRoot)) {
       cpSync(join(handle.runRoot, name), join(away, name), { recursive: true });
       rmSync(join(handle.runRoot, name), { recursive: true });
       cpSync(join(away, name), join(handle.runRoot, name), { recursive: true });
@@ -999,8 +999,9 @@ describe("folder stage workspaces", () => {
     expect(await restarted.prepare(handle.run, stageOf("s1"), 1)).toEqual({ ok: false, code: "workspace-unavailable" });
     await restarted.sweep([]);
     expect(read(handle.out, "result.md")).toBe("collected\n");
-    expect(readdirSync(handle.runRoot).sort()).toEqual(readdirSync(away).sort());
+    expect(readdirSync(handle.runRoot)).toEqual(expect.arrayContaining(readdirSync(away)));
     rmSync(handle.runRoot, { recursive: true });
+    rmSync(`${handle.runRoot}.pin`);
   });
 
   describe.each(["discard", "sweep"] as const)("what a %s may remove of a folder run", (operation) => {

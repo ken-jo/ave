@@ -7,7 +7,7 @@ export interface RunRef { itemId: number; runId: string; runKey: string; project
 interface StageWorkspace { root: string; kind: "git" | "folder"; baseCommit?: string }
 /** Every code a workspace provider refuses with; each has its text in the catalogs. */
 export const WORKSPACE_REFUSALS = [
-  "workspace-unavailable", "home-boundary-unverified", "git-unavailable", "inputs-need-project", "seed-too-large", "seed-unreadable", "identity-missing",
+  "workspace-unavailable", "home-boundary-unverified", "git-unavailable", "inputs-need-project", "seed-too-large", "seed-unreadable", "identity-missing", "volume-unsupported",
 ] as const;
 type WorkspaceRefusal = typeof WORKSPACE_REFUSALS[number];
 
