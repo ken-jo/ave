@@ -1,4 +1,9 @@
 // The staging parent start-up establishes under the runtime root, as a synthetic path.
+// Faked win32 on any host: no backend state to check here; the state rule has its own tests.
+vi.mock("../../../permissions/confinement-state-paths.js", async (original) => ({
+  ...await original<typeof import("../../../permissions/confinement-state-paths.js")>(),
+  declaredConfinementStatePaths: () => [],
+}));
 vi.mock("../../../permissions/mxc-runtime-root.js", async (original) => {
   const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../../__tests__/support/mxc-staging-parent.js");
   return {

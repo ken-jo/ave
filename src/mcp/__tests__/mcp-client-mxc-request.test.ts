@@ -44,6 +44,11 @@ function containedServer() {
     release: async () => finish({ exitCode: 0, timedOut: false }) };
 }
 
+// Faked win32 on any host: no backend state to check here; the state rule has its own tests.
+vi.mock("../../permissions/confinement-state-paths.js", async (original) => ({
+  ...await original<typeof import("../../permissions/confinement-state-paths.js")>(),
+  declaredConfinementStatePaths: () => [],
+}));
 vi.mock("../../permissions/confined-child.js", async (original) => {
   const actual = await original<typeof import("../../permissions/confined-child.js")>();
   const { buildMxcConfinedChildRequest } = await import("../../permissions/mxc-confined-child-request.js");

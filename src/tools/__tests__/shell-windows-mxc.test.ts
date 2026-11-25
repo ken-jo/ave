@@ -1,3 +1,8 @@
+// Faked win32 on any host: no backend state to check here; the state rule has its own tests.
+vi.mock("../../permissions/confinement-state-paths.js", async (original) => ({
+  ...await original<typeof import("../../permissions/confinement-state-paths.js")>(),
+  declaredConfinementStatePaths: () => [],
+}));
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
