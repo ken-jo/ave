@@ -35,8 +35,22 @@ export const NATIVE_TRIGGERS = [
   "src/sandbox/",
   "tools/mxc-probes/",
 ];
-// The summary that opens an affected plan's reason when tracing raised no fallback warning; anything else is best-effort.
+// The rules planCiSuite prefixes to an affected plan's reason, per event; the pull request rule ends with the base ref.
+export const SUITE_PLAN_RULES = Object.freeze({
+  push: ["main push: trusted selection over before..HEAD"],
+  pull_request: ["test-only category merge", "category merge: affected checks", "pull request into "],
+});
+const escapeRegExp = text => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+const SUITE_PLAN_RULE = Object.fromEntries(Object.entries(SUITE_PLAN_RULES).map(([event, rules]) => [event,
+  new RegExp(`^(?:${rules.map(rule => rule.endsWith(" ") ? `${escapeRegExp(rule)}\\S+` : escapeRegExp(rule)).join("|")}); `, "u")]));
+// The selectCiTests summary that follows the rule when tracing raised no fallback warning; anything else is best-effort.
 const TRACED_AFFECTED_REASON = /^(?:test-only diff: affected tests on every base; |integration base: traced selection, strict fallback at the main boundary; )?\d+ changed module\(s\) reach \d+ test file\(s\); /u;
+
+/** True only for a reason of the form "<known rule for the event>; <traced summary>". */
+function tracedPlanReason(eventName, reason) {
+  const rule = SUITE_PLAN_RULE[eventName]?.exec(reason);
+  return rule !== null && rule !== undefined && TRACED_AFFECTED_REASON.test(reason.slice(rule[0].length));
+}
 
 // Paths naming the MXC, srt-win, sandbox or Windows native helper runtimes anywhere in the tree.
 const NATIVE_TRIGGER_NAME = /mxc|srt-win|asrt|sandbox|windows-job|path-kind/iu;
@@ -66,7 +80,7 @@ export function planVitestTiers({ eventName, ref, plan, changedPaths }) {
   if (decoded === null) return all("the suite plan is unreadable");
   if (decoded.mode === "full") return all("the full plan runs every tier");
   if (decoded.tests.length === 0) return all("the affected plan selects no test");
-  if (!TRACED_AFFECTED_REASON.test(decoded.reason)) return all("the affected plan is best-effort");
+  if (!tracedPlanReason(eventName, decoded.reason)) return all("the affected plan is best-effort");
   const infrastructure = changedPaths.find(path => TIER_INFRASTRUCTURE.includes(path));
   if (infrastructure) return all(`${infrastructure} defines the tiers`);
   const planned = tests => decoded.tests.find(test => tests.includes(test));

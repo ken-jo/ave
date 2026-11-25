@@ -14,7 +14,8 @@ const root = resolve(import.meta.dirname, "../..");
 const gh = (body: string) => `\${{ ${body} }}`;
 const TRACED = "1 changed module(s) reach 1 test file(s); 0 changed test file(s); 0 test file(s) name a changed path; 0 lock suite file(s); 1 must-run file(s)";
 const UNRELATED_TEST = "src/ui/renderer/hooks/__tests__/use-send-message-resource.test.tsx";
-const affected = (tests: string[] = [UNRELATED_TEST], reason = TRACED) => ({ mode: "affected", reason, tests });
+const PR_INTO_INTEGRATION = "pull request into integration/permissions; integration base: traced selection, strict fallback at the main boundary; ";
+const affected = (tests: string[] = [UNRELATED_TEST], reason = `pull request into main; ${TRACED}`) => ({ mode: "affected", reason, tests });
 const full = { mode: "full", reason: "test", tests: [] };
 const pr = (changedPaths: string[] | null, plan: unknown = affected()) => planVitestTiers({ eventName: "pull_request", ref: "refs/pull/1/merge", plan, changedPaths });
 
@@ -68,7 +69,7 @@ describe("Vitest tier selection", () => {
   });
 
   it("selects the census on a main push only from the diff or the plan, and the native tier always", () => {
-    const push = (changedPaths: string[]) => planVitestTiers({ eventName: "push", ref: "refs/heads/main", plan: affected(), changedPaths });
+    const push = (changedPaths: string[]) => planVitestTiers({ eventName: "push", ref: "refs/heads/main", plan: affected([UNRELATED_TEST], `main push: trusted selection over before..HEAD; ${TRACED}`), changedPaths });
     expect(push(["src/permissions/rules/shell-rule-matcher.ts"]).census).toBe(true);
     expect(push(["src/ui/renderer/app.tsx"])).toMatchObject({ census: false, native: true });
   });
@@ -98,11 +99,12 @@ describe("Vitest tier selection", () => {
     expect(pr(["src/ui/renderer/app.tsx"], affected([]))).toMatchObject(every);
     expect(pr(["src/ui/renderer/app.tsx"], affected([null, 42] as unknown as string[]))).toMatchObject(every);
     expect(pr(["src/ui/renderer/app.tsx"], { mode: "affected", tests: [UNRELATED_TEST] })).toMatchObject(every);
-    for (const reason of [`related test discovery failed; integration base: traced selection, strict fallback at the main boundary; ${TRACED}`,
-      `src/a.ts could not be read; ${TRACED}`, "test", ""]) {
+    for (const reason of [`pull request into integration/permissions; related test discovery failed; integration base: traced selection, strict fallback at the main boundary; ${TRACED}`,
+      `pull request into main; src/a.ts could not be read; ${TRACED}`, TRACED, `pull request from a fork; ${TRACED}`,
+      `main push: trusted selection over before..HEAD; ${TRACED}`, "test", ""]) {
       expect(pr(["src/ui/renderer/app.tsx"], affected([UNRELATED_TEST], reason)), reason).toMatchObject(every);
     }
-    expect(pr(["src/ui/renderer/app.tsx"], affected([UNRELATED_TEST], `integration base: traced selection, strict fallback at the main boundary; ${TRACED}`)))
+    expect(pr(["src/ui/renderer/app.tsx"], affected([UNRELATED_TEST], `${PR_INTO_INTEGRATION}${TRACED}`)))
       .toMatchObject({ census: false, native: false });
   });
 
