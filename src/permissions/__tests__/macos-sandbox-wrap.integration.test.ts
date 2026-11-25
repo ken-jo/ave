@@ -79,7 +79,8 @@ async function runConfined(command: string, directory: string, allowWrite: reado
       commandId: invocation.token, denyUnixSockets: true,
       filesystem: { allowWrite: [...allowWrite], denyWrite: [] },
     });
-    const result = spawnSync(wrapped.argv[0]!, wrapped.argv.slice(1), {
+    const [program = "", ...args] = wrapped.argv;
+    const result = spawnSync(program, args, {
       cwd: directory, env: { ...process.env, ...wrapped.env }, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
     });
     if (result.error) throw result.error;
@@ -108,7 +109,7 @@ describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())
     const own = readdirSync(temp).filter(name => name.startsWith("srt-sock-")
       && readdirSync(join(temp, name)).some(socket => socket.includes(`-${process.pid}-`)));
     expect(own).toHaveLength(1);
-    socketDirectory = join(temp, own[0]!);
+    socketDirectory = join(temp, ...own);
   });
   afterAll(async () => {
     if (isAsrtSandboxActive()) await resetAsrtSandbox();
@@ -118,7 +119,7 @@ describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())
   it("keeps another run's backend socket from being removed, renamed or replaced while the temp root stays writable", async () => {
     const sockets = readdirSync(socketDirectory);
     expect(sockets.length).toBeGreaterThan(0);
-    const socket = join(socketDirectory, sockets[0]!);
+    const socket = join(socketDirectory, sockets[0] ?? "");
     const control = join(temp, "sandbox-socket-floor-control");
     const result = await runConfined([
       `rm -f '${socket}' 2>/dev/null; test -e '${socket}'; echo "unlink=$?"`,
