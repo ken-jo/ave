@@ -3580,11 +3580,9 @@ in its directory.
 - **Settings.** Permissions shows the substrate chosen for shells and
   extensions, the MXC unavailable reason with the Windows build, the Bash
   limit, the DNS channel, and that extensions share one proxy identity.
-  The Windows shell local-network toggle displays: "Commands can accept
-  connections from your local network and loopback; enable only if you accept
-  that." With access off, status and the diagnostics bundle report the
-  approved-host route even when MXC is available. Extension confinement and
-  its local-network policy remain independent.
+  There is no Windows shell local-network setting: once the start probe
+  passes, status and the diagnostics bundle report the MXC route for shells.
+  Extension confinement and its local-network policy remain independent.
 - **Extension disclosure (row 6).** The Permissions card renders the
   extension state from `SandboxWindowsSubstrateInfo.extensionPlan`, never from
   `extensions` alone: `checking` and `rejected` say starts are refused and that
