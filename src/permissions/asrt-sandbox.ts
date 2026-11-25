@@ -1610,25 +1610,34 @@ function getBuiltinShellSessionReadPolicyInSnapshot(userDataDir = _baseTrustedSe
     allowRead: sessionPolicy.allowRead,
     denyRead: Object.freeze([...otherDenies, ...aveHomeReadBoundaryDenies(children), ...sessionPolicy.denyRead]),
     sessionReadUserDenies: Object.freeze(sessionRoot === undefined ? [] : userDenies
-      .filter((entry) => userDenyInside(entry, sessionRoot)).map((rule) => ({ rule, whole: false, certain: true }))),
+      .flatMap((rule) => {
+        const inside = userDenyInside(rule, sessionRoot);
+        return inside === undefined ? [] : [{ rule, whole: false, certain: inside === "certain" }];
+      })),
   });
 }
 
-// A user deny that can match something strictly beneath `root`, so it withholds part of what a grant of `root` reads: a path
-// under it, or a pattern rooted at or above it (`~/.ave/**/*.json`). Classes widen as userReadDenyCovering reads them.
-function userDenyInside(entry: string, root: string): boolean {
+// Whether a user deny can match something strictly beneath `root`, so it withholds part of what a grant of `root` reads: a path
+// under it, or a pattern rooted at or above it (`~/.ave/**/*.json`). A class matches one character, so it reads as `?`, or as any
+// run when it may match a separator (it holds one, or is negated); the answer is "maybe" when the reach rests on a class.
+function userDenyInside(entry: string, root: string): "certain" | "maybe" | undefined {
   const spelling = expandLeadingTilde(process.platform === "win32" ? expandWindowsEnvRefs(entry) : entry);
-  const pattern = canonicalizePathForMatch(spelling.replace(/\[[^\]]*\]|[[\]]/g, "**")).split("/");
   const rootSegments = canonicalizePathForMatch(root).replace(/\/+$/u, "").split("/");
-  const reaches = (pi: number, ri: number): boolean => {
-    const segment = pattern[pi];
-    if (segment === undefined) return false;
-    if (ri === rootSegments.length) return true;
-    const spanning = segment.indexOf("**");
-    if (spanning >= 0) return compileGlobMatcher(`${segment.slice(0, spanning)}**`)(rootSegments[ri] ?? "");
-    return compileGlobMatcher(segment)(rootSegments[ri] ?? "") && reaches(pi + 1, ri + 1);
+  const reachesWith = (widen: (match: string) => string): boolean => {
+    const pattern = canonicalizePathForMatch(spelling.replace(/\[[^\]]*\]|[[\]]/g, widen)).split("/");
+    const reaches = (pi: number, ri: number): boolean => {
+      const segment = pattern[pi];
+      if (segment === undefined) return false;
+      if (ri === rootSegments.length) return true;
+      const spanning = segment.indexOf("**");
+      if (spanning >= 0) return compileGlobMatcher(`${segment.slice(0, spanning)}**`)(rootSegments[ri] ?? "");
+      return compileGlobMatcher(segment)(rootSegments[ri] ?? "") && reaches(pi + 1, ri + 1);
+    };
+    return reaches(0, 0);
   };
-  return reaches(0, 0);
+  if (!reachesWith((match) => (/[/\\]|^\[[!^]/u.test(match) ? "**" : "?"))) return undefined;
+  // A class read as matching nothing: the reach that survives does not rest on one.
+  return !/[[\]]/u.test(spelling) || reachesWith(() => "\uffff") ? "certain" : "maybe";
 }
 
 // The user-deny notices already shown, per session setup and Ave session: each rule is named once per read it withholds from.
@@ -1647,7 +1656,8 @@ function firstUserDenyNotice(scope: string, rule: string): boolean {
 function sessionReadUserDenyNotices(root: string | undefined, denies: readonly { readonly rule: string; readonly whole: boolean; readonly certain: boolean }[]): string[] {
   if (root === undefined) return [];
   return denies.filter(({ rule }) => firstUserDenyNotice(root, rule)).map(({ rule, whole, certain }) =>
-    t(!whole ? "sandboxPolicy.sessionReadUserDenyPart" : certain ? "sandboxPolicy.sessionReadUserDenyWhole" : "sandboxPolicy.sessionReadUserDenyMaybe", { rule, path: root }));
+    t(!whole ? (certain ? "sandboxPolicy.sessionReadUserDenyPart" : "sandboxPolicy.sessionReadUserDenyPartMaybe")
+      : certain ? "sandboxPolicy.sessionReadUserDenyWhole" : "sandboxPolicy.sessionReadUserDenyMaybe", { rule, path: root }));
 }
 
 /** The user's read denies inside a host pierce (plugin certs, hooks, workers, host API): the pierce stays and only what each
@@ -1658,9 +1668,12 @@ export function userDenyInsidePierceNotices(pierces: readonly string[], owner = 
   return pierces
     .filter((pierce) => sessionRoot === undefined || canonicalizePathForMatch(pierce) !== canonicalizePathForMatch(sessionRoot))
     // A deny that covers the pierce refuses the launch instead.
-    .flatMap((pierce) => userDenies.filter((rule) => userDenyInside(rule, pierce)
-        && userReadDenyCovering([rule])(canonicalizePathForMatch(pierce)) === undefined && firstUserDenyNotice(`${owner}\u0000${pierce}`, rule))
-      .map((rule) => t("sandboxPolicy.pierceUserDenyPart", { rule, path: pierce })));
+    .flatMap((pierce) => userDenies.flatMap((rule) => {
+      const inside = userDenyInside(rule, pierce);
+      if (inside === undefined || userReadDenyCovering([rule])(canonicalizePathForMatch(pierce)) !== undefined) return [];
+      if (!firstUserDenyNotice(`${owner}\u0000${pierce}`, rule)) return [];
+      return [t(inside === "certain" ? "sandboxPolicy.pierceUserDenyPart" : "sandboxPolicy.pierceUserDenyPartMaybe", { rule, path: pierce })];
+    }));
 }
 
 // Compose broad invocation reads while retaining protected host/private paths. `sandboxHome` is the invocation's own sandbox HOME. The sandbox private roots are read-denied like the rest of the floor, and a read grant under them is dropped — a working directory there must not reopen another process's HOME — except the invocation's own HOME and what is inside it.

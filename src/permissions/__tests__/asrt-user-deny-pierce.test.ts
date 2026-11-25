@@ -309,6 +309,32 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
       expect(shellFor(platform).policyNotices).toEqual([]);
     });
 
+    // A class matches one character, so none of these can reach the store.
+    const classesElsewhere = [
+      { name: "a class in a sibling of the Ave home", rule: () => join(dirname(aveHome()), "[Dd]ocuments", "secret") },
+      { name: "a class spelling a dot directory", rule: () => join(dirname(aveHome()), "[.]ssh", "id_rsa") },
+      { name: "a one-character class at the store's depth", rule: () => join(aveHome(), "[x]", "foo") },
+    ];
+    it.each(shellPlatforms.flatMap(platform => classesElsewhere.map(entry => ({ platform, ...entry }))))(
+      "on $platform, names no deny with $name",
+      async ({ platform, rule }) => {
+        await initializeWith([rule()]);
+        const policy = shellFor(platform);
+        expect(policy.allowRead).toEqual([workspace(), sessionRoot()]);
+        expect(policy.policyNotices).toEqual([]);
+      },
+    );
+
+    it.each(shellPlatforms)("on %s, says Ave cannot tell when only a class lets a deny reach into it", async (platform) => {
+      const rule = join(dirname(sessionRoot()), `[${basename(sessionRoot()).slice(0, 1)}]${basename(sessionRoot()).slice(1)}`, "private.jsonl");
+      await initializeWith([rule]);
+      const policy = shellFor(platform);
+      expect(policy.allowRead).toEqual([workspace(), sessionRoot()]);
+      expect(policy.policyNotices).toEqual([
+        `Ave cannot tell whether your read deny ${rule} applies inside the saved-session store ${sessionRoot()}; shell commands cannot read what it matches.`,
+      ]);
+    });
+
     it("on darwin, withholds it under a bracket deny that may cover it and says Ave cannot tell", async () => {
       const rule = join(dirname(sessionRoot()), `[${basename(sessionRoot()).slice(0, 1)}]${basename(sessionRoot()).slice(1)}`);
       await initializeWith([rule]);
