@@ -64,7 +64,7 @@ async function approvalMemoryFor(
   return scope === undefined ? ARGS_APPROVAL_MEMORY : approvalMemoryForScope(tool, input, scope, hostShellExecutionPlan);
 }
 
-export function approvalMemoryForScope(
+function approvalMemoryForScope(
   tool: Tool,
   input: Record<string, unknown>,
   scope: ApprovalMemoryScope,

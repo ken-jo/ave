@@ -424,13 +424,15 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     if (!typed.ok) {
       if (typed.pasteUncleared) return fail(`no command was sent in terminal ${scope.tabId}: ${typed.message}`);
       if (typed.reason === "effect-refused") {
-        if (typed.abandonedControlGeneration !== undefined && bound()) {
+        let reapprovalPending = false;
+        if (typed.abandonedControlGeneration !== undefined && !ctx.abortSignal?.aborted && bound()) {
           const released = deps.host.control(live, windowId);
           if (released?.mode === "available" && released.generation === typed.abandonedControlGeneration) {
-            route.onLeaseAbandoned(typed.abandonedControlGeneration);
+            reapprovalPending = route.onLeaseAbandoned(typed.abandonedControlGeneration);
           }
         }
-        return fail(`no command was sent in terminal ${scope.tabId}: ${typed.message} Call terminal_run again for a fresh decision.`);
+        const guidance = reapprovalPending ? "The host handles reapproval in a separate invocation." : "Call terminal_run again for a fresh decision.";
+        return fail(`no command was sent in terminal ${scope.tabId}: ${typed.message} ${guidance}`);
       }
       return fail(`nothing was typed into terminal ${scope.tabId}: ${typed.message}`);
     }

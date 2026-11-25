@@ -36,7 +36,7 @@ import {
   findPowerShellCommandPathViolation,
   validatePowerShellCommandStructure,
 } from "./shell-tools.js";
-import { isCanonicalTerminalRunTool, terminalCommandScopeOf } from "./terminal-run.js";
+import { isCanonicalTerminalRunTool, terminalCommandScopeOf, type HostTerminalCommandScope } from "./terminal-run.js";
 import { normalizeMcpResourceReadInput } from "./mcp-resource-tools.js";
 import {
   isCanonicalFileTool,
@@ -342,6 +342,14 @@ export interface RationaleResumeExecutionContext {
   terminalized?: boolean;
 }
 
+interface HostTerminalReapproval {
+  input: Record<string, unknown>;
+  scope: HostTerminalCommandScope;
+  backend: string;
+  policyEpoch: string;
+  executionCwd: string;
+}
+
 export async function runToolInvocation(
   services: InvocationRunnerServices,
   toolUse: ToolUseBlock,
@@ -350,6 +358,7 @@ export async function runToolInvocation(
   opts: ExecuteOptions = {},
   rationaleBatchContext?: RationaleBatchExecutionContext,
   rationaleResumeContext?: RationaleResumeExecutionContext,
+  hostTerminalReapproval?: HostTerminalReapproval,
 ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> {
   const context: string[] = [];
   const parentInfluence = hookInfluenceContext.getStore();
@@ -362,12 +371,15 @@ export async function runToolInvocation(
     },
   };
   const startedAt = Date.now();
-  return runWithToolExecutionCwd(opts.executionCwd ?? currentToolExecutionCwd() ?? process.cwd(), () => hookInfluenceContext.run({ context }, async () => {
+  const continuation: { reapproval?: HostTerminalReapproval } = {};
+  const result = await runWithToolExecutionCwd(opts.executionCwd ?? currentToolExecutionCwd() ?? process.cwd(), () => hookInfluenceContext.run({ context }, async () => {
     let current = toolUse;
     for (let mutations = 0; ; mutations += 1) {
       try {
         const result = await runToolInvocationAttempt(services, current, groupId, displayOrder,
-          { ...opts, callbacks }, rationaleBatchContext, rationaleResumeContext);
+          { ...opts, callbacks }, rationaleBatchContext, rationaleResumeContext, hostTerminalReapproval,
+          hostTerminalReapproval === undefined && rationaleResumeContext === undefined
+            ? reapproval => { continuation.reapproval = reapproval; } : undefined);
         if ("content" in result) return { ...result, content: appendContext(result.content) };
         attachHookControlContext(result.control.control, context);
         for (const text of context) {
@@ -381,7 +393,8 @@ export async function runToolInvocation(
         return result;
       } catch (error) {
         if (!(error instanceof HookInputMutationRequest)) throw error;
-        const denied = mutations >= 3 || rationaleResumeContext !== undefined || opts.pluginAuthLifecycle !== undefined;
+        const denied = mutations >= 3 || rationaleResumeContext !== undefined || opts.pluginAuthLifecycle !== undefined ||
+          hostTerminalReapproval !== undefined;
         const reason = denied ? "Hook input mutation could not safely restart permission classification" : "Hook input changed; restarting the full permission decision";
         const hookChain = error.hooks.flatMap((result) => hookChainFromDispatch(result.hookType === "perm" ? "perm" : "pre", {
           decision: result.decision, reason: result.reason, results: [result],
@@ -409,6 +422,15 @@ export async function runToolInvocation(
       }
     }
   }));
+  const reapproval = continuation.reapproval;
+  if (reapproval !== undefined && "tool_use_id" in result && result.is_error && !opts.abortSignal?.aborted) {
+    await opts.onToolResult?.(result);
+    if (opts.abortSignal?.aborted) return result;
+    // The fresh card and its outcome have their own tool-use identity.
+    await runToolInvocation(services, { ...toolUse, id: randomUUID(), input: structuredClone(reapproval.input) },
+      randomUUID(), 0, { ...opts, executionCwd: reapproval.executionCwd }, undefined, undefined, reapproval);
+  }
+  return result;
 }
 
 async function runToolInvocationAttempt(
@@ -419,6 +441,8 @@ async function runToolInvocationAttempt(
     opts: ExecuteOptions = {},
     rationaleBatchContext?: RationaleBatchExecutionContext,
     rationaleResumeContext?: RationaleResumeExecutionContext,
+    hostTerminalReapproval?: HostTerminalReapproval,
+    onHostTerminalReapproval?: (request: HostTerminalReapproval) => void,
   ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> {
     const {
       callbacks,
@@ -1283,6 +1307,15 @@ async function runToolInvocationAttempt(
     const hostTerminalPlan = hostTerminalCommand === undefined ? undefined : getHostShellExecutionPlan("host");
     const hostTerminalFloorPlan = hostTerminalPlan !== undefined
       && (isHomePrivacyHelperUnavailablePlan(hostTerminalPlan) || requiresUnsandboxedShellAsk(hostTerminalPlan)) ? hostTerminalPlan : undefined;
+    if (hostTerminalReapproval && (
+      hostTerminalCommand === undefined || approvalMemory.kind !== "key" ||
+      canonicalStringify(approvalMemory.scope) !== canonicalStringify(hostTerminalReapproval.scope) ||
+      canonicalStringify(finalInput) !== canonicalStringify(hostTerminalReapproval.input) ||
+      hostTerminalPlan?.identity !== hostTerminalReapproval.backend ||
+      services.permissionManager?.getPolicyEpoch() !== hostTerminalReapproval.policyEpoch
+    )) {
+      return await returnExecutionRouteFailure(new Error("The terminal target, execution plan or policy changed before reapproval."));
+    }
     // A blocked plan has no host route to seal; its denial is decided below, and the tool types nothing without a sealed route.
     if (hostTerminalCommand !== undefined && hostTerminalPlan !== undefined && !isHomePrivacyHelperUnavailablePlan(hostTerminalFloorPlan)) {
       const buildHostTerminalRoute = async (legacyPlan?: HostShellExecutionPlan) => {
@@ -1316,7 +1349,7 @@ async function runToolInvocationAttempt(
         executionRoutePathPolicyRelaxations = sealed.router.executionPlanPathPolicyRelaxations(sealed.plan);
         const decided = executionRoutePathPolicyRelaxations;
         const decidedLegacyPlanIdentity = sealed.plan.legacyPlanIdentity;
-        hostTerminalRoute = Object.freeze({
+        const route = Object.freeze({
           decidedBackend: hostTerminalPlan.identity,
           backendIdentity: () => {
             try {
@@ -1334,6 +1367,13 @@ async function runToolInvocationAttempt(
             }
           },
         });
+        hostTerminalRoute = route;
+        if (hostTerminalReapproval) {
+          finalizeExecutionRouteGrant = async () => {
+            await route.recheck();
+            return undefined;
+          };
+        }
       } catch (error) {
         return await returnExecutionRouteFailure(error);
       }
@@ -2464,6 +2504,7 @@ async function runToolInvocationAttempt(
     });
 
     const authorization = await authorizeToolInvocation({
+      hostTerminalReapproval: hostTerminalReapproval !== undefined,
       pluginRuntimeInstance: generationLease?.generation.state.runtime.instance,
       directoryAuthorization,
       paths: invocationPermissionContext.paths,
@@ -2522,6 +2563,9 @@ async function runToolInvocationAttempt(
     });
     if ("tool_use_id" in authorization || authorization.outcome === "rationale-required") {
       return authorization;
+    }
+    if (hostTerminalReapproval && !authorization.humanApproved) {
+      return await returnExecutionRouteFailure(new Error("Terminal reapproval requires an explicit human answer."));
     }
     permissionResult = authorization.permissionResult;
     hostShellApprovalDecision = authorization.hostShellApprovalDecision;
@@ -2594,6 +2638,9 @@ async function runToolInvocationAttempt(
       };
     }
 
+    const terminalScope = approvalMemory.kind === "key" && approvalMemory.scope.kind === "terminal-command" &&
+      approvalMemory.scope.lane === "manual" ? approvalMemory.scope : undefined;
+    const terminalBackend = hostTerminalRoute?.decidedBackend;
     const executeAuthorized = () => executeAuthorizedToolInvocation({
       pluginRuntimeInstance: generationLease?.generation.state.runtime.instance,
       services,
@@ -2637,6 +2684,14 @@ async function runToolInvocationAttempt(
       finalizeExecutionRouteGrant,
       hostTerminalRoute,
       checkCurrentHostTerminalPermission: authorization.checkCurrentHostTerminalPermission,
+      onHostTerminalWriteRefused: onHostTerminalReapproval && terminalScope && terminalBackend !== undefined
+        ? (releasedGeneration, policyEpoch) => {
+          onHostTerminalReapproval({
+            input: structuredClone(finalInput), scope: { ...terminalScope, controlGeneration: releasedGeneration },
+            backend: terminalBackend, policyEpoch, executionCwd,
+          });
+        }
+        : undefined,
       preparedShellInvocation,
       verifiedShellCommand,
       invocationRuntimeAllowedDirectories,

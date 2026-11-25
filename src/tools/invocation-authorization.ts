@@ -148,6 +148,7 @@ export interface AuthorizationStageContext {
   shellEscalated?: boolean;
   directoryAuthorization?: { permission: PermissionCheckResult; humanApproved: boolean; pendingRationale?: true; requestHumanApproval?: (input: { requestId: string; abortSignal?: AbortSignal }) => Promise<import("../permissions/approval-gate.js").ApprovalDecision> };
   permissionResult: PermissionCheckResult | undefined;
+  hostTerminalReapproval?: boolean;
   reviewedPermissionForCard?: PermissionCheckResult;
   cardRequestId?: string;
   onHumanDecision?: (decision: import("../permissions/approval-gate.js").ApprovalDecision) => void;
@@ -161,7 +162,7 @@ export interface AuthorizedInvocation {
   humanApproved: boolean;
   approvedPolicyEpoch?: string;
   permissionRecheckResult?: PermissionCheckResult;
-  checkCurrentHostTerminalPermission?: (requireHuman?: true) => PermissionCheckResult;
+  checkCurrentHostTerminalPermission?: () => PermissionCheckResult;
   permissionResult: PermissionCheckResult | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
   /** Host-issued allow-rule decision that authorized an explicit host shell. */
@@ -378,7 +379,7 @@ export async function authorizeToolInvocation(
       if (hostTerminalScope) await services.permissionManager.ensurePermissionRulesLoaded(projectRulesCwd);
       else await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     }
-    const checkPermission = (requireHuman?: true): PermissionCheckResult => services.permissionManager
+    const readPermission = (requireHuman?: true): PermissionCheckResult => services.permissionManager
       ? services.permissionManager.checkDetailed(
           toolUse.name,
           source,
@@ -414,14 +415,18 @@ export async function authorizeToolInvocation(
           reason: "Permission manager is unavailable",
           forceModal: true,
         };
+    const checkPermission = (): PermissionCheckResult => {
+      const current = readPermission();
+      return context.hostTerminalReapproval && current.decision === "allow" ? readPermission(true) : current;
+    };
     checkCurrentPermission = checkPermission;
     if (hostTerminalScope && services.permissionManager) {
       const manager = services.permissionManager;
-      checkCurrentHostTerminalPermission = (requireHuman) => {
+      checkCurrentHostTerminalPermission = () => {
         if (!manager.areLoadedPermissionRulesCurrent(projectRulesCwd)) {
           return { decision: "deny", reason: "Permission rules changed before typing." };
         }
-        return checkPermission(requireHuman);
+        return checkPermission();
       };
     }
   }
@@ -456,7 +461,7 @@ export async function authorizeToolInvocation(
     const ordinaryRequest = permissionResult.pipelineRequest;
     if (permissionResult.decision !== "allow" && ordinaryRequest !== undefined && !ordinaryRequest.admissionDenial &&
         !ordinaryRequest.floor && ordinaryRequest.rules?.deny === undefined && ordinaryRequest.rules?.ask === undefined &&
-        ordinaryRequest.manualRerun !== true && context.reviewedPermissionForCard === undefined && rationaleResumeContext === undefined &&
+        ordinaryRequest.manualRerun !== true && !context.hostTerminalReapproval && context.reviewedPermissionForCard === undefined && rationaleResumeContext === undefined &&
         rationaleBatchContext === undefined && services.permissionManager !== undefined) {
       const memorySkip = await services.tryUserApprovalMemorySkip(
         toolUse.name,
@@ -483,7 +488,7 @@ export async function authorizeToolInvocation(
       }
     }
     if (
-      permissionResult.decision === "ask" && rationaleResumeContext === undefined && permissionResult.reviewer?.verdict === undefined &&
+      permissionResult.decision === "ask" && !context.hostTerminalReapproval && rationaleResumeContext === undefined && permissionResult.reviewer?.verdict === undefined &&
       (permissionResult.reviewer?.route === "foreground-auto" ||
         rationaleBatchContext !== undefined && permissionResult.reviewer?.route === "headless")
     ) {
@@ -961,7 +966,8 @@ export async function authorizeToolInvocation(
                 allowedChoices: ["allow-once", "deny-once"] as const,
                 durableApprovalRecordAllowed: false as const,
                 forceExplicit: true as const,
-                ...(approvalPolicyEpoch !== undefined && offersFloorSessionAllow(permissionResult)
+                ...(approvalPolicyEpoch !== undefined && offersFloorSessionAllow(permissionResult) &&
+                    !(context.hostTerminalReapproval && permissionResult.pipelineRequest?.manualRerun)
                   ? { floorSessionAllowed: true as const, floorSessionPolicyEpoch: approvalPolicyEpoch } : {}),
               }
             : {}),
@@ -1038,6 +1044,9 @@ export async function authorizeToolInvocation(
             : {}),
           ...hostTerminalFacts,
           ...userOwnedSurfaceCardFacts(permissionResult),
+          ...(context.hostTerminalReapproval && !permissionResult.forceModal &&
+              permissionResult.pipelineRequest?.userOwnedSurface?.kind === "host-terminal"
+            ? { userOwnedSurfaceReviewFallback: true as const, reasonCode: undefined } : {}),
           evaluationContext,
         };
 

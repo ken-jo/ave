@@ -145,7 +145,7 @@ const ctxFor = (scope: ApprovalMemoryScope | undefined, sessionId = "main", sign
     ...(scope === undefined ? {} : { [APPROVAL_MEMORY_SCOPE_METADATA_KEY]: scope }),
   },
   // The sealed host execution route the invocation runner hands a host command (ignored by the isolated lane).
-  hostTerminalRoute: { recheck, refusal: () => undefined, onLeaseAbandoned: () => {} },
+  hostTerminalRoute: { recheck, refusal: () => undefined, onLeaseAbandoned: () => false },
   ...(signal ? { abortSignal: signal } : {}),
 }) as unknown as ToolExecutionContext;
 
