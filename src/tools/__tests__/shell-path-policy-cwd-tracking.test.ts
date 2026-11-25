@@ -221,8 +221,8 @@ describe("shell path policy — working directory tracking", () => {
       ["SUBR16", repeat(16, () => "cd sub && ls && cd ..")],
       ["SUBR32", repeat(32, () => "cd sub && ls && cd ..")],
       ["FORR24", listedLoop(24)],
-      ["IF8", `cd a || exit 1; ${repeat(8, (index) => `if cd d${index}; then v${index}=1; cd ..; fi`)}`],
-      ["IF16 (cap)",`cd a || exit 1; ${repeat(16, (index) => `if cd d${index % 8}; then v${index}=1; cd ..; fi`)}`],
+      ["eight conditional directory changes", `cd a || exit 1; ${repeat(8, (index) => `if cd d${index}; then v${index}=1; cd ..; fi`)}`],
+      ["IF16 (cap)", `cd a || exit 1; ${repeat(16, (index) => `if cd d${index % 8}; then v${index}=1; cd ..; fi`)}`],
       ["NAV20 (cap)", `cd a || exit 1; cd ..; ${repeat(20, () => "cd sub && cd ..")}`],
       ["IFC24 (cap)", `cd a || exit 1; ${repeat(24, (index) => `if cd d${index % 8}; then v${index}=1; cd ..; fi`)}`],
       ["IFT16 (cap)", `cd a || true; ${repeat(16, (index) => `if cd d${index % 8}; then v${index}=1; cd ..; fi`)}`],
@@ -373,28 +373,28 @@ describe("shell path policy — working directory tracking", () => {
       ["ANC2", "cd sub/s2/s3; cd \"$R/sub\"; touch ../x", "sandbox-boundary"],
       ["ANC3", "cd sub/s2 || true; cd sub; touch ../x", "sandbox-boundary"],
       ["REL-disj-desc", "cd sub/s2; cd \"$R/sub/t2\"; touch ../../x", "sandbox-boundary"],
-      ["REL-disj-desc (shared ancestor holds the cwd, TWO1)", "cd sub; cd \"$R/a\"; touch ../x", "sandbox-boundary"],
+      ["absolute sibling destination from the failed branch", "cd sub; cd \"$R/a\"; touch ../x", "sandbox-boundary"],
       ["REL-eq-disj", "cd a; cd ../sub/s2; cd \"$R/sub/s2\"; touch ../../x", "sandbox-boundary"],
       ["REL-desc-disj", "cd a; cd ../sub; cd \"$R/sub/s2\"; touch ../../x", "sandbox-boundary"],
       ["REL-anc-disj", "cd a; cd ../sub/s2/s3; cd \"$R/sub/s2\"; touch ../../x", "sandbox-boundary"],
       ["REL-disj-disj", "cd a; cd ../sub/s2; cd \"$R/sub/t2\"; touch ../../x", "sandbox-boundary"],
-      ["REL-disj-disj (shared ancestor holds the cwd, TWO2)", "cd b; cd ../sub/s2; cd \"$R/a/d0\"; touch ../../x", "sandbox-boundary"],
-      ["CWD1", "cd sub; cd s2; cd \"$R/sub/t2\"; touch ../../x", "sandbox-boundary"],
+      ["absolute destination after two sibling branches", "cd b; cd ../sub/s2; cd \"$R/a/d0\"; touch ../../x", "sandbox-boundary"],
+      ["absolute destination after two descendant branches", "cd sub; cd s2; cd \"$R/sub/t2\"; touch ../../x", "sandbox-boundary"],
     ])("models a later cd against a recorded fault destination: %s: %s", (_cell, command, kind) => {
       expect(verdict(command)).toBe(kind);
     });
 
     it.each([
-      ["SYM1", "cd sub/s2; cd lnk; touch ../x"],
-      ["SYM2", "cd sub; cd lnk/s2; touch ../../x"],
-      ["SYM4", "cd lnk/s2; cd \"$R/sub\"; touch ../x"],
-      ["SYM5", "cd sub/s2; cd -P lnk; touch ../x"],
-      ["SYM6", "cd lnk; cd \"$R/sub/s2\"; touch ../../x"],
-    ])("forks a later cd that reaches a fault destination through a directory link: %s: %s", (_row, command) => {
+      "cd sub/s2; cd lnk; touch ../x",
+      "cd sub; cd lnk/s2; touch ../../x",
+      "cd lnk/s2; cd \"$R/sub\"; touch ../x",
+      "cd sub/s2; cd -P lnk; touch ../x",
+      "cd lnk; cd \"$R/sub/s2\"; touch ../../x",
+    ])("forks a later cd that reaches a fault destination through a directory link: %s", (command) => {
       expect(verdict(command)).toBe("sandbox-boundary");
     });
 
-    it("ends a fault path where it leaves the starting directory on a route that asks before every command: ANC4, Y1", () => {
+    it("ends a fault path where it leaves the starting directory on a route that asks before every command", () => {
       expect(verdict("cd \"$R/sub/s2\"; cd ..; cd \"$R/sub\"; touch ../x")).toBeNull();
       expect(verdict("cd sub; cd ..; touch x")).toBeNull();
     });
@@ -403,13 +403,13 @@ describe("shell path policy — working directory tracking", () => {
       const writes = (command: string) => findShellPathPolicyViolation(command, ROOT, ROOT, EXTRAS, true, { ...hostFacts(), hostCdFaultWrites: true })?.kind ?? null;
 
       it.each([
-        ["ANC4", "cd \"$R/sub/s2\"; cd ..; cd \"$R/sub\"; touch ../x"],
-        ["Y1", "cd sub; cd ..; touch x"],
-        ["Y2", "cd a; make; cd ..; touch stamp"],
-        ["Y3", "cd a && make; cd ..; touch stamp"],
-        ["Y4", "cd a; make; cd ..; echo done > stamp"],
-        ["Y5", "cd a; ls; cd ../b; touch y"],
-      ])("continues a fault path that leaves the starting directory and checks its writes: %s: %s", (_row, command) => {
+        "cd \"$R/sub/s2\"; cd ..; cd \"$R/sub\"; touch ../x",
+        "cd sub; cd ..; touch x",
+        "cd a; make; cd ..; touch stamp",
+        "cd a && make; cd ..; touch stamp",
+        "cd a; make; cd ..; echo done > stamp",
+        "cd a; ls; cd ../b; touch y",
+      ])("continues a fault path that leaves the starting directory and checks its writes: %s", (command) => {
         expect(writes(command)).toBe("sandbox-boundary");
       });
 

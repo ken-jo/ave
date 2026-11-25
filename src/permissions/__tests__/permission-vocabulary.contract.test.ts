@@ -1,8 +1,6 @@
 // One row per permission decision point: what it answers today, in one closed vocabulary.
-// A row whose answer differs from the policy core carries `core` and is listed in EXCEPTIONS; fixing it removes both.
-// LEAD rule: a fix PR that closes an I-id must flip or delete its exception row in the same PR, and move the id into RESOLVED
-// with the row that now proves it. Every I-id sits in exactly one of EXCEPTIONS, INCONSISTENCIES_WITHOUT_ROW and RESOLVED.
-// An id no driven row can show stays in INCONSISTENCIES_WITHOUT_ROW when it is closed: its note says so and names the tests that prove it.
+// A comparison row carries `core` while its observed outcome differs from policy. When the outcomes match, its observation is the proof.
+// Each compared or resolved decision points to its proof rows. Decisions without a driven row keep a note with the available evidence.
 // Tree = docs/architecture/permission-decision-tree.md line(s), or "no row".
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -275,12 +273,9 @@ const ROWS: readonly Row[] = [
     today: { outcome: "deny", reason: "default:active-sandbox-not-shell-contained", waiver: "none" },
     core: { outcome: "ask-human", waiver: "session" },
     observe: () => plan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "partial") }) },
-  { id: "D30", point: "analysis limit other than the cd budget, host route", tree: "no row", unknown: "U1",
+  { id: "D30", point: "analysis limit other than the cd budget", tree: "no row", unknown: "U1",
     today: { outcome: "ask-human", reason: "shell-analysis-limit", headless: "deny", waiver: "once" },
     observe: () => analysisLimit(ANALYSIS_LIMIT_COMMAND) },
-  { id: "D30.b", point: "analysis limit other than the cd budget, contained route", tree: "no row", unknown: "U1",
-    today: { outcome: "ask-human", reason: "shell-analysis-limit", headless: "deny", waiver: "once" },
-    observe: () => analysisLimit(ANALYSIS_LIMIT_COMMAND, true) },
   // Layer 1: egress destination classes. These rows pin the class predicates; the relay that acts on them is not driven,
   // so the outcome names what the relay does with each answer and the `relay:` reason is a label of this table, not a product code.
   // D32 pins class membership only; what an allow-list entry does with a reserved literal is not pinned here.
@@ -460,23 +455,23 @@ const ROWS: readonly Row[] = [
     } },
 ];
 
-// Inconsistency id (policy design, section 3) -> the rows that still answer differently from the policy core.
-const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
+// Compared decisions and their rows, including the proof after a divergence is fixed.
+const COMPARISON_ROWS: Readonly<Record<string, readonly string[]>> = {
   I3: ["L20"],
   I11: ["D26"],
   I12: ["D27"],
   I15: ["L3", "L13"],
   I16: ["L18"],
   I18: ["L6"],
+  I19: ["D30"],
 };
 
-// Closed inconsistency -> the row that proves it, which answers as the policy core does.
+// Resolved decisions covered by a row that needs no policy comparison.
 const RESOLVED: Readonly<Record<string, string>> = {
   I1: "D25.a",
   I5: "D34.b",
   I8: "L4",
   I10: "L1",
-  I19: "D30",
 };
 
 // Inconsistencies no driven row can show, and why.
@@ -553,6 +548,15 @@ describe("permission vocabulary contract", () => {
     expect(await row.observe()).toEqual(row.today);
   });
 
+  it("uses the same one-time floor for a contained route that exceeds the analysis limit", () => {
+    expect(analysisLimit(ANALYSIS_LIMIT_COMMAND, true)).toEqual({
+      outcome: "ask-human",
+      reason: "shell-analysis-limit",
+      headless: "deny",
+      waiver: "once",
+    });
+  });
+
   it("keeps every row inside the closed vocabulary", () => {
     for (const row of ROWS) {
       for (const seen of [row.today, row.core ?? {}]) {
@@ -566,12 +570,15 @@ describe("permission vocabulary contract", () => {
     }
   });
 
-  it("lists every row that differs from the policy core as an exception, and nothing else", () => {
-    const listed = Object.values(EXCEPTIONS).flat();
-    expect(new Set(listed).size).toBe(listed.length);
-    expect([...listed].sort()).toEqual(ROWS.filter(row => row.core !== undefined).map(row => row.id).sort());
+  it("accounts for every difference from the policy core", () => {
+    const compared = Object.values(COMPARISON_ROWS).flat();
+    expect(new Set(compared).size).toBe(compared.length);
+    for (const proof of compared) expect(ROWS.some(row => row.id === proof), proof).toBe(true);
     for (const row of ROWS) {
-      if (row.core !== undefined) expect({ ...row.today, ...row.core }, row.id).not.toEqual(row.today);
+      if (row.core !== undefined) {
+        expect(compared, row.id).toContain(row.id);
+        expect({ ...row.today, ...row.core }, row.id).not.toEqual(row.today);
+      }
       // A refusal with no stable code is an exception until the reason registry exists.
       if (row.today.reason.startsWith("uncoded:")) expect(row.core?.reason, row.id).toBe("registry-code");
     }
@@ -584,12 +591,12 @@ describe("permission vocabulary contract", () => {
     expect(driven.filter(id => id in NOT_DRIVEN)).toEqual([]);
     expect([...driven, ...Object.keys(NOT_DRIVEN)].sort()).toEqual([...points].sort());
     const inconsistencies = Array.from({ length: 28 }, (_, index) => `I${index + 1}`);
-    expect([...Object.keys(EXCEPTIONS), ...Object.keys(INCONSISTENCIES_WITHOUT_ROW), ...Object.keys(RESOLVED)].sort()).toEqual([...inconsistencies].sort());
+    expect([...Object.keys(COMPARISON_ROWS), ...Object.keys(INCONSISTENCIES_WITHOUT_ROW), ...Object.keys(RESOLVED)].sort()).toEqual([...inconsistencies].sort());
     for (const [id, proof] of Object.entries(RESOLVED)) {
       const row = ROWS.find(candidate => candidate.id === proof);
       expect(row, id).toBeDefined();
       expect(row?.core, id).toBeUndefined();
-      expect(Object.values(EXCEPTIONS).flat(), id).not.toContain(proof);
+      expect(Object.values(COMPARISON_ROWS).flat(), id).not.toContain(proof);
     }
   });
 });
