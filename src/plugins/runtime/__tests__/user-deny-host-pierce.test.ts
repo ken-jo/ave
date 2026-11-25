@@ -197,7 +197,7 @@ describe.runIf(hostPlatform === "win32")("a user's read deny over a plugin's cer
   it("starts the certs plugins beside a deny inside their pierce, withholds the match, and names the rule once", async () => {
     const corp = join(certs(), "corp");
     mkdirSync(corp, { recursive: true });
-    const certsRead = { read: [{ kind: "hostDirectory" as const, segments: ["certs"], why: "Read trust anchors" }] };
+    const certsRead: PluginManifest["sandbox"] = { read: [{ kind: "hostDirectory", segments: ["certs"], why: "Read trust anchors" }] };
     const rows = [await installPlugin(CERTS_PLUGIN, "certs_reader_ping", certsRead), await installPlugin(SECOND_CERTS_PLUGIN, "certs_second_ping", certsRead)];
     await writeFile(registryPath, JSON.stringify({ version: 1, plugins: rows }), "utf-8");
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true, denyRead: [corp], windows: { externalConfinement: true } });
