@@ -304,7 +304,7 @@ describe.skipIf(process.platform !== "win32").each(["shell", "extension"] as con
 
     await expect(openRoute()).rejects.toThrow(/could not hold \[::1\]:\d+ \(EADDRINUSE\)/u);
     expect(taken).toBeTypeOf("number");
-    await expect.poll(() => probe("127.0.0.1", taken!)).toBe("ECONNREFUSED");
+    await expect.poll(() => probe("127.0.0.1", taken ?? 0)).toBe("ECONNREFUSED");
     expect(asked).toEqual([]);
   });
 });
