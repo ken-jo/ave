@@ -1,3 +1,5 @@
+import { lstatSync, readdirSync, readlinkSync, type Stats } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import { SANDBOX_NAMED_ENTRIES } from "./sandbox-write-policy.js";
 import { parseSandboxWrappedWords, quoteSandboxWrappedWord } from "./sandbox-wrapped-command.js";
 import { t } from "../i18n/index.js";
@@ -77,26 +79,65 @@ export function macWriteRootNameRules(writeRoots: readonly string[]): string {
   return rules.join("\n");
 }
 
+// Follow `entry` beneath `root` (a resolved path) one component at a time, the way the kernel will: where it ends, and every link
+// passed on the way, each at its own resolved location and under the name the folder gives it. An absent tail is kept as spelled.
+const MAX_NAMED_ENTRY_LINKS = 40;
+export function followNamedEntry(root: string, entry: string): { physical: string; links: string[] } {
+  const links: string[] = [];
+  let current = root;
+  const pending = entry.split("/");
+  while (pending.length > 0) {
+    const name = pending.shift();
+    if (name === undefined || name === "" || name === ".") continue;
+    if (name === "..") { current = dirname(current); continue; }
+    const candidate = join(current, name);
+    let stat: Stats;
+    try { stat = lstatSync(candidate); }
+    catch (error) {
+      if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR")) return { physical: join(candidate, ...pending), links };
+      throw error;
+    }
+    if (!stat.isSymbolicLink()) { current = candidate; continue; }
+    // The folder may hold the link under another case or normalization than the one asked for; a literal rule needs the stored one.
+    const fold = (text: string): string => text.normalize("NFC").toLowerCase();
+    const listed = readdirSync(current);
+    links.push(join(current, listed.includes(name) ? name : listed.find(stored => fold(stored) === fold(name)) ?? name));
+    if (links.length > MAX_NAMED_ENTRY_LINKS) throw new Error(t("sandboxPolicy.tooLarge"));
+    const target = readlinkSync(candidate);
+    if (isAbsolute(target)) current = "/";
+    pending.unshift(...target.split("/"));
+  }
+  return { physical: current, links };
+}
+
 // Where a named entry is a link, or lies behind one (`.agents -> tools/agents`, `.ave/commands -> ../cmds`, `.ave -> conf`), Seatbelt
 // sees a write at the resolved path, which the rules above do not name. Each resolved target is denied as a directory, present or
-// not, and it and the folders above it inside a write root cannot be moved away, so the name cannot be emptied and filled again.
-// The link itself is held by the rules above, which match its own path.
-export function macLinkedNameTargetRules(targets: readonly string[], writeRoots: readonly string[]): string {
+// not. Every link passed on the way cannot be removed, replaced or renamed over, or the entry could be pointed somewhere new. The
+// targets, the links and the folders above them inside a write root cannot be moved away, so no name on the way can be emptied and
+// filled again.
+export function macLinkedNameTargetRules(targets: readonly string[], links: readonly string[], writeRoots: readonly string[]): string {
   const rules = new Set<string>();
   const literal = (path: string): string => {
     const text = JSON.stringify(path);
     if (Buffer.byteLength(text) > MAX_SEATBELT_STRING_BYTES) throw new Error(t("sandboxPolicy.tooLarge"));
     return text;
   };
-  for (const target of targets) {
-    rules.add(`(deny file-write* file-write-create file-write-unlink (subpath ${literal(target)}))`);
+  const pinAbove = (path: string): void => {
     for (const root of writeRoots) {
       const base = root.replace(/\/+$/u, "");
-      if (!target.startsWith(`${base}/`)) continue;
-      for (let above = target.slice(0, target.lastIndexOf("/")); above.length > base.length; above = above.slice(0, above.lastIndexOf("/"))) {
+      if (!path.startsWith(`${base}/`)) continue;
+      for (let above = path.slice(0, path.lastIndexOf("/")); above.length > base.length; above = above.slice(0, above.lastIndexOf("/"))) {
         rules.add(`(deny file-write-unlink (literal ${literal(above)}))`);
       }
     }
+  };
+  for (const target of targets) {
+    rules.add(`(deny file-write* file-write-create file-write-unlink (subpath ${literal(target)}))`);
+    pinAbove(target);
+  }
+  for (const link of links) {
+    rules.add(`(deny file-write-create file-write-unlink (literal ${literal(link)}))`);
+    pinAbove(link);
   }
   return [...rules].join("\n");
 }

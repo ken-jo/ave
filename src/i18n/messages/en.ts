@@ -5008,6 +5008,7 @@ export const en = {
 
   // sandboxPolicy
   "sandboxPolicy.tooLarge": "Sandbox repository protection is too large; grant fewer or narrower write folders and retry",
+  "sandboxPolicy.namedEntryLinksToWriteRoot": "Sandbox protection cannot be applied: {entry} in a work folder is a link to that work folder or to a folder that holds it, so writes there cannot be confined. Remove or retarget the link and retry",
   "sandboxPolicy.configuredDeniesTooLarge": "Sandbox policy is too large; reduce the number or length of your configured denyWrite entries and retry",
   "sandboxPolicy.quarantined": "Sandbox protected Git entries were moved to quarantine (not deleted):\n{moves}\nRestore each entry from the shown quarantine path to its original path after inspecting it.",
   "sandboxPolicy.quarantineFailed": "Sandbox quarantine failed for {path}: {reason}. No deletion was attempted. Already moved entries remain at:\n{moves}",

@@ -43,7 +43,7 @@ import { isAveHomeReadReallowed } from "./ave-home-read-boundary.js";
 import { isBoundStageWorkspacePath } from "./stage-workspace-binding.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, resolvePathForPolicy, SENSITIVE_PATH_ENTRIES, sensitiveEntryOnSandboxFloor } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
-import { assertMacSandboxWrapperSize, hardenMacSandboxGitMetadata, macAppOwnedDirectoryWriteRules, macLinkedNameTargetRules, macWriteRootNameRules } from "./macos-sandbox-wrap.js";
+import { assertMacSandboxWrapperSize, hardenMacSandboxGitMetadata, followNamedEntry, macAppOwnedDirectoryWriteRules, macLinkedNameTargetRules, macWriteRootNameRules } from "./macos-sandbox-wrap.js";
 import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-cleanup.js";
 import { createLogger } from "../lib/logger.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
@@ -1216,15 +1216,25 @@ function macWriteRootRules(applied: Partial<FilesystemConfig> | undefined): stri
   // A root may hold `*` or `?`, as a wildcard or as part of a folder's name; the name rules anchor at both readings.
   const roots = (applied?.allowWrite ?? _baseTrustedSettings?.allowWrite ?? [])
     .flatMap(entry => spellings(typeof entry === "string" ? expandLeadingTilde(entry) : entry.path));
-  // Where a named entry resolves away from its own spelling, through a link at or above it, the resolved path is held too.
-  const linkedTargets = [...new Set(roots.map(root => canonicalizePathForMatch(root)))].flatMap(root =>
-    SANDBOX_NAMED_ENTRIES.flatMap((entry) => {
-      const physical = canonicalizePathForMatch(join(root, entry));
-      return physical === join(root, entry) ? [] : [physical];
-    }));
+  // Where a named entry resolves away from its own spelling, through a link at or above it, the resolved path and every link on
+  // the way are held too. A target that is a work folder, or holds one, cannot be denied without taking the work folder with it,
+  // so that wrap is refused by name.
+  const physicalRoots = [...new Set(roots.map(root => canonicalizePathForMatch(root)))];
+  const fold = (path: string): string => path.normalize("NFC").toLowerCase();
+  const targets = new Set<string>();
+  const links = new Set<string>();
+  for (const root of physicalRoots) for (const entry of SANDBOX_NAMED_ENTRIES) {
+    const followed = followNamedEntry(root, entry);
+    if (followed.links.length === 0 && followed.physical === join(root, entry)) continue;
+    if (physicalRoots.some(held => fold(held) === fold(followed.physical) || fold(held).startsWith(`${fold(followed.physical).replace(/\/$/u, "")}/`))) {
+      throw new Error(t("sandboxPolicy.namedEntryLinksToWriteRoot", { entry }));
+    }
+    targets.add(followed.physical);
+    for (const link of followed.links) links.add(link);
+  }
   return [
     macWriteRootNameRules(roots),
-    macLinkedNameTargetRules([...new Set(linkedTargets)], roots),
+    macLinkedNameTargetRules([...targets], [...links], roots),
     macAppOwnedDirectoryWriteRules([aveHome(), ...appOwnedSandboxPrivateRoots()].flatMap(spellings), roots),
   ].filter(Boolean).join("\n");
 }

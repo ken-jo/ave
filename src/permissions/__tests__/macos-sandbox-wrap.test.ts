@@ -143,18 +143,23 @@ describe("named entry rules", () => {
 });
 
 describe("linked name target rules", () => {
-  it("adds nothing without a target", () => {
-    expect(macLinkedNameTargetRules([], ["/Users/example/project"])).toBe("");
+  it("adds nothing without a target or a link", () => {
+    expect(macLinkedNameTargetRules([], [], ["/Users/example/project"])).toBe("");
   });
 
-  it("denies each target as a directory and pins it and the folders above it inside a write root", () => {
-    expect(macLinkedNameTargetRules(["/Users/example/project/tools/shared/agents", "/Users/example/elsewhere/cmds"], ["/Users/example/project/", "/tmp/x"]).split("\n")).toEqual([
+  it("denies each target as a directory, pins each link, and pins the folders above both inside a write root", () => {
+    expect(macLinkedNameTargetRules(
+      ["/Users/example/project/tools/shared/agents", "/Users/example/elsewhere/cmds"], ["/Users/example/project/hops/l1", "/tmp/x/l2"], ["/Users/example/project/", "/tmp/x"],
+    ).split("\n")).toEqual([
       '(deny file-write* file-write-create file-write-unlink (subpath "/Users/example/project/tools/shared/agents"))',
       '(deny file-write-unlink (literal "/Users/example/project/tools/shared"))',
       '(deny file-write-unlink (literal "/Users/example/project/tools"))',
       '(deny file-write* file-write-create file-write-unlink (subpath "/Users/example/elsewhere/cmds"))',
+      '(deny file-write-create file-write-unlink (literal "/Users/example/project/hops/l1"))',
+      '(deny file-write-unlink (literal "/Users/example/project/hops"))',
+      '(deny file-write-create file-write-unlink (literal "/tmp/x/l2"))',
     ]);
-    expect(() => macLinkedNameTargetRules([`/${"가".repeat(400)}`], [])).toThrow(t("sandboxPolicy.tooLarge"));
+    expect(() => macLinkedNameTargetRules([`/${"가".repeat(400)}`], [], [])).toThrow(t("sandboxPolicy.tooLarge"));
   });
 });
 

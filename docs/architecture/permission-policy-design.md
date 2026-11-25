@@ -838,6 +838,21 @@ each admitted write root, taking precedence over grants:
 - Ave settings, permission settings, rules, policies and approval grants, with
   paths derived from their owning stores rather than copied filenames.
 
+Links and this floor. A protected entry that is a link, or is reached through
+links, is held where it resolves, and on macOS every link on the way to
+`.agents`, `.ave/commands` or `.ave/hooks` is pinned so it cannot be pointed
+somewhere new. The target becomes read-only to confined shells whatever it is:
+`.agents -> .claude` makes `.claude` read-only to them. When such a link
+resolves to a work folder or to a folder that holds one, the wrap is refused
+with a named reason, because denying the target would deny the work folder.
+
+Known limit, for every entry on this floor on every platform (`.vscode`,
+`.git/hooks`, the Linux rows and the macOS rules alike): a deny names a path,
+so a link *inside* a protected folder that leads out of it, such as
+`.agents/skills -> ../.claude/skills` or a file link under `.ave/commands`,
+leaves its target writable at the target's own path. The link itself cannot be
+changed, and the host loads whatever the target then holds.
+
 On macOS two more denies sit outside the write roots' own entries. A directory
 named `srt-sock-*` (the sandbox runtime's proxy socket directory under the host
 temp directory) is write-denied wherever it appears, by an appended rule. When a write root holds the

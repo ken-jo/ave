@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
+import { t } from "../../i18n/index.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { cleanupAsrtSandboxAfterCommand, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
 import { openEgressInvocation } from "../egress-invocations.js";
@@ -246,6 +247,47 @@ describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())
     ].join("\n"), project);
     expect(statuses(result.stdout)).toEqual({ "through-link": "1", "at-target": "1", "absent-part": "1", "move-target": "1", other: "0" });
     expect(readdirSync(join(project, "conf")).sort()).toEqual(["commands", "notes.md"]);
+  });
+
+  it("keeps every link on the way to an entry from being removed, replaced or moved", async () => {
+    const project = join(root, "chained");
+    for (const directory of ["real/skills", "hops", ".ave", "cmds-real"]) mkdirSync(join(project, directory), { recursive: true });
+    symlinkSync("hops/l1", join(project, ".agents"));
+    symlinkSync("../l2", join(project, "hops", "l1"));
+    symlinkSync("real", join(project, "l2"));
+    symlinkSync("../cmds", join(project, ".ave", "commands"));
+    symlinkSync("cmds-real", join(project, "cmds"));
+    const result = await runConfined([
+      `mkdir fresh`,
+      `rm hops/l1 2>/dev/null; echo "remove-first=$?"`,
+      `ln -sfn ../fresh hops/l1 2>/dev/null; echo "replace-first=$?"`,
+      `mv hops hops-moved 2>/dev/null; echo "move-above-first=$?"`,
+      `rm l2 2>/dev/null; echo "remove-second=$?"`,
+      `ln -s fresh staged && mv -f staged l2 2>/dev/null; echo "rename-over-second=$?"`,
+      `rm cmds 2>/dev/null; echo "remove-commands-hop=$?"`,
+      `mkdir -p .agents/skills 2>/dev/null; printf x > .agents/skills/planted 2>/dev/null; echo "plant=$?"`,
+      `printf x > .ave/commands/planted.md 2>/dev/null; echo "plant-command=$?"`,
+      `printf x > hops/other.txt; echo "beside-link=$?"`,
+    ].join("\n"), project);
+    expect(statuses(result.stdout)).toEqual({
+      "remove-first": "1", "replace-first": "1", "move-above-first": "1", "remove-second": "1", "rename-over-second": "1",
+      "remove-commands-hop": "1", plant: "1", "plant-command": "1", "beside-link": "0",
+    });
+    expect(readdirSync(join(project, "fresh"))).toEqual([]);
+    expect(readdirSync(join(project, "real", "skills"))).toEqual([]);
+    expect(readdirSync(join(project, "cmds-real"))).toEqual([]);
+  });
+
+  it("refuses the wrap when an entry links to a work folder or a folder that holds one", async () => {
+    const same = join(root, "self");
+    mkdirSync(same);
+    symlinkSync(".", join(same, ".agents"));
+    await expect(runConfined("true", same)).rejects.toThrow(t("sandboxPolicy.namedEntryLinksToWriteRoot", { entry: ".agents" }));
+    const outer = join(root, "outer");
+    const inner = join(outer, "inner");
+    mkdirSync(join(inner, ".ave"), { recursive: true });
+    symlinkSync("../..", join(inner, ".ave", "hooks"));
+    await expect(runConfined("true", inner, [inner, outer])).rejects.toThrow(t("sandboxPolicy.namedEntryLinksToWriteRoot", { entry: ".ave/hooks" }));
   });
 
   // A working folder may carry a character the write policy reads as a pattern.
