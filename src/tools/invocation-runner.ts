@@ -122,6 +122,7 @@ import {
 import type { BrokeredWorkloadCapability } from "../workload/runtime.js";
 import {
   buildHostShellExecutionPermitBinding,
+  canonicalizeHostShellAllowedDirectories,
   type HostShellExecutionPermitBinding,
 } from "../permissions/host-shell-execution-permit.js";
 import { createLogger } from "../lib/logger.js";
@@ -1428,8 +1429,7 @@ async function runToolInvocationAttempt(
       finalInput,
       currentAuditMetadata(finalInput),
     );
-    // The Plan-B binding is created only after every Layer-1 directory grant
-    // has finalized the effective validator scope. It remains host-only.
+    // Pin the host cwd before any permission decision or directory approval.
     let hostShellExecutionPermitBinding:
       | HostShellExecutionPermitBinding
       | undefined;
@@ -1499,6 +1499,7 @@ async function runToolInvocationAttempt(
       await manager.ensureProjectRulesLoaded(shellSubject?.cwd ?? executionCwd);
       const checkDirectoryPermission = (): PermissionCheckResult => manager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
         ...invocationPermissionContext, sessionId, projectRulesCwd: shellSubject?.cwd ?? executionCwd,
+        ...(hostShellExecutionPermitBinding ? { hostShellCwdIdentity: hostShellExecutionPermitBinding.cwdIdentity ?? null } : {}),
         userOwnedBrowser: userOwnedBrowserScopeOf(tool, approvalMemory),
         agentBrowser: agentBrowserScopeOf(tool, approvalMemory),
         ...(terminalScope?.lane === "manual" ? { hostTerminalTurn: terminalScope, trustOrigin: invocationPermissionContext.trustOrigin } : {}),
@@ -1965,6 +1966,13 @@ async function runToolInvocationAttempt(
       }
       commit?.call(invocationPermissionContext, approvedDirectory);
     };
+
+    if (hostShellExecutionPlan !== undefined && hostShellToolName !== undefined && hostShellRequiresExplicitApproval) {
+      hostShellExecutionPermitBinding = buildHostShellExecutionPermitBinding({
+        plan: hostShellExecutionPlan, toolName: hostShellToolName, toolUseId: toolUse.id,
+        rawInput: finalInput, executionCwd, extraAllowedDirectories: [],
+      });
+    }
 
     if ((hostShellToolName === "bash" || hostShellToolName === "powershell") && hostShellExecutionPlan !== undefined
       && hostShellExecutionPlan.substrate !== "mxc" && invocationPermissionContext.disposableSubstrate === undefined
@@ -2444,18 +2452,10 @@ async function runToolInvocationAttempt(
         // sufficient).
       }
     }
-    if (
-      hostShellExecutionPlan !== undefined &&
-      hostShellToolName !== undefined &&
-      hostShellRequiresExplicitApproval
-    ) {
-      hostShellExecutionPermitBinding = buildHostShellExecutionPermitBinding({
-        plan: hostShellExecutionPlan,
-        toolName: hostShellToolName,
-        toolUseId: toolUse.id,
-        rawInput: finalInput,
-        executionCwd,
-        extraAllowedDirectories: invocationRuntimeAllowedDirectories,
+    if (hostShellExecutionPermitBinding !== undefined) {
+      hostShellExecutionPermitBinding = Object.freeze({
+        ...hostShellExecutionPermitBinding,
+        allowedDirectories: canonicalizeHostShellAllowedDirectories(invocationRuntimeAllowedDirectories),
       });
     }
     const evaluationContext = makeEvaluationContext({

@@ -32,8 +32,11 @@ export function matchesShellWorkingDirectoryIdentity(
   expected: ShellWorkingDirectoryIdentity,
 ): boolean {
   const actual = captureShellWorkingDirectoryIdentity(cwd);
-  return actual !== undefined &&
-    actual.realpath === expected.realpath &&
+  return actual !== undefined && sameShellWorkingDirectoryIdentity(actual, expected);
+}
+
+export function sameShellWorkingDirectoryIdentity(actual: ShellWorkingDirectoryIdentity, expected: ShellWorkingDirectoryIdentity): boolean {
+  return actual.realpath === expected.realpath &&
     actual.dev === expected.dev &&
     actual.ino === expected.ino;
 }

@@ -30,6 +30,8 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import { buildHostShellExecutionPermitBinding, mintHostShellExecutionPermit } from "../../permissions/host-shell-execution-permit.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan } from "../../permissions/sandbox-capability.js";
 import { BashTool } from "../shell-tools.js";
+import { ToolExecutor } from "../executor.js";
+import { ToolRegistry } from "../registry.js";
 import { HOST_SHELL_CWD_REVOKED_EXIT_CODE } from "../host-shell-cwd-guard.js";
 
 let directory: string;
@@ -82,6 +84,49 @@ async function authorizedContext(cwd: string, command = "touch marker", rulePatt
 
 // A bare tool rule does not admit a shell; exact Bash(...) rules cover each command.
 const COMPOUND_RULES = ["Bash(printf command-ran)", "Bash(printf C)", "Bash(exit 0)", "Bash(exit 197)"];
+
+describe("host cwd approval", () => {
+  it("refuses to launch after the approved directory alias is retargeted", async () => {
+    const first = join(directory, "first");
+    const second = join(directory, "second");
+    const alias = join(directory, "alias");
+    mkdirSync(first);
+    mkdirSync(second);
+    symlinkSync(first, alias, "junction");
+    const webContents = { isDestroyed: () => false, send: vi.fn() };
+    const gate = new ApprovalGate(webContents as never);
+    const registry = new ToolRegistry();
+    const tool = new BashTool();
+    const launch = vi.spyOn(tool, "execute").mockResolvedValue({ output: "mock launch" });
+    registry.register(tool);
+    const manager = new PermissionManager(join(directory, "permissions.json"));
+    manager.setMode("strict");
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate);
+    const abort = new AbortController();
+    try {
+      const pending = executor.executeAll([{ id: "cwd-consent", name: "bash", input: {
+        command: "touch marker", cwd: "alias", executionMode: "host", justification: "Use the workspace fixture",
+      } }], { sessionId: "cwd-consent", executionCwd: directory, abortSignal: abort.signal, permissionContext: { trustOrigin: "llm-tool-arg" } });
+      const card = await Promise.race([
+        vi.waitFor(() => {
+          const request = webContents.send.mock.calls.find(([channel]) => channel === "ave:approval:request")?.[1] as ApprovalRequest | undefined;
+          if (!request) throw new Error("No host approval request");
+          return request;
+        }),
+        pending.then(([result]) => { throw new Error(result?.content); }),
+      ]);
+      unlinkSync(alias);
+      symlinkSync(second, alias, "junction");
+      gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac }, webContents as never);
+      const [result] = await pending;
+      expect.soft(launch).not.toHaveBeenCalled();
+      expect(result?.is_error).toBe(true);
+      expect(result?.content).toMatch(/working directory.*changed/i);
+    } finally {
+      abort.abort();
+    }
+  });
+});
 
 describe("host cwd races after permit consumption", () => {
   it("preserves an ordinary exit 197 and the command's output", async () => {

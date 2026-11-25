@@ -31,7 +31,7 @@ import { isCanonicalWebFetchTool } from "./web-fetch.js";
 import { runWithEffectGateContext } from "../permissions/effect-enforcement.js";
 import { CHOKEPOINT_EFFECT } from "../permissions/effect-kind.js";
 import type { HostShellExecutionPermitBinding } from "../permissions/host-shell-execution-permit.js";
-import { mintHostShellExecutionPermit } from "../permissions/host-shell-execution-permit.js";
+import { HOST_SHELL_AUTHORIZATION_REVOKED_ERROR, mintHostShellExecutionPermit } from "../permissions/host-shell-execution-permit.js";
 import { resolveEffectiveCeilingMs, runWithCeiling, type ToolCeilingOutcome } from "./executor-ceiling.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession } from "../shared/chat-origin.js";
@@ -679,8 +679,7 @@ export async function executeAuthorizedToolInvocation(
     hostShellRequiresExplicitApproval &&
     hostShellExecutionPermit === undefined
   ) {
-    const msg =
-      "Unsandboxed shell execution blocked: no host policy authorization or verified approval receipt was available for this action.";
+    const msg = `Unsandboxed shell execution blocked: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`;
     const durationMs = Date.now() - startTime;
     emitToolStart(callbacks, toolUse.name, finalInput, meta);
     callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
@@ -1160,7 +1159,7 @@ export async function executeAuthorizedToolInvocation(
     if (hostShellExecutionPlan && hostShellExecutionPermitBinding) {
       const permit = mintHostShellExecutionPermit({ plan: hostShellExecutionPlan, approvalDecision: decision,
         permissionManager: services.permissionManager, binding: hostShellExecutionPermitBinding });
-      if (hostShellRequiresExplicitApproval && !permit) throw new Error("Host shell approval receipt is unavailable");
+      if (hostShellRequiresExplicitApproval && !permit) throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
       executionContext.hostShellExecutionPermit = permit;
     }
   };

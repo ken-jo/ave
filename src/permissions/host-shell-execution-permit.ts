@@ -1,7 +1,7 @@
 // Plans describe substrates, not authorization. Bind proof privately to one final action and consume it before plain-host spawn.
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
-import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
+import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, sameShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
 import {
   parseHostShellExecutionInput,
   exactRulePassesUnsandboxedShellAsk,
@@ -40,6 +40,7 @@ export interface HostShellExecutionPermitBinding {
   readonly requestedCwd: string | undefined;
   readonly executionCwd: string;
   readonly resolvedCwd: string;
+  readonly cwdIdentity?: ShellWorkingDirectoryIdentity;
   readonly timeoutSeconds: number;
   readonly executionMode: HostShellExecutionRequest;
   readonly justification: string | undefined;
@@ -104,7 +105,8 @@ export function buildHostShellExecutionPermitBinding(input: {
 }): HostShellExecutionPermitBinding | undefined {
   const parsed = parseHostShellExecutionInput(input.rawInput);
   if (parsed === undefined || parsed.executionMode !== input.plan.executionRequest) return undefined;
-  const executionCwd = pathResolve(input.executionCwd);
+  const resolvedCwd = resolveHostShellWorkingDirectory(input.executionCwd, parsed.cwd);
+  const cwdIdentity = captureShellWorkingDirectoryIdentity(resolvedCwd);
   return Object.freeze({
     planIdentity: input.plan.identity,
     plan: input.plan,
@@ -113,7 +115,8 @@ export function buildHostShellExecutionPermitBinding(input: {
     command: parsed.command,
     requestedCwd: parsed.cwd,
     executionCwd: input.executionCwd,
-    resolvedCwd: resolveHostShellWorkingDirectory(executionCwd, parsed.cwd),
+    resolvedCwd,
+    ...(cwdIdentity === undefined ? {} : { cwdIdentity }),
     timeoutSeconds: parsed.timeoutSeconds,
     executionMode: parsed.executionMode,
     justification: parsed.justification,
@@ -190,8 +193,10 @@ export function mintHostShellExecutionPermit(input: {
     input.binding.plan !== input.plan ||
     input.binding.planIdentity !== input.plan.identity
   ) return undefined;
-  const cwdIdentity = allowRuleAuthorization?.cwdIdentity ?? captureShellWorkingDirectoryIdentity(input.binding.resolvedCwd);
-  if (cwdIdentity === undefined) return undefined;
+  const { cwdIdentity } = input.binding;
+  if (cwdIdentity === undefined ||
+      (allowRuleAuthorization !== undefined && !sameShellWorkingDirectoryIdentity(cwdIdentity, allowRuleAuthorization.cwdIdentity)) ||
+      !matchesShellWorkingDirectoryIdentity(input.binding.resolvedCwd, cwdIdentity)) return undefined;
   const permit = Object.freeze({}) as HostShellExecutionPermit;
   permits.set(permit, Object.freeze({ ...input.binding, plan: input.plan, allowRuleAuthorization, cwdIdentity }));
   return permit;

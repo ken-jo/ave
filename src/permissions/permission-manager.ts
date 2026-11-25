@@ -240,6 +240,8 @@ export interface PermissionCheckContext {
   verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   // Host-issued per-invocation substrate, sealed before permission evaluation.
   hostShellExecutionPlan?: HostShellExecutionPlan;
+  // Host cwd observed before permission evaluation. Null means the observation failed.
+  hostShellCwdIdentity?: ShellWorkingDirectoryIdentity | null;
   // No human approval surface is available; the pipeline denies any human fallback.
   headless?: boolean;
   // The app remains open while its owner is away; cards wait using the configured owner-away limit.
@@ -1723,8 +1725,13 @@ export class PermissionManager {
     if (requestedRuleSubject && requestedRuleSubject.dialect !== "bash" && requestedRuleSubject.dialect !== "powershell") {
       throw new Error("Shell rule subject has no known dialect");
     }
+    const boundCwd = context.hostShellCwdIdentity;
+    if (boundCwd !== undefined && (boundCwd === null || requestedRuleSubject?.cwd === undefined ||
+      !matchesShellWorkingDirectoryIdentity(requestedRuleSubject.cwd, boundCwd))) {
+      admissionDenial ??= { code: "shell-cwd-changed", reason: "The shell working directory changed or could not be verified. Request authorization again." };
+    }
     const cwdIdentity = context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined
-      ? captureShellWorkingDirectoryIdentity(requestedRuleSubject.cwd) : undefined;
+      ? boundCwd ?? captureShellWorkingDirectoryIdentity(requestedRuleSubject.cwd) : undefined;
     const ruleSubject = requestedRuleSubject === undefined ? undefined : {
       ...requestedRuleSubject, ...(cwdIdentity ? { cwd: cwdIdentity.realpath } : {}),
     };

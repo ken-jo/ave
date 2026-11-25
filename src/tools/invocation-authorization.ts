@@ -397,6 +397,7 @@ export async function authorizeToolInvocation(
             ...(shellRuleSubject ? { ruleSubject: shellRuleSubject } : {}),
             ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
             ...(hostShellExecutionPlan === undefined ? {} : { hostShellExecutionPlan }),
+            ...(hostShellExecutionPermitBinding ? { hostShellCwdIdentity: hostShellExecutionPermitBinding.cwdIdentity ?? null } : {}),
             ...(shellExecution === undefined ? {} : { shellExecution }),
             ...(sessionId !== undefined ? { sessionId } : {}),
             ...(scopedRuleSubject ? { ruleSubject: scopedRuleSubject } : {}),

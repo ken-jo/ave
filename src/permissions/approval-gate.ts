@@ -520,6 +520,7 @@ function sameHostShellExecutionPermitBinding(
     actual.requestedCwd === expected.requestedCwd &&
     actual.executionCwd === expected.executionCwd &&
     actual.resolvedCwd === expected.resolvedCwd &&
+    actual.cwdIdentity === expected.cwdIdentity &&
     actual.timeoutSeconds === expected.timeoutSeconds &&
     actual.executionMode === expected.executionMode &&
     actual.justification === expected.justification &&

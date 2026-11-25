@@ -11,6 +11,7 @@ import {
   type ApprovalRequest,
 } from "../approval-gate.js";
 import { offersFloorSessionAllow } from "../decision-pipeline.js";
+import { captureShellWorkingDirectoryIdentity } from "../shell-working-directory-identity.js";
 import { buildHostShellExecutionPlan, requiresExplicitHostShellApproval } from "../host-shell-execution-plan.js";
 import { updatePermissionsFile } from "../permissions-store.js";
 import { __resetWindowsSandboxSubstrateForTest } from "../sandbox-capability.js";
@@ -62,6 +63,7 @@ function makeBinding(
     requestedCwd: undefined,
     executionCwd: tmpdir(),
     resolvedCwd: tmpdir(),
+    cwdIdentity: captureShellWorkingDirectoryIdentity(overrides.resolvedCwd ?? tmpdir()),
     timeoutSeconds: 30,
       executionMode: "default",
       justification: undefined,
