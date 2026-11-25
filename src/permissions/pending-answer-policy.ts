@@ -5,12 +5,18 @@
 // allowed. The pending call is then judged again, and the answer stands unless that denies the call or asks for it under a forced
 // card the person was not shown. One rule for every card a person answers, so parallel stages do not void each other's cards.
 import type { PermissionCheckResult, PermissionManager } from "./permission-manager.js";
+import type { ApprovalDecision, ApprovalGate } from "./approval-gate.js";
 
 /** The policy a card was opened under. */
 export interface AnswerEpochs { readonly epoch: string; readonly contextEpoch: string }
 
 type EpochSource = Pick<PermissionManager, "getPolicyEpoch" | "getPolicyContextEpoch">;
 type Rechecked = Pick<PermissionCheckResult, "decision" | "forceModal">;
+export interface SameCardPolicyTransition {
+  readonly gate: Partial<Pick<ApprovalGate, "allowsPolicyTransition">>;
+  readonly decision: ApprovalDecision;
+  onTransition?(): void;
+}
 
 export function answerEpochsOf(manager: EpochSource): AnswerEpochs {
   return { epoch: manager.getPolicyEpoch(), contextEpoch: manager.getPolicyContextEpoch() };
@@ -27,7 +33,13 @@ export function answerSurvivesRecheck(now: Rechecked, cardForced: boolean): bool
 }
 
 /** The whole rule. `recheck` judges the pending call by the policy as it is now; it runs only across memory-only rule steps. */
-export function personAnswerStands(manager: EpochSource, opened: AnswerEpochs, cardForced: boolean, recheck: () => Rechecked): boolean {
-  if (manager.getPolicyEpoch() === opened.epoch) return true;
+export function personAnswerStands(manager: EpochSource, opened: AnswerEpochs, cardForced: boolean, recheck: () => Rechecked,
+  sameCard?: SameCardPolicyTransition): boolean {
+  const current = manager.getPolicyEpoch();
+  if (current === opened.epoch) return true;
+  if (sameCard?.gate.allowsPolicyTransition?.(sameCard.decision, opened.epoch, current)) {
+    sameCard.onTransition?.();
+    return true;
+  }
   return onlyMemoryRulesChangedSince(manager, opened) && answerSurvivesRecheck(recheck(), cardForced);
 }

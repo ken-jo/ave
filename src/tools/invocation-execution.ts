@@ -1,4 +1,4 @@
-import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, personAnswerStands } from "../permissions/pending-answer-policy.js";
+import { type AnswerEpochs, type SameCardPolicyTransition, answerEpochsOf, onlyMemoryRulesChangedSince, personAnswerStands } from "../permissions/pending-answer-policy.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
@@ -966,7 +966,7 @@ export async function executeAuthorizedToolInvocation(
   /** The late card's question judged again across memory-only allow-rule steps (pending-answer-policy.ts). Before the card is asked it
    * stands while it is still asked; once a person `answered`, also when the policy now allows the call, as on the main card. Never
    * when the question is denied or more forced than it was, and never across any other change. */
-  const lateApprovalStands = (answered: boolean): boolean => {
+  const lateApprovalStands = (answered: boolean, sameCard?: SameCardPolicyTransition): boolean => {
     const manager = services.permissionManager;
     const pending = permissionResult;
     if (!manager || lateApprovalAnswerEpochs === undefined || !pending?.pipelineRequest) return false;
@@ -976,7 +976,7 @@ export async function executeAuthorizedToolInvocation(
       permissionResult = manager.recheckPermission(pending, { acrossMemoryRuleChanges: true });
       return permissionResult;
     };
-    if (!personAnswerStands(manager, lateApprovalAnswerEpochs, forced, recheck) || !answered && permissionResult?.decision !== "ask") return false;
+    if (!personAnswerStands(manager, lateApprovalAnswerEpochs, forced, recheck, sameCard) || !answered && permissionResult?.decision !== "ask") return false;
     lateApprovalAnswerEpochs = answerEpochsOf(manager);
     lateApprovalPolicyEpoch = lateApprovalAnswerEpochs.epoch;
     return true;
@@ -1128,11 +1128,8 @@ export async function executeAuthorizedToolInvocation(
     let decision = await services.approvalGate!.requestAndWait(liveRequest);
     abortSignal?.throwIfAborted();
     const currentEpoch = services.permissionManager?.getPolicyEpoch();
-    // The person's answer across another conversation's or run's memory-only allow rule stands; any other change refuses it.
-    const policyChanged = lateApprovalPolicyEpoch !== currentEpoch;
-    const sameCardPolicyTransition = policyChanged && lateApprovalPolicyEpoch !== undefined && currentEpoch !== undefined &&
-      services.approvalGate!.allowsPolicyTransition(decision, lateApprovalPolicyEpoch, currentEpoch);
-    const answerOutdated = !sameCardPolicyTransition && (services.permissionManager ? !lateApprovalStands(true) : policyChanged);
+    const answerOutdated = services.permissionManager !== undefined &&
+      !lateApprovalStands(true, { gate: services.approvalGate!, decision });
     if (answerOutdated) {
       permissionResult = { ...permissionResult, decision: "deny", reason: "Permission policy changed before execution." };
       throw new Error(permissionResult.reason);

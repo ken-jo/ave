@@ -1175,22 +1175,22 @@ export async function authorizeToolInvocation(
         // This is intentionally immediately after the local decision. A P2
         // share revoke that won while the modal was visible must beat the
         // newly returned allow-once before it can reach the execution stage.
-        const currentPolicyEpoch = services.permissionManager?.getPolicyEpoch();
-        const policyChanged = approvalPolicyEpoch !== currentPolicyEpoch;
-        const sameCardPolicyTransition = policyChanged && currentPolicyEpoch !== undefined &&
-          services.approvalGate.allowsPolicyTransition(decision, approvalPolicyEpoch!, currentPolicyEpoch);
-        // A saved rule decides this pending action too; a card answer cannot override its deny.
-        if (sameCardPolicyTransition) permissionResult = checkCurrentPermission();
-        // Any other change while the card was open is judged by the one rule for answered cards (pending-answer-policy.ts): a sibling
-        // stage's "Allow for this run" or a run that ended leaves the answer standing; everything else refuses it.
-        const answerOutdated = !sameCardPolicyTransition && (services.permissionManager !== undefined && approvalAnswerEpochs !== undefined
-          ? !personAnswerStands(services.permissionManager, approvalAnswerEpochs, permissionResult.forceModal === true, checkCurrentPermission)
-          : policyChanged);
+        const sameCardTransition: { denial?: string } = {};
+        const answerOutdated = services.permissionManager !== undefined && approvalAnswerEpochs !== undefined &&
+          !personAnswerStands(services.permissionManager, approvalAnswerEpochs, permissionResult.forceModal === true, checkCurrentPermission, {
+            gate: services.approvalGate,
+            decision,
+            onTransition: () => {
+              const current = checkCurrentPermission();
+              permissionResult = current;
+              if (current.decision === "deny") sameCardTransition.denial = current.reason;
+            },
+          });
         const approvalInvalidationReason = answerOutdated
           ? "Permission policy changed while approval was pending"
           : !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)
             ? "remote-controller-revoked"
-            : sameCardPolicyTransition && permissionResult.decision === "deny" ? permissionResult.reason : undefined;
+            : sameCardTransition.denial;
         if (approvalInvalidationReason !== undefined) {
           const reason = approvalInvalidationReason;
           const msg = t("be_executor.permBlockDeny", {

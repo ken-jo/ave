@@ -325,6 +325,21 @@ describe("hook command permission admission", () => {
     expect(permits).toMatchObject({ minted: 2, consumed: [true, true] });
   });
 
+  it("drops a forced hook answer after the permission mode changes", async () => {
+    setShellSandboxRequestedAtBoot(true);
+    const p = policy();
+    p.permissionManager.setMode("strict");
+    const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+    const gate = new ApprovalGate(wc as never);
+    const authorizer = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
+    const pending = authorizer(hook, payload, process.cwd());
+    await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
+    const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+    p.permissionManager.setMode("allow");
+    gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+    expect(await pending).toMatchObject({ decision: "deny", reason: "Permission policy changed during hook approval" });
+  });
+
   describe.each(["boundary-link", "boundary-unlisted"] as const)("worker-only boot with an unverifiable boundary (%s)", (category) => {
     // Worker confinement on, shell scope off: boot publishes the boundary state while the shell intent stays false.
     function publish(): void {
@@ -400,7 +415,9 @@ describe("hook command permission admission", () => {
           .toMatchObject({ ok: true, scope: "session" });
         gate.completeApprovalRuleSave(token, p.permissionManager.getPolicyEpoch(), "session");
       }
-      gate.resolve(request.id, { requestId: request.id, choice: answer === "allow-session" ? "allow-once" : "deny-once", nonce: request.nonce, hmac: request.hmac });
+      gate.resolveFromDesktopRenderer(request.id, {
+        requestId: request.id, choice: answer === "allow-session" ? "allow-once" : "deny-once", nonce: request.nonce, hmac: request.hmac,
+      }, wc as never);
       return { result: await pending, gate, wc, authorizeCommand };
     }
 

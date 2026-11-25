@@ -14,6 +14,7 @@ import type { RunnableHook } from "./script-hook-runner.js";
 import type { ScriptHookStdin } from "./script-hook-types.js";
 import { DEFAULT_HOOK_TIMEOUT_MS } from "./script-hook-types.js";
 import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
+import { answerEpochsOf, personAnswerStands } from "../permissions/pending-answer-policy.js";
 
 export type HookCommandAuthorizer = (
   hook: RunnableHook,
@@ -24,8 +25,8 @@ export type HookCommandAuthorizer = (
 
 // Enrollment supplies executable identity; the shared pipeline supplies authority.
 export function createHookCommandAuthorizer(deps: {
-  permissionManager: Pick<PermissionManager, "ensureProjectRulesLoaded" | "checkDetailed" | "dispatchReviewer" | "resolveReviewedPermission" | "getPolicyEpoch" | "getMode">;
-  approvalGate: Pick<ApprovalGate, "requestAndWait">;
+  permissionManager: Pick<PermissionManager, "ensureProjectRulesLoaded" | "checkDetailed" | "dispatchReviewer" | "resolveReviewedPermission" | "getPolicyEpoch" | "getPolicyContextEpoch" | "getMode">;
+  approvalGate: Pick<ApprovalGate, "requestAndWait"> & Partial<Pick<ApprovalGate, "allowsPolicyTransition">>;
 }): HookCommandAuthorizer {
   return async (hook, payload, cwd, projectDir = cwd) => {
     const command = hook.command.map(expandLeadingTilde).map(shellQuote).join(" ");
@@ -88,6 +89,7 @@ export function createHookCommandAuthorizer(deps: {
     if (plan.requiresExplicitUserApproval && !binding) return { decision: "deny", reason: "Hook host execution binding is invalid" };
     let approval: ApprovalDecision | undefined;
     const humanApproved = result.decision === "ask";
+    const opened = answerEpochsOf(deps.permissionManager);
     if (humanApproved) {
       approval = await deps.approvalGate.requestAndWait({
         id, category: "tool", toolName: "bash", toolCategory: "shell",
@@ -113,6 +115,9 @@ export function createHookCommandAuthorizer(deps: {
     if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId) || !controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
     const current = check();
     if (current.decision === "deny") return { decision: "deny", reason: current.reason };
+    if (approval && !personAnswerStands(deps.permissionManager, opened, result.forceModal === true, () => current, {
+      gate: deps.approvalGate, decision: approval,
+    })) return { decision: "deny", reason: "Permission policy changed during hook approval" };
     if (effectIdentity(current) !== requestedEffect) return { decision: "deny", reason: "Hook command effect changed during approval" };
     if (!matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity)) return { decision: "deny", reason: "Hook working directory changed during approval" };
     if (binding) {
