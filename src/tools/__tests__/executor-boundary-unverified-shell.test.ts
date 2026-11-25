@@ -15,7 +15,6 @@ vi.mock("node:child_process", async (importOriginal) => ({
 }));
 
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
-import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
 import { HOST_SHELL_AUTHORIZATION_REVOKED_ERROR } from "../../permissions/host-shell-execution-permit.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
@@ -25,10 +24,9 @@ import * as powerShellStartup from "../../shared/powershell-startup-policy.js";
 import { ToolExecutor } from "../executor.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
 import { ToolRegistry } from "../registry.js";
-import type { Tool } from "../base.js";
 import type { ToolExecutionContext } from "../types.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import type { ApprovalGate } from "../../permissions/approval-gate.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { requestedSandboxUnavailable } from "../../__tests__/support/host-shell-sandbox-fixtures.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -38,7 +36,7 @@ import { shellExecutionEnvironmentLines } from "../../shared/shell-execution-env
 import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { getLocale, setLocale, t } from "../../i18n/runtime.js";
 import { userPermissionContext as permissionContext } from "./tool-context-fixture.js";
-import { sentApprovalCards } from "../../__tests__/test-helpers.js";
+import { cardGate, defined, probe, sessionGate } from "../../__tests__/support/forced-shell-card.js";
 
 const ORIGINAL_PLATFORM = process.platform;
 const HOME = "C:\\Users\\alice\\.ave";
@@ -52,55 +50,6 @@ const DIALECTS = [
     other: "Write-Output done", sequences: ["Write-Output boundary; Write-Output boundary", "Write-Output boundary | Write-Output boundary"],
     compose: (a: string, b: string) => [`${a}; ${b}`, `${a} | ${b}`], protectedWrite: "Set-Content .git/config x" },
 ] as const;
-
-function defined<T>(value: T | undefined, what: string): T {
-  if (value === undefined) throw new Error(`${what} is missing`);
-  return value;
-}
-
-function probe(create: () => Tool, execute: (ctx: ToolExecutionContext) => void): ToolRegistry {
-  const tool = create();
-  vi.spyOn(tool, "execute").mockImplementation(async (_input, ctx) => {
-    execute(ctx);
-    return { output: "executed", isError: false };
-  });
-  const registry = new ToolRegistry();
-  registry.register(tool);
-  return registry;
-}
-
-function cardGate(choice: "allow-once" | "deny-once" | "allow-session") {
-  let gate: ApprovalGate;
-  const send = vi.fn((channel: string, request: ApprovalRequest) => {
-    if (channel !== "ave:approval:request") return;
-    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice, nonce: request.nonce, hmac: request.hmac }, webContents as never);
-  });
-  const webContents = { isDestroyed: () => false, send };
-  gate = new ApprovalGate(webContents as never);
-  return { gate, cards: () => sentApprovalCards<ApprovalRequest>({ send } as never) };
-}
-
-// The person picks "This session": the card saves its exact rule for the session through the pending request, then answers allow once.
-function sessionGate(pm: PermissionManager) {
-  let gate: ApprovalGate;
-  const saves: unknown[] = [];
-  const send = vi.fn((channel: string, request: ApprovalRequest) => {
-    if (channel !== "ave:approval:request") return;
-    void (async () => {
-      const snapshot = defined(gate.getRequestSnapshot(request.id) ?? undefined, "request snapshot");
-      // As the approval IPC does: the save is the card's own policy transition.
-      const token = gate.beginApprovalRuleSave(request.id, pm.getPolicyEpoch());
-      const saved = await saveApprovalCardRule(snapshot, { action: "allow", scope: "session" },
-        { decision: "allow", scope: "session", displayedVerdictAtApproval: snapshot.verdictAtApproval }, pm);
-      gate.completeApprovalRuleSave(token, pm.getPolicyEpoch(), saved.ok ? saved.scope : undefined);
-      saves.push(saved);
-      gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, webContents as never);
-    })();
-  });
-  const webContents = { isDestroyed: () => false, send };
-  gate = new ApprovalGate(webContents as never);
-  return { gate, saves, cards: () => sentApprovalCards<ApprovalRequest>({ send } as never) };
-}
 
 function manager(mode: "default" | "auto" | "allow", rules: readonly string[]): PermissionManager {
   const pm = new PermissionManager(join(testRoot, `permissions-${mode}.json`));
@@ -363,7 +312,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(result[0]?.content).toContain(NO_APPROVER_MESSAGE);
   });
 
-  it.each(DIALECTS)("keeps the ordinary explicit-host route for $toolName without a boot privacy failure", async (dialect) => {
+  it.each(DIALECTS)("asks for the explicit-host route for $toolName without a boot privacy failure, allow mode included", async (dialect) => {
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
     const approvals = cardGate("deny-once");
@@ -371,12 +320,12 @@ describe("host shells under an unverifiable Ave home boundary", () => {
       [{ id: "other-failure-host", name: dialect.toolName, input: { command: dialect.command, ...HOST } }],
       { sessionId: "other-failure-host", permissionContext: permissionContext() },
     ));
-    expect(approvals.cards()).toHaveLength(0);
-    expect(execute).toHaveBeenCalledOnce();
-    expect((defined(execute.mock.calls[0], "execute call")[0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({ executionRequest: "host" });
+    expect(approvals.cards()).toHaveLength(1);
+    expect(defined(approvals.cards()[0], "forced card")).toMatchObject({ requireExplicit: true, executionPlan: { executionRequest: "host" } });
+    expect(execute).not.toHaveBeenCalled();
   });
 
-  it.each(DIALECTS)("keeps the ordinary unavailable-sandbox route for $toolName without a boot privacy failure", async (dialect) => {
+  it.each(DIALECTS)("asks for the unavailable-sandbox route for $toolName without a boot privacy failure, saved allows included", async (dialect) => {
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
     const approvals = cardGate("deny-once");
@@ -384,11 +333,13 @@ describe("host shells under an unverifiable Ave home boundary", () => {
       [{ id: "other-failure", name: dialect.toolName, input: { command: dialect.command } }],
       { sessionId: "other-failure", permissionContext: permissionContext() },
     ));
-    expect(approvals.cards()).toHaveLength(0);
-    expect(execute).toHaveBeenCalledOnce();
-    expect((defined(execute.mock.calls[0], "execute call")[0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({
-      fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: false });
-    expect(result[0]?.is_error).toBeUndefined();
+    expect(approvals.cards()).toHaveLength(1);
+    expect(defined(approvals.cards()[0], "forced card")).toMatchObject({
+      requireExplicit: true,
+      executionPlan: { fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true },
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(result[0]?.is_error).toBe(true);
   });
 
   // Owner decision 2026-11-08: the sandbox-unavailable floor also offers "this session", for the conversation's later shells and hooks.
@@ -642,7 +593,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it.each(DIALECTS)("a floor session grant does not satisfy the ordinary ask once the boundary state clears for $toolName", async (dialect) => {
+  it.each(DIALECTS)("a floor session grant does not satisfy the ordinary ask after the boundary state changes for $toolName", async (dialect) => {
     publishBoundary("boundary-unlisted");
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
@@ -653,12 +604,12 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(granted.saves).toEqual([expect.objectContaining({ ok: true })]);
     expect(execute).toHaveBeenCalledOnce();
 
-    // A verified home leaves the ordinary unavailable-sandbox plan, which asks in default mode with no rules.
+    // A verified home: the grant was for the boot-privacy state, so the explicit host on the unavailable sandbox still shows its card.
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: HOME, sid: "S-1-5-21-1-2-3-1001" });
     const ordinary = cardGate("deny-once");
-    await run(pm, ordinary.gate, registry);
+    await sessionRun(dialect, "host", "boundary-leak")(pm, ordinary.gate, registry);
     expect(ordinary.cards()).toHaveLength(1);
-    expect(defined(ordinary.cards()[0], "ordinary card").executionPlan).toMatchObject({ requiresExplicitUserApproval: false });
+    expect(defined(ordinary.cards()[0], "ordinary card").executionPlan).toMatchObject({ executionRequest: "host" });
     expect(execute).toHaveBeenCalledOnce();
   });
 

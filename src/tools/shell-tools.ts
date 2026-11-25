@@ -1852,10 +1852,9 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     // backgrounded ASRT command running concurrently with the next tool would
     // corrupt the shared sandbox state; background execution is therefore
     // confined to the unsandboxed plain path, and the one-shot-permit routes
-    // (explicit host, Windows Plan B: requiresExplicitUserApproval) are
-    // excluded so a command cannot outlive its single-use authorization. A
-    // requested-but-unavailable sandbox follows the normal rules and may
-    // background like sandbox-off.
+    // (explicit host, Windows Plan B, requested-but-unavailable sandbox:
+    // requiresExplicitUserApproval) are excluded so a command cannot outlive
+    // its single-use authorization.
     if (
       input.run_in_background === true &&
       !holdsOutput &&
