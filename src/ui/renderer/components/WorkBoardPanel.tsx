@@ -54,7 +54,7 @@ import { usePaneActions } from "./PaneFrame.js";
 import { ApprovalDock, ApprovalLaneCard } from "./permissions/ApprovalDock.js";
 import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
 import { LiveRunPanel, LIVE_STEP_PANEL_ID, type LiveRunEntry } from "./work-board/LiveRunPanel.js";
-import { useBoardApprovals, useToolApprovalSurface } from "./work-board/use-board-approvals.js";
+import { stageApprovalLanes, useBoardApprovals, useToolApprovalSurface } from "./work-board/use-board-approvals.js";
 import type { ApprovalRequest } from "../types.js";
 import { useScheduleData } from "./schedule/use-schedule-data.js";
 import { boardScheduleCards, weekStart } from "./schedule/board-schedule.js";
@@ -2097,20 +2097,31 @@ export function WorkBoardPanel({
   const decideHead = (head: ApprovalRequest) => (choice: Parameters<typeof approvalSurfaceValue.decide>[1], pattern?: string, extras?: Parameters<typeof approvalSurfaceValue.decide>[3]) => {
     void approvalSurfaceValue.decide(head.id, choice, pattern, extras);
   };
+  // One lane per stage session of the run: each stage's head card is drawn and answered on its own.
   const renderApproval = (entry: LiveRunEntry) => {
-    const head = entry.approvals[0];
-    if (!head) return null;
-    return (
-      <ApprovalLaneCard
-        queue={entry.approvals}
-        conversationLabel={entry.item.title}
-        proposedChoice={approvalSurfaceValue.proposal?.requestId === head.id ? approvalSurfaceValue.proposal.choice : null}
-        onDecide={decideHead(head)}
-        onOpenPermanentDeny={approvalSurfaceValue.openPermanentDeny}
-        interactionLocked={approvalSurfaceValue.lockedRequestId === head.id}
-        reviewerSuggestion={approvalSurfaceValue.reviewerSuggestion}
-      />
-    );
+    const lanes = stageApprovalLanes(entry.approvals);
+    if (lanes.length === 0) return null;
+    return lanes.map((lane) => {
+      const head = lane.requests[0];
+      return (
+        <div key={lane.stage?.stageId ?? "run"} className="space-y-1" data-testid="work-board-approval-lane" data-stage-id={lane.stage?.stageId ?? ""}>
+          {lane.stage ? (
+            <p className="truncate text-dense text-muted-foreground" data-testid="work-board-approval-lane-stage">
+              {t("toolApprovalDialog.runStage", { stage: lane.stage.stageName })}
+            </p>
+          ) : null}
+          <ApprovalLaneCard
+            queue={lane.requests}
+            conversationLabel={entry.item.title}
+            proposedChoice={approvalSurfaceValue.proposal?.requestId === head.id ? approvalSurfaceValue.proposal.choice : null}
+            onDecide={decideHead(head)}
+            onOpenPermanentDeny={approvalSurfaceValue.openPermanentDeny}
+            interactionLocked={approvalSurfaceValue.lockedRequestId === head.id}
+            reviewerSuggestion={approvalSurfaceValue.reviewerSuggestion}
+          />
+        </div>
+      );
+    });
   };
   // Dialog mode: one card over the board for every run's approvals, in the window queue's order.
   const dialogQueue = approvalSurface === "dialog"

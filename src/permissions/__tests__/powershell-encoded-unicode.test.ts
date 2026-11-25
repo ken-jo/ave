@@ -5,11 +5,36 @@ import { proveLiteralPowerShell } from "../rules/powershell-exfiltration.js";
 import { proveLiteralShell } from "../rules/shell-rule-matcher.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
-import { assignedRejectedCodePoints, codePointChunks, CODE_POINT_CHUNK_COUNT, DIALECTS, POSITIONS,
-  PAYLOAD, RUNTIME_WHITE_SPACE, optionWith, useEncodedUnicodeFixture } from "../../__tests__/support/encoded-unicode-fixtures.js";
+import { assignedRejectedCodePoints, codePointChunks, CODE_POINT_CHUNK_COUNT, DIALECTS, POSITIONS, hex,
+  PAYLOAD, RUNTIME_WHITE_SPACE, optionWith, rejectedCategory, representativeCodePoints, useEncodedUnicodeFixture } from "../../__tests__/support/encoded-unicode-fixtures.js";
 
 const fixture = useEncodedUnicodeFixture();
-const { checkCommand } = fixture;
+const { checkCommand, traceCommand } = fixture;
+
+describe("full-pipeline representatives", () => {
+  it("cover every Cc, Cf and Z point and the edges of each Co and Cs run", () => {
+    const representatives = new Set(representativeCodePoints);
+    const categories = new Map<string, number>();
+    for (const point of assignedRejectedCodePoints) {
+      const category = rejectedCategory(point);
+      categories.set(category, (categories.get(category) ?? 0) + 1);
+      if (!["Co", "Cs"].includes(category)) expect(representatives.has(point), hex(point)).toBe(true);
+    }
+    expect([...categories.keys()].sort()).toEqual(["Cc", "Cf", "Co", "Cs", "Zl", "Zp", "Zs"]);
+    for (const edge of [0xe000, 0xf8ff, 0xf0000, 0xffffd, 0x100000, 0x10fffd, 0xd800, 0xdb7f, 0xdb80, 0xdbff, 0xdc00, 0xdfff]) {
+      expect(representatives.has(edge), hex(edge)).toBe(true);
+    }
+    for (const point of RUNTIME_WHITE_SPACE) if (point !== 0x20) expect(representatives.has(point), hex(point)).toBe(true);
+    expect(representativeCodePoints.length).toBeLessThan(assignedRejectedCodePoints.length / 100);
+  });
+
+  it.each(DIALECTS.flatMap((dialect) => POSITIONS.map((position) => ({ dialect, position }))))("reject every representative through all four layers ($dialect, $position)", ({ dialect, position }) => {
+    for (const point of representativeCodePoints) {
+      const { failure } = traceCommand(dialect, optionWith(point, position));
+      if (failure !== null) throw new Error(`${hex(point)} ${position}: ${failure}`);
+    }
+  }, 120_000);
+});
 
 describe.each(DIALECTS)("positive launcher argument character proof (%s)", (dialect) => {
   it("keeps an encoded carrier unproven while the selected mode owns approval", () => {

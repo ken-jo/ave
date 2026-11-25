@@ -1,5 +1,6 @@
 import type { SubAgentSpawnResult } from "../../engine/subagent-runner.js";
 import type { TemplateStage } from "../../shared/workflow-template-types.js";
+import { evaluateModelVerdict, MODEL_VERDICT_PROMPT_SUFFIX } from "./stage-verdict.js";
 
 type PassCondition = Extract<TemplateStage["gate"], { type: "auto" }>["pass"];
 interface GateFacts {
@@ -30,6 +31,12 @@ export function createPassConditionRegistry(): PassConditionRegistry {
         const passed = result.ok && !result.incomplete;
         return { passed, evidence: passed ? "the stage ended cleanly" : `the stage did not finish (${result.stopReason ?? "no result"})`, judgedBy: "host" };
       },
+    }],
+    ["model_verdict", {
+      evaluate: ({ result }) => result.ok && !result.incomplete && !result.suspension
+        ? evaluateModelVerdict(result.summary)
+        : { passed: false, evidence: "verdict-stage-incomplete", judgedBy: "model" },
+      promptSuffix: MODEL_VERDICT_PROMPT_SUFFIX,
     }],
   ]);
   return {

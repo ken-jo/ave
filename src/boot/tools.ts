@@ -10,6 +10,7 @@ import { createRequestPluginTool } from "../tools/request-plugin.js";
 import { createToolSearchTool } from "../tools/tool-search.js";
 import { createAskUserQuestionTool } from "../tools/ask-user-question.js";
 import { createRoutineScheduleTool, type RoutineScheduleToolDeps } from "../tools/routine-schedule.js";
+import { createWorkflowTemplateProposeTool } from "../tools/workflow-template-propose.js";
 import { createSessionTasksTool } from "../tools/session-tasks.js";
 import { createSessionGoalTool } from "../tools/session-goal.js";
 import {
@@ -38,6 +39,7 @@ import { createAgentGuideTool } from "../tools/agent-guide.js";
 import { createAgentSendTool, type AgentSendRuntime } from "../tools/agent-send.js";
 import type { AskUserQuestionGate } from "../main/ask-user-question-gate.js";
 import type { RoutinesStore } from "../main/routines-store.js";
+import type { WorkflowTemplateStore } from "../main/workflow-template-store.js";
 import type { SessionTasksStore } from "../main/session-tasks-store.js";
 import type { SessionGoalStore } from "../main/session-goal-store.js";
 import type { SubAgentRunner } from "../engine/subagent-runner.js";
@@ -82,6 +84,7 @@ export interface WorkflowToolDeps {
   /** Lazy-resolved gate — populated after BrowserWindow is ready. */
   getAskUserQuestionGate?: () => AskUserQuestionGate | undefined;
   routinesStore?: RoutinesStore;
+  workflowTemplateStore?: WorkflowTemplateStore;
   /** Required with routinesStore: the calling conversation's project and chat, and the panel's delete, for routine_schedule. */
   routineScheduleDeps?: RoutineScheduleToolDeps;
   sessionTasksStore?: SessionTasksStore;
@@ -143,6 +146,9 @@ export function registerBuiltinTools(
     const routineScheduleDeps = workflowDeps.routineScheduleDeps;
     if (!routineScheduleDeps) throw new Error("registerBuiltinTools: routinesStore requires routineScheduleDeps");
     builtins.push(createRoutineScheduleTool(workflowDeps.routinesStore, routineScheduleDeps));
+  }
+  if (workflowDeps.workflowTemplateStore) {
+    builtins.push(createWorkflowTemplateProposeTool(workflowDeps.workflowTemplateStore));
   }
   if (workflowDeps?.sessionTasksStore) {
     builtins.push(createSessionTasksTool(workflowDeps.sessionTasksStore));
