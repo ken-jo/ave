@@ -4,6 +4,7 @@ import {
   admitMxcExtensionStart, assertMxcReleaseGateEvidence, consumeMxcExtensionAdmission, createMxcExtensionAdmission,
   registerMxcReleaseGateEvidence, type MxcExtensionAdmission,
 } from "../mxc-extension-admission.js";
+import { MxcCapabilityUnavailableError } from "../mxc-extension-errors.js";
 import { mxcRequestDigest, type MxcExtensionStartEvidence, type MxcExtensionStartRecord } from "../mxc-extension-protocol.js";
 import { planWindowsExtensionHolder, type MxcExtensionReleaseGateEvidence } from "../mxc-extension-readiness.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -163,6 +164,15 @@ describe("per-start admission (fields 1-5) on the holder's own start", () => {
     await refused;
     expect(startSignal?.aborted).toBe(true);
     // The receipt went with the refusal: a late start cannot spend it.
+    expect(() => consumeMxcExtensionAdmission(receipt, captured)).toThrow(/does not match/);
+  });
+
+  it("refuses with the start's own capability failure, not an ancestor or deadline reason", async () => {
+    withReleaseGate();
+    const captured = identity();
+    const receipt = createMxcExtensionAdmission(captured);
+    const failure = new MxcCapabilityUnavailableError("Required native containment is unavailable");
+    await expect(admitMxcExtensionStart(receipt, { ...captured, start: async () => { throw failure; } })).rejects.toBe(failure);
     expect(() => consumeMxcExtensionAdmission(receipt, captured)).toThrow(/does not match/);
   });
 

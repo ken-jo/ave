@@ -89,10 +89,14 @@ export async function admitMxcExtensionStart(admission: MxcExtensionAdmission, i
     }
     let startSignal: AbortSignal | undefined;
     let observed: WindowsExtensionMxcState | undefined;
+    let startFailure: MxcCapabilityUnavailableError | undefined;
     const result = await settleWindowsExtensionReadiness({
       probe: async (signal) => {
         startSignal = signal;
-        const started = await input.start(signal);
+        const started = await input.start(signal).catch((error: unknown) => {
+          if (error instanceof MxcCapabilityUnavailableError) startFailure = error;
+          throw error;
+        });
         if (!record.spent) throw new MxcProcessContractError("Extension start did not pass admission at the native boundary");
         if (started === undefined) throw new MxcProcessContractError("Extension start carried no ready-frame evidence");
         if (started.requestDigest !== record.requestDigest) throw new MxcProcessContractError("Start evidence belongs to another holder's start");
@@ -108,6 +112,8 @@ export async function admitMxcExtensionStart(admission: MxcExtensionAdmission, i
         || canonicalStringify(input.bootPlan) !== record.bootPlanDigest) {
       throw new MxcProcessContractError("Native admission request changed during readiness");
     }
+    // The start's own capability refusal keeps its message; the settled plan would only name the ancestor.
+    if (startFailure) throw startFailure;
     if (result.selectedBackend !== "mxc" || result.readiness !== "ready") {
       // Only the deadline aborts a start whose caller did not cancel; the plan reason alone names the ancestor, not the cause.
       const cause = observed?.state === "unavailable" ? observed.reason
