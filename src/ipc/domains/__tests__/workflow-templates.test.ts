@@ -120,12 +120,12 @@ it("saves a new version only through a matching user confirmation", async () => 
   await withTemplateProposal(async ({ event, store, auditLog, propose }) => {
     const { proposalId, graphHash } = JSON.parse((await propose(reportWithEnvelope)).output);
     const decision = { expectedGraphHash: graphHash, expectedDraftRevision: proposalId };
-    const confirm = handler(WORK_BOARD.templateConfirm);
-    expect(await confirm(event, proposalId, { ...decision, expectedGraphHash: "a".repeat(64) }, gesture))
+    const confirmProposal = handler(WORK_BOARD.templateConfirm);
+    expect(await confirmProposal(event, proposalId, { ...decision, expectedGraphHash: "a".repeat(64) }, gesture))
       .toEqual({ ok: false, error: "stale-draft" });
     expect(await store.list()).toEqual([]);
-    expect(await confirm(event, proposalId, decision)).toEqual({ ok: false, error: "user-gesture-required" });
-    const results = await Promise.all([confirm(event, proposalId, decision, gesture), confirm(event, proposalId, decision, gesture)]);
+    expect(await confirmProposal(event, proposalId, decision)).toEqual({ ok: false, error: "user-gesture-required" });
+    const results = await Promise.all([confirmProposal(event, proposalId, decision, gesture), confirmProposal(event, proposalId, decision, gesture)]);
     expect(results.filter(result => (result as { ok: boolean }).ok)).toHaveLength(1);
     const [template] = await store.list();
     expect(template).toMatchObject({ currentVersion: 1, name: reportDraft.name });
