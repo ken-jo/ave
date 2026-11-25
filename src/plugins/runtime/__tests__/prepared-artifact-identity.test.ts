@@ -6,6 +6,8 @@ import { join } from "node:path";
 import {
   makeTestPluginRuntime,
   makeTestTreeWritable,
+  stopTestPluginRuntimes,
+  trackTestPluginRuntime,
 } from "../../__tests__/test-helpers.js";
 import {
   buildInstallReceipt,
@@ -53,10 +55,12 @@ afterEach(async () => {
   removalFault.error = undefined;
   removalFault.calls = 0;
   vi.restoreAllMocks();
+  const stopped = await stopTestPluginRuntimes();
   await Promise.all(roots.splice(0).map(async (root) => {
     await makeTestTreeWritable(root);
     await rm(root, { recursive: true, force: true });
   }));
+  expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
 });
 
 describe("prepared activation cleanup error identity", () => {
@@ -69,7 +73,7 @@ describe("prepared activation cleanup error identity", () => {
     const primary = new ArtifactRollbackError("directory rollback unresolved", [new Error("durable commit refused")], join(root, "rollback-backup"));
     const secondary = new Error("retained generation removal refused");
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const runtime = new PluginRuntime({
+    const runtime = trackTestPluginRuntime(new PluginRuntime({
       childEntryPath: pluginChildEntryPath(),
       encryption: unavailableSecretEncryption,
       hostRoot: root,
@@ -83,7 +87,7 @@ describe("prepared activation cleanup error identity", () => {
         }
         return createNoopHostApiForTests(id, manifest, dataDir);
       },
-    });
+    }));
     const lifecycle = new PluginBundleLifecycle({
       pluginRuntime: runtime,
       receiptCacheRoot: cacheRoot,
