@@ -344,9 +344,17 @@ describe("extension starts on the remote surface", () => {
     expect(notify.mock.calls.map(([start, why]) => [start.key, why])).toEqual([["mcp-stdio:files", "declined"]]);
     expect(listPendingExtensionStarts()).toMatchObject([{ key: "mcp-stdio:files", state: "declined" }]);
     const calls = (mock: { mock: { calls: unknown[] } }) => mock.mock.calls as unknown as readonly (readonly unknown[])[];
-    expect(calls(harness.client.answerCallbackQuery).map((call) => call[1])).toEqual(["Approved for this run", "Denied", "Approved for this run"]);
-    expect(calls(harness.client.editMessageText).map((call) => String(call[2])).sort()).toEqual(
-      [`Ave: tool ${START_TOOL} approved for this run`, `Ave: tool ${START_TOOL} approved for this run`, `Ave: tool ${START_TOOL} denied`]);
+    // An answer given while other starts still wait is only recorded: nothing starts until the last one is answered.
+    expect(calls(harness.client.answerCallbackQuery).map((call) => call[1])).toEqual([
+      "Recorded. It starts once the other starts on this card are answered.",
+      "Recorded. It will not start.",
+      "Approved for this run",
+    ]);
+    expect(calls(harness.client.editMessageText).map((call) => String(call[2])).sort()).toEqual([
+      `Ave: tool ${START_TOOL} allowed; it starts once the other starts on this card are answered`,
+      `Ave: tool ${START_TOOL} approved for this run`,
+      `Ave: tool ${START_TOOL} will not start`,
+    ]);
   });
 
   it("says on the last remote card how many starts are waiting on the desktop only, when not every start got a remote card", async () => {

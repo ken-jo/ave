@@ -3273,6 +3273,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "extensionStartCard.answeredRemotely": "원격에서 답함",
   "extensionStartCard.confirm": "확인",
   "extensionStartCard.denyAll": "모두 시작 안 함",
+  "extensionStartCard.denyRest": "나머지 시작 안 함",
   "extensionStartCard.incomplete": "모든 항목을 선택해야 확인할 수 있습니다.",
   "extensionStartCard.invalid": "시작 목록이 빠진 요청이라 거부만 할 수 있습니다.",
   "extensionStart.declinedNoBackend": "{name}은(는) 시작되지 않았습니다. OS 격리 없이 실행하는 것을 거부하셨습니다. 격리된 상태로 실행하려면 설정 > 권한에서 Windows 샌드박스를 설치하세요.",

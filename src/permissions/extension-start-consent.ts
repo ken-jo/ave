@@ -99,6 +99,7 @@ export interface PendingExtensionStart {
 export const pluginChildStartKey = (pluginId: string): string => `plugin-child:${pluginId}`;
 export const mcpStdioStartKey = (serverId: string): string => `mcp-stdio:${serverId}`;
 /** What a person agrees to or declines when asked about an unconfined server start: an edited command, args, env or cwd is another start. */
+// apiKeyEnv and apiKey stay out of the identity: governance pins apiKeyEnv to an admin-approved value, so they cannot repoint an agreed start.
 export function mcpStdioStartIdentity(config: {
   readonly id: string; readonly command?: string; readonly args?: readonly string[]; readonly env?: Readonly<Record<string, string>>; readonly cwd?: string;
 }): string {

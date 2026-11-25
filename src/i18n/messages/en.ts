@@ -3271,6 +3271,7 @@ export const en = {
   "extensionStartCard.answeredRemotely": "answered remotely",
   "extensionStartCard.confirm": "Confirm",
   "extensionStartCard.denyAll": "Don't start any",
+  "extensionStartCard.denyRest": "Don't start the rest",
   "extensionStartCard.incomplete": "Choose for every item to confirm.",
   "extensionStartCard.invalid": "This request is missing its list of starts, so it can only be refused.",
   "extensionStart.declinedNoBackend": "{name} was not started: you declined to run it without OS isolation. Install the Windows sandbox in Settings > Permissions to run it isolated.",

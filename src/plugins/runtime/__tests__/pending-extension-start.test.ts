@@ -43,7 +43,7 @@ const ATTENDED = { sessionId: "s1", attended: true };
 const refused = (cause: "no-backend" | "home-privacy-unverified", identity = "v1") => new ExtensionStartConsentRequiredError(cause, { key: KEY, identity });
 
 interface RuntimeInternals {
-  importPluginFactoryForLifecycle(pluginId: string, source: { kind: "entry"; resolvedEntryPath: string }, manifest: PluginManifest, verified: undefined): Promise<unknown>;
+  importPluginFactoryForLifecycle(pluginId: string, source: { kind: "entry"; resolvedEntryPath: string }, manifest: PluginManifest, verified: object | undefined): Promise<unknown>;
   reportAttemptFactoryFailure(manifest: PluginManifest, error: unknown, attempt: object): void;
   recordAttemptRefusal(manifest: PluginManifest, error: unknown, attempt: string): boolean;
 }
@@ -139,6 +139,24 @@ describe("a plugin child start that nothing confines", () => {
   it("queues nothing for any other factory failure", () => {
     (runtime() as unknown as RuntimeInternals).reportAttemptFactoryFailure(MANIFEST, new Error("child crashed"), {});
     expect(listPendingExtensionStarts()).toEqual([]);
+  });
+
+  it("names the start by the receipt's artifact too: another artifactSha256 under the same manifest is another start", async () => {
+    const { pluginChildStartIdentity } = await import("../../isolation/out-of-process-plugin.js");
+    const internals = runtime() as unknown as RuntimeInternals;
+    const evidence = (artifactSha256: string) => ({ installSource: "marketplace" as const, signerKeyId: "key-1", artifactSha256, rung: null, sourceOrigin: null });
+    const source = { kind: "entry" as const, resolvedEntryPath: join(tmpdir(), "no-such-plugin-entry.mjs") };
+    for (const verified of [evidence("a".repeat(64)), evidence("a".repeat(64)), evidence("b".repeat(64)), undefined]) {
+      await internals.importPluginFactoryForLifecycle(PLUGIN_ID, source, MANIFEST, verified);
+    }
+    // The runtime hands the factory the evidence the load was verified against, and the factory's identity is taken over it.
+    const specs = factory.specs as unknown as Array<{ manifest: PluginManifest; launch: { kind: "entry" }; integrity?: object }>;
+    expect(specs.map((spec) => spec.integrity)).toEqual([evidence("a".repeat(64)), evidence("a".repeat(64)), evidence("b".repeat(64)), undefined]);
+    const [same, again, replaced, unverified] = specs.map((spec) => pluginChildStartIdentity({ manifest: spec.manifest, launchKind: spec.launch.kind, integrity: spec.integrity }));
+    expect(again).toBe(same);
+    expect(replaced).not.toBe(same);
+    expect(unverified).not.toBe(same);
+    expect(unverified).not.toBe(replaced);
   });
 
   it("hands the child factory the consent waiting for this plugin, once", async () => {

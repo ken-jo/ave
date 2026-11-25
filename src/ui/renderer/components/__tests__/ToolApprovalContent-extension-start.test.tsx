@@ -123,6 +123,19 @@ describe("the shared extension-start approval card", () => {
     shown.unmount();
   });
 
+  it("says dismissing leaves the rest unstarted once a row was answered elsewhere, since that row's answer stands", () => {
+    const decide = vi.fn();
+    const shown = renderApproval(request(), decide);
+    expect(screen.getByTestId("extension-start-deny-all")).toHaveTextContent(t("extensionStartCard.denyAll"));
+    shown.rerender(<ToolApprovalContent conversationLabel="conversation" open request={request(ROWS, { extensionStartAnswered: { "row-1": "yes" } })} onDecide={decide} />);
+    expect(screen.getByTestId("extension-start-deny-all")).toHaveTextContent(t("extensionStartCard.denyRest"));
+    expect(t("extensionStartCard.denyRest")).not.toBe(t("extensionStartCard.denyAll"));
+    expect(ko["extensionStartCard.denyRest"]).not.toBe(ko["extensionStartCard.denyAll"]);
+    fireEvent.click(screen.getByTestId("extension-start-deny-all"));
+    expect(decide).toHaveBeenCalledExactlyOnceWith("deny-once");
+    shown.unmount();
+  });
+
   it("drops a pick for a row that another surface answers while the card is open", () => {
     const decide = vi.fn();
     const shown = renderApproval(request(), decide);
@@ -181,7 +194,7 @@ describe("the shared extension-start approval card", () => {
 
   it("has every card string in both languages", () => {
     const keys = Object.keys(en).filter((key) => key.startsWith("extensionStartCard.") || key === "extensionStart.cardBatch");
-    expect(keys).toHaveLength(18);
+    expect(keys).toHaveLength(19);
     for (const key of keys) {
       expect(ko[key as keyof typeof ko], key).toEqual(expect.any(String));
       expect(ko[key as keyof typeof ko], key).not.toBe("");

@@ -37,6 +37,11 @@ const CARD_TEXT = Object.freeze({
   expired: (tool: string) => `Ave: the approval for tool ${tool} is no longer active`,
   approveButton: "Approve once",
   denyButton: "Deny",
+  // A start answered while others on its card still wait is only recorded: nothing starts until the last one is answered.
+  rowAllowed: (tool: string) => `Ave: tool ${tool} allowed; it starts once the other starts on this card are answered`,
+  rowDeclined: (tool: string) => `Ave: tool ${tool} will not start`,
+  ackRowAllowed: "Recorded. It starts once the other starts on this card are answered.",
+  ackRowDeclined: "Recorded. It will not start.",
   ackApproved: "Approved for this run",
   ackDenied: "Denied",
   ackStale: "This approval is no longer active",
@@ -307,7 +312,10 @@ export function createTelegramRemoteApprovalCoordinator(
       }
       // A row answered while other starts still wait: the gate has not settled the ask, so this card is closed here.
       if (binding.card.row !== undefined && cardsByToken.get(callback.data) === binding) {
-        retireCard(binding.card, binding.choice === "allow-once" ? CARD_TEXT.approved(binding.card.toolIdentifier) : CARD_TEXT.denied(binding.card.toolIdentifier));
+        const allowed = binding.choice === "allow-once";
+        retireCard(binding.card, allowed ? CARD_TEXT.rowAllowed(binding.card.toolIdentifier) : CARD_TEXT.rowDeclined(binding.card.toolIdentifier));
+        await acknowledge(callback.callbackQueryId, allowed ? CARD_TEXT.ackRowAllowed : CARD_TEXT.ackRowDeclined);
+        return;
       }
       await acknowledge(
         callback.callbackQueryId,

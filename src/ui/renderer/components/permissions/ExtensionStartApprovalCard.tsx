@@ -110,7 +110,10 @@ export function ExtensionStartApprovalCard({ request, conversationLabel, interac
           {rows === undefined ? null : (
             <Button disabled={locked || !complete} data-testid="extension-start-confirm" onClick={confirm}>{t("extensionStartCard.confirm")}</Button>
           )}
-          <Button disabled={locked} variant="outline" data-testid="extension-start-deny-all" onClick={dismiss}>{t("extensionStartCard.denyAll")}</Button>
+          <Button disabled={locked} variant="outline" data-testid="extension-start-deny-all" onClick={dismiss}>
+            {/* A row answered elsewhere keeps its answer, so dismissing only declines what is left. */}
+            {t(Object.keys(answered).length > 0 ? "extensionStartCard.denyRest" : "extensionStartCard.denyAll")}
+          </Button>
         </div>
       </div>
     </section>
