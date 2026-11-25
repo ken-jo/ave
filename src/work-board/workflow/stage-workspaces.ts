@@ -2,7 +2,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { isSensitivePath } from "../../permissions/sensitive-paths.js";
-import { aveHome, getAveHomePrivacyFailure, isAveHomeBoundaryUnverifiedAtBoot } from "../../shared/ave-home.js";
+import { aveHome, getAveHomePrivacyFailure } from "../../shared/ave-home.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { canonicalWorkflowJson, resultHashOf } from "../../shared/workflow-template-output.js";
 import type { TemplateStage } from "../../shared/workflow-template-types.js";
@@ -486,7 +486,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   async function openIn(run: RunRef, projectRoot: string | undefined): ReturnType<StageWorkspaceProvider["open"]> {
     const refused = (code: Refusal): { ok: false; code: Refusal } => ({ ok: false, code });
     // A home whose privacy or read boundary could not be checked gets no workspace made in it.
-    if (isAveHomeBoundaryUnverifiedAtBoot() || getAveHomePrivacyFailure() !== undefined) return refused("home-boundary-unverified");
+    if (getAveHomePrivacyFailure() !== undefined) return refused("home-boundary-unverified");
     let project: WorkspaceRecord["project"];
     if (projectRoot !== undefined) {
       let root: string;
