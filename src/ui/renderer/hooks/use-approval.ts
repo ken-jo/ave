@@ -15,7 +15,7 @@ import type { ReviewerSuggestion } from "./use-permission-signals.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { getAccessibilitySignalEngine } from "../accessibility-signal-engine.js";
 
-export type ApprovalDecisionExtras = Pick<ApprovalDecision, "elicitationContent" | "egressScope" | "userOwnedSurfaceChoice" | "browserSiteChoice">;
+export type ApprovalDecisionExtras = Pick<ApprovalDecision, "elicitationContent" | "egressScope" | "userOwnedSurfaceChoice" | "browserSiteChoice" | "extensionStartChoices">;
 
 /** One window FIFO routes each card to the surface claiming its session or children.
  * Use live ownership predicates; the window dock receives only unclaimed requests. */
@@ -124,6 +124,12 @@ export function useApproval(): ApprovalQueueApi {
     }
     const unsub = window.ave.approval.onRequest((req) => {
       if (!aliveRef.current) return;
+      // The host sends an extension-start card again, under the same id, when another surface answers one of its rows. It replaces
+      // the card this window holds; it is not a new card, and it shows nothing in a window that does not hold that card.
+      if (req.extensionStartAnswered !== undefined) {
+        setQueue((q) => (q.some((held) => held.id === req.id) ? q.map((held) => (held.id === req.id ? req : held)) : q));
+        return;
+      }
       setQueue((q) => approvalQueueReducer(q, { type: "push", req }));
       // A live request is a new card waiting for the user. Parked requests read below predate this renderer and stay silent.
       getAccessibilitySignalEngine().signal("approvalNeeded", `approval:${req.id}`);
@@ -211,6 +217,8 @@ export function useApproval(): ApprovalQueueApi {
           hmac: current.hmac,
           ...(extras?.egressScope === undefined ? {} : { egressScope: extras.egressScope }),
           ...(extras?.browserSiteChoice === undefined ? {} : { browserSiteChoice: extras.browserSiteChoice }),
+          // Each start's own yes or no on an extension-start card; the host checks it against the starts the card listed.
+          ...(extras?.extensionStartChoices === undefined ? {} : { extensionStartChoices: extras.extensionStartChoices }),
           ...(extras?.userOwnedSurfaceChoice === undefined ? {} : { userOwnedSurfaceChoice: extras.userOwnedSurfaceChoice }),
           ...(extras && "elicitationContent" in extras
             ? { elicitationContent: extras.elicitationContent }

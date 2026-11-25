@@ -1,7 +1,7 @@
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
 import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
-import { approvedExtensionStart } from "../../../__tests__/support/approved-extension-start.js";
+import { approvedExtensionStart, FIXTURE_START_IDENTITY } from "../../../__tests__/support/approved-extension-start.js";
 import { pluginChildStartKey } from "../../../permissions/extension-start-consent.js";
 /** Exercise real confined spawns: secret denial, outside-write refusal, usable own data, private temp storage, mandatory wrapping, and unavailable desktop APIs.
  * Read isolation needs a covering deny; allowed writes include the principal temp directory, and offline probes do not prove egress enforcement.
@@ -1221,7 +1221,7 @@ setTimeout(() => process.exit(0), 2000).unref?.();
     );
     const child = await spawnConfinedPluginChild({
       pluginId: PLUGIN_ID,
-      extensionStart: await approvedExtensionStart(pluginChildStartKey(PLUGIN_ID)),
+      extensionStart: { identity: FIXTURE_START_IDENTITY, authority: await approvedExtensionStart(pluginChildStartKey(PLUGIN_ID)) },
       socketDir: resolvePluginSocketDir(fx.pluginDataDir),
       envelope: baseEnvelope(fx),
       launch: { kind: "entry", childEntryPath: probePath },
@@ -1261,7 +1261,7 @@ setTimeout(() => process.exit(0), 2000).unref?.();
     await expect(
       spawnConfinedPluginChild({
         pluginId: PLUGIN_ID,
-        extensionStart: await approvedExtensionStart(pluginChildStartKey(PLUGIN_ID)),
+        extensionStart: { identity: FIXTURE_START_IDENTITY, authority: await approvedExtensionStart(pluginChildStartKey(PLUGIN_ID)) },
         socketDir: resolvePluginSocketDir(fx.pluginDataDir),
         envelope: { read: [fx.pluginRoot, fx.pluginDataDir, dangling], write: [dangling] },
         launch: { kind: "entry", childEntryPath: writeProbeModule(fx) },
@@ -1283,7 +1283,7 @@ setTimeout(() => process.exit(0), 2000).unref?.();
         await expect(
           spawnConfinedPluginChild({
             pluginId: PLUGIN_ID,
-            extensionStart: await approvedExtensionStart(pluginChildStartKey(PLUGIN_ID)),
+            extensionStart: { identity: FIXTURE_START_IDENTITY, authority: await approvedExtensionStart(pluginChildStartKey(PLUGIN_ID)) },
             socketDir: resolvePluginSocketDir(fx.pluginDataDir),
             envelope: { read: [fx.pluginRoot, fx.pluginDataDir, dangling], write: [dangling] },
             launch: { kind: "entry", childEntryPath: writeProbeModule(fx) },

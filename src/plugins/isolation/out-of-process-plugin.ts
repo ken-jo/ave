@@ -34,7 +34,7 @@ import {
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
 } from "../../permissions/asrt-sandbox.js";
-import { pluginChildStartKey, type ExtensionStartAuthority } from "../../permissions/extension-start-consent.js";
+import { extensionStartIdentity, pluginChildStartKey, type ExtensionStartAuthority } from "../../permissions/extension-start-consent.js";
 import { holdWindowsFilesystemGrant, type HeldWindowsGrant } from "../../permissions/windows-acl-grant-holder.js";
 import {
   resolvePluginSocketDir,
@@ -368,8 +368,8 @@ export interface ConfinedPluginChildSpec {
   readonly socketDir: string;
   /** What the wrap runs: see {@link ConfinedPluginLaunch}. */
   readonly launch: ConfinedPluginLaunch;
-  /** The consent for this one start when nothing confines it; spent at the spawn. */
-  readonly extensionStart?: ExtensionStartAuthority;
+  /** This start as its factory identified it, with the consent for it when nothing confines it; spent at the spawn. */
+  readonly extensionStart?: { readonly identity: string; readonly authority: ExtensionStartAuthority | undefined };
 }
 
 /** The two ways a plugin child is produced (docs/design/plugin-hostapi-protocol.md §2.1). - `entry`: the host's reference runtime, `childEntryPath`, run by the Electron binary as Node.
@@ -430,8 +430,9 @@ function windowsLoopbackLaunchLine(
 export async function spawnConfinedPluginChild(
   spec: ConfinedPluginChildSpec,
 ): Promise<ConfinedPluginChild> {
-  const extensionStart = { key: pluginChildStartKey(spec.pluginId), authority: spec.extensionStart };
-  assertExtensionStartAllowed({ start: extensionStart });
+  // A spawn its factory did not identify presents no start, so no consent passes for it.
+  const extensionStart = spec.extensionStart === undefined ? undefined : { key: pluginChildStartKey(spec.pluginId), ...spec.extensionStart };
+  assertExtensionStartAllowed(extensionStart ? { start: extensionStart } : {});
   const { launch } = spec;
   const processLaunch = launch.kind === "process";
   if (processLaunch && process.platform === "win32") throw new ProcessEntryUnconfinedError();
@@ -523,7 +524,7 @@ export async function spawnConfinedPluginChild(
       command,
       ...launchLine,
       label: `plugin-child:${spec.pluginId}`,
-      extensionStart,
+      ...(extensionStart ? { extensionStart } : {}),
       egressOwner: { kind: "worker", role: "plugin-child", pluginId: spec.pluginId },
       grantMode: process.platform === "win32" ? "deny-only" : "allow-list",
       requireWrap: processLaunch,
@@ -745,6 +746,8 @@ export interface OutOfProcessPluginSpec {
   readonly onChildSpawned?: (confinement: SpawnConfinement) => (() => void) | void;
   /** Takes the consent a person gave for this plugin's next child start, if one waits. */
   readonly takeExtensionStart?: () => ExtensionStartAuthority | undefined;
+  /** The install evidence this load was verified against. Part of what a start consent answers for; absent for a load with no receipt. */
+  readonly integrity?: object;
 }
 
 /** The host protocol version this plugin's connection speaks (§3.2). Its declared, served `requires.hostProtocol`. Omission and unserved
@@ -755,6 +758,20 @@ export function connectionHostProtocol(manifest: PluginManifest): HostProtocolVe
     throw new IncompatibleHostProtocolError(manifest.id, { declared: declared ?? null });
   }
   return declared;
+}
+
+/** What a plugin child start runs: its manifest (id, version, declared entry and roots), the kind of launch, and the install
+ * evidence the load was verified against (the artifact hash, where one exists). A consent answers exactly this, so an upgraded,
+ * reinstalled or edited plugin is asked about again. The paths of one activation are left out on purpose: every activation runs
+ * from its own generation directory, and a consent given for a start must still fit that same plugin's next attempt.
+ * A load with no receipt (a local-dev plugin) is named by its manifest alone, so an edit to its code that leaves the manifest as it
+ * was is the same start. That code is the user's own, edited by the user; it is not the replaced artifact this binding guards against. */
+export function pluginChildStartIdentity(facts: {
+  readonly manifest: PluginManifest;
+  readonly launchKind: OutOfProcessPluginSpec["launch"]["kind"];
+  readonly integrity?: object | undefined;
+}): string {
+  return extensionStartIdentity({ pluginId: facts.manifest.id, manifest: facts.manifest, launchKind: facts.launchKind, integrity: facts.integrity ?? null });
 }
 
 /** Build the factory the lifecycle calls in place of the in-process one. The returned factory does the whole of the boundary's setup; spawn, dispatcher assembly, construct; inside ONE call, which is what puts it under
@@ -773,8 +790,11 @@ export function createOutOfProcessPluginFactory(
   const factory = async (context: PluginRuntimeContext): Promise<RuntimePlugin> => {
     // A native launch is admitted by row 2's own native-entry guard; the legacy guard refuses a selected container plan.
     // The factory, the child spawn and its wrap are three crossings of one start: they share this consent.
-    const extensionStart = spec.prepareMxcChild ? undefined : spec.takeExtensionStart?.();
-    if (!spec.prepareMxcChild) assertExtensionStartAllowed({ start: { key: pluginChildStartKey(spec.manifest.id), authority: extensionStart } });
+    const extensionStart = spec.prepareMxcChild ? undefined : {
+      identity: pluginChildStartIdentity({ manifest: spec.manifest, launchKind: spec.launch.kind, integrity: spec.integrity }),
+      authority: spec.takeExtensionStart?.(),
+    };
+    if (extensionStart) assertExtensionStartAllowed({ start: { key: pluginChildStartKey(pluginId), ...extensionStart } });
     // Refused before anything is spawned. `runtime/index.ts` refuses the same manifest at every load path; this is the spawn path's
     // own copy of the rule, so a factory reached any other way cannot start a child that would be told a version it does not speak.
     const hostProtocolVersion = connectionHostProtocol(spec.manifest);

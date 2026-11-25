@@ -67,9 +67,12 @@ export function bootExtensionStartAsker(ctx: Pick<BootContext, "approvalGate" | 
   const { approvalGate, bootAuditLogger } = ctx;
   return createExtensionStartAsker({
     approvalGate,
-    reason: (start) => {
-      const question = t(EXTENSION_START_CARD_KEYS[start.kind], { name: start.label });
-      return start.cause === "readiness-deadline" ? t("extensionStart.cardReadinessDeadline", { question }) : question;
+    reason: (starts) => {
+      const [only] = starts;
+      // Several starts: each row of the card names its own cause, the expired container check among them.
+      if (only === undefined || starts.length !== 1) return t("extensionStart.cardBatch", { count: starts.length, names: starts.map((start) => start.label).join(", ") });
+      const question = t(EXTENSION_START_CARD_KEYS[only.kind], { name: only.label });
+      return only.cause === "readiness-deadline" ? t("extensionStart.cardReadinessDeadline", { question }) : question;
     },
     notify: (start, why) => {
       const body = EXTENSION_START_NOTICE_KEYS[start.cause][why];
