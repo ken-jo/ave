@@ -1859,7 +1859,7 @@ export class PermissionManager {
     if (shellAnalysisLimited) floor ??= { code: "shell-analysis-limit", reason: SHELL_ANALYSIS_LIMIT_REASON };
     const competingFloor = floor !== undefined;
     if (sandboxUnavailableAsk && !shellAnalysisLimited) {
-      floor = context.floor ?? { code: "sandbox-unavailable", reason: "The OS sandbox is unavailable, so this shell command would run without isolation; it needs your approval once or for this session." };
+      floor = context.floor ?? { code: "sandbox-unavailable", reason: "The OS sandbox is unavailable, so this shell command would run without isolation and needs your approval." };
     }
     const floorSessionEligible = sandboxUnavailableAsk && !competingFloor;
     const floorSessionGranted = floorSessionEligible && context.hostShellExecutionPlan !== undefined && requestedRuleSubject !== undefined &&

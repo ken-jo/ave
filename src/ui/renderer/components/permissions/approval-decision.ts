@@ -84,6 +84,10 @@ function stageAllowChoices(stage: RunStage | undefined): Pick<ApprovalDecisionMo
   return stage === undefined ? {} : { allowChoices: STAGE_ALLOW_MENU_CHOICES };
 }
 
+export function offersFloorSessionWaiver(rule: ShellRuleApproval | undefined): boolean {
+  return rule?.floorSessionOnly === true && rule.sessionAllowed;
+}
+
 /** A bash or PowerShell card: every remembering choice saves a `Bash(...)` / `PowerShell(...)` rule, editable in the card. Always deny saves the command's literal argv, or a rule the person writes when there is none. */
 export function shellDecisionModel(rule: ShellRuleApproval, stage?: RunStage): ApprovalDecisionModel {
   if (rule.floorSessionOnly === true) {
@@ -93,7 +97,7 @@ export function shellDecisionModel(rule: ShellRuleApproval, stage?: RunStage): A
       variant: "shell",
       options: {
         "deny-always": once("deny-always"),
-        "allow-session": rule.sessionAllowed ? offered(null, null, label("allow-session")) : once("allow-session"),
+        "allow-session": offersFloorSessionWaiver(rule) ? offered(null, null, label("allow-session")) : once("allow-session"),
         // A floor is answered once or for its own session; the run never passes it.
         "allow-run": once("allow-run"),
         "allow-project": once("allow-project"),

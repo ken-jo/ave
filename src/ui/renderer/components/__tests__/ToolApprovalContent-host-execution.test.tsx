@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { SHELL_ANALYSIS_LIMIT_REASON } from "../../../../permissions/decision-pipeline.js";
@@ -25,6 +27,12 @@ function request(host: boolean): ApprovalRequest {
 }
 
 describe("explicit host execution approval", () => {
+  it("shares the session choice predicate with the environment text", () => {
+    const source = (file: string) => readFileSync(join(process.cwd(), "src/ui/renderer/components", file), "utf8");
+    expect(source("ToolApprovalContent.tsx")).toMatch(/sessionOffered: offersFloorSessionWaiver\(request\.shellRule\)/);
+    expect(source("permissions/approval-decision.ts")).toMatch(/"allow-session": offersFloorSessionWaiver\(rule\)/);
+  });
+
   it("shows the exact host warning, reason, environment and full command before consent", () => {
     const { container } = renderApproval(request(true), () => undefined);
     const warning = container.querySelector('[data-testid="tool-approval-host-execution"]');
@@ -144,17 +152,39 @@ describe("explicit host execution approval", () => {
     }
   });
 
+  it.each(["en", "ko"] as const)("uses one-time wording for an under-budget competing floor in %s", (locale) => {
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      const approval = request(false);
+      approval.args = { command: "printf ready" };
+      approval.reason = "This principal requires local approval.";
+      approval.reasonCode = "other-principal";
+      approval.executionPlan = getHostShellExecutionPlanAuditProjection(buildHostShellExecutionPlan({
+        platform: "linux", requestedSandbox: false, unavailableSandboxRequiresAsk: true,
+        activeCapability: { reason: "Fixture sandbox disabled", kind: "none", confidence: "verified", platform: "linux" },
+      }));
+      const { getByTestId } = renderApproval(approval, () => undefined);
+      expect(getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
+      expect(getByTestId("tool-approval-shell-environment")).toHaveTextContent(t("shellExecution.boundaryUnverifiedOneTime"));
+    } finally {
+      setLocale(previous);
+    }
+  });
+
   // An unavailable sandbox is a forced ask: the card says the sandbox is unavailable and shows the host warning, without the explicit-request justification.
   it("warns that the sandbox is unavailable on the forced fallback ask, with what to install", () => {
     const fallback = request(false);
     fallback.args = { command: "printf fallback" };
+    fallback.shellRule = { exactRule: null, floorSessionOnly: true, sessionAllowed: true, persistentAllowed: false, denyAllowed: false };
     fallback.executionPlan = getHostShellExecutionPlanAuditProjection(buildHostShellExecutionPlan({
       platform: "linux", requestedSandbox: true, unavailableCauses: ["missing-bwrap"],
       activeCapability: { reason: "Fixture sandbox unavailable", kind: "none", confidence: "verified", platform: "linux" },
     }));
-    const { container } = renderApproval(fallback, () => undefined);
+    const { container, getByTestId } = renderApproval(fallback, () => undefined);
     const environment = container.querySelector('[data-testid="tool-approval-shell-environment"]')?.textContent;
     expect(environment).toContain(t("shellExecution.sandboxUnavailableAsk"));
+    expect(getByTestId(TEST_IDS.allowSessionButton)).toBeEnabled();
     expect(environment).toContain(t("shellExecution.sandboxInstallHint", { packages: "bubblewrap (bwrap)" }));
     const host = container.querySelector('[data-testid="tool-approval-host-execution"]')?.textContent;
     expect(host).toContain(t("shellExecution.hostWarning"));

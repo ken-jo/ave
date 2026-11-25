@@ -69,6 +69,7 @@ import {
   allowRefusalKey,
   exactDecisionModel,
   oneShotDecisionModel,
+  offersFloorSessionWaiver,
   FOLDER_ALLOW_LABEL_KEY,
   pathGrantDecisionModel,
   ruleSaveErrorText,
@@ -1174,7 +1175,7 @@ export function ToolApprovalContent({
                   ) : null}
                   {request.executionPlan ? (
                     <div className="mt-1 space-y-0.5 text-xs text-muted-foreground" data-testid="tool-approval-shell-environment">
-                      {shellExecutionEnvironmentLines(request.executionPlan, { oneTimeApproval: isShellAnalysisLimit }).map((line) => <p key={line}>{line}</p>)}
+                      {shellExecutionEnvironmentLines(request.executionPlan, { sessionOffered: offersFloorSessionWaiver(request.shellRule) }).map((line) => <p key={line}>{line}</p>)}
                     </div>
                   ) : null}
                   {requiresHostConsent ? (
