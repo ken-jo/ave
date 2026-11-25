@@ -205,7 +205,8 @@ Notes that are part of the contract:
 - Windows shell confinement withholds the configured saved-session read exception on every Windows confinement backend.
 - A user's own deny beats a host pierce (owner decision 2026-11-26): a pierce the host needs for a confined launch re-opens only
   host floor rows, never a deny the user configured. When a user's read deny covers a path the host needs, the launch fails
-  and names that user rule; the path is never opened silently.
+  and names that user rule; the path is never opened silently. A deny whose cover cannot be decided (a character class in the
+  package wrap) refuses too, and says it cannot tell; a deny that cannot reach the path leaves the launch alone.
 - Local memory inference uses the Windows system directory for its working directory. The sandbox account already has read access there,
   so inference needs no ACL grant for its fresh process HOME. The active model is under the denied Ave home models directory and the host streams its verified bytes. With no confinement backend, memory-map inference runs unconfined through its switch, which is on by default; with the switch off, inference is disabled (OQ-14 confirmed; owner decision 2026-11-25). Not yet implemented: until the Windows container backend flip (R-win) ships the switch, inference is refused (`local-runtime-unavailable`) when the OS sandbox is not active (owner decision 2026-11-25).
 - Unverified Ave home privacy at boot (any boot privacy failure: boundary-link, boundary-unlisted, the Windows ACL, ownership,

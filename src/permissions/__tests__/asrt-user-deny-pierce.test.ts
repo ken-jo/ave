@@ -4,10 +4,12 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import os from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { registerLinuxWrapperProgramFixtures } from "../../__tests__/support/linux-wrapper-programs.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { setLocale } from "../../i18n/index.js";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { buildPolicyModel } from "../policy-model.js";
 import { rankMxcFilesystem } from "../mxc-windows.js";
@@ -57,14 +59,22 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true, denyRead });
   }
 
-  function readFor(platform: NodeJS.Platform): string[] | undefined {
+  const spelled = (entry: string | { readonly path: string }): string => typeof entry === "string" ? entry : entry.path;
+
+  function configFor(platform: NodeJS.Platform): { readonly allowRead: string[]; readonly denyRead: string[] } {
     setProcessPlatform(platform);
-    return buildPerCommandSandboxCustomConfig({
+    const filesystem = buildPerCommandSandboxCustomConfig({
       allowRead: [certs(), corp()], denyRead: getDefaultSensitiveReadDenyPaths(), floorPierces: [certs()],
-    })?.filesystem?.allowRead?.map(entry => typeof entry === "string" ? entry : entry.path);
+    })?.filesystem;
+    return { allowRead: (filesystem?.allowRead ?? []).map(spelled), denyRead: (filesystem?.denyRead ?? []).map(spelled) };
+  }
+
+  function readFor(platform: NodeJS.Platform): string[] {
+    return configFor(platform).allowRead;
   }
 
   beforeEach(() => {
+    setLocale("en");
     configureHostResources({ resourcePath: resources, isPackaged: false });
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: aveHome(), sid: "S-1-5-21-100-200-300-1001" });
     mkdirSync(corp(), { recursive: true });
@@ -86,8 +96,8 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
     { name: "a subtree pattern above the pierce", rule: () => join(aveHome(), "**"), pattern: true },
     { name: "a pattern over the pierce's contents", rule: () => join(certs(), "**"), pattern: true },
   ];
-  // Linux and the Windows package wrap already refuse a read deny pattern over a grant before any grant is composed.
-  const carried = (platform: NodeJS.Platform, pattern?: boolean): boolean => pattern === undefined || platform === "darwin";
+  // The Windows package wrap refuses a read deny pattern over a grant earlier, as an obligation it cannot enforce (glob-not-subtree).
+  const carried = (platform: NodeJS.Platform, pattern?: boolean): boolean => pattern === undefined || platform !== "win32";
   it.each(platforms.flatMap(platform => refusing.filter(entry => carried(platform, entry.pattern)).map(entry => ({ platform, ...entry }))))(
     "on $platform, refuses the launch when the user's deny is $name, naming the rule",
     async ({ platform, rule }) => {
@@ -104,6 +114,58 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
       .filter(row => row.access === "denied" && /corp$/u.test(row.path)).map(row => row.reason);
     expect(reasons.length).toBeGreaterThan(0);
     expect(new Set(reasons)).toEqual(new Set(["user-deny"]));
+  });
+
+  // A character class has no exact reading in the shared grammar; read as any run, it still decides a deny that cannot reach the pierce.
+  // Linux Git quarantine refuses every bracket deny on its own, so there only the home reference is composed.
+  const bracketElsewhere = () => join(dirname(aveHome()), "unrelated-dir", "[ab].key");
+  const bracketInside = () => join(corp(), "[ab].key");
+  const composed = [
+    ...platforms.filter(platform => platform !== "linux").map(platform => ({ platform, name: "a bracket pattern in another directory", rule: bracketElsewhere, restated: platform === "darwin" })),
+    ...platforms.map(platform => ({ platform, name: "a home reference to another file", rule: () => "%USERPROFILE%/unrelated-secret", restated: false })),
+    { platform: "darwin" as const, name: "a bracket pattern inside it", rule: bracketInside, restated: true },
+  ];
+  it.each(composed)("on $platform, keeps the pierce and its grants beside $name", async ({ platform, rule, restated }) => {
+    await initializeWith([rule()]);
+    const config = configFor(platform);
+    expect(config.allowRead).toEqual([certs(), corp()]);
+    // The macOS profile keeps a bracket deny as written and restates it after the allows, so it still holds beneath the pierce.
+    if (restated) expect(config.denyRead).toContain(rule());
+  });
+
+  it.each([bracketElsewhere, bracketInside])("on linux, a bracket deny meets the Git quarantine refusal, not a user-deny refusal (%#)", async (rule) => {
+    await initializeWith([rule()]);
+    expect(() => readFor("linux")).toThrow("Linux Git quarantine cannot represent a filesystem deny pattern");
+  });
+
+  const undecided = [
+    { name: "a bracket pattern that may match the pierce", rule: () => join(aveHome(), "[c]erts") },
+    { name: "a bracket pattern that may match an ancestor", rule: () => join(dirname(aveHome()), `[${basename(aveHome()).slice(0, 1)}]${basename(aveHome()).slice(1)}`) },
+    { name: "a bracket pattern inside the pierce", rule: () => join(corp(), "[ab].key") },
+  ];
+  it.each(platforms.flatMap(platform => undecided.slice(0, 2).map(entry => ({ platform, ...entry }))).filter(entry => entry.platform !== "win32"))(
+    "on $platform, refuses the launch when it cannot tell whether $name covers it",
+    async ({ platform, rule }) => {
+      await initializeWith([rule()]);
+      expect(() => readFor(platform)).toThrow(`Ave cannot tell whether your read deny ${rule()} covers ${certs()}, which this launch needs to read; the launch is refused`);
+    },
+  );
+
+  // The Windows package wrap stamps a bracket deny over its whole static base, so one at, above or inside a grant is refused there first.
+  it.runIf(platforms.includes("win32")).each(undecided)("on win32, refuses $name as an obligation the package wrap cannot enforce", async ({ rule }) => {
+    await initializeWith([rule()]);
+    expect(() => readFor("win32")).toThrow(`Windows sandbox obligations cannot be enforced: ${rule()} (glob-not-subtree)`);
+  });
+
+  it.runIf(platforms.includes("win32"))("on win32, expands a home reference before matching and refuses one at the pierce", async () => {
+    const rule = `%USERPROFILE%/${basename(aveHome())}/certs`;
+    await initializeWith([rule]);
+    const home = vi.spyOn(os, "homedir").mockReturnValue(dirname(aveHome()));
+    try {
+      expect(() => readFor("win32")).toThrow(`Your read deny ${rule} covers ${certs()}, which this launch needs to read; the launch is refused`);
+    } finally {
+      home.mockRestore();
+    }
   });
 
   it.each(platforms)("on %s, keeps the pierce and its grants with no user deny", async (platform) => {

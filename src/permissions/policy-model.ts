@@ -4,6 +4,8 @@
 // request, and that adapter owns the backend's handling of absent paths and the precedence between its lists. Network egress is not
 // part of the model: a confined launch reaches the network only through the egress relay endpoint it is handed.
 
+import { t } from "../i18n/index.js";
+
 type PolicyAccess = "rw" | "ro" | "denied";
 
 /**
@@ -84,7 +86,12 @@ export function policyGrantRow(path: string, access: PolicyGrantRow["access"], r
 
 /** A host pierce at or beneath a user's read deny: the user's rule wins, so the launch is refused and names it. */
 export function userDenyCoversPierce(rule: string, pierce: string): Error {
-  return new Error(`Your read deny ${rule} covers ${pierce}, which this launch needs to read; the launch is refused`);
+  return new Error(t("be_policyModel.userDenyCoversPierce", { rule, pierce }));
+}
+
+/** A user's read deny whose cover of a host pierce cannot be decided: the launch is refused as if it covered, and says it cannot tell. */
+export function userDenyMayCoverPierce(rule: string, pierce: string): Error {
+  return new Error(t("be_policyModel.userDenyMayCoverPierce", { rule, pierce }));
 }
 
 export function isPolicyFloorRow(row: PolicyRow): row is PolicyFloorRow {

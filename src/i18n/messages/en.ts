@@ -1093,6 +1093,10 @@ export const en = {
   "be_pluginUiHost.pluginUiTitle": "Extension UI",
   "be_pluginUiHost.pluginUiLoadingDesc": "Loading extension view.",
 
+  // be_policyModel
+  "be_policyModel.userDenyCoversPierce": "Your read deny {rule} covers {pierce}, which this launch needs to read; the launch is refused",
+  "be_policyModel.userDenyMayCoverPierce": "Ave cannot tell whether your read deny {rule} covers {pierce}, which this launch needs to read; the launch is refused",
+
   // be_policyStore
   "be_policyStore.managedPolicyUserCannotChange": "IT-managed policy cannot be changed by the user.",
 

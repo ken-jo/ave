@@ -3,7 +3,7 @@
 import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { mxcRuntimeRootFloorPath } from "./mxc-runtime-root.js";
-import { buildPolicyModel, policyFloorRow, policyGrantRow, userDenyCoversPierce, type PolicyFloorRow, type PolicyGrantRow, type PolicyModel } from "./policy-model.js";
+import { buildPolicyModel, policyFloorRow, policyGrantRow, userDenyCoversPierce, userDenyMayCoverPierce, type PolicyFloorRow, type PolicyGrantRow, type PolicyModel } from "./policy-model.js";
 import { srtWriteFloorRow, toSrtConfig } from "./srt-policy-adapter.js";
 import { isMxcReadPattern } from "./mxc-windows.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
@@ -1723,12 +1723,43 @@ function readGrantsOutsideReadDenies(
     }
   }
   // A pierce re-opens only host floor rows: a user's deny at, above or matching it refuses the launch.
-  const userCovering = readDenyCovering(userDenies);
+  const userCovering = userReadDenyCovering(userDenies);
   for (const pierce of floorPierces) {
-    const rule = userCovering(canonicalizePathForMatch(pierce));
-    if (rule !== undefined) throw userDenyCoversPierce(rule, pierce);
+    const cover = userCovering(canonicalizePathForMatch(pierce));
+    if (cover !== undefined) throw (cover.certain ? userDenyCoversPierce : userDenyMayCoverPierce)(cover.rule, pierce);
   }
-  return withholdUnder(grants, floor, floorPierces, "read grant", userCovering);
+  return withholdUnder(grants, floor, floorPierces, "read grant", (path) => userCovering(path)?.rule);
+}
+
+// The user's read denies judged as the package reads them: home references expanded, and on Windows only the home variables, as
+// the package does. A character class has no reading in the shared grammar, so it is read as any run, which can only widen the
+// match: no match means the deny cannot cover the path, and a match means it may (`certain: false`). The floor keeps its own
+// stricter matcher, where a class covers everything: it only withholds, never refuses.
+function userReadDenyCovering(denied: readonly FilesystemPathEntry[]): (canonicalPath: string) => { readonly rule: string; readonly certain: boolean } | undefined {
+  const matchers = denied.map((entry) => {
+    if (typeof entry !== "string") {
+      const literal = canonicalizePathForMatch(entry.path).replace(/\/+$/, "");
+      return { rule: entry.path, certain: true, match: (candidate: string) => candidate === literal };
+    }
+    const spelling = expandLeadingTilde(process.platform === "win32" ? expandWindowsEnvRefs(entry) : entry);
+    const certain = !/[[\]]/.test(spelling);
+    const widened = certain ? spelling : spelling.replace(/\[[^\]]*\]|[[\]]/g, "**");
+    return { rule: entry, certain, match: compileGlobMatcher(canonicalizePathForMatch(widened)) };
+  });
+  return (canonicalPath) => {
+    const candidates: string[] = [];
+    for (let candidate = canonicalPath; ; candidate = dirname(candidate)) {
+      candidates.push(candidate);
+      if (dirname(candidate) === candidate) break;
+    }
+    let uncertain: { readonly rule: string; readonly certain: boolean } | undefined;
+    for (const { rule, certain, match } of matchers) {
+      if (!candidates.some((candidate) => match(candidate) || match(`${candidate}/`))) continue;
+      if (certain) return { rule, certain };
+      uncertain ??= { rule, certain };
+    }
+    return uncertain;
+  };
 }
 
 function withholdUnder(

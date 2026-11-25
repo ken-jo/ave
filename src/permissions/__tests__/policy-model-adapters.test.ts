@@ -1,7 +1,8 @@
 // One policy model, two adapters. Every row of the table states a launch as policy rows and pins what each adapter makes of it:
 // the sandbox runtime package lists and the ranked container grants. The expected values are literals, so a change in either
 // adapter's output fails here.
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { setLocale } from "../../i18n/index.js";
 import { synthesizeMxcAncestorQueries } from "../mxc-filesystem-policy.js";
 import { rankMxcRowsBySpelling, type MxcFilesystemGrants } from "../mxc-windows.js";
 import {
@@ -181,6 +182,7 @@ const TABLE: readonly AdapterRow[] = [
 ];
 
 describe("policy model adapters", () => {
+  beforeEach(() => setLocale("en"));
   it.each(TABLE)("projects $name onto the sandbox runtime package lists", (row) => {
     if (row.srt === undefined) expect(() => toSrtConfig(row.model)).toThrow(/cannot carry a floor pierce/);
     else expect(toSrtConfig(row.model)).toEqual(row.srt);

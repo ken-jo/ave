@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { setLocale } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../../shared/windows-command-line.js";
 
@@ -273,6 +274,7 @@ describe("isWindowsPathAtOrUnder", () => {
 });
 
 describe("rankMxcFilesystem", () => {
+  beforeEach(() => setLocale("en"));
   const home = "C:\\Users\\u";
   const repo = "C:\\Users\\u\\src\\repo";
   const sandboxHome = "C:\\Users\\u\\AppData\\Roaming\\Ave\\sandbox-homes\\h1";
