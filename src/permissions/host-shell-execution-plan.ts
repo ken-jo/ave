@@ -54,7 +54,7 @@ export interface HostShellExecutionPlan {
   // Honest capability of the child selected by this plan.
   readonly capability: SandboxCapability;
   readonly fallbackReason: HostShellFallbackReason;
-  // True whenever this plain shell needs a per-invocation host authorization before spawn: an explicit unsandboxed request, the Windows partial-ASRT Plan B (an exact `Bash(<command>)` allow rule or a fresh approval), or a requested-but-unavailable sandbox (a human ask, once or for the session).
+  // True whenever this plain shell needs per-invocation host authorization before spawn, including explicit host requests and the no-confinement floor.
   readonly requiresExplicitUserApproval: boolean;
   // Stable identity for audit/cache consumers; contains no command or raw path.
   readonly identity: string;
@@ -254,7 +254,7 @@ export function buildHostShellExecutionPlan(input: {
   if (executionRequest === "host") {
     // With the requested sandbox unavailable an explicit host request is the same uncontained shell, so it takes the same ask.
     const forcedAsk = askEveryCommand || (requestedSandbox && input.activeCapability.kind === "none");
-    const windowsUncontained = input.platform === "win32" && requestedSandbox && input.activeCapability.kind === "asrt" && !hasShellContainment(input.activeCapability);
+    const backendDoesNotContainShells = requestedSandbox && input.activeCapability.kind !== "none" && !hasShellContainment(input.activeCapability);
     return Object.freeze({
       version: HOST_SHELL_EXECUTION_PLAN_VERSION,
       platform: input.platform,
@@ -267,7 +267,7 @@ export function buildHostShellExecutionPlan(input: {
       capability: noneCapability(input.platform, "Explicit host execution runs as the current user without OS confinement."),
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: true,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":explicit-host" + (forcedAsk ? noBackendAskSuffix : windowsUncontained ? ASK_EVERY_COMMAND_SUFFIX : ""),
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":explicit-host" + (forcedAsk ? noBackendAskSuffix : backendDoesNotContainShells ? ASK_EVERY_COMMAND_SUFFIX : ""),
     });
   }
 

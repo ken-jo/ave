@@ -189,7 +189,7 @@ describe("host shell execution plan", () => {
     },
   );
 
-  it("puts an explicit host request under the forced ask only when the requested sandbox is unavailable", () => {
+  it("distinguishes a missing backend from sandbox-off and ready backends for host requests", () => {
     const host = (requestedSandbox: boolean, activeCapability: Parameters<typeof buildHostShellExecutionPlan>[0]["activeCapability"]) =>
       buildHostShellExecutionPlan({ platform: "linux", requestedSandbox, executionMode: "host", activeCapability });
     const unavailable = host(true, { ...NONE, platform: "linux" });
@@ -200,6 +200,22 @@ describe("host shell execution plan", () => {
       expect(plan.identity).toBe("host-shell-execution-plan/v4:linux:explicit-host");
       expect(requiresUnsandboxedShellAsk(plan)).toBe(false);
     }
+  });
+
+  it.each([
+    ["linux", "asrt"],
+    ["win32", "partial"],
+  ] as const)("puts an explicit host request under the floor with an uncontained %s %s backend", (platform, kind) => {
+    const plan = buildHostShellExecutionPlan({
+      platform,
+      requestedSandbox: true,
+      executionMode: "host",
+      activeCapability: { ...WINDOWS_PARTIAL_ASRT, platform, kind },
+      homePrivacyVerified: true,
+    });
+    expect(plan.mode).toBe("plain");
+    expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
+    expect(exactRulePassesUnsandboxedShellAsk(plan)).toBe(false);
   });
 
   // Tree T:151, T:232: an exact saved rule may pass only the ask that the missing backend alone raises, with boot home privacy verified.
