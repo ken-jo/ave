@@ -218,8 +218,7 @@ const ROWS: readonly Row[] = [
     today: { outcome: "ask", reason: "default:disabled-by-setting", waiver: "any" },
     observe: () => plan({ platform: "linux", requestedSandbox: false, activeCapability: capability("linux", "none") }) },
   { id: "D25", point: "sandbox on, no usable backend", tree: "T:128", unknown: "U2",
-    today: { outcome: "ask", reason: "default:requested-sandbox-unavailable", waiver: "any" },
-    core: { outcome: "ask-human", waiver: "session" },
+    today: { outcome: "ask-human", reason: "default:requested-sandbox-unavailable", waiver: "session" },
     observe: () => plan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "none") }) },
   { id: "D26", point: "Windows capability that does not contain shells", tree: "T:128", unknown: "U2",
     today: { outcome: "ask", reason: "default:windows-partial-shell-acl-unsafe", waiver: "once" },
@@ -344,7 +343,6 @@ const ROWS: readonly Row[] = [
 
 // Inconsistency id (policy design, section 3) -> the rows that still answer differently from the policy core.
 const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
-  I1: ["D25"],
   I2: ["L5"],
   I8: ["L4"], // also carries an uncoded reason (I15); PF2 clears it
   I10: ["L1"],
@@ -358,6 +356,7 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
 
 // Closed inconsistency -> the row that proves it, which answers as the policy core does.
 const RESOLVED: Readonly<Record<string, string>> = {
+  I1: "D25",
   I5: "D34.b",
 };
 
