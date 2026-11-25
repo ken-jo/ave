@@ -1059,10 +1059,9 @@ describe("the browser download staging folder in a container holder's native req
   beforeEach(async () => {
     runtime.containerBackend = true;
     writeDriveFile(nodePath);
-    const { registerMxcHolderReadinessProbe } = await import("../../sandbox/wrap-bundled-command.js");
-    unregister = registerMxcHolderReadinessProbe(async () => ({ installedPayloadVerified: true, baseContainerReady: true, exactRequestAccepted: true,
-      uiEnabledRuntimeStarted: true, ancestorQueriesSupported: true, standardStreamsRoundTrip: true, cleanTermination: true, ownProxySucceeded: true,
-      otherListenerRefused: true, directEgressRefused: true, forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true }));
+    const { registerMxcReleaseGateEvidence } = await import("../mxc-extension-admission.js");
+    const { MXC_RELEASE_GATE_EVIDENCE, mxcStartRecord } = await import("../../__tests__/support/mxc-supervisor.js");
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     runtime.nativeSpawn.mockImplementation(async (request: { filesystem: ContainerFilesystem }, options: { onOwned: (child: unknown) => void; beforeSpawn: () => void }) => {
       for (const row of pinWindowsPaths([...request.filesystem.readonlyPaths, ...request.filesystem.readwritePaths])) {
         expect(row).toMatchObject({ exists: true, directory: true });
@@ -1071,7 +1070,7 @@ describe("the browser download staging folder in a container holder's native req
         expect(row.fileId).not.toBeNull();
       }
       const child = { id: 42, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), completion: new Promise(() => {}),
-        dispose: vi.fn(async () => undefined), diagnostics: {} };
+        dispose: vi.fn(async () => undefined), diagnostics: {}, startEvidence: mxcStartRecord(request) };
       options.onOwned(child);
       options.beforeSpawn();
       return child;

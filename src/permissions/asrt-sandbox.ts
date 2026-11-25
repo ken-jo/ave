@@ -1272,7 +1272,7 @@ export function probeExtensionStart(holder?: "worker"): ExtensionStartRecheck {
 
 // Refuse an extension start that nothing would confine unless a person consented to this one start.
 // `backend: "mxc"` is the native entry. A legacy adapter may declare `holder: "worker"` so a selected container backend refuses it with the worker transport code (D1); every other legacy holder gets the holder-neutral native-entry refusal.
-// `start` carries the per-start consent. `hostOwned` is a host process (the inference child): it has no consent route and keeps its own gate.
+// `start` carries the per-start consent. `hostOwned` is a host process (the inference child): outside this floor, so it has no consent route and keeps its own gate.
 export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" } | {
   readonly holder?: "worker";
   readonly start?: ExtensionStartPresentation;
