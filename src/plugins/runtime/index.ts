@@ -4875,10 +4875,16 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
               )
             : Promise.resolve();
         } catch (error) {
+          const committedGeneration = generationLifecycle.getActive(manifest.id)?.generationId === generationId;
           if (
             displacedUnpublishedCandidate
-            && generationLifecycle.getActive(manifest.id)?.generationId === generationId
+            && committedGeneration
+            && this.plugins.get(manifest.id) === displacedUnpublishedCandidate.plugin
           ) {
+            // Runtime publication failed after commit, so the candidate is still mapped and shutdown retires it from there.
+            displacedUnpublishedCandidate.handoff.close();
+            log.warn(`${manifest.id} prepared activation left the unpublished loaded plugin mapped after a post-commit publication failure`);
+          } else if (displacedUnpublishedCandidate && committedGeneration) {
             // The replacement committed, so the displaced candidate is still owed its retirement; register it before rethrowing.
             void this.retireDisplacedUnpublishedLoadedCandidate(
               manifest.id,
