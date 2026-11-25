@@ -51,6 +51,7 @@ import type { PluginWorkerControl } from "../plugins/public-contract.js";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { registerMxcHolderLifetime } from "./mxc-holder-lifetime.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
+import { isIssuedContainerHome } from "./sandbox-home-registry.js";
 import { assertMxcHolderPrivateDirectories, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { isSandboxWrapperEnvKey } from "../tools/safe-env.js";
 import {
@@ -324,9 +325,8 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     filesystemOwnership: Object.freeze({ readRoots: Object.freeze([...spec.filesystemOwnership.readRoots]),
       writeRoots: Object.freeze([...spec.filesystemOwnership.writeRoots]), hostStorageRoots: Object.freeze([...spec.filesystemOwnership.hostStorageRoots]) }),
   });
-  // No working directory inside the runtime root but the holder's own HOME, the default one.
-  const ownHome = pathForms(spec.home);
-  if (pathForms(spec.cwd).some((form) => isWindowsPathAtOrUnder(form, runtimeRoot) && !ownHome.some((home) => isWindowsPathAtOrUnder(form, home)))) {
+  // No working directory inside the runtime root except the launch's own issued HOME itself, by identity.
+  if (pathForms(spec.cwd).some((form) => isWindowsPathAtOrUnder(form, runtimeRoot)) && !isIssuedContainerHome(spec.cwd, spec.home)) {
     throw new MxcProcessContractError("Container working directory is inside the sandbox runtime root");
   }
   const assertParent = (): void => {

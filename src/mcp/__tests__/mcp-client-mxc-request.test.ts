@@ -44,6 +44,11 @@ function containedServer() {
     release: async () => finish({ exitCode: 0, timedOut: false }) };
 }
 
+// The in-memory drive has no directory identities: recording the issued HOME is observed, not performed.
+vi.mock("../../permissions/sandbox-home-registry.js", async (original) => ({
+  ...await original<typeof import("../../permissions/sandbox-home-registry.js")>(),
+  recordIssuedContainerHome: vi.fn(), forgetIssuedContainerHome: vi.fn(),
+}));
 vi.mock("../../permissions/confined-child.js", async (original) => {
   const actual = await original<typeof import("../../permissions/confined-child.js")>();
   const { buildMxcConfinedChildRequest } = await import("../../permissions/mxc-confined-child-request.js");

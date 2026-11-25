@@ -3474,7 +3474,9 @@ in its directory.
   is no managed MXC shell job, so background processes in that container end
   with the invocation's containment.
 
-- **Filesystem.** The per-command ASRT lists are ranked for MXC
+- **Filesystem.** A container working directory inside the runtime root is
+  refused, except the launch's own issued HOME (matched by path and file identity).
+  The per-command ASRT lists are ranked for MXC
   (`rankMxcFilesystem`): the protected read floor drops grants not under a
   pierce, a write grant under a `denyWrite` path becomes read-only, a deny
   strictly inside a grant becomes an explicit `denied` entry when the path

@@ -184,7 +184,8 @@ Notes that are part of the contract:
   macOS denies the subpath and allows the granted children inside it. Host features (preview, document observation) and the write
   floor keep the per-file rows.
 - On Windows the container runtime root (`<local application data>\<app id>\mxc-runtime`) is a floor read deny, established at
-  start-up; a root that cannot be proved private refuses every container start.
+  start-up; a root that cannot be proved private refuses every container start, and a container working directory inside it is
+  refused, except the launch's own issued HOME.
 - Limit of the Ave home boundary on Windows: an Ave home directly under the OS profile (the default `%USERPROFILE%\.ave`) gets no
   root deny, because a stamp also denies `FILE_DELETE_CHILD` inheritably on the target's parent, and on the profile root that
   propagates through the whole profile and exceeds the init timeout. Instead each existing top-level child directory that is not

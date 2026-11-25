@@ -21,9 +21,15 @@ const state = vi.hoisted(() => ({
   shellPlan: undefined as unknown, issued: new WeakSet<object>(),
   // The runtime root start-up proved, or the refusal of one that was not.
   startRoot: vi.fn((): string => "C:\\ave-cache\\mxc-runtime"),
+  // Stands for the issued-HOME identity check (its own suite runs it on real directories): the launch's HOME itself.
+  issuedHome: vi.fn((cwd: string, home: string | undefined): boolean => cwd === home),
 }));
 vi.mock("../mxc-runtime-root.js", async (original) => ({
   ...await original<typeof import("../mxc-runtime-root.js")>(), requireMxcContainerStartRoot: () => state.startRoot(),
+}));
+vi.mock("../sandbox-home-registry.js", async (original) => ({
+  ...await original<typeof import("../sandbox-home-registry.js")>(),
+  isIssuedContainerHome: (cwd: string, home: string | undefined) => state.issuedHome(cwd, home),
 }));
 vi.mock("../asrt-sandbox.js", () => ({
   assertExtensionStartAllowed: () => state.allowed(), admitMxcExtensionFilesystem: (...args: unknown[]) => state.admit(...args),
@@ -453,6 +459,8 @@ describe("the container runtime root", () => {
     ["its own temp", String.raw`${STAGING}\temp`],
     ["the HOME parent spelled in another case", String.raw`C:\AVE-CACHE\MXC-RUNTIME\HOMES`],
     ["a junction into the root", String.raw`D:\work\link\homes`],
+    ["the staging parent", String.raw`C:\ave-cache\mxc-runtime\staging`],
+    ["a directory below its own HOME", String.raw`${STAGING}\home\work`],
   ])("refuses a working directory inside it: %s", async (_case, cwd) => {
     state.junctions.set(String.raw`D:\work\link`, RUNTIME_ROOT);
     const before = liveEgressInvocationCount();
@@ -473,6 +481,14 @@ describe("the container runtime root", () => {
     expect(state.spawn).toHaveBeenCalledOnce();
     expect(state.spawn.mock.calls[0]?.[0].workingDirectory).toBe(cwd);
     await result.release();
+  });
+
+  it("refuses its own HOME by name once it is no longer the directory issued, and asks with this launch's HOME", async () => {
+    state.issuedHome.mockReturnValueOnce(false);
+    const home = String.raw`${STAGING}\home`;
+    await expect(spawnMxcConfinedChild(staged(home))).rejects.toThrow(/working directory is inside the sandbox runtime root/u);
+    expect(state.issuedHome).toHaveBeenCalledWith(home, home);
+    expect(state.spawn).not.toHaveBeenCalled();
   });
 });
 

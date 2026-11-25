@@ -39,6 +39,7 @@ import { getWindowsExtensionBackendPlan } from "../permissions/sandbox-capabilit
 import { listAuthorizedWorkspaceRoots } from "../permissions/workspace-authorized-roots.js";
 import type { SandboxWindowsExtensionPlan } from "../shared/sandbox-capability-info.js";
 import { createSandboxProcessHome, resolvedHostProcessOwner } from "../permissions/sandbox-process-home.js";
+import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../permissions/sandbox-home-registry.js";
 import { readWindowsProcessRunStates, type ProcessRunStateProbe } from "../permissions/windows-process-start-time.js";
 import {
   holdWindowsFilesystemGrant,
@@ -502,6 +503,8 @@ function createHolderStaging(): HolderStaging {
     liveStaging.delete(root);
     throw error;
   }
+  // The one directory under the runtime root this holder may use as its working directory.
+  recordIssuedContainerHome(home);
   return Object.freeze({ root, home, temp });
 }
 
@@ -550,6 +553,7 @@ function removeStagingTree(root: string): void {
  * raise. A partial failure leaves the marked remainder for the next sweep. */
 async function removeHolderStaging(root: string): Promise<void> {
   if (!liveStaging.delete(root)) return;
+  forgetIssuedContainerHome(winPath.join(root, "home"));
   try {
     try {
       await renameDirectory(root, `${root}${STAGING_RETIRED_SUFFIX}`);

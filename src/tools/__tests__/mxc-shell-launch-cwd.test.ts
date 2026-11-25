@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
+import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../../permissions/sandbox-home-registry.js";
 
 const h = vi.hoisted(() => ({ root: "" }));
 const PAST_THE_CHECK = "reached the listener, past the working-directory check";
@@ -11,7 +12,7 @@ vi.mock("../../permissions/egress-host-listener.js", () => ({
 }));
 vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/mxc-windows.js")>(),
-  resolveHostWxcExecPath: async () => "C:\\Ave\\resources\\mxc\\x64\\wxc-exec.exe",
+  resolveHostWxcExecPath: async () => String.raw`C:\Ave\resources\mxc\x64\wxc-exec.exe`,
 }));
 vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/mxc-runtime-root.js")>(),
@@ -30,21 +31,31 @@ registerMxcShellLaunchAdmissionFixture("tok");
 
 describe.runIf(process.platform === "win32")("a container shell's working directory against the real runtime root", () => {
   let base = "";
+  const own = (): string => join(h.root, "homes", "ave-sandbox-home-own");
+  const other = (): string => join(h.root, "homes", "ave-sandbox-home-other");
   beforeAll(() => {
     base = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-cwd-")));
     h.root = join(base, "cache", "mxc-runtime");
-    mkdirSync(join(h.root, "homes"), { recursive: true });
+    for (const home of [own(), other()]) {
+      mkdirSync(home, { recursive: true });
+      recordIssuedContainerHome(home);
+    }
     mkdirSync(`${h.root}-other`);
     symlinkSync(h.root, join(base, "link"), "junction");
+    symlinkSync(own(), join(base, "to-own"), "junction");
   });
-  afterAll(() => { rmSync(base, { recursive: true, force: true }); });
+  afterAll(() => {
+    forgetIssuedContainerHome(own());
+    forgetIssuedContainerHome(other());
+    rmSync(base, { recursive: true, force: true });
+  });
 
   const launch = async (cwd: string): Promise<unknown> => {
     const lifecycle = createContainedShellLifecycle();
     try {
-      return await prepareMxcShellLaunch({ egressToken: "tok", commandLine: "cmd.exe /d /c echo hi", cwd,
+      return await prepareMxcShellLaunch({ egressToken: "tok", commandLine: "cmd.exe /d /c echo hi", cwd, sandboxHome: own(),
         filesystem: { allowWrite: [cwd], allowRead: [], denyRead: [], denyWrite: [] },
-        env: { SYSTEMROOT: "C:\\Windows" }, timeoutMs: 5_000, exists: () => true, list: () => [] }, lifecycle).catch((error: unknown) => error);
+        env: { SYSTEMROOT: String.raw`C:\Windows` }, timeoutMs: 5_000, exists: () => true, list: () => [] }, lifecycle).catch((error: unknown) => error);
     } finally {
       await lifecycle.dispose();
     }
@@ -54,11 +65,17 @@ describe.runIf(process.platform === "win32")("a container shell's working direct
     ["through a junction", () => join(base, "link", "homes")],
     ["in another case", () => join(h.root.toUpperCase(), "HOMES")],
     ["below the root, not yet created", () => join(h.root, "staging", "next")],
+    ["at another invocation's HOME", other],
+    ["at the HOME parent", () => join(h.root, "homes")],
   ])("refuses one inside it %s", async (_case, cwd) => {
     expect(await launch(cwd())).toMatchObject({ message: "Container shell working directory is inside the sandbox runtime root" });
   });
 
-  it("admits one beside it whose name only starts like it", async () => {
-    expect(await launch(`${h.root}-other`)).toMatchObject({ message: PAST_THE_CHECK });
+  it.each([
+    ["one beside it whose name only starts like it", () => `${h.root}-other`],
+    ["its own issued HOME", own],
+    ["a junction to its own issued HOME, by the target's identity", () => join(base, "to-own")],
+  ])("admits %s", async (_case, cwd) => {
+    expect(await launch(cwd())).toMatchObject({ message: PAST_THE_CHECK });
   });
 });

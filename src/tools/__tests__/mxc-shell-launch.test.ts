@@ -18,10 +18,16 @@ const h = vi.hoisted(() => ({
   lstat: vi.fn(),
   // The runtime root start-up proved, or the refusal of one that was not.
   startRoot: vi.fn((): string => "C:\\Users\\alice\\AppData\\Local\\ai.agent-connector.ave\\mxc-runtime"),
+  // Stands for the issued-HOME identity check (its own suite runs it on real directories): the invocation's HOME itself.
+  issuedHome: vi.fn((cwd: string, home: string | undefined): boolean => cwd === home),
 }));
 vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/mxc-runtime-root.js")>(),
   requireMxcContainerStartRoot: () => h.startRoot(),
+}));
+vi.mock("../../permissions/sandbox-home-registry.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../permissions/sandbox-home-registry.js")>(),
+  isIssuedContainerHome: (cwd: string, home: string | undefined) => h.issuedHome(cwd, home),
 }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -234,7 +240,19 @@ describe("prepareMxcShellLaunch", () => {
       expect(filesystem.readwritePaths).toEqual([sibling, OWN]);
     });
 
-    it.each([...CLOSED, OWN, `${OWN}\\work`])("refuses a working directory inside it: %s", async (cwd) => {
+    it("admits its own issued HOME itself, asking with this invocation's HOME", async () => {
+      const filesystem = await launchWith({ cwd: OWN, sandboxHome: OWN, filesystem: { allowWrite: [OWN], allowRead: [], denyRead: [], denyWrite: [] } });
+      expect(filesystem.readwritePaths).toEqual([OWN]);
+      expect(h.issuedHome).toHaveBeenCalledWith(OWN, OWN);
+    });
+
+    it("refuses its own HOME by name once it is no longer the directory issued", async () => {
+      h.issuedHome.mockReturnValueOnce(false);
+      await expect(launchWith({ cwd: OWN, sandboxHome: OWN, filesystem: { allowWrite: [OWN], allowRead: [], denyRead: [], denyWrite: [] } }))
+        .rejects.toThrow(/working directory is inside the sandbox runtime root/u);
+    });
+
+    it.each([...CLOSED, `${OWN}\\work`])("refuses a working directory inside it: %s", async (cwd) => {
       const lifecycle = createContainedShellLifecycle();
       try {
         await expect(prepareMxcShellLaunch({ ...INPUT, cwd, sandboxHome: OWN,

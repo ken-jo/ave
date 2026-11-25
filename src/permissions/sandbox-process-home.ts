@@ -14,7 +14,7 @@ import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
 import { appOwnedSandboxHomeRoot, ensureSandboxPrivateRoot } from "./asrt-sandbox.js";
 import { mxcSandboxHomesParent } from "./mxc-runtime-root.js";
-import { liveSandboxProcessHomes } from "./sandbox-home-registry.js";
+import { forgetIssuedContainerHome, liveSandboxProcessHomes, recordIssuedContainerHome } from "./sandbox-home-registry.js";
 import { drainAgentObservationHome, registerAgentObservationHome } from "../tools/agent-observation-context.js";
 import { readWindowsProcessRunStates, type ProcessRunStateProbe } from "./windows-process-start-time.js";
 
@@ -256,6 +256,7 @@ export function createSandboxProcessHome(
     env = Object.freeze(sandboxProcessProfileEnvironment(homePath, platform));
     createProfileDirectories(env);
     mkdirSync(join(homePath, "document-observation"), { mode: 0o700 });
+    if (platform === "win32") recordIssuedContainerHome(homePath);
     registerAgentObservationHome(homePath);
   } catch (err) {
     if (
@@ -281,6 +282,7 @@ export function createSandboxProcessHome(
       removeHome(homePath, { recursive: true, force: true });
       cleaned = true;
       liveHomes.delete(homePath);
+      forgetIssuedContainerHome(homePath);
       failedAttempts = 0;
       // After the HOME, so a crash between the two leaves an orphan marker the sweep drops, never an unmarked HOME.
       if (platform === "win32") {
