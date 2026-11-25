@@ -124,6 +124,12 @@ export function useApproval(): ApprovalQueueApi {
     }
     const unsub = window.ave.approval.onRequest((req) => {
       if (!aliveRef.current) return;
+      // The host sends an extension-start card again, under the same id, when another surface answers one of its rows. It replaces
+      // the card this window holds; it is not a new card, and it shows nothing in a window that does not hold that card.
+      if (req.extensionStartAnswered !== undefined) {
+        setQueue((q) => (q.some((held) => held.id === req.id) ? q.map((held) => (held.id === req.id ? req : held)) : q));
+        return;
+      }
       setQueue((q) => approvalQueueReducer(q, { type: "push", req }));
       // A live request is a new card waiting for the user. Parked requests read below predate this renderer and stay silent.
       getAccessibilitySignalEngine().signal("approvalNeeded", `approval:${req.id}`);

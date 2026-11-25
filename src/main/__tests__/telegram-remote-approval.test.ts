@@ -349,6 +349,23 @@ describe("extension starts on the remote surface", () => {
       [`Ave: tool ${START_TOOL} approved for this run`, `Ave: tool ${START_TOOL} approved for this run`, `Ave: tool ${START_TOOL} denied`]);
   });
 
+  it("says on the last remote card how many starts are waiting on the desktop only, when not every start got a remote card", async () => {
+    const harness = remoteApprovalHarness();
+    const keys = Array.from({ length: 10 }, (_, index) => `plugin-child:p${index}`);
+    const { spawned, settling } = waitingStarts(harness, keys);
+    const cards = await remoteCards(harness.client, 8);
+    expect(cards.slice(0, 7).map((card) => card.text)).toEqual([1, 2, 3, 4, 5, 6, 7].map((n) => `Ave: tool ${START_TOOL} is waiting for approval (${n} of 10). This decides this run only.`));
+    expect(cards[7]?.text).toBe(`Ave: tool ${START_TOOL} is waiting for approval (8 of 10). 2 more can only be answered on the desktop. This decides this run only.`);
+    // The remote answers decide the eight starts they were shown; the card stays open for the other two.
+    for (const card of cards) await harness.coordinator.handleCallbackQuery(press(card.approve));
+    expect(spawned).toEqual([]);
+    expect(harness.gate.pendingCount).toBe(1);
+    const request = harness.dock.sent.at(-1);
+    harness.gate.resolveFromDesktopRenderer(request?.id ?? "", { requestId: request?.id ?? "", choice: "deny-once", nonce: request?.nonce as string, hmac: request?.hmac as string }, harness.dock.webContents as never);
+    await settling;
+    expect(spawned).toEqual(keys.slice(0, 8));
+  });
+
   it("still lets one press answer a card that lists one start", async () => {
     const harness = remoteApprovalHarness();
     const { spawned, settling } = waitingStarts(harness, ["plugin-child:notes"]);

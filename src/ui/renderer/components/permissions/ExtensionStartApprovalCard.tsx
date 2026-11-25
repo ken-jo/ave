@@ -30,13 +30,16 @@ export function ExtensionStartApprovalCard({ request, conversationLabel, interac
 }) {
   const { t } = useTranslation();
   const rows = extensionStartApprovalRows(request.args);
-  const answered = useRef(false);
+  const sent = useRef(false);
   const [submitted, setSubmitted] = useState(false);
-  const [choices, setChoices] = useState<Readonly<Record<string, ExtensionStartChoice>>>({});
+  const [picked, setPicked] = useState<Readonly<Record<string, ExtensionStartChoice>>>({});
+  // A row another surface answered first keeps that answer: it is shown as answered, offers no choice, and overrides a pick made here.
+  const answered = request.extensionStartAnswered ?? {};
+  const choices: Readonly<Record<string, ExtensionStartChoice>> = { ...picked, ...answered };
   const locked = interactionLocked || submitted;
   const send = (choice: ApprovalChoice, extras?: ApprovalDecisionExtras) => {
-    if (answered.current || interactionLocked) return;
-    answered.current = true;
+    if (sent.current || interactionLocked) return;
+    sent.current = true;
     setSubmitted(true);
     if (extras === undefined) onDecide(choice);
     else onDecide(choice, undefined, extras);
@@ -73,22 +76,29 @@ export function ExtensionStartApprovalCard({ request, conversationLabel, interac
                 const label = revealHiddenCharacters(row.label, { lineBreaks: true });
                 return (
                   <li key={row.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-md border border-border p-2"
-                    data-testid="extension-start-row" data-extension-start-kind={row.kind} data-extension-start-choice={choices[row.id] ?? "none"}>
+                    data-testid="extension-start-row" data-extension-start-kind={row.kind} data-extension-start-choice={choices[row.id] ?? "none"}
+                    data-extension-start-answered={Object.hasOwn(answered, row.id) ? "remote" : "none"}>
                     <div className="min-w-0 space-y-0.5">
                       <p className="min-w-0 break-all font-mono text-xs font-semibold" data-testid="extension-start-label">{label}</p>
                       <p className="min-w-0 break-words text-xs text-muted-foreground">{t(KIND_KEYS[row.kind])} · {t(CAUSE_KEYS[row.cause])}</p>
                     </div>
+                    {Object.hasOwn(answered, row.id) ? (
+                      <p className="shrink-0 text-xs font-medium text-muted-foreground" data-testid="extension-start-answered">
+                        {t(answered[row.id] === "yes" ? "extensionStartCard.answeredAllowed" : "extensionStartCard.answeredDenied")} · {t("extensionStartCard.answeredRemotely")}
+                      </p>
+                    ) : (
                     <fieldset className="m-0 flex min-w-0 shrink-0 gap-2 border-0 p-0">
                       <legend className="sr-only">{label}</legend>
                       <Button size="sm" variant={choices[row.id] === "yes" ? "default" : "outline"} aria-pressed={choices[row.id] === "yes"} disabled={locked}
-                        data-testid="extension-start-allow" onClick={() => setChoices((current) => ({ ...current, [row.id]: "yes" }))}>
+                        data-testid="extension-start-allow" onClick={() => setPicked((current) => ({ ...current, [row.id]: "yes" }))}>
                         {t("extensionStartCard.allow")}
                       </Button>
                       <Button size="sm" variant={choices[row.id] === "no" ? "default" : "outline"} aria-pressed={choices[row.id] === "no"} disabled={locked}
-                        data-testid="extension-start-deny" onClick={() => setChoices((current) => ({ ...current, [row.id]: "no" }))}>
+                        data-testid="extension-start-deny" onClick={() => setPicked((current) => ({ ...current, [row.id]: "no" }))}>
                         {t("extensionStartCard.deny")}
                       </Button>
                     </fieldset>
+                    )}
                   </li>
                 );
               })}

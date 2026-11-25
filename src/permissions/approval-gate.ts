@@ -228,6 +228,8 @@ export interface ApprovalRequest {
   };
   // Present iff `kind === "egress-host"`.
   egressHost?: EgressHostApproval;
+  // Display-only, on an `extension-start` card: the rows another surface already answered, by row id. The host keeps those answers whatever this card sends for them; the card shows them answered and locked. The card is sent again, under the same id, each time a row is answered.
+  extensionStartAnswered?: Readonly<Record<string, ExtensionStartChoice>>;
   // Permission policy.5 — trust origin classification (user-keyboard / plugin-emitted / app-emitted / llm-tool-arg / file-content). Audited; renderer may surface badge.
   trustOrigin?: string;
   // OS-level execution sandbox SOT, surfaced to the approval dock so the user can see whether the tool will run under the ASRT OS sandbox (macOS Seatbelt / Linux bwrap) or with no isolation. Captured at request build time by the executor (and by ApprovalGate for non-tool approvals) from detectSandboxCapability; immutable thereafter. Typed as the canonical SandboxCapability (not a structural mirror) to keep the `platform: NodeJS.Platform` enum tight. Mirror declarations in the renderer type SHOULD use the same shape.
@@ -1795,6 +1797,19 @@ export class ApprovalGate {
     return false;
   }
 
+  // Send the desk its extension-start card again with the rows another surface answered. Same id, same signed contents: the
+  // window that holds the card replaces it in place. A window that loads later gets this copy too (`listPendingRendererRequests`).
+  private showExtensionStartRowsAnswered(entry: PendingEntry, answered: ReadonlyMap<string, ExtensionStartChoice>): void {
+    if (entry.rendererRequest === undefined) return;
+    entry.rendererRequest = { ...entry.rendererRequest, extensionStartAnswered: Object.fromEntries(answered) };
+    try {
+      const surface = this.liveSurfaceFor(entry.sessionId);
+      if (surface && !surface.isDestroyed()) surface.send(IPC_APPROVAL_REQUEST, entry.rendererRequest);
+    } catch {
+      // The window went away: the host still holds the answers, and the next window is handed the card with them.
+    }
+  }
+
   private resolveDecision(
     requestId: string,
     decision: ApprovalDecision,
@@ -1947,8 +1962,11 @@ export class ApprovalGate {
         type: "approval",
         output: `[approval:extension-start-row] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} row=${offered.indexOf(row) + 1}/${offered.length} choice=${decision.choice}`,
       });
-      // Still waiting on other rows: this row is answered, the card is not.
-      if (answered.size < offered.length) return { requestId, choice: decision.choice };
+      // Still waiting on other rows: this row is answered, the card is not. The desk card is sent again so it shows the row answered.
+      if (answered.size < offered.length) {
+        this.showExtensionStartRowsAnswered(entry, answered);
+        return { requestId, choice: decision.choice };
+      }
       // Every row has its answer: the card settles with them, through the same checks as an answer for the whole card.
       entry.extensionStartRowAnswers = undefined;
       const choices = Object.fromEntries(answered);

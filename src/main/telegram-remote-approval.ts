@@ -29,6 +29,9 @@ const CARD_TEXT = Object.freeze({
   // One of several starts waiting on the same desk card, numbered in that card's order.
   promptRow: (tool: string, position: number, total: number) =>
     `Ave: tool ${tool} is waiting for approval (${position} of ${total}). This decides this run only.`,
+  // The last remote card when the card bound left some starts without one: those are on the desk card only.
+  promptRowLast: (tool: string, position: number, total: number, deskOnly: number) =>
+    `Ave: tool ${tool} is waiting for approval (${position} of ${total}). ${deskOnly} more can only be answered on the desktop. This decides this run only.`,
   approved: (tool: string) => `Ave: tool ${tool} approved for this run`,
   denied: (tool: string) => `Ave: tool ${tool} denied`,
   expired: (tool: string) => `Ave: the approval for tool ${tool} is no longer active`,
@@ -202,12 +205,11 @@ export function createTelegramRemoteApprovalCoordinator(
       if (chatId === null) return;
       if (cardsByRequest.has(view.requestId)) return;
       const rows: readonly (string | undefined)[] = offer.rows ?? [undefined];
-      for (const [index, row] of rows.entries()) {
-        if (activeCardCount() >= MAX_ACTIVE_CARDS) {
-          // A start with no remote card is still on the desk card; the remote answers decide only the starts they were shown.
-          log?.("[telegram-remote-approval] card skipped: active card bound reached");
-          return;
-        }
+      // A start the bound leaves without a remote card is still on the desk card; the remote answers decide only the starts they
+      // were shown, and the last card says how many were not.
+      const shown = Math.min(rows.length, Math.max(0, MAX_ACTIVE_CARDS - activeCardCount()));
+      if (shown < rows.length) log?.("[telegram-remote-approval] card skipped: active card bound reached");
+      for (const [index, row] of rows.slice(0, shown).entries()) {
         const card: RemoteApprovalCard = {
           requestId: view.requestId,
           ...(row === undefined ? {} : { row }),
@@ -229,7 +231,9 @@ export function createTelegramRemoteApprovalCoordinator(
         ];
         const prompt = row === undefined || rows.length === 1
           ? CARD_TEXT.prompt(card.toolIdentifier)
-          : CARD_TEXT.promptRow(card.toolIdentifier, index + 1, rows.length);
+          : shown < rows.length && index === shown - 1
+            ? CARD_TEXT.promptRowLast(card.toolIdentifier, index + 1, rows.length, rows.length - shown)
+            : CARD_TEXT.promptRow(card.toolIdentifier, index + 1, rows.length);
         void client
           .sendDecisionCard(card.chatId, prompt, buttons)
           .then((result) => {

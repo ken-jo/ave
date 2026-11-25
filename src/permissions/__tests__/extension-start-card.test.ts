@@ -151,6 +151,32 @@ describe("the shared extension-start card", () => {
     expect(audit().filter((line) => line.startsWith(`[approval:extension-start-row-rejected] ${card.id}`))).toHaveLength(3);
   });
 
+  it("shows the desk card each row another surface answered, and the desk answer for the rest settles the card exactly once", async () => {
+    const { wc, gate, spawned, notify } = waitingStarts();
+    const settling = settlePendingExtensionStarts(SESSION);
+    const card = await cardSent(wc);
+    const [first, second, third] = rowsOf(card).map((row) => row.id);
+    gate.resolve(card.id, { requestId: card.id, choice: "deny-once", extensionStartRow: first ?? "", nonce: card.nonce, hmac: card.hmac }, "platform-bridge");
+    // The same card again, to the window that holds it, now naming the answered row. Its signed contents are unchanged.
+    const updated = await cardSent(wc, 2);
+    expect(updated).toMatchObject({ id: card.id, nonce: card.nonce, hmac: card.hmac, args: card.args, extensionStartAnswered: { [first ?? ""]: "no" } });
+    gate.resolve(card.id, { requestId: card.id, choice: "allow-once", extensionStartRow: second ?? "", nonce: card.nonce, hmac: card.hmac }, "platform-bridge");
+    expect(await cardSent(wc, 3)).toMatchObject({ id: card.id, extensionStartAnswered: { [first ?? ""]: "no", [second ?? ""]: "yes" } });
+    // A window that loads now is handed the card with the answered rows on it.
+    expect(gate.listPendingRendererRequests(wc as never)).toMatchObject([{ id: card.id, extensionStartAnswered: { [first ?? ""]: "no", [second ?? ""]: "yes" } }]);
+    // The desk confirms: it echoes the answered rows and decides the one that is left.
+    const desk = { requestId: card.id, choice: "allow-once" as const, extensionStartChoices: { [first ?? ""]: "no", [second ?? ""]: "yes", [third ?? ""]: "yes" } as const, nonce: card.nonce, hmac: card.hmac };
+    expect(gate.resolveFromDesktopRenderer(card.id, desk, wc as never)).toMatchObject({ choice: "allow-once", extensionStartChoices: desk.extensionStartChoices });
+    // The same answer again, and a late row answer, find nothing to settle.
+    expect(gate.resolveFromDesktopRenderer(card.id, desk, wc as never)).toBeNull();
+    expect(gate.resolve(card.id, { requestId: card.id, choice: "allow-once", extensionStartRow: third ?? "", nonce: card.nonce, hmac: card.hmac }, "platform-bridge")).toBeNull();
+    await settling;
+    expect(spawned).toEqual(["mcp-stdio:b", "plugin-child:c"]);
+    expect(notify).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ key: "plugin-child:a" }), "declined");
+    for (const key of KEYS) expect(takeExtensionStartGrant(key)).toBeUndefined();
+    expect(sentApprovalCards(wc)).toHaveLength(3);
+  });
+
   it("refuses a row answer whose signature is not the card's, and settles nothing with it", async () => {
     const { wc, gate, spawned } = waitingStarts();
     const settling = settlePendingExtensionStarts(SESSION);

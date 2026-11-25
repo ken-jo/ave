@@ -8,6 +8,7 @@ import { t } from "../../../../i18n/runtime.js";
 import { en } from "../../../../i18n/messages/en.js";
 import { ko } from "../../../../i18n/messages/ko.js";
 import { useApproval } from "../../hooks/use-approval.js";
+import { ToolApprovalContent } from "../ToolApprovalContent.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -101,6 +102,56 @@ describe("the shared extension-start approval card", () => {
     hook.unmount();
   });
 
+  it("shows a row another surface already answered as answered and locked, and confirms only the rest", () => {
+    const decide = vi.fn();
+    const shown = renderApproval(request(ROWS, { extensionStartAnswered: { "row-1": "yes", "row-2": "no" } }), decide);
+    expect(rows().map((item) => item.dataset.extensionStartChoice)).toEqual(["yes", "no", "none"]);
+    expect(rows().map((item) => item.dataset.extensionStartAnswered)).toEqual(["remote", "remote", "none"]);
+    expect(within(row(0)).getByTestId("extension-start-answered")).toHaveTextContent(`${t("extensionStartCard.answeredAllowed")} · ${t("extensionStartCard.answeredRemotely")}`);
+    expect(within(row(1)).getByTestId("extension-start-answered")).toHaveTextContent(`${t("extensionStartCard.answeredDenied")} · ${t("extensionStartCard.answeredRemotely")}`);
+    // An answered row offers no choice: its first answer stands.
+    for (const index of [0, 1]) {
+      expect(within(row(index)).queryByTestId("extension-start-allow")).toBeNull();
+      expect(within(row(index)).queryByTestId("extension-start-deny")).toBeNull();
+    }
+    const confirm = screen.getByTestId("extension-start-confirm");
+    expect(confirm).toBeDisabled();
+    choose(2, "deny");
+    fireEvent.click(confirm);
+    // The answered rows go back as they were answered; the pick decides the row that was left.
+    expect(decide).toHaveBeenCalledExactlyOnceWith("allow-once", undefined, { extensionStartChoices: { "row-1": "yes", "row-2": "no", "row-3": "no" } });
+    shown.unmount();
+  });
+
+  it("drops a pick for a row that another surface answers while the card is open", () => {
+    const decide = vi.fn();
+    const shown = renderApproval(request(), decide);
+    choose(0, "allow");
+    choose(1, "allow");
+    choose(2, "allow");
+    shown.rerender(<ToolApprovalContent conversationLabel="conversation" open request={request(ROWS, { extensionStartAnswered: { "row-1": "no" } })} onDecide={decide} />);
+    expect(rows().map((item) => item.dataset.extensionStartChoice)).toEqual(["no", "yes", "yes"]);
+    fireEvent.click(screen.getByTestId("extension-start-confirm"));
+    expect(decide).toHaveBeenCalledExactlyOnceWith("allow-once", undefined, { extensionStartChoices: { "row-1": "no", "row-2": "yes", "row-3": "yes" } });
+    shown.unmount();
+  });
+
+  it("takes a card update for a request it holds in place, without a second card or a second alert", async () => {
+    const card = request(ROWS, { nonce: "native-nonce", hmac: "native-hmac" });
+    let deliver: (req: ApprovalRequest) => void = () => {};
+    vi.stubGlobal("ave", { approval: { onRequest: vi.fn((cb: (req: ApprovalRequest) => void) => { deliver = cb; return () => {}; }), onSettled: vi.fn(() => () => {}),
+      listPending: vi.fn(async () => [card]), respond: vi.fn(async () => ({ ok: true })) } });
+    const hook = renderHook(useApproval);
+    await waitFor(() => expect(hook.result.current.queue).toHaveLength(1));
+    act(() => deliver({ ...card, extensionStartAnswered: { "row-2": "yes" } }));
+    expect(hook.result.current.queue).toHaveLength(1);
+    expect(hook.result.current.queue[0]).toMatchObject({ id: card.id, extensionStartAnswered: { "row-2": "yes" } });
+    // An update for a card this window does not hold shows nothing.
+    act(() => deliver({ ...card, id: "another-card", extensionStartAnswered: { "row-2": "yes" } }));
+    expect(hook.result.current.queue.map((held) => held.id)).toEqual([card.id]);
+    hook.unmount();
+  });
+
   it("shows one start the same way", () => {
     const decide = vi.fn();
     renderApproval(request([ROWS[1]]), decide);
@@ -130,7 +181,7 @@ describe("the shared extension-start approval card", () => {
 
   it("has every card string in both languages", () => {
     const keys = Object.keys(en).filter((key) => key.startsWith("extensionStartCard.") || key === "extensionStart.cardBatch");
-    expect(keys).toHaveLength(15);
+    expect(keys).toHaveLength(18);
     for (const key of keys) {
       expect(ko[key as keyof typeof ko], key).toEqual(expect.any(String));
       expect(ko[key as keyof typeof ko], key).not.toBe("");
