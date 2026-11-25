@@ -152,6 +152,8 @@ A parent's owned descendant set includes pending startups before their first
 asynchronous probe. Parent release aborts those starts and waits for startup
 settlement and native termination before reporting tree cleanup. A holder
 incarnation cannot be admitted twice while its earlier lifetime remains owned.
+A contained plugin worker's parent is the incarnation of its plugin's native
+child that is live when the worker's start begins.
 
 Native admission additionally requires a single-use receipt from
 `createMxcExtensionAdmission()`. Its actual-request probe observes a separate
@@ -256,7 +258,9 @@ Hard requirements for holder adapters (rows 3–5):
   both be live: the second is refused while the first is owned. Serialize such
   holders, or give each a disjoint root.
 - HOME/temp go in `<AVE_HOME>\mxc-staging\<opaque-id>`, inside the holder's
-  captured write roots.
+  captured write roots. When a holder's grant sits above the Ave home, the Ave
+  home is denied and a staging HOME/temp beneath it is refused: the start fails
+  closed, and resolving that is an owner decision.
 - Executables come from installation or generation roots, never from a workspace
   or any holder-writable root.
 
