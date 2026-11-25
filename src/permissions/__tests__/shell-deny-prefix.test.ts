@@ -124,6 +124,21 @@ describe.each([
     it("refuses at the input limit with a typographic quote after a completed statement", async () => {
       expect((await evaluate())(`${first}; date ‘${"x".repeat(8000)}`)).toMatchObject(pastLimit);
     });
+  } else {
+    it.each([
+      { construct: "quoted text", statement: (tail: string) => 'echo "a\\"; printf hidden"' + tail },
+      { construct: "parameter expansion", statement: (tail: string) => 'echo "${value:-a\\}; printf hidden}"' + tail },
+      { construct: "quoted heredoc", statement: (tail: string) => `{ cat <<'END'\n; printf hidden\nEND\necho${tail}\n}` },
+      { construct: "command substitution", statement: (tail: string) => 'echo "$(echo a\\); printf hidden)"' + tail },
+    ])("uses only complete statements around $construct", async ({ statement }) => {
+      const check = await evaluate();
+      const tokenLimited = statement(" x".repeat(450));
+      const inputLimited = statement(` ${"x".repeat(8000)}`);
+      expect(check(tokenLimited)).toMatchObject(pastLimit);
+      expect(check(inputLimited)).toMatchObject(limitCard);
+      expect(check(`${first}; ${tokenLimited}`)).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
+      expect(check(`${first}; ${inputLimited}`)).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
+    });
   }
 
   it("preserves the merge-base refusal when the first statement exhausts the token budget", async () => {
