@@ -459,17 +459,24 @@ describe("mandatory sandbox control-file writes", () => {
   // (macos-sandbox-wrap.ts). The Windows floor is not changed here.
   it("denies agent, cloud and project command names in write roots on Linux, and leaves the macOS policy without rows for them", () => {
     const roots = [join(root, "project"), join(root, "temp")];
-    const names = [".codex", ".agents", ".aws", ".ave/commands", ".ave/hooks"];
+    const names = [
+      ".codex/config.toml", ".codex/hooks.json", ".codex/hooks", ".codex/rules", ".codex/prompts", ".codex/AGENTS.md", ".codex/AGENTS.override.md",
+      ".agents/skills", ".agents/commands", ".agents/hooks", ".agents/plugins", ".aws", ".ave/commands", ".ave/hooks",
+    ];
     const rowsNaming = (denies: ReturnType<typeof nativeDenyRows>, name: string) => (denies ?? [])
-      .map(entry => typeof entry === "string" ? entry : entry.path).filter(path => path.toLowerCase().includes(name.replace(/[a-z]/gu, letter => `[${letter}`)) || path.endsWith(`/${name}`));
+      .map(entry => typeof entry === "string" ? entry : entry.path).filter(path => path.endsWith(`/${name}`));
+    const holding = (denies: ReturnType<typeof nativeDenyRows>, text: string) => (denies ?? [])
+      .map(entry => typeof entry === "string" ? entry : entry.path).filter(path => path.includes(text));
     withPlatform("darwin", () => {
       const denies = nativeDenyRows(buildMandatorySandboxWritePolicy(roots).denyWrite);
       for (const name of names) expect(rowsNaming(denies, name)).toEqual([]);
-      expect((denies ?? []).filter(entry => (typeof entry === "string" ? entry : entry.path).includes("srt-sock"))).toEqual([]);
+      for (const text of ["srt-sock", "[cC][oO][dD][eE][xX]", ".codex", ".agents", ".aws", ".ave/"]) expect(holding(denies, text)).toEqual([]);
     });
     withPlatform("linux", () => {
       const denies = nativeDenyRows(buildMandatorySandboxWritePolicy(roots).denyWrite);
       for (const name of names) expect(rowsNaming(denies, name)).toEqual(roots.map(base => join(base, name)));
+      // The directories that carry the parts are not rows themselves.
+      for (const base of roots) for (const carrier of [".codex", ".agents", ".ave"]) expect(denies).not.toContain(join(base, carrier));
     });
   });
 

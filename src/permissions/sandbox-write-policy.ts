@@ -30,12 +30,19 @@ const SANDBOX_PROTECTED_ROOT_ENTRIES = [...new Set([
   ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry)), ...SANDBOX_LOADER_ENTRIES,
 ])];
 
-// Config that another agent or cloud tool loads from a project: Codex's own protected names, and an `.aws/config` whose
-// `credential_process` runs on the host. A confined command must not plant or edit them in a write root. Linux carries one row per
-// root. macOS carries none here: a row per root costs the root's length for every name, which the longest supported darwin layout
-// cannot fit in MAX_POSIX_WRITE_DENY_POLICY_BYTES, so its wrap appends one name rule to the profile instead (macos-sandbox-wrap.ts).
+// Config and executable input that another agent or cloud tool loads from a write root, directly beneath it (the same depth as the
+// rest of this floor, and as Codex's own protected names). `.codex` and `.agents` are named by part, the way `.claude` is above: at a
+// write root that is a home folder, `.codex` is Codex's own home, where it also writes its logs, history, memories and credential
+// cache, and `$HOME/.agents/skills` sits beside whatever else a tool keeps there. `.aws` holds credentials and a `config` whose
+// `credential_process` runs on the host, so it is denied whole. Linux carries one row per root for each entry. macOS carries none
+// here: a row per root costs the root's length for every entry, which the longest supported darwin layout cannot fit in
+// MAX_POSIX_WRITE_DENY_POLICY_BYTES, so its wrap appends one rule anchored at the write roots instead (macos-sandbox-wrap.ts).
 // The Windows floor is stamped and watched per row and is not changed here.
-const SANDBOX_FOREIGN_CONFIG_ENTRIES = [".codex", ".agents", ".aws"] as const;
+const SANDBOX_FOREIGN_CONFIG_ENTRIES = [
+  ".codex/config.toml", ".codex/hooks.json", ".codex/hooks", ".codex/rules", ".codex/prompts", ".codex/AGENTS.md", ".codex/AGENTS.override.md",
+  ".agents/skills", ".agents/commands", ".agents/hooks", ".agents/plugins",
+  ".aws",
+] as const;
 // What Ave itself loads from a project's `.ave` (custom-commands.ts, hook-source-controller.ts): the file tools ask before touching
 // any `.ave`, and a confined command must not edit them without that card. The two children are named, not `.ave` itself: under a
 // write root that holds the Ave home, `<root>/.ave` is the home, and a deny there would take the command's own HOME and temp with it.

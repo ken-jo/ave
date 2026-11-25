@@ -11,28 +11,40 @@ export function assertMacSandboxWrapperSize(argv: readonly string[]): void {
 }
 
 const GIT_MARKER_FILTER = '(regex #"/\\.[gG][iI][tT]$")';
-// A project's `.ave` holds the commands and hooks Ave loads, and their write denies below are path patterns. The
-// directory that carries those paths must stay where it is: moved away, its contents could be edited under another name and moved
-// back, and a prepared directory could be renamed into an absent `.ave`.
-const AVE_PROJECT_MARKER_FILTER = '(regex #"/\\.[aA][vV][eE]$")';
-// Names a confined command must not write wherever they appear, each with everything beneath it: the config another agent or cloud
-// tool loads from a project and the commands and hooks Ave loads from a project's `.ave` (SANDBOX_NAMED_ENTRIES), and the sandbox
-// runtime's `srt-sock-*` directory, which holds the backend sockets of every egress proxy of a host process under the host temp
-// directory (ensurePrivateSocketDir in its sandbox manager). Linux masks that directory in every wrap; Seatbelt has no mask. One
-// rule here instead of rows in the write policy: a row per write root costs the root's length for every name, and these names cost
-// the policy budget nothing this way. Create and unlink are named beside the wildcard because the runtime re-allows those two
-// operations for every write root by name, and a rule that names an operation outranks a wildcard rule whatever their order.
-function nameExpression(name: string): string {
-  return name.replace(/[.]/gu, "\\.").replace(/[a-z]/gu, letter => `[${letter}${letter.toUpperCase()}]`);
-}
-const NAMED_ENTRY_FILTER = `(regex #"/(${[...SANDBOX_NAMED_ENTRIES.map(nameExpression), "srt-sock-[^/]*"].join("|")})(/|$)")`;
+// The sandbox runtime's `srt-sock-*` directory holds the backend sockets of every egress proxy of a host process, under the host temp
+// directory (ensurePrivateSocketDir in its sandbox manager), which is a shell write root. Linux masks the directory in every wrap;
+// Seatbelt has no mask, so the name is write-denied wherever it appears. Create and unlink are named beside the wildcard here and
+// below because the runtime re-allows those two operations for every write root by name, and a rule that names an operation
+// outranks a wildcard rule whatever their order.
+const EGRESS_SOCKET_DIRECTORY_FILTER = '(regex #"/srt-sock-[^/]*(/|$)")';
 const GIT_METADATA_RULES = [
   // Match the entry itself: an existing directory's children remain writable.
   `(deny file-write-create file-write-unlink ${GIT_MARKER_FILTER})`,
   `(deny file-write* (require-all ${GIT_MARKER_FILTER} (vnode-type REGULAR-FILE)))`,
-  `(deny file-write-create file-write-unlink ${AVE_PROJECT_MARKER_FILTER})`,
-  `(deny file-write* file-write-create file-write-unlink ${NAMED_ENTRY_FILTER})`,
+  `(deny file-write* file-write-create file-write-unlink ${EGRESS_SOCKET_DIRECTORY_FILTER})`,
 ].join("\n");
+
+function nameExpression(name: string): string {
+  return name.replace(/[.]/gu, "\\.").replace(/[a-z]/giu, letter => `[${letter.toLowerCase()}${letter.toUpperCase()}]`);
+}
+
+// The named entries (SANDBOX_NAMED_ENTRIES: config and executable input another agent, a cloud tool or Ave loads) directly beneath each
+// write root, with everything beneath them. Rules in the profile instead of rows in the write policy: a row per root costs the
+// root's length for every entry, and the roots are spelled once here. The entries are path patterns, so the directory that carries
+// them is pinned too: an entry named `.codex`, `.agents` or `.ave` directly beneath a root cannot be created, removed or renamed.
+// Moved away, its contents could be edited under another name and moved back, and a prepared directory could be renamed into an
+// absent one. Existing directories keep their other children writable. Roots are given in their resolved spelling, which is what
+// Seatbelt matches.
+export function macWriteRootNameRules(writeRoots: readonly string[]): string {
+  const roots = [...new Set(writeRoots.map(root => root.replace(/\/+$/u, "")))].filter(root => root !== "");
+  if (roots.length === 0) return "";
+  const anchor = `^(${roots.map(root => root.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|")})/`;
+  const carriers = [...new Set(SANDBOX_NAMED_ENTRIES.filter(entry => entry.includes("/")).map(entry => entry.slice(0, entry.indexOf("/"))))];
+  return [
+    `(deny file-write* file-write-create file-write-unlink (regex ${JSON.stringify(`${anchor}(${SANDBOX_NAMED_ENTRIES.map(nameExpression).join("|")})(/|$)`)}))`,
+    `(deny file-write-create file-write-unlink (regex ${JSON.stringify(`${anchor}(${carriers.map(nameExpression).join("|")})$`)}))`,
+  ].join("\n");
+}
 
 // The default macOS volume folds case and normalization, so two spellings that differ only there name one directory. On a volume that
 // does not fold, reading them as one can only add a deny.
@@ -54,7 +66,7 @@ export function macAppOwnedDirectoryWriteRules(directories: readonly string[], w
     if (!writeRoots.some(root => isAtOrUnder(root, directory) && !isAtOrUnder(directory, root))) continue;
     const own = [...new Set(writeRoots.filter(root => isAtOrUnder(directory, root)))];
     const filter = `(subpath ${JSON.stringify(directory)})`;
-    // Create and unlink are named for the reason given at the name rule. Seatbelt compares `subpath` case-sensitively against the
+    // Create and unlink are named for the reason given at the socket rule. Seatbelt compares `subpath` case-sensitively against the
     // resolved path, so an exception spelled otherwise does not match and the wrap's own directory stays denied: callers pass each
     // root in its realpath spelling (and may add others).
     rules.add(`(deny file-write* file-write-create file-write-unlink ${own.length === 0 ? filter

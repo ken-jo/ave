@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
-import { hardenMacSandboxGitMetadata, macAppOwnedDirectoryWriteRules } from "../macos-sandbox-wrap.js";
+import { hardenMacSandboxGitMetadata, macAppOwnedDirectoryWriteRules, macWriteRootNameRules } from "../macos-sandbox-wrap.js";
 import { parseSandboxWrappedWords, quoteSandboxWrappedWord } from "../sandbox-wrapped-command.js";
 import { t } from "../../i18n/index.js";
 
@@ -49,10 +49,10 @@ describe("typed repository marker rules", () => {
     ]);
     expect(hardenedWords.slice(5).map(word => word.value)).toEqual(originalWords.slice(5).map(word => word.value));
     expect(hardenedWords[4]?.value).toContain('(deny file-write-create file-write-unlink (regex #"/\\.[gG][iI][tT]$"))');
-    expect(hardenedWords[4]?.value).toContain('(deny file-write-create file-write-unlink (regex #"/\\.[aA][vV][eE]$"))');
-    expect(hardenedWords[4]?.value).toContain('(deny file-write* file-write-create file-write-unlink (regex #"/('
-      + "\\.[cC][oO][dD][eE][xX]|\\.[aA][gG][eE][nN][tT][sS]|\\.[aA][wW][sS]|\\.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]|\\.[aA][vV][eE]/[hH][oO][oO][kK][sS]"
-      + '|srt-sock-[^/]*)(/|$)"))');
+    expect(hardenedWords[4]?.value).toContain('(deny file-write* file-write-create file-write-unlink (regex #"/srt-sock-[^/]*(/|$)"))');
+    // Nothing names a project entry without the wrap's write roots.
+    expect(hardenedWords[4]?.value).not.toContain("[cC][oO][dD][eE][xX]");
+    expect(hardenedWords[4]?.value).not.toContain("[aA][vV][eE]");
     expect(hardenedWords[4]?.value).toContain("(vnode-type REGULAR-FILE)");
     expect(hardenedWords[4]?.value.startsWith(originalWords[4]!.value)).toBe(true);
     expect(originalWords[4]?.value).not.toContain("REGULAR-FILE");
@@ -77,6 +77,34 @@ describe("typed repository marker rules", () => {
     expect(Buffer.byteLength(small.argv[2] ?? "")).toBeLessThan(196_608);
     expect(() => hardenMacSandboxGitMetadata(wrap(`(version 1)\n;${"x".repeat(196_608)}`)))
       .toThrow(t("sandboxPolicy.tooLarge"));
+  });
+});
+
+describe("named entry rules", () => {
+  it("adds nothing without a write root", () => {
+    expect(macWriteRootNameRules([])).toBe("");
+  });
+
+  it("anchors the entries and their carrying directories directly beneath each root", () => {
+    const [entries = "", carriers = "", ...rest] = macWriteRootNameRules(["/Users/example/project/", "/tmp/a.b[1]", "/Users/example/project"]).split("\n");
+    expect(rest).toEqual([]);
+    const pattern = (rule: string) => new RegExp(JSON.parse(rule.slice(rule.indexOf("(regex ") + 7, -2)) as string, "u");
+    expect(entries.startsWith("(deny file-write* file-write-create file-write-unlink (regex ")).toBe(true);
+    expect(carriers.startsWith("(deny file-write-create file-write-unlink (regex ")).toBe(true);
+    for (const denied of [
+      "/Users/example/project/.codex/config.toml", "/Users/example/project/.CODEX/Hooks/run.sh", "/Users/example/project/.codex/AGENTS.override.md",
+      "/Users/example/project/.agents/skills/x/SKILL.md", "/Users/example/project/.aws", "/Users/example/project/.aws/credentials",
+      "/Users/example/project/.ave/commands/x.md", "/tmp/a.b[1]/.ave/hooks",
+    ]) expect(pattern(entries).test(denied), denied).toBe(true);
+    for (const allowed of [
+      "/Users/example/project/.codex", "/Users/example/project/.codex/sessions/x", "/Users/example/project/.codex/config.toml.bak",
+      "/Users/example/project/sub/.codex/config.toml", "/Users/example/project/.ave/notes", "/Users/example/projectx/.aws",
+      "/tmp/aXb[1]/.aws", "/Users/example/.aws",
+    ]) expect(pattern(entries).test(allowed), allowed).toBe(false);
+    for (const pinned of ["/Users/example/project/.codex", "/Users/example/project/.Agents", "/tmp/a.b[1]/.ave"]) expect(pattern(carriers).test(pinned), pinned).toBe(true);
+    for (const free of ["/Users/example/project/.codex/log", "/Users/example/project/sub/.ave", "/Users/example/project/.aws", "/Users/example/project/.avenue"]) {
+      expect(pattern(carriers).test(free), free).toBe(false);
+    }
   });
 });
 
