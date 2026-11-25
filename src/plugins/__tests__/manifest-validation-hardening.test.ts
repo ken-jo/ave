@@ -6,8 +6,8 @@ import { mkdtempSync } from "node:fs";
 import {
   pureTool,
   TestPluginRuntime as PluginRuntime,
+  stopTestPluginRuntimes,
 } from "./test-helpers.js";
-import { stopTestPluginRuntimes } from "./test-helpers.js";
 import { agentPluginsDocument, servedAgentPluginsDocument } from "./test-helpers.js";
 import { buildManifestValidator, parsePluginJson } from "../runtime/manifest-validation.js";
 

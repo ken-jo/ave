@@ -9,8 +9,8 @@ import {
   writeTestPlugin,
   writeTestPluginRegistry,
   type TestPluginRuntimeFixture,
+  stopTestPluginRuntimes,
 } from "./test-helpers.js";
-import { stopTestPluginRuntimes } from "./test-helpers.js";
 import { revocationRegistry } from "../revocation/revocation-registry.js";
 import { isReinstallFixableFailureKind } from "../../shared/plugin-install-failure.js";
 

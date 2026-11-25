@@ -18,8 +18,8 @@ import {
   makeTestTreeWritable,
   TestPluginRuntime as PluginRuntime,
   writeTestPluginRegistry,
+  stopTestPluginRuntimes,
 } from "./test-helpers.js";
-import { stopTestPluginRuntimes } from "./test-helpers.js";
 import { servedAgentPluginsDocument } from "./test-helpers.js";
 
 const ENTRY_SOURCE = `export default async function createPlugin(ctx) {

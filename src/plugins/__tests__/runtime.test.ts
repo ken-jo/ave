@@ -25,13 +25,16 @@ import { isCommittedPluginGenerationPublicationError } from "../committed-genera
 import { PluginDeploymentGuard } from "../deployment-guard.js";
 import type { PackageKey } from "../../marketplace/sources/policy.js";
 import { uninstallPluginWithLifecycle } from "../uninstall-lifecycle.js";
-import { existsSync, mkdtempSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import {
   makeTestPluginEntrySource,
   makeTestPluginRuntime as constructTestPluginRuntime,
   makeTestPluginRuntimeFixture,
   makeTestTreeWritable,
   bindTestPluginRuntimeGeneration,
+  stopTestPluginRuntimes,
+  untrackTestPluginRuntime,
+  waitForSandboxHomesRemoved,
   createTestHostApiFactory,
   writeTestPlugin,
   writeTestPluginRegistry,
@@ -49,7 +52,7 @@ import {
   __resetManagedChildProcessesForTest,
   forceKillAndDrainManagedChildProcesses,
 } from "../../main/managed-child-processes.js";
-import { SANDBOX_HOME_OWNER_SUFFIX, sandboxProcessHomesInUse } from "../../permissions/sandbox-process-home.js";
+import { sandboxProcessHomesInUse } from "../../permissions/sandbox-process-home.js";
 
 let manifestValidator: Awaited<ReturnType<typeof buildManifestValidator>>;
 const testRuntimes = new Set<PluginRuntime>();
@@ -59,14 +62,39 @@ beforeAll(async () => {
   manifestValidator = await buildManifestValidator();
 });
 
-// Stopped runtimes leave no sandbox HOME behind; retained runtimes keep theirs on purpose.
+// Sandbox HOMEs noted live before each stop, so a removed HOME's orphaned `.owner` marker is still checked.
+const notedHomes = new Set<string>();
+// HOMEs of a case that retained a runtime, or already reported; later checks skip only these.
+const skippedHomes = new Set<string>();
+// HOMEs of describe-scoped fixtures already alive when the case began; the file-level afterAll checks them.
+let caseStartHomes = new Set<string>();
+let caseRetained = false;
+
+function noteLiveSandboxHomes(): void {
+  for (const home of sandboxProcessHomesInUse()) notedHomes.add(home);
+}
+
+async function sandboxHomesLeft(skip: Iterable<string> = []): Promise<string[]> {
+  const leftHomes = await waitForSandboxHomesRemoved(notedHomes, new Set([...skippedHomes, ...skip]));
+  for (const home of notedHomes) if (leftHomes.some((path) => path.startsWith(home))) skippedHomes.add(home);
+  return leftHomes;
+}
+
+beforeEach(() => {
+  caseStartHomes = new Set(sandboxProcessHomesInUse());
+});
+
+// File level, so it runs after each describe's own teardown: a stopped case leaves no sandbox HOME; a retained runtime keeps only its own case's.
+afterEach(async () => {
+  noteLiveSandboxHomes();
+  if (caseRetained) for (const home of notedHomes) if (!caseStartHomes.has(home)) skippedHomes.add(home);
+  caseRetained = false;
+  const { unfinished } = await stopTestPluginRuntimes();
+  expect({ unfinished, leftHomes: await sandboxHomesLeft(caseStartHomes) }).toEqual({ unfinished: [], leftHomes: [] });
+});
+
 afterAll(async () => {
-  if (retainedRuntimes.size > 0) return;
-  const leftHomes = () => [...sandboxProcessHomesInUse()]
-    .flatMap((home) => [home, `${home}${SANDBOX_HOME_OWNER_SUFFIX}`].filter((path) => existsSync(path)));
-  const deadline = Date.now() + 2_000;
-  while (leftHomes().length > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
-  expect(leftHomes()).toEqual([]);
+  expect(await sandboxHomesLeft()).toEqual([]);
 });
 
 function prepareTestRuntime(runtime: PluginRuntime): PluginRuntime {
@@ -81,14 +109,17 @@ function makeTestPluginRuntime(...args: Parameters<typeof constructTestPluginRun
 }
 
 async function stopTestRuntimes(): Promise<boolean> {
+  noteLiveSandboxHomes();
   const runtimes = [...testRuntimes];
   const results = await Promise.allSettled(runtimes.map((runtime) => runtime.stopAll()));
   let stopped = true;
   for (const [index, result] of results.entries()) {
     const runtime = runtimes[index]!;
     testRuntimes.delete(runtime);
+    untrackTestPluginRuntime(runtime);
     if (result.status === "rejected" || result.value.unfinished.length > 0) {
       retainedRuntimes.add(runtime);
+      caseRetained = true;
       stopped = false;
     }
   }
@@ -169,6 +200,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
     const runtime = makeTestPluginRuntime(fixture, { deploymentGuard: guard });
     // Share the stateless child until every policy-check consumer finishes.
     testRuntimes.delete(runtime);
+    untrackTestPluginRuntime(runtime);
     sharedDisposers.unshift(async () => {
       const report = await runtime.stopAll();
       if (report.unfinished.length > 0) {
@@ -3438,6 +3470,7 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
   const fixtures: Array<() => Promise<void>> = [];
 
   afterEach(async () => {
+    noteLiveSandboxHomes();
     for (const dispose of fixtures.splice(0)) await dispose();
   });
 
@@ -3447,6 +3480,7 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
     await writeTestPluginRegistry(fixture, [{ id: ID, manifestPath: written.manifestPath }]);
     const runtime = makeTestPluginRuntime(fixture);
     testRuntimes.delete(runtime);
+    untrackTestPluginRuntime(runtime);
     const internals = runtime as unknown as {
       ensureDataDir(...args: unknown[]): string;
       buildHostApiIncarnation(...args: unknown[]): unknown;
@@ -3653,6 +3687,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
   const disposers: Array<() => Promise<void>> = [];
 
   afterEach(async () => {
+    noteLiveSandboxHomes();
     for (const dispose of disposers.splice(0)) await dispose();
   });
 
@@ -3707,6 +3742,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       },
     });
     testRuntimes.delete(runtime);
+    untrackTestPluginRuntime(runtime);
     const internals = runtime as unknown as Internals;
     // Restore real materialization so these cases exercise receipt-backed generation roots.
     delete (internals as Partial<Internals>).materializeImmutableRuntimeRoot;

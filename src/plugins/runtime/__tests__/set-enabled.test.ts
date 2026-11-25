@@ -4,8 +4,7 @@ import { chmod, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/p
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { makeTestPluginRuntime } from "../../__tests__/test-helpers.js";
-import { stopTestPluginRuntimes } from "../../__tests__/test-helpers.js";
+import { makeTestPluginRuntime, stopTestPluginRuntimes } from "../../__tests__/test-helpers.js";
 import { createNoopHostApiForTests } from "../sandbox.js";
 import type { PluginRegistryTrust } from "../../types.js";
 import { PluginBackgroundEffectApprovals, backgroundEffectSubject } from "../../plugin-background-effects.js";
@@ -138,9 +137,9 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
 
   afterEach(async () => {
     vi.useRealTimers();
+    releaseRegistryCommit();
     const stopped = await stopTestPluginRuntimes();
     vi.restoreAllMocks();
-    releaseRegistryCommit();
     await makeTreeWritable(testDir);
     await rm(testDir, { recursive: true, force: true });
     expect(stopped).toEqual({ unfinished: [], leftHomes: [] });

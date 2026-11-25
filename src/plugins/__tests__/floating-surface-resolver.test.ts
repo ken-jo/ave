@@ -7,8 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-import { pureTool, TestPluginRuntime as PluginRuntime } from "./test-helpers.js";
-import { stopTestPluginRuntimes } from "./test-helpers.js";
+import { pureTool, TestPluginRuntime as PluginRuntime, stopTestPluginRuntimes } from "./test-helpers.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { servedAgentPluginsDocument } from "./test-helpers.js";
 import { getLocale, setLocale } from "../../i18n/runtime.js";

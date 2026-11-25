@@ -6,8 +6,8 @@ import {
   writeTestPlugin,
   writeTestPluginRegistry,
   type TestPluginRuntimeFixture,
+  stopTestPluginRuntimes,
 } from "./test-helpers.js";
-import { stopTestPluginRuntimes } from "./test-helpers.js";
 
 describe("PluginRuntime config overrides", () => {
   let fixture: TestPluginRuntimeFixture;

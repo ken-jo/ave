@@ -11,8 +11,8 @@ import {
   writeTestPlugin,
   writeTestPluginRegistry,
   type TestPluginRuntimeFixture,
+  stopTestPluginRuntimes,
 } from "./test-helpers.js";
-import { stopTestPluginRuntimes } from "./test-helpers.js";
 
 // Directory junctions exercise Windows reparse traversal without symlink privileges.
 const dirLinkType = process.platform === "win32" ? "junction" : "dir";

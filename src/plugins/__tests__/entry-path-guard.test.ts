@@ -10,8 +10,8 @@ import {
   writeTestPlugin,
   writeTestPluginRegistry,
   type TestPluginRuntimeFixture,
+  stopTestPluginRuntimes,
 } from "./test-helpers.js";
-import { stopTestPluginRuntimes } from "./test-helpers.js";
 
 describe("PluginRuntime — entry path allowlist", () => {
   let fixture: TestPluginRuntimeFixture;

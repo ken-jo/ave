@@ -8,8 +8,8 @@ import {
   writeTestPlugin,
   writeTestPluginRegistry,
   type TestPluginRuntimeFixture,
+  stopTestPluginRuntimes,
 } from "./test-helpers.js";
-import { stopTestPluginRuntimes } from "./test-helpers.js";
 
 describe("PluginRuntime — Tool name policy", () => {
   let fixture: TestPluginRuntimeFixture;

@@ -3,8 +3,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as nodeFs from "node:fs";
-import { TestPluginRuntime as PluginRuntime } from "./test-helpers.js";
-import { stopTestPluginRuntimes } from "./test-helpers.js";
+import { TestPluginRuntime as PluginRuntime, stopTestPluginRuntimes } from "./test-helpers.js";
 import { mkdtempSync } from "node:fs";
 import { agentPluginsDocument } from "./test-helpers.js";
 
