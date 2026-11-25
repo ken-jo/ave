@@ -8,6 +8,8 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { cleanupAsrtSandboxAfterCommand, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
 import { openEgressInvocation } from "../egress-invocations.js";
 import { mxcRuntimeRootFloorPath } from "../mxc-runtime-root.js";
+import { prepareSandboxFixture } from "../../tools/__tests__/support/prepared-shell.js";
+import { spawnWithSandbox } from "../../tools/shell-tools.js";
 
 describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())("native typed repository markers", () => {
   let root: string;
@@ -270,6 +272,28 @@ describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())
     for (const path of Object.values(hostState)) expect(readFileSync(path, "utf8")).toBe("host");
     for (const path of planted) expect(existsSync(path)).toBe(false);
     expect(readdirSync(ownHome).sort()).toEqual(["file", "tmp"]);
+  });
+
+  // The shell tool's own path: its read policy re-opens the command's HOME, which is created under the Ave home.
+  it("leaves the bash tool's own HOME and temp fully usable under an ancestor working directory", async () => {
+    const victim = join(aveHomeDirectory, "runtime", "layout");
+    mkdirSync(join(aveHomeDirectory, "runtime"), { recursive: true });
+    writeFileSync(victim, "host");
+    const script = [
+      `printf x >> '${victim}' 2>/dev/null; echo "home-state=$?"`,
+      `printf x > "$HOME/file" && mv "$HOME/file" "$HOME/moved" && rm "$HOME/moved"; echo "own-home=$?"`,
+      `made=$(mktemp "$TMPDIR/probe.XXXXXX") && printf x > "$made" && rm "$made"; echo "own-temp=$?"`,
+      `cat <<'TEXT' > "$HOME/heredoc" && rm "$HOME/heredoc"; echo "heredoc=$?"\nline\nTEXT`,
+      `case "$HOME" in '${aveHomeDirectory}'/*) echo "home-under-ave-home=0";; *) echo "home-under-ave-home=1";; esac`,
+      `printf x > ordinary; echo "account=$?"`,
+    ].join("\n");
+    writeFileSync(join(account, "probe.sh"), script);
+    const command = "bash ./probe.sh";
+    const result = await spawnWithSandbox(command, account, [account], 30, prepareSandboxFixture(command, account));
+    expect(statuses(result.output)).toEqual({
+      "home-state": "1", "own-home": "0", "own-temp": "0", heredoc: "0", "home-under-ave-home": "0", account: "0",
+    });
+    expect(readFileSync(victim, "utf8")).toBe("host");
   });
 
   it("adds nothing for a wrap whose roots do not hold the home", async () => {

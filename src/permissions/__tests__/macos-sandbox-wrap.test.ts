@@ -102,6 +102,15 @@ describe("app-owned directory write rules", () => {
     ]);
   });
 
+  it("reads a root spelled in another case as the same folder", () => {
+    expect(macAppOwnedDirectoryWriteRules([home], ["/users/EXAMPLE"]).split("\n")[0])
+      .toBe(`(deny file-write* file-write-create file-write-unlink (subpath "${home}"))`);
+    // The home spelled in another case is the home, not an ancestor of it.
+    expect(macAppOwnedDirectoryWriteRules([home], ["/Users/example/.AVE"])).toBe("");
+    expect(macAppOwnedDirectoryWriteRules([home], ["/Users/example", "/Users/example/.AVE/Workspace"]).split("\n")[0])
+      .toBe(`(deny file-write* file-write-create file-write-unlink (require-all (subpath "${home}") (require-not (subpath "/Users/example/.AVE/Workspace"))))`);
+  });
+
   it("writes a path as one quoted literal whatever it holds", () => {
     const odd = '/Users/example/a "b"\\c/.ave';
     expect(macAppOwnedDirectoryWriteRules([odd], ["/Users/example"]).split("\n")[0])

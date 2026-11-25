@@ -1208,13 +1208,14 @@ function spelledPathEntries(entries: readonly FilesystemPathEntry[], field: stri
 }
 
 // The Ave home and the private roots, for a wrap whose write roots hold one of them. A wrap on the shared config names no roots of
-// its own and gets no rule. Linux needs none: its read mask is a mount over the directory, which takes the writes with it.
+// its own, so the session's requested roots stand in: a root the floor later withheld only adds a deny or an unused exception.
+// Linux needs none: its read mask is a mount over the directory, which takes the writes with it.
 function macAppOwnedWriteRules(applied: Partial<FilesystemConfig> | undefined): string {
-  if (applied?.allowWrite === undefined) return "";
   const spellings = (path: string): string[] => [...new Set([resolve(path), canonicalizePathForMatch(path)])];
+  const roots = applied?.allowWrite ?? _baseTrustedSettings?.allowWrite ?? [];
   return macAppOwnedDirectoryWriteRules(
     [aveHome(), ...appOwnedSandboxPrivateRoots()].flatMap(spellings),
-    applied.allowWrite.flatMap(entry => spellings(typeof entry === "string" ? entry : entry.path)),
+    roots.flatMap(entry => spellings(typeof entry === "string" ? expandLeadingTilde(entry) : entry.path)),
   );
 }
 

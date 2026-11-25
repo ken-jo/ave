@@ -22,8 +22,11 @@ const GIT_METADATA_RULES = [
   `(deny file-write-create file-write-unlink ${AVE_PROJECT_MARKER_FILTER})`,
 ].join("\n");
 
+// The default macOS volume folds case and normalization, so two spellings that differ only there name one directory. On a volume that
+// does not fold, reading them as one can only add a deny.
 function isAtOrUnder(parent: string, path: string): boolean {
-  return path === parent || path.startsWith(parent.endsWith("/") ? parent : `${parent}/`);
+  const [folded, candidate] = [parent, path].map(spelling => spelling.normalize("NFC").toLowerCase()) as [string, string];
+  return candidate === folded || candidate.startsWith(folded.endsWith("/") ? folded : `${folded}/`);
 }
 
 // Write denies for app-owned directories (the Ave home, the confined processes' private roots) that lie inside one of the wrap's write
@@ -35,7 +38,7 @@ function isAtOrUnder(parent: string, path: string): boolean {
 export function macAppOwnedDirectoryWriteRules(directories: readonly string[], writeRoots: readonly string[]): string {
   const rules = new Set<string>();
   for (const directory of directories) {
-    if (!writeRoots.some(root => root !== directory && isAtOrUnder(root, directory))) continue;
+    if (!writeRoots.some(root => isAtOrUnder(root, directory) && !isAtOrUnder(directory, root))) continue;
     const own = [...new Set(writeRoots.filter(root => isAtOrUnder(directory, root)))];
     const filter = `(subpath ${JSON.stringify(directory)})`;
     // Create and unlink are named beside the wildcard: the runtime re-allows those two operations for every write root by name, and a
