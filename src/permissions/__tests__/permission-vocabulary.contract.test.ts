@@ -218,6 +218,7 @@ const ROWS: readonly Row[] = [
     today: { outcome: "ask", reason: "default:disabled-by-setting", waiver: "any" },
     observe: () => plan({ platform: "linux", requestedSandbox: false, activeCapability: capability("linux", "none") }) },
   { id: "D25", point: "sandbox on, no usable backend", tree: "T:128", unknown: "U2",
+    // S1 (#664) made this the forced ask the core names.
     today: { outcome: "ask-human", reason: "default:requested-sandbox-unavailable", waiver: "session" },
     observe: () => plan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "none") }) },
   { id: "D26", point: "Windows capability that does not contain shells", tree: "T:128", unknown: "U2",
@@ -356,12 +357,12 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
 
 // Closed inconsistency -> the row that proves it, which answers as the policy core does.
 const RESOLVED: Readonly<Record<string, string>> = {
-  I1: "D25",
   I5: "D34.b",
 };
 
 // Inconsistencies no driven row can show, and why.
 const INCONSISTENCIES_WITHOUT_ROW: Readonly<Record<string, string>> = {
+  I1: "an exact saved host rule on a no-backend host: an open owner question (loosening); D25 shows S1's forced ask, the core answer",
   I3: "inference child route: spawn path, not driven",
   I4: "lives on the device-path branch, not on main",
   I6: "stage workspaces are not on main",
