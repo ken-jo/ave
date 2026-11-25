@@ -186,9 +186,12 @@ export function dropExtensionStart(key: string): void {
   if (grant !== undefined) burnExtensionStartConsent(grant.authority);
 }
 
-/** Uninstall or disable: the plugin's child, workers and hooks. */
-export function dropPluginExtensionStarts(pluginId: string): void {
-  const child = pluginChildStartKey(pluginId);
+/**
+ * Uninstall or disable: the plugin's child, workers and hooks. "generation" is a restart or upgrade: the workers and hooks
+ * belonged to the code being replaced; the child start is the one this activation performs, so its answer stays.
+ */
+export function dropPluginExtensionStarts(pluginId: string, scope: "plugin" | "generation" = "plugin"): void {
+  const child = scope === "plugin" ? pluginChildStartKey(pluginId) : undefined;
   const workers = workerStartKey(pluginId, "");
   const hooks = pluginHookStartKey(pluginId, "");
   for (const key of new Set([...entries.keys(), ...parked.keys(), ...asking])) {

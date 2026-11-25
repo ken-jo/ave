@@ -22,6 +22,7 @@ import { EffectBoundaryDeniedError, runWithEffectGateContext } from "../../../pe
 import {
   __resetExtensionStartsForTest, ExtensionStartConsentRequiredError, listPendingExtensionStarts, setExtensionStartAsker, type ExtensionStartAsker,
 } from "../../../permissions/extension-start-consent.js";
+import { turnExtensionPolicyContext } from "../../../shared/turn-extension-policy.js";
 import { backgroundEffectSubject, PluginBackgroundEffectApprovals } from "../../../plugins/plugin-background-effects.js";
 import { SettingsService } from "../../../data/settings-store.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
@@ -1093,18 +1094,25 @@ describe("HostApi incarnation authority", () => {
         "plugin-a",
       );
       const spawn = () => api.spawnWorker({ workerId: "w", command: "node", control: "output-only-v1" } as never);
-      await runWithEffectGateContext({ headless: false, approvalSurface: "interactive", sessionId: "tool-session", toolName: "sample" }, spawn);
+      const toolCall = { headless: false, approvalSurface: "interactive", sessionId: "tool-session", toolName: "sample" } as const;
+      await turnExtensionPolicyContext.run({ allowExternalHooks: true }, () => runWithEffectGateContext(toolCall, spawn));
       expect(ask.mock.calls.map(([start, session]) => [start.key, start.label, session.sessionId, session.attended]))
         .toEqual([["worker:plugin-a/w", "plugin-a / w", "tool-session", true]]);
       expect(runtimeTestState.spawnWorker).toHaveBeenCalledTimes(2);
 
       // A no covers that spawn only: the next spawn in a tool call asks again.
       ask.mockResolvedValueOnce("no");
-      const inToolCall = () => runWithEffectGateContext({ headless: false, approvalSurface: "interactive", sessionId: "tool-session", toolName: "sample" }, spawn);
+      const inToolCall = () => turnExtensionPolicyContext.run({ allowExternalHooks: true }, () => runWithEffectGateContext(toolCall, spawn));
       await expect(inToolCall()).rejects.toThrow("extension-start-consent-required");
       await inToolCall();
       expect(ask).toHaveBeenCalledTimes(3);
       ask.mockClear();
+
+      // The turn decides who is present, as it does for a hook: a routine waking a chat has nobody to ask.
+      await expect(turnExtensionPolicyContext.run({ allowExternalHooks: true, withholdSessionAuthority: true }, () => runWithEffectGateContext(toolCall, spawn)))
+        .rejects.toThrow("extension-start-consent-required");
+      expect(ask).not.toHaveBeenCalled();
+      expect(listPendingExtensionStarts()).toEqual([]);
 
       await expect(spawn()).rejects.toThrow("extension-start-consent-required");
       expect(ask).not.toHaveBeenCalled();

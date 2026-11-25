@@ -94,7 +94,7 @@ import {
   type ResolveApiKeyVendor,
 } from "../../../main/host-api/resolve-api-key.js";
 import { spawnWorker } from "../../../permissions/worker-spawn.js";
-import { pluginStartLabel, runExtensionStart, workerStartKey } from "../../../permissions/extension-start-consent.js";
+import { pluginStartLabel, runExtensionStart, turnExtensionStartSession, workerStartKey } from "../../../permissions/extension-start-consent.js";
 import { probeExtensionStart } from "../../../permissions/asrt-sandbox.js";
 import { declaredHostDirectoryFloorPierces } from "../../../plugins/sandbox-authority.js";
 import { routeExternalUrl } from "./external-url.js";
@@ -976,9 +976,7 @@ export function createHostApiFactory(
         const call = currentEffectGateContext();
         // Inside a tool call that session answers for an unconfined worker; outside one there is no session to ask.
         const session = call === undefined || call.standalone === true || call.sessionId === undefined ? undefined : {
-          sessionId: call.sessionId,
-          attended: !call.headless && call.approvalSurface !== "unavailable"
-            && call.permissionContext?.ownerUnattended !== true && call.permissionContext?.remoteControllerAuthority === undefined,
+          ...turnExtensionStartSession(call.sessionId),
           ...(call.abortSignal ? { abortSignal: call.abortSignal } : {}),
         };
         const worker = await runExtensionStart(

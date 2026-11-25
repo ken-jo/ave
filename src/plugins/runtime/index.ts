@@ -4554,6 +4554,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     if (manifest.id !== input.manifest.id || manifest.version !== input.manifest.version) {
       throw new Error(`prepared artifact manifest identity changed for '${input.manifest.id}'`);
     }
+    dropPluginExtensionStarts(manifest.id, "generation");
     this.assertActiveCapabilityDependencies(manifest, "prepared artifact activation");
     this.assertActiveCapabilityDependentsRemainSatisfied(
       manifest.id,
@@ -5889,6 +5890,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       logPluginLifecycle("warn", { pluginId, phase: PluginPhase.RESTART_REQUEST, reason: "not_loaded" }, "restart no-op — plugin not loaded");
       return undefined;
     }
+    // New code is asked about its own workers and hooks.
+    dropPluginExtensionStarts(pluginId, "generation");
     const isCurrent = () =>
       !cancellation.cancelled
       && this.isPluginLifecycleOperationCurrent(pluginId, generation);

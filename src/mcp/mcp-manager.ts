@@ -113,7 +113,8 @@ const defaultConfigPath = (): string => join(aveHome(), "mcp", "servers.json");
 
 /** What a person agreed to or declined when asked about an unconfined server start. */
 function sameStartIdentity(a: McpServerConfig, b: McpServerConfig): boolean {
-  return isDeepStrictEqual([a.command, a.args ?? [], a.env ?? {}], [b.command, b.args ?? [], b.env ?? {}]);
+  const identity = (config: McpServerConfig) => [config.command, config.args ?? [], config.env ?? {}, config.transport === "stdio" ? config.cwd : undefined];
+  return isDeepStrictEqual(identity(a), identity(b));
 }
 
 function validatedApiKey(value: unknown): string {
@@ -483,8 +484,18 @@ export class McpManager {
     return { connected, failed };
   }
 
+  private forgetUnconfinedStart(serverId: string): void {
+    this.unconfinedStarts.delete(serverId);
+    dropExtensionStart(mcpStdioStartKey(serverId));
+  }
+
   async connectServer(config: McpServerConfig, opts: { force?: boolean } = {}): Promise<void> {
     this.assertConfigRecoverable();
+    // An edited command, args, env or cwd is another start: no earlier answer covers it. Decided before the first await,
+    // so a yes on its way to the old command is gone before this connect can reach a spawn.
+    const waited = this.unconfinedStarts.get(config.id);
+    if (waited !== undefined && !sameStartIdentity(waited, config)) this.forgetUnconfinedStart(config.id);
+    const waitedAtEntry = this.unconfinedStarts.get(config.id);
     if (config.auth === "api-key" && !config.apiKey) throw new Error("mcp-api-key-required: Add an API key before starting this server");
     await this.installUserServerApproval(config);
     const epoch = this.oauthEpoch(config.id);
@@ -566,10 +577,8 @@ export class McpManager {
     } catch (err) {
       if (this.clients.get(config.id) === client) this.clients.delete(config.id);
       // Nothing confines this server: it waits for a person, who is asked at the next attended turn.
-      if (isExtensionStartConsentRequired(err)) {
-        // An edited command, args or env is another start: an earlier no does not cover it.
-        const waited = this.unconfinedStarts.get(config.id);
-        if (waited !== undefined && !sameStartIdentity(waited, config)) dropExtensionStart(mcpStdioStartKey(config.id));
+      // A connect that another one overtook leaves the newer waiting start alone.
+      if (isExtensionStartConsentRequired(err) && this.unconfinedStarts.get(config.id) === waitedAtEntry) {
         this.unconfinedStarts.set(config.id, config);
         deferExtensionStart({ key: mcpStdioStartKey(config.id), kind: "mcp-stdio", label: config.id, cause: err.unconfinedCause,
           recheck: () => probeExtensionStart(),
@@ -1787,6 +1796,8 @@ export class McpManager {
     }
 
     if (requiresTrust) return { connected: false, warning: "mcp-trust-required" };
+    // A changed credential is another start too.
+    this.forgetUnconfinedStart(id);
     const existingClient = this.clients.get(id);
     if (existingClient) {
       await existingClient.disconnect().catch((err) => {
@@ -1893,8 +1904,7 @@ export class McpManager {
         if (removedConfig) this.removedUserServer = { config: removedConfig, trust: removedTrust };
       });
       committed = true;
-      this.unconfinedStarts.delete(serverId);
-      dropExtensionStart(mcpStdioStartKey(serverId));
+      this.forgetUnconfinedStart(serverId);
       this.retireOAuth(serverId);
       this.governance.unregisterRuntimeApproval(serverId);
       const session = this.oauthSessions.get(serverId)?.session;

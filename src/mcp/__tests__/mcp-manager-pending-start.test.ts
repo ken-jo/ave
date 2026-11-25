@@ -32,8 +32,8 @@ import { McpManager } from "../mcp-manager.js";
 import type { McpServerConfig } from "../types.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import {
-  __resetExtensionStartsForTest, ExtensionStartConsentRequiredError, listPendingExtensionStarts,
-  setExtensionStartAsker, settlePendingExtensionStarts,
+  __resetExtensionStartsForTest, ExtensionStartConsentRequiredError, listPendingExtensionStarts, mcpStdioStartKey,
+  setExtensionStartAsker, settlePendingExtensionStarts, takeExtensionStartGrant,
 } from "../../permissions/extension-start-consent.js";
 
 const testDir = mkdtempSync(join(tmpdir(), "ave-mcp-pending-"));
@@ -108,6 +108,7 @@ describe("an MCP server start that nothing confines", () => {
     ["command", { command: "bun" }],
     ["args", { args: ["serve", "--all"] }],
     ["env", { env: { MODE: "b" } }],
+    ["cwd", { cwd: "/tmp/other" }],
   ])("asks again after a no once the server's %s is edited", async (_field, change) => {
     const manager = await makeManager();
     const stdio: McpServerConfig = { id: "files", transport: "stdio", command: "node", args: ["serve"], env: { MODE: "a" } };
@@ -126,6 +127,36 @@ describe("an MCP server start that nothing confines", () => {
     await expect(manager.connectServer({ ...stdio, ...change } as McpServerConfig)).rejects.toBeInstanceOf(ExtensionStartConsentRequiredError);
     await settlePendingExtensionStarts({ sessionId: "s1", attended: true });
     expect(ask).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not spend a yes on a command edited while the approved start was on its way", async () => {
+    const manager = await makeManager();
+    const stdio: McpServerConfig = { id: "files", transport: "stdio", command: "node", args: ["serve"] };
+    const edited: McpServerConfig = { ...stdio, command: "bun" };
+    const refused = () => new ExtensionStartConsentRequiredError("no-backend");
+    const left: unknown[] = [];
+    let connects = 0;
+    // The second connect is the approved retry; the edit reconnects before that client spawns.
+    mockConnect.mockImplementation(async () => {
+      connects += 1;
+      if (connects === 2) {
+        await manager.connectServer(edited, { force: true }).catch(() => {});
+        left.push(takeExtensionStartGrant(mcpStdioStartKey("files")));
+      }
+      throw refused();
+    });
+    await expect(manager.connectServer(stdio)).rejects.toBeInstanceOf(ExtensionStartConsentRequiredError);
+    const ask = vi.fn(async () => "yes" as const);
+    setExtensionStartAsker({ ask, notify: vi.fn() });
+    await settlePendingExtensionStarts({ sessionId: "s1", attended: true });
+    expect(left).toEqual([undefined]);
+    expect(listPendingExtensionStarts()).toMatchObject([{ key: mcpStdioStartKey("files"), state: "pending" }]);
+
+    created.length = 0;
+    mockConnect.mockResolvedValue(undefined);
+    await settlePendingExtensionStarts({ sessionId: "s1", attended: true });
+    expect(ask).toHaveBeenCalledTimes(2);
+    expect(created).toMatchObject([{ command: "bun" }]);
   });
 
   it("never reconnects the old config of a server edited while it waited", async () => {
