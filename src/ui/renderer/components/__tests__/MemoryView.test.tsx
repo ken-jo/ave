@@ -4,7 +4,6 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryMapApi } from '../../../../__tests__/support/memory-map-api.js';
 import { makeMockAveApi } from '../../../../../test/renderer/mock-ave-api.js';
-import { ko } from '../../../../i18n/messages/ko.js';
 import type { GraphSnapshot } from '../../../../shared/memory-map.js';
 import type { AveApi } from '../../types.js';
 import type { MemoryGraphRenderer } from '../memory-graph-renderer.js';
@@ -46,7 +45,7 @@ describe('memory map view', () => {
     map.get.mockResolvedValue({ ok: true, value: snapshot });
     map.modelStatus.mockResolvedValue({ ok: false, error: 'local-runtime-unavailable' });
     render(<MemoryView {...props} />);
-    expect(await screen.findByText(ko['memoryMap.error.local-runtime-unavailable'])).toBeTruthy();
+    expect(await screen.findByText("로컬 모델을 네트워크에서 차단하는 OS 샌드박스가 활성화되어 있지 않아 로컬 임베딩을 사용할 수 없습니다.")).toBeTruthy();
     expect(screen.getByRole('button', { name: '지도 다시 만들기' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: '다시 시도' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '메모리 임베딩 설정' }));
@@ -60,7 +59,7 @@ describe('memory map view', () => {
     render(<MemoryView {...props} />);
     await ready();
     fireEvent.click(screen.getByRole('button', { name: '지도 다시 만들기' }));
-    expect(await screen.findByText(ko['memoryMap.error.local-runtime-unavailable'])).toBeTruthy();
+    expect(await screen.findByText("로컬 모델을 네트워크에서 차단하는 OS 샌드박스가 활성화되어 있지 않아 로컬 임베딩을 사용할 수 없습니다.")).toBeTruthy();
     expect(screen.getByRole('button', { name: '지도 다시 만들기' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: '다시 시도' })).toBeNull();
 
@@ -70,7 +69,7 @@ describe('memory map view', () => {
     if (!save) throw new Error('Missing memory save subscription');
     act(() => save({} as Parameters<typeof save>[0]));
     await waitFor(() => expect(map.modelStatus).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText(ko['memoryMap.error.local-runtime-unavailable'])).toBeTruthy();
+    expect(await screen.findByText("로컬 모델을 네트워크에서 차단하는 OS 샌드박스가 활성화되어 있지 않아 로컬 임베딩을 사용할 수 없습니다.")).toBeTruthy();
     expect(screen.getByRole('button', { name: '지도 다시 만들기' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: '다시 시도' })).toBeNull();
     expect(map.build).toHaveBeenCalledOnce();

@@ -212,10 +212,10 @@ describe("UsageDashboard", () => {
     await renderDashboard(api);
 
     const section = await screen.findByTestId("subscription-usage-dashboard");
-    expect(section.textContent).toContain(t("usageDashboard.subscriptionUsageTitle"));
-    expect(section.textContent).toContain(t("usageDashboard.subscriptionUsageNotice"));
-    expect(section.textContent).toContain(t("usageDashboard.subscriptionReported"));
-    expect(section.textContent).toContain(t("usageDashboard.subscriptionLocalEstimate"));
+    expect(section.textContent).toContain("구독 토큰 사용량");
+    expect(section.textContent).toContain("구독 사용량은 토큰만 표시하며 호출별 가격은 산정하지 않습니다.");
+    expect(section.textContent).toContain("공급자 보고");
+    expect(section.textContent).toContain("로컬 추정");
     expect(section.textContent).toContain("codex");
     expect(section.textContent).toContain("gpt-5.4");
     expect(section.textContent).not.toContain("$");
@@ -359,7 +359,7 @@ describe("UsageDashboard request state", () => {
     api.exportUsageCsv.mockRejectedValueOnce(new Error("disk full"));
     await renderDashboard(api);
     fireEvent.click(await screen.findByRole("button", { name: /CSV 내보내기/ }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(t("usageDashboard.exportError"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("사용량을 내보내지 못했습니다. 다시 시도하세요.");
     api.exportUsageCsv.mockResolvedValueOnce({ ok: false, filePath: "" });
     fireEvent.click(screen.getByRole("button", { name: /CSV 내보내기/ }));
     await waitFor(() => expect(api.exportUsageCsv).toHaveBeenCalledTimes(2));

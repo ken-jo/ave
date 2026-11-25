@@ -195,12 +195,12 @@ describe("SurfacePane", () => {
     // sentence on the chip's tooltip; nothing stacks between the header and the output.
     const header = screen.getByTestId("pane-header");
     await waitFor(() => expect(within(header).getByTestId("terminal-pane-host-chip")).toHaveTextContent("호스트"));
-    expect(within(header).getByTestId("terminal-pane-host-chip")).toHaveAttribute("title", expect.stringContaining(t("ptyTerminal.manualEnvironment")));
+    expect(within(header).getByTestId("terminal-pane-host-chip")).toHaveAttribute("title", expect.stringContaining("사용자의 호스트 프로필과 HOME을 사용합니다. 직접 채팅에 첨부한 명령과 출력만 공유됩니다."));
     await waitFor(() => expect(within(header).getByTestId("terminal-blocks-toggle")).toBeTruthy());
     const body = screen.getByTestId("surface-pane");
     expect(within(body).queryByTestId("terminal-host-identity")).toBeNull();
     expect(within(body).queryByTestId("terminal-blocks-bar")).toBeNull();
-    expect(body.textContent).not.toContain(t("ptyTerminal.manualEnvironment"));
+    expect(body.textContent).not.toContain("사용자의 호스트 프로필과 HOME을 사용합니다. 직접 채팅에 첨부한 명령과 출력만 공유됩니다.");
   });
 
   it("pushes the terminal aside from the chat pane's breakpoint up and overlays it below, as a chat pane's panel does", async () => {

@@ -137,7 +137,7 @@ describe("TailnetAccessContent", () => {
     render(<TailnetAccessContent api={api} />);
 
     // The unavailable state names itself, and the setup card names the step it performs — neither restates the row.
-    await screen.findByText(t("tailnetAccessTab.disabledTitle"));
+    await screen.findByText("Sharing unavailable");
     expect(screen.getByText(t("tailnetSetup.sectionTitle"))).toBeTruthy();
     expect(screen.queryByText(t("remoteSurfacesTab.tailnetSectionTitle"))).toBeNull();
   });
@@ -213,7 +213,7 @@ describe("TailnetAccessContent", () => {
     fireEvent.click(screen.getByTestId("tailnet-access-create-share"));
 
     expect(await screen.findByTestId("tailnet-access-control-confirm")).toHaveTextContent(
-      t("tailnetAccessTab.controlConfirm"),
+      "Allow your own paired account to send messages to the current conversation? Tool use follows the same permission rules and mode as local use.",
     );
     expect(createCurrentConversationShare).not.toHaveBeenCalled();
 

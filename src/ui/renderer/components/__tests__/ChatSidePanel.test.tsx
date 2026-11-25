@@ -1399,8 +1399,8 @@ describe("ChatSidePanel", () => {
     const fileRow = await screen.findByText("readme.md");
     fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
     fireEvent.click(screen.getByTestId("file-row-action-add-to-chat"));
-    expect(screen.queryByText(t("folderView.addToContextNoComposer"))).toBeNull();
-    expect(screen.queryByText(t("folderView.addToContextFull"))).toBeNull();
+    expect(screen.queryByText("이 파일을 추가하려면 먼저 채팅을 여세요.")).toBeNull();
+    expect(screen.queryByText("채팅 입력창이 가득 찼습니다.")).toBeNull();
   });
 
   it("right-click Reveal calls workspace.reveal with the row path (never opens the file)", async () => {
@@ -2079,7 +2079,9 @@ describe("ChatSidePanel", () => {
           await pending.promise;
         });
         if (status === "running" || status === "waiting") {
-          expect(detail.textContent).toBe(t(status === "running" ? "subAgentCard.statusRunning" : "subAgentCard.statusWaiting"));
+          expect(detail.textContent).toBe(locale === "ko"
+            ? (status === "running" ? "실행 중" : "대기 중")
+            : (status === "running" ? "Running" : "Waiting"));
           expect(within(detail).queryByRole("alert")).toBeNull();
         } else {
           expect(within(detail).getByRole("alert")).toHaveTextContent(locale === "ko"
@@ -2609,7 +2611,7 @@ describe("ChatSidePanel", () => {
         await pending.promise;
       });
       expect(within(detail).queryByRole("alert")).toBeNull();
-      expect(detail).toHaveTextContent(t(status === "running" ? "subAgentCard.statusRunning" : "subAgentCard.statusWaiting"));
+      expect(detail).toHaveTextContent(status === "running" ? "실행 중" : "대기 중");
     });
 
     it.each(["not-found", "reject"] as const)("keeps running live entries after a %s transcript read", async (responseMode) => {
@@ -2684,7 +2686,7 @@ describe("ChatSidePanel", () => {
         pending.resolve({ ok: false, error: "sub-agent-transcript-not-found" });
         await pending.promise;
       });
-      expect(within(detail).getByRole("alert")).toHaveTextContent(t("subAgentCard.transcriptLoadFailed"));
+      expect(within(detail).getByRole("alert")).toHaveTextContent("대화 기록을 불러오지 못했습니다.");
     });
 
     it.each(["not-found", "reject"] as const)("ignores a late running %s after terminal hydration succeeds", async (responseMode) => {

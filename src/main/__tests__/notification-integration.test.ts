@@ -69,10 +69,9 @@ describe("Trigger 4: ApprovalGate fires `approval` on requestAndWait entry", () 
       reason: "internal", source: "builtin", createdAt: Date.now(), sessionId: "session-1", trustOrigin: "plugin-prompt-emitted",
     });
     const notice = vi.mocked(svc.fire).mock.calls[0][0];
-    expect(notice.body).toBe(t("be_approvalGate.stagedConversationNotification", {
-      action: locale === "ko" ? "README.md 파일 읽기" : "Read README.md file",
-      origin: t("trustOriginLabel.pluginPromptEmitted"), title: "egress-probe",
-    }));
+    expect(notice.body).toBe(locale === "ko"
+      ? "README.md 파일 읽기 · 템플릿 프롬프트 · 대화: egress-probe"
+      : "Read README.md file · Template prompt · Conversation: egress-probe");
     if (locale === "ko") expect(notice.body).toBe("README.md 파일 읽기 · 템플릿 프롬프트 · 대화: egress-probe");
     gate.disposeAll();
     await waiting;
