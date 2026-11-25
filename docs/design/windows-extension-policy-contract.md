@@ -188,13 +188,14 @@ must lie inside a captured write root, inside or outside plugin namespaces, and
 the holder's HOME and temp must lie inside them too. HOME and temp must not lie
 below the shared private HOME, temp or handoff roots: an ancestor enumerate
 grant there would list every other holder's leaf. Holder adapters (rows 3 and 5)
-place them in a dedicated staging tree such as `<AVE_HOME>\mxc-staging\<opaque-id>`,
-so the staging root's enumerate grant reveals only opaque IDs. The staging tree
-still lives under the user profile, so its ancestor queries expose profile and
-`AVE_HOME` sibling names; the plugins root also gets enumerate access above a
-plugin's own data and generation roots, revealing other plugin IDs. Both are
-disclosed residuals (`ancestorNameExposure`), not privacy guarantees; a location
-outside the profile would need a separate owner decision. Requested grants cannot declare their own ownership. Admission
+place them in a dedicated staging tree, `<staging parent>\<opaque-id>`, so the
+staging root's enumerate grant reveals only opaque IDs. The staging parent is
+the platform's ([Runtime root](#runtime-root)); on Windows it is still
+`<AVE_HOME>\mxc-staging`. That tree lives under the user profile, so its
+ancestor queries expose profile and `AVE_HOME` sibling names; the plugins root
+also gets enumerate access above a plugin's own data and generation roots,
+revealing other plugin IDs. Both are disclosed residuals
+(`ancestorNameExposure`), not privacy guarantees. Requested grants cannot declare their own ownership. Admission
 rejects grants at or above plugin, cache and private HOME/temp namespace roots,
 another holder's roots,
 write access to a read-only generation, and read or write grants intersecting
@@ -257,12 +258,85 @@ Hard requirements for holder adapters (rows 3–5):
   the same workspace (for example two delegated workers on one workspace) cannot
   both be live: the second is refused while the first is owned. Serialize such
   holders, or give each a disjoint root.
-- HOME/temp go in `<AVE_HOME>\mxc-staging\<opaque-id>`, inside the holder's
-  captured write roots. When a holder's grant sits above the Ave home, the Ave
-  home is denied and a staging HOME/temp beneath it is refused: the start fails
-  closed, and resolving that is an owner decision.
+- HOME/temp go in `<staging parent>\<opaque-id>`, inside the holder's captured
+  write roots. On Windows the staging parent is still under the Ave home, so
+  when a holder's grant sits above the Ave home, the Ave home is denied and a
+  staging HOME/temp beneath it is refused: the start fails closed. The
+  [runtime root](#runtime-root) removes that case on each platform that has
+  moved to it.
 - Executables come from installation or generation roots, never from a workspace
   or any holder-writable root.
+
+## Runtime root
+
+Owner decision 2026-11-25: nothing a container needs lives under the Ave home.
+The Ave home is a denied directory. The macOS sandbox lets a deny override
+every allow, so a HOME or temp nested inside the Ave home cannot be written
+there, and this contract already refuses an admitted root under a denied path.
+Staging, HOME, temp and socket directories therefore go under one per-account
+runtime root outside the Ave home. The Ave home is then never granted to a
+container, and no container grant is re-allowed inside it.
+
+`src/permissions/mxc-runtime-root.ts` is the only place that decides the
+location (`mxcStagingParent`). Every producer and the shared staging-shape
+check (`assertMxcHolderStaging`) take the staging parent from it.
+
+| Platform | Runtime root | Staging parent |
+|---|---|---|
+| macOS | `<per-user temp>/ave-mxc-<uid>-<home digest>` | `<runtime root>/staging` |
+| Linux | `$XDG_RUNTIME_DIR/ave-mxc-<uid>-<home digest>` when the session provides one, else `<temp>/ave-mxc-<uid>-<home digest>` | `<runtime root>/staging` |
+| Windows | not moved yet | `<AVE_HOME>\mxc-staging`, unchanged |
+
+- **Selection.**
+  - The base is resolved to its canonical path, because the macOS sandbox
+    matches real paths. `<home digest>` is eight hex digits of the Ave home
+    path's SHA-256, so two Ave homes of one account never share a root.
+  - The root and the staging parent are created with mode 0700 and re-verified
+    on every use: a real directory, not a link, owned by this account, closed
+    to every other account. A Linux session runtime directory must pass the
+    same check.
+  - The root must lie neither inside nor above the Ave home, compared on both
+    the lexical and the canonical home.
+  - Any failure refuses the start (`MxcRuntimeRootError`). A directory that
+    fails is never re-moded, replaced or bypassed, and staging never falls back
+    into the Ave home.
+- **Layout.**
+  - `<runtime root>/staging/<opaque-id>/{home,temp}`, each 0700. The id is 32
+    lowercase hex digits. `<opaque-id>` is the run's only write grant.
+  - `<runtime root>/staging/<opaque-id>.owner` records the creating process:
+    its pid and a start identity that differs when a pid is reused. It is
+    written before the run directory exists, so a crash never leaves an
+    unmarked tree. It sits in the staging parent, which no container is
+    granted, so a container cannot forge or remove it. A run that cannot be
+    marked is refused.
+  - `<runtime root>/s/<first 12 id digits>` holds the run's unix sockets. It
+    is created on first use, outside the run's write grant, on a short path:
+    a socket address holds 104 bytes on macOS and 108 on Linux. A socket path
+    over the limit is refused. Granting the directory is the backend's
+    decision.
+  - The runtime root, the staging parent and the socket parent are host-only.
+- **Cleanup.**
+  - A run's directories are removed only after its exit is confirmed, and only
+    by the process that created them. The tree is first renamed to
+    `<opaque-id>.retired`, then removed without following links; the socket
+    directory follows, and the owner marker goes last. A partial removal keeps
+    the marker.
+  - The first run under a staging parent sweeps what earlier runs left. A tree
+    is removed only when its marker is a plain file of this account that names
+    a process that is provably gone, or this process for a run it already
+    released. An entry with no marker, an unreadable marker, a running or
+    undetermined owner, or another account's ownership is kept. A sweep failure
+    only warns and never blocks a start.
+- **Windows.** The Windows adapters below keep `<AVE_HOME>\mxc-staging`, their
+  own removal and their `retired-*` sweep. Windows honours a write grant nested
+  under a denied directory, so that placement works there. Moving it needs a
+  per-user location with a protected ACL and is a separate change; until then
+  the Ave home's read re-allow for `mxc-staging` stays.
+- **Residual.** The runtime root is outside the Ave home's read deny. A
+  container sees only its own grants, so it cannot reach another run. A process
+  confined by a different, allow-by-default backend on the same account is not
+  kept out by mode bits; keeping it out needs a floor deny on the runtime root,
+  which is a permission decision and not part of this placement.
 
 ## Holder adapters (row 5)
 
@@ -290,8 +364,9 @@ nesting and the lifetime registry stay row 2's.
   - A copied or stale plan is also refused as a contract violation.
 - **Layout.**
   - Each start is a new holder incarnation with its own
-    `<AVE_HOME>\mxc-staging\<opaque-id>\{home,temp}`. That staging root is
-    added to the captured write roots.
+    `<staging parent>\<opaque-id>\{home,temp}`. That staging root is added
+    to the captured write roots. This adapter is the Windows one, whose staging
+    parent is `<AVE_HOME>\mxc-staging` (`mxcStagingParent`).
   - The caller's roots are passed as the holder's own explicit roots, never as
     another holder's plan.
   - The executable's directory is the only added read. A configured cwd must
@@ -300,7 +375,7 @@ nesting and the lifetime registry stay row 2's.
     in its sandbox root, as on the legacy route. Only without a sandbox root
     does the cwd default to the private HOME. Neither the host process cwd nor
     a workspace is ever the default.
-  - The staging parent (`<AVE_HOME>\mxc-staging`) is refused if it is a link.
+  - The staging parent is refused if it is a link.
   - After verified termination the staging tree is first renamed to a random
     `retired-<opaque-id>` sibling, then removed without following links. A
     link is unlinked itself and never chmod-ed or traversed. A file has its
