@@ -315,7 +315,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   // Checked before filesystem admission, the egress invocation and the lease.
   assertMxcReleaseGateEvidence();
   // A runtime root that was not proved private refuses every container start.
-  requireMxcContainerStartRoot();
+  const runtimeRoot = requireMxcContainerStartRoot();
   spec = Object.freeze({ ...spec, args: Object.freeze([...spec.args]),
     baseEnv: Object.freeze({ ...spec.baseEnv }), egressOwner: Object.freeze({ ...spec.egressOwner }),
     holderEnv: Object.freeze({ ...(spec.holderEnv ?? {}) }),
@@ -324,6 +324,11 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     filesystemOwnership: Object.freeze({ readRoots: Object.freeze([...spec.filesystemOwnership.readRoots]),
       writeRoots: Object.freeze([...spec.filesystemOwnership.writeRoots]), hostStorageRoots: Object.freeze([...spec.filesystemOwnership.hostStorageRoots]) }),
   });
+  // No working directory inside the runtime root but the holder's own HOME, the default one.
+  const ownHome = pathForms(spec.home);
+  if (pathForms(spec.cwd).some((form) => isWindowsPathAtOrUnder(form, runtimeRoot) && !ownHome.some((home) => isWindowsPathAtOrUnder(form, home)))) {
+    throw new MxcProcessContractError("Container working directory is inside the sandbox runtime root");
+  }
   const assertParent = (): void => {
     if (spec.parent === undefined) return;
     const parent = nativeHolderBindings.get(spec.parent);

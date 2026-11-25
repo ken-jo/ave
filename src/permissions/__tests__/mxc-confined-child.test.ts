@@ -428,6 +428,15 @@ describe("user-hook shell-plan route under a container extension backend", () =>
 });
 
 describe("the container runtime root", () => {
+  const RUNTIME_ROOT = String.raw`C:\ave-cache\mxc-runtime`;
+  const STAGING = String.raw`C:\ave-cache\mxc-runtime\staging\0123456789abcdef0123456789abcdef`;
+  const WORK = String.raw`D:\work`;
+  // A holder laid out as its adapters lay it out: HOME and temp in its own staging directory under the root.
+  function staged(cwd: string, writes = [WORK, STAGING]): MxcConfinedChildSpec {
+    return { ...spec(), cwd, home: String.raw`${STAGING}\home`, temp: String.raw`${STAGING}\temp`, allowWrite: writes,
+      filesystemOwnership: { readRoots: [], writeRoots: writes, hostStorageRoots: [] } };
+  }
+
   it("refuses every start while the root is not proved, before admission, egress or the native spawn", async () => {
     const before = liveEgressInvocationCount();
     state.startRoot.mockImplementationOnce(() => { throw new Error("Container runtime root was not established when the sandbox started"); });
@@ -436,6 +445,34 @@ describe("the container runtime root", () => {
     expect(state.lease).not.toHaveBeenCalled();
     expect(state.spawn).not.toHaveBeenCalled();
     expect(liveEgressInvocationCount()).toBe(before);
+  });
+
+  it.each([
+    ["the root itself", RUNTIME_ROOT],
+    ["another holder's staging", String.raw`C:\ave-cache\mxc-runtime\staging\fedcba9876543210fedcba9876543210\home`],
+    ["its own temp", String.raw`${STAGING}\temp`],
+    ["the HOME parent spelled in another case", String.raw`C:\AVE-CACHE\MXC-RUNTIME\HOMES`],
+    ["a junction into the root", String.raw`D:\work\link\homes`],
+  ])("refuses a working directory inside it: %s", async (_case, cwd) => {
+    state.junctions.set(String.raw`D:\work\link`, RUNTIME_ROOT);
+    const before = liveEgressInvocationCount();
+    await expect(spawnMxcConfinedChild(staged(cwd))).rejects.toThrow(/working directory is inside the sandbox runtime root/u);
+    expect(state.admit).not.toHaveBeenCalled();
+    expect(state.spawn).not.toHaveBeenCalled();
+    expect(liveEgressInvocationCount()).toBe(before);
+  });
+
+  it.each([
+    ["its own HOME, the default", String.raw`${STAGING}\home`],
+    ["a sibling of the root", String.raw`C:\ave-cache\mxc-runtime-other`],
+    ["the workspace", WORK],
+  ])("admits a working directory outside it, or %s", async (_case, cwd) => {
+    const writes = [...new Set([WORK, STAGING, ...cwd.startsWith(STAGING) ? [] : [cwd]])];
+    admitWrites(...writes);
+    const result = await spawnMxcConfinedChild(staged(cwd, writes));
+    expect(state.spawn).toHaveBeenCalledOnce();
+    expect(state.spawn.mock.calls[0]?.[0].workingDirectory).toBe(cwd);
+    await result.release();
   });
 });
 

@@ -163,7 +163,8 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   const privateRootCovering = protectedReadDenyMatcher(privateRoots);
   const insideClosedRoot = (path: string): boolean =>
     privateRootCovering(path) !== undefined && !insideOwnWindowsSandboxHome(path, input.sandboxHome);
-  if (insideClosedRoot(input.cwd)) throw new Error("Container shell working directory is inside the sandbox runtime root");
+  // No working directory inside the root, the invocation's own HOME included.
+  if (privateRootCovering(input.cwd) !== undefined) throw new Error("Container shell working directory is inside the sandbox runtime root");
   const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
   const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
   const denyRead = [...new Set([...input.filesystem.denyRead, ...privateRoots])];

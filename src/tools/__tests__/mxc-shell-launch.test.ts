@@ -228,7 +228,13 @@ describe("prepareMxcShellLaunch", () => {
       }
     });
 
-    it.each(CLOSED)("refuses a working directory inside it: %s", async (cwd) => {
+    it("admits a working directory beside it", async () => {
+      const sibling = `${ROOT}-other\\repo`;
+      const filesystem = await launchWith({ cwd: sibling, sandboxHome: OWN, filesystem: { allowWrite: [sibling, OWN], allowRead: [], denyRead: [], denyWrite: [] } });
+      expect(filesystem.readwritePaths).toEqual([sibling, OWN]);
+    });
+
+    it.each([...CLOSED, OWN, `${OWN}\\work`])("refuses a working directory inside it: %s", async (cwd) => {
       const lifecycle = createContainedShellLifecycle();
       try {
         await expect(prepareMxcShellLaunch({ ...INPUT, cwd, sandboxHome: OWN,
