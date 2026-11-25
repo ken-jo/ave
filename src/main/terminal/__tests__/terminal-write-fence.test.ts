@@ -81,7 +81,7 @@ function editor(editFailure?: { at: "echo" | "acknowledgement"; deny(): void }, 
     return runWithEffectGateContext({ headless: false, toolName: "terminal_run", sessionId: "alice", permissionContext: { remoteControllerAuthority } },
       () => typeLineAtPrompt(target, COMMAND));
   };
-  return { bytes, order, onBeforeEnter, run };
+  return { blocks, bytes, order, onBeforeEnter, run };
 }
 
 describe("terminal write fence", () => {
@@ -183,6 +183,27 @@ describe("terminal write fence", () => {
     const cancel = new AbortController();
     expect(await terminal.run(() => undefined, () => cancel.abort(), cancel.signal)).toMatchObject({ ok: false, reason: "aborted" });
     expect(terminal.bytes).toEqual([]);
+  });
+
+  it("stops at the final send check when cancellation follows a successful pre-paste check", async () => {
+    const terminal = editor();
+    const cancel = new AbortController();
+    const editLineReport = terminal.blocks.editLineReport.bind(terminal.blocks);
+    vi.spyOn(terminal.blocks, "editLineReport").mockImplementation(() => {
+      const report = editLineReport();
+      if (terminal.bytes.at(-1) === TERMINAL_EDIT_LINE_QUERY && terminal.order.at(-1) === "fence") {
+        cancel.abort();
+      }
+      return report;
+    });
+    const fence = () => {
+      expect(cancel.signal.aborted).toBe(false);
+      return undefined;
+    };
+    expect(await terminal.run(fence, undefined, cancel.signal)).toMatchObject({ ok: false, reason: "aborted" });
+    expect(cancel.signal.aborted).toBe(true);
+    expect(terminal.bytes).toEqual([RESET, TERMINAL_EDIT_LINE_QUERY]);
+    expect(terminal.onBeforeEnter).not.toHaveBeenCalled();
   });
 
   it("stops at the final send check when cancellation follows a successful pre-Enter check", async () => {
