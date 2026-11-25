@@ -3,7 +3,6 @@ import net from "node:net";
 import { join, resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SandboxManager, type SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
-import { setDestinationResolverForTesting, setWindowsAclReleaseForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import { deferred, useTempDirs } from "../../__tests__/test-helpers.js";
 import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
 import { closed, echoParentProxy, openTunnel, probePort, within } from "../../__tests__/support/proxy-tunnel-probe.js";
@@ -18,6 +17,7 @@ import * as hostListener from "../egress-host-listener.js";
 import * as frontendListener from "../egress-invocation-listener.js";
 import { egressIdentityStrength } from "../egress-identity.js";
 import { egressInvocationAbortSignal, egressInvocationOwner, openEgressInvocation, type EgressInvocation } from "../egress-invocations.js";
+import { setEgressRelayRouter } from "../egress-relay/relay.js";
 import { PermissionManager } from "../permission-manager.js";
 import {
   __resetActiveSandboxCapabilityForTest,
@@ -30,6 +30,13 @@ import {
   setWindowsShellLocalNetworkAccess,
   setWindowsSandboxSubstrate,
 } from "../sandbox-capability.js";
+
+// The relay's resolver, answered by the test.
+const resolved = vi.hoisted(() => ({ addresses: [] as Array<{ address: string; family: number }> }));
+vi.mock("node:dns/promises", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:dns/promises")>(),
+  lookup: async () => resolved.addresses,
+}));
 
 vi.mock("../mxc-windows.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../mxc-windows.js")>(),
@@ -50,7 +57,6 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
   // Settles when the policy callback records its first decision.
   let decided: ReturnType<typeof deferred<void>>;
   let requester: EgressApprovalRequester;
-  let sharedPort: number;
 
   function recordSubstrate(state: "checking" | "available"): void {
     const { substrate } = planWindowsSandbox({
@@ -92,13 +98,6 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     return launch;
   }
 
-  function sharedAuthorization(token: string): string {
-    const label = `srt.${Buffer.from(token).toString("base64")}`;
-    const credential = SandboxManager.getProxyAuthToken();
-    if (credential === undefined) throw new Error("Shared proxy did not issue a credential");
-    return `Basic ${Buffer.from(`${label}:${credential}`).toString("base64")}`;
-  }
-
   // Bounded, and its socket is destroyed at teardown even when an assertion leaves it open.
   function request(port: number, authorization: string, method: "GET" | "CONNECT" = "GET", destination = DESTINATION): Promise<number | undefined> {
     let req: http.ClientRequest | undefined;
@@ -121,17 +120,6 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
       req.end();
     });
     return within(response, `request to port ${port}`).finally(() => req?.destroy());
-  }
-
-  // A shell's key named only by the shared proxy username: `attributionKey` is what the runtime let through (nothing while a relay owns
-  // the key), and a key it let through is refused without being handed back for the proxy's own record.
-  function expectSharedDenial(index: number, attributionKey: string | undefined): void {
-    expect(observed[index]?.context?.attributionKey).toBe(attributionKey);
-    expect(observed[index]?.context?.identity).toBe("username");
-    expect(observed[index]?.context?.phase).toBe("name");
-    expect(observed[index]?.decision).toEqual(attributionKey === undefined
-      ? { allow: false, reason: EGRESS_DENY_REASONS.unattributed }
-      : { allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
   }
 
   function endAdmission(revocation: "consent" | "cancel" | "release", controller: AbortController, ending: EgressInvocation): void {
@@ -174,7 +162,7 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
       requester: () => requester,
       audit: () => {},
     });
-    setDestinationResolverForTesting(async () => [{ address: PUBLIC_ADDRESS, family: 4 }]);
+    resolved.addresses = [{ address: PUBLIC_ADDRESS, family: 4 }];
     await initializeAsrtSandbox({
       allowedDomains: [],
       strictAllowlist: false,
@@ -187,9 +175,6 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
       // Exercise the resolved policy without dialing the test destination.
       return dial || context?.phase === "name";
     });
-    const port = SandboxManager.getProxyPort();
-    if (port === undefined) throw new Error("Shared proxy did not start");
-    sharedPort = port;
   });
 
   // Every step runs, whichever fails; the failures are thrown together afterwards.
@@ -202,7 +187,6 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     sockets.clear();
     for (const cleanup of cleanups.splice(0).reverse()) await step(cleanup);
     await step(resetAsrtSandbox);
-    await step(() => setDestinationResolverForTesting(undefined));
     await step(__resetActiveSandboxCapabilityForTest);
     await step(__resetSandboxRequestedAtBootForTest);
     await step(__resetWindowsSandboxSubstrateForTest);
@@ -210,12 +194,9 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     if (failures.length > 0) throw new AggregateError(failures, "contained shell egress teardown failed");
   });
 
-  it.each(["GET", "CONNECT"] as const)("keeps shared proxy labels at username identity and refuses them for a contained shell (%s)", async (method) => {
-    expect(await request(sharedPort, sharedAuthorization(invocation.token), method)).toBe(403);
-    expectSharedDenial(0, invocation.token);
-    expect(observed).toHaveLength(1);
-    // The refusal is recorded, but not against the shell the username named.
-    expect(SandboxManager.getSandboxViolationStore().getViolationsForCommand(invocation.token)).toEqual([]);
+  it("starts no shared proxy: a contained session's only egress endpoints are its invocations' relays", () => {
+    expect(SandboxManager.getProxyPort()).toBeUndefined();
+    expect(SandboxManager.getProxyAuthToken()).toBeUndefined();
   });
 
   it.each(["GET", "CONNECT"] as const)("attributes a contained command at both listener decision phases (%s)", async (method) => {
@@ -227,10 +208,6 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
       { attributionKey: undefined, identity: "listener", phase: "name", decision: true },
       { attributionKey: undefined, identity: "listener", phase: "resolved", addresses: [PUBLIC_ADDRESS], resolution: "pinned", decision: true },
     ]);
-    expect(await request(sharedPort, sharedAuthorization(invocation.token), method)).toBe(403);
-    // While the shell's own relay is open, the username names nobody.
-    expectSharedDenial(2, undefined);
-    expect(observed).toHaveLength(3);
   });
 
   it.each(["local", "unverified"] as const)("rechecks a contained listener's public project grant when the destination becomes %s", async (network) => {
@@ -243,9 +220,9 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     expect(approve.mock.calls.map(([approval]) => approval.network)).toEqual(["public"]);
 
     if (network === "local") {
-      setDestinationResolverForTesting(async () => [{ address: "10.0.0.5", family: 4 }]);
+      resolved.addresses = [{ address: "10.0.0.5", family: 4 }];
     } else {
-      SandboxManager.setParentProxyRouter(async () => ({ routes: [{ kind: "http", host: "198.51.100.20", port: 8080, resolvesNames: true }] }));
+      setEgressRelayRouter(async () => ({ routes: [{ kind: "http", host: "198.51.100.20", port: 8080, resolvesNames: true }] }));
     }
     expect(await request(relay.port, relay.proxyAuthorization)).toBe(403);
     expect(approve.mock.calls.map(([approval]) => ({ network: approval.network, scopes: approval.scopes }))).toEqual([
@@ -256,24 +233,11 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     expect(observed.every(({ context, decision }) => context?.identity === "listener" && decision === true)).toBe(true);
   });
 
-  it("refuses the ordinary Windows invocation listener and rejects invalid host relay ports", async () => {
-    await expect(SandboxManager.openInvocationListener(invocation.token)).rejects.toThrow(/not supported/u);
+  it("rejects invalid host relay ports", async () => {
     const relay = await openRelay();
     for (const port of [0, -1, 65_536, 1.5, Number.NaN]) {
       expect(() => relay.registerPort(port)).toThrow("invalid listener port");
     }
-  });
-
-  it.each(["GET", "CONNECT"] as const)("refuses shared proxy destinations on frontend and relay ports before asking (%s)", async (method) => {
-    const open = vi.spyOn(hostListener, "openHostEgressListener");
-    const launch = await launchShell();
-    const relay = await open.mock.results[0]?.value;
-    if (relay === undefined) throw new Error("Shell launch did not open a relay");
-    const worker = openInvocation({ kind: "worker", role: "worker", pluginId: "fixture" });
-    for (const port of [launch.proxyPort, relay.port]) {
-      expect(await request(sharedPort, sharedAuthorization(worker.token), method, `http://127.0.0.1:${port}/`)).toBe(403);
-    }
-    expect(observed).toEqual([]);
   });
 
   it("keeps the shell capability shared until the runtime and substrate are ready", () => {
@@ -318,7 +282,7 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     const otherRelay = await openRelay(other.token);
     expect(await request(relay.port, otherRelay.proxyAuthorization)).toBe(407);
     expect(await request(otherRelay.port, relay.proxyAuthorization)).toBe(407);
-    for (const port of [sharedPort, relay.port]) {
+    for (const port of [otherRelay.port, relay.port]) {
       expect(await request(relay.port, relay.proxyAuthorization, "GET", `http://127.0.0.1:${port}/`)).toBe(403);
     }
     expect(observed).toEqual([]);
@@ -429,7 +393,7 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     dial = true;
     const parent = await echoParentProxy();
     cleanups.push(parent.close);
-    SandboxManager.setParentProxyRouter(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: parent.port, resolvesNames: true }] }));
+    setEgressRelayRouter(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: parent.port, resolvesNames: true }] }));
     const controller = new AbortController();
     const running = openEgressInvocation(invocation.owner, { abortSignal: controller.signal });
     cleanups.push(running.release);
@@ -486,36 +450,6 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     expect(again).toHaveBeenCalledOnce();
   });
 
-  it("unbinds a relay whose connection drain throws, rejects its close and keeps its key unattributable on the shared front end", async () => {
-    // Not left to teardown: its close is the failure under test.
-    const relay = await hostListener.openHostEgressListener(invocation.token);
-    const failure = new Error("relay drain failed");
-    vi.spyOn(http.Server.prototype, "closeAllConnections").mockImplementationOnce(() => { throw failure; });
-    await expect(relay.close()).rejects.toBe(failure);
-    // The drain's failure did not skip the unbind.
-    expect(await probePort(relay.port, sockets)).toBe("refused");
-    expect(await request(sharedPort, sharedAuthorization(invocation.token))).toBe(403);
-    expectSharedDenial(0, undefined);
-    // The unbound relay left the registry, so ending the session does not meet its failure again.
-    await expect(resetAsrtSandbox()).resolves.toBeUndefined();
-  });
-
-  it("ends the session and unbinds a relay whose drain throws during that teardown", async () => {
-    const relay = await hostListener.openHostEgressListener(invocation.token);
-    const closeAll = http.Server.prototype.closeAllConnections;
-    const drained: http.Server[] = [];
-    // The shared proxy closes first; the relay's drain, which follows it, throws.
-    vi.spyOn(http.Server.prototype, "closeAllConnections")
-      .mockImplementationOnce(function (this: http.Server) { closeAll.call(this); })
-      .mockImplementationOnce(function (this: http.Server) {
-        drained.push(this);
-        throw new Error("relay drain failed");
-      });
-    await expect(resetAsrtSandbox()).resolves.toBeUndefined();
-    expect(drained).toHaveLength(1);
-    for (const port of [relay.port, sharedPort]) expect(await probePort(port, sockets)).toBe("refused");
-  });
-
   it("fails the session's reset after the rest of its teardown while a relay's port stays bound, and releases it at the next", async () => {
     const relay = await hostListener.openHostEgressListener(invocation.token);
     const close = http.Server.prototype.close;
@@ -528,28 +462,13 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
       }
       return close.call(this, callback);
     });
-    // The session's ACL release completes and drops a row; the reset's failure must not lose it.
-    setWindowsAclReleaseForTesting({
-      sandboxUserSid: "S-1-5-21-1", srtWin: "unused",
-      revoke: ({ onExit }) => { onExit(true); return [{ path: String.raw`D:\example\gone`, status: "missing" }]; },
-      restore: ({ onExit }) => { onExit(true); return []; },
-    });
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const failure: unknown = await resetAsrtSandbox().catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).toContain("Sandbox reset left 1 invocation relay port bound");
-    // The rows' raw targets stay off every enumerable path of the error.
-    expect(Object.getOwnPropertyDescriptor(failure, "windowsAclUnreleased")?.enumerable).toBe(false);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Windows ACE rows dropped without release (%s)"), expect.stringMatching(/^grant revoke missing x1 \[/u));
-    for (const argument of warn.mock.calls.flat()) expect(String(argument)).not.toContain(String.raw`D:\example\gone`);
-    warn.mockClear();
+    expect(failure).toEqual(new Error("relay unbind failed"));
     // The rest of the session ended; the relay is still owned, and drops what connects.
-    expect(await probePort(sharedPort, sockets)).toBe("refused");
+    await expect(hostListener.openHostEgressListener(openInvocation(invocation.owner).token)).rejects.toThrow("the service is not started");
     expect(await probePort(relay.port, sockets)).toBe("dropped");
     refuse = false;
     await expect(resetAsrtSandbox()).resolves.toBeUndefined();
     expect(await probePort(relay.port, sockets)).toBe("refused");
-    // The completed release was not repeated.
-    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("Windows ACE rows dropped without release"), expect.anything());
   });
 });

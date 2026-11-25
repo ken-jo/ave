@@ -20,7 +20,7 @@ import { chmodSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node
 import { listAuthorizedWorkspaceRoots } from "./workspace-authorized-roots.js";
 import { createRequire } from "node:module";
 import { type AveHomeBoundarySnapshot, currentAveHomeBoundarySnapshot, inAveHomeBoundarySnapshot } from "./ave-home-boundary-snapshot.js";
-import { homedir } from "node:os";
+import { EOL, homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, windowsPathKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
@@ -47,6 +47,15 @@ import { resolvePluginPaths } from "../plugins/plugin-paths.js";
 import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, compactSandboxWriteDenies, isGrantPathWithin, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot, windowsDenyOperandKey } from "./sandbox-write-policy.js";
 export { isGrantPathWithin } from "./sandbox-write-policy.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "./egress-invocations.js";
+import {
+  closeAllEgressRelayConnections,
+  closeEgressRelayConnections,
+  egressRelayOwnsKey,
+  egressRelayViolationLines,
+  startEgressRelayService,
+  stopEgressRelayService,
+  subscribeEgressRelayViolations,
+} from "./egress-relay/relay.js";
 import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
 import {
   getWindowsExtensionBackendPlan,
@@ -289,16 +298,22 @@ async function openEgressListener(
 // Close every open connection the proxy let through to `host:port` for these invocations (a revoked grant's tunnels). Returns how many were closed; 0 before initialization (nothing can be open then).
 export function closeEgressConnections(tokens: readonly string[], host: string, port: number): number {
   if (tokens.length === 0) return 0;
-  return loadedSandboxManagerForRelease?.closeInvocationConnections(tokens, host, port) ?? 0;
+  return (loadedSandboxManagerForRelease?.closeInvocationConnections(tokens, host, port) ?? 0) + closeEgressRelayConnections(tokens, host, port);
 }
 
 // Close every connection the proxy allowed, for every invocation: when the upstream proxy setting changes, a tunnel opened through the old upstream (or direct, before one was required) must not outlive it, as a revoked grant's connections do not. Returns how many were closed.
 export function closeAllEgressConnections(): number {
-  return loadedSandboxManagerForRelease?.closeAllInvocationConnections() ?? 0;
+  return (loadedSandboxManagerForRelease?.closeAllInvocationConnections() ?? 0) + closeAllEgressRelayConnections();
 }
 
 // Retained after initialization so revocation can close connections synchronously.
 let loadedSandboxManagerForRelease: Awaited<ReturnType<typeof loadSandboxManager>> | undefined;
+// The session's config when Windows children are confined in containers only: the wrap runtime is then never loaded or initialized.
+let containerOnlyConfig: SandboxRuntimeConfig | undefined;
+
+function assertWrapRuntime(caller: string): void {
+  if (containerOnlyConfig !== undefined) throw new Error(`${caller}: this session confines Windows children in containers; the wrap runtime is not initialized`);
+}
 interface PendingGitCleanup {
   cleanup: () => string | undefined;
   complete: (outcome: SandboxCleanupOutcome) => void;
@@ -907,7 +922,7 @@ export function buildPerCommandSandboxCustomConfig(
     let hiddenSeccompHelper: string | undefined;
     // What the wrap may be granted on Windows: per-exec grants are refused there (see above), so the session's and the live worker grants.
     const windowsWriteGrants: FilesystemPathEntry[] = [
-      ...(process.platform === "win32" ? loadedSandboxManagerForRelease?.getConfig()?.filesystem.allowWrite ?? [] : []),
+      ...(process.platform === "win32" ? (loadedSandboxManagerForRelease?.getConfig() ?? containerOnlyConfig)?.filesystem.allowWrite ?? [] : []),
       ...(_baseTrustedSettings?.allowWrite ?? []),
       ...(filesystem.allowWrite ?? []),
       ...grants.allowWrite,
@@ -2442,15 +2457,21 @@ function logResetRows(report: SandboxResetReport | undefined): void {
 
 // Forget a just-initialized ASRT singleton after the runtime probe fails. `active` is not set until after the probe, but the manager may already own proxy/helper state; reset it best-effort without masking the typed failure.
 async function discardFailedAsrtInitialization(
-  SandboxManager: Awaited<ReturnType<typeof loadSandboxManager>>,
+  SandboxManager: Awaited<ReturnType<typeof loadSandboxManager>> | undefined,
 ): Promise<void> {
   active = false;
   loadedSandboxManagerForRelease = undefined;
+  containerOnlyConfig = undefined;
+  windowsExternalConfinement = false;
+  await stopEgressRelayService().catch((error: unknown) => {
+    log.error("discarding a failed initialization: egress relay stop failed: %s", errorMessage(error));
+  });
   _baseTrustedSettings = undefined;
   _baseReadDenyEvidence = undefined;
   sandboxSession?.windowsLiveGrants.clear();
   sandboxSession = undefined;
   _workerUnixSocketDirs.clear();
+  if (SandboxManager === undefined) return;
   try {
     logResetRows(await SandboxManager.reset());
     markSrtWinRuntimeReleased();
@@ -2523,7 +2544,9 @@ async function initializeSandboxRuntime(
   if (trustedSettings.windows?.externalConfinement !== true) {
     assertAveHomePrivacyForConfinement();
   }
-  const SandboxManager = await loadSandboxManager();
+  // Containers confine this session's Windows children, so only the egress relay serves them: the wrap runtime stays unloaded.
+  const SandboxManager = process.platform === "win32" && trustedSettings.windows?.externalConfinement === true
+    ? undefined : await loadSandboxManager();
   startupSignal?.throwIfAborted();
   const linuxWrapperPrograms = process.platform === "linux" ? requireLinuxWrapperPrograms() : undefined;
   const backgroundInitialization = process.platform === "win32"
@@ -2551,6 +2574,18 @@ async function initializeSandboxRuntime(
     fullConfig = config;
     assertNoLocalBinding(config);
     noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
+    // Every contained Windows route gets its egress from the relay. Its allow list stays empty: each destination goes to the ask callback,
+    // and without one the service is not started, so no route opens.
+    if (process.platform === "win32" && askCb !== undefined) {
+      startEgressRelayService({ ask: askCb, ...(trustedSettings.upstreamRouter ? { router: trustedSettings.upstreamRouter } : {}) });
+    }
+    if (SandboxManager === undefined) {
+      checkWindowsSandboxStampTargets(config.filesystem);
+      containerOnlyConfig = config;
+      windowsExternalConfinement = true;
+      active = true;
+      return { isCurrent: (): boolean => active && sandboxSession === session };
+    }
     // Installed before the proxy starts, so no connection is routed without it; reset (including a failed initialization's) clears it.
     SandboxManager.setParentProxyRouter(trustedSettings.upstreamRouter);
     setWindowsAclRecoveryListener(logWindowsAclRecovery);
@@ -2563,7 +2598,11 @@ async function initializeSandboxRuntime(
     const initialConfig = backgroundInitialization
       ? { ...config, windows: { ...config.windows, externalConfinement: "embedder" as const } }
       : config;
-    await SandboxManager.initialize(initialConfig, askCb, enableLogMonitor);
+    // A key its relay owns is learned from that relay alone: named by a shared proxy username it attributes nothing.
+    const sharedAsk: SandboxAskCallback | undefined = askCb === undefined || process.platform !== "win32" ? askCb
+      : (destination, context) => askCb(destination, context?.attributionKey !== undefined && egressRelayOwnsKey(context.attributionKey)
+        ? { ...context, attributionKey: undefined } : context);
+    await SandboxManager.initialize(initialConfig, sharedAsk, enableLogMonitor);
     startupSignal?.throwIfAborted();
     if (sandboxSession !== session) throw new Error("Sandbox initialization was cancelled");
     // A host may reject a configured profile even when every dependency exists. Publish activity only after a real confined workload starts.
@@ -2636,6 +2675,7 @@ export async function wrapToolCommand(
   if (!isAsrtSandboxActive()) {
     throw new Error("wrapToolCommand: ASRT sandbox is not active (initialize at boot first)");
   }
+  assertWrapRuntime("wrapToolCommand");
   assertWindowsDenyProtection();
   // A wrapped command is a confined process that may write a plugin tree.
   noteConfinedProcessesMayRun();
@@ -2820,6 +2860,7 @@ async function wrapLongLivedCommand(
   wrapOptions: { readonly ttys: readonly string[] } | undefined,
 ): Promise<SandboxWrapResult> {
   assertAveHomePrivacyForConfinement();
+  assertWrapRuntime(caller);
   const invocation = egressInvocationOwner(options.commandId);
   // Self-enforcing gate — same rationale as wrapToolCommand.
   if (!isAsrtSandboxActive()) {
@@ -3444,6 +3485,7 @@ function assertPrivateHelperGrants(read: readonly string[], write: readonly stri
 
 // Per-command cleanup pass-through (`SandboxManager.cleanupAfterCommand`). Call after a wrapped command finishes.
 export async function cleanupAsrtSandboxAfterCommand(): Promise<void> {
+  if (containerOnlyConfig !== undefined) return;
   const SandboxManager = await loadSandboxManager();
   SandboxManager.cleanupAfterCommand();
 }
@@ -3461,6 +3503,8 @@ async function resetSandboxRuntime(): Promise<void> {
   active = false;
   loadedSandboxManagerForRelease = undefined;
   windowsExternalConfinement = false;
+  const containerOnly = containerOnlyConfig !== undefined;
+  containerOnlyConfig = undefined;
   // Reset base settings and live socket holders so reinitialization cannot inherit stale allowances.
   _baseTrustedSettings = undefined;
   _baseReadDenyEvidence = undefined;
@@ -3475,16 +3519,13 @@ async function resetSandboxRuntime(): Promise<void> {
   // the native runtime once teardown has been requested.
   // Let an in-flight grant stamp settle before restoring its session deny ACLs.
   if (windowsGrantStamp !== undefined) await windowsGrantStamp.catch(() => {});
-  const SandboxManager = await loadSandboxManager();
   try {
-    // A failed Windows ACL release (carried patch part 12), or an invocation relay port still bound (part 3), rejects after the rest of the
-    // teardown; the release then stays pending, so the private helper copy is kept for the runtime's exit handler and the next boot's recovery
-    // to retry, and a later reset retries the relay.
-    logResetRows(await SandboxManager.reset());
-    markSrtWinRuntimeReleased();
-  } catch (error) {
-    logResetRows(failedResetReport(error));
-    throw error;
+    // A relay port still bound rejects after the rest of the teardown, and a later reset retries it.
+    try {
+      await stopEgressRelayService();
+    } finally {
+      if (!containerOnly) await resetWrapRuntime();
+    }
   } finally {
     // Drop every wrapped-worker marker (MCP servers AND host-spawned plugin workers) so a torn-down sandbox cannot leave a stale `asrt` signal the reviewer would honour. Lazy import keeps the module-load edge one-way (sandbox-capability is renderer-safe and never imports back into this main-only module).
     const { clearWrappedMcpServers, clearWrappedPluginWorkers, clearConfinedPluginChildren } =
@@ -3492,6 +3533,20 @@ async function resetSandboxRuntime(): Promise<void> {
     clearWrappedMcpServers();
     clearWrappedPluginWorkers();
     clearConfinedPluginChildren();
+  }
+}
+
+// A failed Windows ACL release (carried patch part 12), or an invocation listener port still bound (part 3), rejects after the rest of the
+// teardown; the release then stays pending, so the private helper copy is kept for the runtime's exit handler and the next boot's recovery
+// to retry.
+async function resetWrapRuntime(): Promise<void> {
+  const SandboxManager = await loadSandboxManager();
+  try {
+    logResetRows(await SandboxManager.reset());
+    markSrtWinRuntimeReleased();
+  } catch (error) {
+    logResetRows(failedResetReport(error));
+    throw error;
   }
 }
 
@@ -3515,8 +3570,12 @@ export async function annotateWithSandboxViolations(
   command?: string,
   notices: readonly string[] = [],
 ): Promise<string> {
-  const SandboxManager = await loadSandboxManager();
-  const annotated = SandboxManager.annotateStderrWithSandboxFailures(commandId, [text, ...new Set(notices)].filter(Boolean).join("\n"));
+  const joined = [text, ...new Set(notices)].filter(Boolean).join("\n");
+  const wrapped = containerOnlyConfig !== undefined ? joined
+    : (await loadSandboxManager()).annotateStderrWithSandboxFailures(commandId, joined);
+  // A contained route's refusals are the relay's records, in the same block.
+  const relayed = egressRelayViolationLines(commandId);
+  const annotated = relayed.length === 0 ? wrapped : `${wrapped}${EOL}<sandbox_violations>${EOL}${relayed.join(EOL)}${EOL}</sandbox_violations>`;
   if (annotated.includes("`.git` metadata is protected; rerun outside the sandbox after approval")) return annotated;
   const deniedMetadata = /\.git(?:[\\/\s:'"`]|$)/iu.test(annotated)
     && /(?:permission denied|operation not permitted|read.only file system|sandbox.*deny|sandbox.*violation|invalid gitfile format|not a directory)/iu.test(annotated);
@@ -3534,6 +3593,7 @@ export async function annotateWithSandboxViolations(
  * Proxy denials and transport errors are separate policy decisions, never a host retry signal. */
 export async function filesystemSandboxBlockForCommand(commandId: string, command: string, cwd: string): Promise<SandboxBlock | undefined> {
   assertCommandId("filesystemSandboxBlockForCommand", commandId);
+  if (containerOnlyConfig !== undefined) return undefined;
   const SandboxManager = await loadSandboxManager();
   const records = SandboxManager.getSandboxViolationStore().getViolationsForCommand(commandId);
   const denied = records.some(({ line }) => !/^(?:deny|fail)\s/u.test(line)
@@ -3552,6 +3612,11 @@ export interface AsrtViolationRecord {
 export async function subscribeAsrtViolations(
   listener: (violations: readonly AsrtViolationRecord[]) => void,
 ): Promise<() => void> {
+  const offRelay = subscribeEgressRelayViolations(listener);
   const SandboxManager = await loadSandboxManager();
-  return SandboxManager.getSandboxViolationStore().subscribe(listener);
+  const offStore = SandboxManager.getSandboxViolationStore().subscribe(listener);
+  return () => {
+    offRelay();
+    offStore();
+  };
 }

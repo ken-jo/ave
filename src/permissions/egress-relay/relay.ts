@@ -166,6 +166,12 @@ export function subscribeEgressRelayViolations(listener: (violations: readonly E
   };
 }
 
+// The retained refusals and failures recorded for this invocation, oldest first.
+export function egressRelayViolationLines(token: string): string[] {
+  const encodedKey = Buffer.from(token).toString("base64");
+  return violations.filter((violation) => violation.encodedCommand === encodedKey).map((violation) => violation.line);
+}
+
 function deny(lane: Lane, host: string, port: number, reason: string, unattributed = false): Refusal {
   addViolation(`deny network-outbound ${host}:${port} (${oneLine(reason)})`, unattributed ? undefined : lane.encodedKey);
   return new Refusal(oneLine(reason));
@@ -188,11 +194,18 @@ export function startEgressRelayService(options: EgressRelayServiceOptions): voi
 
 export async function stopEgressRelayService(): Promise<void> {
   service = undefined;
+  // Nothing of the ended service is left for the next one to count.
+  closeAllEgressRelayConnections();
   const results = await Promise.allSettled([...lanes.values()].map((lane) => lane.close()));
   retiredKeys.clear();
   violations = [];
   const failed = results.find((result) => result.status === "rejected");
   if (failed !== undefined) throw failed.reason;
+}
+
+// Whether a relay of this service holds, or held, the invocation's key.
+export function egressRelayOwnsKey(token: string): boolean {
+  return lanes.has(token) || retiredKeys.has(token);
 }
 
 export function setEgressRelayRouter(router: EgressRelayRouter | undefined): void {

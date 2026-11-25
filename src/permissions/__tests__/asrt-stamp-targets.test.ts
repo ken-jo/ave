@@ -55,7 +55,7 @@ async function initializeFixtureSandbox(filesystem: { allowRead?: string[]; allo
   const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
   const initialize = vi.spyOn(SandboxManager, "initialize").mockResolvedValue(undefined);
   const sandbox = await import("../asrt-sandbox.js");
-  await sandbox.initializeAsrtSandbox({ ...filesystem, windows: { externalConfinement: true } });
+  await sandbox.initializeAsrtSandbox({ ...filesystem });
   return { SandboxManager, sandbox, sharedConfig: initialize.mock.calls.at(-1)![0] };
 }
 
@@ -161,7 +161,6 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
     const target = "C:\\ProgramData";
     await expect(initializeAsrtSandbox({
-      windows: { externalConfinement: true },
       denyRead: [target],
     })).rejects.toThrow(refusal);
     expect(initialize).not.toHaveBeenCalled();
@@ -173,7 +172,6 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Native initialization must not run"));
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
     await expect(initializeAsrtSandbox({
-      windows: { externalConfinement: true },
       denyRead: [inject("realAccountHome")],
     })).rejects.toThrow(refusal);
     expect(initialize).not.toHaveBeenCalled();
@@ -185,7 +183,6 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Native initialization must not run"));
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
     await expect(initializeAsrtSandbox({
-      windows: { externalConfinement: true },
       denyRead: ["\\\\?\\" + inject("realAccountHome")],
     })).rejects.toThrow(refusal);
     expect(initialize).not.toHaveBeenCalled();
@@ -201,7 +198,6 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     writeFileSync(match, "");
     const glob = join(process.env.USERPROFILE!, "*.stamp-fixture");
     await expect(initializeAsrtSandbox({
-      windows: { externalConfinement: true },
       allowWrite: ["~/.stamp-fixture", "%USERPROFILE%/.stamp-env-fixture"],
       denyRead: ["~/.stamp-fixture", "%USERPROFILE%/.stamp-env-fixture", glob],
     })).rejects.toThrow("Fixture initialization reached");
@@ -219,7 +215,6 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Fixture initialization reached"));
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
     await expect(initializeAsrtSandbox({
-      windows: { externalConfinement: true },
       allowWrite: ["~/.stamp-fixture"],
     })).rejects.toThrow("Fixture initialization reached");
     expect(initialize).toHaveBeenCalledOnce();
@@ -235,7 +230,6 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Native initialization must not run"));
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
     await expect(initializeAsrtSandbox({
-      windows: { externalConfinement: true },
       allowWrite: [`~/.stamp-fixture/${component}`],
     })).rejects.toThrow(/not a plain drive path/);
     expect(initialize).not.toHaveBeenCalled();
@@ -277,7 +271,6 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Native initialization must not run"));
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
     await expect(initializeAsrtSandbox({
-      windows: { externalConfinement: true },
       denyRead: [join(inject("realAccountHome"), "AppData*")],
     })).rejects.toThrow(refusal);
     expect(initialize).not.toHaveBeenCalled();
@@ -310,7 +303,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const lookup = vi.spyOn(runtime, "getWindowsSandboxUserStatus");
     const filesystem = { allowWrite: [process.env.ProgramData!] };
     if (producer === "session") {
-      expect(() => sandbox.buildSandboxConfig({ ...filesystem, windows: { externalConfinement: true } })).toThrow(/contains machine root/);
+      expect(() => sandbox.buildSandboxConfig({ ...filesystem })).toThrow(/contains machine root/);
     } else if (producer === "per-command") {
       expect(() => sandbox.buildPerCommandSandboxCustomConfig(filesystem)).toThrow(/contains machine root/);
     } else if (producer === "worker") {
@@ -350,7 +343,6 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
     const alias = link(inject("realAccountHome"), join(scratch(), "account-link"));
     await expect(initializeAsrtSandbox({
-      windows: { externalConfinement: true },
       denyWrite: [join(alias, "*")],
     })).rejects.toThrow(new RegExp(`${refusal.source}|not a plain drive path`));
     expect(initialize).not.toHaveBeenCalled();
@@ -399,7 +391,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
       expect(config.filesystem.allowWrite).not.toContain(glob);
     });
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    await initializeAsrtSandbox({ windows: { externalConfinement: true }, allowWrite: [glob] });
+    await initializeAsrtSandbox({ allowWrite: [glob] });
   });
 
   it("pins tool glob matches before the runtime's asynchronous lookups", async () => {
@@ -433,7 +425,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
       identity.assertPinned();
     });
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    const initialization = await initializeAsrtSandbox({ windows: { externalConfinement: true }, allowWrite: [join(alias, "*.stamp-fixture")] });
+    const initialization = await initializeAsrtSandbox({ allowWrite: [join(alias, "*.stamp-fixture")] });
     expect(initialization.isCurrent()).toBe(true);
     expect(initialization.windowsIsolation).toBeUndefined();
     expect(initialize).toHaveBeenCalledOnce();
@@ -468,7 +460,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
       expect(denyWriteSpellings(config.filesystem)).toContain(alias);
     });
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    const initialization = await initializeAsrtSandbox({ windows: { externalConfinement: true }, denyRead: [alias], denyWrite: [alias] });
+    const initialization = await initializeAsrtSandbox({ denyRead: [alias], denyWrite: [alias] });
     expect(initialization.isCurrent()).toBe(true);
     expect(initialization.windowsIsolation).toBeUndefined();
     expect(initialize).toHaveBeenCalledOnce();
@@ -500,7 +492,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
       identity.assertPinned();
     });
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    const initialization = await initializeAsrtSandbox({ windows: { externalConfinement: true }, allowRead: [alias], allowWrite: [alias] });
+    const initialization = await initializeAsrtSandbox({ allowRead: [alias], allowWrite: [alias] });
     expect(initialization.isCurrent()).toBe(true);
     expect(initialization.windowsIsolation).toBeUndefined();
     expect(initialize).toHaveBeenCalledOnce();
@@ -548,7 +540,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
       runtimeAllowWrite(config.filesystem);
     });
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    await expect(initializeAsrtSandbox({ windows: { externalConfinement: true }, allowWrite: [target] }))
+    await expect(initializeAsrtSandbox({ allowWrite: [target] }))
       .rejects.toThrow(/Sandbox stamp target identity changed/);
   });
 
@@ -646,7 +638,6 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     });
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
     await initializeAsrtSandbox({
-      windows: { externalConfinement: true },
       allowRead: [readable, missingGrant], allowWrite: [writable, missingGrant],
       denyRead: [missingDeny], denyWrite: [missingDeny + "\\"],
     });

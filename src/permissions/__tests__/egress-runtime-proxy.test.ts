@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { configureHostResources } from "../../main/host-resources.js";
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
+import * as aveHome from "../../shared/ave-home.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { SandboxManager, type SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
@@ -103,9 +104,13 @@ async function startRuntime(answerScope: () => EgressGrantScope = () => "session
     approvalGate: { requestAndWait },
     shellAskEnabled: () => true,
   });
+  // The background start: the shared proxy and the relay service run side by side while the isolation stamp is pending.
+  vi.spyOn(SandboxManager, "initializeWindowsIsolation").mockReturnValue(new Promise(() => {}));
+  // Home privacy is not this file's subject.
+  vi.spyOn(aveHome, "assertAveHomePrivacyForConfinement").mockImplementation(() => {});
   await initializeAsrtSandbox({
     allowedDomains: [],
-    windows: { externalConfinement: true, proxyPortRange: [42000, 42009] },
+    windows: { backgroundInitialization: true, proxyPortRange: [42000, 42009] },
     upstreamRouter: async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: upstream.port }] }),
   }, async (destination, context) => {
     observed.push({ host: destination.host, context });
@@ -152,7 +157,7 @@ function connect(port: number, authorization?: string) {
 }
 
 async function expectResponse(client: ReturnType<typeof connect>, status: number): Promise<void> {
-  expect(await client.status).toMatch(new RegExp(`^HTTP/1\\.1 ${status}\\b`, "u"));
+  expect(await client.status).toMatch(new RegExp(`^HTTP/1\\.[01] ${status}\\b`, "u"));
 }
 
 describe.skipIf(process.platform !== "win32")("native proxy with production egress callback", () => {

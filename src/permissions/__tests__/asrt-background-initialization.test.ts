@@ -151,7 +151,7 @@ describe("background session isolation", () => {
       return [path, index % 2 === 0 ? alias.replaceAll("\\", "/") : `\\\\?\\${alias}`];
     });
     expect(denies.every(path => win32.isAbsolute(path) === (kind === "absolute"))).toBe(true);
-    await initializeAsrtSandbox({ denyRead: denies, windows: { externalConfinement: true } });
+    await initializeAsrtSandbox({ denyRead: denies });
     pinWorkerRoot(root);
     const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => requests.map(() => ({
       denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40, directory: false,
@@ -168,7 +168,7 @@ describe("background session isolation", () => {
     const root = win32.join(fixtureRoot, "worker");
     const paths = Array.from({ length: 510 }, (_, index) => win32.join(root, `denied-${index}`));
     paths.push(win32.join(root, "Case"), win32.join(root, "case"), `${win32.join(root, "absent-dir")}\\`);
-    await initializeAsrtSandbox({ denyWrite: paths, windows: { externalConfinement: true } });
+    await initializeAsrtSandbox({ denyWrite: paths });
     pinWorkerRoot(root);
     const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => requests.map(() => ({
       denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: denyAcl.WINDOWS_WRITE_DENY_MASK, parentMask: 0x40, directory: false,
@@ -184,7 +184,7 @@ describe("background session isolation", () => {
   it("refuses cumulative retained deny growth without recording the rejected request", async () => {
     const paths = (prefix: string, length = 600) => Array.from({ length }, (_, index) => win32.join(fixtureRoot, "retained", prefix, String(index)));
     const base = paths("base", 300);
-    await initializeAsrtSandbox({ denyWrite: base, windows: { externalConfinement: true } });
+    await initializeAsrtSandbox({ denyWrite: base });
     const wrap = (denyWrite: string[]) => wrapToolCommand("echo safe", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [], denyWrite } });
     const first = [...base, ...paths("first")];
     await wrap(first);
@@ -195,7 +195,7 @@ describe("background session isolation", () => {
   });
 
   it.each(WIN32_WRAPPERS)("keeps the next %s wrap admissible after mandatory rows exceed the budget", async (_name, wrap) => {
-    await initializeAsrtSandbox({ windows: { externalConfinement: true } });
+    await initializeAsrtSandbox({});
     await expect(wrapWriteDenies(wrap, denyPatterns("oversized", 1024)))
       .rejects.toThrow(t("sandboxPolicy.configuredDeniesTooLarge"));
     expect(manager.wrapWithSandboxArgv).not.toHaveBeenCalled();
@@ -204,7 +204,7 @@ describe("background session isolation", () => {
   });
 
   it.each(WIN32_WRAPPERS)("keeps the next %s wrap admissible after the runtime rejects its expanded policy", async (_name, wrap) => {
-    await initializeAsrtSandbox({ windows: { externalConfinement: true } });
+    await initializeAsrtSandbox({});
     const cause = new WindowsSandboxError("acl_policy_too_large", "Expanded policy exceeds the ACL budget");
     manager.wrapWithSandboxArgv.mockRejectedValueOnce(cause);
     await expect(wrapWriteDenies(wrap, denyPatterns("expanded", 900)))
@@ -217,7 +217,7 @@ describe("background session isolation", () => {
   it("keeps an in-progress worker verification on the same deny revision when a wrap is refused", async () => {
     const root = win32.join(fixtureRoot, "worker");
     const protectedPath = win32.join(root, "protected");
-    await initializeAsrtSandbox({ denyWrite: [protectedPath], windows: { externalConfinement: true } });
+    await initializeAsrtSandbox({ denyWrite: [protectedPath] });
     pinWorkerRoot(root);
     let refused: Promise<void> | undefined;
     const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => {
@@ -245,7 +245,7 @@ describe("background session isolation", () => {
     const root = win32.join(fixtureRoot, "worker");
     const initial = win32.join(root, "initial");
     const late = win32.join(root, kind === "glob" ? "*.secret" : "late-secret");
-    await initializeAsrtSandbox({ denyRead: [initial], windows: { externalConfinement: true } });
+    await initializeAsrtSandbox({ denyRead: [initial] });
     pinWorkerRoot(root);
     let reads = 0;
     let wrapping: Promise<void> | undefined;

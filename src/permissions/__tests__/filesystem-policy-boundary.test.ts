@@ -43,7 +43,7 @@ afterEach(async () => {
   syncBuiltinESMExports();
 });
 
-async function setup(settings: { allowWrite: string[]; windows: { externalConfinement: true } } = { allowWrite: [], windows: { externalConfinement: true } }) {
+async function setup(settings: { allowWrite: string[] } = { allowWrite: [] }) {
   const profile = scratch();
   vi.stubEnv("USERPROFILE", profile); vi.stubEnv("HOME", profile);
   vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
@@ -131,7 +131,7 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
     const target = scratch();
     const canonical = (await import("node:fs")).realpathSync.native(target);
     const controls = vi.spyOn(writePolicy, "buildMandatorySandboxWritePolicy");
-    const config = sandbox.buildSandboxConfig({ allowWrite: [target.toLowerCase()], windows: { externalConfinement: true } });
+    const config = sandbox.buildSandboxConfig({ allowWrite: [target.toLowerCase()] });
     expect(controls.mock.calls[0]![0].map(entry => typeof entry === "string" ? entry : entry.path)).toEqual([canonical]);
     expect(config.filesystem.denyWrite.map(entry => {
       const path = typeof entry === "string" ? entry : entry.path;
@@ -151,7 +151,7 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
 
   it.each(["session-init", "config-register", "config-unregister", "per-command", "worker-api", "worker-spawn", "holder", "plugin", "bundled"] as const)
     ("refuses machine-root writes from %s without a native boundary call", async producer => {
-      const settings = { allowWrite: [] as string[], windows: { externalConfinement: true as const } };
+      const settings = { allowWrite: [] as string[] };
       const { sandbox, runtime, update } = await setup(settings);
       const allowWrite = [process.env.ProgramData!];
       const holder = Object.assign(new EventEmitter(), { pid: 5101, exitCode: 0, signalCode: null, stdin: { end: vi.fn() } }) as unknown as ChildProcess;
@@ -163,7 +163,7 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
       try {
         if (producer === "session-init") {
           await sandbox.resetAsrtSandbox();
-          await expect(sandbox.initializeAsrtSandbox({ allowWrite, windows: { externalConfinement: true } })).rejects.toThrow(/contains machine root/);
+          await expect(sandbox.initializeAsrtSandbox({ allowWrite })).rejects.toThrow(/contains machine root/);
         } else if (producer.startsWith("config-")) {
           const socket = scratch(), owner = {};
           if (producer === "config-unregister") await sandbox.registerWorkerUnixSocketDir(socket, owner);
