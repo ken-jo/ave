@@ -18,6 +18,7 @@ import {
   type MxcDirectoryEntry,
 } from "../permissions/mxc-windows.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../permissions/policy-model.js";
+import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 
 export interface MxcShellLaunch {
@@ -109,6 +110,8 @@ const MXC_TIMEOUT_MARGIN_MS = 30_000;
 export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle): Promise<MxcShellLaunch> {
   const capability = detectMxcShellCapability();
   if (capability === undefined) throw new Error("Container shell route is unavailable");
+  // Before anything is allocated: a runtime root that was not proved private refuses every container start.
+  requireMxcContainerStartRoot();
   const token = input.egressToken;
   const owner = egressInvocationOwner(token);
   if (owner?.kind !== "shell" || owner.requiresListener !== true) {

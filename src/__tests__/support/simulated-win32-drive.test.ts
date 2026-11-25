@@ -136,6 +136,12 @@ describe("simulated container runtime root", () => {
     }
   });
 
+  it("starts containers under the simulated floor root as the proved one", () => {
+    const simulated = simulatedRuntimeRoot(runtimeRoot, "linux");
+    setProcessPlatform("win32");
+    expect(simulated.requireMxcContainerStartRoot()).toBe(SIMULATED_MXC_RUNTIME_ROOT);
+  });
+
   it("puts synthetic staging directly under the simulated win32 floor root", () => {
     const simulated = simulatedRuntimeRoot(runtimeRoot, "linux");
     setProcessPlatform("win32");

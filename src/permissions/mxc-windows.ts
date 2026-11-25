@@ -769,5 +769,8 @@ export async function detectHostMxcPrerequisites(): Promise<MxcSupport> {
 
 // probeMxcPowerShellStart against this host's shipped binary (after boot).
 export async function probeHostMxcPowerShellStart(): Promise<MxcSupport> {
+  // The probe starts a container too: a runtime root that was not proved private refuses it.
+  const { requireMxcContainerStartRoot } = await import("./mxc-runtime-root.js");
+  requireMxcContainerStartRoot();
   return await withHostMxcDeps(probeMxcPowerShellStart);
 }

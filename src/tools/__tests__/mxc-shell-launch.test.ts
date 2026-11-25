@@ -16,6 +16,12 @@ const h = vi.hoisted(() => ({
   closeRelay: vi.fn(async () => {}),
   readdir: vi.fn(),
   lstat: vi.fn(),
+  // The runtime root start-up proved, or the refusal of one that was not.
+  startRoot: vi.fn((): string => "C:\\Users\\alice\\AppData\\Local\\ai.agent-connector.ave\\mxc-runtime"),
+}));
+vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../permissions/mxc-runtime-root.js")>(),
+  requireMxcContainerStartRoot: () => h.startRoot(),
 }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -207,6 +213,18 @@ describe("prepareMxcShellLaunch", () => {
           allowWrite: [WS, SIBLING, OWN], allowRead: [SIBLING, OWN], denyRead: [], denyWrite: [],
         } });
         expect(filesystem.readwritePaths, String(sandboxHome)).toEqual([WS]);
+      }
+    });
+
+    it("refuses the launch before anything is allocated while the root is not proved", async () => {
+      h.startRoot.mockImplementationOnce(() => { throw new Error("Container runtime root was not established when the sandbox started"); });
+      const lifecycle = createContainedShellLifecycle();
+      try {
+        await expect(prepareMxcShellLaunch({ ...INPUT, sandboxHome: OWN }, lifecycle)).rejects.toThrow(/not established/u);
+        expect(h.wxcExec).not.toHaveBeenCalled();
+        expect(h.openRelay).not.toHaveBeenCalled();
+      } finally {
+        expect(await lifecycle.dispose()).toEqual([]);
       }
     });
 

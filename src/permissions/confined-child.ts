@@ -50,6 +50,7 @@ import type { ExtensionStartPresentation } from "./extension-start-consent.js";
 import type { PluginWorkerControl } from "../plugins/public-contract.js";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { registerMxcHolderLifetime } from "./mxc-holder-lifetime.js";
+import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
 import { assertMxcHolderPrivateDirectories, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { isSandboxWrapperEnvKey } from "../tools/safe-env.js";
 import {
@@ -313,6 +314,8 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   }
   // Checked before filesystem admission, the egress invocation and the lease.
   assertMxcReleaseGateEvidence();
+  // A runtime root that was not proved private refuses every container start.
+  requireMxcContainerStartRoot();
   spec = Object.freeze({ ...spec, args: Object.freeze([...spec.args]),
     baseEnv: Object.freeze({ ...spec.baseEnv }), egressOwner: Object.freeze({ ...spec.egressOwner }),
     holderEnv: Object.freeze({ ...(spec.holderEnv ?? {}) }),

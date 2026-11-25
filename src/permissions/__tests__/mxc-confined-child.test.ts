@@ -19,6 +19,11 @@ const state = vi.hoisted(() => ({
   missing: new Set<string>(),
   spawn: vi.fn(), close: vi.fn(), admit: vi.fn(), validate: vi.fn(), allowed: vi.fn(), lease: vi.fn(),
   shellPlan: undefined as unknown, issued: new WeakSet<object>(),
+  // The runtime root start-up proved, or the refusal of one that was not.
+  startRoot: vi.fn((): string => "C:\\ave-cache\\mxc-runtime"),
+}));
+vi.mock("../mxc-runtime-root.js", async (original) => ({
+  ...await original<typeof import("../mxc-runtime-root.js")>(), requireMxcContainerStartRoot: () => state.startRoot(),
 }));
 vi.mock("../asrt-sandbox.js", () => ({
   assertExtensionStartAllowed: () => state.allowed(), admitMxcExtensionFilesystem: (...args: unknown[]) => state.admit(...args),
@@ -419,6 +424,18 @@ describe("user-hook shell-plan route under a container extension backend", () =>
       .rejects.toThrow("not the current issued srt-win plan");
     await expect(spawnConfinedChild({ ...spec(), egressOwner: userHookOwner, grantMode: "deny-only", userHookShellPlan: issuedPlan("mxc") }))
       .rejects.toThrow("not the current issued srt-win plan");
+  });
+});
+
+describe("the container runtime root", () => {
+  it("refuses every start while the root is not proved, before admission, egress or the native spawn", async () => {
+    const before = liveEgressInvocationCount();
+    state.startRoot.mockImplementationOnce(() => { throw new Error("Container runtime root was not established when the sandbox started"); });
+    await expect(spawnMxcConfinedChild(spec())).rejects.toThrow(/not established/u);
+    expect(state.admit).not.toHaveBeenCalled();
+    expect(state.lease).not.toHaveBeenCalled();
+    expect(state.spawn).not.toHaveBeenCalled();
+    expect(liveEgressInvocationCount()).toBe(before);
   });
 });
 

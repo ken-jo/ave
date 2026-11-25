@@ -565,6 +565,16 @@ function rootOfThisTestRun(host: MxcRuntimeHost): string | undefined {
 }
 
 /**
+ * The Windows runtime root every container start requires: the one sandbox start-up proved private (under the test
+ * runner, the one the run's set-up proved), still the same directory. It creates and proves nothing: a root that was
+ * refused, never established, removed or replaced refuses the start.
+ */
+export function requireMxcContainerStartRoot(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
+  if (host.platform !== "win32") refuse("Container starts require the Windows container runtime root");
+  return rootOfThisTestRun(host) ?? requireMxcRuntimeRoot(host);
+}
+
+/**
  * Where Windows sandbox HOMEs and their owner markers are created: `<runtime root>\homes`, beside `staging`. It
  * inherits the root's access, so only this account reaches it; a confined process is granted its own HOME inside it
  * and nothing else, and the markers sit where no confined process is granted. A root no caller has established yet is

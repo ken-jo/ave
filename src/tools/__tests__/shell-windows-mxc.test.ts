@@ -16,6 +16,12 @@ const childProcessMock = vi.hoisted(() => ({
 }));
 const installationMock = vi.hoisted(() => ({ resolve: vi.fn() }));
 const sandboxHomeMock = vi.hoisted(() => ({ onCreate: vi.fn<() => void>(), onCleanup: vi.fn<(home: string) => void>() }));
+// The runtime root start-up proved, or the refusal of one that was not.
+const startRoot = vi.hoisted(() => vi.fn((): string => "C:\\ave-fixture\\cache\\mxc-runtime"));
+vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../permissions/mxc-runtime-root.js")>(),
+  requireMxcContainerStartRoot: () => startRoot(),
+}));
 vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: installationMock.resolve }));
 const mxcLaunchMock = vi.hoisted(() => ({
   prepare: vi.fn(),
@@ -494,6 +500,25 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(result.output).toBe("PowerShell spawn failed: could not create isolated HOME: profile directory failed");
     expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
     expect(childProcessMock.spawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses the container while the runtime root is not proved, and releases its HOME", async () => {
+    bootMxcShells();
+    const { prepareMxcShellLaunch } = await vi.importActual<typeof import("../mxc-shell-launch.js")>("../mxc-shell-launch.js");
+    mxcLaunchMock.prepare.mockImplementation(prepareMxcShellLaunch);
+    const resolveLauncher = vi.spyOn(mxcWindows, "resolveHostWxcExecPath").mockResolvedValue(WXC_EXEC);
+    startRoot.mockImplementation(() => { throw new Error("Container runtime root was not established when the sandbox started"); });
+    try {
+      const result = await executePowerShell(context("ps-mxc-root-unproved"));
+      expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+      expect(result.output).toMatch(/^PowerShell spawn failed: .*not established/u);
+      expect(resolveLauncher).not.toHaveBeenCalled();
+      expect(childProcessMock.spawn.mock.calls.some((call) => call[0] === WXC_EXEC)).toBe(false);
+      expect(sandboxHomeMock.onCleanup).toHaveBeenCalledOnce();
+    } finally {
+      startRoot.mockReset();
+      startRoot.mockReturnValue("C:\\ave-fixture\\cache\\mxc-runtime");
+    }
   });
 
   it.each([false, true])("fails closed on policy delivery failure with headless=%s", async (headless) => {
