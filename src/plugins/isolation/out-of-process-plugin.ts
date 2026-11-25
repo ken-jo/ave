@@ -760,7 +760,9 @@ export function connectionHostProtocol(manifest: PluginManifest): HostProtocolVe
 /** What a plugin child start runs: its manifest (id, version, declared entry and roots), the kind of launch, and the install
  * evidence the load was verified against (the artifact hash, where one exists). A consent answers exactly this, so an upgraded,
  * reinstalled or edited plugin is asked about again. The paths of one activation are left out on purpose: every activation runs
- * from its own generation directory, and a consent given for a start must still fit that same plugin's next attempt. */
+ * from its own generation directory, and a consent given for a start must still fit that same plugin's next attempt.
+ * A load with no receipt (a local-dev plugin) is named by its manifest alone, so an edit to its code that leaves the manifest as it
+ * was is the same start. That code is the user's own, edited by the user; it is not the replaced artifact this binding guards against. */
 export function pluginChildStartIdentity(facts: {
   readonly manifest: PluginManifest;
   readonly launchKind: OutOfProcessPluginSpec["launch"]["kind"];

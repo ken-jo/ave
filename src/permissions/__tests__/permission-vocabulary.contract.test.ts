@@ -2,6 +2,7 @@
 // A row whose answer differs from the policy core carries `core` and is listed in EXCEPTIONS; fixing it removes both.
 // LEAD rule: a fix PR that closes an I-id must flip or delete its exception row in the same PR, and move the id into RESOLVED
 // with the row that now proves it. Every I-id sits in exactly one of EXCEPTIONS, INCONSISTENCIES_WITHOUT_ROW and RESOLVED.
+// An id no driven row can show stays in INCONSISTENCIES_WITHOUT_ROW when it is closed: its note says so and names the tests that prove it.
 // Tree = docs/architecture/permission-decision-tree.md line(s), or "no row".
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -373,7 +374,7 @@ const RESOLVED: Readonly<Record<string, string>> = {
 // Inconsistencies no driven row can show, and why.
 const INCONSISTENCIES_WITHOUT_ROW: Readonly<Record<string, string>> = {
   I1: "an exact saved host rule on a no-backend host: an open owner question (loosening); D25 shows S1's forced ask, the core answer",
-  I2: "built: the starts waiting in a session share one card and each keeps its own yes or no. A row observes one start's gate outcome (L5), not how the question is presented; extension-start-consent.test.ts and extension-start-card.test.ts prove the card",
+  I2: "built: the starts waiting in a session share one card and each keeps its own yes or no. A row observes one start's gate outcome (L5), not how the question is presented; extension-start-consent.test.ts, extension-start-card.test.ts and telegram-remote-approval.test.ts (one remote card per start) prove it",
   I3: "inference child route: spawn path, not driven",
   I4: "lives on the device-path branch, not on main",
   I6: "stage workspaces are not on main",

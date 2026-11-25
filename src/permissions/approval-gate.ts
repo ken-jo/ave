@@ -350,6 +350,8 @@ export interface ApprovalDecision {
   egressScope?: EgressGrantScope;
   // For an `extension-start` ask: the person's own yes or no for each start on the card, by row id. The host accepts it only when it covers exactly the rows the card offered; an allow with no map is honoured only on a one-start card.
   extensionStartChoices?: Readonly<Record<string, ExtensionStartChoice>>;
+  // For an `extension-start` ask, from a surface that shows one start at a time: the one row this answer is for. `choice` is that start's yes (allow-once) or no (deny-once). The first answer a row gets stands; the card settles when every row has one.
+  extensionStartRow?: string;
 
   rememberPattern?: string;
   // One-shot structured content captured by renderer-only approval surfaces. Currently used for MCP `elicitation/create` form-mode requests; never persisted in the user-approval memory store.
@@ -447,14 +449,16 @@ function assertExtensionStartRequestShape(req: ApprovalRequestInput): void {
 }
 
 // What an answer to an `extension-start` card may be. A map must answer exactly the offered rows and agree with the choice.
-// With no map, a deny refuses every start and an allow is an answer only on a one-start card. "desktop-only": a surface that
-// cannot answer per start said allow to several; the card stays for the desktop.
+// With no map, a deny refuses every start and an allow is an answer only on a one-start card. "desktop-only": a surface other
+// than the desktop said one allow to several starts; that is no start's answer, so the card stays open. Such a surface answers
+// one start at a time instead (`extensionStartRow`).
 function extensionStartAnswerProblem(
-  offered: readonly string[], decision: ApprovalDecision, nativeRenderer: boolean,
+  offered: readonly string[], decision: ApprovalDecision, nativeRenderer: boolean, rowsAlreadyAnswered: number,
 ): string | "desktop-only" | undefined {
   const choices: unknown = decision.extensionStartChoices;
   if (choices === undefined) {
-    if (decision.choice === "deny-once" || offered.length === 1) return undefined;
+    // A lone allow speaks for a start only when that start is the whole card and nobody has answered it.
+    if (decision.choice === "deny-once" || (offered.length === 1 && rowsAlreadyAnswered === 0)) return undefined;
     return nativeRenderer ? "extension start answers missing" : "desktop-only";
   }
   if (!isExtensionStartChoices(choices)) return "extension start answers malformed";
@@ -612,6 +616,8 @@ interface PendingEntry {
   };
   // The row ids an `extension-start` ask offered, kept host-side for the answer check.
   extensionStartIds?: readonly string[];
+  // Rows a one-start-at-a-time surface has already answered. The first answer a row gets stands.
+  extensionStartRowAnswers?: Map<string, ExtensionStartChoice>;
   // The scopes an `egress-host` ask offered, kept host-side for the answer check.
   egressScopes?: readonly EgressGrantScope[];
   // A workspace terminal tab's egress ask: only the window that owns the tab may fetch or answer it (`listPendingRendererRequests`, `resolveFromDesktopRenderer`).
@@ -660,6 +666,8 @@ export interface PendingApprovalView {
   readonly allowedChoices?: readonly ApprovalChoice[];
   // Conversation attribution, as on the request; never renderer-supplied.
   readonly sessionId?: string;
+  // An `extension-start` ask's row ids, in card order, so a surface that shows one start at a time can answer each (`ApprovalDecision.extensionStartRow`). Opaque: no start name or key.
+  readonly extensionStartRows?: readonly string[];
   // Echo material ApprovalGate.resolve verifies; host-internal only.
   readonly nonce: string;
   readonly hmac: string;
@@ -1581,6 +1589,7 @@ export class ApprovalGate {
         ...(fullReq.source === undefined ? {} : { source: fullReq.source }),
         category: fullReq.category,
         ...(fullReq.kind === undefined ? {} : { kind: fullReq.kind }),
+        ...(fullReq.kind === "extension-start" ? { extensionStartRows: (extensionStartApprovalRows(fullReq.args) ?? []).map((row) => row.id) } : {}),
         ...(fullReq.allowedChoices === undefined
           ? {}
           : { allowedChoices: fullReq.allowedChoices }),
@@ -1912,10 +1921,46 @@ export class ApprovalGate {
         return forcedDecision;
       }
     }
+    // One start's answer from a surface that shows one start at a time. An answer that is not for an open row of this card is
+    // refused on its own: the card and the rows already answered stay as they are.
+    if (entry.kind === "extension-start" && decision.extensionStartRow !== undefined) {
+      const offered = entry.extensionStartIds ?? [];
+      const answered = entry.extensionStartRowAnswers ?? new Map<string, ExtensionStartChoice>();
+      const row = decision.extensionStartRow;
+      const refusal = typeof row !== "string" || !offered.includes(row) ? "row-not-offered"
+        : answered.has(row) ? "row-already-answered"
+          : decision.extensionStartChoices !== undefined ? "row-with-card-answers" : undefined;
+      if (refusal !== undefined) {
+        this.auditLogger?.log({
+          timestamp: new Date().toISOString(),
+          sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+          type: "approval",
+          output: `[approval:extension-start-row-rejected] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} reason=${refusal} -> response-rejected`,
+        });
+        return null;
+      }
+      answered.set(row, decision.choice === "allow-once" ? "yes" : "no");
+      entry.extensionStartRowAnswers = answered;
+      this.auditLogger?.log({
+        timestamp: new Date().toISOString(),
+        sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:extension-start-row] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} row=${offered.indexOf(row) + 1}/${offered.length} choice=${decision.choice}`,
+      });
+      // Still waiting on other rows: this row is answered, the card is not.
+      if (answered.size < offered.length) return { requestId, choice: decision.choice };
+      // Every row has its answer: the card settles with them, through the same checks as an answer for the whole card.
+      entry.extensionStartRowAnswers = undefined;
+      const choices = Object.fromEntries(answered);
+      return this.resolveDecision(requestId, {
+        requestId, choice: Object.values(choices).includes("yes") ? "allow-once" : "deny-once", extensionStartChoices: choices,
+        ...(decision.nonce === undefined ? {} : { nonce: decision.nonce }), ...(decision.hmac === undefined ? {} : { hmac: decision.hmac }),
+      }, answeredBy, nativeRenderer, responder, identityRefreshed);
+    }
     // Each start on an extension-start card has its own answer. A yes is never inferred for a start the answer does not name.
     if (entry.kind === "extension-start" || decision.extensionStartChoices !== undefined) {
       const problem = entry.kind === "extension-start"
-        ? extensionStartAnswerProblem(entry.extensionStartIds ?? [], decision, nativeRenderer)
+        ? extensionStartAnswerProblem(entry.extensionStartIds ?? [], decision, nativeRenderer, entry.extensionStartRowAnswers?.size ?? 0)
         : "extension start answers on another request";
       if (problem === "desktop-only") {
         this.auditLogger?.log({
@@ -1940,6 +1985,32 @@ export class ApprovalGate {
         entry.resolve(forcedDecision);
         return forcedDecision;
       }
+    }
+    // An answer for the whole card arrives after some rows were answered one at a time: those rows keep their first answer, and
+    // this answer decides only the rest. A dismissed card is a no for the rest.
+    if (entry.kind === "extension-start" && entry.extensionStartRowAnswers !== undefined && entry.extensionStartRowAnswers.size > 0) {
+      const first = entry.extensionStartRowAnswers;
+      const offered = entry.extensionStartIds ?? [];
+      const late = decision.extensionStartChoices;
+      const choices: Record<string, ExtensionStartChoice> = {};
+      for (const [index, id] of offered.entries()) {
+        const earlier = first.get(id);
+        const later: ExtensionStartChoice = late !== undefined && Object.hasOwn(late, id) && late[id] === "yes" ? "yes" : "no";
+        choices[id] = earlier ?? later;
+        if (earlier !== undefined && late !== undefined && earlier !== later) {
+          this.auditLogger?.log({
+            timestamp: new Date().toISOString(),
+            sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+            type: "approval",
+            output: `[approval:extension-start-row-late] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} row=${index + 1}/${offered.length} kept=${earlier} -> response-rejected`,
+          });
+        }
+      }
+      entry.extensionStartRowAnswers = undefined;
+      return this.resolveDecision(requestId, {
+        requestId, choice: Object.values(choices).includes("yes") ? "allow-once" : "deny-once", extensionStartChoices: choices,
+        ...(decision.nonce === undefined ? {} : { nonce: decision.nonce }), ...(decision.hmac === undefined ? {} : { hmac: decision.hmac }),
+      }, answeredBy, nativeRenderer, responder, identityRefreshed);
     }
     // User-owned surface choices carry only their authenticated selection, never auxiliary renderer content.
     const resolvedDecision: ApprovalDecision =

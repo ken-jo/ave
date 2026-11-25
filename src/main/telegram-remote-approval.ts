@@ -26,6 +26,9 @@ const CALLBACK_TOKEN_BYTES = 16;
 const CARD_TEXT = Object.freeze({
   prompt: (tool: string) =>
     `Ave: tool ${tool} is waiting for approval. This decides this run only.`,
+  // One of several starts waiting on the same desk card, numbered in that card's order.
+  promptRow: (tool: string, position: number, total: number) =>
+    `Ave: tool ${tool} is waiting for approval (${position} of ${total}). This decides this run only.`,
   approved: (tool: string) => `Ave: tool ${tool} approved for this run`,
   denied: (tool: string) => `Ave: tool ${tool} denied`,
   expired: (tool: string) => `Ave: the approval for tool ${tool} is no longer active`,
@@ -76,13 +79,17 @@ interface RemoteApprovalOffer {
   // The ONLY choices a remote press can produce.
   readonly approveChoice: "allow-once";
   readonly denyChoice: "deny-once";
+  // An extension-start ask: one remote card per waiting start, each answering its own row. Undefined for every other ask.
+  readonly rows?: readonly string[];
 }
 
 // Remote approval is one-shot only; offer allow-once/deny-once and retain the gate’s allowed-choice validation.
 function remoteApprovalOffer(view: PendingApprovalView): RemoteApprovalOffer | null {
   // Only an ordinary tool ask. Directory-scope grants, plugin agent actions, and rationale cards are desk-only decisions.
   if (view.category !== "tool") return null;
-  if (view.kind !== undefined && view.kind !== "tool") return null;
+  // An extension-start ask is offered one start at a time: each start keeps its own yes or no, and no press answers them all.
+  const rows = view.kind === "extension-start" ? view.extensionStartRows : undefined;
+  if (view.kind !== undefined && view.kind !== "tool" && (rows === undefined || rows.length === 0)) return null;
   // An approval with no conversation attribution cannot be fenced to the shared conversation, so it is not offered.
   if (view.sessionId === undefined) return null;
   // Requests that constrain their answers must accept both one-shot choices.
@@ -103,11 +110,14 @@ function remoteApprovalOffer(view: PendingApprovalView): RemoteApprovalOffer | n
     toolIdentifier,
     approveChoice: "allow-once",
     denyChoice: "deny-once",
+    ...(rows === undefined ? {} : { rows }),
   };
 }
 
 interface RemoteApprovalCard {
   readonly requestId: string;
+  // The one row of an extension-start ask this card answers; undefined when the card answers the whole request.
+  readonly row?: string;
   readonly toolIdentifier: string;
   readonly chatId: string;
   // Echo material for the shared resolve chokepoint; never leaves the host.
@@ -137,7 +147,15 @@ export function createTelegramRemoteApprovalCoordinator(
     throw new TypeError("telegram-remote-approval-options-invalid");
   }
   const { client, gate, log } = options;
-  const cardsByRequest = new Map<string, RemoteApprovalCard>();
+  const cardsByRequest = new Map<string, Set<RemoteApprovalCard>>();
+  const activeCardCount = (): number => [...cardsByRequest.values()].reduce((count, cards) => count + cards.size, 0);
+  const forgetCard = (card: RemoteApprovalCard): void => {
+    const cards = cardsByRequest.get(card.requestId);
+    cards?.delete(card);
+    if (cards?.size === 0) cardsByRequest.delete(card.requestId);
+    cardsByToken.delete(card.approveToken);
+    cardsByToken.delete(card.denyToken);
+  };
   const cardsByToken = new Map<string, { card: RemoteApprovalCard; choice: "allow-once" | "deny-once" }>();
   let disposed = false;
 
@@ -154,16 +172,16 @@ export function createTelegramRemoteApprovalCoordinator(
   };
 
   const retireCard = (card: RemoteApprovalCard, finalText: string): void => {
-    cardsByRequest.delete(card.requestId);
-    cardsByToken.delete(card.approveToken);
-    cardsByToken.delete(card.denyToken);
+    forgetCard(card);
     card.finalText = finalText;
     editCard(card);
   };
 
   const finalTextFor = (card: RemoteApprovalCard, decision: ApprovalDecision): string => {
     // Read before the guard: its `decision is ApprovalDecision` predicate would otherwise narrow the negated branch to `never`.
-    const approved = decision.choice.startsWith("allow");
+    // A row card shows its own start's answer. An answer that names no row is for the whole ask: a dismissed desk card, or the one start of a one-start card.
+    const rowAnswer = card.row === undefined ? undefined : decision.extensionStartChoices?.[card.row];
+    const approved = rowAnswer === undefined ? decision.choice.startsWith("allow") : rowAnswer === "yes";
     if (isHostApprovalTimeoutDecision(decision)) return CARD_TEXT.expired(card.toolIdentifier);
     return approved
       ? CARD_TEXT.approved(card.toolIdentifier)
@@ -182,52 +200,57 @@ export function createTelegramRemoteApprovalCoordinator(
         return;
       }
       if (chatId === null) return;
-      if (cardsByRequest.size >= MAX_ACTIVE_CARDS || cardsByRequest.has(view.requestId)) {
-        log?.("[telegram-remote-approval] card skipped: active card bound reached");
-        return;
-      }
-      const card: RemoteApprovalCard = {
-        requestId: view.requestId,
-        toolIdentifier: offer.toolIdentifier,
-        chatId,
-        echoNonce: view.nonce,
-        echoHmac: view.hmac,
-        approveToken: randomBytes(CALLBACK_TOKEN_BYTES).toString("base64url"),
-        denyToken: randomBytes(CALLBACK_TOKEN_BYTES).toString("base64url"),
-      };
-      cardsByRequest.set(card.requestId, card);
-      cardsByToken.set(card.approveToken, { card, choice: offer.approveChoice });
-      cardsByToken.set(card.denyToken, { card, choice: offer.denyChoice });
-      const buttons: readonly TelegramDecisionButton[] = [
-        { label: CARD_TEXT.approveButton, callbackData: card.approveToken },
-        { label: CARD_TEXT.denyButton, callbackData: card.denyToken },
-      ];
-      void client
-        .sendDecisionCard(card.chatId, CARD_TEXT.prompt(card.toolIdentifier), buttons)
-        .then((result) => {
-          if (!result.ok) {
-            // An unsent card must not keep live tokens: a press can only arrive for a card that exists on the owner's screen.
-            cardsByRequest.delete(card.requestId);
-            cardsByToken.delete(card.approveToken);
-            cardsByToken.delete(card.denyToken);
+      if (cardsByRequest.has(view.requestId)) return;
+      const rows: readonly (string | undefined)[] = offer.rows ?? [undefined];
+      for (const [index, row] of rows.entries()) {
+        if (activeCardCount() >= MAX_ACTIVE_CARDS) {
+          // A start with no remote card is still on the desk card; the remote answers decide only the starts they were shown.
+          log?.("[telegram-remote-approval] card skipped: active card bound reached");
+          return;
+        }
+        const card: RemoteApprovalCard = {
+          requestId: view.requestId,
+          ...(row === undefined ? {} : { row }),
+          toolIdentifier: offer.toolIdentifier,
+          chatId,
+          echoNonce: view.nonce,
+          echoHmac: view.hmac,
+          approveToken: randomBytes(CALLBACK_TOKEN_BYTES).toString("base64url"),
+          denyToken: randomBytes(CALLBACK_TOKEN_BYTES).toString("base64url"),
+        };
+        const cards = cardsByRequest.get(card.requestId) ?? new Set<RemoteApprovalCard>();
+        cards.add(card);
+        cardsByRequest.set(card.requestId, cards);
+        cardsByToken.set(card.approveToken, { card, choice: offer.approveChoice });
+        cardsByToken.set(card.denyToken, { card, choice: offer.denyChoice });
+        const buttons: readonly TelegramDecisionButton[] = [
+          { label: CARD_TEXT.approveButton, callbackData: card.approveToken },
+          { label: CARD_TEXT.denyButton, callbackData: card.denyToken },
+        ];
+        const prompt = row === undefined || rows.length === 1
+          ? CARD_TEXT.prompt(card.toolIdentifier)
+          : CARD_TEXT.promptRow(card.toolIdentifier, index + 1, rows.length);
+        void client
+          .sendDecisionCard(card.chatId, prompt, buttons)
+          .then((result) => {
+            if (!result.ok) {
+              // An unsent card must not keep live tokens: a press can only arrive for a card that exists on the owner's screen.
+              forgetCard(card);
+              log?.("[telegram-remote-approval] card send failed");
+              return;
+            }
+            card.messageId = result.value.messageId;
+            // Settled while the send was in flight: apply the final edit now.
+            editCard(card);
+          })
+          .catch(() => {
+            forgetCard(card);
             log?.("[telegram-remote-approval] card send failed");
-            return;
-          }
-          card.messageId = result.value.messageId;
-          // Settled while the send was in flight: apply the final edit now.
-          editCard(card);
-        })
-        .catch(() => {
-          cardsByRequest.delete(card.requestId);
-          cardsByToken.delete(card.approveToken);
-          cardsByToken.delete(card.denyToken);
-          log?.("[telegram-remote-approval] card send failed");
-        });
+          });
+      }
     },
     onSettled: (requestId, decision) => {
-      const card = cardsByRequest.get(requestId);
-      if (card === undefined) return;
-      retireCard(card, finalTextFor(card, decision));
+      for (const card of [...(cardsByRequest.get(requestId) ?? [])]) retireCard(card, finalTextFor(card, decision));
     },
   };
   const unsubscribe = gate.observePendingApprovals(observer);
@@ -267,6 +290,7 @@ export function createTelegramRemoteApprovalCoordinator(
         {
           requestId: binding.card.requestId,
           choice: binding.choice,
+          ...(binding.card.row === undefined ? {} : { extensionStartRow: binding.card.row }),
           nonce: binding.card.echoNonce,
           hmac: binding.card.echoHmac,
         },
@@ -277,9 +301,13 @@ export function createTelegramRemoteApprovalCoordinator(
         await acknowledge(callback.callbackQueryId, CARD_TEXT.ackStale);
         return;
       }
+      // A row answered while other starts still wait: the gate has not settled the ask, so this card is closed here.
+      if (binding.card.row !== undefined && cardsByToken.get(callback.data) === binding) {
+        retireCard(binding.card, binding.choice === "allow-once" ? CARD_TEXT.approved(binding.card.toolIdentifier) : CARD_TEXT.denied(binding.card.toolIdentifier));
+      }
       await acknowledge(
         callback.callbackQueryId,
-        decision.choice.startsWith("allow") ? CARD_TEXT.ackApproved : CARD_TEXT.ackDenied,
+        (binding.card.row === undefined ? decision.choice.startsWith("allow") : binding.choice === "allow-once") ? CARD_TEXT.ackApproved : CARD_TEXT.ackDenied,
       );
     },
     dispose(): void {
@@ -287,8 +315,8 @@ export function createTelegramRemoteApprovalCoordinator(
       disposed = true;
       unsubscribe();
       // Buttons that can no longer reach a handler must not keep looking pressable. Best-effort and not awaited: teardown never blocks on a provider.
-      for (const card of [...cardsByRequest.values()]) {
-        retireCard(card, CARD_TEXT.expired(card.toolIdentifier));
+      for (const cards of [...cardsByRequest.values()]) {
+        for (const card of [...cards]) retireCard(card, CARD_TEXT.expired(card.toolIdentifier));
       }
     },
   });

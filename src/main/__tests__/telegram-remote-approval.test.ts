@@ -1,5 +1,5 @@
 // Resolve button presses through the real ApprovalGate chokepoint used by desktop approvals.
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApprovalGate,
   isHostApprovalTimeoutDecision,
@@ -15,6 +15,12 @@ import {
   type CreateTelegramRemoteApprovalCoordinatorOptions,
 } from "../telegram-remote-approval.js";
 import type { TelegramCallbackQueryEnvelope } from "../telegram-platform-adapter.js";
+import { createExtensionStartAsker } from "../../permissions/extension-start-asker.js";
+import {
+  __resetExtensionStartsForTest, deferExtensionStart, listPendingExtensionStarts, presentExtensionStartConsent, setExtensionStartAsker,
+  settlePendingExtensionStarts, takeExtensionStartGrant,
+} from "../../permissions/extension-start-consent.js";
+import { extensionStartApprovalRows, type ExtensionStartChoice } from "../../shared/permissions-events.js";
 
 const OWNER_ID = "123456789";
 const STRANGER_ID = "987654321";
@@ -275,5 +281,124 @@ describe("telegram remote approval", () => {
     // The approval itself is untouched: the desk still owns the decision.
     gate.resolve("remote-req-1", deskEcho(dock, "allow-once"));
     await expect(waiting).resolves.toMatchObject({ choice: "allow-once" });
+  });
+});
+
+describe("extension starts on the remote surface", () => {
+  afterEach(() => __resetExtensionStartsForTest());
+
+  const KEYS = ["plugin-child:notes", "mcp-stdio:files", "worker:notes/index"];
+  const START_TOOL = "extension_start";
+
+  /** Waiting starts whose retry is the spawn: it presents the consent parked for it and records whether the gate let it through. */
+  function waitingStarts(harness: ReturnType<typeof remoteApprovalHarness>, keys: readonly string[] = KEYS) {
+    const spawned: string[] = [];
+    const notify = vi.fn();
+    setExtensionStartAsker(createExtensionStartAsker({ approvalGate: harness.gate, reason: () => "start without isolation?", notify }));
+    for (const key of keys) {
+      deferExtensionStart({ key, identity: "fixture", kind: "plugin-child", label: `label of ${key}`, cause: "no-backend", retry: async () => {
+        if (presentExtensionStartConsent({ key, identity: "fixture", authority: takeExtensionStartGrant(key), spend: true })) spawned.push(key);
+      } });
+    }
+    const settling = settlePendingExtensionStarts({ sessionId: SHARED_CONVERSATION, attended: true });
+    return { spawned, notify, settling };
+  }
+
+  /** The remote cards sent so far, in order: their text and their two tokens. */
+  async function remoteCards(client: ReturnType<typeof fakeDecisionCardClient>, count: number) {
+    await vi.waitFor(() => expect(client.sendDecisionCard).toHaveBeenCalledTimes(count));
+    return (client.sendDecisionCard.mock.calls as unknown as [string, string, readonly { callbackData: string }[]][]).map(([, text, buttons]) => {
+      const [approve, deny] = buttons;
+      if (approve === undefined || deny === undefined) throw new Error("a remote card has no buttons");
+      return { text, approve: approve.callbackData, deny: deny.callbackData };
+    });
+  }
+
+  function deskAnswer(dock: ReturnType<typeof deskDock>, choices: readonly ExtensionStartChoice[]): ApprovalDecision {
+    const request = dock.sent.at(-1);
+    if (request === undefined) throw new Error("the desk got no card");
+    const map = Object.fromEntries((extensionStartApprovalRows(request.args) ?? []).map((row, index) => [row.id, choices[index] ?? "no"]));
+    return { requestId: request.id, choice: choices.includes("yes") ? "allow-once" : "deny-once", extensionStartChoices: map, nonce: request.nonce as string, hmac: request.hmac as string };
+  }
+
+  it("offers each waiting start as its own remote card and starts only the ones answered yes", async () => {
+    const harness = remoteApprovalHarness();
+    const { spawned, notify, settling } = waitingStarts(harness);
+    const cards = await remoteCards(harness.client, 3);
+    // The desk still has one card for all three; the remote surface has one per start, numbered in the desk card's order.
+    expect(harness.dock.sent).toHaveLength(1);
+    expect(cards.map((card) => card.text)).toEqual([1, 2, 3].map((n) => `Ave: tool ${START_TOOL} is waiting for approval (${n} of 3). This decides this run only.`));
+    // Fixed host text only: no start name, key or row id leaves the host.
+    const wire = JSON.stringify(harness.client.sendDecisionCard.mock.calls);
+    for (const key of KEYS) expect(wire).not.toContain(key);
+    for (const row of extensionStartApprovalRows(harness.dock.sent[0]?.args) ?? []) expect(wire).not.toContain(row.id);
+
+    await harness.coordinator.handleCallbackQuery(press(cards[0]?.approve ?? ""));
+    await harness.coordinator.handleCallbackQuery(press(cards[1]?.deny ?? ""));
+    // Two of three rows answered: nothing has started and the card is still open.
+    expect(spawned).toEqual([]);
+    expect(harness.gate.pendingCount).toBe(1);
+    await harness.coordinator.handleCallbackQuery(press(cards[2]?.approve ?? ""));
+    await settling;
+    expect(spawned).toEqual(["plugin-child:notes", "worker:notes/index"]);
+    expect(notify.mock.calls.map(([start, why]) => [start.key, why])).toEqual([["mcp-stdio:files", "declined"]]);
+    expect(listPendingExtensionStarts()).toMatchObject([{ key: "mcp-stdio:files", state: "declined" }]);
+    const calls = (mock: { mock: { calls: unknown[] } }) => mock.mock.calls as unknown as readonly (readonly unknown[])[];
+    expect(calls(harness.client.answerCallbackQuery).map((call) => call[1])).toEqual(["Approved for this run", "Denied", "Approved for this run"]);
+    expect(calls(harness.client.editMessageText).map((call) => String(call[2])).sort()).toEqual(
+      [`Ave: tool ${START_TOOL} approved for this run`, `Ave: tool ${START_TOOL} approved for this run`, `Ave: tool ${START_TOOL} denied`]);
+  });
+
+  it("still lets one press answer a card that lists one start", async () => {
+    const harness = remoteApprovalHarness();
+    const { spawned, settling } = waitingStarts(harness, ["plugin-child:notes"]);
+    const cards = await remoteCards(harness.client, 1);
+    expect(cards[0]?.text).toBe(`Ave: tool ${START_TOOL} is waiting for approval. This decides this run only.`);
+    await harness.coordinator.handleCallbackQuery(press(cards[0]?.approve ?? ""));
+    await settling;
+    expect(spawned).toEqual(["plugin-child:notes"]);
+  });
+
+  it("starts a start once when the remote surface and the desk both say yes to it", async () => {
+    const harness = remoteApprovalHarness();
+    const { spawned, settling } = waitingStarts(harness);
+    const cards = await remoteCards(harness.client, 3);
+    await harness.coordinator.handleCallbackQuery(press(cards[0]?.approve ?? ""));
+    // The same press again: that row is answered, so it is stale and changes nothing.
+    await harness.coordinator.handleCallbackQuery(press(cards[0]?.approve ?? ""));
+    expect(harness.client.answerCallbackQuery).toHaveBeenLastCalledWith("press-1", "This approval is no longer active");
+    harness.gate.resolveFromDesktopRenderer(harness.dock.sent[0]?.id ?? "", deskAnswer(harness.dock, ["yes", "no", "no"]), harness.dock.webContents as never);
+    await settling;
+    expect(spawned).toEqual(["plugin-child:notes"]);
+    // A press that arrives after the card was settled starts nothing.
+    await harness.coordinator.handleCallbackQuery(press(cards[2]?.approve ?? ""));
+    expect(harness.client.answerCallbackQuery).toHaveBeenLastCalledWith("press-1", "This approval is no longer active");
+    expect(spawned).toEqual(["plugin-child:notes"]);
+    for (const key of KEYS) expect(takeExtensionStartGrant(key)).toBeUndefined();
+  });
+
+  it("keeps the first answer for a row: a later desk yes does not start what the remote surface refused, nor a later no stop what it allowed", async () => {
+    const harness = remoteApprovalHarness();
+    const { spawned, settling } = waitingStarts(harness);
+    const cards = await remoteCards(harness.client, 3);
+    await harness.coordinator.handleCallbackQuery(press(cards[0]?.deny ?? ""));
+    await harness.coordinator.handleCallbackQuery(press(cards[1]?.approve ?? ""));
+    const settled = harness.gate.resolveFromDesktopRenderer(harness.dock.sent[0]?.id ?? "", deskAnswer(harness.dock, ["yes", "no", "yes"]), harness.dock.webContents as never);
+    const [first, second, third] = (extensionStartApprovalRows(harness.dock.sent[0]?.args) ?? []).map((row) => row.id);
+    expect(settled).toMatchObject({ choice: "allow-once", extensionStartChoices: { [first ?? ""]: "no", [second ?? ""]: "yes", [third ?? ""]: "yes" } });
+    await settling;
+    expect(spawned).toEqual(["mcp-stdio:files", "worker:notes/index"]);
+    expect(auditRowTexts(harness.auditLogger).filter((row) => row.startsWith("[approval:extension-start-row-late]"))).toHaveLength(2);
+  });
+
+  it("reads a dismissed desk card as a no only for the rows nobody answered yet", async () => {
+    const harness = remoteApprovalHarness();
+    const { spawned, settling } = waitingStarts(harness);
+    const cards = await remoteCards(harness.client, 3);
+    await harness.coordinator.handleCallbackQuery(press(cards[1]?.approve ?? ""));
+    const request = harness.dock.sent[0];
+    harness.gate.resolveFromDesktopRenderer(request?.id ?? "", { requestId: request?.id ?? "", choice: "deny-once", nonce: request?.nonce as string, hmac: request?.hmac as string }, harness.dock.webContents as never);
+    await settling;
+    expect(spawned).toEqual(["mcp-stdio:files"]);
   });
 });

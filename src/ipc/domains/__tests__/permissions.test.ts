@@ -1625,6 +1625,8 @@ describe("shell egress grants in Settings", () => {
       expect(await respond?.({ sender, senderFrame: frame }, { ...decision, extensionStartChoices }))
         .toMatchObject({ ok: false, error: "invalid-payload" });
     }
+    // One start's answer on its own is the remote surface's form; the desktop card answers every start at once.
+    expect(await respond?.({ sender, senderFrame: frame }, { ...decision, extensionStartRow: "row-1" })).toMatchObject({ ok: false, error: "invalid-payload" });
     expect(deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity).toHaveBeenCalledTimes(1);
   });
 

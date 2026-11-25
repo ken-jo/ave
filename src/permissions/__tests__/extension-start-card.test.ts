@@ -129,6 +129,38 @@ describe("the shared extension-start card", () => {
     expect(spawned).toEqual(["mcp-stdio:b"]);
   });
 
+  it("takes one start's answer at a time from a surface that shows one start at a time, and settles when every start has one", async () => {
+    const { wc, gate, spawned, audit } = waitingStarts();
+    const settling = settlePendingExtensionStarts(SESSION);
+    const card = await cardSent(wc);
+    const [first, second, third] = rowsOf(card).map((row) => row.id);
+    const row = (extensionStartRow: string | undefined, choice: "allow-once" | "deny-once") =>
+      gate.resolve(card.id, { requestId: card.id, choice, extensionStartRow: extensionStartRow ?? "", nonce: card.nonce, hmac: card.hmac }, "platform-bridge");
+    expect(row(first, "allow-once")).toMatchObject({ choice: "allow-once" });
+    // A row the card did not list, a row already answered, and a row answer that also carries a whole map: none is an answer.
+    expect(row("plugin-child:a", "allow-once")).toBeNull();
+    expect(row(first, "deny-once")).toBeNull();
+    expect(gate.resolve(card.id, { requestId: card.id, choice: "allow-once", extensionStartRow: second ?? "", extensionStartChoices: answers(card, ["yes", "yes", "yes"]), nonce: card.nonce, hmac: card.hmac }, "platform-bridge")).toBeNull();
+    expect(gate.pendingCount).toBe(1);
+    expect(spawned).toEqual([]);
+    expect(row(second, "deny-once")).toMatchObject({ choice: "deny-once" });
+    expect(row(third, "allow-once")).toMatchObject({ choice: "allow-once", extensionStartChoices: { [first ?? ""]: "yes", [second ?? ""]: "no", [third ?? ""]: "yes" } });
+    await settling;
+    expect(spawned).toEqual(["plugin-child:a", "plugin-child:c"]);
+    expect(audit().filter((line) => line.startsWith(`[approval:extension-start-row] ${card.id}`))).toHaveLength(3);
+    expect(audit().filter((line) => line.startsWith(`[approval:extension-start-row-rejected] ${card.id}`))).toHaveLength(3);
+  });
+
+  it("refuses a row answer whose signature is not the card's, and settles nothing with it", async () => {
+    const { wc, gate, spawned } = waitingStarts();
+    const settling = settlePendingExtensionStarts(SESSION);
+    const card = await cardSent(wc);
+    const decision = gate.resolve(card.id, { requestId: card.id, choice: "allow-once", extensionStartRow: rowsOf(card)[0]?.id ?? "", nonce: card.nonce, hmac: "0".repeat(64) }, "platform-bridge");
+    expect(isHostApprovalRejectedDecision(decision)).toBe(true);
+    await settling;
+    expect(spawned).toEqual([]);
+  });
+
   it("lets one allow answer a card that lists one start, as before", async () => {
     const { wc, gate, spawned } = waitingStarts(["plugin-child:a"]);
     const settling = settlePendingExtensionStarts(SESSION);
