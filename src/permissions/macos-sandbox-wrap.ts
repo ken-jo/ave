@@ -104,7 +104,7 @@ export function followNamedEntry(root: string, entry: string): { physical: strin
     }
     if (!stat.isSymbolicLink()) { current = candidate; continue; }
     links += 1;
-    if (links > MAX_NAMED_ENTRY_LINKS) throw new Error(t("sandboxPolicy.tooLarge"));
+    if (links > MAX_NAMED_ENTRY_LINKS) throw new Error(t("sandboxPolicy.linkedEntryPathTooLong"));
     const target = readlinkSync(candidate);
     if (isAbsolute(target)) current = "/";
     pending.unshift(...target.split("/"));

@@ -1,7 +1,10 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
-import { hardenMacSandboxGitMetadata, macAppOwnedDirectoryWriteRules, macLinkedNameTargetRules, macWriteRootNameRules } from "../macos-sandbox-wrap.js";
+import { hardenMacSandboxGitMetadata, followNamedEntry, macAppOwnedDirectoryWriteRules, macLinkedNameTargetRules, macWriteRootNameRules } from "../macos-sandbox-wrap.js";
 import { parseSandboxWrappedWords, quoteSandboxWrappedWord } from "../sandbox-wrapped-command.js";
 import { t } from "../../i18n/index.js";
 
@@ -181,6 +184,28 @@ describe("linked name target rules", () => {
   it("refuses a path too long to hold in one pattern, by name", () => {
     expect(() => macLinkedNameTargetRules([`/${"r".repeat(300)}`], [], [])).toThrow(t("sandboxPolicy.linkedEntryPathTooLong"));
     expect(() => macLinkedNameTargetRules([], [`/Users/example/project/${"r".repeat(300)}`], ["/Users/example/project"])).toThrow(t("sandboxPolicy.linkedEntryPathTooLong"));
+  });
+});
+
+describe.skipIf(process.platform === "win32")("following a named entry", () => {
+  it("reports every name looked up, and refuses a chain of links that never ends by the link message", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "named-entry-walk-")));
+    try {
+      mkdirSync(join(root, "sub", "deep"), { recursive: true });
+      mkdirSync(join(root, "real"));
+      symlinkSync("sub/l2", join(root, ".agents"));
+      symlinkSync("deep/../../real", join(root, "sub", "l2"));
+      expect(followNamedEntry(root, ".agents")).toEqual({
+        physical: join(root, "real"), linked: true,
+        visited: [".agents", "sub", "sub/l2", "sub/deep", "sub/deep", "sub", "real"].map(name => join(root, name)),
+      });
+      expect(followNamedEntry(root, ".ave/hooks")).toEqual({ physical: join(root, ".ave", "hooks"), linked: false, visited: [join(root, ".ave")] });
+      mkdirSync(join(root, ".ave"));
+      symlinkSync("hooks", join(root, ".ave", "hooks"));
+      expect(() => followNamedEntry(root, ".ave/hooks")).toThrow(t("sandboxPolicy.linkedEntryPathTooLong"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
