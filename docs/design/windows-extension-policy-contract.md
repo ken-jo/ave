@@ -63,24 +63,51 @@ missing endpoint isolation or unsupported query policy remains a readiness
 failure, not an accepted exposure.
 
 `planWindowsExtensionHolder()` selects for the exact runtime/request. A caller
-must not reuse another holder's readiness or widen the request to make a probe
-pass. Checking queues admission without a temporary fallback or unconfined
+must not use another holder's start evidence or widen the request to make a
+start pass. Checking queues admission without a temporary fallback or unconfined
 process. `settleWindowsExtensionReadiness()` bounds this wait using
 `TOOL_TIMEOUT_POLICY.mxcExtensionReadinessMs` and passes cancellation to the
-probe. The millisecond budget starts when the resolver is called and includes
-its wait. Cancellation observed before settlement rejects even if the probe
-also succeeds. The probe owns cleanup of any native resources it created;
-this resolver installs no process markers and owns no persisted queue. Its
-caller owns admission serialization, captured session identity and cancellation
-of queued starts. Fallback readiness must come from the same boot/session, and
-ancestor admission is rechecked at settlement before returning the candidate.
+start it waits on. The millisecond budget starts when the resolver is called and
+includes its wait. Cancellation observed before settlement rejects even if the
+start also succeeds. The holder's lifetime owner cleans up any native resources
+that start created; this resolver installs no process markers and owns no
+persisted queue. Its caller owns admission serialization, captured session
+identity and cancellation of queued starts. Fallback readiness must come from
+the same boot/session, and ancestor admission is rechecked at settlement before
+returning the candidate.
 
-The readiness classifier requires every recorded observation: verified installed
-payload, BaseContainer support, exact-request acceptance, UI-enabled runtime
-startup, query ancestors, standard-stream round trip, clean termination,
-endpoint isolation with correct forged-label attribution and no worker port, and
-refusal of reparse substitution of grant paths (`reparseSubstitutionRefused`).
-A launcher-only shell result supplies none of that extension evidence.
+Readiness evidence has thirteen fields, in three groups with different owners
+(owner decision 2026-11-25):
+
+| Fields | Evidence | Gathered | Judged by |
+| --- | --- | --- | --- |
+| 1 verified installed payload, 2 BaseContainer support, 3 exact-request acceptance, 4 UI-enabled runtime startup, 5 query ancestors | Per-start admission | By the holder's own start, on every start, and reported on its ready frame | `admitMxcExtensionStart()` through `classifyMxcExtensionReadiness()` |
+| 6 standard-stream round trip | MCP only | When a JSON-RPC response crosses the native pipes | The MCP `windows-mxc` marker rule (see Lifetime) |
+| 7 clean termination | Teardown evidence | When the holder stops | `dispose()`: termination that cannot be established keeps the holder, its endpoint and its HOME owned |
+| 8 own proxy succeeds, 9 other listener refused, 10 direct egress refused, 11 forged labels attributed, 12 no worker port, 13 reparse substitution of grant paths refused (`reparseSubstitutionRefused`) | Release-gate evidence | Once per release, on the packaged build, by the native release gate | `assertMxcReleaseGateEvidence()` through `classifyMxcReleaseGate()` |
+
+Per-start admission is the holder's own start, with no separate probe start.
+The supervisor's ready frame carries the digest of the request it started and
+fields 1-5 as five explicit booleans. The holder is admitted only after that
+frame arrives, names this holder's request, and reports every field true,
+inside the readiness deadline. It fails closed: no ready frame, a ready frame
+without the evidence, evidence for another request, a false field, expiry or
+cancellation refuses the start, stops what the start created, and never
+selects another backend or runs the holder another way. A ready frame that
+carries any other field (6-13) is an invalid frame. The deadline starts when
+admission begins the start, so it covers supervisor startup, native creation and
+the ready frame; an expiry here is a refusal of this start and is never written
+into the boot plan.
+
+Release-gate evidence is an install property. A start checks the registered
+record and never gathers it; nothing runs fields 8-13 per start. With no record,
+or a record with a field not observed, every holder start is refused with
+`MxcCapabilityUnavailableError` before any staging or listener exists.
+
+No reuse means no other holder's start evidence: start evidence is bound to the
+start that produced it and is never borrowed, cached or carried to a later start.
+The install-wide record is not start evidence, and every start reads the same one.
+A launcher-only shell result supplies none of this extension evidence.
 
 On deadline or settled host unavailability, fallback requires version `0.0.80`,
 ready in the current boot/session, and no admitted holder or ancestor. The
@@ -95,8 +122,10 @@ already-ready fallback. Cancellation rejects without fallback.
 Current delivery status: boot reports `native-validation-required` for
 extension requests.
 It retains an already-ready pinned fallback or reports no extension substrate.
-The native release gate must provide the actual request evidence before MXC
-extension activation. The capability snapshot never turns proxy-only startup
+Per-start evidence exists only after a start, so it cannot let boot publish an
+MXC plan. The native release gate must produce the release-gate record on the
+packaged build, bound to that build, and boot must register it before MXC
+extension activation; until then nothing registers a record and the pin stays. The capability snapshot never turns proxy-only startup
 into process-wide confinement. Per-process markers still require a completed
 native spawn and transport setup, and are removed when authority is revoked.
 `assertExtensionStartAllowed()` rejects checking/rejected starts before legacy
@@ -156,9 +185,12 @@ A contained plugin worker's parent is the incarnation of its plugin's native
 child that is live when the worker's start begins.
 
 Native admission additionally requires a single-use receipt from
-`createMxcExtensionAdmission()`. Its actual-request probe observes a separate
-request snapshot. Mutation of that snapshot, the production request or the
-captured boot plan during readiness rejects admission. A private receipt map
+`createMxcExtensionAdmission()`, minted only while the release-gate record is
+registered and complete. An adapter's own request check (`assertRequest`)
+observes a separate request snapshot. `admitMxcExtensionStart()` then runs the
+holder's own start and admits it on that start's ready-frame evidence. Mutation
+of the production request or the captured boot plan during readiness rejects
+admission. A private receipt map
 binds the full canonical request, including the held proxy endpoint, to the
 captured holder object, the `executableIdentity` and the exact boot-plan object.
 `executableIdentity` is a digest of the admitted executable's (`spec.command`)
@@ -177,9 +209,10 @@ holder adapters must not admit executables from a workspace (see the adapter
 requirements below).
 `consumeMxcExtensionAdmission()` runs at the native spawn boundary; a mismatch
 or second use refuses the start and cannot retry the receipt. A globally ready
-selection, a copied receipt or another holder's evidence cannot substitute.
-The callback is trusted host probe implementation, never plugin-supplied proof;
-its native observations still belong to the release gate.
+selection, a copied receipt or another holder's evidence cannot substitute:
+admission requires that this receipt was spent at this start's native boundary
+and that the evidence names this receipt's request. The evidence comes from the
+host's own supervisor over its authenticated channel, never from the plugin.
 
 Filesystem ownership is an independent host-captured
 `MxcExtensionFilesystemOwnership` with read roots, write roots and host-only
@@ -375,9 +408,11 @@ nesting and the lifetime registry stay row 2's.
     route instead refuses any configured `NODE_OPTIONS`. A server that depends
     on one starts on srt-win and is refused under a selected container plan;
     the Permissions disclosure for a selected container plan says so.
-- **Readiness probe.** The exact-request probe is registered by the native
-  release gate through `registerMxcHolderReadinessProbe`. Until then every
-  holder start fails closed with `MxcCapabilityUnavailableError`.
+- **Readiness.** A holder start is admitted on its own ready-frame evidence
+  (fields 1-5). The install's release-gate record (fields 8-13) is registered
+  through `registerMxcReleaseGateEvidence` once the native release gate has
+  produced it. Until then every holder start fails closed with
+  `MxcCapabilityUnavailableError`.
 - **Lifetime.**
   - MCP reports `windows-mxc` (the wrapped marker) only after a JSON-RPC 2.0
     response (string or number `id`, with `result` or `error`) crosses the
