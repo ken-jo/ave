@@ -10,6 +10,9 @@ import { afterEach, expect, it, vi } from "vitest";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { prepareVerifiedShellCommand, verifiedShellExecution, type VerifiedShellCommand } from "../../permissions/verified-shell-command.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
+import { holdSandboxGitWrites } from "../../shared/host-git.js";
+import { runWithEffectGateContext } from "../../permissions/effect-enforcement.js";
 import * as shellResolver from "../../lib/shell-resolver.js";
 import * as sandboxHomeOwner from "../../permissions/sandbox-process-home.js";
 import * as sandbox from "../../permissions/asrt-sandbox.js";
@@ -297,6 +300,31 @@ it("refuses native records on an unsupported host before consulting an approving
   }
   expect(installation.resolveVerifiedExecutableAsync).not.toHaveBeenCalled();
   expect(versionProbe).not.toHaveBeenCalled();
+});
+
+it("refuses to start verified Bash when sandbox writes take a hold during the launch handoff", async () => {
+  const command = "git log HEAD";
+  const { cwd, identity } = await fixture(false, command);
+  const sessionId = "verified-bash-hold";
+  let release: (() => void) | undefined;
+  const refreshCurrent = vi.fn(async () => {
+    release = holdSandboxGitWrites([cwd]);
+    return true;
+  });
+  const authority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:fixture",
+    pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+    pairedShareGuard: { isCurrent: () => true, refreshCurrent } }, sessionId);
+  const spawned = vi.spyOn(childProcess, "spawn").mockImplementation(() => completedChild("git output"));
+  try {
+    const result = await runWithEffectGateContext({ headless: false, toolName: "bash", sessionId,
+      permissionContext: { remoteControllerAuthority: authority } }, () => new BashTool().execute({ command, timeoutSeconds: 5 }, {
+      cwd, extraAllowedDirectories: [], metadata: { sessionId },
+      hostShellExecutionPlan: identity.plan, verifiedShellCommand: identity.verifiedShellCommand,
+    }));
+    expect(refreshCurrent).toHaveBeenCalledOnce();
+    expect(spawned).not.toHaveBeenCalled();
+    expect(result).toEqual({ output: "Read-only Git output discarded: repository metadata changed during execution.", isError: true, metadata: {} });
+  } finally { release?.(); }
 });
 
 it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].flatMap((background) =>

@@ -95,7 +95,11 @@ import {
   type PermissionPathEvidence,
   canonicalizePathForMatch,
   caseFoldForMatch,
+  protectedControlEntryFor,
 } from "./sensitive-paths.js";
+import { boundStageWorkspace, isOwnStageWorkspacePath, isStageWorkspacesPath } from "./stage-workspace-binding.js";
+import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { resolveToolPathForPermission } from "../shared/tool-path-resolution.js";
 import { isPathAllowedForEffect, type PathEffect } from "./allowed-directories.js";
 import { errorMessage } from "../shared/error-message.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
@@ -1698,11 +1702,24 @@ export class PermissionManager {
     if (brokerGuestRoute && (typeof context.guestCwd !== "string" || !/^\/(?!\/)/u.test(context.guestCwd))) {
       admissionDenial ??= { code: "invalid-rule-target", reason: "Guest working directory is unavailable" };
     }
+    // A stage session's own workspace lies in the application home and is still its project: that one fact is dropped for it, for every
+    // spelling of the target. Any other protected entry, any other path and any session without a binding are decided as before.
+    const stageBound = !activeBrokerGuest && context.sessionId !== undefined && boundStageWorkspace(context.sessionId) !== undefined;
+    const ownStagePath = (...spellings: string[]): boolean => stageBound && spellings.every(spelling =>
+      protectedControlEntryFor(spelling) === "application-home" && isOwnStageWorkspacePath(context.sessionId, spelling));
+    // Reads: every stage workspace, and the run folders around them, is a protected path for every principal. Only the session bound to a
+    // workspace, or a grandchild bound to the same one, reads inside it.
+    const otherStageRead = (evidence: PermissionPathEvidence): boolean => !activeBrokerGuest && evidence.effect === "read"
+      && [evidence.lexical, evidence.canonical].some(isStageWorkspacesPath)
+      && ![evidence.lexical, evidence.canonical].every(spelling => isOwnStageWorkspacePath(context.sessionId, spelling));
+    const withoutOwnStageFloor = <T extends PermissionPathEvidence>(evidence: T): T =>
+      evidence.protectedControl === "application-home" && ownStagePath(evidence.lexical, evidence.canonical) ? { ...evidence, protectedControl: undefined }
+        : evidence.protectedControl === undefined && otherStageRead(evidence) ? { ...evidence, protectedControl: "application-home" } : evidence;
     const evidenceForPath = createPermissionPathEvidence(projectRulesCwd ?? requestedRuleSubject?.cwd ?? process.cwd(), undefined, {
       inspectHostFiles: !activeBrokerGuest,
     });
     for (const path of context.paths ?? []) {
-      const evidence = evidenceForPath(path);
+      const evidence = withoutOwnStageFloor(evidenceForPath(path));
       if (evidence.admissionDenial) admissionDenial ??= { code: "credential-store", reason: evidence.admissionDenial };
       if (evidence.projectEscape) floor ??= { code: "project-escape", reason: "The target escapes the project boundary." };
       if (evidence.protectedControl) floor ??= { code: "protected-path", reason: evidence.protectedControl };
@@ -1717,7 +1734,10 @@ export class PermissionManager {
     if (scopedSubject && projectRuleState === undefined) throw new Error("Scoped permission rules require an explicit project scope");
     const scopedRules = scopedSubject ? evaluateScopedRules(scopedSubject, projectRuleState!.projectRoot, this.rules, projectRules) : undefined;
     if (scopedRules?.admissionDenial) admissionDenial ??= { code: "invalid-rule-target", reason: scopedRules.admissionDenial };
-    if (scopedRules?.floor) {
+    const ownStageEdit = scopedSubject?.kind === "edit" && scopedRules?.floorCode === "protected-path" && ownStagePath(scopedSubject.cwd)
+      && scopedSubject.paths.every(path => !path.split(/[\\/]/u).includes("..")
+        && ownStagePath(resolveToolPathForPermission(path, scopedSubject.cwd), resolveShellFilesystemPath(path, scopedSubject.cwd)));
+    if (scopedRules?.floor && !ownStageEdit) {
       if (!scopedRules.floorCode) throw new Error("Scoped permission floor has no reason code");
       floor ??= { code: scopedRules.floorCode, reason: scopedRules.floor };
     }
@@ -1762,7 +1782,8 @@ export class PermissionManager {
     const unknownProtectedWrite = shellPaths?.unknownProtectedWrite ?? powerShellPaths?.unknownProtectedWrite;
     if (unknownProtectedWrite) floor ??= { code: "protected-path", reason: unknownProtectedWrite };
     const hostBoundWriteTargets = shellExecution.environmentSnapshot !== undefined && shellPaths?.resolvedWriteTargetsOnly === true;
-    for (const evidence of [...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])]) {
+    for (const found of [...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])]) {
+      const evidence = withoutOwnStageFloor(found);
       if (evidence.admissionDenial) admissionDenial ??= { code: "credential-store", reason: evidence.admissionDenial };
       const deleteRoots = brokerGuestRoute
         ? [analysisCwd, getActiveWorkloadBrokerProjection()?.workload.home].filter((path): path is string => typeof path === "string" && /^\/(?!\/)/u.test(path) && !path.includes("\0"))

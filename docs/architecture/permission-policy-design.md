@@ -921,6 +921,7 @@ be created during execution and is quarantined after confirmed exit:
 | `worktrees/*/config.worktree`, `worktrees/*/commondir`, `worktrees/*/gitdir` | Protected linked-worktree configuration and discovery. |
 | `commondir`, `gitdir` and a checkout's regular `.git` pointer file | Protected routing entries, including already resolved control targets. |
 | `objects/info/alternates`, `objects/info/http-alternates` | Protected object-store paths and alternate URLs. |
+| `worktrees/*/ave.id`, `ave-pins` | Protected anchors and pins by which a template run holds its worktree registrations. |
 | `remotes/**`, `branches/**` | Protected legacy remote URL and refspec definitions; these are configuration-equivalent routing inputs. |
 | `info/attributes` | Linux protects this control; macOS retains writable attributes as described below. |
 | `objects/**`, `refs/**`, `index`, `HEAD`, `logs/**`, `COMMIT_EDITMSG` | Writable subject to the control-path exceptions. |

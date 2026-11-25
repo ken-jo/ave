@@ -106,12 +106,15 @@ export function simulatedDriveFs(actual: typeof Fs) {
   return { ...configurationFs, default: { ...configurationFs, realpathSync }, realpathSync };
 }
 
-/** ASRT's package, and so its vendored srt-win, resolves on the simulated drive; no real checkout path becomes a stamp target. */
-export function simulatedDriveModule(actual: typeof Module) {
+/**
+ * ASRT's package, and so its vendored srt-win, resolves on the simulated drive; no real checkout path becomes a stamp target.
+ * `onDrive` says when the simulated drive spells paths: by default a simulated win32 process, or whenever a fixture switches the path module to win32.
+ */
+export function simulatedDriveModule(actual: typeof Module, onDrive: () => boolean = () => process.platform === "win32") {
   if (host === "win32") return actual;
   const createRequire = (...args: Parameters<typeof actual.createRequire>) => {
     const real = actual.createRequire(...args);
-    const resolve = Object.assign((id: string, options?: { paths?: string[] }) => process.platform === "win32" && id === "@anthropic-ai/sandbox-runtime/package.json"
+    const resolve = Object.assign((id: string, options?: { paths?: string[] }) => onDrive() && id === "@anthropic-ai/sandbox-runtime/package.json"
       ? String.raw`C:\ave\node_modules\@anthropic-ai\sandbox-runtime\package.json` : real.resolve(id, options), { paths: real.resolve.paths });
     return Object.assign((id: string) => real(id), real, { resolve });
   };

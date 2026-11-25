@@ -7,11 +7,11 @@ export type Expire = (reason?: string) => void;
 export type Bound = (expire: Expire) => () => void;
 
 /** Arms `expire` once the signal-wait bound passes. The timer never keeps the process alive by itself. Returns what clears it. */
-export const boundWait: Bound = expire => {
-  const timeout = setTimeout(() => expire(), SIGNAL_WAIT_MS);
+export function boundWait(expire: Expire, timeoutMs = SIGNAL_WAIT_MS): () => void {
+  const timeout = setTimeout(() => expire(), timeoutMs);
   timeout.unref();
   return () => clearTimeout(timeout);
-};
+}
 
 const ended = (what: string, reason?: string) => reason === undefined ? `timed out waiting for ${what}` : `${reason} while waiting for ${what}`;
 

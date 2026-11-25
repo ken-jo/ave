@@ -1,4 +1,5 @@
 /** Child entry: stdout belongs exclusively to framed protocol traffic; diagnostics go to stderr. */
+import "../../main/bare-program-lookup.js";
 import { PassThrough, Writable } from "node:stream";
 import { Console } from "node:console";
 import { realpathSync } from "node:fs";
