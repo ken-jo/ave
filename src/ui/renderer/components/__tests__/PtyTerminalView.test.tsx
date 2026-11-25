@@ -448,6 +448,19 @@ describe("PtyTerminalView environment and session boundaries", () => {
     expect(terminal.spawn).toHaveBeenCalledTimes(1);
   });
 
+  it("names unavailable sandboxed processes when a running shell is shown elsewhere", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const ave = { ...api, terminal };
+    const { rerender } = render(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:17" tabLabel="Terminal 17" />);
+    await waitFor(() => expect(terminal.control).toHaveBeenCalled());
+    terminal.spawn.mockResolvedValueOnce({ ok: false, reason: "sandbox-unavailable", message: "unavailable" } as never);
+    rerender(<PtyTerminalView api={ave as never} location="pane:main" tabId="terminal:17" tabLabel="Terminal 17" />);
+    await waitFor(() => expect(fakeTerm().written.join("")).toContain(t("ptyTerminal.sandboxUnavailable")));
+    expect(terminal.spawn).toHaveBeenCalledTimes(2);
+    expect(terminal.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ tabId: "terminal:17", purpose: "workspace", replay: false }));
+  });
+
   it("buffers pre-reply replay by lane and incarnation, then ignores retired output", async () => {
     const { api } = makeMockAveApi();
     const terminal = terminalApi();
@@ -1003,6 +1016,22 @@ describe("a restored tab's earlier output", () => {
     const at = ["OLD-OUTPUT", t("ptyTerminal.restored"), "NEW-PROMPT"].map((text) => drawn.indexOf(text));
     expect(at).toEqual([...at].sort((a, b) => a - b));
     expect(at.every((index) => index >= 0)).toBe(true);
+  });
+
+  it.each([
+    ["names unavailable sandboxed processes and does not retry at the root", "sandbox-unavailable", 1, "ptyTerminal.sandboxUnavailable"],
+    ["retries at the root once the saved directory cannot be used", "spawn-failed", 2, "ptyTerminal.manualUnavailable"],
+  ] as const)("%s", async (_case, reason, spawns, notice) => {
+    const tabId = "terminal:53";
+    stageRestoredLayout({ sideTabs: {}, terminals: [{ kind: "terminal", tabId, ordinal: 1, cwd: "/work", url: null }] });
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.spawn.mockResolvedValue({ ok: false, reason, message: "refused" } as never);
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId={tabId} tabLabel="Terminal" />);
+    await waitFor(() => expect(fakeTerm().written.join("")).toContain(t(notice)));
+    expect(terminal.spawn).toHaveBeenCalledTimes(spawns);
+    expect(terminal.spawn).toHaveBeenNthCalledWith(1, expect.objectContaining({ tabId, cwd: "/work", restore: true }));
+    expect(fakeTerm().written.join("").includes(t("ptyTerminal.restoredRoot"))).toBe(spawns === 2);
   });
 
   it("does not ask for it when the tab is new", async () => {

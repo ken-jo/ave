@@ -333,9 +333,17 @@ describe("spawnWorker — gate OFF (default)", () => {
     const spec = { pluginId: "local-indexer", workerId: "no-home", command: "C:/runtime/worker.exe", control: "output-only-v1" as const };
     await expect(spawnWorker(spec)).rejects.toBe(refusal);
     expect(spawnMock).toHaveBeenCalledTimes(1);
+    // The grant holder started for it is stopped: its stdin closed and the process terminated.
+    expect(holder.stdin.writableEnded).toBe(true);
+    expect(holder.killCalls).not.toEqual([]);
     sandboxHomeRefusal.next = refusal;
-    spawnMock.mockReturnValueOnce(new StubWorkerChild());
+    const second = new StubWorkerChild();
+    spawnMock.mockReturnValueOnce(second);
     await expect(spawnWorker(spec)).rejects.toBe(refusal);
+    // The freed slot admits the second attempt, which again starts only its holder and stops it.
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(spawnMock.mock.calls.map(([command]) => String(command).toLowerCase().endsWith("more.com"))).toEqual([true, true]);
+    expect(second.stdin.writableEnded).toBe(true);
   });
 
   it("starts srt-win and the worker in the worker's granted sandbox HOME, never the host's cwd", async () => {
