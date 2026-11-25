@@ -260,6 +260,22 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
       },
     );
 
+    // The package resolves a relative deny against the working directory and a leading ~ against the home, as Ave does.
+    it.each(shellPlatforms)("on %s, names a relative pattern and a home pattern that reach into it", async (platform) => {
+      vi.stubEnv("HOME", dirname(aveHome()));
+      vi.stubEnv("USERPROFILE", dirname(aveHome()));
+      const cwd = vi.spyOn(process, "cwd").mockReturnValue(dirname(aveHome()));
+      try {
+        const rules = ["**/*.jsonl", `~/${basename(aveHome())}/**/*.jsonl`];
+        await initializeWith(rules);
+        expect(shellFor(platform).policyNotices).toEqual(rules.map(rule =>
+          `Your read deny ${rule} applies inside the saved-session store ${sessionRoot()}, so shell commands cannot read what it matches.`));
+      } finally {
+        cwd.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    });
+
     it.each(shellPlatforms)("on %s, names no pattern that reaches only a sibling of the store", async (platform) => {
       await initializeWith([join(aveHome(), "unrelated-sibling", "**", "*.jsonl")]);
       expect(shellFor(platform).policyNotices).toEqual([]);

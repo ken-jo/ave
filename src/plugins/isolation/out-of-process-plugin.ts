@@ -91,10 +91,9 @@ import { MxcProcessContractError } from "../../permissions/mxc-extension-errors.
 
 const log = createLogger("out-of-process-plugin");
 
-// Name, against the plugin, each user read deny that withholds part of one of its host pierces; the wrap then stays silent on it.
-function logUserDeniesInsidePierces(pluginId: string, pierces: readonly string[]): readonly string[] {
-  for (const notice of userDenyInsidePierceNotices(pierces)) log.warn(`[${pluginId}] ${notice}`);
-  return pierces;
+// Name, against a confined plugin, each user read deny that withholds part of one of its host pierces: once per plugin and session.
+function logUserDeniesInsidePierces(pluginId: string, pierces: readonly string[]): void {
+  for (const notice of userDenyInsidePierceNotices(pierces, `plugin:${pluginId}`)) log.warn(`[${pluginId}] ${notice}`);
 }
 
 /** Host-directory rows grant only literal host-selected reads; user-chosen keys may add read/write only within canonical approved ceilings.
@@ -539,6 +538,7 @@ export async function spawnConfinedPluginChild(
     const launchLine = windowsLoopback
       ? windowsLoopbackLaunchLine(args, baseEnv, extraEnv)
       : { args: referenceStdio ? [...args, CHILD_PRIVATE_STDIO_TRANSPORT_ARG] : args };
+    const floorPierces = spec.envelope.read.filter((path) => hostDirectoryFloorPierces().includes(path));
     const { child, confinement } = await spawnConfinedChild({
       command,
       ...launchLine,
@@ -557,7 +557,7 @@ export async function spawnConfinedPluginChild(
       // Every other plugin's code and data: the floor does not cover the plugins root, so this spawn does wherever a deny can re-allow.
       ...(process.platform === "win32" ? {} : { denyPluginsRoot: true }),
       // The envelope names a floor-piercing host directory only when the plugin's reviewed declaration asked for it.
-      floorPierces: logUserDeniesInsidePierces(spec.pluginId, spec.envelope.read.filter((path) => hostDirectoryFloorPierces().includes(path))),
+      floorPierces,
       // The data root above all: the host keeps resolving it, so a child that could swap it for a link would steer the next storage handle or spawn.
       pinWriteRoots: true,
       baseEnv,
@@ -566,6 +566,8 @@ export async function spawnConfinedPluginChild(
       stdio: referenceStdio ? ["ignore", "pipe", "pipe", "pipe"] : [windowsLoopback ? "ignore" : "pipe", "pipe", "pipe"],
       onWrapped: () => {
         wrapped = true;
+        // Only a wrapped child has the deny withheld; an unwrapped one reads nothing through the pierce rules.
+        logUserDeniesInsidePierces(spec.pluginId, floorPierces);
         // Reviewer signal (sandbox-capability registry): tools owned by this plugin now execute in a genuinely ASRT-confined child, so
         // resolveReviewerSandboxCapability may report the real capability for them. Set ONLY on the wrapped path; an unwrapped spawn never marks.
         markPluginChildConfined(spec.pluginId);
@@ -848,7 +850,8 @@ export function createOutOfProcessPluginFactory(
         // Derived before the planner creates anything, so nothing between its staging and the adapter can strand it.
         const intent = { pluginId, command: process.execPath, args: [childEntryPath], cwd: context.pluginRoot,
           baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }) };
-        const floorPierces = logUserDeniesInsidePierces(pluginId, declaredHostDirectoryFloorPierces(spec.manifest.sandbox));
+        const floorPierces = declaredHostDirectoryFloorPierces(spec.manifest.sandbox);
+        logUserDeniesInsidePierces(pluginId, floorPierces);
         const launch = await spec.prepareMxcChild({ ...intent, pluginDataDir: context.pluginDataDir, envelope });
         // The incumbent may have begun terminating, or been quarantined, while admission was awaited:
         // recheck synchronously right before spawn (and again after it) through the registration.

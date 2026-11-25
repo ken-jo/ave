@@ -1651,15 +1651,15 @@ function sessionReadUserDenyNotices(root: string | undefined, denies: readonly {
 }
 
 /** The user's read denies inside a host pierce (plugin certs, hooks, workers, host API): the pierce stays and only what each
- * matches is withheld. Each is named once per session; the saved-session root has its own notice. */
-export function userDenyInsidePierceNotices(pierces: readonly string[]): string[] {
+ * matches is withheld. Each is named once per session and `owner` (a plugin, or the wrap itself); the saved-session root has its own notice. */
+export function userDenyInsidePierceNotices(pierces: readonly string[], owner = ""): string[] {
   const sessionRoot = getConfiguredSessionReadPolicy().allowRead[0];
   const userDenies = getUserReadDenies();
   return pierces
     .filter((pierce) => sessionRoot === undefined || canonicalizePathForMatch(pierce) !== canonicalizePathForMatch(sessionRoot))
     // A deny that covers the pierce refuses the launch instead.
     .flatMap((pierce) => userDenies.filter((rule) => userDenyInside(rule, pierce)
-        && userReadDenyCovering([rule])(canonicalizePathForMatch(pierce)) === undefined && firstUserDenyNotice(pierce, rule))
+        && userReadDenyCovering([rule])(canonicalizePathForMatch(pierce)) === undefined && firstUserDenyNotice(`${owner}\u0000${pierce}`, rule))
       .map((rule) => t("sandboxPolicy.pierceUserDenyPart", { rule, path: pierce })));
 }
 

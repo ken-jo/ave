@@ -81,6 +81,7 @@ vi.mock("../../../lib/logger.js", async (importOriginal) => {
 
 const CERTS_PLUGIN = "certsreader";
 const OTHER_PLUGIN = "plainreader";
+const SECOND_CERTS_PLUGIN = "certsreadertwo";
 const stagingParent = mxcStagingParentFor();
 const hostPlatform = process.platform;
 
@@ -193,29 +194,31 @@ describe.runIf(hostPlatform === "win32")("a user's read deny over a plugin's cer
     }
   });
 
-  it("starts the certs plugin beside a deny inside its pierce, withholds the match, and names the rule once", async () => {
+  it("starts the certs plugins beside a deny inside their pierce, withholds the match, and names the rule once", async () => {
     const corp = join(certs(), "corp");
     mkdirSync(corp, { recursive: true });
-    const rows = [await installPlugin(CERTS_PLUGIN, "certs_reader_ping", { read: [{ kind: "hostDirectory", segments: ["certs"], why: "Read trust anchors" }] })];
+    const certsRead = { read: [{ kind: "hostDirectory" as const, segments: ["certs"], why: "Read trust anchors" }] };
+    const rows = [await installPlugin(CERTS_PLUGIN, "certs_reader_ping", certsRead), await installPlugin(SECOND_CERTS_PLUGIN, "certs_second_ping", certsRead)];
     await writeFile(registryPath, JSON.stringify({ version: 1, plugins: rows }), "utf-8");
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true, denyRead: [corp], windows: { externalConfinement: true } });
     spawnNativeChild.mockReset().mockImplementation(async () => ownedChild());
-    const notice = `[${CERTS_PLUGIN}] Your read deny ${corp} applies inside ${certs()}, which this launch reads; the launch keeps the rest of it and cannot read what the deny matches.`;
+    const notice = `Your read deny ${corp} applies inside ${certs()}, which this launch reads; the launch keeps the rest of it and cannot read what the deny matches.`;
     for (let launch = 0; launch < 2; launch++) {
       const runtime = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: installedDir });
       routeNative(runtime);
       await runtime.startAll();
       try {
-        expect(runtime.listPluginIds()).toContain(CERTS_PLUGIN);
+        expect(runtime.listPluginIds()).toEqual(expect.arrayContaining([CERTS_PLUGIN, SECOND_CERTS_PLUGIN]));
         await expect(runtime.call("certs_reader_ping")).resolves.toBe("pong");
+        await expect(runtime.call("certs_second_ping")).resolves.toBe("pong");
       } finally {
         await runtime.stopAll();
       }
     }
-    expect(rankedDenies).toHaveLength(2);
+    expect(rankedDenies).toHaveLength(4);
     for (const denied of rankedDenies) expect(denied).toContain(corp);
-    // Named against the plugin on its first launch only; the container admission stays silent on a rule already named.
-    expect(warnings.filter((line) => line.includes(corp))).toEqual([notice]);
+    // Named once in the session, and once against each affected plugin; the second launch names nothing again.
+    expect(warnings.filter((line) => line.includes(corp)).sort()).toEqual([notice, `[${CERTS_PLUGIN}] ${notice}`, `[${SECOND_CERTS_PLUGIN}] ${notice}`].sort());
     expect(runtimeErrors).toEqual([]);
   });
 });
