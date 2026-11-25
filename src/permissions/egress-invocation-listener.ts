@@ -3,6 +3,7 @@
 import http from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
+import { createLogger } from "../lib/logger.js";
 import { getWindowsProxyPortRange } from "./asrt-sandbox.js";
 
 // Where the listener forwards, and as whom. Read once per forwarded request.
@@ -117,6 +118,16 @@ function refuse(socketOrResponse: http.ServerResponse | Duplex, status: number, 
 
 const DEFAULT_MAX_UPSTREAM_HEAD_BYTES = 16 * 1024;
 const MAX_LISTENER_BIND_ATTEMPTS = 16;
+
+const log = createLogger("egress-invocation-listener");
+// The bind failures that mean this host has no such address (or no IPv6 sockets at all), as opposed to someone else having the port.
+const IPV6_LOOPBACK_ABSENT: ReadonlySet<string> = new Set(["EADDRNOTAVAIL", "EAFNOSUPPORT"]);
+const MAX_IPV6_HOLD_RETRIES = 4;
+let ipv6HoldNoticeLogged = false;
+
+export function __resetIpv6HoldNoticeForTest(): void {
+  ipv6HoldNoticeLogged = false;
+}
 
 export async function openInvocationProxyListener(
   options: OpenInvocationProxyListenerOptions,
@@ -264,9 +275,13 @@ export async function openInvocationProxyListener(
     for (const forward of forwards) forward.destroy();
     forwards.clear();
   };
+  // A contained client reaches this port number on both loopback addresses, so the IPv6 one is held as well: nothing else can listen
+  // there, and whatever connects is dropped.
+  const hold = net.createServer((socket) => socket.destroy());
+  hold.on("error", () => {});
   // An already-unbound server is closed; any other close failure is the caller's.
-  const unbind = (): Promise<void> => new Promise<void>((resolve, reject) => {
-    server.close((error) => {
+  const unbind = (bound: net.Server = server): Promise<void> => new Promise<void>((resolve, reject) => {
+    bound.close((error) => {
       if (error === undefined || (error as NodeJS.ErrnoException).code === "ERR_SERVER_NOT_RUNNING") resolve();
       else reject(error);
     });
@@ -282,7 +297,11 @@ export async function openInvocationProxyListener(
     closing ??= (async () => {
       // A bind still in progress finishes first, so its port is closed rather than left behind.
       await binding?.catch(() => {});
-      if (server.listening) await unbind();
+      try {
+        if (server.listening) await unbind();
+      } finally {
+        if (hold.listening) await unbind(hold);
+      }
     })().catch((error: unknown) => {
       // The port may still be bound: a later close tries again.
       closing = undefined;
@@ -294,26 +313,63 @@ export async function openInvocationProxyListener(
   options.admission?.signal.addEventListener("abort", revoke, { once: true });
   let port: number | undefined;
   try {
-    for (let attempt = 0; attempt < MAX_LISTENER_BIND_ATTEMPTS; attempt++) {
-      options.admission?.assertCanBind();
-      if (closeRequested) throw new Error("invocation proxy listener closed while binding");
-      binding = new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(0, "127.0.0.1", () => {
-          server.off("error", reject);
+    // Each pass binds a fresh port pair. Where the IPv6 bind fails for a reason that is neither a taken port nor an absent
+    // address, both ports are released and another pair is tried.
+    for (let retry = 0; port === undefined; retry++) {
+      let candidate: number | undefined;
+      for (let attempt = 0; attempt < MAX_LISTENER_BIND_ATTEMPTS; attempt++) {
+        options.admission?.assertCanBind();
+        if (closeRequested) throw new Error("invocation proxy listener closed while binding");
+        binding = new Promise<void>((resolve, reject) => {
+          server.once("error", reject);
+          server.listen(0, "127.0.0.1", () => {
+            server.off("error", reject);
+            resolve();
+          });
+        });
+        await binding;
+        const address = server.address();
+        if (address === null || typeof address === "string") throw new Error("invocation proxy listener has no TCP address");
+        if (address.port < excludedStart || address.port > excludedEnd) {
+          candidate = address.port;
+          break;
+        }
+        await unbind();
+      }
+      if (candidate === undefined) throw new Error("invocation proxy listener could not bind outside shared proxy port range");
+      const held = candidate;
+      let failure: string | undefined;
+      binding = new Promise<void>((resolve) => {
+        const failed = (error: NodeJS.ErrnoException): void => {
+          failure = error.code ?? "bind failed";
+          resolve();
+        };
+        hold.once("error", failed);
+        hold.listen({ host: "::1", port: held, ipv6Only: true, exclusive: true }, () => {
+          hold.off("error", failed);
           resolve();
         });
       });
       await binding;
-      const address = server.address();
-      if (address === null || typeof address === "string") throw new Error("invocation proxy listener has no TCP address");
-      if (address.port < excludedStart || address.port > excludedEnd) {
-        port = address.port;
-        break;
+      if (failure === undefined) {
+        port = held;
+      } else if (IPV6_LOOPBACK_ABSENT.has(failure)) {
+        // The host has no such address, so there is nothing there to own: the endpoint opens without the hold.
+        if (!ipv6HoldNoticeLogged) {
+          ipv6HoldNoticeLogged = true;
+          log.warn(`This host has no IPv6 loopback address (${failure}): contained egress endpoints hold their IPv4 port only`);
+        }
+        port = held;
+      } else if (failure === "EADDRINUSE") {
+        // Someone else has it: no other port is tried and no IPv4-only endpoint is left.
+        throw new Error(`invocation proxy listener could not hold [::1]:${held} (${failure})`);
+      } else {
+        await unbind();
+        if (retry >= MAX_IPV6_HOLD_RETRIES) {
+          throw new Error(`invocation proxy listener could not hold an IPv6 loopback port after ${MAX_IPV6_HOLD_RETRIES} retries (${failure})`);
+        }
       }
-      await unbind();
     }
-    if (port === undefined) throw new Error("invocation proxy listener could not bind outside shared proxy port range");
     options.admission?.assertCanBind();
     if (closeRequested) throw new Error("invocation proxy listener closed while binding");
   } catch (error) {

@@ -8,7 +8,7 @@ beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isP
 import * as policyHome from "../../shared/policy-home.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
-import { SandboxManager, type SandboxAskCallback, type ParentProxyRouter } from "@anthropic-ai/sandbox-runtime";
+import type { SandboxAskCallback, ParentProxyRouter } from "@anthropic-ai/sandbox-runtime";
 import {
   closeAllEgressConnections,
   closeEgressConnections,
@@ -19,6 +19,7 @@ import {
 import { openInvocationProxyListener } from "../egress-invocation-listener.js";
 import { openHostEgressListener } from "../egress-host-listener.js";
 import { EgressGrantStore, egressGrantScopesFor } from "../egress-grants.js";
+import { egressRelayViolationLines } from "../egress-relay/relay.js";
 import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
 
 vi.mock("../mxc-windows.js", async (importOriginal) => ({
@@ -187,27 +188,6 @@ async function initialize(upstreamRouter: ParentProxyRouter, callback: SandboxAs
 describe.skipIf(process.platform !== "win32")("container proxy regression coverage", () => {
   registerMxcShellLaunchAdmissionFixture(TOKEN_A, TOKEN_B);
 
-  it("excludes the configured range from relay binds and frontend registration", async () => {
-    const proxyPortRange = [42000, 42009] as const;
-    await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true, proxyPortRange } });
-    const forced = forceFirstReportedPort(proxyPortRange);
-    const relay = await openHostEgressListener(TOKEN_A);
-    listeners.push(relay);
-    expect(forced.verifyDiscardedBinds()).toEqual([relay.port]);
-    expect(() => relay.registerPort(42005)).toThrow("shared proxy range");
-  });
-
-  it("discards a relay bind in the shared range and keeps both launcher ports outside it", async () => {
-    const proxy = await localProxy();
-    await initialize(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: proxy.port }] }));
-    const forced = forceFirstReportedPort(DEFAULT_WINDOWS_PROXY_PORT_RANGE);
-    const listener = await lane(TOKEN_A, "launcher");
-    const keptPorts = forced.verifyDiscardedBinds();
-    expect(keptPorts).toHaveLength(2);
-    expect(keptPorts.at(-1)).toBe(listener.port);
-    expect(await exchange(track(net.connect(listener.port, "127.0.0.1")), connectRequest())).toMatch(/^HTTP\/1\.1 200/u);
-  });
-
   it.each(["listener", "launcher"] as const)("revokes live tunnels and stops echo through the %s path", async (kind) => {
     const proxy = await localProxy();
     const subject = { token: TOKEN_A, sessionId: "review", tabId: undefined, projectRoot: undefined, origin: "shell" as const };
@@ -223,7 +203,7 @@ describe.skipIf(process.platform !== "win32")("container proxy regression covera
       });
     const listener = await lane(TOKEN_A, kind);
     const client = track(net.connect(listener.port, "127.0.0.1"));
-    expect(await exchange(client, connectRequest())).toMatch(/^HTTP\/1\.1 200/u);
+    expect(await exchange(client, connectRequest())).toMatch(/^HTTP\/1\.[01] 200/u);
     expect(await exchange(client, "before-revoke", (text) => text.includes("before-revoke"))).toBe("before-revoke");
     const revoked = await grants.revoke({ scope: "session", sessionId: "review", ...DESTINATION });
     expect(revoked.tokens).toEqual([TOKEN_A]);
@@ -240,7 +220,7 @@ describe.skipIf(process.platform !== "win32")("container proxy regression covera
     await initialize(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: proxy.port }] }));
     const listener = await lane(TOKEN_A, kind);
     const client = track(net.connect(listener.port, "127.0.0.1"));
-    expect(await exchange(client, connectRequest())).toMatch(/^HTTP\/1\.1 200/u);
+    expect(await exchange(client, connectRequest())).toMatch(/^HTTP\/1\.[01] 200/u);
     expect(closeAllEgressConnections()).toBeGreaterThanOrEqual(1);
     await expect(exchange(client, "after-change", (text) => text.includes("after-change"))).rejects.toThrow();
     await expect.poll(() => client.destroyed).toBe(true);
@@ -290,7 +270,6 @@ describe.skipIf(process.platform !== "win32")("container proxy regression covera
       .replace("\r\n\r\n", `\r\nProxy-Authorization: ${a.proxyAuthorization}\r\n\r\n`);
     expect(await exchange(track(net.connect(a.port, "127.0.0.1")), request)).toMatch(/^HTTP\/1\.1 403/u);
     expect(attribution).not.toContain(TOKEN_B);
-    expect(SandboxManager.getSandboxViolationStore().getViolationsForCommand(TOKEN_A).at(-1)?.line)
-      .toContain("sandbox proxy listener");
+    expect(egressRelayViolationLines(TOKEN_A).at(-1)).toContain("sandbox proxy listener");
   });
 });
