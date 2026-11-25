@@ -138,7 +138,7 @@ it.each([
 ] as const)("runs every collected suite when native checks run and the native tier is selected ($event, $base, $file)", ({ event, base, mode, file, runs }) => {
   const workflow = parse(readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8"));
   const job = workflow.jobs["windows-permission-tests"];
-  expect(workflow.jobs["windows-native-preparation"].if).toBe("needs.build.outputs.platform_checks == 'true'");
+  expect(workflow.jobs["windows-native-preparation"].if).toBe("needs.build.outputs.platform_checks == 'true' || needs.build.outputs.windows_tier_tests == 'true'");
   expect(job.if).toBe("needs.build.outputs.platform_checks == 'true' && needs.windows-native-preparation.result == 'success'");
   const plan: CiSuitePlan = { mode, reason: "platform gate", tests: [] };
   const selected = platformChecksRequired(event, plan, file ? [modifiedEntry(file)] : [], base);

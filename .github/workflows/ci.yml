@@ -57,7 +57,8 @@ jobs:
       default_vitest_tiers: ${{ steps.tiers.outputs.default_vitest_tiers || 'default,native' }}
       tier_job_native: ${{ steps.tiers.outputs.tier_job_native || 'false' }}
       vitest_tier_job: ${{ steps.tiers.outputs.vitest_tier_job || 'false' }}
-      windows_tier_tests: ${{ steps.plan.outputs.platform_checks == 'true' && steps.tiers.outputs.windows_tiers != '' }}
+      # A selected Windows tier runs even when the platform matrix is skipped.
+      windows_tier_tests: ${{ steps.docs-impact.outputs.docs_only != 'true' && steps.tiers.outputs.windows_tiers != '' }}
     env:
       # Parallel runners may share a home; each workspace owns its Bun cache.
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
@@ -236,7 +237,7 @@ jobs:
           AVE_WINDOWS_TEST_TIERS: ${{ steps.tiers.outputs.windows_tiers }}
         run: bun run scripts/plan-windows-tests.ts "$RUNNER_TEMP/windows-ci/windows-plan.json"
       - name: Upload the Windows regression plan
-        if: steps.docs-impact.outputs.docs_only != 'true' && steps.plan.outputs.platform_checks == 'true'
+        if: steps.docs-impact.outputs.docs_only != 'true' && (steps.plan.outputs.platform_checks == 'true' || steps.tiers.outputs.windows_tiers != '')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-ci-plan
@@ -761,7 +762,13 @@ jobs:
           fi
           expected=skipped
           if [ "$PLATFORM_CHECKS" = "true" ]; then expected=success; fi
-          for result in "$WINDOWS_PREPARATION_RESULT" "$WINDOWS_RESULT" "$MACOS_RESULT" "$LINUX_RESULT"; do
+          preparation=$expected
+          if [ "$WINDOWS_TIER_TESTS" = "true" ]; then preparation=success; fi
+          if [ "$WINDOWS_PREPARATION_RESULT" != "$preparation" ]; then
+            echo "::error::Windows native preparation ended $WINDOWS_PREPARATION_RESULT, expected $preparation"
+            exit 1
+          fi
+          for result in "$WINDOWS_RESULT" "$MACOS_RESULT" "$LINUX_RESULT"; do
             if [ "$result" != "$expected" ]; then
               echo "::error::native platform check ended $result, expected $expected"
               exit 1
@@ -791,7 +798,7 @@ jobs:
       group: ci-platform-${{ github.workflow }}-windows-prepare-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     needs: build
-    if: needs.build.outputs.platform_checks == 'true'
+    if: needs.build.outputs.platform_checks == 'true' || needs.build.outputs.windows_tier_tests == 'true'
     # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     # The runner needs Git for Windows (bash) and the C++ build tools that
     # scripts/build-windows-job.ps1 finds through vswhere. Pinned to
@@ -1197,7 +1204,7 @@ jobs:
       group: ci-platform-${{ github.workflow }}-windows-tiers-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}-${{ matrix.shard }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     needs: [build, windows-native-preparation]
-    if: needs.build.outputs.platform_checks == 'true' && needs.windows-native-preparation.result == 'success' && needs.build.outputs.windows_tier_tests == 'true'
+    if: needs.build.outputs.windows_tier_tests == 'true' && needs.windows-native-preparation.result == 'success'
     runs-on: windows-2025
     strategy:
       fail-fast: false

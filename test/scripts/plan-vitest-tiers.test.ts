@@ -166,7 +166,7 @@ describe("Vitest tier CI wiring", () => {
       default_vitest_tiers: gh("steps.tiers.outputs.default_vitest_tiers || 'default,native'"),
       tier_job_native: gh("steps.tiers.outputs.tier_job_native || 'false'"),
       vitest_tier_job: gh("steps.tiers.outputs.vitest_tier_job || 'false'"),
-      windows_tier_tests: gh("steps.plan.outputs.platform_checks == 'true' && steps.tiers.outputs.windows_tiers != ''"),
+      windows_tier_tests: gh("steps.docs-impact.outputs.docs_only != 'true' && steps.tiers.outputs.windows_tiers != ''"),
     });
   });
 
@@ -194,9 +194,12 @@ describe("Vitest tier CI wiring", () => {
     expect(prove).toBeLessThan(tiers.steps.indexOf(native as Step));
   });
 
-  it("runs the Windows tier shards when the build job selects a tier", () => {
+  it("runs the Windows tier shards when the build job selects a tier, even without the platform matrix", () => {
     expect(windowsTiers.needs).toEqual(windows.needs);
-    expect(windowsTiers.if).toBe(`${windows.if} && needs.build.outputs.windows_tier_tests == 'true'`);
+    expect(windowsTiers.if).toBe("needs.build.outputs.windows_tier_tests == 'true' && needs.windows-native-preparation.result == 'success'");
+    expect(workflow.jobs["windows-native-preparation"].if).toContain("|| needs.build.outputs.windows_tier_tests == 'true'");
+    const upload = workflow.jobs.build.steps.find(step => step.name === "Upload the Windows regression plan");
+    expect(upload?.if).toContain("|| steps.tiers.outputs.windows_tiers != ''");
     expect(windowsTiers.strategy?.matrix.shard).toEqual([1, 2, 3]);
     expect(windowsTiers.env).toMatchObject({ AVE_WINDOWS_TEST_TIER: "tiers", AVE_VITEST_TIERS: "default,native,census" });
     expect(windows.env?.AVE_WINDOWS_TEST_TIER).toBeUndefined();

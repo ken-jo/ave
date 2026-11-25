@@ -488,6 +488,36 @@ function checkArm64PathKindJob(jobs) {
   }
 }
 
+const TIER_SELECTION = "needs.build.outputs.windows_tier_tests == 'true'";
+const TIER_SELECTION_OUTPUT = "${{ steps.docs-impact.outputs.docs_only != 'true' && steps.tiers.outputs.windows_tiers != '' }}";
+const PLAN_UPLOAD_CONDITION = "steps.docs-impact.outputs.docs_only != 'true' && "
+  + "(steps.plan.outputs.platform_checks == 'true' || steps.tiers.outputs.windows_tiers != '')";
+const TIER_AGGREGATE = 'case "$WINDOWS_TIER_TESTS:$WINDOWS_TIER_RESULT" in\n  true:success|false:skipped) ;;';
+const PREPARATION_AGGREGATE = [
+  "preparation=$expected",
+  'if [ "$WINDOWS_TIER_TESTS" = "true" ]; then preparation=success; fi',
+  'if [ "$WINDOWS_PREPARATION_RESULT" != "$preparation" ]; then',
+].join("\n");
+
+// A selected Windows tier is prepared, uploaded, run and required even when the platform matrix is skipped.
+function checkTierSelection(jobs, tierCondition) {
+  const upload = jobs.build?.steps?.filter(step => step.name === "Upload the Windows regression plan");
+  const tierJob = jobs[TIER_JOB];
+  const aggregate = jobs["build-and-test"];
+  const result = aggregate?.steps?.[0];
+  if (jobs.build?.outputs?.windows_tier_tests !== TIER_SELECTION_OUTPUT
+    || upload?.length !== 1 || upload[0].if !== PLAN_UPLOAD_CONDITION
+    || tierJob?.if !== tierCondition || JSON.stringify(tierJob?.needs) !== JSON.stringify(["build", PREPARATION_JOB])
+    || !Array.isArray(aggregate?.needs) || !aggregate.needs.includes(TIER_JOB) || !aggregate.needs.includes(PREPARATION_JOB)
+    || result?.env?.WINDOWS_TIER_TESTS !== "${{ needs.build.outputs.windows_tier_tests }}"
+    || result.env.WINDOWS_TIER_RESULT !== `\${{ needs.${TIER_JOB}.result }}`
+    || result.env.WINDOWS_PREPARATION_RESULT !== `\${{ needs.${PREPARATION_JOB}.result }}`
+    || typeof result.run !== "string" || !result.run.includes(TIER_AGGREGATE) || !result.run.includes(PREPARATION_AGGREGATE)
+    || result.run.includes('"$WINDOWS_PREPARATION_RESULT" "$WINDOWS_RESULT"')) {
+    throw new Error("The Windows tier shards must follow tier selection through preparation, plan upload and the aggregate");
+  }
+}
+
 export function checkWindowsWorkflow(workflow, inspect) {
   const { jobs } = parse(workflow);
   checkArm64PathKindJob(jobs);
@@ -497,16 +527,14 @@ export function checkWindowsWorkflow(workflow, inspect) {
   }
   const job = jobs[CONTAINED_JOB];
   const platform = "needs.build.outputs.platform_checks == 'true'";
-  if (jobs[PREPARATION_JOB]?.if !== platform || jobs[PREPARATION_JOB]?.needs !== "build"
-    || job?.if !== `${platform} && needs.windows-native-preparation.result == 'success'`
+  const prepared = "needs.windows-native-preparation.result == 'success'";
+  if (jobs[PREPARATION_JOB]?.if !== `${platform} || ${TIER_SELECTION}` || jobs[PREPARATION_JOB]?.needs !== "build"
+    || job?.if !== `${platform} && ${prepared}`
     || JSON.stringify(job?.needs) !== JSON.stringify(["build", PREPARATION_JOB])) {
     throw new Error("Windows preparation and every shard must follow native platform selection");
   }
   const tierJob = jobs[TIER_JOB];
-  if (tierJob?.if !== `${job.if} && needs.build.outputs.windows_tier_tests == 'true'`
-    || JSON.stringify(tierJob?.needs) !== JSON.stringify(["build", PREPARATION_JOB])) {
-    throw new Error("The Windows tier shards must follow native platform and tier selection");
-  }
+  checkTierSelection(jobs, `${TIER_SELECTION} && ${prepared}`);
   for (const [testJob, shards, tier] of [[job, WINDOWS_TEST_SHARDS, undefined], [tierJob, WINDOWS_TIER_TEST_SHARDS, "tiers"]]) {
     const strategy = testJob?.strategy;
     if (strategy?.["fail-fast"] !== false || Object.keys(strategy.matrix ?? {}).length !== 1
