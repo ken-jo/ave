@@ -947,7 +947,7 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
       ...writeFloor.map((path) => policyFloorRow(path, "ro", "protected-name", true)),
       ...protectedFloor.map((path) => policyFloorRow(path, "denied", "secrets", true)),
       // The user's denies stay spellings: a pattern is expanded when the launch is ranked.
-      ...(_baseTrustedSettings?.denyRead ?? []).map((path) => policyFloorRow(path, "denied", "secrets", false)),
+      ...getUserReadDenies().map((path) => policyFloorRow(path, "denied", "user-deny", false)),
     ],
     userGrants: [],
     extensionManifests: [
@@ -1664,6 +1664,11 @@ function getProtectedReadDenyPaths(
 // and recognize the reviewed exceptions carried by the policy.
 export function getProtectedReadDenyFloor(): readonly string[] {
   return getProtectedReadDenyPaths();
+}
+
+/** The read denies the user configured, which no host pierce covers. */
+export function getUserReadDenies(): readonly string[] {
+  return _baseTrustedSettings?.denyRead ?? [];
 }
 
 // The protected read deny covering `path`, if any. A plugin's chosen directory is refused when one does: its read half would re-allow the deny on every platform, and on Linux its write half would too.

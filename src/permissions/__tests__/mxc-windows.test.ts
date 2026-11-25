@@ -327,9 +327,15 @@ describe("rankMxcFilesystem", () => {
       const grants = rankAdmittedMxcLists(policy);
       expect(grants.readonly.toSorted()).toEqual([certs, owned].toSorted());
       expect(grants.denied.toSorted()).toEqual([protectedRoot, nestedDeny, mask].toSorted());
-      // On the protected floor the mask drops the grant beneath it; the pierce still holds.
-      const floorMask = rankAdmittedMxcLists({ ...policy, denyRead: [], protectedFloor: [...policy.protectedFloor, mask] });
-      expect(floorMask.readonly).toEqual([certs]);
+      // The user's own deny of the pierced path wins: the launch is refused and names that rule.
+      expect(() => rankAdmittedMxcLists({ ...policy, userDenyRead: [certs] })).toThrow(`Your read deny ${certs} covers ${certs}`);
+      expect(() => rankAdmittedMxcLists({ ...policy, userDenyRead: [protectedRoot] })).toThrow(`Your read deny ${protectedRoot} covers ${certs}`);
+      expect(() => rankAdmittedMxcLists({ ...policy, userDenyRead: [join(protectedRoot, "cert*")] }))
+        .toThrow(`Your read deny ${join(protectedRoot, "cert*")} covers ${certs}`);
+      // A user deny beneath the pierce stays a deny, and one elsewhere drops the grant beneath it.
+      const beneath = rankAdmittedMxcLists({ ...policy, userDenyRead: [nestedDeny, mask] });
+      expect(beneath.readonly).toEqual([certs]);
+      expect(beneath.denied.toSorted()).toEqual([protectedRoot, nestedDeny, mask].toSorted());
     } finally {
       rmSync(userData, { recursive: true, force: true });
     }

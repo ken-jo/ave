@@ -4,7 +4,7 @@ import { win32 as winPath } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
-import { aveHomeReadBoundaryCovering, getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
+import { aveHomeReadBoundaryCovering, getProtectedReadDenyFloor, getUserReadDenies } from "../permissions/asrt-sandbox.js";
 import { openInvocationProxyListener } from "../permissions/egress-invocation-listener.js";
 import { openHostEgressListener } from "../permissions/egress-host-listener.js";
 import { egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../permissions/egress-invocations.js";
@@ -38,6 +38,8 @@ export interface MxcShellPolicyLists {
   readonly denyWrite: readonly string[];
   /** The protected read floor. A grant at or beneath a row is dropped. */
   readonly protectedFloor: readonly string[];
+  /** The user's read denies. A grant at or beneath a row is dropped, and no pierce covers one. */
+  readonly userDenyRead?: readonly string[];
   /** Reads the shell holds inside the protected floor on purpose (the saved session history). */
   readonly floorPierces?: readonly string[];
 }
@@ -52,6 +54,7 @@ export function shellPolicyModel(lists: MxcShellPolicyLists): PolicyModel {
       ...lists.denyRead.map((path) => policyFloorRow(path, "denied", "read-boundary", false)),
       ...lists.denyWrite.map((path) => policyFloorRow(path, "ro", "protected-name", false)),
       ...lists.protectedFloor.map((path) => policyFloorRow(path, "denied", "secrets", false)),
+      ...(lists.userDenyRead ?? []).map((path) => policyFloorRow(path, "denied", "user-deny", false)),
     ],
     userGrants: [],
     extensionManifests: [],
@@ -69,7 +72,7 @@ export interface PrepareMxcShellLaunchInput {
   readonly commandLine: string;
   readonly cwd: string;
   /** What the shell computed for this command. The protected read floor is added here. */
-  readonly filesystem: Omit<MxcShellPolicyLists, "protectedFloor">;
+  readonly filesystem: Omit<MxcShellPolicyLists, "protectedFloor" | "userDenyRead">;
   /** The child's secret-stripped environment. */
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
@@ -135,8 +138,9 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   const insideBoundary = (path: string): boolean => aveHomeReadBoundaryCovering(path) !== undefined;
   const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path));
   const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path));
-  const protectedFloor = getProtectedReadDenyFloor();
-  const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, protectedFloor }));
+  const userDenyRead = getUserReadDenies();
+  const protectedFloor = getProtectedReadDenyFloor().filter((path) => !userDenyRead.includes(path));
+  const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, protectedFloor, userDenyRead }));
   assertAdmission();
   const relay = await openHostEgressListener(token, admission);
   assertAdmission();

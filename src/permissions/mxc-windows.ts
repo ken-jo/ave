@@ -516,6 +516,21 @@ export interface MxcPolicyRows {
   readonly protectedFloor: readonly string[];
   // Host-minted pierces. A grant at or beneath one is not dropped by the floor.
   readonly floorPierces: readonly string[];
+  // The user's read denies (`user-deny` rows). A grant at or beneath one is dropped, and no pierce covers it.
+  readonly userDenies: readonly string[];
+}
+
+function pathAndAncestors(path: string): string[] {
+  const paths: string[] = [];
+  for (let current = withoutTrailingSeparator(path); ; current = winPath.dirname(current)) {
+    paths.push(current);
+    if (winPath.dirname(current) === current) return paths;
+  }
+}
+
+// A host pierce at or beneath a user's read deny: the user's rule wins, so the launch is refused and names it.
+function userDenyCoversPierce(rule: string, pierce: string): Error {
+  return new Error(`Your read deny ${rule} covers ${pierce}, which this launch needs to read; the launch is refused`);
 }
 
 export function mxcPolicyRows(model: PolicyModel): MxcPolicyRows {
@@ -524,10 +539,11 @@ export function mxcPolicyRows(model: PolicyModel): MxcPolicyRows {
   return {
     writeGrants: paths((row) => grant(row) && row.access === "rw"),
     readGrants: paths((row) => grant(row) && row.access === "ro"),
-    readDenies: paths((row) => isPolicyFloorRow(row) && row.access === "denied" && row.reason !== "secrets"),
+    readDenies: paths((row) => isPolicyFloorRow(row) && row.access === "denied" && row.reason !== "secrets" && row.reason !== "user-deny"),
     writeFloor: paths((row) => isPolicyFloorRow(row) && row.access === "ro"),
     protectedFloor: paths((row) => row.reason === "secrets"),
     floorPierces: paths((row) => row.reason === "floor-pierce"),
+    userDenies: paths((row) => row.reason === "user-deny"),
   };
 }
 
@@ -545,9 +561,15 @@ export function rankMxcRowsBySpelling(
   const protectedFloor = windowsPaths(rows.protectedFloor);
   const denyWrite = windowsPaths(rows.writeFloor);
   const pierces = rows.floorPierces;
+  const userDenies = windowsPaths(rows.userDenies);
+  for (const pierce of pierces) {
+    const rule = userDenies.find((deny) => !PATTERN_SEGMENT.test(deny) && isWindowsPathAtOrUnder(pierce, deny));
+    if (rule !== undefined) throw userDenyCoversPierce(rule, pierce);
+  }
   const floored = (path: string): boolean =>
-    protectedFloor.some((floor) => isWindowsPathAtOrUnder(path, floor)) &&
-    !pierces.some((pierce) => isWindowsPathAtOrUnder(path, pierce));
+    userDenies.some((deny) => !PATTERN_SEGMENT.test(deny) && isWindowsPathAtOrUnder(path, deny)) ||
+    (protectedFloor.some((floor) => isWindowsPathAtOrUnder(path, floor)) &&
+    !pierces.some((pierce) => isWindowsPathAtOrUnder(path, pierce)));
   const writeDenied = (path: string): boolean => denyWrite.some((deny) => isWindowsPathAtOrUnder(path, deny));
 
   const writeGrants = dedupe(rows.writeGrants).filter((path) => exists(path) && !floored(path));
@@ -558,7 +580,7 @@ export function rankMxcRowsBySpelling(
   // A pierced floor row is the read exception itself; kept, it would deny the pierced grant as soon as a wider grant contains it. Only the
   // exact row goes: a floor row above a pierce stays, and the more specific read grant carves the pierce out of it.
   const pierced = new Set(pierces.map(foldPath));
-  const readDenies = dedupe([...windowsPaths(rows.readDenies), ...protectedFloor.filter((row) => !pierced.has(foldPath(row)))]);
+  const readDenies = dedupe([...windowsPaths(rows.readDenies), ...protectedFloor.filter((row) => !pierced.has(foldPath(row))), ...userDenies]);
   // A relative row is unanchored, as a pattern is: it applies wherever the shell reads, so it is expanded rather than dropped.
   const isPatternDeny = (deny: string): boolean => PATTERN_SEGMENT.test(deny) || !WINDOWS_ABSOLUTE.test(deny);
   const literalDenies = readDenies.filter((deny) => !isPatternDeny(deny));
@@ -651,18 +673,27 @@ function* listMxcPatternDirectory(directory: string): Iterable<MxcDirectoryEntry
 }
 
 // A policy row as the obligation the ranking below reads. `secrets` rows are the protected floor: a grant at or beneath one is dropped
-// unless a pierce covers it. `ave-home` and `read-boundary` rows are read masks a grant at their own path or beneath them re-opens.
-// A read deny is a pattern by its spelling; its matches are admitted when the launch is ranked.
-function obligationRowsOf(model: PolicyModel): { readonly rows: readonly ObligationRow[]; readonly patterns: readonly string[] } {
+// unless a pierce covers it. `user-deny` rows drop it too, and no pierce covers them. `ave-home` and `read-boundary` rows are read
+// masks a grant at their own path or beneath them re-opens. A read deny is a pattern by its spelling; its matches are admitted when
+// the launch is ranked.
+function obligationRowsOf(model: PolicyModel): {
+  readonly rows: readonly ObligationRow[]; readonly patterns: readonly string[]; readonly userPatterns: readonly string[];
+} {
   const rows: ObligationRow[] = [];
   const patterns = new Set<string>();
+  const userPatterns = new Set<string>();
   let sessionRoot: string | undefined;
   for (const row of model.rows) {
     const spelling = { path: expandMxcPolicyPath(row.path), literal: true } as const;
     if (isPolicyFloorRow(row)) {
       if (row.access === "ro") rows.push({ spelling, polarity: { effect: "deny", access: "write" }, source: "per-command" });
-      else if (isMxcReadPattern(row.path)) patterns.add(stripExtendedPathPrefix(spelling.path));
-      else rows.push({ spelling, polarity: { effect: "deny", access: "read" }, source: row.reason === "secrets" ? "floor" : "read-mask" });
+      else if (isMxcReadPattern(row.path)) {
+        patterns.add(stripExtendedPathPrefix(spelling.path));
+        if (row.reason === "user-deny") userPatterns.add(stripExtendedPathPrefix(spelling.path));
+      } else {
+        const source = row.reason === "secrets" ? "floor" : row.reason === "user-deny" ? "settings" : "read-mask";
+        rows.push({ spelling, polarity: { effect: "deny", access: "read" }, source });
+      }
     } else if (row.reason === "floor-pierce") {
       // The saved-session read exception is withheld on Windows.
       sessionRoot ??= sessionStorePath();
@@ -671,7 +702,7 @@ function obligationRowsOf(model: PolicyModel): { readonly rows: readonly Obligat
       rows.push({ spelling, polarity: { effect: "allow", access: row.access === "rw" ? "write" : "read" }, source: row.reason === "user-grant" ? "settings" : "per-command" });
     }
   }
-  return { rows, patterns: [...patterns] };
+  return { rows, patterns: [...patterns], userPatterns: [...userPatterns] };
 }
 
 interface CanonicalPatternDeny extends SpelledPatternDeny {
@@ -793,7 +824,8 @@ export function assertMxcDenyOutcomes(input: MxcDenyOutcomeInput): void {
 // The Windows container adapter: policy rows in, the three container lists out. Every row is admitted to the object it names
 // first, and the ranking compares those objects, never spellings.
 export function rankMxcFilesystem(model: PolicyModel): MxcFilesystemGrants {
-  return rankAdmittedMxcFilesystem(admitMxcFilesystem(model), obligationRowsOf(model).patterns);
+  const { patterns, userPatterns } = obligationRowsOf(model);
+  return rankAdmittedMxcFilesystem(admitMxcFilesystem(model), patterns, userPatterns);
 }
 
 /** The model's literal rows admitted for one container launch; pattern denies are admitted when the launch is ranked. */
@@ -801,7 +833,7 @@ export function admitMxcFilesystem(model: PolicyModel): ObligationSet {
   return admitObligations({ purpose: "mxc-launch", principal: "mxc", rows: obligationRowsOf(model).rows });
 }
 
-function rankAdmittedMxcFilesystem(set: ObligationSet, requestedPatterns: readonly string[]): MxcFilesystemGrants {
+function rankAdmittedMxcFilesystem(set: ObligationSet, requestedPatterns: readonly string[], userPatterns: readonly string[]): MxcFilesystemGrants {
   requireEnforceable(set);
   if (set.scope.principal !== "mxc") throw new TypeError("Filesystem obligations were issued for another principal");
   const entries = consumeObligations(set, "mxc-launch");
@@ -815,6 +847,10 @@ function rankAdmittedMxcFilesystem(set: ObligationSet, requestedPatterns: readon
   const requestedPierces = entries.filter(entry => entry.polarity.access === "lookup" && entry.origin.source === "per-command" && entry.kind !== "missing");
   const sessionRoot = requestedPierces.length > 0 ? sessionStorePath() : undefined;
   const pierces = requestedPierces.filter(entry => sessionRoot === undefined || !isWindowsPathAtOrUnder(entry.target, sessionRoot));
+  for (const pierce of pierces) {
+    const rule = allReadDenies.find(deny => deny.origin.source === "settings" && within(deny, pierce));
+    if (rule !== undefined) throw userDenyCoversPierce(rule.origin.row, pierce.origin.row);
+  }
   const baseAllows = entries.filter(entry => entry.polarity.effect === "allow" && entry.polarity.access !== "lookup" && entry.kind !== "missing"
     && !allReadDenies.some(deny => within(deny, entry) && deny.origin.source !== "read-mask"
       && !(deny.origin.source === "floor" && entry.polarity.access === "read"
@@ -828,6 +864,13 @@ function rankAdmittedMxcFilesystem(set: ObligationSet, requestedPatterns: readon
   let patternOutcomes: ReadonlyMap<string, PatternOutcome> = new Map();
   const patternDenies = requestedPatterns.length === 0 ? [] : withLocalityDecision(() => {
     patterns = canonicalPatternSpellings(requestedPatterns, baseAllows);
+    for (const { requested, pattern } of patterns) {
+      if (!userPatterns.includes(requested)) continue;
+      const glob = pattern.replaceAll("\\", "/");
+      const matches = compileGlobMatcher(WINDOWS_ABSOLUTE.test(pattern) || glob.startsWith("**") ? glob : `**/${glob}`, { caseInsensitive: true });
+      const pierce = pierces.find(entry => pathAndAncestors(entry.target).some(path => matches(path.replaceAll("\\", "/"))));
+      if (pierce !== undefined) throw userDenyCoversPierce(requested, pierce.origin.row);
+    }
     const rules: MxcRule[] = [
       ...baseAllows.map(entry => ({ path: entry.target, kind: entry.polarity.access === "write" ? "readwrite" as const : "readonly" as const })),
       ...readDenies.filter(deny => baseAllows.some(grant => inside(grant, deny))).map(entry => ({ path: entry.target, kind: "deny" as const })),

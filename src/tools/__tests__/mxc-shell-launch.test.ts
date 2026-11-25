@@ -125,6 +125,7 @@ vi.mock("../../permissions/egress-host-listener.js", () => ({
 vi.mock("../../permissions/asrt-sandbox.js", () => ({
   aveHomeReadBoundaryCovering: h.boundary,
   getProtectedReadDenyFloor: h.floor,
+  getUserReadDenies: () => [],
   getWindowsProxyPortRange: () => [60080, 60089],
 }));
 vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({

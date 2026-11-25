@@ -162,6 +162,22 @@ const TABLE: readonly AdapterRow[] = [
     srt: undefined,
     mxc: { readwrite: [], readonly: [HOME, `${HOME}\\.ave\\sessions`], denied: [`${HOME}\\.ave\\keys`] },
   },
+  {
+    // A user's deny drops a grant beneath it; a pierce elsewhere still lifts its own floor row.
+    name: "user deny",
+    model: model({
+      floors: [floor(`${HOME}\\.ave\\sessions`, "denied", "secrets"), floor(`${HOME}\\private`, "denied", "user-deny")],
+      launchGrants: [
+        grant(HOME, "ro", "launch-grant"),
+        grant(`${HOME}\\private\\notes`, "ro", "launch-grant"),
+        grant(`${HOME}\\.ave\\sessions`, "ro", "launch-grant"),
+        grant(`${HOME}\\.ave\\sessions`, "ro", "floor-pierce"),
+      ],
+    }),
+    exists: everything,
+    srt: undefined,
+    mxc: { readwrite: [], readonly: [HOME, `${HOME}\\.ave\\sessions`], denied: [`${HOME}\\private`] },
+  },
 ];
 
 describe("policy model adapters", () => {
@@ -192,6 +208,16 @@ describe("policy model adapters", () => {
     expect(Object.isFrozen(built.rows) && built.rows.every((row) => Object.isFrozen(row))).toBe(true);
   });
 
+  it("refuses a pierce at or beneath a user's deny, naming the rule", () => {
+    for (const rule of [`${HOME}\\.ave`, `${HOME}\\.ave\\sessions`]) {
+      const pierced = model({
+        floors: [floor(`${HOME}\\.ave\\sessions`, "denied", "secrets"), floor(rule, "denied", "user-deny")],
+        launchGrants: [grant(`${HOME}\\.ave\\sessions`, "ro", "launch-grant"), grant(`${HOME}\\.ave\\sessions`, "ro", "floor-pierce")],
+      });
+      expect(() => rankMxcRowsBySpelling(pierced, everything)).toThrow(`Your read deny ${rule} covers ${HOME}\\.ave\\sessions`);
+    }
+  });
+
   it("accepts a floor pierce from an extension manifest and from a launch", () => {
     expect(model({ extensionManifests: [grant(WORK, "ro", "floor-pierce")], launchGrants: [grant(HOME, "ro", "floor-pierce")] }).rows)
       .toHaveLength(2);
@@ -209,6 +235,7 @@ describe("policy model adapters", () => {
   it.each<[string, Partial<PolicyModelInput>]>([
     ["a floor row that gives access", { floors: [{ ...floor(WORK, "denied", "secrets"), access: "rw" } as unknown as PolicyFloorRow] }],
     ["a readable secrets row", { floors: [floor(WORK, "ro", "secrets")] }],
+    ["a readable user deny", { floors: [floor(WORK, "ro", "user-deny")] }],
     ["a denied protected name", { floors: [floor(WORK, "denied", "protected-name")] }],
     ["a grant reason among the floors", { floors: [grant(WORK, "ro", "user-grant") as unknown as PolicyFloorRow] }],
     ["a grant under the wrong input", { extensionManifests: [grant(WORK, "rw", "user-grant")] }],

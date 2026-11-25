@@ -8,28 +8,31 @@ type PolicyAccess = "rw" | "ro" | "denied";
 
 /**
  * Why a floor row exists. A floor row takes access away.
- * - `secrets`: the protected read floor (secret and credential stores, the app's user data directory, the denies the user
- *   configured). Nothing may be granted at or beneath it unless a `floor-pierce` row covers the grant. The model does not enforce
+ * - `secrets`: the protected read floor (secret and credential stores, the app's user data directory). Nothing may be granted at
+ *   or beneath it unless a `floor-pierce` row covers the grant. The model does not enforce
  *   that by itself: the container adapter drops such a grant when it ranks the rows, and the sandbox runtime package's composers
  *   withhold it before they state their rows (see `toSrtConfig`).
  * - `ave-home`: the Ave home boundary. Only a more specific grant (a re-allowed child) is readable beneath it.
  * - `read-boundary`: a read deny a composer restates for this launch (sandbox private directories, other extensions' storage, a
  *   caller's own list). A more specific grant is readable beneath it.
  * - `protected-name`: the write floor (control names inside write roots, startup and persistence files, Ave's own control files).
+ * - `user-deny`: a read deny the user configured. Nothing may be granted at or beneath it, and no `floor-pierce` covers it: a
+ *   launch whose pierce lies at or beneath one is refused, naming the rule.
  *
  * A reason is exact where the composer knows the origin: the shared and the per-command package composers name each read deny's
  * real floor. The container composers hand over two legacy lists instead, a restated read-deny list and the protected floor, and
  * the Windows container adapter treats them differently. There a path on both lists is stated twice, once as `read-boundary` and
  * once as `secrets`, and `read-boundary` means "from the restated list", whatever the path is.
  */
-export type PolicyFloorReason = "secrets" | "ave-home" | "read-boundary" | "protected-name";
+export type PolicyFloorReason = "secrets" | "ave-home" | "read-boundary" | "protected-name" | "user-deny";
 
 /**
  * Why a grant row exists. A grant row gives access.
  * - `user-grant`: a root the user or the user's settings granted.
  * - `extension-manifest`: a root an extension holds through its manifest.
  * - `launch-grant`: a root one launch was handed by a composer whose interface does not say which of the two stands behind it.
- * - `floor-pierce`: a host-minted binding, not access by itself: read grants at or beneath it stay granted under a `secrets` row.
+ * - `floor-pierce`: a host-minted binding, not access by itself: read grants at or beneath it stay granted under a `secrets` row,
+ *   never under a `user-deny` row.
  *   Only an extension manifest's or a launch's rows may carry one.
  */
 export type PolicyGrantReason = "user-grant" | "extension-manifest" | "launch-grant" | "floor-pierce";
@@ -69,7 +72,7 @@ export interface PolicyModelInput {
   readonly launchGrants: readonly PolicyGrantRow[];
 }
 
-const FLOOR_REASONS: ReadonlySet<string> = new Set<PolicyFloorReason>(["secrets", "ave-home", "read-boundary", "protected-name"]);
+const FLOOR_REASONS: ReadonlySet<string> = new Set<PolicyFloorReason>(["secrets", "ave-home", "read-boundary", "protected-name", "user-deny"]);
 
 export function policyFloorRow(path: string, access: PolicyFloorRow["access"], reason: PolicyFloorReason, literal: boolean): PolicyFloorRow {
   return { path, literal, access, reason };

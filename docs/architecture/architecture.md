@@ -3480,7 +3480,8 @@ in its directory.
 
 - **Filesystem.** The per-command ASRT lists are ranked for MXC
   (`rankAdmittedMxcFilesystem`): the protected read floor drops grants not under a
-  pierce, a write grant under a `denyWrite` path becomes read-only, a deny
+  pierce, a user's read deny drops every grant beneath it and refuses a launch
+  whose pierce it covers, a write grant under a `denyWrite` path becomes read-only, a deny
   strictly inside a grant becomes an explicit `denied` entry when the path
   exists, and grants that do not exist are dropped. Measured: a more specific
   grant wins over a denied parent, a missing `denied` file path still blocks its
