@@ -65,7 +65,9 @@ describe.runIf(process.platform === "win32")("container shell and sibling sandbo
     { name: "a working directory above the runtime root", grantsBase: false, aboveRoot: true },
     // Directories inside the runtime root named as additional directories: none of them is granted.
     { name: "the runtime root, the HOME parent, a sibling HOME and staging as additional directories", grantsBase: false, grantsFloor: true },
-  ])("keeps a sibling HOME and the host temp root closed with $name", { timeout: 2 * TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async ({ grantsBase, aboveRoot, grantsFloor }, testContext) => {
+    // A working directory inside the runtime root: the launch is refused, and nothing runs on the host instead.
+    { name: "the HOME parent as the working directory", grantsBase: false, cwdInside: true },
+  ])("keeps a sibling HOME and the host temp root closed with $name", { timeout: 2 * TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async ({ grantsBase, aboveRoot, grantsFloor, cwdInside }, testContext) => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const tempRoot = realpathSync.native(tmpdir());
     const directory = aboveRoot === true
@@ -100,13 +102,21 @@ describe.runIf(process.platform === "win32")("container shell and sibling sandbo
       planted.push(join(staging, `g1-planted-${nonce}.txt`), join(sibling.path, "planted.txt"), join(siblingTemp, "planted.txt"),
         join(dirname(sibling.path), `ave-sandbox-home-g1${nonce}${SANDBOX_HOME_OWNER_SUFFIX}`));
       // What `getTurnAdditionalDirectories` hands every tool when the user added no directory.
-      const context = { cwd: directory, extraAllowedDirectories: [...(grantsBase ? baseAllowedDirectories() : []), ...floor], metadata: {},
+      const context = { cwd: cwdInside === true ? dirname(sibling.path) : directory, extraAllowedDirectories: [...(grantsBase ? baseAllowedDirectories() : []), ...floor], metadata: {},
         blockReadsOutsideWorkingDirectories: false, hostShellExecutionPlan: getHostShellExecutionPlan() };
       expect(context.hostShellExecutionPlan.mode).toBe("asrt");
       const result = await new PowerShellTool().execute({
         command: probeScript({ siblingName: basename(sibling.path), tempRoot, nonce }),
         timeoutSeconds: TOOL_TIMEOUT_POLICY.shellDefaultMs / 1000,
       }, context);
+      if (cwdInside === true) {
+        console.info(`G1 evidence ${JSON.stringify({ cwdInside: true, isError: result.isError === true, output: result.output.slice(0, 200) })}`);
+        expect(result.isError, result.output).toBe(true);
+        expect(result.metadata?.sandboxed).not.toBe(true);
+        expect(result.output).not.toContain("own-home-path=");
+        expect(existsSync(join(dirname(sibling.path), "cwd.txt"))).toBe(false);
+        return;
+      }
       expect(result.metadata?.sandboxed, result.output).toBe(true);
       const lines = new Map(result.output.split(/\r?\n/).flatMap((line): [string, string][] => {
         // cmd.exe also echoes each line it read, behind its prompt.
