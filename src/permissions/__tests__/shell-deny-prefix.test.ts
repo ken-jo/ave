@@ -1,18 +1,27 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { PermissionManager } from "../permission-manager.js";
+import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
+import { evaluatePowerShellSubject, evaluateShellSubject, shellDenyOnBoundedPrefix } from "../rules/rule-scopes.js";
+import { parsePowerShellCommand } from "../rules/powershell-exfiltration.js";
+import { parseShellFloorCommand } from "../rules/shell-exfiltration.js";
 
 let cwd: string;
 beforeEach(() => { cwd = mkdtempSync(join(tmpdir(), "ave-shell-deny-prefix-")); });
-afterEach(() => { cleanupTmpDir(cwd); });
+afterEach(async () => { await cleanupTmpDir(cwd); });
 
 it("uses the bounded deny scan once and feeds it the decision's rule scopes", () => {
+  const root = join(process.cwd(), "src");
+  const uses = readdirSync(root, { recursive: true, encoding: "utf8" }).map((file) => file.replaceAll("\\", "/"))
+    .filter((file) => file.endsWith(".ts") && !file.split("/").includes("__tests__") && file !== "permissions/rules/rule-scopes.ts")
+    .flatMap((file) => (readFileSync(join(root, file), "utf8").match(/\bshellDenyOnBoundedPrefix\(/g) ?? []).map(() => file));
+  expect(uses).toEqual(["permissions/permission-manager.ts"]);
   const source = readFileSync(new URL("../permission-manager.ts", import.meta.url), "utf8");
-  expect(source.match(/shellDenyOnBoundedPrefix\(/g)).toHaveLength(1);
   expect(source).toMatch(/shellDenyOnBoundedPrefix\(\{[\s\S]*?ruleScopes[,\s]/);
+  expect(source).toMatch(/rules\.deny = deny\?\.pattern \?\? shellDeny\?\.pattern/);
 });
 
 describe.each([
@@ -24,8 +33,8 @@ describe.each([
   async function savedDeny(generic = false) {
     const manager = new PermissionManager(join(cwd, "permissions.json"));
     manager.setMode("allow");
+    if (generic) manager.setRules([{ pattern: dialect, action: "deny" }]);
     await manager.addRulePersist({ pattern, action: "deny" }, { kind: "user" });
-    if (generic) await manager.addRulePersist({ pattern: dialect, action: "deny" }, { kind: "user" });
     return (command: string, headless = false) => manager.checkDetailed(dialect, "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect, command, cwd },
       shellExecution: { runsSandboxed: true },
@@ -51,8 +60,26 @@ describe.each([
     expect((await savedDeny(true))(long)).toMatchObject({ decision: "deny", reasonCode: "rule-deny", reason: dialect });
   });
 
+  it("keeps complete commands equivalent to the full evaluator", () => {
+    const rules = [{ pattern, action: "deny" as const, shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }];
+    for (const command of [first, `date; ${first}`, "date", dialect === "bash" ? "printf 'two words'" : "echo 'two words'"]) {
+      const subject = { command, cwd, exactAllowOnly: false };
+      const expected = dialect === "bash" ? evaluateShellSubject(subject, rules) : evaluatePowerShellSubject(subject, rules);
+      const parsed = dialect === "bash" ? { parsed: parseShellFloorCommand(command) }
+        : { parsedPowerShell: parsePowerShellCommand(command) };
+      const input = { command, dialect, cwd, ruleScopes: [[], rules, []] };
+      expect(shellDenyOnBoundedPrefix(input).pattern).toBe(expected.decision === "deny" ? expected.pattern : undefined);
+      expect(shellDenyOnBoundedPrefix({ ...input, ...parsed })).toEqual(shellDenyOnBoundedPrefix(input));
+    }
+  });
+
   it("asks when the deny target occurs after the bound", async () => {
     expect((await savedDeny())(`date; ${overBudgetTail}; ${first}`))
+      .toMatchObject({ decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit" });
+  });
+
+  it("keeps the outer parse cap even when the first statement would be denied", async () => {
+    expect((await savedDeny())(`${first}; ${longTail.repeat(10)}`))
       .toMatchObject({ decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit" });
   });
 });

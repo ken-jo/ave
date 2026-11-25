@@ -1010,8 +1010,15 @@ export function powerShellBoundedDenyPrefix(command: string, parsed?: ParsedPowe
     pipelines = lexer.completed;
     if (context.facts.get("unproven-quote-delimiter") === true) pipelines = [];
   }
-  const commands = (pipelines ?? []).flatMap((pipeline) => pipeline.stages).map(commandArgv)
-    .filter((argv): argv is (string | null)[] => argv !== null);
+  let stages = (pipelines ?? []).flatMap((pipeline) => pipeline.stages);
+  if (pipelines?.length) {
+    try {
+      stages = staticProgram(pipelines, new SharedPowerShellContext()).stages.map((stage) => stage.command);
+    } catch (error) {
+      if (!(error instanceof PowerShellStructuralLimitError)) throw error;
+    }
+  }
+  const commands = stages.map(ruleArgv).filter((argv): argv is (string | null)[] => argv !== null);
   return { commands, firstStatementLimited };
 }
 

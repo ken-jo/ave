@@ -352,12 +352,13 @@ export function shellDenyOnBoundedPrefix(input: {
   }
   const rules = collectPowerShellRules(...denies);
   if (rules.deny.length === 0) return {};
-  if (parsedPowerShell && !parsedPowerShell.analysisLimited) {
-    const evaluated = evaluatePowerShellSubject({ command: parsedPowerShell, cwd, exactAllowOnly: false }, ...denies);
+  const parsedCommand = parsedPowerShell ?? (command.length <= SHELL_FLOOR_INPUT_LIMIT ? parsePowerShellCommand(command) : undefined);
+  if (parsedCommand && !parsedCommand.analysisLimited) {
+    const evaluated = evaluatePowerShellSubject({ command: parsedCommand, cwd, exactAllowOnly: false }, ...denies);
     if (evaluated.decision === "deny") return { pattern: evaluated.pattern };
     return evaluated.decision === "ask" ? { unreadable: true } : {};
   }
-  const bounded = powerShellBoundedDenyPrefix(command, parsedPowerShell);
+  const bounded = powerShellBoundedDenyPrefix(command, parsedCommand);
   const visible = bounded.commands.map((argv) => ({ argv, normalized: restrictionTokens(argv) }));
   const match = rules.deny.find((rule) => visible.some(({ argv, normalized }) =>
     matchesPowerShellRule(rule.spec, argv) || matchesPowerShellRule(rule.restriction, normalized)));
