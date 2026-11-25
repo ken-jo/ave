@@ -14,7 +14,7 @@ import { initializeAsrtSandbox, resetAsrtSandbox } from "../asrt-sandbox.js";
 import { openHostEgressListener } from "../egress-host-listener.js";
 import { openInvocationProxyListener } from "../egress-invocation-listener.js";
 import { openEgressInvocation, type EgressInvocation } from "../egress-invocations.js";
-import { createEgressAskRuntimeCallback, listEgressGrants, revokeEgressGrant } from "../egress-runtime.js";
+import { createEgressAskRuntimeCallback, listEgressGrants, revokeEgressGrant, setWorkerEgressAllowlists } from "../egress-runtime.js";
 import { PermissionManager } from "../permission-manager.js";
 import type { EgressGrantScope } from "../../shared/egress-grant-scopes.js";
 
@@ -39,6 +39,7 @@ afterEach(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
   for (const grant of await listEgressGrants()) await revokeEgressGrant(grant);
+  setWorkerEgressAllowlists({ byExtension: new Map(), modelEndpointHosts: [] });
   vi.restoreAllMocks();
 });
 
@@ -139,14 +140,14 @@ async function invocationFrontend(token: string) {
   return frontend;
 }
 
-function connect(port: number, authorization?: string) {
+function connect(port: number, authorization?: string, authority = `${DESTINATION.host}:${DESTINATION.port}`) {
   let response = "";
   let answered: (text: string) => void = () => {};
   // The status line, or whatever arrived before the socket closed.
   const status = new Promise<string>((resolve) => { answered = resolve; });
   const socket = track(net.connect(port, "127.0.0.1", () => {
     const auth = authorization === undefined ? "" : `Proxy-Authorization: ${authorization}\r\n`;
-    socket.write(`CONNECT ${DESTINATION.host}:${DESTINATION.port} HTTP/1.1\r\nHost: ${DESTINATION.host}:${DESTINATION.port}\r\n${auth}\r\n`);
+    socket.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n${auth}\r\n`);
   }));
   socket.on("data", (chunk: Buffer) => {
     response += chunk.toString("latin1");
@@ -258,5 +259,35 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
     expect(runtime.requestAndWait.mock.calls[0]?.[0].egressHost?.scopes).toEqual(["once", "session"]);
     expect(runtime.upstream.received).toEqual([]);
     expect(await listEgressGrants()).toEqual([]);
+  });
+
+  // The front listener asks for no credential and its relay speaks as the shell, so neither port is a destination for anyone else.
+  // The extension's own allowlist admits every loopback port: without the refusal it would egress as the shell.
+  it.each(["127.0.0.1", "localhost", "[::1]"])("refuses shared proxy destinations on frontend and relay ports before asking, for an extension whose allowlist admits %s", async (host) => {
+    setWorkerEgressAllowlists({ byExtension: new Map([["fixture", ["127.0.0.1", "localhost", "::1"]]]), modelEndpointHosts: [] });
+    const runtime = await startRuntime();
+    const shell = openShell();
+    const relay = await openHostEgressListener(shell.token);
+    listeners.push(relay);
+    const frontend = await openInvocationProxyListener({
+      upstream: () => ({ host: "127.0.0.1", port: relay.port, proxyAuthorization: relay.proxyAuthorization }),
+      onRefused: relay.recordRefusal,
+    });
+    relay.registerPort(frontend.port);
+    listeners.push(frontend);
+    const worker = openEgressInvocation({ kind: "worker", role: "worker", pluginId: "fixture" });
+    invocations.push(worker);
+    const authorization = proxyAuthorization(worker.token, runtime.credential);
+
+    for (const port of [frontend.port, relay.port]) {
+      await expectResponse(connect(runtime.sharedPort, authorization, `${host}:${port}`), 403);
+    }
+    expect(runtime.observed).toEqual([]);
+    expect(runtime.requestAndWait).not.toHaveBeenCalled();
+    expect(runtime.upstream.received).toEqual([]);
+
+    // The same entry still reaches a loopback port that is no shell's: the refusal is the port's, not the address's.
+    await connect(runtime.sharedPort, authorization, `${host}:${runtime.upstream.port}`).status;
+    expect(runtime.observed.length).toBeGreaterThan(0);
   });
 });

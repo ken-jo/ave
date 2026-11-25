@@ -52,6 +52,7 @@ import {
   closeAllEgressRelayConnections,
   closeEgressRelayConnections,
   egressRelayOwnsKey,
+  isEgressRelayListener,
   egressRelayViolationLines,
   startEgressRelayService,
   stopEgressRelayService,
@@ -2671,10 +2672,18 @@ async function initializeSandboxRuntime(
     const initialConfig = backgroundInitialization
       ? { ...config, windows: { ...config.windows, externalConfinement: "embedder" as const } }
       : config;
+    // A contained endpoint's ports are no destination of the shared proxy, whatever its caller is allowed: a front port asks for no
+    // credential and its relay speaks as the shell. Refused before the policy is asked, by name and again by resolved address.
     // A key its relay owns is learned from that relay alone: named by a shared proxy username it attributes nothing.
     const sharedAsk: SandboxAskCallback | undefined = askCb === undefined || process.platform !== "win32" ? askCb
-      : (destination, context) => askCb(destination, context?.attributionKey !== undefined && egressRelayOwnsKey(context.attributionKey)
-        ? { ...context, attributionKey: undefined } : context);
+      : async (destination, context) => {
+        const dialed = context?.phase === "resolved" ? context.addresses : [];
+        if ([destination.host, ...dialed].some((host) => isEgressRelayListener(host, destination.port))) {
+          return { allow: false, reason: "destination is a contained egress endpoint of this host" };
+        }
+        return askCb(destination, context?.attributionKey !== undefined && egressRelayOwnsKey(context.attributionKey)
+          ? { ...context, attributionKey: undefined } : context);
+      };
     await SandboxManager.initialize(initialConfig, sharedAsk, enableLogMonitor);
     startupSignal?.throwIfAborted();
     if (sandboxSession !== session) throw new Error("Sandbox initialization was cancelled");

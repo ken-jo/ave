@@ -234,6 +234,13 @@ function isRelayListener(canonical: string, port: number): boolean {
   return isLoopbackName(canonical) || (net.isIP(canonical) !== 0 && isThisHostAddress(canonical, localInterfaceAddresses()));
 }
 
+// Whether a destination, as any proxy of this process is asked for it, is a live relay port or a port registered with one.
+export function isEgressRelayListener(host: string, port: number | undefined): boolean {
+  if (port === undefined) return false;
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  return isRelayListener(bare.toLowerCase(), port);
+}
+
 function connectionKey(key: string, host: string, port: number): string {
   return `${key}\n${canonicalRelayHost(host) ?? host}\n${port}`;
 }
