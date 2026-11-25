@@ -353,7 +353,7 @@ const ROWS: readonly Row[] = [
       return { outcome: built.sandboxed ? "contained" : "ask", reason: `mode=${built.mode} kind=${built.capability.kind} substrate=${built.substrate}` };
     } },
   // The local-network consent gate is removed (T:117): an available container carries the shells with nothing saved.
-  { id: "L18.a", point: "Windows container shells with no saved local-network consent", tree: "T:117", unknown: "-",
+  { id: "L18.a", point: "Windows shell route when MXC is available", tree: "T:117", unknown: "-",
     today: { outcome: "contained", reason: "shells=mxc substrate=mxc" },
     observe: () => {
       setProcessPlatform("win32");
