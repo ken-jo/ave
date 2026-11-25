@@ -7,17 +7,25 @@ import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
+import * as runtime from "@anthropic-ai/sandbox-runtime";
+import { restoreWindowsAcl, stampWindowsAcl } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { hasNativeSrtWinBuildReceipt } from "../../__tests__/support/srt-win-build-receipts.js";
+import { configureHostResources } from "../../main/host-resources.js";
 
 import { aveHome } from "../../shared/ave-home.js";
 import {
-  appOwnedSandboxPrivateRoots, ensureSandboxTempPrincipalDir, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths,
+  appOwnedSandboxPrivateRoots, ensureSandboxTempPrincipalDir, getVendoredSrtWinExePath, protectedReadDenyCovering, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths,
   initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, wrapWorkerCommand,
 } from "../asrt-sandbox.js";
 import {
-  AVE_APP_ID, createMxcRunStaging, establishMxcRuntimeRoot, mxcRuntimeRootFloorPath, MxcRuntimeRootError, removeMxcRunStaging,
+  _forgetMxcRuntimeRootForTest, AVE_APP_ID, createMxcRunStaging, currentMxcRuntimeHost, establishMxcRuntimeRoot, mxcRuntimeRootFloorPath,
+  MxcRuntimeRootError, mxcStagingParent, removeMxcRunStaging, requireMxcRuntimeRoot,
 } from "../mxc-runtime-root.js";
+import { WINDOWS_RUNTIME_HOST, windowsRuntimeRootFailure } from "../mxc-runtime-root-windows.js";
+import { readWindowsDenyAcls, WINDOWS_READ_DENY_MASK } from "../windows-deny-acl.js";
 import { asrtCanInitialize } from "./test-helpers.js";
 
 const posix = process.platform === "darwin" || process.platform === "linux";
@@ -130,5 +138,62 @@ describe.runIf(posix)("a cache directory that cannot hold the runtime root", () 
     const result = spawnSync(program as string, args, { encoding: "utf8" });
     // Sandboxed as ever: it runs, reads, and cannot write outside its grant.
     expect(result.stdout).toMatch(/^readablewrite=[1-9]/u);
+  });
+});
+
+const windows = process.platform === "win32";
+
+describe.runIf(windows)("container runtime root on the Windows sandbox read floor", () => {
+  beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
+  it("is the one private root every wrap is denied, and lies outside the Ave home", () => {
+    const root = mxcRuntimeRootFloorPath();
+    expect(appOwnedSandboxPrivateRoots()).toEqual([root + sep]);
+    expect(getDefaultSensitiveReadDenyPaths()).toContain(root + sep);
+    const [home, floor] = [aveHome().toLowerCase() + sep, root.toLowerCase() + sep];
+    expect(floor.startsWith(home) || home.startsWith(floor)).toBe(false);
+  });
+
+  it("covers a run's staged home and temp, and not a sibling of the root", () => {
+    const root = mxcRuntimeRootFloorPath();
+    const floor = appOwnedSandboxPrivateRoots();
+    for (const inside of [root, join(root, "staging"), join(root, "staging", "0123456789abcdef0123456789abcdef", "home"), join(root.toUpperCase(), "staging")]) {
+      expect(protectedReadDenyCovering(inside, floor), inside).toBeDefined();
+    }
+    for (const outside of [`${root}-other`, join(root, ".."), join(root, "..", "sibling")]) {
+      expect(protectedReadDenyCovering(outside, floor), outside).toBeUndefined();
+    }
+  });
+});
+
+describe.runIf(windows && hasNativeSrtWinBuildReceipt())("the sandbox account's deny on a real Windows runtime root", () => {
+  const cacheHome = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-rt-floor-")));
+  const host = { ...currentMxcRuntimeHost(), cacheHome };
+  beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
+  afterAll(() => {
+    _forgetMxcRuntimeRootForTest(cacheHome);
+    rmSync(cacheHome, { recursive: true, force: true });
+  });
+
+  it("stamps the read deny on the root, keeps the root usable by the host, and restores it", (context) => {
+    const srtWin = runtime.resolveSrtWin({ path: getVendoredSrtWinExePath() });
+    const sid = runtime.getWindowsSandboxUserStatus({ srtWin }).sid;
+    if (!sid) return context.skip();
+    const root = establishMxcRuntimeRoot(host);
+    expect(root).toBe(mxcRuntimeRootFloorPath(cacheHome));
+    expect(readWindowsDenyAcls([root], sid)[0]?.denyMask).toBe(0);
+    try {
+      stampWindowsAcl({ sandboxUserSid: sid, srtWin, denyRead: [root], denyWrite: [] });
+      const stamped = readWindowsDenyAcls([root], sid)[0];
+      expect(stamped?.denyMask).toBe(WINDOWS_READ_DENY_MASK);
+      expect(stamped?.inheritableMask).toBe(WINDOWS_READ_DENY_MASK);
+      // A deny for another principal takes nothing from the owner-only proof: the root still passes it and still stages.
+      expect(windowsRuntimeRootFailure(WINDOWS_RUNTIME_HOST.readFacts(root), root)).toBeUndefined();
+      expect(requireMxcRuntimeRoot(host)).toBe(root);
+      expect(mxcStagingParent("win32", host)).toBe(join(root, "staging"));
+    } finally {
+      restoreWindowsAcl({ sandboxUserSid: sid, srtWin });
+    }
+    expect(readWindowsDenyAcls([root], sid)[0]?.denyMask).toBe(0);
+    expect(windowsRuntimeRootFailure(WINDOWS_RUNTIME_HOST.readFacts(root), root)).toBeUndefined();
   });
 });

@@ -279,7 +279,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
           // Create both roots before any wrap; Linux may omit read denies for paths that do not yet exist.
           ensureSandboxPrivateRoot(appOwnedSandboxHomeRoot());
           // The container runtime root is on the same read floor, and this is the only place that creates it: a wrap built while it was absent may carry no deny for it. The floor names its path either way, so a root that cannot be established leaves every shell sandboxed as before and refuses container starts for the rest of this process.
-          if (process.platform !== "win32") {
+          {
             const { establishMxcRuntimeRoot } = await import("../../permissions/mxc-runtime-root.js");
             try {
               establishMxcRuntimeRoot();

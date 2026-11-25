@@ -2861,9 +2861,9 @@ function appOwnedSandboxReallowableRoots(): string[] {
   return [appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot(), appOwnedTerminalHandoffRoot()];
 }
 
-// The roots of the confined processes' private directories, read-denied by the floor on macOS and Linux. Empty on Windows, whose floor is unchanged. The container runtime root is one of them: it holds what used to be staged under the Ave home, outside it, and stays as unreadable to every other confined process as it was there. No wrap on this route re-opens anything inside it, so its deny is a plain one, and naming it never throws, whatever state the account's cache directory is in.
+// The roots of the confined processes' private directories, read-denied by the floor. The container runtime root is one of them on every platform, and the only one on Windows, where it is spelled as that platform's directory rows are, with a trailing separator: it holds what used to be staged under the Ave home, outside it, and stays as unreadable to every other confined process as it was there. No wrap on this route re-opens anything inside it, so its deny is a plain one, and naming it never throws, whatever state the account's cache directory is in.
 export function appOwnedSandboxPrivateRoots(): string[] {
-  if (process.platform === "win32") return [];
+  if (process.platform === "win32") return [mxcRuntimeRootFloorPath() + sep];
   return [...appOwnedSandboxReallowableRoots(), mxcRuntimeRootFloorPath()];
 }
 
