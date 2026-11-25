@@ -10,6 +10,7 @@ import type {
   PluginRuntimeGenerationProjection,
 } from "../plugin-host-generation.js";
 import { agentPluginsDocument, servedAgentPluginsDocument, makeTestTreeWritable } from "./test-helpers.js";
+import { stopTestPluginRuntimes, trackTestPluginRuntime } from "./test-helpers.js";
 import {
   HOST_PROTOCOL_VERSION,
   IncompatibleHostProtocolError,
@@ -20,10 +21,12 @@ import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry
 const roots: string[] = [];
 
 afterEach(async () => {
+  const stopped = await stopTestPluginRuntimes();
   await Promise.all(roots.splice(0).map(async (root) => {
     await makeTestTreeWritable(root);
     await rm(root, { recursive: true, force: true });
   }));
+  expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
 });
 
 describe("PluginRuntime immutable generation root", () => {
@@ -85,6 +88,7 @@ export default async function createPlugin(ctx) {
       state: HostPluginGenerationState;
     } | undefined;
     const generationId = "b".repeat(64);
+    const publishedRuntimes: PluginRuntimeGenerationProjection[] = [];
     const access = {
       getActive: vi.fn(() => active),
       isExactAdmitted: vi.fn(() => true),
@@ -94,6 +98,7 @@ export default async function createPlugin(ctx) {
       replaceRuntime: vi.fn(async (projection: PluginRuntimeGenerationProjection) => {
         projection.hostEffects?.bindGeneration(access as never, generationId);
         runtime.prepareRuntimeGeneration(projection, active?.generationId).publish();
+        publishedRuntimes.push(projection);
         active = {
           pluginId,
           generationId,
@@ -106,14 +111,19 @@ export default async function createPlugin(ctx) {
         };
       }),
       waitForRetirements: vi.fn(async () => undefined),
+      // Shutdown in `afterEach` closes admission and retires every generation this fake published.
+      closeAdmission: vi.fn(),
+      listRetiringGenerations: vi.fn(() => publishedRuntimes.map((projection) => ({
+        pluginId, generationId: "", runtime: projection, retired: Promise.resolve(),
+      }))),
     };
-    runtime = new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
+    runtime = trackTestPluginRuntime(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot: root,
       registryPath,
       pluginsRoot,
       installReceiptCacheRoot: cacheRoot,
       createHostApi: createNoopHostApiForTests,
-    });
+    }));
     runtime.setGenerationAccess(access as never);
     await runtime.startAll();
 
@@ -217,6 +227,7 @@ export default async function createPlugin(ctx) {
       state: HostPluginGenerationState;
     } | undefined;
     let published = 0;
+    const publishedRuntimes: PluginRuntimeGenerationProjection[] = [];
     const access = {
       getActive: vi.fn(() => active),
       isExactAdmitted: vi.fn(() => true),
@@ -227,6 +238,7 @@ export default async function createPlugin(ctx) {
         const generationId = String(++published).repeat(64);
         projection.hostEffects?.bindGeneration(access as never, generationId);
         runtime.prepareRuntimeGeneration(projection, active?.generationId).publish();
+        publishedRuntimes.push(projection);
         active = {
           pluginId,
           generationId,
@@ -239,16 +251,21 @@ export default async function createPlugin(ctx) {
         };
       }),
       waitForRetirements: vi.fn(async () => undefined),
+      // Shutdown in `afterEach` closes admission and retires every generation this fake published.
+      closeAdmission: vi.fn(),
+      listRetiringGenerations: vi.fn(() => publishedRuntimes.map((projection) => ({
+        pluginId, generationId: "", runtime: projection, retired: Promise.resolve(),
+      }))),
     };
     const audit: Array<{ level: string; message: string; data?: unknown }> = [];
-    runtime = new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
+    runtime = trackTestPluginRuntime(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot: root,
       registryPath,
       pluginsRoot,
       installReceiptCacheRoot: cacheRoot,
       createHostApi: createNoopHostApiForTests,
       auditLog: (level, message, data) => { audit.push({ level, message, data }); },
-    });
+    }));
     runtime.setGenerationAccess(access as never);
     await runtime.startAll();
     expect(await runtime.call("refused_restart_which")).toBe("incumbent");

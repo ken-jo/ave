@@ -7,8 +7,13 @@ import { join } from "node:path";
 import { buildImportUrl } from "../plugin-loader.js";
 import { PluginChildTerminationUnverifiedError } from "../../isolation/plugin-child-transport.js";
 import {
+  __resetManagedChildProcessesForTest,
+  forceKillAndDrainManagedChildProcesses,
+} from "../../../main/managed-child-processes.js";
+import {
   makeTestPluginRuntime,
   TestPluginRuntime,
+  stopTestPluginRuntimes,
 } from "../../__tests__/test-helpers.js";
 import { servedAgentPluginsDocument } from "../../__tests__/test-helpers.js";
 
@@ -31,8 +36,10 @@ describe("PluginRuntime lifecycle — restartPlugin", () => {
 
   afterEach(async () => {
     vi.useRealTimers();
+    const stopped = await stopTestPluginRuntimes();
     vi.restoreAllMocks();
     await rm(testDir, { recursive: true, force: true });
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   function makeRuntime() {
@@ -436,14 +443,21 @@ export default async function createPlugin() {
       return result;
     });
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    await expect(runtime.restartPlugin("lc-stop-timeout")).resolves.toBe("started");
-    await inStop;
-    expect(runtime.listPluginIds()).toContain("lc-stop-timeout");
-    await expect(runtime.call("lc_stop_timeout_ping")).resolves.toBe("pong");
-    await vi.advanceTimersByTimeAsync(2_100);
-    await expect(runtime.restartPlugin("lc-stop-timeout")).rejects.toMatchObject({
-      code: "plugin-lifecycle-quarantined",
-    });
+    try {
+      await expect(runtime.restartPlugin("lc-stop-timeout")).resolves.toBe("started");
+      await inStop;
+      expect(runtime.listPluginIds()).toContain("lc-stop-timeout");
+      await expect(runtime.call("lc_stop_timeout_ping")).resolves.toBe("pong");
+      await vi.advanceTimersByTimeAsync(2_100);
+      await expect(runtime.restartPlugin("lc-stop-timeout")).rejects.toMatchObject({
+        code: "plugin-lifecycle-quarantined",
+      });
+    } finally {
+      // The predecessor's stop never settles, so its child lives until killed; its exit removes its sandbox HOME.
+      vi.useRealTimers();
+      await forceKillAndDrainManagedChildProcesses("lifecycle test: stop handler never settles");
+      __resetManagedChildProcessesForTest();
+    }
   }, 10_000);
 
   it("restartPlugin re-imports the latest on-disk module (ESM cache-bust)", async () => {
