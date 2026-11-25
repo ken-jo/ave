@@ -1,18 +1,21 @@
 import { win32 as winPath } from "node:path";
 import { t } from "../i18n/index.js";
 import { canonicalWhereItExists, mxcConfinementStatePaths } from "./mxc-runtime-root.js";
-import { isGrantPathWithin } from "./sandbox-write-policy.js";
+import { isWindowsPathAtOrUnder } from "./mxc-windows.js";
 import { srtWinConfinementStatePaths } from "./srt-win-integrity.js";
 
 const CONFINEMENT_STATE_WRITE_GRANT_CODE = "confinement-state-write-grant";
 
-/** A write grant would equal, sit inside or contain a confinement backend's own state, or that state could not be located. */
+/** A write grant would equal, sit inside or contain a confinement backend's own state, or it or that state could not be
+ * located. */
 export class ConfinementStateWriteGrantError extends Error {
   readonly code = CONFINEMENT_STATE_WRITE_GRANT_CODE;
-  constructor(readonly path: string | undefined) {
+  constructor(readonly path: string | undefined, readonly reason: "overlap" | "grant-unresolved" = "overlap") {
     super(path === undefined
       ? t("be_confinementState.unresolved", { code: CONFINEMENT_STATE_WRITE_GRANT_CODE })
-      : t("be_confinementState.writeGrantRefused", { path, code: CONFINEMENT_STATE_WRITE_GRANT_CODE }));
+      : reason === "grant-unresolved"
+        ? t("be_confinementState.grantUnresolved", { path, code: CONFINEMENT_STATE_WRITE_GRANT_CODE })
+        : t("be_confinementState.writeGrantRefused", { path, code: CONFINEMENT_STATE_WRITE_GRANT_CODE }));
     this.name = "ConfinementStateWriteGrantError";
   }
 }
@@ -39,19 +42,21 @@ function resolvedStatePaths(statePaths: readonly string[] | undefined): string[]
 
 /**
  * The shared step every backend's grant check runs: no write grant may equal, sit inside or contain a path the backend
- * declares as its own state. A declaration that is missing or does not resolve refuses every write.
- * `within(root, path)` is the backend's containment rule for its grant spellings.
+ * declares as its own state. Each grant is compared as spelled and as the identity it resolves to, which an alias or
+ * a link on its path would otherwise hide. A declaration that is missing or does not resolve refuses every write; a
+ * grant that does not resolve is refused.
  */
-export function assertWriteGrantsOutsideConfinementState(
-  write: readonly string[],
-  statePaths: readonly string[] | undefined,
-  within: (root: string, path: string) => boolean = isGrantPathWithin,
-): void {
+export function assertWriteGrantsOutsideConfinementState(write: readonly string[], statePaths: readonly string[] | undefined): void {
   if (write.length === 0) return;
   const states = resolvedStatePaths(statePaths);
   if (states === undefined) throw new ConfinementStateWriteGrantError(undefined);
   for (const grant of write) {
-    if (states.some(state => within(state, grant) || within(grant, state))) throw new ConfinementStateWriteGrantError(grant);
+    const real = strictlyResolved(grant);
+    if (real === undefined) throw new ConfinementStateWriteGrantError(grant, "grant-unresolved");
+    if ([grant, real].some(spelling => states.some(state =>
+      isWindowsPathAtOrUnder(spelling, state) || isWindowsPathAtOrUnder(state, spelling)))) {
+      throw new ConfinementStateWriteGrantError(grant);
+    }
   }
 }
 

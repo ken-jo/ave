@@ -456,6 +456,27 @@ describe("the backend's own state", () => {
     expect([...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir))).toBe(false);
   });
 
+  it.each([
+    ["an alias of the state root", "C:\\alias", SIMULATED_MXC_RUNTIME_ROOT],
+    ["a missing final component under an alias of the state root", "C:\\alias\\runs\\missing", SIMULATED_MXC_RUNTIME_ROOT],
+    ["an alias of an ancestor of the state root", "C:\\alias", winPath.dirname(SIMULATED_MXC_RUNTIME_ROOT)],
+  ])("refuses a caller write grant through %s, by the identity it resolves to", async (_name, path, target) => {
+    state.links.set("C:\\alias", target);
+    const refusal = await spawnMxcBundledHolder(input({ allowWrite: [path] })).catch((error: unknown) => error);
+    expect(refusal).toMatchObject({ code: "confinement-state-write-grant", path, reason: "overlap" });
+    await expect(prepareMxcPluginChildLaunch({ pluginId: "fs", command: NODE, cwd: "C:\\ave\\plugins\\fs\\gen", pluginDataDir: path,
+      baseEnv: { SYSTEMROOT: "C:\\Windows" }, envelope: { read: [], write: [path] } })).rejects.toMatchObject({ code: "confinement-state-write-grant" });
+    expect(state.spawn).not.toHaveBeenCalled();
+    expect([...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir))).toBe(false);
+  });
+
+  it("refuses a caller write grant whose location cannot be resolved", async () => {
+    const path = "E:\\nowhere\\data";
+    await expect(spawnMxcBundledHolder(input({ allowWrite: [path] })))
+      .rejects.toMatchObject({ code: "confinement-state-write-grant", path, reason: "grant-unresolved" });
+    expect(state.spawn).not.toHaveBeenCalled();
+  });
+
   it("starts a holder writing an unrelated sibling, and still adds its own staging root inside the state root", async () => {
     await spawnMxcBundledHolder(input({ allowWrite: [sibling] }));
     expect(lastSpec().allowWrite[0]).toBe(sibling);
@@ -809,6 +830,7 @@ describe("container refusal copy (row 6 disclosure)", () => {
     new MxcExtensionReadinessRefusedError(),
     new ConfinementStateWriteGrantError("C:\\state"),
     new ConfinementStateWriteGrantError(undefined),
+    new ConfinementStateWriteGrantError("C:\\elsewhere", "grant-unresolved"),
   ];
 
   it.each(["en", "ko"] as const)("localizes every refusal from a real %s key and keeps its stable code", (locale) => {
@@ -823,7 +845,7 @@ describe("container refusal copy (row 6 disclosure)", () => {
       });
       expect(codes).toEqual(["executable-not-admissible", "holder-workspace-busy", "holder-workspace-busy", "bash-incompatible", "holder-environment-refused",
         "holder-quarantined", "worker-transport-unsupported", "native-entry-required", "plugin-child-termination-unverified",
-        "extension-readiness-refused", "confinement-state-write-grant", "confinement-state-write-grant"]);
+        "extension-readiness-refused", "confinement-state-write-grant", "confinement-state-write-grant", "confinement-state-write-grant"]);
     } finally {
       setLocale(previous);
     }

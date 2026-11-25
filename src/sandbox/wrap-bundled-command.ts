@@ -695,8 +695,6 @@ export interface MxcBundledHolder {
   readonly quarantined: boolean;
 }
 
-const mxcStateWithin = (root: string, path: string): boolean => isWindowsPathAtOrUnder(path, root);
-
 /** What a plugin child's planner needs from this adapter: a fresh staging tree. The plugin-child adapter drives row 2
  * itself, so nothing is spawned here. Every refusal comes before the staging tree exists; with no registered
  * release-gate evidence the start is refused, never run another way. */
@@ -719,8 +717,8 @@ export function prepareMxcHolderStart(input: {
   assertMxcHolderNotBashForm(executable);
   assertExecutableAdmissible(executable, input.allowWrite, []);
   assertNoLiveWorkspaceWriter(input.allowWrite, []);
-  // Before the staging root, which the state root holds, joins the writes.
-  assertWriteGrantsOutsideConfinementState(input.allowWrite, mxcConfinementStatePaths(), mxcStateWithin);
+  // Caller writes only, before this holder's own staging root, which the state root holds, joins them.
+  assertWriteGrantsOutsideConfinementState(input.allowWrite, mxcConfinementStatePaths());
   const staging = createHolderStaging();
   return { root: staging.root, home: staging.home, temp: staging.temp, release: () => removeHolderStaging(staging.root) };
 }
@@ -737,7 +735,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
   const workspaceRoots = input.workspaceRoots ?? [];
   assertExecutableAdmissible(executable, input.allowWrite, workspaceRoots);
   assertNoLiveWorkspaceWriter(input.allowWrite, workspaceRoots);
-  assertWriteGrantsOutsideConfinementState(input.allowWrite, mxcConfinementStatePaths(), mxcStateWithin);
+  assertWriteGrantsOutsideConfinementState(input.allowWrite, mxcConfinementStatePaths());
   const staging = createHolderStaging();
   const allowWrite = [...new Set([...input.allowWrite, staging.root])];
   const allowRead = [...new Set([...input.allowRead, winPath.dirname(executable)])];
