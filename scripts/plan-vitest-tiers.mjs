@@ -4,6 +4,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CENSUS_TIER_TESTS, NATIVE_TIER_TESTS } from "./lib/vitest-tiers.mjs";
+import { readPlanFile } from "./run-ci-suite.mjs";
 
 // Changes to these select every tier.
 export const TIER_INFRASTRUCTURE = [
@@ -15,6 +16,7 @@ export const TIER_INFRASTRUCTURE = [
   "scripts/lib/vitest-tiers.mjs",
   "scripts/plan-vitest-tiers.mjs",
   "scripts/plan-windows-tests.ts",
+  "scripts/run-ci-suite.mjs",
   "scripts/run-windows-test-list.mjs",
   "vitest.config.ts",
 ];
@@ -33,32 +35,47 @@ export const NATIVE_TRIGGERS = [
   "src/sandbox/",
   "tools/mxc-probes/",
 ];
+// The summary that opens an affected plan's reason when tracing raised no fallback warning; anything else is best-effort.
+const TRACED_AFFECTED_REASON = /^(?:test-only diff: affected tests on every base; |integration base: traced selection, strict fallback at the main boundary; )?\d+ changed module\(s\) reach \d+ test file\(s\); /u;
+
 // Paths naming the MXC, srt-win, sandbox or Windows native helper runtimes anywhere in the tree.
 const NATIVE_TRIGGER_NAME = /mxc|srt-win|asrt|sandbox|windows-job|path-kind/iu;
 
 const startsWithAny = (path, prefixes) => prefixes.some(prefix => path === prefix || path.startsWith(prefix));
 
+/** The plan through the suite's own decoder, or null when it is not a plan. */
+function decodePlan(plan) {
+  try {
+    return readPlanFile(JSON.stringify(plan));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * eventName and ref are the GitHub event; plan is the written CI suite plan; changedPaths is null when the diff is unresolved.
- * Pull requests select a tier from the diff and the plan. Main pushes always select the native tier and select the census
- * like a pull request. Every other event selects all tiers.
+ * Pull requests select a tier from the diff and a fully traced affected plan. Main pushes always select the native tier and
+ * select the census like a pull request. A full, empty or best-effort plan and every other event select all tiers.
  */
 export function planVitestTiers({ eventName, ref, plan, changedPaths }) {
   const mainPush = eventName === "push" && ref === "refs/heads/main";
   const all = reason => ({ census: true, native: true, reason });
   if (eventName !== "pull_request" && !mainPush) return all(`${eventName} runs every tier`);
   if (!Array.isArray(changedPaths)) return all("the diff is unresolved");
-  if ((plan?.mode !== "full" && plan?.mode !== "affected") || !Array.isArray(plan.tests)) return all("the suite plan is unreadable");
+  const decoded = decodePlan(plan);
+  if (decoded === null) return all("the suite plan is unreadable");
+  if (decoded.mode === "full") return all("the full plan runs every tier");
+  if (decoded.tests.length === 0) return all("the affected plan selects no test");
+  if (!TRACED_AFFECTED_REASON.test(decoded.reason)) return all("the affected plan is best-effort");
   const infrastructure = changedPaths.find(path => TIER_INFRASTRUCTURE.includes(path));
   if (infrastructure) return all(`${infrastructure} defines the tiers`);
-  const planned = tests => plan.mode === "affected" ? plan.tests.find(test => tests.includes(test)) : undefined;
+  const planned = tests => decoded.tests.find(test => tests.includes(test));
   const censusTrigger = changedPaths.find(path => startsWithAny(path, CENSUS_TRIGGERS));
   const censusTest = planned(CENSUS_TIER_TESTS);
   const nativeTrigger = changedPaths.find(path => startsWithAny(path, NATIVE_TRIGGERS) || NATIVE_TRIGGER_NAME.test(path) || NATIVE_TIER_TESTS.includes(path));
   const nativeTest = planned(NATIVE_TIER_TESTS);
   const census = censusTrigger ? `${censusTrigger} changes the shell rules` : censusTest ? `the plan selects ${censusTest}` : undefined;
   const native = mainPush ? "a main push runs the native tier"
-    : plan.mode === "full" ? "the full plan runs the native tier"
     : nativeTrigger ? `${nativeTrigger} changes a native boundary` : nativeTest ? `the plan selects ${nativeTest}` : undefined;
   return {
     census: census !== undefined,

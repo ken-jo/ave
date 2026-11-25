@@ -5,15 +5,18 @@ import { describe, expect, it } from "vitest";
 import type { ViteUserConfig } from "vitest/config";
 import { parse } from "yaml";
 import { changedPathsFor, planVitestTiers, vitestTierOutputs } from "../../scripts/plan-vitest-tiers.mjs";
+import { expandMustRunTests, MUST_RUN_TESTS_PATH, selectCiTests } from "../../scripts/run-ci-suite.mjs";
 import { collectedVitestFiles } from "../../scripts/lib/vitest-collection.mjs";
 import { CENSUS_TIER_TESTS, NATIVE_TIER_TESTS, selectedVitestTiers, vitestTierEnabled } from "../../scripts/lib/vitest-tiers.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 // A GitHub expression as the workflow spells it.
 const gh = (body: string) => `\${{ ${body} }}`;
-const affected = (tests: string[]) => ({ mode: "affected", reason: "test", tests });
+const TRACED = "1 changed module(s) reach 1 test file(s); 0 changed test file(s); 0 test file(s) name a changed path; 0 lock suite file(s); 1 must-run file(s)";
+const UNRELATED_TEST = "src/ui/renderer/hooks/__tests__/use-send-message-resource.test.tsx";
+const affected = (tests: string[] = [UNRELATED_TEST], reason = TRACED) => ({ mode: "affected", reason, tests });
 const full = { mode: "full", reason: "test", tests: [] };
-const pr = (changedPaths: string[] | null, plan: unknown = affected([])) => planVitestTiers({ eventName: "pull_request", ref: "refs/pull/1/merge", plan, changedPaths });
+const pr = (changedPaths: string[] | null, plan: unknown = affected()) => planVitestTiers({ eventName: "pull_request", ref: "refs/pull/1/merge", plan, changedPaths });
 
 type Step = { name?: string; id?: string; if?: string; run?: string; env?: Record<string, string> };
 type Job = { needs?: string | string[]; if?: string; outputs?: Record<string, string>; env?: Record<string, string>; strategy?: { matrix: { shard: number[] } }; steps: Step[] };
@@ -47,6 +50,7 @@ describe("Vitest tier selection", () => {
     expect(vitestTierEnabled("census", "default,census")).toBe(true);
     expect(() => selectedVitestTiers("default,cencus")).toThrow(/unknown tier/);
     expect(() => selectedVitestTiers(" , ")).toThrow(/at least one tier/);
+    for (const value of ["census", "native,census"]) expect(() => selectedVitestTiers(value), value).toThrow(/census without default/);
   });
 
   it("selects every tier for nightly, dispatch and tags", () => {
@@ -64,7 +68,7 @@ describe("Vitest tier selection", () => {
   });
 
   it("selects the census on a main push only from the diff or the plan, and the native tier always", () => {
-    const push = (changedPaths: string[]) => planVitestTiers({ eventName: "push", ref: "refs/heads/main", plan: affected([]), changedPaths });
+    const push = (changedPaths: string[]) => planVitestTiers({ eventName: "push", ref: "refs/heads/main", plan: affected(), changedPaths });
     expect(push(["src/permissions/rules/shell-rule-matcher.ts"]).census).toBe(true);
     expect(push(["src/ui/renderer/app.tsx"])).toMatchObject({ census: false, native: true });
   });
@@ -88,9 +92,22 @@ describe("Vitest tier selection", () => {
       "scripts/plan-windows-tests.ts", "scripts/run-windows-test-list.mjs", ".github/scripts/check-windows-workflow.mjs"]) expect(pr([path]), path).toMatchObject(every);
   });
 
+  it("selects every tier for a full, empty, malformed or best-effort plan", () => {
+    const every = { census: true, native: true };
+    expect(pr(["src/__tests__/support/fixture-owner.ts"], full)).toMatchObject(every);
+    expect(pr(["src/ui/renderer/app.tsx"], affected([]))).toMatchObject(every);
+    expect(pr(["src/ui/renderer/app.tsx"], affected([null, 42] as unknown as string[]))).toMatchObject(every);
+    expect(pr(["src/ui/renderer/app.tsx"], { mode: "affected", tests: [UNRELATED_TEST] })).toMatchObject(every);
+    for (const reason of [`related test discovery failed; integration base: traced selection, strict fallback at the main boundary; ${TRACED}`,
+      `src/a.ts could not be read; ${TRACED}`, "test", ""]) {
+      expect(pr(["src/ui/renderer/app.tsx"], affected([UNRELATED_TEST], reason)), reason).toMatchObject(every);
+    }
+    expect(pr(["src/ui/renderer/app.tsx"], affected([UNRELATED_TEST], `integration base: traced selection, strict fallback at the main boundary; ${TRACED}`)))
+      .toMatchObject({ census: false, native: false });
+  });
+
   it("leaves both tiers out of an unrelated pull request", () => {
     expect(pr(["src/ui/renderer/app.tsx", "docs/README.md"])).toMatchObject({ census: false, native: false });
-    expect(pr(["src/__tests__/support/fixture-owner.ts"], full).census).toBe(false);
   });
 
   it("keeps the native tier in the default shards only on events that select every tier", () => {
@@ -119,6 +136,34 @@ describe("Vitest tier selection", () => {
     expect(changedPathsFor("pull_request", undefined, () => "only-one\n")).toBeNull();
     expect(changedPathsFor("push", "a".repeat(40), () => { throw new Error("not an ancestor"); })).toBeNull();
   });
+});
+
+describe("Vitest tiers for real CI suite plans", () => {
+  const tracked = collectedVitestFiles(root);
+  const mustRun = JSON.parse(readFileSync(resolve(root, MUST_RUN_TESTS_PATH), "utf8"));
+  const readText = (path: string) => { try { return readFileSync(resolve(root, path), "utf8"); } catch { return null; } };
+  const plan = (paths: string[], baseRef: string, discoverRelated: (files: string[]) => { source: string; tests: string[] }[] | null) => selectCiTests({
+    changes: paths.map(path => ({ oldMode: "100644", newMode: "100644", status: "M", path })),
+    trackedTests: tracked, mustRunTests: expandMustRunTests(mustRun, tracked, paths), readText, discoverRelated, baseRef,
+  });
+  const tiersFor = (paths: string[], suitePlan: unknown) => planVitestTiers({ eventName: "pull_request", ref: "refs/pull/1/merge", plan: suitePlan, changedPaths: paths });
+
+  it.each([
+    [["src/permissions/permission-manager.ts", "tsconfig.tests.json"]],
+    [["config/vitest.globalSetup.ts"]],
+  ])("selects both tiers for the full plan of %j", (paths) => {
+    const suitePlan = plan(paths, "main", () => { throw new Error("a full plan does not discover related tests"); });
+    expect(suitePlan.mode).toBe("full");
+    expect(tiersFor(paths, suitePlan)).toMatchObject({ census: true, native: true });
+  });
+
+  it("selects both tiers for the best-effort plan of an integration pull request whose discovery failed", () => {
+    const paths = ["src/shared/shell-filesystem-path.ts"];
+    const suitePlan = plan(paths, "integration/permissions", () => null);
+    expect(suitePlan).toMatchObject({ mode: "affected", reason: expect.stringContaining("related test discovery failed") });
+    expect(suitePlan.tests.length).toBeGreaterThan(0);
+    expect(tiersFor(paths, suitePlan)).toMatchObject({ census: true, native: true });
+  }, 60_000);
 });
 
 type Project = { test?: { name?: string; include?: string[]; exclude?: string[] } };

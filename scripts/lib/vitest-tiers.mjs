@@ -36,6 +36,10 @@ export function selectedVitestTiers(value = process.env.AVE_VITEST_TIERS) {
   for (const tier of tiers) {
     if (!VITEST_TIERS.includes(tier)) throw new Error(`AVE_VITEST_TIERS names an unknown tier: ${JSON.stringify(tier)}`);
   }
+  // The census cases live in default-project files.
+  if (tiers.includes("census") && !tiers.includes("default")) {
+    throw new Error(`AVE_VITEST_TIERS=${JSON.stringify(value)} names census without default, whose project holds the census files`);
+  }
   return new Set(tiers);
 }
 
