@@ -1180,8 +1180,11 @@ describe("the browser download staging folder in a container holder's native req
     }
     // A grant on the Ave home or a directory holding it reaches other holders' and the host's storage: refused before the native entry.
     const parent = aveHome().replace(/\\[^\\]+$/, "");
+    // A write on the profile also holds the helper's default state folder, which the state step refuses first.
+    const writeRefusal = layout === PROFILE_CHILD ? /\(confinement-state-write-grant\)$/ : /ownership reaches another holder or host storage/;
     for (const [kind, asked] of [["read", aveHome()], ["read", parent], ["write", aveHome()], ["write", parent]] as const) {
-      await expectHolderRefusal(asking(kind, asked), /ownership reaches another holder or host storage/, `${kind} ${asked}`);
+      const expected = kind === "write" && asked === parent ? writeRefusal : /ownership reaches another holder or host storage/;
+      await expectHolderRefusal(asking(kind, asked), expected, `${kind} ${asked}`);
     }
   });
 });
