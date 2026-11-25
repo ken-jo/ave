@@ -46,6 +46,27 @@ export function useToolApprovalSurface(api: AveApi): WorkBoardToolApprovalSurfac
   return surface;
 }
 
+/** One approval lane of a run: the requests of one template stage, head first, or of the run itself when no stage is named. */
+export interface StageApprovalLane {
+  /** The stage the host derived for the requests (`ApprovalRequest.runStage`), or null for a run that has no stages. */
+  readonly stage: { readonly stageId: string; readonly stageName: string } | null;
+  readonly requests: readonly ApprovalRequest[];
+}
+
+/** A run's requests split into one lane per stage, in the order each stage first asked. Parallel stages each keep their own head card,
+ * so answering one stage never waits behind another's. */
+export function stageApprovalLanes(requests: readonly ApprovalRequest[]): readonly StageApprovalLane[] {
+  const lanes = new Map<string | null, { stage: StageApprovalLane["stage"]; requests: ApprovalRequest[] }>();
+  for (const request of requests) {
+    const stage = request.runStage === undefined ? null : { stageId: request.runStage.stageId, stageName: request.runStage.stageName };
+    const key = stage?.stageId ?? null;
+    const lane = lanes.get(key) ?? { stage, requests: [] };
+    lane.requests.push(request);
+    lanes.set(key, lane);
+  }
+  return [...lanes.values()];
+}
+
 export interface BoardApprovals {
   /** The requests this board draws, per item, head first. */
   byItem: ReadonlyMap<number, readonly ApprovalRequest[]>;
