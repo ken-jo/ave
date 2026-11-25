@@ -1,6 +1,17 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
-vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
+const presentTargets = vi.hoisted(() => new Set<string>());
+vi.mock("node:fs", async original => {
+  const actual = await original<typeof import("node:fs")>();
+  const fs = (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(actual);
+  const { win32: drivePath } = await vi.importActual<typeof import("node:path")>("node:path");
+  // Registered deny targets exist, so they reach the stamp instead of being watched.
+  const lstatSync = ((path: import("node:fs").PathLike, options?: import("node:fs").StatSyncOptions) => {
+    if (presentTargets.has(drivePath.resolve(String(path)).replace(/\\$/u, "").toLowerCase())) return actual.lstatSync(".");
+    return actual.lstatSync(path, options);
+  }) as typeof actual.lstatSync;
+  return { ...fs, lstatSync, default: { ...(fs as { default?: object }).default ?? fs, lstatSync } };
+});
 vi.mock("node:module", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original()));
 vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
 vi.mock("../../shared/ave-home-test-guard.js", async original => {
@@ -90,6 +101,10 @@ function denyPatterns(prefix: string, count: number): string[] {
   return Array.from({ length: count }, (_, index) => win32.join(fixtureRoot, prefix, `${index}-*.deny`));
 }
 
+function present(paths: readonly string[]): void {
+  for (const path of paths) presentTargets.add(win32.resolve(path).replace(/\\$/u, "").toLowerCase());
+}
+
 function pinWorkerRoot(root: string): void {
   const pin = facts.pinWindowsPaths;
   vi.spyOn(facts, "pinWindowsPaths").mockImplementation(requests => requests.map(path => {
@@ -121,6 +136,7 @@ afterEach(async () => {
   try {
     await resetAsrtSandbox();
   } finally {
+    presentTargets.clear();
     process.chdir(checkout);
     __resetSandboxRequestedAtBootForTest();
     setProcessPlatform(ORIGINAL_PLATFORM);
@@ -151,6 +167,7 @@ describe("background session isolation", () => {
       return [path, index % 2 === 0 ? alias.replaceAll("\\", "/") : `\\\\?\\${alias}`];
     });
     expect(denies.every(path => win32.isAbsolute(path) === (kind === "absolute"))).toBe(true);
+    present(paths);
     await initializeAsrtSandbox({ denyRead: denies });
     pinWorkerRoot(root);
     const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => requests.map(() => ({
@@ -168,6 +185,7 @@ describe("background session isolation", () => {
     const root = win32.join(fixtureRoot, "worker");
     const paths = Array.from({ length: 510 }, (_, index) => win32.join(root, `denied-${index}`));
     paths.push(win32.join(root, "Case"), win32.join(root, "case"), `${win32.join(root, "absent-dir")}\\`);
+    present(paths);
     await initializeAsrtSandbox({ denyWrite: paths });
     pinWorkerRoot(root);
     const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => requests.map(() => ({
@@ -217,6 +235,7 @@ describe("background session isolation", () => {
   it("keeps an in-progress worker verification on the same deny revision when a wrap is refused", async () => {
     const root = win32.join(fixtureRoot, "worker");
     const protectedPath = win32.join(root, "protected");
+    present([protectedPath]);
     await initializeAsrtSandbox({ denyWrite: [protectedPath] });
     pinWorkerRoot(root);
     let refused: Promise<void> | undefined;
@@ -245,6 +264,7 @@ describe("background session isolation", () => {
     const root = win32.join(fixtureRoot, "worker");
     const initial = win32.join(root, "initial");
     const late = win32.join(root, kind === "glob" ? "*.secret" : "late-secret");
+    present([initial, late]);
     await initializeAsrtSandbox({ denyRead: [initial] });
     pinWorkerRoot(root);
     let reads = 0;
@@ -265,6 +285,31 @@ describe("background session isolation", () => {
       expect(read.mock.calls.map(([targets]) => targets)).toEqual(Array.from({ length: readback }, () => [initial]));
       expect(nativeWorker.grantWindowsAcl).not.toHaveBeenCalled();
       expect(wrapping).toBeDefined();
+    } finally {
+      await wrapping;
+    }
+  });
+
+  it.each(WIN32_WRAPPERS)("refuses a worker grant when a %s wrap adds a glob deny while every reached row is watched", async (_name, wrap) => {
+    const root = win32.join(fixtureRoot, "worker");
+    const initial = win32.join(root, "initial");
+    await initializeAsrtSandbox({ denyRead: [initial] });
+    pinWorkerRoot(root);
+    let wrapping: Promise<void> | undefined;
+    const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => {
+      wrapping ??= expect(wrap("echo late", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [win32.join(root, "*.secret")] } }))
+        .resolves.toMatchObject({ argv: ["confined"] });
+      return requests.map(() => ({
+        denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40, directory: false,
+      }));
+    });
+    try {
+      const grant = grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [root] })
+        .then(held => { held.release(); return held; });
+      await expect(grant).rejects.toThrow(/obligation|glob|changed/i);
+      expect(read.mock.calls.map(([targets]) => targets)).toEqual([[]]);
+      expect(nativeWorker.grantWindowsAcl).not.toHaveBeenCalled();
+      expect(stampWindowsAclAsync).not.toHaveBeenCalled();
     } finally {
       await wrapping;
     }

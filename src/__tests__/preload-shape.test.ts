@@ -277,6 +277,8 @@ describe("preload contextBridge world shape lock", () => {
             "updateSecuritySettings",
             "upstreamProxyGet",
             "upstreamProxySet",
+            "watchedQuarantineList",
+            "watchedQuarantineRestore",
           ],
           "pluginConfig": [
             "get",

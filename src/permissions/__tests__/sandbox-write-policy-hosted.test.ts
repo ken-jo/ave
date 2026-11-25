@@ -106,7 +106,7 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js", async ori
     ? paths.win32.normalize(path) : Reflect.apply(actual.normalizePathForSandbox, undefined, [path, ...args]) };
 });
 
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -116,11 +116,13 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { buildPerCommandSandboxCustomConfig, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
+import { resetWatchedRows, watchedProtectedRows } from "../windows-watched-rows.js";
 
 const hostPlatform = process.platform;
 
 describe("hosted write policy spellings", () => {
   afterEach(() => {
+    resetWatchedRows();
     driveFixture.enabled = false;
     setProcessPlatform(hostPlatform);
     vi.restoreAllMocks();
@@ -200,6 +202,12 @@ describe("hosted write policy spellings", () => {
     const ordinaryRoots = [workRoot, ...[".ave/plugins/p/data", ".ave/mcp/s/sandbox", "temp/owned"]
       .map(path => join(root, ...path.split("/"))), literalRoot, interveningGrant];
     for (const path of [...protectedRoots, ...ordinaryRoots]) mkdirSync(path, { recursive: true });
+    if (platform === "win32") {
+      // Windows never stamps an absent row (the native stamp would create it), so the floor rows checked here exist.
+      for (const path of [...protectedRoots, ...ordinaryRoots]) writeFileSync(join(path, ".bash_profile"), "");
+      mkdirSync(join(literalRoot, ".vscode"));
+      writeFileSync(deniedChild, "");
+    }
     mkdirSync(join(root, "pattern-files", "key"), { recursive: true });
     const linkedControl = join(root, ".config", "linked-control");
     const externalControl = join(root, "external-control");
@@ -234,11 +242,12 @@ describe("hosted write policy spellings", () => {
     }
     expect(writeDenies).toContainEqual({ path: join(literalRoot, ".vscode"), literal: true });
     if (platform === "win32") {
-      expect(Buffer.byteLength(JSON.stringify(filesystem?.denyWrite))).toBeGreaterThan(65_536);
+      // Absent floor rows are watched, not stamped, so the native operand stays small; the raw floor below still exceeds the budget.
+      expect(Buffer.byteLength(JSON.stringify(filesystem?.denyWrite))).toBeLessThan(65_536);
       expect(realpathSync.native(workRoot)).toBe(join(root, "MiXeD", "work"));
       expect(writeDenies).toContain(join(root, "MiXeD", "work", ".bash_profile"));
       expect(writeDenies).toContain(deniedChild);
-      // The native expander retains the spelling of an absent literal.
+      // The native expander retains the spelling of a literal.
       // Check the actual operand before mapping it to the simulated drive's backing directory.
       expect(filesystem?.denyWrite).toContain(deniedChild);
       const denyWrite = expandWindowsFsPaths((filesystem?.denyWrite ?? []).map(entry =>
@@ -265,7 +274,10 @@ describe("hosted write policy spellings", () => {
       for (const target of [...mandatoryTargets, ...protectedDenies, ...nonCoveringDenies.filter(path => !path.includes("*")), externalControl]) {
         const physical = driveFixture.toHost(target);
         if (currentGrants.some(grant => atOrUnder(grant, physical))) {
-          expect(ranked.denyWrite.some(deny => atOrUnder(deny, physical)), target).toBe(true);
+          const denied = ranked.denyWrite.some(deny => atOrUnder(deny, physical));
+          // A reached row that is absent is watched, never stamped into existence.
+          const watched = !existsSync(physical) && watchedProtectedRows().some(row => atOrUnder(driveFixture.toHost(row), physical));
+          expect(denied || watched, target).toBe(true);
         } else {
           expect(ranked.grantWrite.some(grant => atOrUnder(grant, physical)), target).toBe(false);
         }
