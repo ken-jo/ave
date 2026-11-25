@@ -221,6 +221,13 @@ function assertAncestorsHeld(cacheHome: string, uid: number): void {
   }
 }
 
+/** The deepest directory of `path` that exists. */
+function nearestExisting(path: string): string {
+  for (let current = path; ; current = posixPath.dirname(current)) {
+    if (lstatSync(current, { throwIfNoEntry: false }) !== undefined || posixPath.dirname(current) === current) return current;
+  }
+}
+
 interface EstablishedRoot { readonly root: string; readonly dev: number; readonly ino: number }
 
 /** One entry per cache directory this process tried to establish a root under: the root, or null when it failed. */
@@ -231,6 +238,8 @@ function createRuntimeRoot(host: MxcRuntimeHost): EstablishedRoot {
   const planned = plannedRuntimeRoot(host);
   // Before anything is created.
   assertOutsideAveHome(planned, host);
+  // The directories that already exist above the root, before any is created beneath them: a refused one is left as it was.
+  assertAncestorsHeld(nearestExisting(posixPath.dirname(posixPath.dirname(planned))), uid);
   let cacheHome: string;
   try {
     mkdirSync(host.cacheHome, { recursive: true, mode: 0o700 });

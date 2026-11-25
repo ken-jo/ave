@@ -183,6 +183,9 @@ describe.runIf(posix)("runtime root fails closed", () => {
     chmodSync(open, 0o777);
     refused(hostOf({ cacheHome: join(open, "cache") }), /not held by this account or the system/u);
     expect(readdirSync(join(open, "cache"))).toEqual([]);
+    // A cache directory that is not there yet is not created under a refused ancestor.
+    refused(hostOf({ cacheHome: join(open, "later", "cache") }), /not held by this account or the system/u);
+    expect(readdirSync(open)).toEqual(["cache"]);
     // Sticky, as a shared temp directory is: its entries cannot be replaced by another account.
     chmodSync(open, 0o1777);
     _forgetMxcRuntimeRootForTest(join(open, "cache"));
