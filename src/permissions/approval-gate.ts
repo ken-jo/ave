@@ -132,17 +132,19 @@ const APPROVAL_REASON_CODES = ["protected-path", "project-escape", "secret-read"
 
 // File reasons use a target. The analysis-limit reason applies to the entire shell command.
 export function approvalReasonFields(
-  result: { readonly reasonCode?: string; readonly pipelineRequest?: Pick<PermissionDecisionRequest, "pathFacts"> },
+  result: { readonly reasonCode?: string; readonly pipelineRequest?: Pick<PermissionDecisionRequest, "pathFacts" | "shellAnalysisLimited"> },
   card: { readonly fileTarget: boolean; readonly folderCard?: true },
-): Pick<ApprovalRequest, "reasonCode" | "reasonDetail"> {
-  if (result.reasonCode === "shell-analysis-limit") return { reasonCode: result.reasonCode };
-  if (!card.fileTarget) return {};
+): Pick<ApprovalRequest, "reasonCode" | "reasonDetail" | "shellAnalysisLimited"> {
+  const analysis = result.pipelineRequest?.shellAnalysisLimited ? { shellAnalysisLimited: true as const } : {};
+  if (result.reasonCode === "shell-analysis-limit") return { ...analysis, reasonCode: result.reasonCode };
+  if (!card.fileTarget) return analysis;
   const reasonCode = APPROVAL_REASON_CODES.find((code) => code === result.reasonCode
     && (card.folderCard === undefined || code === "protected-path" || code === "project-escape"));
   const facts = result.pipelineRequest?.pathFacts;
   const protectedEntry = reasonCode === "protected-path" ? facts?.protectedEntry : undefined;
   const secretPattern = facts?.secretPattern;
   return {
+    ...analysis,
     ...(reasonCode === undefined ? {} : { reasonCode }),
     ...(protectedEntry === undefined && secretPattern === undefined ? {} : { reasonDetail: {
       ...(protectedEntry === undefined ? {} : { protectedEntry }),
@@ -190,6 +192,8 @@ export interface ApprovalRequest {
   id: string;
   // Display-only code for localizing the permission reason. The gate never reads it from an answer.
   reasonCode?: string;
+  // Display-only evidence that the shell analysis budget ran out.
+  shellAnalysisLimited?: true;
   userOwnedSurface?: UserOwnedSurface;
   userOwnedSurfaceReviewFallback?: true;
   // Display-only projection of the host terminal's current-turn provenance; never an approval capability.

@@ -565,7 +565,7 @@ describe("shared runner decisions", () => {
     const manager = runnerManager();
     manager.setMode("allow");
     await manager.addRulePersist({ pattern: "Bash(rm *)", action: "deny" }, { kind: "user" });
-    const tail = Array.from({ length: Math.ceil(MAX_SHELL_ANALYSIS_TOKENS / 20) }, () => ":" + " x".repeat(19)).join("; ");
+    const tail = Array.from({ length: Math.ceil(MAX_SHELL_ANALYSIS_TOKENS / 20) }, () => `:${" x".repeat(19)}`).join("; ");
     const command = `${first}; bash -c '${tail}'`;
     expect(inspectShellCommand(command, CWD).analysisLimited).toBe(true);
     const result = checkCommand(manager, "bash", command, true);

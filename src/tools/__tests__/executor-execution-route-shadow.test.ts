@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { SHELL_ANALYSIS_LIMIT_REASON } from "../../permissions/decision-pipeline.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import {
@@ -102,6 +103,7 @@ function makeExecutor(
   mode: "strict" | "default" | "auto" | "allow",
   bashAstValidator?: BashAstValidator,
   scriptHookManager?: object,
+  approvalGate?: ApprovalGate,
 ): { executor: ToolExecutor; appendPermissionAuditEntry: ReturnType<typeof vi.fn> } {
   const registry = new ToolRegistry();
   registry.register(new BashTool());
@@ -120,7 +122,7 @@ function makeExecutor(
       undefined,
       permissions,
       bashAstValidator,
-      undefined,
+      approvalGate,
       scriptHookManager as never,
       auditLogger as never,
     ),
@@ -314,19 +316,75 @@ describe("execution route shadow metadata", () => {
     }
   }, 60_000);
 
+  it.each([false, true])("keeps a competing floor or saved deny for a bounded command (denied: %s)", async (denied) => {
+    setShellSandboxRequestedAtBoot(false);
+    activateDisposableCapability();
+    const dir = mkdtempSync(join(tmpdir(), "ave-analysis-limit-principal-"));
+    const abort = new AbortController();
+    try {
+      const cards: ApprovalRequest[] = [];
+      const owner = { isDestroyed: () => false, send: (channel: string, card: ApprovalRequest) => {
+        if (channel === "ave:approval:request") cards.push(card);
+      } };
+      const gate = new ApprovalGate(owner as never);
+      const registry = new ToolRegistry();
+      registry.register(new BashTool());
+      const manager = new PermissionManager(join(dir, "permissions.json"));
+      manager.setMode("allow");
+      if (denied) await manager.addRulePersist({ action: "deny", pattern: "Bash(printf denied)" }, { kind: "user" });
+      const check = vi.spyOn(manager, "checkDetailed");
+      const executor = new ToolExecutor(registry, undefined, manager, new BashAstValidator({ mode: "deny" }), gate);
+      const tail = Array.from({ length: Math.ceil(MAX_SHELL_ANALYSIS_TOKENS / 20) }, () => `:${" x".repeat(19)}`).join("; ");
+      const command = denied ? `printf denied; bash -c '${tail}'` : `${tail}; :`;
+      const pending = executor.executeAll(
+        [{ id: "principal-limit", name: "bash", input: { command } }],
+        { sessionId: "principal-limit", executionCwd: dir, permissionContext: { trustOrigin: "llm-tool-arg", otherPrincipal: true }, abortSignal: abort.signal },
+      );
+      if (denied) {
+        const [result] = await pending;
+        expect(result?.is_error).toBe(true);
+        expect(check.mock.results[0]?.value).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
+        expect(cards).toHaveLength(0);
+        return;
+      }
+      const card = await Promise.race([
+        vi.waitFor(() => {
+          const [opened] = cards;
+          if (opened === undefined) throw new Error("No approval card");
+          return opened;
+        }),
+        pending.then(([result]) => { throw new Error(result?.content); }),
+      ]);
+      const decision = check.mock.results[0]?.value;
+      expect(decision).toMatchObject({ decision: "ask", reasonCode: "other-principal", forceModal: true });
+      expect(card).toMatchObject({ reason: decision?.reason, shellAnalysisLimited: true, args: { command }, allowedChoices: ["allow-once", "deny-once"] });
+      gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac }, owner as never);
+      await pending;
+    } finally {
+      abort.abort();
+      await cleanupTmpDir(dir);
+    }
+  });
+
   it.each(["host", "contained"] as const)("denies a structural refusal on the %s route without a card", async (route) => {
     setShellSandboxRequestedAtBoot(false);
     if (route === "contained") activateDisposableCapability();
     const dir = mkdtempSync(join(tmpdir(), "ave-structural-refusal-"));
     try {
-      const { executor } = makeExecutor(dir, "allow", new BashAstValidator({ mode: "deny" }));
+      const gate = new ApprovalGate({ isDestroyed: () => false, send: vi.fn() } as never);
+      const request = vi.spyOn(gate, "requestAndWait");
+      const { executor, appendPermissionAuditEntry } = makeExecutor(dir, "allow", new BashAstValidator({ mode: "deny" }), undefined, gate);
       const [result] = await executor.executeAll(
-        [{ id: "structural-refusal", name: "bash", input: { command: 'eval "printf ok"' } }],
+        [{ id: "structural-refusal", name: "bash", input: { command: 'printf "%s" "$IFS"' } }],
         { sessionId: "structural-refusal", executionCwd: dir, permissionContext: { trustOrigin: "llm-tool-arg" } },
       );
       expect(result?.is_error).toBe(true);
-      expect(result?.content).toContain("eval-untrusted");
+      expect(result?.content).toContain("ifs-command-injection");
+      expect(request).not.toHaveBeenCalled();
       expect(operatorHarness.consumeCount).toBe(0);
+      expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+        executionRoute: expect.objectContaining({ route: route === "host" ? "host" : "disposable-container" }),
+      }));
     } finally {
       await cleanupTmpDir(dir);
     }

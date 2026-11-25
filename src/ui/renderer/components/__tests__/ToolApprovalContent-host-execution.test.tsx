@@ -3,6 +3,7 @@ import "../../../../../test/renderer/setup.js";
 import { describe, expect, it } from "vitest";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { SHELL_ANALYSIS_LIMIT_REASON } from "../../../../permissions/decision-pipeline.js";
+import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../../../shared/shell-analysis-limits.js";
 import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
@@ -51,6 +52,7 @@ describe("explicit host execution approval", () => {
       const approval = request(false);
       approval.reason = SHELL_ANALYSIS_LIMIT_REASON;
       approval.reasonCode = "shell-analysis-limit";
+      approval.shellAnalysisLimited = true;
       approval.executionPlan = getHostShellExecutionPlanAuditProjection(buildHostShellExecutionPlan({
         platform: "linux", requestedSandbox: true,
         activeCapability: { reason: "Fixture sandbox unavailable", kind: "none", confidence: "verified", platform: "linux" },
@@ -69,6 +71,29 @@ describe("explicit host execution approval", () => {
     ["en", /the rest of the command past that limit was not checked/i],
     ["ko", /분석 한도 이후의 명령 내용은 확인하지 않았습니다/u],
   ] as const)("analysis-limit disclosure in %s", (locale, notice) => {
+    it("preserves the other floor and shows the unchecked command with one-shot choices", () => {
+      const previous = getLocale();
+      setLocale(locale);
+      try {
+        const command = `printf %s${" word".repeat(MAX_SHELL_ANALYSIS_TOKENS)}\nprintf 'trailing marker'`;
+        const approval = { ...request(false), args: { command }, shellAnalysisLimited: true as const, reason: "This principal requires local approval." };
+        const { container, getByTestId } = renderApproval(approval, () => undefined);
+        expect(getByTestId("approval-ask-reason")).toHaveTextContent(approval.reason);
+        expect.soft(container.textContent).toMatch(notice);
+        const commandRow = getByTestId("tool-approval-input");
+        expect.soft(commandRow).toBeVisible();
+        expect(commandRow.textContent).toBe(command);
+        expect(Array.from(container.querySelectorAll("details pre")).at(-1)?.textContent).toContain("trailing marker");
+        expect(getByTestId(TEST_IDS.approveButton)).toHaveTextContent(t("toolApprovalDialog.allowOnce"));
+        expect(getByTestId(TEST_IDS.approveButton)).toBeEnabled();
+        expect(getByTestId(TEST_IDS.denyButton)).toHaveTextContent(t("toolApprovalDialog.decisionDeny"));
+        expect(getByTestId(TEST_IDS.denyButton)).toBeEnabled();
+        expect(getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
+      } finally {
+        setLocale(previous);
+      }
+    });
+
     it.each(["host", "contained"] as const)("shows the unchecked notice and the full %s command before consent", (route) => {
       const previous = getLocale();
       setLocale(locale);
@@ -78,6 +103,7 @@ describe("explicit host execution approval", () => {
         approval.args = { command };
         approval.reason = SHELL_ANALYSIS_LIMIT_REASON;
         approval.reasonCode = "shell-analysis-limit";
+        approval.shellAnalysisLimited = true;
         if (route === "host") {
           approval.executionPlan = getHostShellExecutionPlanAuditProjection(buildHostShellExecutionPlan({
             platform: "darwin", requestedSandbox: false,
@@ -104,6 +130,7 @@ describe("explicit host execution approval", () => {
       const approval = request(false);
       approval.reason = SHELL_ANALYSIS_LIMIT_REASON;
       approval.reasonCode = "shell-analysis-limit";
+      approval.shellAnalysisLimited = true;
       approval.executionPlan = getHostShellExecutionPlanAuditProjection(buildHostShellExecutionPlan({
         platform: "linux", requestedSandbox: false, unavailableSandboxRequiresAsk: true,
         activeCapability: { reason: "Fixture sandbox disabled", kind: "none", confidence: "verified", platform: "linux" },

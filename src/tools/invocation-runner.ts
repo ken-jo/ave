@@ -10,7 +10,6 @@ import { selectDeclaredPathValues } from "../shared/dotted-field-value.js";
 import { isConfinedHostShellExecution } from "../permissions/host-shell-execution-plan.js";
 import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { criticalDeleteTargetFor } from "../permissions/sensitive-paths.js";
-import { SHELL_ANALYSIS_LIMIT_REASON } from "../permissions/decision-pipeline.js";
 import { hookChainFromDispatch } from "./pipeline/audit-entries.js";
 import { runScriptHook } from "./invocation-services.js";
 import { HookInputMutationRequest, attachHookControlContext, hookInfluenceContext } from "../hooks/hook-influence.js";
@@ -1420,6 +1419,7 @@ async function runToolInvocationAttempt(
       rationaleAvailable: rationaleBatchContext !== undefined || rationaleResumeContext !== undefined,
       ...(approvalCacheKey ? { approvalCacheKey } : {}),
       approvalMemory,
+      shellAnalysisLimited: undefined,
       disposableSubstrate,
       guestCwd: isBrokerGuestRoutePlan(executionRoutePlan) ? executionRoutePlan.cwd : undefined,
       ...(permissionStoreError === undefined ? {} : { permissionStoreError }),
@@ -1454,7 +1454,6 @@ async function runToolInvocationAttempt(
 
     const canonicalTargets: Array<{ filePath: string; canonicalPath: string; runtimePath: string }> = [];
     let directoryAuthorization: AuthorizationStageContext["directoryAuthorization"];
-    let shellAnalysisLimitAdmitted = false;
     const directoryApprovalSignal = (approvalSignal?: AbortSignal) =>
       approvalSignal && abortSignal ? AbortSignal.any([approvalSignal, abortSignal]) : approvalSignal ?? abortSignal;
     const directoryGrantGuard = (signal?: AbortSignal) =>
@@ -2025,7 +2024,6 @@ async function runToolInvocationAttempt(
     if (canonicalBrokerLifecycleTool === undefined && hasShellCommandArgument(finalInput) && !brokeredHostShellRouteSelected()) {
       while (true) {
         let shellPathViolation: ShellPathPolicyViolation | null = null;
-        shellAnalysisLimitAdmitted = false;
         if (hostShellToolName === "powershell") {
           const resolvedCwd = resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined);
           // Unpinned startup cannot run a native host preflight. The tool repeats
@@ -2057,8 +2055,7 @@ async function runToolInvocationAttempt(
           break;
         }
         if (shellPathViolation.kind === "analysis-limit") {
-          invocationPermissionContext.floor ??= { code: "shell-analysis-limit", reason: SHELL_ANALYSIS_LIMIT_REASON };
-          shellAnalysisLimitAdmitted = true;
+          invocationPermissionContext.shellAnalysisLimited = true;
           break;
         }
 
@@ -2190,9 +2187,8 @@ async function runToolInvocationAttempt(
         (hostShellExecutionPlan?.mode === "plain" || executionRoutePlan?.route === "disposable-container"
            || isConfinedHostShellExecution(hostShellExecutionPlan, disposableSubstrate));
       if (bashAnalysisLimit) {
-        invocationPermissionContext.floor ??= { code: "shell-analysis-limit", reason: SHELL_ANALYSIS_LIMIT_REASON };
-        shellAnalysisLimitAdmitted = true;
-        if (directoryAuthorization?.permission.reasonCode !== "shell-analysis-limit") directoryAuthorization = undefined;
+        invocationPermissionContext.shellAnalysisLimited = true;
+        if (directoryAuthorization?.permission.pipelineRequest?.shellAnalysisLimited !== true) directoryAuthorization = undefined;
       } else if (bashResult.decision === "deny") {
         const msg = t("be_executor.bashAstBlock", { reason: bashResult.reason ?? "", patternId: bashResult.patternId ?? "" })
           + buildPolicyDenialGuidance({
@@ -2604,7 +2600,7 @@ async function runToolInvocationAttempt(
       trust,
       invocationCategory,
       blockReadsOutsideWorkingDirectories,
-      ...(shellAnalysisLimitAdmitted ? { shellAnalysisLimitAdmitted: true as const } : {}),
+      ...(invocationPermissionContext.shellAnalysisLimited ? { shellAnalysisLimitAdmitted: true as const } : {}),
       evaluationContext,
       approvalCacheKey,
       approvalPurpose,

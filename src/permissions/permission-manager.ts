@@ -230,6 +230,7 @@ export interface PermissionCheckContext {
   admissionDenial?: PermissionDecisionRequest["admissionDenial"];
   paths?: readonly (NonNullable<PermissionDecisionRequest["paths"]>[number] & { runtimePath?: string })[];
   shellReadOnlyProven?: boolean;
+  shellAnalysisLimited?: true;
   shellEscalated?: boolean;
   // Host-derived native file facts; never accepted from tool arguments.
   fileWritePolicy?: { insideProject: boolean; checkpointAvailable?: boolean; directoryApproved: boolean };
@@ -1825,8 +1826,6 @@ export class PermissionManager {
         brokerGuestRoute ? new ShellFloorContext("powershell", { inspectHostFiles: false }) : undefined) : undefined;
     const shellInspectionExhausted = analysisLimited || shellSignals?.analysisLimited === true;
     analysisLimited ||= shellInspectionExhausted;
-    const analysisLimitFloor = { code: "shell-analysis-limit" as const, reason: SHELL_ANALYSIS_LIMIT_REASON };
-    if (shellInspectionExhausted) floor ??= analysisLimitFloor;
     if (shellSignals?.exfiltration) exfiltration ??= { reason: shellSignals.exfiltration };
     const shellShape = parsed && !analysisLimited && !ruleProofLimited ? analyzeShellForRules(parsed, ruleSubject?.cwd) : undefined;
     // A confirmed broker guest route resolves drive-less operands as guest (Linux) paths. Host routes, and any substrate the live broker does not confirm, keep host semantics and the unchanged floor.
@@ -1836,7 +1835,8 @@ export class PermissionManager {
     const powerShellPaths = !shellInspectionExhausted && command !== undefined && ruleSubject?.dialect === "powershell" && analysisCwd !== undefined
       ? inspectPowerShellPermissionPaths(parsedPowerShell ?? command, analysisCwd, shellExecution.environmentSnapshot ?? {}, undefined,
         { inspectHostFiles: !brokerGuestRoute }) : undefined;
-    if (shellPaths?.unproven?.kind === "analysis-limit" || powerShellPaths?.evidenceLimitExceeded) floor ??= analysisLimitFloor;
+    const shellAnalysisLimited = context.shellAnalysisLimited === true || floor?.code === "shell-analysis-limit" || shellInspectionExhausted ||
+      shellPaths?.unproven?.kind === "analysis-limit" || powerShellPaths?.evidenceLimitExceeded === true;
     const credentialStore = powerShellPaths?.credentialStore;
     if (credentialStore) admissionDenial ??= { code: "credential-store", reason: credentialStore };
     const unknownProtectedWrite = shellPaths?.unknownProtectedWrite ?? powerShellPaths?.unknownProtectedWrite;
@@ -1855,16 +1855,17 @@ export class PermissionManager {
       secretRead ||= evidence.effect === "read" && evidence.secret !== null;
       notePathFacts(evidence);
     }
+    if (shellAnalysisLimited) floor ??= { code: "shell-analysis-limit", reason: SHELL_ANALYSIS_LIMIT_REASON };
     const competingFloor = floor !== undefined;
-    if (sandboxUnavailableAsk) {
-      floor = context.floor ?? (floor?.code === "shell-analysis-limit" ? floor : { code: "sandbox-unavailable", reason: "The OS sandbox is unavailable, so this shell command would run without isolation; it needs your approval once or for this session." });
+    if (sandboxUnavailableAsk && !shellAnalysisLimited) {
+      floor = context.floor ?? { code: "sandbox-unavailable", reason: "The OS sandbox is unavailable, so this shell command would run without isolation; it needs your approval once or for this session." };
     }
     const floorSessionEligible = sandboxUnavailableAsk && !competingFloor;
     const floorSessionGranted = floorSessionEligible && context.hostShellExecutionPlan !== undefined && requestedRuleSubject !== undefined &&
       (requestedRuleSubject.dialect === "bash" || requestedRuleSubject.dialect === "powershell") && requestedRuleSubject.dialect === toolName &&
       this.holdsFloorSessionGrant(context.sessionId);
     const sessionRules = this.sessionRulesInScope(context.sessionId);
-    const shellRules = parsed?.analysis.ok ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true,
+    const shellRules = parsed && (!analysisLimited || parsed.analysis.ok) ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true,
         ...(ruleSubject?.hostTerminal === undefined ? {} : { hostTerminal: ruleSubject.hostTerminal }) }, this.rules, projectRules, sessionRules)
       : parsedPowerShell && !parsedPowerShell.analysisLimited ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject?.cwd, hostShellExecutionPlan: context.hostShellExecutionPlan, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true }, this.rules, projectRules, sessionRules) : undefined;
     // Tree T:128, T:259: a saved rule that is exactly this command passes the sandbox-unavailable ask when the plan asks only for the missing
@@ -1921,10 +1922,11 @@ export class PermissionManager {
       rationaleAvailable: context.rationaleAvailable === true,
       headless: context.headless === true || context.approvalSurface === "unavailable", ownerAway: context.ownerUnattended, paths: [...(context.paths ?? []), ...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])].map(({lexical,canonical,effect}) => ({lexical,canonical,effect})),
       admissionDenial, floor, exfiltration, rules, secretRead, manualRerun: context.manualRerun,
+      ...(shellAnalysisLimited ? { shellAnalysisLimited: true as const } : {}),
       ...(pathFacts.protectedEntry !== undefined || pathFacts.secretPattern !== undefined ? { pathFacts } : {}),
       ...(floorSessionEligible ? { floorSessionEligible: true as const } : {}),
       ...(context.fileWritePolicy ? { fileWrite: { ...context.fileWritePolicy, checkpointAvailable: context.fileWritePolicy.checkpointAvailable === true } } : {}),
-      ...(category === "shell" ? { shell: { sandboxed: shellExecution.runsSandboxed, readOnlyProven, unproven: analysisLimited || ruleProofLimited || shellPaths?.unproven != null || powerShellPaths?.unproven === true || !hostBoundWriteTargets && !readOnlyProven && (shellSignals?.outcome === "unproven" || Boolean(shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason)), destructive: shellDestructive, escalated: context.shellEscalated } } : {}),
+      ...(category === "shell" ? { shell: { sandboxed: shellExecution.runsSandboxed, readOnlyProven, unproven: shellAnalysisLimited || ruleProofLimited || shellPaths?.unproven != null || powerShellPaths?.unproven === true || !hostBoundWriteTargets && !readOnlyProven && (shellSignals?.outcome === "unproven" || Boolean(shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason)), destructive: shellDestructive, escalated: context.shellEscalated } } : {}),
     };
     const result = this.pipelineResult(request, context);
     if (result.decision === "allow" && result.reasonCode === "floor-session-allow" && requestedRuleSubject?.cwd !== undefined && context.hostShellExecutionPlan !== undefined) {

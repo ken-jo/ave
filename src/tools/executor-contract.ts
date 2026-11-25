@@ -91,6 +91,7 @@ export interface ToolPermissionContext {
   otherPrincipal?: boolean;
   admissionDenial?: PermissionDecisionRequest["admissionDenial"];
   floor?: PermissionDecisionRequest["floor"];
+  shellAnalysisLimited?: PermissionCheckContext["shellAnalysisLimited"];
   paths?: PermissionCheckContext["paths"];
   secretRead?: boolean;
   headless?: boolean;

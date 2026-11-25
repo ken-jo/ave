@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { PermissionCheckResult, PermissionManager } from "../permissions/permission-manager.js";
-import { isHostApprovalRejectedDecision, type ApprovalDecision, type ApprovalGate } from "../permissions/approval-gate.js";
+import { approvalReasonFields, isHostApprovalRejectedDecision, type ApprovalDecision, type ApprovalGate } from "../permissions/approval-gate.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
 import { getHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
 import { getHostShellExecutionPlanAuditProjection, requiresUnsandboxedShellAsk, type HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
@@ -92,6 +92,7 @@ export function createHookCommandAuthorizer(deps: {
       approval = await deps.approvalGate.requestAndWait({
         id, category: "tool", toolName: "bash", toolCategory: "shell",
         args: { ...args, hook: hook.id, event: payload.hookType }, reason: result.reason,
+        ...approvalReasonFields(result, { fileTarget: false }),
         source: "builtin", createdAt: Date.now(), sessionId: payload.sessionId, trustOrigin: payload.trustOrigin,
         evaluationContext, ownerUnattended: turnPolicy?.ownerUnattended, abortSignal,
         remoteControllerAuthority, remoteControllerOrigin: remoteControllerOriginOf(remoteControllerAuthority),

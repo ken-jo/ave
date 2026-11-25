@@ -15,6 +15,7 @@ export interface PermissionDecisionRequest {
   paths?: readonly { lexical: string; canonical: string; effect: "read" | "write" }[];
   admissionDenial?: { code: string; reason: string };
   floor?: { code: PermissionFloorCode; reason: string };
+  shellAnalysisLimited?: true;
   // The floor is sandbox-unavailable with no other floor behind it, so its card may offer "This session".
   floorSessionEligible?: true;
   exfiltration?: { reason: string };

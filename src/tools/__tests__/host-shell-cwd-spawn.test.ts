@@ -97,7 +97,7 @@ describe("host cwd approval", () => {
     const gate = new ApprovalGate(webContents as never);
     const registry = new ToolRegistry();
     const tool = new BashTool();
-    const launch = vi.spyOn(tool, "execute").mockResolvedValue({ output: "mock launch" });
+    const launch = vi.spyOn(tool, "execute").mockResolvedValue({ output: "mock launch", isError: false });
     registry.register(tool);
     const manager = new PermissionManager(join(directory, "permissions.json"));
     manager.setMode("strict");

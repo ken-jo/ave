@@ -979,7 +979,7 @@ export function ToolApprovalContent({
     && request.executionPlan.executionRequest === "host";
   const requiresHostConsent = request.executionPlan?.mode === "plain"
     && request.executionPlan.requiresExplicitUserApproval;
-  const isShellAnalysisLimit = request.reasonCode === "shell-analysis-limit";
+  const isShellAnalysisLimit = request.shellAnalysisLimited === true;
   const showFullArgsByDefault = requiresHostConsent || isShellAnalysisLimit;
   const canToggleArgs = !showFullArgsByDefault && argsStr.length > 500;
   const argsTruncated = canToggleArgs && !expanded;
@@ -1009,8 +1009,9 @@ export function ToolApprovalContent({
   const categoryImpact = approvalActionSummary(request, tHook);
   const specificReviewerReason = request.reviewerVerdict?.reason.trim() ?? "";
   // A coded reason is worded below in the user's language; its host text is an English literal kept for audit rows and tool results.
-  const specificHostReason = request.reasonCode ? "" : request.reason.trim();
-  const askReason = approvalAskReason(request, tHook);
+  const specificHostReason = request.reasonCode || isShellAnalysisLimit ? "" : request.reason.trim();
+  const askReason = approvalAskReason(request, tHook) ?? (isShellAnalysisLimit
+    ? revealHiddenCharacters(request.reason, { lineBreaks: true }) : null);
   const shownSecretPattern = request.reasonDetail?.secretPattern
     ? revealHiddenCharacters(request.reasonDetail.secretPattern, { lineBreaks: true }) : null;
   // The path-grant reason is host-derived and localized here; the raw request.reason for this kind is an internal English marker.
@@ -1135,6 +1136,11 @@ export function ToolApprovalContent({
                   {askReason ? (
                     <p className="mt-1 break-words text-xs leading-relaxed" data-testid="approval-ask-reason" data-reason-code={request.reasonCode}>
                       {askReason}
+                    </p>
+                  ) : null}
+                  {isShellAnalysisLimit && request.reasonCode !== "shell-analysis-limit" ? (
+                    <p className="mt-1 break-words text-xs leading-relaxed">
+                      {tHook("toolApprovalDialog.reasonShellAnalysisLimit")}
                     </p>
                   ) : null}
                   {shownSecretPattern ? (
