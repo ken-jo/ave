@@ -159,7 +159,7 @@ describe("permission path facts", () => {
     expect(isSensitivePath(join(project, name), "read")).toBeNull();
   });
 
-  it.each([".git", ".vscode", ".idea", ".husky", ".cargo", ".devcontainer", ".yarn", ".mvn", ".claude", ".config/git", ".bashrc", ".zshrc", ".zprofile", ".profile", ".envrc", ".gitconfig", ".npmrc", ".mcp.json", ".claude.json"])("reports protected paths across case and separators for %s", (name) => {
+  it.each([".git", ".vscode", ".idea", ".husky", ".cargo", ".devcontainer", ".yarn", ".mvn", ".config/git", ".bashrc", ".zshrc", ".zprofile", ".profile", ".envrc", ".gitconfig", ".npmrc", ".mcp.json", ".agents"])("reports protected paths across case and separators for %s", (name) => {
     const target = `${project}/${name}/child`;
     expect(protectedControlEntryFor(target)).toBe(name);
     expect(createPermissionPathEvidence(project)({ lexical: target, canonical: target, effect: "read" }).protectedControl).toBeUndefined();
@@ -167,7 +167,8 @@ describe("permission path facts", () => {
     expect(protectedControlEntryFor(`C:\\workspace\\${name.toUpperCase().replaceAll("/", "\\")}\\child`)).toBe(name);
   });
 
-  it.each([".githooks", ".pre-commit-config.yaml", "lefthook.yml", ".bash_profile"])("does not extend the protected set with %s", (name) => {
+  // Other agents' config folders are theirs to protect (owner decision 2026-11-25).
+  it.each([".githooks", ".pre-commit-config.yaml", "lefthook.yml", ".bash_profile", ".claude/settings.json", ".claude.json", ".codex/config.toml"])("does not extend the protected set with %s", (name) => {
     expect(protectedControlEntryFor(join(project, name))).toBeUndefined();
   });
 

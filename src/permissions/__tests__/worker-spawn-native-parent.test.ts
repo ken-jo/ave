@@ -42,8 +42,9 @@ vi.mock("../mxc-extension-process.js", () => ({
     let finish!: (result: { exitCode: number; timedOut: boolean }) => void;
     const stdout = new PassThrough();
     const stderr = new PassThrough();
+    const { mxcStartRecord } = await import("../../__tests__/support/mxc-supervisor.js");
     const native = {
-      id: 4000 + state.natives.length, stdin: new PassThrough(), stdout, stderr,
+      id: 4000 + state.natives.length, stdin: new PassThrough(), stdout, stderr, startEvidence: mxcStartRecord(request),
       completion: new Promise<{ exitCode: number; timedOut: boolean }>((resolve) => { finish = resolve; }),
       diagnostics: { nodeVersion: "v0", nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "owner" },
       dispose: vi.fn(async () => {
@@ -60,7 +61,8 @@ vi.mock("../mxc-extension-process.js", () => ({
 
 const { planWindowsExtensionHolder } = await import("../mxc-extension-readiness.js");
 const { drainMxcHolderLifetimes, liveMxcPluginChildHolder } = await import("../mxc-holder-lifetime.js");
-const { registerMxcHolderReadinessProbe } = await import("../../sandbox/wrap-bundled-command.js");
+const { registerMxcReleaseGateEvidence } = await import("../mxc-extension-admission.js");
+const { MXC_RELEASE_GATE_EVIDENCE } = await import("../../__tests__/support/mxc-supervisor.js");
 const { prepareMxcPluginChildLaunch } = await import("../../plugins/isolation/mxc-plugin-child-launch.js");
 const { spawnMxcPluginChild } = await import("../../plugins/isolation/mxc-plugin-child.js");
 const { resolvePluginPaths } = await import("../../plugins/plugin-paths.js");
@@ -70,13 +72,9 @@ const { buildSafeChildEnv } = await import("../../tools/safe-env.js");
 const { __resetActiveWrappedWorkersForTest, spawnWorker } = await import("../worker-spawn.js");
 
 const PLUGIN = "example-plugin";
-const EVIDENCE = { installedPayloadVerified: true, baseContainerReady: true, exactRequestAccepted: true,
-  uiEnabledRuntimeStarted: true, ancestorQueriesSupported: true, standardStreamsRoundTrip: true,
-  cleanTermination: true, ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true,
-  forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true };
 
 describe.skipIf(process.platform !== "win32")("contained worker under a real plugin child parent", () => {
-  let unregisterProbe: () => void = () => {};
+  let unregisterReleaseGate: () => void = () => {};
   const pluginRoot = (): string => join(resolvePluginPaths().pluginsRoot, PLUGIN);
   const dataDir = (): string => join(pluginRoot(), "data");
   const work = (): string => join(aveHome(), "..", "native-parent-work");
@@ -90,14 +88,14 @@ describe.skipIf(process.platform !== "win32")("contained worker under a real plu
     state.holdCompletion = false;
     state.denyWrite = [];
     __resetActiveWrappedWorkersForTest();
-    unregisterProbe = registerMxcHolderReadinessProbe(async () => EVIDENCE as never);
+    unregisterReleaseGate = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     for (const dir of [join(pluginRoot(), "gen"), join(dataDir(), "cache"), join(dataDir(), "models"), join(pluginRoot(), "socket"), work()]) {
       mkdirSync(dir, { recursive: true });
     }
   });
   afterEach(async () => {
     await drainMxcHolderLifetimes();
-    unregisterProbe();
+    unregisterReleaseGate();
     rmSync(work(), { recursive: true, force: true });
   });
 

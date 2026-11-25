@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { liveEgressInvocationCount } from "../egress-invocations.js";
-import { MxcNativeEntryRequiredError, MxcProcessCleanupError, WorkerTransportUnsupportedError } from "../mxc-extension-errors.js";
+import { MxcCapabilityUnavailableError, MxcNativeEntryRequiredError, MxcProcessCleanupError, WorkerTransportUnsupportedError } from "../mxc-extension-errors.js";
+import { registerMxcReleaseGateEvidence } from "../mxc-extension-admission.js";
+import { mxcRequestDigest, type MxcExtensionStartEvidence } from "../mxc-extension-protocol.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { drainMxcHolderLifetimes } from "../mxc-holder-lifetime.js";
 import { planWindowsExtensionHolder } from "../mxc-extension-readiness.js";
 import { mxcPolicyModel } from "../../__tests__/support/mxc-policy-rows.js";
@@ -67,12 +70,26 @@ function spec(): MxcConfinedChildSpec {
     egressOwner: { kind: "worker", role: "worker", pluginId: "sample", instanceId: "main" },
     workerTransport: "stdio-control-v1", baseEnv: { SYSTEMROOT: "C:\\Windows", LOCALAPPDATA: "C:\\local" },
     filesystemOwnership: { readRoots: [], writeRoots: ["D:\\work"], hostStorageRoots: [] }, holder: Object.freeze({ incarnation: "main" }),
-    probe: async () => ({ installedPayloadVerified: true, baseContainerReady: true, exactRequestAccepted: true,
-      uiEnabledRuntimeStarted: true, ancestorQueriesSupported: true, standardStreamsRoundTrip: true,
-      cleanTermination: true, ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true,
-      forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true }),
   };
 }
+// Contract fields 1-5, as this start's ready frame reports them for the request it started.
+const START: MxcExtensionStartEvidence = { installedPayloadVerified: true, baseContainerReady: true, exactRequestAccepted: true,
+  uiEnabledRuntimeStarted: true, ancestorQueriesSupported: true };
+const started = (request: unknown, evidence: MxcExtensionStartEvidence = START) =>
+  ({ requestDigest: mxcRequestDigest(request as Parameters<typeof mxcRequestDigest>[0]), evidence });
+/** A native start whose ready frame carried `startEvidence` (or nothing). */
+function startWith(startEvidence: (request: unknown) => unknown) {
+  const dispose = vi.fn().mockResolvedValue(undefined);
+  state.spawn.mockImplementationOnce(async (request, options) => {
+    const child = { id: 46, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      completion: new Promise(() => {}), startEvidence: startEvidence(request), dispose };
+    options.onOwned(child);
+    options.beforeSpawn();
+    return child;
+  });
+  return dispose;
+}
+let unregisterReleaseGate: (() => void) | undefined;
 
 // A descendant laid out as a sibling of its parent's writable root, as rows 3-5 must do.
 function siblingChild(parent: MxcConfinedChildSpawn, root = "D:\\child"): MxcConfinedChildSpec {
@@ -93,13 +110,16 @@ beforeEach(() => {
   state.missing.clear();
   state.plan = planWindowsExtensionHolder({ requested: true, mxc: { state: "available" },
     fallback: { version: "0.0.80", ready: false } });
+  // Contract fields 8-13: the install's release-gate record, which no start gathers.
+  unregisterReleaseGate = registerMxcReleaseGateEvidence({ ownProxySucceeded: true, otherListenerRefused: true,
+    directEgressRefused: true, forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true });
   state.close.mockResolvedValue(undefined);
   state.lease.mockResolvedValue({ url: "http://127.0.0.1:43210", port: 43210, close: state.close });
   state.admit.mockReturnValue({ model: mxcPolicyModel({ allowRead: ["C:\\runtime", "C:\\Windows"], allowWrite: ["D:\\work"],
     denyRead: [], denyWrite: [], protectedFloor: [] }), assertStillValid: state.validate });
   state.spawn.mockImplementation(async (_request, options) => {
     const child = { id: 42, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
-      completion: new Promise(() => {}), dispose: vi.fn().mockResolvedValue(undefined) };
+      completion: new Promise(() => {}), startEvidence: started(_request), dispose: vi.fn().mockResolvedValue(undefined) };
     options.onOwned(child);
     options.beforeSpawn();
     return child;
@@ -108,6 +128,8 @@ beforeEach(() => {
 afterEach(async () => {
   // Release every holder a test left owned so its writable roots do not constrain the next test.
   await drainMxcHolderLifetimes();
+  unregisterReleaseGate?.(); unregisterReleaseGate = undefined;
+  vi.useRealTimers();
   __resetWindowsSandboxSubstrateForTest();
   setProcessPlatform(ORIGINAL_PLATFORM);
 });
@@ -166,6 +188,110 @@ describe("native confined holder admission", () => {
     expect(state.plan.selectedBackend).toBe("mxc");
   });
 
+  describe("per-start admission on the holder's own start", () => {
+    it("refuses and stops a holder whose ready frame carried no start evidence", async () => {
+      const before = liveEgressInvocationCount();
+      const dispose = startWith(() => undefined);
+      await expect(spawnMxcConfinedChild(spec())).rejects.toThrow(/no ready-frame evidence/);
+      // Refused after native creation: stopped, endpoint released, and no second start on any backend.
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(state.spawn).toHaveBeenCalledTimes(1);
+      expect(state.close).toHaveBeenCalledOnce();
+      expect(liveEgressInvocationCount()).toBe(before);
+      expect(liveMxcHolderWritableRoots()).toEqual([]);
+    });
+
+    it("refuses and stops a holder that presents another holder's start evidence", async () => {
+      const before = liveEgressInvocationCount();
+      const other = await spawnMxcConfinedChild(spec());
+      const borrowed = (await state.spawn.mock.results.at(0)?.value)?.startEvidence;
+      expect(borrowed).toBeDefined();
+      await other.release();
+      admitWrites("D:\\child");
+      const dispose = startWith(() => borrowed);
+      await expect(spawnMxcConfinedChild({ ...siblingChild(other), parent: undefined })).rejects.toThrow(/another holder's start/);
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(liveEgressInvocationCount()).toBe(before);
+    });
+
+    it.each([
+      ["installedPayloadVerified", "native-validation-required"],
+      ["baseContainerReady", "native-validation-required"],
+      ["exactRequestAccepted", "native-validation-required"],
+      ["uiEnabledRuntimeStarted", "runtime-start-failed"],
+      ["ancestorQueriesSupported", "ancestor-policy-unsupported"],
+    ] as const)("refuses and stops a holder whose start did not observe %s", async (field, reason) => {
+      const before = liveEgressInvocationCount();
+      const dispose = startWith((request) => started(request, { ...START, [field]: false }));
+      const refusal: unknown = await spawnMxcConfinedChild(spec()).catch((error: unknown) => error);
+      expect(refusal).toBeInstanceOf(MxcCapabilityUnavailableError);
+      expect(String(refusal)).toContain(`Native admission readiness failed: ${reason}`);
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(state.spawn).toHaveBeenCalledTimes(1);
+      expect(liveEgressInvocationCount()).toBe(before);
+    });
+
+    it("refuses at the readiness deadline, cancels its own start and leaves the backend plan as it was", async () => {
+      vi.useFakeTimers();
+      const before = liveEgressInvocationCount();
+      const plan = state.plan;
+      const dispose = vi.fn().mockResolvedValue(undefined);
+      let startSignal: AbortSignal | undefined;
+      state.spawn.mockImplementationOnce((_request, options) => new Promise((_resolve, reject) => {
+        options.onOwned({ id: 47, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+          completion: new Promise(() => {}), startEvidence: undefined, dispose });
+        options.beforeSpawn();
+        startSignal = options.signal;
+        options.signal.addEventListener("abort", () => reject(new Error("start cancelled")), { once: true });
+      }));
+      const refusal = spawnMxcConfinedChild(spec()).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.mxcExtensionReadinessMs - 1);
+      expect(startSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const error = await refusal;
+      expect(error).toBeInstanceOf(MxcCapabilityUnavailableError);
+      expect(String(error)).toContain("readiness-deadline");
+      expect(startSignal?.aborted).toBe(true);
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(state.spawn).toHaveBeenCalledTimes(1);
+      expect(state.plan).toBe(plan);
+      expect(liveEgressInvocationCount()).toBe(before);
+    });
+
+    it("refuses before any listener or native start while no release-gate record is registered", async () => {
+      const before = liveEgressInvocationCount();
+      unregisterReleaseGate?.();
+      await expect(spawnMxcConfinedChild(spec())).rejects.toThrow(/No release-gate evidence is registered/);
+      expect(state.spawn).not.toHaveBeenCalled();
+      expect(state.lease).not.toHaveBeenCalled();
+      expect(state.admit).not.toHaveBeenCalled();
+      expect(liveEgressInvocationCount()).toBe(before);
+    });
+
+    it("disposes the native process when the caller's signal aborts after admission", async () => {
+      const before = liveEgressInvocationCount();
+      const controller = new AbortController();
+      const result = await spawnMxcConfinedChild({ ...spec(), signal: controller.signal });
+      expect(result.process.dispose).not.toHaveBeenCalled();
+      controller.abort();
+      await vi.waitFor(() => expect(state.close).toHaveBeenCalledOnce());
+      expect(result.process.dispose).toHaveBeenCalledOnce();
+      expect(liveEgressInvocationCount()).toBe(before);
+      expect(liveMxcHolderWritableRoots()).toEqual([]);
+    });
+
+    it("runs the adapter's request check on a snapshot before the start", async () => {
+      const assertRequest = vi.fn((request: { command: string }) => { request.command = "mutated"; });
+      const result = await spawnMxcConfinedChild({ ...spec(), assertRequest });
+      expect(assertRequest).toHaveBeenCalledOnce();
+      expect(state.spawn.mock.lastCall?.[0].command).toMatch(/runtime\.exe/u);
+      await result.release();
+      await expect(spawnMxcConfinedChild({ ...spec(), assertRequest: () => { throw new Error("not the planned launch"); } }))
+        .rejects.toThrow("not the planned launch");
+      expect(state.spawn).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("stops a native process invalidated while startup was pending", async () => {
     const before = liveEgressInvocationCount();
     const validate = vi.fn().mockImplementationOnce(() => {}).mockImplementationOnce(() => {}).mockImplementationOnce(() => {})
@@ -220,7 +346,7 @@ describe("native confined holder admission", () => {
     const death = new Promise<void>((resolve) => { establishDeath = resolve; });
     state.spawn.mockImplementationOnce(async (_request, options) => {
       const child = { id: 43, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
-        completion: new Promise(() => {}), dispose: vi.fn(() => death) };
+        completion: new Promise(() => {}), startEvidence: started(_request), dispose: vi.fn(() => death) };
       options.onOwned(child); options.beforeSpawn(); authorized();
       await nativeReturned;
       return child;
@@ -384,7 +510,7 @@ describe("co-holder nesting and executable identity", () => {
     let late: unknown;
     state.spawn.mockImplementationOnce(async (_request, options) => {
       const child = { id: 44, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
-        completion: new Promise(() => {}), dispose: vi.fn().mockResolvedValue(undefined) };
+        completion: new Promise(() => {}), startEvidence: started(_request), dispose: vi.fn().mockResolvedValue(undefined) };
       options.onOwned(child);
       admitWrites("D:\\outer");
       late = await spawnMxcConfinedChild({ ...siblingChild(first, "D:\\outer"), parent: undefined }).catch((error: unknown) => error);
@@ -411,7 +537,7 @@ describe("co-holder nesting and executable identity", () => {
   it("re-measures the admitted executable synchronously before native creation", async () => {
     state.spawn.mockImplementationOnce(async (_request, options) => {
       const child = { id: 45, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
-        completion: new Promise(() => {}), dispose: vi.fn().mockResolvedValue(undefined) };
+        completion: new Promise(() => {}), startEvidence: started(_request), dispose: vi.fn().mockResolvedValue(undefined) };
       options.onOwned(child);
       state.executableStamp = 2n;
       options.beforeSpawn();
