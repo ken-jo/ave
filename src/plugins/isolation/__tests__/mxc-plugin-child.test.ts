@@ -3,10 +3,10 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { createMxcExtensionRequest } from "../../../__tests__/support/mxc-supervisor.js";
-import type { MxcConfinedChildSpec } from "../../../permissions/confined-child.js";
+import type { MxcConfinedChildSpawn, MxcConfinedChildSpec } from "../../../permissions/confined-child.js";
 import type { OwnedMxcExtensionProcess } from "../../../permissions/mxc-extension-process.js";
 import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError } from "../../../permissions/mxc-extension-errors.js";
-import { registerMxcHolderLifetime } from "../../../permissions/mxc-holder-lifetime.js";
+import { liveMxcPluginChildHolder, registerMxcHolderLifetime } from "../../../permissions/mxc-holder-lifetime.js";
 import { aveHome } from "../../../shared/ave-home.js";
 import { windowsCommandLine } from "../../../shared/windows-command-line.js";
 import { PluginChildTerminationUnverifiedError } from "../plugin-child-transport.js";
@@ -23,6 +23,8 @@ const spawn = vi.hoisted(() => vi.fn());
 vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../permissions/confined-child.js")>(),
   spawnMxcConfinedChild: spawn,
+  // The admitted holders here are fakes; row 2 liveness is pinned with a real parent in worker-spawn-native-parent.test.ts.
+  isMxcConfinedChildLive: () => true,
 }));
 
 const STAGING_ID = "0123456789abcdef0123456789abcdef";
@@ -200,6 +202,29 @@ describe("native plugin stream ownership", () => {
     const { launch, intent } = fixture();
     await spawnMxcPluginChild(launch, { ...intent, command, args: [entry] });
     expect((spawn.mock.calls[0]![0] as MxcConfinedChildSpec).allowRead).toEqual(expected);
+  });
+
+  it("publishes its holder as the plugin's worker parent until its termination begins, and never withdraws a later one", async () => {
+    const { launch, intent } = fixture();
+    const first = await spawnMxcPluginChild(launch, intent);
+    const firstHolder = await (spawn.mock.results[0] as { value: Promise<MxcConfinedChildSpawn> }).value;
+    expect(liveMxcPluginChildHolder(intent.pluginId)).toBe(firstHolder);
+    expect(liveMxcPluginChildHolder("another-plugin")).toBeUndefined();
+    first.link.terminate("stop");
+    // Withdrawn synchronously, before disposal settles.
+    expect(liveMxcPluginChildHolder(intent.pluginId)).toBeUndefined();
+    await first.waitForExit();
+
+    const old = fixture();
+    const ended = await spawnMxcPluginChild(old.launch, old.intent);
+    const next = fixture();
+    const replacement = await spawnMxcPluginChild(next.launch, next.intent);
+    const replacementHolder = await (spawn.mock.results[0] as { value: Promise<MxcConfinedChildSpawn> }).value;
+    ended.link.terminate("replaced");
+    expect(liveMxcPluginChildHolder(intent.pluginId)).toBe(replacementHolder);
+    replacement.link.terminate("stop");
+    expect(liveMxcPluginChildHolder(intent.pluginId)).toBeUndefined();
+    await Promise.all([ended.waitForExit(), replacement.waitForExit()]);
   });
 
   it("revocation fails row 2's validity check", async () => {

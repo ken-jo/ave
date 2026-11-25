@@ -197,8 +197,27 @@ interface NativeHolderBinding {
   readonly plan: object;
   active: boolean;
   readonly children: Set<{ release(): Promise<void> }>;
+  readonly footprint: LiveHolderFootprint;
 }
 const nativeHolderBindings = new WeakMap<MxcConfinedChildSpawn, NativeHolderBinding>();
+
+/** Whether row 2 still admits descendants of this holder: false from the start of its release. */
+export function isMxcConfinedChildLive(holder: MxcConfinedChildSpawn): boolean {
+  return nativeHolderBindings.get(holder)?.active === true;
+}
+
+/** The co-holder nesting rule, applied before anything is created to a descendant's declared grants against its live
+ * parent: no declared path inside the parent's writable roots, and no declared write root above a parent path. Row 2's
+ * own check at admission stays the authority, and refuses a parent it never admitted. */
+export function assertMxcDescendantOutsideParent(parent: MxcConfinedChildSpawn, grants: { readonly read: readonly string[]; readonly write: readonly string[] }): void {
+  const binding = nativeHolderBindings.get(parent);
+  if (binding === undefined) return;
+  if (!binding.active) throw new MxcProcessContractError("Extension parent backend is no longer admitted");
+  const forms = (paths: readonly string[]): readonly string[] => [...new Set(paths.flatMap(pathForms))];
+  const declared: LiveHolderFootprint = { writable: forms(grants.write), paths: forms([...grants.read, ...grants.write]), privateDirectories: [], command: [] };
+  const refusal = writableContains(binding.footprint, declared) ?? writableContains(declared, binding.footprint);
+  if (refusal !== undefined) throw new MxcProcessContractError(refusal);
+}
 const admittedNativeHolderIdentities = new WeakSet<object>();
 
 /** Synchronous file identity of the admitted executable: canonical path, volume/file ID, size and timestamps.
@@ -258,16 +277,17 @@ export function liveMxcHolderWritableRoots(): readonly string[] {
  * outcome does not depend on admission order: a new holder's paths inside a live holder's writable root, and a live
  * holder's paths inside the new holder's writable root. Equal pinned roots are allowed, except for HOME/temp. Every
  * executable must lie outside every live writable root, this holder's own included. */
+function writableContains(writer: LiveHolderFootprint, target: LiveHolderFootprint): string | undefined {
+  for (const root of writer.writable) {
+    if (target.command.some((form) => isWindowsPathAtOrUnder(form, root))) return "Container executable lies inside a holder's writable root";
+    if (writer === target) continue;
+    if (target.privateDirectories.some((form) => isWindowsPathAtOrUnder(form, root))) return "Container HOME or temp lies at or inside another live holder's writable root";
+    if (target.paths.some((form) => strictlyUnder(form, root))) return "Container path lies inside another live holder's writable root";
+  }
+  return undefined;
+}
+
 function assertNoCoHolderNesting(self: LiveHolderFootprint): void {
-  const writableContains = (writer: LiveHolderFootprint, target: LiveHolderFootprint): string | undefined => {
-    for (const root of writer.writable) {
-      if (target.command.some((form) => isWindowsPathAtOrUnder(form, root))) return "Container executable lies inside a holder's writable root";
-      if (writer === target) continue;
-      if (target.privateDirectories.some((form) => isWindowsPathAtOrUnder(form, root))) return "Container HOME or temp lies at or inside another live holder's writable root";
-      if (target.paths.some((form) => strictlyUnder(form, root))) return "Container path lies inside another live holder's writable root";
-    }
-    return undefined;
-  };
   for (const holder of new Set([...liveHolderFootprints, self])) {
     const refusal = writableContains(holder, self) ?? (holder === self ? undefined : writableContains(self, holder));
     if (refusal !== undefined) throw new MxcProcessContractError(refusal);
@@ -391,7 +411,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     admitted.assertStillValid();
     assertManagedChildProcessAdmissionOpen(spec.label);
     if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed during native start");
-    binding = { plan, active: true, children: new Set() };
+    binding = { plan, active: true, children: new Set(), footprint: ownRoots };
     const result: MxcConfinedChildSpawn = Object.freeze({ process: child, confinement: "windows-mxc", release: lifetime.release });
     nativeHolderBindings.set(result, binding);
     // Revocation closes descendant admission even when termination cannot be established.

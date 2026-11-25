@@ -52,6 +52,8 @@ import { ensurePluginDataDir, resolvePluginDataDir, resolveEntryPath, buildPlugi
 import { buildMethodMap, declaredAppVisibleToolMethods } from "./plugin-loader.js";
 import { withPluginInstallLock, hasExclusivePluginLifecycleMutation, isPluginInstallLockHeld, withAllPluginInstallLocks, withResolvedPluginInstallLocks } from "../install-lifecycle.js";
 import type { SpawnConfinement } from "../../permissions/confined-child.js";
+import { prepareMxcPluginChildLaunch } from "../isolation/mxc-plugin-child-launch.js";
+import { isMxcExtensionBackendSelected } from "../../sandbox/wrap-bundled-command.js";
 import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError, pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../isolation/out-of-process-plugin.js";
 import { PluginChildTerminationUnverifiedError } from "../isolation/plugin-child-transport.js";
 import { bindPluginInstanceIntegrity, recordPluginFactoryIntegrity } from "../runtime-integrity-evidence.js";
@@ -4920,6 +4922,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       : createOutOfProcessPluginFactory({
         ...outOfProcess,
         launch: { kind: "entry", entryPath: source.resolvedEntryPath },
+        // Only under a selected container plan; a start it cannot admit is refused, never run on the other route.
+        ...(isMxcExtensionBackendSelected() ? { prepareMxcChild: prepareMxcPluginChildLaunch } : {}),
       });
     recordPluginFactoryIntegrity(createPlugin, pluginId, verified);
     return { createPlugin, arm: "child" };

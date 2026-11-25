@@ -24,6 +24,7 @@ import {
   liveMxcHolderWritableRoots,
   spawnConfinedChild,
   spawnMxcConfinedChild,
+  type MxcConfinedChildSpawn,
   type MxcConfinedChildSpec,
 } from "../permissions/confined-child.js";
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
@@ -559,6 +560,8 @@ export interface MxcBundledHolderInput {
   readonly assertStillValid?: () => void;
   /** A worker's declared control mode; required for the worker role. */
   readonly workerTransport?: MxcConfinedChildSpec["workerTransport"];
+  /** The live holder this one descends from: row 2 refuses the start once it is gone and ends this holder with it. */
+  readonly parent?: MxcConfinedChildSpawn;
   readonly signal?: AbortSignal;
 }
 
@@ -570,6 +573,33 @@ export interface MxcBundledHolder {
   release(): Promise<void>;
   /** Sticky once a release failed. */
   readonly quarantined: boolean;
+}
+
+/** What a plugin child's planner needs from this adapter: the registered readiness probe and a fresh staging tree. The
+ * plugin-child adapter drives row 2 itself, so nothing is spawned here. Every refusal comes before the staging tree
+ * exists; with no registered probe the start is refused, never run another way. */
+export function prepareMxcHolderStart(input: {
+  readonly label: string;
+  readonly executable: string;
+  readonly baseEnv: Readonly<Record<string, string | undefined>>;
+  readonly allowWrite: readonly string[];
+}): {
+  readonly probe: MxcConfinedChildSpec["probe"];
+  readonly root: string;
+  readonly home: string;
+  readonly temp: string;
+  /** Only after verified termination, or for a start that never reached native creation. */
+  release(): Promise<void>;
+} {
+  if (!isMxcExtensionBackendSelected()) throw new MxcProcessContractError(`${input.label}: the extension container backend is not selected`);
+  assertHolderEnvironmentAdmissible(input.baseEnv);
+  const probe = registeredHolderReadinessProbe();
+  const executable = resolveHolderExecutable(input.executable, {});
+  assertMxcHolderNotBashForm(executable);
+  assertExecutableAdmissible(executable, input.allowWrite, []);
+  assertNoLiveWorkspaceWriter(input.allowWrite, []);
+  const staging = createHolderStaging();
+  return { probe, root: staging.root, home: staging.home, temp: staging.temp, release: () => removeHolderStaging(staging.root) };
 }
 
 /** One holder incarnation per call: its own sibling roots and staging, never the caller's plan passed through. */
@@ -610,6 +640,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
       ...(input.floorPierces !== undefined ? { floorPierces: [...input.floorPierces] } : {}),
       ...(input.assertStillValid ? { assertStillValid: input.assertStillValid } : {}),
       ...(input.workerTransport ? { workerTransport: input.workerTransport } : {}),
+      ...(input.parent ? { parent: input.parent } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
     });
   } catch (error) {

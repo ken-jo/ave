@@ -31,10 +31,11 @@ import {
 } from "./worker-stdio-control.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { assertHostProgramNotRelative, resolveHostProgram } from "../shared/host-program-path.js";
-import { spawnConfinedChild } from "./confined-child.js";
+import { assertMxcDescendantOutsideParent, spawnConfinedChild, type MxcConfinedChildSpawn } from "./confined-child.js";
 import { assertConfiguredLauncherEnvironment, sandboxTargetSetupFailed } from "./launcher-environment.js";
 import { MxcProcessCleanupError } from "./mxc-extension-errors.js";
 import { isMxcExtensionBackendSelected, spawnMxcBundledHolder, type MxcBundledHolder } from "../sandbox/wrap-bundled-command.js";
+import { liveMxcPluginChildHolder } from "./mxc-holder-lifetime.js";
 import {
   assertManagedChildProcessAdmissionOpen,
   trackManagedChildProcess,
@@ -245,12 +246,25 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   const label = `worker:${safePlugin}:${safeWorker}`;
   assertHostProgramNotRelative(spec.command);
   const args = [...(spec.args ?? [])];
+  let parent: MxcConfinedChildSpawn | undefined;
   if (contained) {
+    // Taken before the first await, so this spawn cannot pick up a replacement incarnation. Row 2 refuses the start
+    // once this parent is gone and ends the worker with it.
+    parent = liveMxcPluginChildHolder(spec.pluginId);
+    if (parent === undefined) {
+      throw new Error(`[worker-spawn] ${label}: refusing a container worker whose plugin has no live container process`);
+    }
     // The holder's ownership roots repeat the worker's declared grants, so, before anything is created, the host holds the declaration to the
     // plugin's own install and cache here: nothing inside another plugin's storage, nothing at or above a plugin root.
     const beyond = pluginGrantPathsBeyondOwnRoots(safePlugin, [...(spec.allowReadPaths ?? []), ...(spec.allowWritePaths ?? [])]);
     if (beyond.length > 0) {
       throw new Error(`[worker-spawn] ${label}: refusing a container grant beyond the plugin's own roots: ${[...new Set(beyond)].join(", ")}`);
+    }
+    // Sibling roots: nothing declared inside the parent's writable roots (its data directory included), nothing above them.
+    try {
+      assertMxcDescendantOutsideParent(parent, { read: spec.allowReadPaths ?? [], write: spec.allowWritePaths ?? [] });
+    } catch (error) {
+      throw new Error(`[worker-spawn] ${label}: refusing a container grant that nests with its plugin's container process: ${errorMessage(error)}`, { cause: error });
     }
   }
 
@@ -262,8 +276,8 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   if (stateDir !== undefined) baseEnv[WORKER_STATE_DIR_ENV] = stateDir;
   const stateGrant = stateDir !== undefined ? [stateDir] : [];
 
-  if (contained) {
-    return await spawnContainedWorker(spec, { plugin: safePlugin, worker: safeWorker }, control, label, args, stateDir,
+  if (parent !== undefined) {
+    return await spawnContainedWorker(spec, { plugin: safePlugin, worker: safeWorker }, control, label, args, stateDir, parent,
       reserveWrappedWorker(safePlugin, safeWorker));
   }
 
@@ -524,6 +538,7 @@ async function spawnContainedWorker(
   label: string,
   args: readonly string[],
   stateDir: string | undefined,
+  parent: MxcConfinedChildSpawn,
   releaseWorkerReservation: (keepReserved?: boolean) => void,
 ): Promise<SpawnedWorker> {
   const holderEnv = { ...definedEnv(spec.env), ...(stateDir !== undefined ? { [WORKER_STATE_DIR_ENV]: stateDir } : {}) };
@@ -541,6 +556,7 @@ async function spawnContainedWorker(
       ownedReadRoots: [...(spec.allowReadPaths ?? [])],
       egressOwner: { kind: "worker", role: "worker", pluginId: spec.pluginId, instanceId: spec.workerId },
       workerTransport: control,
+      parent,
       ...(spec.floorPierces !== undefined ? { floorPierces: spec.floorPierces } : {}),
     });
   } catch (error) {

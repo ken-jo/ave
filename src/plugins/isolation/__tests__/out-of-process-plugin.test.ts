@@ -15,7 +15,7 @@ vi.mock("node:fs", async original => {
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
-import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
+import { aveHome, ensureAveHomePrivate } from "../../../shared/ave-home.js";
 /** Exercise the real child runtime and factory; recorded spawn calls alone do not prove confinement. */
 import { beforeAll, describe, expect, it, type TestContext, vi } from "vitest";
 import { configureHostResources } from "../../../main/host-resources.js";
@@ -168,7 +168,9 @@ import { servePluginChild } from "../plugin-child-main.js";
 import { createOutOfProcessPluginFactory, PluginSandboxGrantError, pluginFactoryDeadlineMs, spawnConfinedPluginChild } from "../out-of-process-plugin.js";
 import { TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../../../shared/tool-timeout-policy.js";
 import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
-import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
+import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest, setWindowsSandboxSubstrate } from "../../../permissions/sandbox-capability.js";
+import { planWindowsSandbox } from "../../../boot/steps/windows-sandbox-plan.js";
+import { prepareMxcPluginChildLaunch } from "../mxc-plugin-child-launch.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { prepareSandboxTargetLaunch } from "../../../permissions/launcher-environment.js";
 import { getManagedChildProcessCount, trackManagedChildProcess } from "../../../main/managed-child-processes.js";
@@ -197,7 +199,7 @@ import { buildSafeChildEnv } from "../../../tools/safe-env.js";
 import { ProcessEntryUnconfinedError } from "../../process-entry.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 import { admittedMxcChild, nativePluginLaunch } from "../../../__tests__/support/mxc-plugin-launch.js";
-import { MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
+import { MxcNativeEntryRequiredError, MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
 import { holdWindowsFilesystemGrant } from "../../../permissions/windows-acl-grant-holder.js";
 import { PluginRuntime, createNoopHostApiForTests } from "../../runtime.js";
 import { runPluginFactoryWithTimeout } from "../../runtime/index.js";
@@ -1134,6 +1136,60 @@ describe("native factory failures with unverified termination", () => {
       expect(registration.terminating).toHaveBeenCalledOnce();
       expect(release).not.toHaveBeenCalled();
     } finally { roots.remove(); for (const cleanup of cleanups.splice(0)) cleanup(); }
+  });
+});
+
+describe("native floor pierces", () => {
+  it("pierces the read floor only for the reviewed host directories the manifest declares", async () => {
+    const roots = spawnableRoots();
+    const registration = { assertCurrent: vi.fn(), dispose: vi.fn(), quarantine: vi.fn(), terminating: vi.fn() };
+    const { dir, entryPath } = writePluginModule();
+    spawnNativeChild.mockReset().mockRejectedValue(new Error("stop at admission"));
+    try {
+      const pierces = async (sandbox?: PluginManifest["sandbox"]): Promise<unknown> => {
+        const factory = createOutOfProcessPluginFactory({ manifest: { ...MANIFEST, ...(sandbox ? { sandbox } : {}) }, launch: { kind: "entry", entryPath },
+          prepareMxcChild: async () => nativePluginLaunch(), registerSandboxEnvelope: () => registration });
+        await Promise.resolve().then(() => factory(hostContext(fakeHostApi(), roots.context))).catch(() => undefined);
+        const [admitted] = spawnNativeChild.mock.lastCall as [{ floorPierces: unknown }];
+        return admitted.floorPierces;
+      };
+      await expect(pierces()).resolves.toEqual([]);
+      await expect(pierces({ read: [{ kind: "hostDirectory", segments: ["runtime"], why: "Managed runtimes." }] })).resolves.toEqual([]);
+      await expect(pierces({ read: [{ kind: "hostDirectory", segments: ["certs"], why: "Trust anchors." }] }))
+        .resolves.toEqual([join(aveHome(), "certs")]);
+      expect(spawnNativeChild).toHaveBeenCalledTimes(3);
+    } finally { roots.remove(); rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+// The runtime routes a factory to one route from the selection it reads then; a later change is refused, never run.
+describe.skipIf(process.platform !== "win32")("container backend selection changed after routing", () => {
+  it("refuses the start in either direction, on no route", async () => {
+    const roots = spawnableRoots();
+    const registration = { assertCurrent: vi.fn(), dispose: vi.fn(), quarantine: vi.fn(), terminating: vi.fn() };
+    const { dir, entryPath } = writePluginModule();
+    const select = (): void => setWindowsSandboxSubstrate(planWindowsSandbox({ shellRequested: false, workerRequested: true,
+      mxc: { state: "available" }, extensionMxc: { state: "available" }, windowsBuild: null, srtWinReady: false }).substrate);
+    const start = (factory: ReturnType<typeof createOutOfProcessPluginFactory>) =>
+      Promise.resolve().then(() => factory(hostContext(fakeHostApi(), roots.context)));
+    spawnNativeChild.mockReset();
+    spawnConfinedChild.mockClear();
+    try {
+      select();
+      const routedNative = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath },
+        prepareMxcChild: prepareMxcPluginChildLaunch, registerSandboxEnvelope: () => registration });
+      __resetWindowsSandboxSubstrateForTest();
+      await expect(start(routedNative)).rejects.toThrow("the extension container backend is not selected");
+      const routedLegacy = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
+      select();
+      await expect(start(routedLegacy)).rejects.toBeInstanceOf(MxcNativeEntryRequiredError);
+      expect(spawnNativeChild).not.toHaveBeenCalled();
+      expect(spawnConfinedChild).not.toHaveBeenCalled();
+    } finally {
+      __resetWindowsSandboxSubstrateForTest();
+      roots.remove();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
