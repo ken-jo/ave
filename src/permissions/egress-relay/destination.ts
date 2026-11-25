@@ -150,11 +150,13 @@ export function resolvedAddressPermitted(
 ): boolean {
   if (net.isIP(canonicalHost) !== 0) return true;
   if (net.isIP(address) === 0) return false;
-  // An address the allow list names itself is reachable by name too; an embedded form earns nothing.
+  // A reserved address is never dialed, as a literal or by name: the allow list does not exempt it.
+  if (isReservedAddress(address)) return false;
+  // Any other address the allow list names itself is reachable by name too; an embedded form earns nothing.
   const literal = canonicalRelayHost(address);
   if (allow.some((entry) => !entry.wildcard && entry.host === literal && entry.port === port)) return true;
   if (isLoopbackName(canonicalHost)) return isLoopbackAddress(address);
   const forms = [address, deliveredIPv4(address)].filter((form): form is string => form !== undefined);
-  if (forms.some((form) => inList(LOOPBACK, form) || inList(RESERVED, form))) return false;
+  if (forms.some((form) => inList(LOOPBACK, form))) return false;
   return !isThisHostAddress(address, local);
 }

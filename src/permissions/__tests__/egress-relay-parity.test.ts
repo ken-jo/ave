@@ -53,6 +53,8 @@ const RECORDED = {
   endedPortHop: { both: "asked" },
   // P21: the allow list does not exempt a reserved literal on the new relay.
   allowedReservedLiteral: { today: "tunnelled", new: "HTTP/1.1 403 destination is a reserved address" },
+  // P21: nor does it exempt a name that resolves to one.
+  allowedReservedByName: { today: "tunnelled", new: "HTTP/1.1 403 destination resolves to this host or a reserved address" },
   oversizedHeader: { both: "HTTP/1.1 431 Request Header Fields Too Large" },
   reusedToken: { both: "the invocation already had a relay" },
 } as const;
@@ -64,7 +66,7 @@ const DIFFERENCES = [
   { row: "P14", today: RECORDED.noAskCallback.today, new: RECORDED.noAskCallback.new, why: "the ask callback is a precondition of the service" },
   { row: "P15", today: RECORDED.openBeforeStart.today, new: RECORDED.openBeforeStart.new, why: "same refusal, the relay's own wording" },
   { row: "P16", today: "4096 relays, not exercised here", new: "4096 relays, exercised with a lower injected limit", why: "same limit" },
-  { row: "P21", today: "a reserved address literal is asked about, then dialled", new: RECORDED.reservedLiteral.new, why: "no spelling of a link-local, metadata, multicast or unspecified address is a destination; loopback and private-use literals are asked as today; the allow list does not exempt a literal (today an allow-listed one is tunnelled without an ask)" },
+  { row: "P21", today: "a reserved address literal is asked about, then dialled", new: RECORDED.reservedLiteral.new, why: "no spelling of a link-local, metadata, multicast or unspecified address is a destination; loopback and private-use literals are asked as today; the allow list does not exempt a literal, nor a name that resolves to one (today an allow-listed one is tunnelled without an ask)" },
   { row: "407 challenge", today: "its own realm name", new: 'realm "egress relay"', why: "nothing reads the realm" },
   { row: "P24", today: "a route kind that keeps an ended invocation's ports refused for 30 minutes, or 24 hours while its process group lives", new: "no such route: every relay belongs to one invocation and frees its ports at close", why: "the hold existed for children left on the host after their invocation; a contained child is ended with its job, and a late client has no credential for any other relay (unauthenticated, otherInvocationName)" },
   { row: "listener", today: "a port outside the shared proxy range", new: "any ephemeral loopback port", why: "the container makes the connection, so no range has to match a host rule" },
@@ -518,6 +520,22 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
 
       expect(/ 200 /u.test(client.statusLine()) ? "tunnelled" : client.statusLine()).toBe(recorded("allowedReservedLiteral"));
       expect(ask).not.toHaveBeenCalled();
+    });
+
+    it("P21: a name that resolves to a reserved address on the allow list", async () => {
+      const upstream = await startUpstream();
+      const ask = vi.fn<Ask>(async () => true);
+      await start({
+        ask, allow: ["metadata.example:80", "169.254.169.254:80"], router: upstream.router,
+        resolve: resolverFor({ "metadata.example": ["169.254.169.254"] }),
+      });
+      const relay = await open();
+
+      const client = connect(relay, "metadata.example:80");
+      await expect.poll(client.output).toContain("\r\n\r\n");
+
+      expect(/ 200 /u.test(client.statusLine()) ? "tunnelled" : client.statusLine()).toBe(recorded("allowedReservedByName"));
+      if (adapter.name === "new") expect(upstream.connects).toEqual([]);
     });
 
     const unbound = (port: number): Promise<boolean> => new Promise((done) => {
