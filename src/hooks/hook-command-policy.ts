@@ -8,6 +8,7 @@ import { buildHostShellExecutionPermitBinding, mintHostShellExecutionPermit, con
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { buildPermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
+import { answerEpochsOf, personAnswerStands } from "../permissions/pending-answer-policy.js";
 import { shellQuote } from "../lib/shell-resolver.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import type { RunnableHook } from "./script-hook-runner.js";
@@ -24,8 +25,8 @@ export type HookCommandAuthorizer = (
 
 // Enrollment supplies executable identity; the shared pipeline supplies authority.
 export function createHookCommandAuthorizer(deps: {
-  permissionManager: Pick<PermissionManager, "ensureProjectRulesLoaded" | "checkDetailed" | "dispatchReviewer" | "resolveReviewedPermission" | "getPolicyEpoch" | "getMode">;
-  approvalGate: Pick<ApprovalGate, "requestAndWait">;
+  permissionManager: Pick<PermissionManager, "ensureProjectRulesLoaded" | "checkDetailed" | "dispatchReviewer" | "resolveReviewedPermission" | "getPolicyEpoch" | "getPolicyContextEpoch" | "getMode">;
+  approvalGate: Pick<ApprovalGate, "requestAndWait"> & Partial<Pick<ApprovalGate, "allowsPolicyTransition">>;
 }): HookCommandAuthorizer {
   return async (hook, payload, cwd, projectDir = cwd) => {
     const command = hook.command.map(expandLeadingTilde).map(shellQuote).join(" ");
@@ -88,6 +89,7 @@ export function createHookCommandAuthorizer(deps: {
     if (plan.requiresExplicitUserApproval && !binding) return { decision: "deny", reason: "Hook host execution binding is invalid" };
     let approval: ApprovalDecision | undefined;
     const humanApproved = result.decision === "ask";
+    const opened = humanApproved ? answerEpochsOf(deps.permissionManager) : undefined;
     if (humanApproved) {
       approval = await deps.approvalGate.requestAndWait({
         id, category: "tool", toolName: "bash", toolCategory: "shell",
@@ -98,7 +100,7 @@ export function createHookCommandAuthorizer(deps: {
         reviewerVerdict: result.reviewer?.verdict, reviewerOutcome: result.reviewer?.outcome,
         reviewerApprovalBasis: result.reviewer?.approvalBasis,
         ...(result.forceModal ? { forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false,
-          ...(offersFloorSessionAllow(result) ? { floorSessionAllowed: true as const } : {}) } : {}),
+          ...(opened !== undefined && offersFloorSessionAllow(result) ? { floorSessionAllowed: true as const, floorSessionPolicyEpoch: opened.epoch } : {}) } : {}),
         executionPlan: getHostShellExecutionPlanAuditProjection(plan),
         ...(binding ? { hostShellExecutionPermitBinding: binding } : {}),
       });
@@ -111,6 +113,12 @@ export function createHookCommandAuthorizer(deps: {
     }
     if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId) || !controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
     const current = check();
+    const policyEpoch = deps.permissionManager.getPolicyEpoch();
+    if (opened !== undefined && approval !== undefined &&
+        !personAnswerStands(deps.permissionManager, opened, result.forceModal === true, () => current) &&
+        !deps.approvalGate.allowsPolicyTransition?.(approval, opened.epoch, policyEpoch)) {
+      return { decision: "deny", reason: "Permission policy changed while approval was pending" };
+    }
     if (current.decision === "deny") return { decision: "deny", reason: current.reason };
     if (effectIdentity(current) !== requestedEffect) return { decision: "deny", reason: "Hook command effect changed during approval" };
     if (!matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity)) return { decision: "deny", reason: "Hook working directory changed during approval" };
@@ -121,7 +129,6 @@ export function createHookCommandAuthorizer(deps: {
         return { decision: "deny", reason: "Hook host execution approval receipt is invalid" };
       }
     }
-    const policyEpoch = deps.permissionManager.getPolicyEpoch();
     const assertAllowed = (): void => {
       const current = check();
       if (!controllerCurrent() || abortSignal?.aborted || current.decision === "deny" || effectIdentity(current) !== requestedEffect || deps.permissionManager.getPolicyEpoch() !== policyEpoch || !matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity)) {

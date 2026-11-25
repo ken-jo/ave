@@ -1,4 +1,4 @@
-import { type AnswerEpochs, answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince } from "../permissions/pending-answer-policy.js";
+import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, personAnswerStands } from "../permissions/pending-answer-policy.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
@@ -978,10 +978,12 @@ export async function executeAuthorizedToolInvocation(
    * when the question is denied or more forced than it was, and never across any other change. */
   const lateApprovalStandsAcrossMemoryRules = (answered: boolean): boolean => {
     const manager = services.permissionManager;
-    if (!manager || lateApprovalAnswerEpochs === undefined || !permissionResult?.pipelineRequest || !onlyMemoryRulesChangedSince(manager, lateApprovalAnswerEpochs)) return false;
-    const forced = permissionResult.forceModal === true;
-    permissionResult = manager.recheckPermission(permissionResult, { acrossMemoryRuleChanges: true });
-    if (!(permissionResult.decision === "ask" || answered && permissionResult.decision === "allow") || !answerSurvivesRecheck(permissionResult, forced)) return false;
+    const pending = permissionResult;
+    if (!manager || lateApprovalAnswerEpochs === undefined || !pending?.pipelineRequest) return false;
+    if (!personAnswerStands(manager, lateApprovalAnswerEpochs, pending.forceModal === true, () => {
+      permissionResult = manager.recheckPermission(pending, { acrossMemoryRuleChanges: true });
+      return answered || permissionResult.decision === "ask" ? permissionResult : { decision: "deny" };
+    })) return false;
     lateApprovalAnswerEpochs = answerEpochsOf(manager);
     lateApprovalPolicyEpoch = lateApprovalAnswerEpochs.epoch;
     return true;
@@ -1083,8 +1085,7 @@ export async function executeAuthorizedToolInvocation(
       ...(approvalReasonPrefix ? { approvalReasonPrefix } : {}),
       createdAt: Date.now(), abortSignal,
       ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
-      ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
-        ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}) } : {}),
+      ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false } : {}),
       ownerUnattended: invocationPermissionContext.ownerUnattended === true,
       ...(approvalRequestTarget(targetFilePath, linkedTargets, permissionResult.reasonCode) ? { target: approvalRequestTarget(targetFilePath, linkedTargets, permissionResult.reasonCode) } : {}),
       ...approvalReasonFields(permissionResult, { fileTarget: targetFilePath !== undefined && invocationCategory !== "shell" }),
@@ -1125,7 +1126,8 @@ export async function executeAuthorizedToolInvocation(
       ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
       reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${permissionResult.reason}` : permissionResult.reason,
       ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
-        ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}) } : {}),
+        ...(lateApprovalPolicyEpoch !== undefined && offersFloorSessionAllow(permissionResult)
+          ? { floorSessionAllowed: true as const, floorSessionPolicyEpoch: lateApprovalPolicyEpoch } : {}) } : {}),
       ...hostTerminalApprovalFacts(tool, invocationPermissionContext.approvalMemory, finalInput.command),
       ...userOwnedSurfaceCardFacts(permissionResult),
     };

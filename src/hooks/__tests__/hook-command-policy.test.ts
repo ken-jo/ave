@@ -31,6 +31,7 @@ import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import type { ToolInvocationContext } from "../../permissions/reviewer/risk-classifier.js";
 import { shellRuleCoversCommand } from "../../permissions/rules/shell-rule-approval.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
+import { cardGate } from "../../__tests__/support/forced-shell-card.js";
 
 const sandboxedHost = vi.hoisted(() => ({ active: false }));
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
@@ -295,6 +296,21 @@ describe("hook command permission admission", () => {
     }
   });
 
+  it("keeps a hook floor answer across memory-only rules but refuses it after a mode change", async () => {
+    setShellSandboxRequestedAtBoot(true);
+    const p = policy();
+    p.permissionManager.setMode("allow");
+    const memory = cardGate("allow-once", () => p.permissionManager.addSessionRule("other-hook", "Bash(printf ready)"));
+    const allowed = await createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: memory.gate })(hook, payload, process.cwd());
+    expect(memory.cards()).toEqual([expect.objectContaining({ allowedChoices: ["allow-once", "deny-once"] })]);
+    expect(allowed.decision, allowed.reason).toBe("allow");
+
+    const changed = cardGate("allow-once", () => p.permissionManager.setMode("strict"));
+    const denied = await createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: changed.gate })(hook, payload, process.cwd());
+    expect(changed.cards()).toHaveLength(1);
+    expect(denied).toEqual({ decision: "deny", reason: "Permission policy changed while approval was pending" });
+  });
+
   it("runs the hook once per gate-signed allow-once on the unavailable-sandbox forced card, and asks again next time", async () => {
     setShellSandboxRequestedAtBoot(true);
     const p = policy();
@@ -400,7 +416,7 @@ describe("hook command permission admission", () => {
           .toMatchObject({ ok: true, scope: "session" });
         gate.completeApprovalRuleSave(token, p.permissionManager.getPolicyEpoch(), "session");
       }
-      gate.resolve(request.id, { requestId: request.id, choice: answer === "allow-session" ? "allow-once" : "deny-once", nonce: request.nonce, hmac: request.hmac });
+      gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: answer === "allow-session" ? "allow-once" : "deny-once", nonce: request.nonce, hmac: request.hmac }, wc as never);
       return { result: await pending, gate, wc, authorizeCommand };
     }
 

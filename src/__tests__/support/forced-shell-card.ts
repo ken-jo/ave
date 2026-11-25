@@ -24,10 +24,11 @@ export function probe(create: () => Tool, execute: (ctx: ToolExecutionContext) =
   return registry;
 }
 
-export function cardGate(choice: "allow-once" | "deny-once" | "allow-session") {
+export function cardGate(choice: "allow-once" | "deny-once" | "allow-session", beforeAnswer?: () => void) {
   let gate: ApprovalGate;
   const send = vi.fn((channel: string, request: ApprovalRequest) => {
     if (channel !== "ave:approval:request") return;
+    beforeAnswer?.();
     gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice, nonce: request.nonce, hmac: request.hmac }, webContents as never);
   });
   const webContents = { isDestroyed: () => false, send };
@@ -36,12 +37,13 @@ export function cardGate(choice: "allow-once" | "deny-once" | "allow-session") {
 }
 
 // The person picks "This session": the card saves through the pending request, then answers allow once.
-export function sessionGate(pm: PermissionManager) {
+export function sessionGate(pm: PermissionManager, beforeAnswer?: () => void) {
   let gate: ApprovalGate;
   const saves: unknown[] = [];
   const send = vi.fn((channel: string, request: ApprovalRequest) => {
     if (channel !== "ave:approval:request") return;
     void (async () => {
+      beforeAnswer?.();
       const snapshot = defined(gate.getRequestSnapshot(request.id) ?? undefined, "request snapshot");
       // As the approval IPC does: the save is the card's own policy transition.
       const token = gate.beginApprovalRuleSave(request.id, pm.getPolicyEpoch());

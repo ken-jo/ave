@@ -330,6 +330,7 @@ export type ApprovalRequestInput = Omit<
   readonly hostShellExecutionPermitBinding?: HostShellExecutionPermitBinding;
   // Host-only: the forced card answers the sandbox-unavailable floor alone (`offersFloorSessionAllow`), so later shells and hooks of this conversation may also pass that floor.
   readonly floorSessionAllowed?: true;
+  readonly floorSessionPolicyEpoch?: string;
   // Host-only: this request types one command into the user's own host terminal. Only the desktop window answers it (no remote, plugin,
   // parked observer or away answer), it is never remembered and offers no rule saves. Set by the
   // executor from the sealed terminal target, never by a renderer.
@@ -662,7 +663,7 @@ interface PendingEntry {
   runStage: ApprovalRequest["runStage"];
   shellRule?: ShellRuleApproval;
   // Host-only: the floor a "This session" save on this card answers (never sent to the renderer).
-  floorSessionGrant?: FloorSessionGrant;
+  floorSessionGrant?: FloorSessionGrant & { policyEpoch: string; plan: NonNullable<ApprovalRequestInput["hostShellExecutionPlan"]> };
   hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
   verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   projectCwd?: string;
@@ -1134,6 +1135,7 @@ export class ApprovalGate {
       durableApprovalRecordAllowed: requestedDurableApprovalRecordAllowed,
       hostShellExecutionPermitBinding,
       floorSessionAllowed: requestedFloorSessionAllowed,
+      floorSessionPolicyEpoch,
       hostTerminal,
       hostTerminalAfterExternalContent: _requestedAfterExternalContent,
       homeFolderRefused: _requestedHomeFolderRefused,
@@ -1221,11 +1223,12 @@ export class ApprovalGate {
     const floorSessionPlan = hostTerminal !== undefined
       ? terminalFloorPlan
       : req.toolName === "bash" || req.toolName === "powershell" ? hostShellExecutionPermitBinding?.plan : undefined;
-    const floorSessionGrant: FloorSessionGrant | undefined = requestedFloorSessionAllowed === true && hasOneShotHostShellApprovalContract &&
+    const floorSessionGrant: PendingEntry["floorSessionGrant"] = requestedFloorSessionAllowed === true && hasOneShotHostShellApprovalContract &&
+      floorSessionPolicyEpoch !== undefined && floorSessionPlan !== undefined &&
       requiresUnsandboxedShellAsk(floorSessionPlan) &&
       typeof req.sessionId === "string" && req.sessionId.length > 0 && req.source === "builtin" && req.toolCategory === "shell" &&
       req.category === "tool" && (req.kind === undefined || req.kind === "tool")
-      ? Object.freeze({ code: "sandbox-unavailable" as const })
+      ? Object.freeze({ code: "sandbox-unavailable" as const, policyEpoch: floorSessionPolicyEpoch, plan: floorSessionPlan })
       : undefined;
     if (
       hostShellExecutionPermitBinding !== undefined &&
@@ -2172,7 +2175,7 @@ export class ApprovalGate {
     sessionId: string | undefined;
     projectCwd: string | undefined;
     shellRule: ShellRuleApproval | undefined;
-    floorSessionGrant?: FloorSessionGrant;
+    floorSessionGrant?: PendingEntry["floorSessionGrant"];
     hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
     verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
     egress: (NonNullable<PendingEntry["egressRule"]> & { scopes: readonly EgressGrantScope[]; terminalTabId?: string }) | undefined;

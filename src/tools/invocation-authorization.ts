@@ -919,8 +919,8 @@ export async function authorizeToolInvocation(
           });
         const approvalRuleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true && !permissionResult.pipelineRequest?.userOwnedSurface
           ? classifyCurrentRule() : undefined;
-        const approvalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
         const approvalAnswerEpochs = services.permissionManager ? answerEpochsOf(services.permissionManager) : undefined;
+        const approvalPolicyEpoch = approvalAnswerEpochs?.epoch;
         const readjudicationAssessment = source === "plugin" && context.pluginRuntimeInstance !== undefined &&
           permissionResult.forceModal !== true && !evaluationContext.headless &&
           !permissionResult.pipelineRequest?.userOwnedSurface &&
@@ -943,7 +943,8 @@ export async function authorizeToolInvocation(
                 allowedChoices: ["allow-once", "deny-once"] as const,
                 durableApprovalRecordAllowed: false as const,
                 forceExplicit: true as const,
-                ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}),
+                ...(approvalPolicyEpoch !== undefined && offersFloorSessionAllow(permissionResult)
+                  ? { floorSessionAllowed: true as const, floorSessionPolicyEpoch: approvalPolicyEpoch } : {}),
               }
             : {}),
           ...(hostShellExecutionPermitBinding === undefined ? {} : { hostShellExecutionPermitBinding }),

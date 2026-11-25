@@ -425,6 +425,27 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     { label: "auto review", mode: "auto" as const, rules: [] },
   ];
 
+  it.each(["default", "explicit-host"] as const)("checks a pending floor answer against policy changes on the %s route", async (route) => {
+    partialWindowsAsrt();
+    const execute = vi.fn();
+    const registry = shellProbeRegistry(execute);
+    const pm = partialManager("default", []);
+    const options = { host: route === "explicit-host" };
+
+    const memory = cardGate("allow-once", () => pm.addSessionRule("other-session", "Bash(printf ready)"));
+    const allowed = await partialRun(pm, memory.gate, registry, options);
+    expect(memory.cards()).toEqual([expect.objectContaining({ allowedChoices: ["allow-once", "deny-once"] })]);
+    expect(allowed[0]?.is_error, String(allowed[0]?.content)).toBeFalsy();
+    expect(execute).toHaveBeenCalledOnce();
+
+    const changed = cardGate("allow-once", () => pm.setMode("allow"));
+    const denied = await partialRun(pm, changed.gate, registry, options);
+    expect(changed.cards()).toHaveLength(1);
+    expect(denied[0]?.is_error).toBe(true);
+    expect(denied[0]?.content).toContain("Permission policy changed while approval was pending");
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
   it.each(FLOOR_BYPASSES.flatMap(entry => [{ ...entry, host: false, route: "default" }, { ...entry, host: true, route: "explicit-host" }]))(
     "asks on the no-confinement card for a partial-plan shell ($route) with $label", async ({ mode, rules, host }) => {
       partialWindowsAsrt();

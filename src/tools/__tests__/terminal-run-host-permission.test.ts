@@ -18,7 +18,7 @@ import { ToolRegistry } from "../registry.js";
 import { createTerminalRunTool } from "../terminal-run.js";
 import { TerminalBlockTracker, registerTerminalBlockTracker, __resetTerminalBlocksForTest } from "../../main/terminal/terminal-blocks.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
-import { sessionGate } from "../../__tests__/support/forced-shell-card.js";
+import { cardGate, sessionGate } from "../../__tests__/support/forced-shell-card.js";
 import { partialWindowsAsrt } from "../../__tests__/support/host-shell-sandbox-fixtures.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
@@ -371,6 +371,27 @@ describe("terminal_run without Windows shell containment", () => {
     expect(denied.requestAndWait).not.toHaveBeenCalled();
     expect(denied.review).not.toHaveBeenCalled();
     expect(denied.typed).toEqual([]);
+  });
+
+  it("keeps a terminal floor answer across an unrelated memory-only allow", async () => {
+    const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+    const approval = cardGate("allow-once", () => permissionManager.addSessionRule("other-pane", "Bash(printf ready)"));
+    const result = await run(command, { permissionManager, mode: "allow", surfaceChoice: "allow", approvalGate: approval.gate });
+    expect(result.decision).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable", forceModal: true });
+    expect(result.typed).toEqual([command]);
+  });
+
+  it("refuses to save a terminal floor waiver after the policy changes", async () => {
+    const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+    const stale = sessionGate(permissionManager, () => permissionManager.setMode("strict"));
+    const options = { permissionManager, mode: "allow" as const, surfaceChoice: "allow" as const };
+    const first = await run(command, { ...options, approvalGate: stale.gate });
+    expect(first.typed).toEqual([]);
+    expect(stale.saves).toEqual([expect.objectContaining({ ok: false, error: "rule-save-failed" })]);
+
+    const later = await run(command, options);
+    expect(later.decision).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
+    expect(later.typed).toEqual([]);
   });
 
   it("passes the floor for the conversation that waived it and asks again in another", async () => {
