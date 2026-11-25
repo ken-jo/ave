@@ -160,65 +160,50 @@ describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
-  it("keeps the config and executable parts read-only at the root, and state and nested copies writable", async () => {
+  it("keeps .agents and the project's commands and hooks read-only at the root, and other .ave content and nested copies writable", async () => {
     const project = join(root, "existing");
-    for (const directory of [".codex/hooks", ".codex/sessions", ".agents/skills", ".aws", ".ave/commands", ".ave/hooks", "packages/tool/.codex", "packages/tool/.ave/commands"]) {
-      mkdirSync(join(project, directory), { recursive: true });
-    }
-    writeFileSync(join(project, ".codex", "config.toml"), "host");
+    for (const directory of [".agents/skills", ".ave/commands", ".ave/hooks", ".codex", "packages/tool/.ave/commands"]) mkdirSync(join(project, directory), { recursive: true });
+    writeFileSync(join(project, ".agents", "skills", "SKILL.md"), "host");
     writeFileSync(join(project, ".ave", "commands", "deploy.md"), "host");
     const result = await runConfined([
-      `printf x > .codex/config.toml 2>/dev/null; echo "codex-config=$?"`,
-      `printf x > .codex/hooks/planted 2>/dev/null; echo "codex-hooks=$?"`,
-      `mkdir .codex/prompts 2>/dev/null; echo "codex-prompts=$?"`,
-      `printf x > .codex/AGENTS.md 2>/dev/null; echo "codex-instructions=$?"`,
-      `printf x > .codex/CONFIG.TOML 2>/dev/null; echo "codex-other-case=$?"`,
-      `printf x > .agents/skills/planted.md 2>/dev/null; echo "agents-skills=$?"`,
-      `mkdir .agents/commands 2>/dev/null; echo "agents-commands=$?"`,
-      `printf x > .aws/config 2>/dev/null; echo "aws=$?"`,
+      `printf x > .agents/skills/SKILL.md 2>/dev/null; echo "agents=$?"`,
+      `printf x > .agents/planted 2>/dev/null; echo "agents-create=$?"`,
+      `mv .agents .agents-moved 2>/dev/null; echo "move-agents=$?"`,
       `printf x > .ave/commands/deploy.md 2>/dev/null; echo "ave-commands=$?"`,
+      `printf x > .ave/COMMANDS/planted.md 2>/dev/null; echo "ave-other-case=$?"`,
       `printf x > .ave/hooks/planted.json 2>/dev/null; echo "ave-hooks=$?"`,
       // Moving the directory away would take the parts out from under their names, to be edited and moved back.
-      `mv .codex .codex-moved 2>/dev/null; echo "move-codex=$?"`,
-      `mv .agents .agents-moved 2>/dev/null; echo "move-agents=$?"`,
       `mv .ave .ave-moved 2>/dev/null; echo "move-ave=$?"`,
       `mv .ave/commands .ave/commands-moved 2>/dev/null; echo "move-part=$?"`,
-      // A tool's own state beside its config stays writable.
-      `printf x > .codex/sessions/rollout.jsonl && printf x > .codex/history.jsonl && mkdir .codex/log; echo "codex-state=$?"`,
-      `printf x > .agents/notes.md; echo "agents-other=$?"`,
       `printf x > .ave/notes.md; echo "ave-other=$?"`,
       // Only the entries directly beneath the root are named.
-      `printf x > packages/tool/.codex/config.toml; echo "nested-codex=$?"`,
       `printf x > packages/tool/.ave/commands/x.md; echo "nested-ave=$?"`,
-      `mkdir -p packages/tool/.aws && printf x > packages/tool/.aws/config; echo "nested-aws=$?"`,
+      `mkdir -p packages/tool/.agents/skills && printf x > packages/tool/.agents/skills/x.md; echo "nested-agents=$?"`,
+      // Not on this floor.
+      `printf x > .codex/config.toml && mkdir .aws && printf x > .aws/config; echo "unnamed=$?"`,
       `printf x > ordinary.txt; echo "ordinary=$?"`,
     ].join("\n"), project);
     expect(statuses(result.stdout)).toEqual({
-      "codex-config": "1", "codex-hooks": "1", "codex-prompts": "1", "codex-instructions": "1", "codex-other-case": "1",
-      "agents-skills": "1", "agents-commands": "1", aws: "1", "ave-commands": "1", "ave-hooks": "1",
-      "move-codex": "1", "move-agents": "1", "move-ave": "1", "move-part": "1",
-      "codex-state": "0", "agents-other": "0", "ave-other": "0", "nested-codex": "0", "nested-ave": "0", "nested-aws": "0", ordinary: "0",
+      agents: "1", "agents-create": "1", "move-agents": "1", "ave-commands": "1", "ave-other-case": "1", "ave-hooks": "1", "move-ave": "1", "move-part": "1",
+      "ave-other": "0", "nested-ave": "0", "nested-agents": "0", unnamed: "0", ordinary: "0",
     });
-    expect(readFileSync(join(project, ".codex", "config.toml"), "utf8")).toBe("host");
+    expect(readFileSync(join(project, ".agents", "skills", "SKILL.md"), "utf8")).toBe("host");
     expect(readFileSync(join(project, ".ave", "commands", "deploy.md"), "utf8")).toBe("host");
-    expect(readdirSync(join(project, ".codex")).sort()).toEqual(["config.toml", "history.jsonl", "hooks", "log", "sessions"]);
+    expect(readdirSync(join(project, ".ave")).sort()).toEqual(["commands", "hooks", "notes.md"]);
   });
 
-  it("refuses to create the directories, or rename a prepared one into place, where they are absent", async () => {
+  it("refuses to create the entries, or rename a prepared directory into place, where they are absent", async () => {
     const project = join(root, "absent");
     mkdirSync(project);
     const result = await runConfined([
-      `mkdir .codex 2>/dev/null; echo "codex=$?"`,
+      `mkdir .agents 2>/dev/null; echo "agents=$?"`,
       `mkdir .AGENTS 2>/dev/null; echo "agents-other-case=$?"`,
-      `mkdir .aws 2>/dev/null; echo "aws=$?"`,
+      `mkdir -p prepared/skills && printf x > prepared/skills/x.md && mv prepared .agents 2>/dev/null; echo "rename-into-agents=$?"`,
       `mkdir -p .ave/commands 2>/dev/null; echo "ave=$?"`,
       `mkdir -p staged/commands && printf x > staged/commands/planted.md && mv staged .ave 2>/dev/null; echo "rename-into-ave=$?"`,
-      `mkdir prepared && printf x > prepared/config.toml && mv prepared .codex 2>/dev/null; echo "rename-into-codex=$?"`,
-      `mkdir -p deeper/.codex && printf x > deeper/.codex/config.toml; echo "nested=$?"`,
+      `mkdir -p deeper/.ave/commands && printf x > deeper/.ave/commands/x.md; echo "nested=$?"`,
     ].join("\n"), project);
-    expect(statuses(result.stdout)).toEqual({
-      codex: "1", "agents-other-case": "1", aws: "1", ave: "1", "rename-into-ave": "1", "rename-into-codex": "1", nested: "0",
-    });
+    expect(statuses(result.stdout)).toEqual({ agents: "1", "agents-other-case": "1", "rename-into-agents": "1", ave: "1", "rename-into-ave": "1", nested: "0" });
     expect(readdirSync(project).sort()).toEqual(["deeper", "prepared", "staged"]);
   });
 });

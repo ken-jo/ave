@@ -27,27 +27,21 @@ const SANDBOX_LOADER_ENTRIES = [
   ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky",
 ] as const;
 const SANDBOX_PROTECTED_ROOT_ENTRIES = [...new Set([
-  ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry)), ...SANDBOX_LOADER_ENTRIES,
+  // `.agents` rides with the named entries below, not as a row per root on every platform.
+  ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry) && entry !== ".agents"), ...SANDBOX_LOADER_ENTRIES,
 ])];
 
-// Config and executable input that another agent or cloud tool loads from a write root, directly beneath it (the same depth as the
-// rest of this floor, and as Codex's own protected names). `.codex` and `.agents` are named by part, the way `.claude` is above: at a
-// write root that is a home folder, `.codex` is Codex's own home, where it also writes its logs, history, memories and credential
-// cache, and `$HOME/.agents/skills` sits beside whatever else a tool keeps there. `.aws` holds credentials and a `config` whose
-// `credential_process` runs on the host, so it is denied whole. Linux carries one row per root for each entry. macOS carries none
-// here: a row per root costs the root's length for every entry, which the longest supported darwin layout cannot fit in
-// MAX_POSIX_WRITE_DENY_POLICY_BYTES, so its wrap appends one rule anchored at the write roots instead (macos-sandbox-wrap.ts).
-// The Windows floor is stamped and watched per row and is not changed here.
-const SANDBOX_FOREIGN_CONFIG_ENTRIES = [
-  ".codex/config.toml", ".codex/hooks.json", ".codex/hooks", ".codex/rules", ".codex/prompts", ".codex/AGENTS.md", ".codex/AGENTS.override.md",
-  ".agents/skills", ".agents/commands", ".agents/hooks", ".agents/plugins",
-  ".aws",
-] as const;
-// What Ave itself loads from a project's `.ave` (custom-commands.ts, hook-source-controller.ts): the file tools ask before touching
-// any `.ave`, and a confined command must not edit them without that card. The two children are named, not `.ave` itself: under a
-// write root that holds the Ave home, `<root>/.ave` is the home, and a deny there would take the command's own HOME and temp with it.
-const SANDBOX_PROJECT_INPUT_ENTRIES = [".ave/commands", ".ave/hooks"] as const;
-export const SANDBOX_NAMED_ENTRIES = [...SANDBOX_FOREIGN_CONFIG_ENTRIES, ...SANDBOX_PROJECT_INPUT_ENTRIES] as const;
+// More entries directly beneath each write root, the same depth as the rest of this floor. `.agents` holds the skills, commands and
+// plugins agent hosts load, and is denied whole. `.ave/commands` and `.ave/hooks` are what Ave itself loads from a project
+// (custom-commands.ts, hook-source-controller.ts): the file tools ask before touching any `.ave`, and a confined command must not
+// edit them without that card. The two children are named, not `.ave` itself: under a write root that holds the Ave home,
+// `<root>/.ave` is the home, and a deny there would take the command's own HOME and temp with it. `.codex` and a project `.aws`
+// are not named (owner decision 2026-11-25).
+// Linux carries one row per root for each entry. macOS carries none here; its wrap appends rules anchored at the write roots
+// (macos-sandbox-wrap.ts), because a row per root costs the root's length for every entry, which the longest supported darwin
+// layout cannot fit in MAX_POSIX_WRITE_DENY_POLICY_BYTES, and because the `.ave` directory itself can be pinned there. The Windows
+// floor is stamped and watched per row and is not changed here.
+export const SANDBOX_NAMED_ENTRIES = [".agents", ".ave/commands", ".ave/hooks"] as const;
 function caseInsensitivePattern(path: string): string {
   return path.replace(/[a-z]/gu, character => `[${character}${character.toUpperCase()}]`);
 }

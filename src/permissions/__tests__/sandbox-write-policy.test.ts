@@ -445,7 +445,8 @@ describe("mandatory sandbox control-file writes", () => {
   });
 
   // The shared floor's own list, so a new entry cannot fall off the sandbox floor unnoticed; `.git/*` controls are covered by the Git tests below.
-  it.each([".git", ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry))])("protects missing %s in every writable root", (entry) => {
+  // `.agents` is a row per root on Linux only; the macOS wrap carries it as an appended rule (see the named-entry case below).
+  it.each([".git", ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry) && entry !== ".agents")])("protects missing %s in every writable root", (entry) => {
     const roots = [join(root, "project"), join(root, "temp")];
     const denies = buildMandatorySandboxWritePolicy(roots).denyWrite;
     for (const base of roots) {
@@ -454,15 +455,12 @@ describe("mandatory sandbox control-file writes", () => {
     }
   });
 
-  // Config another agent or cloud tool loads from the project, and the commands and hooks Ave loads. Linux carries a row per root.
+  // `.agents`, and the commands and hooks Ave loads from the project. Linux carries a row per root.
   // macOS carries none: a row per root does not fit its policy budget, so its wrap denies the names in the profile
   // (macos-sandbox-wrap.ts). The Windows floor is not changed here.
-  it("denies agent, cloud and project command names in write roots on Linux, and leaves the macOS policy without rows for them", () => {
+  it("denies .agents and the project command and hook names in write roots on Linux, and leaves the macOS policy without rows for them", () => {
     const roots = [join(root, "project"), join(root, "temp")];
-    const names = [
-      ".codex/config.toml", ".codex/hooks.json", ".codex/hooks", ".codex/rules", ".codex/prompts", ".codex/AGENTS.md", ".codex/AGENTS.override.md",
-      ".agents/skills", ".agents/commands", ".agents/hooks", ".agents/plugins", ".aws", ".ave/commands", ".ave/hooks",
-    ];
+    const names = [".agents", ".ave/commands", ".ave/hooks"];
     const rowsNaming = (denies: ReturnType<typeof nativeDenyRows>, name: string) => (denies ?? [])
       .map(entry => typeof entry === "string" ? entry : entry.path).filter(path => path.endsWith(`/${name}`));
     const holding = (denies: ReturnType<typeof nativeDenyRows>, text: string) => (denies ?? [])
@@ -470,13 +468,13 @@ describe("mandatory sandbox control-file writes", () => {
     withPlatform("darwin", () => {
       const denies = nativeDenyRows(buildMandatorySandboxWritePolicy(roots).denyWrite);
       for (const name of names) expect(rowsNaming(denies, name)).toEqual([]);
-      for (const text of ["srt-sock", "[cC][oO][dD][eE][xX]", ".codex", ".agents", ".aws", ".ave/"]) expect(holding(denies, text)).toEqual([]);
+      for (const text of ["srt-sock", ".agents", ".aws", ".ave/"]) expect(holding(denies, text)).toEqual([]);
     });
     withPlatform("linux", () => {
       const denies = nativeDenyRows(buildMandatorySandboxWritePolicy(roots).denyWrite);
       for (const name of names) expect(rowsNaming(denies, name)).toEqual(roots.map(base => join(base, name)));
-      // The directories that carry the parts are not rows themselves.
-      for (const base of roots) for (const carrier of [".codex", ".agents", ".ave"]) expect(denies).not.toContain(join(base, carrier));
+      // The `.ave` directory is not a row itself, and `.codex` and a project `.aws` are not named.
+      for (const base of roots) for (const unnamed of [".ave", ".codex", ".aws"]) expect(holding(denies, join(base, unnamed)).filter(path => !path.includes("/.ave/"))).toEqual([]);
     });
   });
 

@@ -824,18 +824,12 @@ each admitted write root, taking precedence over grants:
 - `.vscode/**`;
 - `.envrc`, `.mise.toml`, `mise.toml`, `.tool-versions`, `.npmrc`, `.yarnrc.yml`,
   `bunfig.toml` and `.husky/**`;
-- config and executable input another agent or cloud tool loads: `.codex/config.toml`,
-  `.codex/hooks.json`, `.codex/hooks`, `.codex/rules`, `.codex/prompts`,
-  `.codex/AGENTS.md`, `.codex/AGENTS.override.md`, `.agents/skills`,
-  `.agents/commands`, `.agents/hooks`, `.agents/plugins` and all of `.aws`; and
-  `.ave/commands` and `.ave/hooks`, which Ave loads. `.codex` and `.agents` are
-  named by part, like `.claude`, because a tool keeps its own state beside them
-  when the write root is a home folder. On Linux these are entries beneath each
-  write root. On macOS one rule appended to the Seatbelt profile, anchored at the
-  write roots, denies the same entries, because a row per root does not fit the
-  write policy budget; it also refuses to create, remove or rename `.codex`,
-  `.agents` or `.ave` directly beneath a root, so the parts cannot be moved out
-  from under their names. The Windows floor does not carry these entries yet;
+- all of `.agents`, which holds the skills, commands and plugins agent hosts
+  load, and `.ave/commands` and `.ave/hooks`, which Ave loads. On Linux these are entries beneath each write root. On macOS
+  rules appended to the Seatbelt profile, anchored at the write roots, deny the
+  same entries, and also refuse to create, remove or rename `.ave` directly
+  beneath a root, so its parts cannot be moved out from under their names. The
+  Windows floor does not carry these entries yet;
 - configured `core.hooksPath` directories, including absent targets and their
   physical symlink targets;
 - Ave settings, permission settings, rules, policies and approval grants, with

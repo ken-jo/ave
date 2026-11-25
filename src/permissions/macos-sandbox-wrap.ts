@@ -30,13 +30,12 @@ function nameExpression(name: string): string {
   return name.replace(/[.]/gu, "\\.").replace(/[a-z]/giu, letter => `[${letter.toLowerCase()}${letter.toUpperCase()}]`);
 }
 
-// The named entries (SANDBOX_NAMED_ENTRIES: config and executable input another agent, a cloud tool or Ave loads) directly beneath each
-// write root, with everything beneath them. Rules in the profile instead of rows in the write policy: a row per root costs the
-// root's length for every entry, and the roots are spelled once here. The entries are path patterns, so the directory that carries
-// them is pinned too: an entry named `.codex`, `.agents` or `.ave` directly beneath a root cannot be created, removed or renamed.
-// Moved away, its contents could be edited under another name and moved back, and a prepared directory could be renamed into an
-// absent one. Existing directories keep their other children writable. Roots are given in their resolved spelling, which is what
-// Seatbelt matches.
+// The named entries (SANDBOX_NAMED_ENTRIES: `.agents`, and the commands and hooks Ave loads from a project's `.ave`) directly beneath each
+// write root, with everything beneath them. Rules in the profile instead of rows in the write policy, so that the directory that
+// carries the `.ave` entries can be pinned too: the entries are path patterns, and an entry named `.ave` directly beneath a root
+// cannot be created, removed or renamed. Moved away, its contents could be edited under another name and moved back, and a prepared
+// directory could be renamed into an absent one. An existing `.ave` keeps its other children writable. Roots are given in their
+// resolved spelling, which is what Seatbelt matches.
 export function macWriteRootNameRules(writeRoots: readonly string[]): string {
   const roots = [...new Set(writeRoots.map(root => root.replace(/\/+$/u, "")))].filter(root => root !== "");
   const carriers = [...new Set(SANDBOX_NAMED_ENTRIES.filter(entry => entry.includes("/")).map(entry => entry.slice(0, entry.indexOf("/"))))];

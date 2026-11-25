@@ -159,7 +159,7 @@ describe("permission path facts", () => {
     expect(isSensitivePath(join(project, name), "read")).toBeNull();
   });
 
-  it.each([".git", ".vscode", ".idea", ".husky", ".cargo", ".devcontainer", ".yarn", ".mvn", ".claude", ".config/git", ".bashrc", ".zshrc", ".zprofile", ".profile", ".envrc", ".gitconfig", ".npmrc", ".mcp.json", ".claude.json"])("reports protected paths across case and separators for %s", (name) => {
+  it.each([".git", ".vscode", ".idea", ".husky", ".cargo", ".devcontainer", ".yarn", ".mvn", ".claude", ".config/git", ".bashrc", ".zshrc", ".zprofile", ".profile", ".envrc", ".gitconfig", ".npmrc", ".mcp.json", ".claude.json", ".agents"])("reports protected paths across case and separators for %s", (name) => {
     const target = `${project}/${name}/child`;
     expect(protectedControlEntryFor(target)).toBe(name);
     expect(createPermissionPathEvidence(project)({ lexical: target, canonical: target, effect: "read" }).protectedControl).toBeUndefined();
