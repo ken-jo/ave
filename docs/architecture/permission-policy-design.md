@@ -1580,7 +1580,38 @@ check; directory rename/replacement after the host check remains a limitation
 on that platform. Their final policy validation and native spawn share the same
 serial queue.
 
-A sandbox requested but unavailable carries `fallbackReason: "requested-sandbox-unavailable"` and `sandboxed: false` in its host execution plan. The card, model environment and tool result disclose the missing isolation. Explicit environment activation failures retain the startup refusal described above. When a plain host route is available, it uses the decision tree's host-shell mode/human path; ordinary approval may offer prefix rules. Protected floors and host credential-store admission denial remain authoritative. Plan issuance, approval and execution permits must describe the same exact route.
+A sandbox requested but unavailable carries `fallbackReason: "requested-sandbox-unavailable"`
+and `sandboxed: false` in its host execution plan. The card, model environment
+and tool result disclose the missing isolation. Explicit environment activation
+failures retain the startup refusal described above. Every shell and hook
+command on this plan takes the `sandbox-unavailable` forced ask on every OS:
+the person approves it once or waives this sandbox ask for the conversation,
+after which rules and mode decide later shells without a reviewer, and an
+ordinary ask keeps this card; nothing is
+saved; saved rules, allow mode and auto review do not stand in for the answer;
+a headless run denies. Deny rules and the other protected floors keep their
+place in the decision order, and host credential-store admission denial remains
+authoritative. Such a shell spawns only on the one-shot permit minted from that
+answer; `run_in_background` runs it in the foreground and a timeout does not
+move it to the background. An explicit `executionMode: "host"` request on such
+a host takes the same forced ask, and the conversation's waiver covers it; with
+a backend ready it keeps the host-shell mode/human path. Plan
+issuance, approval and execution permits must describe the same exact route.
+
+#### Hosts with no usable sandbox backend
+
+A host is on the unavailable plan when the sandbox is turned on and its start
+fails or its requirements are not met. The requirements per OS:
+
+| OS | Needed for a sandbox backend | Notice hint |
+|---|---|---|
+| Windows | The container launcher reports the base container tier, the dry run of the shipped request validates and the start check passes. A host is on this plan when neither the container nor the ASRT start is available, or a proxy-only start fails; ASRT without a container is the explicit host approval route instead. | none |
+| macOS | The profile-based backend starts and passes its runtime check. The container backend, once it ships, needs macOS 15 or later on arm64. | none |
+| Linux | bubblewrap, socat and ripgrep installed, and the backend passes its runtime check. The container backend, once it ships, also needs unprivileged user and network namespaces, slirp4netns, unshare, nsenter, ip and iptables, with proxy enforcement reported as supported. | names the missing package among bubblewrap, socat and ripgrep |
+
+The notice on the card and in the model environment says the sandbox is
+unavailable and, where a missing package is the cause, what to install; the
+sandbox returns after the install and a restart.
 
 Inside a live operator-attested disposable one-shot, `executionMode: "host"`
 means the strongest shell authority reachable by that process, which is still

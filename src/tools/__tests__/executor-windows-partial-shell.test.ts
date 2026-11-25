@@ -1044,9 +1044,9 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(result[0]?.is_error).toBe(true);
   });
 
-  // Unavailable confinement follows normal host review while retaining its substrate projection.
+  // Unavailable confinement asks the person: neither auto review nor a saved rule runs it.
   it.each(["darwin", "linux", "win32"] as const)(
-    "reviews a requested-unavailable %s shell and preserves the fallback when a rule later authorizes it",
+    "asks for a requested-unavailable %s shell without review, and again under a saved rule",
     async (platform) => {
       requestedSandboxUnavailable(platform);
       let observedPlan: import("../../permissions/host-shell-execution-plan.js").HostShellExecutionPlan | undefined;
@@ -1058,8 +1058,8 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       const pm = new PermissionManager(`/tmp/nonexistent-requested-unavailable-${platform}.json`);
       pm.setMode("auto");
       setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, recentlyDenied: makeRecentlyDeniedStore(join(testRoot, "recently-denied.json")) });
-      pm.dispatchReviewer = vi.fn(async () => ({ verdict: { level: "high" as const, reason: "Host effect needs a human" }, cacheReason: "miss-not-found" as const,
-        outcome: "fresh" as const, judge: reviewerJudgeOutcomeForTest("ask", "Host effect needs a human") })) as never;
+      pm.dispatchReviewer = vi.fn(async () => ({ verdict: { level: "low" as const, reason: "Bounded effect" }, cacheReason: "miss-not-found" as const,
+        outcome: "fresh" as const, judge: reviewerJudgeOutcomeForTest("allow", "Bounded effect") })) as never;
       const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" as const }));
       const executor = new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never);
       const run = (id: string) => executor.executeAll(
@@ -1074,29 +1074,21 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
 
       pm.setRules([{ pattern: "Bash(echo reviewed)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
       const result = await run(`requested-unavailable-${platform}-rule`);
-      expect(pm.dispatchReviewer).toHaveBeenCalledTimes(1);
-      expect(requestAndWait).toHaveBeenCalledTimes(1);
-      expect(execute).toHaveBeenCalledTimes(1);
-      expect(execute.mock.calls[0]?.[0].hostShellExecutionPermit).toBeUndefined();
-      expect(observedPlan).toMatchObject({
-        platform,
-        requestedSandbox: true,
-        mode: "plain",
-        fallbackReason: "requested-sandbox-unavailable",
-        requiresExplicitUserApproval: false,
-        capability: {
-          kind: "none",
-          confines: { filesystem: false, process: false, network: false },
-        },
-      });
-      expect(result[0]?.is_error).toBeUndefined();
-      expect(result[0]?.executionPlan).toMatchObject({ fallbackReason: "requested-sandbox-unavailable" });
+      expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+      expect(requestAndWait).toHaveBeenCalledTimes(2);
+      expect(requestAndWait).toHaveBeenLastCalledWith(expect.objectContaining({
+        forceExplicit: true, allowedChoices: ["allow-once", "deny-once"],
+        executionPlan: expect.objectContaining({ platform, fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true }),
+      }));
+      expect(execute).not.toHaveBeenCalled();
+      expect(observedPlan).toBeUndefined();
+      expect(result[0]?.is_error).toBe(true);
     },
   );
 
-  // The unavailable-confinement plan keeps normal policy authorization without adding an unrelated native permit.
+  // A policy allow that did not come through the forced ask carries no permit, so the unavailable-confinement plan does not spawn.
   it.each(["darwin", "linux", "win32"] as const)(
-    "runs requested-unavailable %s shells on a policy allow without a card or permit",
+    "refuses requested-unavailable %s shells on a policy allow that skipped the forced ask",
     async (platform) => {
       requestedSandboxUnavailable(platform);
       let observedPlan: import("../../permissions/host-shell-execution-plan.js").HostShellExecutionPlan | undefined;
@@ -1119,15 +1111,9 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       );
 
       expect(sentApprovalCards<ApprovalRequest>({ send } as never)).toHaveLength(0);
-      expect(observedPermit).toBeUndefined();
-      expect(observedPlan).toMatchObject({
-        platform,
-        requestedSandbox: true,
-        mode: "plain",
-        fallbackReason: "requested-sandbox-unavailable",
-        requiresExplicitUserApproval: false,
-      });
-      expect(result[0]?.is_error).toBeUndefined();
+      expect(observedPermit).toBe("unset");
+      expect(observedPlan).toBeUndefined();
+      expect(result[0]?.is_error).toBe(true);
     },
   );
 

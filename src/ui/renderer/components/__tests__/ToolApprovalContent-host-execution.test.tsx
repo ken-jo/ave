@@ -39,18 +39,20 @@ describe("explicit host execution approval", () => {
     expect(container.querySelector('[data-testid="tool-approval-shell-environment"]')?.textContent).toContain(t("shellExecution.temporaryHome"));
   });
 
-  // An unavailable sandbox follows the sandbox-off policy (unsandboxed shell exact-rule requirement), so its ask is an ordinary card that says the sandbox is
-  // unavailable, not a host-consent card (that framing stays for an explicit host request).
-  it("warns that the sandbox is unavailable on an ordinary fallback ask, without host-consent framing", () => {
+  // An unavailable sandbox is a forced ask: the card says the sandbox is unavailable and shows the host warning, without the explicit-request justification.
+  it("warns that the sandbox is unavailable on the forced fallback ask, with what to install", () => {
     const fallback = request(false);
     fallback.args = { command: "printf fallback" };
     fallback.executionPlan = getHostShellExecutionPlanAuditProjection(buildHostShellExecutionPlan({
-      platform: "darwin", requestedSandbox: true,
-      activeCapability: { reason: "Fixture sandbox unavailable", kind: "none", confidence: "verified", platform: "darwin" },
+      platform: "linux", requestedSandbox: true, unavailableCauses: ["missing-bwrap"],
+      activeCapability: { reason: "Fixture sandbox unavailable", kind: "none", confidence: "verified", platform: "linux" },
     }));
     const { container } = renderApproval(fallback, () => undefined);
-    expect(container.querySelector('[data-testid="tool-approval-shell-environment"]')?.textContent)
-      .toContain(t("shellExecution.sandboxUnavailable"));
-    expect(container.querySelector('[data-testid="tool-approval-host-execution"]')).toBeNull();
+    const environment = container.querySelector('[data-testid="tool-approval-shell-environment"]')?.textContent;
+    expect(environment).toContain(t("shellExecution.sandboxUnavailableAsk"));
+    expect(environment).toContain(t("shellExecution.sandboxInstallHint", { packages: "bubblewrap (bwrap)" }));
+    const host = container.querySelector('[data-testid="tool-approval-host-execution"]')?.textContent;
+    expect(host).toContain(t("shellExecution.hostWarning"));
+    expect(host).not.toContain(t("shellExecution.justification"));
   });
 });

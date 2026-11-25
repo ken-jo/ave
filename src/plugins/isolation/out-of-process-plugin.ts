@@ -53,7 +53,7 @@ import {
 } from "../../permissions/sensitive-paths.js";
 import { assertAveHomeRuntimeBoundary, AVE_HOME_RUNTIME_DIRECTORY, aveHome } from "../../shared/ave-home.js";
 import { isPathWithin } from "../plugin-storage-containment.js";
-import { HOST_DIRECTORY_CATALOG, hostDirectoryFloorPierces } from "../sandbox-authority.js";
+import { declaredHostDirectoryFloorPierces, HOST_DIRECTORY_CATALOG, hostDirectoryFloorPierces } from "../sandbox-authority.js";
 import type {
   PluginManifest,
   PluginRuntimeContext,
@@ -706,6 +706,10 @@ export interface OutOfProcessPluginSpec {
     readonly command: string;
     readonly args: readonly string[];
     readonly cwd: string;
+    /** Where the plugin's data lives; its host-only storage sibling is named from it. */
+    readonly pluginDataDir: string;
+    /** The child's environment; the planner refuses a loader or SDK override in it before it creates anything. */
+    readonly baseEnv: NodeJS.ProcessEnv;
     readonly envelope: DelegatedWorkerConfinement;
   }) => Promise<MxcPluginChildLaunch>;
   readonly registerSandboxEnvelope?: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) => {
@@ -757,7 +761,8 @@ export function createOutOfProcessPluginFactory(
   }
 
   const factory = async (context: PluginRuntimeContext): Promise<RuntimePlugin> => {
-    assertExtensionStartAllowed();
+    // A native launch is admitted by row 2's own native-entry guard; the legacy guard refuses a selected container plan.
+    if (!spec.prepareMxcChild) assertExtensionStartAllowed();
     // Refused before anything is spawned. `runtime/index.ts` refuses the same manifest at every load path; this is the spawn path's
     // own copy of the rule, so a factory reached any other way cannot start a child that would be told a version it does not speak.
     const hostProtocolVersion = connectionHostProtocol(spec.manifest);
@@ -789,8 +794,11 @@ export function createOutOfProcessPluginFactory(
     let withdrawConfinement: (() => void) | undefined;
     try {
       if (spec.prepareMxcChild) {
-        const intent = { pluginId, command: process.execPath, args: [childEntryPath], cwd: context.pluginRoot };
-        const launch = await spec.prepareMxcChild({ ...intent, envelope });
+        // Derived before the planner creates anything, so nothing between its staging and the adapter can strand it.
+        const intent = { pluginId, command: process.execPath, args: [childEntryPath], cwd: context.pluginRoot,
+          baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }) };
+        const floorPierces = declaredHostDirectoryFloorPierces(spec.manifest.sandbox);
+        const launch = await spec.prepareMxcChild({ ...intent, pluginDataDir: context.pluginDataDir, envelope });
         // The incumbent may have begun terminating, or been quarantined, while admission was awaited:
         // recheck synchronously right before spawn (and again after it) through the registration.
         const native = await spawnMxcPluginChild({
@@ -802,8 +810,7 @@ export function createOutOfProcessPluginFactory(
         }, {
           ...intent,
           envelope,
-          floorPierces: envelope.read.filter((path) => hostDirectoryFloorPierces().includes(path)),
-          baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
+          floorPierces,
         }, () => {
           nativeRevoked = true;
           withdrawConfinement?.();

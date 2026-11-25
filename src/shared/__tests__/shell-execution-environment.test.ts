@@ -73,10 +73,26 @@ describe("shell execution environment", () => {
       platform: "linux", requestedSandbox: true,
       activeCapability: { reason: "Fixture sandbox unavailable", kind: "none", confidence: "verified", platform: "linux" },
     });
-    expect(shellExecutionEnvironmentLines(fallback)[0]).toBe(t("shellExecution.sandboxUnavailable"));
-    expect(shellExecutionEnvironmentPrompt(fallback, true)).toContain(t("shellExecution.sandboxUnavailable"));
-    expect(shellExecutionEnvironmentLines(plan(false))).not.toContain(t("shellExecution.sandboxUnavailable"));
-    expect(shellExecutionEnvironmentLines(plan(true))).not.toContain(t("shellExecution.sandboxUnavailable"));
+    expect(shellExecutionEnvironmentLines(fallback)[0]).toBe(t("shellExecution.sandboxUnavailableAsk"));
+    expect(shellExecutionEnvironmentPrompt(fallback, true)).toContain(t("shellExecution.sandboxUnavailableAsk"));
+    expect(shellExecutionEnvironmentLines(plan(false))).not.toContain(t("shellExecution.sandboxUnavailableAsk"));
+    expect(shellExecutionEnvironmentLines(plan(true))).not.toContain(t("shellExecution.sandboxUnavailableAsk"));
+  });
+
+  it("names what to install right after the unavailable notice, only when an install restores the sandbox", () => {
+    const unavailable = (unavailableCauses: Parameters<typeof buildHostShellExecutionPlan>[0]["unavailableCauses"]) => buildHostShellExecutionPlan({
+      platform: "linux", requestedSandbox: true, unavailableCauses,
+      activeCapability: { reason: "Fixture sandbox unavailable", kind: "none", confidence: "verified", platform: "linux" },
+    });
+    const hint = t("shellExecution.sandboxInstallHint", { packages: "bubblewrap (bwrap), socat" });
+    expect(hint).toContain("bubblewrap (bwrap), socat");
+    expect(hint).not.toContain("{packages}");
+    const hinted = unavailable(["missing-bwrap", "missing-socat"]);
+    expect(shellExecutionEnvironmentLines(hinted).slice(0, 2)).toEqual([t("shellExecution.sandboxUnavailableAsk"), hint]);
+    expect(shellExecutionEnvironmentPrompt(hinted, true)).toContain(hint);
+    expect(shellExecutionEnvironmentLines(unavailable(["missing-ripgrep"]))[1]).toBe(t("shellExecution.sandboxInstallHint", { packages: "ripgrep (rg)" }));
+    expect(shellExecutionEnvironmentLines(unavailable(["linux-runtime-probe-failed"]))[1]).toBe(t("shellExecution.location", { platform: "linux" }));
+    expect(shellExecutionEnvironmentLines(unavailable([]))[1]).toBe(t("shellExecution.location", { platform: "linux" }));
   });
 
   it("does not promise an interactive approval surface to a headless turn", () => {

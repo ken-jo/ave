@@ -6,7 +6,6 @@ import {
   addRange,
   addressInSet,
   embeddedIPv4,
-  isLoopbackAddress,
   isLoopbackName,
   LOOPBACK_RANGES,
 } from "./egress-relay/address-set.js";
@@ -93,11 +92,11 @@ function isLocalNetworkName(name: string): boolean {
 
 function addressNetwork(address: string): EgressDestinationNetwork {
   // Before the embedded-IPv4 rule: `::1`'s IPv4-compatible form is 0.0.0.1.
-  if (isLoopbackAddress(address)) return "local";
+  if (addressInSet(LOOPBACK, address)) return "local";
   // An address that carries an IPv4 address (NAT64, 6to4, IPv4-compatible) is delivered to that address, so it is judged by it as well.
   const forms = [address, embeddedIPv4(address)].filter((a): a is string => a !== undefined);
   if (forms.some((a) => addressInSet(RESERVED, a))) return "reserved";
-  if (forms.some((a) => isLoopbackAddress(a) || addressInSet(LOCAL, a))) return "local";
+  if (forms.some((a) => addressInSet(LOCAL, a))) return "local";
   return "public";
 }
 
@@ -110,6 +109,7 @@ function rangeList(ranges: readonly string[]): BlockList {
 }
 const RESERVED = rangeList(RESERVED_RANGES);
 const LOCAL = rangeList(LOCAL_RANGES);
+const LOOPBACK = rangeList(LOOPBACK_RANGES);
 
 export function egressDestinationNetwork(
   canonicalHost: string,

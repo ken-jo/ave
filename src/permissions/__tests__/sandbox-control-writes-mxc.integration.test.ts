@@ -46,7 +46,7 @@ describe.runIf(process.platform === "win32")("container control-file write bound
       execFileSync(git, ["-C", project, "config", "user.name", "Sandbox Fixture"], { env: gitEnv });
       execFileSync(git, ["-C", project, "config", "user.email", "fixture.invalid"], { env: gitEnv });
       mkdirSync(configuration, { recursive: true, mode: 0o700 });
-      await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } });
+      await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } }, async () => false);
       const targets = [join(project, ".git", "config"), join(project, ".git", "hooks", "pre-commit"),
         join(project, ".bash_profile"), join(configuration, "future-control.json")];
       for (const target of targets) if (!existsSync(target)) writeFileSync(target, "original");

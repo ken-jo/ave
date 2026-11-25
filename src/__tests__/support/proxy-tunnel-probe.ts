@@ -84,7 +84,7 @@ export async function openTunnel(port: number, options: { authority?: string; au
       response += chunk.toString("latin1");
       if (!response.includes("\r\n\r\n")) return;
       socket.off("data", onData);
-      if (response.startsWith("HTTP/1.1 200")) resolve();
+      if (response.startsWith("HTTP/1.1 200 ") || response.startsWith("HTTP/1.0 200 ")) resolve();
       else reject(new Error(`tunnel refused: ${response.split("\r\n")[0]}`));
     };
     socket.on("data", onData);
