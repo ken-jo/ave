@@ -396,6 +396,7 @@ export function getHostShellExecutionPlan(executionMode: HostShellExecutionReque
     activeCapability: mxc ?? detectShellSandboxCapability(),
     shellSubstrate: mxc === undefined ? "asrt" : "mxc",
     executionMode,
+    unavailableCauses: _bootOutcome?.causes,
     unavailableSandboxRequiresAsk: privacyFailure !== undefined,
     unconfinedShellDenied: privacyFailure !== undefined && !isAveHomePrivacyApprovable(privacyFailure.category),
   });

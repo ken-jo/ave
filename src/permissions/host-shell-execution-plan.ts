@@ -3,7 +3,7 @@
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { en } from "../i18n/messages/en.js";
 import type { DisposableSubstrate, SandboxCapability } from "./sandbox-capability.js";
-import { egressProtocolCoverageFor, type EgressProtocolCoverage, type SandboxConfinement } from "../shared/sandbox-capability-info.js";
+import { egressProtocolCoverageFor, type EgressProtocolCoverage, type SandboxConfinement, type SandboxStartFailureCause } from "../shared/sandbox-capability-info.js";
 import { isRecord } from "../shared/is-record.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
@@ -28,6 +28,15 @@ export type HostShellFallbackReason =
   // Boot got no answer from the home privacy helper: every unconfined shell is denied until a restart.
   | "home-privacy-helper-unavailable";
 
+// Host packages whose installation restores the requested sandbox. Display only; no decision reads it.
+type SandboxInstallHint = "bubblewrap" | "socat" | "ripgrep";
+
+const INSTALL_HINT_BY_CAUSE: Partial<Record<SandboxStartFailureCause, SandboxInstallHint>> = {
+  "missing-bwrap": "bubblewrap",
+  "missing-socat": "socat",
+  "missing-ripgrep": "ripgrep",
+};
+
 export interface HostShellExecutionPlan {
   readonly version: typeof HOST_SHELL_EXECUTION_PLAN_VERSION;
   readonly platform: NodeJS.Platform;
@@ -45,10 +54,12 @@ export interface HostShellExecutionPlan {
   // Honest capability of the child selected by this plan.
   readonly capability: SandboxCapability;
   readonly fallbackReason: HostShellFallbackReason;
-  // True whenever this plain shell needs a per-invocation host authorization before spawn: an explicit unsandboxed request or the Windows partial-ASRT Plan B (an exact `Bash(<command>)` allow rule or a fresh approval). A requested-but-unavailable sandbox is not one of them: it follows the same exact-rule policy and only records its `fallbackReason`.
+  // True whenever this plain shell needs a per-invocation host authorization before spawn: an explicit unsandboxed request, the Windows partial-ASRT Plan B (an exact `Bash(<command>)` allow rule or a fresh approval), or a requested-but-unavailable sandbox (a human ask, once or for the session).
   readonly requiresExplicitUserApproval: boolean;
   // Stable identity for audit/cache consumers; contains no command or raw path.
   readonly identity: string;
+  // Only on the requested-but-unavailable plan, and only when installing something restores the sandbox.
+  readonly installHints?: readonly SandboxInstallHint[];
 }
 
 // The allowlist-only, serializable execution-plan view retained in audit data and shell result metadata. It deliberately excludes command arguments, directories, approval bindings, permits, nonces, HMACs, and free-form capability reasons.
@@ -71,6 +82,7 @@ export interface HostShellExecutionPlanAuditProjection {
     platform: NodeJS.Platform;
     confines?: Readonly<SandboxConfinement>;
   }>;
+  readonly installHints?: readonly SandboxInstallHint[];
 }
 
 const auditProjections = new WeakMap<
@@ -106,6 +118,7 @@ export function getHostShellExecutionPlanAuditProjection(
       platform: plan.capability.platform,
       ...(confines === undefined ? {} : { confines }),
     }),
+    ...(plan.installHints === undefined ? {} : { installHints: plan.installHints }),
   });
   issuedAuditProjections.add(projection);
   auditProjections.set(plan, projection);
@@ -141,6 +154,8 @@ export function getHostShellExecutionPlanCacheIdentity(
     },
     fallbackReason: projection.fallbackReason,
     identity: projection.identity,
+    // Omitted from the JSON when absent, so plans without hints keep their identity.
+    installHints: projection.installHints,
     mode: projection.mode,
     sandboxed: projection.sandboxed,
     substrate: projection.substrate,
@@ -197,6 +212,8 @@ export function buildHostShellExecutionPlan(input: {
   // Boot could not establish Ave home privacy (any category but helper-unavailable, which `unconfinedShellDenied` blocks): every plain host shell
   // (unavailable sandbox, shell scope off, Windows partial shell or explicit host) then needs a human ask for every command.
   unavailableSandboxRequiresAsk?: boolean;
+  // Why boot could not start the requested sandbox; read only for the unavailable plan's install hints.
+  unavailableCauses?: readonly SandboxStartFailureCause[];
   // Boot got no answer from the home privacy helper: every route above that would run unconfined is blocked instead, so no approval runs it.
   unconfinedShellDenied?: boolean;
 }): HostShellExecutionPlan {
@@ -231,6 +248,8 @@ export function buildHostShellExecutionPlan(input: {
   const askEveryCommand = input.unavailableSandboxRequiresAsk === true;
 
   if (executionRequest === "host") {
+    // With the requested sandbox unavailable an explicit host request is the same uncontained shell, so it takes the same ask.
+    const forcedAsk = askEveryCommand || (requestedSandbox && input.activeCapability.kind === "none");
     return Object.freeze({
       version: HOST_SHELL_EXECUTION_PLAN_VERSION,
       platform: input.platform,
@@ -243,7 +262,7 @@ export function buildHostShellExecutionPlan(input: {
       capability: noneCapability(input.platform, "Explicit host execution runs as the current user without OS confinement."),
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: true,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":explicit-host" + (askEveryCommand ? ASK_EVERY_COMMAND_SUFFIX : ""),
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":explicit-host" + (forcedAsk ? ASK_EVERY_COMMAND_SUFFIX : ""),
     });
   }
 
@@ -268,13 +287,14 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
 
-  // A requested sandbox that is unavailable (missing bwrap/socat, start failure) yields an honest plain child on every platform. It takes the same policy path as explicit sandbox-off, floor and deny rules included, so it needs no one-shot permit: a saved exact or prefix allow rule runs it unasked and everything else asks (decision tree, host shell row; this replaces the 2026-10-25 exact-only rule). Exception: while boot cannot establish Ave home privacy (any category but helper-unavailable, which is blocked; an unverifiable read boundary included), the plan requires explicit approval and the permission floor asks for every command, with no saved-rule or mode pass. The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
+  // A requested sandbox that is unavailable (missing bwrap/socat, start failure, host below the documented minimums) yields a plain child on every platform, and only through the sandbox-unavailable forced ask: once or for this session, never saved; saved rules, allow mode and auto review do not pass, and a headless run is denied. A helper-unavailable boot blocks it before this branch. The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
   if (requestedSandbox && input.activeCapability.kind === "none") {
     const fallbackReason: HostShellFallbackReason = "requested-sandbox-unavailable";
     const capability = noneCapability(
       input.platform,
       "The requested OS sandbox is unavailable, so this shell will run without OS isolation until it is restored.",
     );
+    const installHints = [...new Set((input.unavailableCauses ?? []).flatMap((cause) => INSTALL_HINT_BY_CAUSE[cause] ?? []))];
     return Object.freeze({
       version: HOST_SHELL_EXECUTION_PLAN_VERSION,
       platform: input.platform,
@@ -286,8 +306,9 @@ export function buildHostShellExecutionPlan(input: {
       egressProtocolCoverage: egressProtocolCoverageFor("none"),
       capability,
       fallbackReason,
-      requiresExplicitUserApproval: askEveryCommand,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + (askEveryCommand ? ASK_EVERY_COMMAND_SUFFIX : ""),
+      requiresExplicitUserApproval: true,
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + ASK_EVERY_COMMAND_SUFFIX,
+      ...(installHints.length === 0 ? {} : { installHints: Object.freeze(installHints) }),
     });
   }
 
@@ -370,9 +391,10 @@ export function isHomePrivacyHelperUnavailablePlan(plan: Pick<HostShellExecution
   return plan?.mode === "blocked" && plan.fallbackReason === "home-privacy-helper-unavailable";
 }
 
-// An unconfined plan (unavailable sandbox, shell scope off, or explicit host) that boot marked for a human ask on every command (a boot home privacy
-// failure of any category but helper-unavailable, whose plan is blocked). The permission floor reads this, so saved allows, auto review and mode allows cannot run it unasked.
-// Outside that state an explicit-host plan keeps its ordinary rule and mode handling.
+// An unconfined plan that needs a human ask for every command: the requested-but-unavailable sandbox always, an explicit host request
+// on such a host, and a shell-scope-off or explicit-host plan while boot cannot establish Ave home privacy (any category but helper-unavailable,
+// whose plan is blocked). The permission floor reads this, so saved allows, auto review and mode allows cannot run it unasked. Otherwise an
+// explicit-host plan keeps its ordinary rule and mode handling.
 export function requiresUnsandboxedShellAsk(plan: HostShellExecutionPlan | undefined): boolean {
   if (plan === undefined || plan.mode !== "plain" || plan.sandboxed || plan.capability.kind !== "none" ||
     plan.requiresExplicitUserApproval !== true || !plan.identity.endsWith(ASK_EVERY_COMMAND_SUFFIX)) return false;

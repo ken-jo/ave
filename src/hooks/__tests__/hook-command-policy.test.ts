@@ -250,20 +250,53 @@ describe("hook command permission admission", () => {
     expect(JSON.parse(result.rawStdout).reason).toBe("received");
   });
 
-  it("follows the sandbox-off policy, without a one-shot receipt, when the requested sandbox is unavailable", async () => {
-    // A requested-but-unavailable sandbox is a plain shell under the exact-rule policy, as for the bash tool (owner 2026-10-25, unsandboxed shell exact-rule requirement); it records its fallback reason instead.
+  it("takes the forced ask when the requested sandbox is unavailable: a saved allow and allow mode do not run the hook unasked", async () => {
     setShellSandboxRequestedAtBoot(true);
     expect(getHostShellExecutionPlan()).toMatchObject({
-      mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: false,
+      mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true,
     });
-    const p = policy("allow-once");
+    const p = policy("deny-once");
+    p.permissionManager.setMode("allow");
     p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
-    expect(result.decision, result.reason).toBe("allow");
-    expect(JSON.parse(result.rawStdout).reason).toBe("received");
-    // The hook's own approval is asked once, with no host-execution permit to bind.
+    expect(result.decision).toBe("deny");
+    expect(result.rawStdout).toBe("");
     expect(p.requestAndWait).toHaveBeenCalledOnce();
-    expect(p.requestAndWait).not.toHaveBeenCalledWith(expect.objectContaining({ hostShellExecutionPermitBinding: expect.anything() }));
+    expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
+      forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false, floorSessionAllowed: true,
+      executionPlan: expect.objectContaining({ fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true }),
+      hostShellExecutionPermitBinding: expect.anything(),
+    }));
+  });
+
+  it("runs the hook once per gate-signed allow-once on the unavailable-sandbox forced card, and asks again next time", async () => {
+    setShellSandboxRequestedAtBoot(true);
+    const p = policy();
+    p.permissionManager.setMode("allow");
+    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+    const runOnce = async () => {
+      const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+      const gate = new ApprovalGate(wc as never);
+      const pending = runOneHookScript(hook, payload, { authorizeCommand: createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate }) });
+      const deadline = Date.now() + 3000;
+      while (wc.send.mock.calls.length === 0 && Date.now() < deadline) await new Promise((done) => setTimeout(done, 1));
+      const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+      expect(request?.nonce).toBeTruthy();
+      expect(request).toMatchObject({ allowedChoices: ["allow-once", "deny-once"],
+        executionPlan: { requestedSandbox: true, fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true } });
+      gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+      const result = await pending;
+      return { result, cards: wc.send.mock.calls.filter(([, sent]) => (sent as ApprovalRequest | undefined)?.nonce !== undefined).length };
+    };
+    const first = await runOnce();
+    expect(first.result.decision, first.result.reason).toBe("allow");
+    expect(JSON.parse(first.result.rawStdout).reason).toBe("received");
+    expect(first.cards).toBe(1);
+    expect(permits).toMatchObject({ minted: 1, consumed: [true] });
+    const second = await runOnce();
+    expect(second.cards).toBe(1);
+    expect(second.result.decision, second.result.reason).toBe("allow");
+    expect(permits).toMatchObject({ minted: 2, consumed: [true, true] });
   });
 
   describe.each(["boundary-link", "boundary-unlisted"] as const)("worker-only boot with an unverifiable boundary (%s)", (category) => {
@@ -423,14 +456,23 @@ describe("hook command permission admission", () => {
       expect(permits.minted).toBe(0);
     });
 
-    // An exact rule admits this command with no card outside the failure, so the deny is what refuses it here.
+    // Outside the failure an exact rule admits this command with no card (scope off) or the sandbox-unavailable forced card shows; either way the deny is what refuses it here.
     it.each([{ mode: "default" as const }, { mode: "allow" as const }])("denies an exactly allowed hook command in $mode mode", async ({ mode }) => {
       setShellSandboxRequestedAtBoot(requested);
       const p = policy("allow-once");
       p.permissionManager.setMode(mode);
       p.permissionManager.setRules([{ pattern: "Bash('printf' 'ready')", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
       const exact = { ...hook, command: ["printf", "ready"] };
-      expect((await p.authorizeCommand(exact, payload, process.cwd())).decision).toBe("allow");
+      const baseline = await p.authorizeCommand(exact, payload, process.cwd());
+      if (requested) {
+        expect(p.requestAndWait).toHaveBeenCalledOnce();
+        expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ forceExplicit: true }));
+        // The mock answer never passed the gate, so it carries no host receipt.
+        expect(baseline).toMatchObject({ decision: "deny", reason: expect.stringContaining("approval receipt is invalid") });
+        p.requestAndWait.mockClear();
+      } else {
+        expect(baseline.decision).toBe("allow");
+      }
       setAveHomePrivacyAtBoot({ enforcement: "none", home: "C:\\Users\\alice\\.ave", reason: "helper-unavailable", category: "helper-unavailable" });
       const denied = await p.authorizeCommand(exact, payload, process.cwd());
       expect(denied.decision).toBe("deny");
