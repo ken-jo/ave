@@ -6,6 +6,7 @@ import {
   writeTestPlugin,
   writeTestPluginRegistry,
   type TestPluginRuntimeFixture,
+  stopTestPluginRuntimes,
 } from "./test-helpers.js";
 
 describe("PluginRuntime config overrides", () => {
@@ -16,7 +17,9 @@ describe("PluginRuntime config overrides", () => {
   });
 
   afterEach(async () => {
+    const stopped = await stopTestPluginRuntimes();
     await rm(fixture.rootDir, { recursive: true, force: true });
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   async function installConfigPlugin(input: {
