@@ -302,6 +302,7 @@
    "<FIXTURE>/ws/.git/objects/info/http-alternates",
    "<FIXTURE>/ws/.git/remotes",
    "<FIXTURE>/ws/.git/branches",
+   "<FIXTURE>/ws/.git/ave-pins",
    "<FIXTURE>/ws/.git/modules",
    "<FIXTURE>/ws/.git/worktrees",
    "/**/.[gG][iI][tT]/[hH][oO][oO][kK][sS]",
@@ -331,6 +332,9 @@
    "/**/.[gG][iI][tT]/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]",
+   "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
    "<FIXTURE>/ws/locked",
    {
     "path": "<FIXTURE>/ws/lit[1]",
@@ -627,7 +631,10 @@
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[rR][eE][mM][oO][tT][eE][sS]",
    "/**/.[gG][iI][tT]/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[bB][rR][aA][nN][cC][hH][eE][sS]",
-   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]"
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]",
+   "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]"
   ]
  },
  "darwin · shared: two write roots and a user data directory": {
@@ -963,6 +970,7 @@
    "<FIXTURE>/ws/.git/objects/info/http-alternates",
    "<FIXTURE>/ws/.git/remotes",
    "<FIXTURE>/ws/.git/branches",
+   "<FIXTURE>/ws/.git/ave-pins",
    "<FIXTURE>/ws/.git/modules",
    "<FIXTURE>/ws/.git/worktrees",
    "<FIXTURE>/plain/.git",
@@ -992,7 +1000,10 @@
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[rR][eE][mM][oO][tT][eE][sS]",
    "/**/.[gG][iI][tT]/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[bB][rR][aA][nN][cC][hH][eE][sS]",
-   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]"
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]",
+   "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]"
   ]
  },
  "darwin · shared: an empty read list": {
@@ -1314,7 +1325,10 @@
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[rR][eE][mM][oO][tT][eE][sS]",
    "/**/.[gG][iI][tT]/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[bB][rR][aA][nN][cC][hH][eE][sS]",
-   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]"
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]",
+   "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]"
   ],
   "allowRead": []
  },
@@ -1491,7 +1505,10 @@
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[rR][eE][mM][oO][tT][eE][sS]",
    "/**/.[gG][iI][tT]/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[bB][rR][aA][nN][cC][hH][eE][sS]",
-   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]"
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]",
+   "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]"
   ]
  },
  "darwin · wrap: pinned write root with the floors restated": {
@@ -1795,6 +1812,7 @@
    "<FIXTURE>/ws/.git/objects/info/http-alternates",
    "<FIXTURE>/ws/.git/remotes",
    "<FIXTURE>/ws/.git/branches",
+   "<FIXTURE>/ws/.git/ave-pins",
    "<FIXTURE>/ws/.git/modules",
    "<FIXTURE>/ws/.git/worktrees",
    "/**/.[gG][iI][tT]/[hH][oO][oO][kK][sS]",
@@ -1824,6 +1842,9 @@
    "/**/.[gG][iI][tT]/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]",
+   "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
    "<FIXTURE>/ws/.ave-pinned-write-root"
   ],
   "allowRead": [
@@ -2007,7 +2028,10 @@
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[rR][eE][mM][oO][tT][eE][sS]",
    "/**/.[gG][iI][tT]/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[bB][rR][aA][nN][cC][hH][eE][sS]",
-   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]"
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]",
+   "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]"
   ]
  },
  "darwin · wrap: one read deny and an empty read list": {
@@ -2186,7 +2210,10 @@
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[rR][eE][mM][oO][tT][eE][sS]",
    "/**/.[gG][iI][tT]/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[bB][rR][aA][nN][cC][hH][eE][sS]",
-   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]"
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]",
+   "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]"
   ],
   "allowRead": []
  },
@@ -2511,6 +2538,9 @@
    "/**/.[gG][iI][tT]/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]",
+   "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
    {
     "path": "<FIXTURE>/plain/x",
     "literal": true
@@ -2743,6 +2773,7 @@
    "<FIXTURE>/ws/.git/objects/info/http-alternates",
    "<FIXTURE>/ws/.git/remotes",
    "<FIXTURE>/ws/.git/branches",
+   "<FIXTURE>/ws/.git/ave-pins",
    "<FIXTURE>/ws/.git/modules",
    "<FIXTURE>/ws/.git/worktrees",
    "<FIXTURE>/plain/.git",
@@ -2772,7 +2803,10 @@
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[rR][eE][mM][oO][tT][eE][sS]",
    "/**/.[gG][iI][tT]/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[bB][rR][aA][nN][cC][hH][eE][sS]",
-   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]"
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]",
+   "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]"
   ]
  },
  "darwin · wrap: read grant only": {
@@ -2948,7 +2982,10 @@
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[rR][eE][mM][oO][tT][eE][sS]",
    "/**/.[gG][iI][tT]/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[bB][rR][aA][nN][cC][hH][eE][sS]",
-   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]"
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]",
+   "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]"
   ],
   "allowRead": [
    "<FIXTURE>/ro"
@@ -3277,6 +3314,9 @@
    "/**/.[gG][iI][tT]/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]",
+   "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
    "<FIXTURE>/plain/.ave-pinned-write-root"
   ],
   "allowRead": [
@@ -3570,7 +3610,10 @@
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[rR][eE][mM][oO][tT][eE][sS]",
    "/**/.[gG][iI][tT]/[bB][rR][aA][nN][cC][hH][eE][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[bB][rR][aA][nN][cC][hH][eE][sS]",
-   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]"
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[bB][rR][aA][nN][cC][hH][eE][sS]",
+   "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
+   "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]"
   ],
   "allowRead": [
    "<FIXTURE>/ro"
