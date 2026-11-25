@@ -3,7 +3,7 @@ import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-g
  * The physical directory, current user turn and final route remain independently enforced.
  * Only the host PTY typing and its disclosure are stubs, recording what would have been typed. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -314,10 +314,12 @@ describe("terminal_run without Windows shell containment", () => {
   beforeEach(partialWindowsAsrt);
 
   it.each([
-    { label: "an exact saved host rule", rules: [exactRule] },
-    { label: "allow mode", mode: "allow" as const },
-    { label: "the surface allow choice", surfaceChoice: "allow" as const },
-  ])("forces a card despite $label", async ({ label: _label, ...options }) => {
+    { label: "an exact saved host rule with unverified privacy", verified: false, rules: [exactRule] },
+    { label: "a saved prefix rule", verified: true, rules: [{ pattern: "Bash(printf *)", action: "allow" as const }] },
+    { label: "allow mode", verified: true, mode: "allow" as const },
+    { label: "the surface allow choice", verified: true, surfaceChoice: "allow" as const },
+  ])("forces a card despite $label", async ({ label: _label, verified, ...options }) => {
+    if (verified) setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
     const denied = await run(command, options);
     expect(denied.decision).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable", forceModal: true });
     expect(denied.requestAndWait).toHaveBeenCalledOnce();
@@ -329,7 +331,38 @@ describe("terminal_run without Windows shell containment", () => {
     expect(denied.result.is_error).toBe(true);
   });
 
+  it("types on a saved exact rule with verified boot home privacy", async () => {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
+    const allowed = await run(command, { rules: [exactRule] });
+    expect(allowed.decision).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
+    expect(allowed.requestAndWait).not.toHaveBeenCalled();
+    expect(allowed.review).not.toHaveBeenCalled();
+    expect(allowed.surfaceChoice).toBe("ask");
+    expect(allowed.typed).toEqual([command]);
+    expect(allowed.result.is_error).toBeFalsy();
+  });
+
+  it("refuses to type if the saved exact rule is deleted before the write", async () => {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
+    const refused = await run(command, {
+      rules: [exactRule], duringTyping: () => unlinkSync(join(dir, "permissions.json")),
+    });
+    expect(refused.decision).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
+    expect(refused.requestAndWait).not.toHaveBeenCalled();
+    expect(refused.typed).toEqual([]);
+    expect(refused.result.is_error).toBe(true);
+  });
+
+  it("refuses to type if the host plan loses verified boot home privacy before the write", async () => {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
+    const refused = await run(command, { rules: [exactRule], duringTyping: _resetAveHomePrivacyForTest });
+    expect(refused.decision).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
+    expect(refused.refusals).toEqual([PATH_POLICY_DECISION_MISMATCH_ERROR]);
+    expect(refused.typed).toEqual([]);
+  });
+
   it("denies headless with an exact rule, allow mode and the surface allow choice", async () => {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
     const denied = await run(command, {
       headless: true, mode: "allow", surfaceChoice: "allow", rules: [exactRule],
     });

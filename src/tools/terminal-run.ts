@@ -409,10 +409,11 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     // The directory proof is the last step, after the route recheck's await: nothing asynchronous lies between it and the write it guards.
     const effectCheck = async (): Promise<{ ok: true } | { ok: false; message: string }> => {
       try {
-        await route.recheck();
         const gate = currentEffectGateContext();
-        if (!await refreshRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)
-          || !isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) return { ok: false, message: "remote-controller-revoked" };
+        const authority = gate?.permissionContext?.remoteControllerAuthority;
+        if (!await refreshRemoteControllerBoundToSession(authority, gate?.sessionId)) return { ok: false, message: "remote-controller-revoked" };
+        await route.recheck();
+        if (!isRemoteControllerBoundToSession(authority, gate?.sessionId)) return { ok: false, message: "remote-controller-revoked" };
       }
       catch (error) { return { ok: false, message: errorMessage(error) }; }
       const moved = directoryChanged();

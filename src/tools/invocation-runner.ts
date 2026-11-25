@@ -1274,7 +1274,7 @@ async function runToolInvocationAttempt(
     // A command typed into the user's own host terminal runs on the host and nowhere else. Seal that route with the same router the shells
     // use, so the permission decision sees its (empty) path-policy relaxations, and re-prove it before every write to the terminal: a route
     // that would now move the effect elsewhere, or relax path policy, is a contract violation and types nothing.
-    let hostTerminalRoute: { recheck(): Promise<void> } | undefined;
+    let hostTerminalRoute: { recheck(requireSamePlan?: boolean): Promise<void> } | undefined;
     const hostTerminalCommand = isCanonicalTerminalRunTool(tool) && approvalMemory.kind === "key"
       && approvalMemory.scope.kind === "terminal-command" && approvalMemory.scope.lane === "manual" && typeof finalInput.command === "string"
       ? { command: finalInput.command, cwd: approvalMemory.scope.physicalCwd } : undefined;
@@ -1311,10 +1311,12 @@ async function runToolInvocationAttempt(
         executionRoutePathPolicyRelaxations = sealed.router.executionPlanPathPolicyRelaxations(sealed.plan);
         const decided = executionRoutePathPolicyRelaxations;
         hostTerminalRoute = Object.freeze({
-          recheck: async () => {
+          recheck: async (requireSamePlan = false) => {
             const current = await buildHostTerminalRoute();
             current.router.assertDecidedPathPolicyRelaxations(current.plan, decided);
-            if (current.plan.route !== "host") throw new Error(current.router.PATH_POLICY_DECISION_MISMATCH_ERROR);
+            if (current.plan.route !== "host" || requireSamePlan && hostTerminalFloorPlan?.identity !== getHostShellExecutionPlan("host").identity) {
+              throw new Error(current.router.PATH_POLICY_DECISION_MISMATCH_ERROR);
+            }
           },
         });
       } catch (error) {

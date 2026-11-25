@@ -19,7 +19,7 @@ export interface PermissionDecisionRequest {
   floorSessionEligible?: true;
   exfiltration?: { reason: string };
   // `floorSession`: a "This session" allow approved on this floor's own card in this conversation; ordinary rules never pass a floor.
-  // `exactHostRule`: the saved exact rule (its pattern) that matches this whole command on a no-backend host with verified boot home privacy.
+  // `exactHostRule`: the saved exact rule (its pattern) that matches this whole command when shell containment is unavailable and boot home privacy is verified.
   rules?: { deny?: string; ask?: string; allow?: string; remembered?: string; floorSession?: string; exactHostRule?: string };
   secretRead?: boolean;
   // Display-only: what the path evidence matched, for the card's reason line. No stage reads it.
@@ -46,7 +46,7 @@ export function offersFloorSessionAllow(result: { readonly pipelineRequest?: Per
   return request?.floorSessionEligible === true && request.floor?.code === "sandbox-unavailable";
 }
 
-// An exact saved rule passed the no-backend sandbox-unavailable ask; the reason names the rule.
+// An exact saved rule passed the no-confinement floor; the reason names the rule.
 export const EXACT_HOST_RULE_REASON_CODE = "exact-host-rule";
 
 export const NO_APPROVER_MESSAGE = "Nobody can approve this request; do not retry.";
@@ -91,10 +91,11 @@ export function decidePermission(request: PermissionDecisionRequest): Permission
     if (request.headless) return { outcome: "deny", reasonCode: "no-approver", reason: NO_APPROVER_MESSAGE };
     if (request.floor.code === "sandbox-unavailable" && request.floorSessionEligible && request.rules?.exactHostRule !== undefined &&
       request.rules.ask === undefined && !request.manualRerun && !request.exfiltration) {
-      // Tree T:151, T:232: the exact saved rule is the consent, so nothing asks. It answers only this floor, and only when the ordinary
-      // stages reach the allow-rule stage with it: a user-owned surface keeps the card. Headless stays denied above (T:16).
+      // The exact saved rule is command-specific consent for the built-in host terminal too.
       const { floor: _floor, floorSessionEligible: _eligible, reviewer: _reviewer, ...ordinary } = request;
-      const decided = decidePermission({ ...ordinary, rules: { ...ordinary.rules, allow: request.rules.exactHostRule } });
+      const hostTerminal = request.userOwnedSurface?.kind === "host-terminal" && request.tool.source === "builtin" && request.tool.name === "terminal_run";
+      const decided = decidePermission({ ...ordinary, ...(hostTerminal ? { userOwnedSurface: undefined } : {}),
+        rules: { ...ordinary.rules, allow: request.rules.exactHostRule } });
       if (decided.outcome === "allow" && decided.reasonCode === "rule-allow") {
         return { outcome: "allow", reasonCode: EXACT_HOST_RULE_REASON_CODE, reason: `Saved exact rule ${request.rules.exactHostRule} allows this command without the OS sandbox.` };
       }

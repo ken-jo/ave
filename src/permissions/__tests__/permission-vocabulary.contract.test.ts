@@ -91,7 +91,7 @@ const capability = (platform: NodeJS.Platform, kind: SandboxCapability["kind"], 
 // A plan is a route, not a verdict. Read as: confined -> contained, blocked -> deny, the home-privacy floor -> ask-human for the
 // session, a per-invocation host authorization -> ask once, otherwise the ordinary policy (any saved scope may answer).
 // An explicit host request also sets requiresExplicitUserApproval, yet a saved rule answers it (the permit mint accepts an issued
-// rule decision for an explicit host request, and for the exact-rule pass of the no-backend ask, D25.a).
+// rule decision for an explicit host request, and for the exact-rule pass of the no-confinement floor, D25.a and D26).
 function plan(input: Parameters<typeof buildHostShellExecutionPlan>[0]): Observation {
   const built: HostShellExecutionPlan = buildHostShellExecutionPlan(input);
   const reason = `${built.executionRequest}:${built.fallbackReason}`;
@@ -101,11 +101,12 @@ function plan(input: Parameters<typeof buildHostShellExecutionPlan>[0]): Observa
   return { outcome: "ask", reason, waiver: built.requiresExplicitUserApproval && built.executionRequest !== "host" ? "once" : "any" };
 }
 
-// A shell on a sandbox-on host with no usable backend (T:144-145), with one saved allow rule. The plan and the pipeline are driven. One
+// A shell on a sandbox-on host without proven shell containment (T:144-146). The plan and pipeline are driven. One
 // manager step is restated: it offers the saved rule as `exactHostRule` only when the rule is exactly the command, the plan is one
 // `exactRulePassesUnsandboxedShellAsk` marks, and no other floor applies; a second floor also withdraws the session offer.
-function noBackendShell(saved: "exact" | "prefix", boot: { homePrivacyVerified?: boolean; unavailableSandboxRequiresAsk?: boolean }, secondFloor = false, executionMode?: "host"): Observation {
-  const built = buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "none"), ...boot, ...(executionMode ? { executionMode } : {}) });
+function uncontainedShell(saved: "exact" | "prefix", boot: { homePrivacyVerified?: boolean; unavailableSandboxRequiresAsk?: boolean },
+  secondFloor = false, executionMode?: "default" | "host", activeCapability = capability("linux", "none")): Observation {
+  const built = buildHostShellExecutionPlan({ platform: activeCapability.platform, requestedSandbox: true, activeCapability, ...boot, executionMode });
   expect(requiresUnsandboxedShellAsk(built)).toBe(true);
   const exact = saved === "exact" && !secondFloor && exactRulePassesUnsandboxedShellAsk(built);
   return pipeline({ tool: SHELL, shell: HOST_SHELL, mode: "allow", floor: { code: "sandbox-unavailable", reason: "fixture" },
@@ -251,38 +252,39 @@ const ROWS: readonly Row[] = [
   // Nothing is unknown here: the missing boundary is the fact the saved exact rule consents to (owner decision 2026-11-25).
   { id: "D25.a", point: "no usable backend: a saved rule that is exactly the command, boot home privacy verified", tree: "T:151, T:232", unknown: "-",
     today: { outcome: "allow", reason: "exact-host-rule", headless: "deny" },
-    observe: () => noBackendShell("exact", { homePrivacyVerified: true }) },
+    observe: () => uncontainedShell("exact", { homePrivacyVerified: true }) },
   { id: "D25.b", point: "no usable backend: a saved prefix rule and the allow mode", tree: "T:151, T:232", unknown: "U2",
     today: { outcome: "ask-human", reason: "sandbox-unavailable", headless: "deny", waiver: "session" },
-    observe: () => noBackendShell("prefix", { homePrivacyVerified: true }) },
+    observe: () => uncontainedShell("prefix", { homePrivacyVerified: true }) },
   { id: "D25.c", point: "no usable backend: the exact rule while boot home privacy is unverified", tree: "T:147, T:151, T:232", unknown: "U2",
     today: { outcome: "ask-human", reason: "sandbox-unavailable", headless: "deny", waiver: "session" },
     observe: () => {
       // A boot that published no result is not verified either.
-      expect(noBackendShell("exact", {})).toEqual(noBackendShell("exact", { unavailableSandboxRequiresAsk: true }));
-      return noBackendShell("exact", { unavailableSandboxRequiresAsk: true });
+      expect(uncontainedShell("exact", {})).toEqual(uncontainedShell("exact", { unavailableSandboxRequiresAsk: true }));
+      return uncontainedShell("exact", { unavailableSandboxRequiresAsk: true });
     } },
   { id: "D25.d", point: "no usable backend: the exact rule with a second forced reason", tree: "T:149, T:151, T:232", unknown: "U2",
     today: { outcome: "ask-human", reason: "sandbox-unavailable", headless: "deny", waiver: "once" },
-    observe: () => noBackendShell("exact", { homePrivacyVerified: true }, true) },
+    observe: () => uncontainedShell("exact", { homePrivacyVerified: true }, true) },
   // An explicit host request on that host is the same uncontained shell: the same pass, and the same ask without it.
   { id: "D25.e", point: "no usable backend: an explicit host request, with the exact rule and with a prefix rule", tree: "T:149, T:151, T:232", unknown: "-",
     today: { outcome: "allow", reason: "exact-host-rule", headless: "deny" },
     observe: () => {
-      expect(noBackendShell("prefix", { homePrivacyVerified: true }, false, "host")).toEqual(noBackendShell("prefix", { homePrivacyVerified: true }));
-      expect(noBackendShell("exact", {}, false, "host")).toEqual(noBackendShell("exact", {}));
-      return noBackendShell("exact", { homePrivacyVerified: true }, false, "host");
+      expect(uncontainedShell("prefix", { homePrivacyVerified: true }, false, "host")).toEqual(uncontainedShell("prefix", { homePrivacyVerified: true }));
+      expect(uncontainedShell("exact", {}, false, "host")).toEqual(uncontainedShell("exact", {}));
+      return uncontainedShell("exact", { homePrivacyVerified: true }, false, "host");
     } },
-  { id: "D26", point: "Windows capability that does not contain shells", tree: "T:146, T:232", unknown: "U2",
-    today: { outcome: "ask-human", reason: "default:windows-partial-shell-acl-unsafe", waiver: "session" },
+  { id: "D26", point: "active backend without shell containment: same floor and exact-rule pass on both host routes", tree: "T:144-151, T:232", unknown: "-",
+    today: { outcome: "allow", reason: "exact-host-rule", headless: "deny" },
     observe: () => {
-      // An explicit host request there is the same uncontained shell, and no saved rule passes either route.
-      for (const executionMode of ["default", "host"] as const) {
-        const built = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: capability("win32", "asrt", false), executionMode, homePrivacyVerified: true });
-        expect(requiresUnsandboxedShellAsk(built)).toBe(true);
-        expect(exactRulePassesUnsandboxedShellAsk(built)).toBe(false);
+      const active = capability("win32", "asrt", false);
+      const verified = { homePrivacyVerified: true };
+      for (const mode of ["default", "host"] as const) {
+        expect(uncontainedShell("exact", verified, false, mode, active)).toEqual(uncontainedShell("exact", verified, false, mode));
+        expect(uncontainedShell("prefix", verified, false, mode, active)).toEqual(uncontainedShell("prefix", verified, false, mode));
+        expect(uncontainedShell("exact", {}, false, mode, active)).toEqual(uncontainedShell("exact", {}, false, mode));
       }
-      return plan({ platform: "win32", requestedSandbox: true, activeCapability: capability("win32", "asrt", false) });
+      return uncontainedShell("exact", verified, false, "default", active);
     } },
   // I12 removes this branch with the partial and fs-only kinds (PF3); nothing produces them today. Until then the core answer
   // is the U2 one its neighbours D25 and D26 carry.

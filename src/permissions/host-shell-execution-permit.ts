@@ -132,7 +132,8 @@ export function recordHostShellPolicyAuthorization(binding: HostShellExecutionPe
   policyAuthorizations.add(binding);
 }
 
-// Consume only action-bound host proof: a verified one-shot receipt, an exact host-request rule decision, the exact-rule pass of the no-backend ask, or the authorization pipeline's normal-policy permit. The partial Windows plan rejects rule proof; structural, unrelated or differently bound decisions fail closed.
+// Consume only action-bound host proof: a one-shot approval, a rule decision for an explicit host request or the no-confinement floor,
+// a floor session decision, or a policy authorization for this action.
 export function mintHostShellExecutionPermit(input: {
   plan: HostShellExecutionPlan;
   approvalDecision: ApprovalDecision | undefined;

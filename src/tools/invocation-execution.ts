@@ -14,7 +14,7 @@ import { disposableContainerCapability, resolveReviewerSandboxCapability } from 
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
 import type { ApprovalDecision, ApprovalRequestInput, LinkedApprovalTarget } from "../permissions/approval-gate.js";
 import { randomUUID } from "node:crypto";
-import type { PermissionCheckResult } from "../permissions/permission-manager.js";
+import { isIssuedShellAllowRuleDecision, type PermissionCheckResult } from "../permissions/permission-manager.js";
 import type { ToolExecutionAuditMetadata } from "../audit/audit-schema.js";
 import { isPiiRedactionEnabled, maskSensitiveData } from "../audit/dlp-filter.js";
 import { emitEffectShadowLog } from "../permissions/reviewer/risk-shadow-log.js";
@@ -199,7 +199,7 @@ export interface ExecutionStageContext {
   hostShellExecutionPlan: HostShellExecutionPlan | undefined;
   executionRouteGrant?: ExecutionGrant;
   finalizeExecutionRouteGrant?: () => Promise<ExecutionGrant | undefined>;
-  hostTerminalRoute?: { recheck(): Promise<void> };
+  hostTerminalRoute?: { recheck(requireSamePlan?: boolean): Promise<void> };
   preparedShellInvocation?: import("./prepared-shell-invocation.js").PreparedShellInvocation;
   verifiedShellCommand?: import("../permissions/verified-shell-command.js").VerifiedShellCommand;
   hostShellRequiresExplicitApproval: boolean;
@@ -817,7 +817,20 @@ export async function executeAuthorizedToolInvocation(
     ...(ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot } : {}),
     ...(hostShellExecutionPlan ? { hostShellExecutionPlan } : {}),
     ...(executionRouteGrant ? { executionRouteGrant } : {}),
-    ...(hostTerminalRoute ? { hostTerminalRoute } : {}),
+    ...(hostTerminalRoute ? { hostTerminalRoute: {
+      recheck: async () => {
+        const exactRule = permissionResult?.reasonCode === EXACT_HOST_RULE_REASON_CODE ? permissionResult : undefined;
+        await hostTerminalRoute.recheck(exactRule !== undefined);
+        if (exactRule === undefined) return;
+        const manager = services.permissionManager;
+        if (!manager) throw new Error("Host terminal permission changed before typing.");
+        const refreshed = manager.recheckPermission(exactRule);
+        if (!isIssuedShellAllowRuleDecision(refreshed, manager)) {
+          throw new Error("Host terminal permission changed before typing.");
+        }
+        permissionResult = refreshed;
+      },
+    } } : {}),
     ...(preparedShellInvocation ? { preparedShellInvocation } : {}),
     ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
     ...(hostShellExecutionPermit ? { hostShellExecutionPermit } : {}),

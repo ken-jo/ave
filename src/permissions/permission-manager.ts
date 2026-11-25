@@ -1786,11 +1786,10 @@ export class PermissionManager {
     const shellRules = !analysisLimited && parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true,
         ...(ruleSubject?.hostTerminal === undefined ? {} : { hostTerminal: ruleSubject.hostTerminal }) }, this.rules, projectRules, sessionRules)
       : !analysisLimited && parsedPowerShell ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject?.cwd, hostShellExecutionPlan: context.hostShellExecutionPlan, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true }, this.rules, projectRules, sessionRules) : undefined;
-    // Tree T:151, T:232: a saved rule that is exactly this command passes the sandbox-unavailable ask when the plan asks only for the missing
-    // backend (boot home privacy verified) and no other floor applies. Session rules are not saved; a prefix rule, a tool-name rule and a
-    // compound command keep the ask. It is offered only when its rule proof can be issued, so a pass never ends as a refused spawn.
+    // Tree T:151, T:232: only a saved exact rule with verified boot home privacy can answer this floor.
+    // The host terminal can use that rule here. Its ordinary policy still uses the surface choice.
     const exactRuleCwdIdentity = floorSessionEligible && exactRulePassesUnsandboxedShellAsk(context.hostShellExecutionPlan) && !analysisLimited &&
-      ruleSubject !== undefined && requestedRuleSubject?.cwd !== undefined && ruleSubject.dialect === toolName && ruleSubject.hostTerminal === undefined
+      ruleSubject !== undefined && requestedRuleSubject?.cwd !== undefined && ((ruleSubject.dialect === toolName && ruleSubject.hostTerminal === undefined) || terminalFloorSubject)
       ? cwdIdentity ?? captureShellWorkingDirectoryIdentity(requestedRuleSubject.cwd) : undefined;
     const exactRuleProjectVersion = exactRuleCwdIdentity === undefined ? undefined : projectPolicyVersion ?? this.projectRuleScopes.policyVersionFor(exactRuleCwdIdentity.realpath);
     const exactRuleVersions = this.userRulesVersion && this.userRulesVersion.withheld !== true && exactRuleProjectVersion && exactRuleProjectVersion.withheld !== true &&

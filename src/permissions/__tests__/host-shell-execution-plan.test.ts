@@ -109,7 +109,7 @@ describe("host shell execution plan", () => {
     expect(Object.isFrozen(plan.capability)).toBe(true);
   });
 
-  it("puts the Windows approved-host plan on the forced ask, with no exact-rule pass on either route", () => {
+  it("puts both Windows host routes under the floor, with the exact-rule pass based on boot home privacy", () => {
     const plan = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: WINDOWS_PARTIAL_ASRT,
       unavailableCauses: ["missing-bwrap"] });
     expect(plan).toEqual({
@@ -137,7 +137,7 @@ describe("host shell execution plan", () => {
       for (const executionMode of ["default", "host"] as const) {
         const built = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: WINDOWS_PARTIAL_ASRT, executionMode, homePrivacyVerified });
         expect(requiresUnsandboxedShellAsk(built)).toBe(true);
-        expect(exactRulePassesUnsandboxedShellAsk(built)).toBe(false);
+        expect(exactRulePassesUnsandboxedShellAsk(built)).toBe(homePrivacyVerified);
       }
     }
     // A contained shell route is not floored when its explicit host request is: the request leaves a ready backend.
@@ -215,10 +215,8 @@ describe("host shell execution plan", () => {
     });
     expect(plan.mode).toBe("plain");
     expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
-    expect(exactRulePassesUnsandboxedShellAsk(plan)).toBe(false);
+    expect(exactRulePassesUnsandboxedShellAsk(plan)).toBe(true);
   });
-
-  // Tree T:151, T:232: an exact saved rule may pass only the ask that the missing backend alone raises, with boot home privacy verified.
   it.each(["default", "host"] as const)("marks the %s no-backend plan for the exact-rule pass only with verified boot home privacy", (executionMode) => {
     const build = (extra: Partial<Parameters<typeof buildHostShellExecutionPlan>[0]>) => buildHostShellExecutionPlan({
       platform: "linux", requestedSandbox: true, activeCapability: { ...NONE, platform: "linux" }, executionMode, ...extra });

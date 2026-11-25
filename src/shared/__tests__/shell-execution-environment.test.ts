@@ -66,16 +66,17 @@ describe("shell execution environment", () => {
         },
       } as const;
       const partial = buildHostShellExecutionPlan(input);
+      const partialVerified = buildHostShellExecutionPlan({ ...input, homePrivacyVerified: true });
       const privacy = buildHostShellExecutionPlan({ ...input, requestedSandbox: false, unavailableSandboxRequiresAsk: true });
       const missingInput = { ...input, activeCapability: { ...input.activeCapability, kind: "none" as const } };
       const missing = buildHostShellExecutionPlan({ ...missingInput, homePrivacyVerified: true });
       const missingAndPrivacyUnverified = buildHostShellExecutionPlan({ ...missingInput, unavailableSandboxRequiresAsk: true });
 
-      for (const hostPlan of [partial, privacy, missing, missingAndPrivacyUnverified]) {
+      for (const hostPlan of [partial, partialVerified, privacy, missing, missingAndPrivacyUnverified]) {
         const prompt = environmentPrompt(plan(true), true, hostPlan);
         expect(prompt).toContain(t("shellExecution.hostRequestFloor"));
         expect(prompt).not.toContain(t("shellExecution.hostRequest"));
-        expect(prompt.includes(t("shellExecution.hostRequestExactRule"))).toBe(hostPlan === missing);
+        expect(prompt.includes(t("shellExecution.hostRequestExactRule"))).toBe(hostPlan === missing || hostPlan === partialVerified);
         expect(environmentPrompt(plan(true), false, hostPlan)).not.toContain(t("shellExecution.hostRequestFloor"));
       }
     } finally {

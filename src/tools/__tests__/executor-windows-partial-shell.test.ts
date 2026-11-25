@@ -51,7 +51,7 @@ import {
   setWindowsSandboxSubstrate,
 } from "../../permissions/sandbox-capability.js";
 import { windowsSubstrateFor } from "../../boot/steps/windows-sandbox-plan.js";
-import { _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
+import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import {
@@ -458,6 +458,34 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       const again = cardGate("deny-once");
       await partialRun(pm, again.gate, registry, { host });
       expect(again.cards()).toHaveLength(1);
+      expect(execute).toHaveBeenCalledOnce();
+    });
+
+  it.each([{ host: false, route: "default" }, { host: true, route: "explicit-host" }])(
+    "runs on a saved exact rule with verified boot home privacy ($route)", async ({ host }) => {
+      partialWindowsAsrt();
+      const execute = vi.fn();
+      const registry = shellProbeRegistry(execute);
+      const pm = partialManager("default");
+      await pm.addRulePersist({ pattern: "Bash(echo no-run)", action: "allow" }, { kind: "user" });
+      const unverified = cardGate("deny-once");
+      await partialRun(pm, unverified.gate, registry, { host });
+      expect(unverified.cards()).toHaveLength(1);
+      expect(execute).not.toHaveBeenCalled();
+
+      setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: testRoot, sid: "S-1-5-21-1" });
+      const approvals = cardGate("deny-once");
+
+      const result = await partialRun(pm, approvals.gate, registry, { host });
+      expect(approvals.cards()).toHaveLength(0);
+      expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+      expect(execute).toHaveBeenCalledOnce();
+      expect(execute.mock.calls[0][0].hostShellExecutionPermit).toBeDefined();
+      expect(result[0]?.is_error).toBeUndefined();
+
+      const headless = await partialRun(pm, approvals.gate, registry, { host, headless: true });
+      expect(headless[0]?.content).toContain(NO_APPROVER_MESSAGE);
+      expect(approvals.cards()).toHaveLength(0);
       expect(execute).toHaveBeenCalledOnce();
     });
 
