@@ -307,20 +307,27 @@ describe("host terminal late native approval", () => {
     });
   });
 
-  it("asks a human once for a command whose path analysis runs out of budget, then types it", async () => {
+  it.each([false, true])("asks a human once for exhausted path analysis, with a pending mode change of %s", async (changeMode) => {
     const command = Array.from({ length: 7 }, (_, index) => `if test -f q${index}; then v${index}=1; fi`).join("; ");
     const f = await fixture({ command, mode: "default", exactRule: false, holdFinalizer: false });
     await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "analysis-limit-turn" }, async () => {
       const pending = f.run();
       await vi.waitFor(() => expect(f.cards).toHaveLength(1), CARD_WAIT);
       expect(f.cards[0]?.reason).toContain(SHELL_ANALYSIS_LIMIT_REASON);
+      expect(f.cards[0]?.reasonCode).toBe("shell-analysis-limit");
       expect(f.cards[0]?.allowedChoices).toEqual(["allow-once", "deny-once"]);
       expect(f.typed).toEqual([]);
+      if (changeMode) f.manager.setMode("allow");
       f.approve(f.cards[0], true);
       const [result] = await pending;
-      expect(result.is_error, result.content).toBeFalsy();
+      if (changeMode) {
+        expect(result.is_error).toBe(true);
+        expect(result.content).toContain("Permission policy changed while approval was pending");
+      } else {
+        expect(result.is_error, result.content).toBeFalsy();
+      }
       expect(f.cards).toHaveLength(1);
-      expect(f.typed).toEqual([command]);
+      expect(f.typed).toEqual(changeMode ? [] : [command]);
     });
   });
 

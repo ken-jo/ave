@@ -1,4 +1,4 @@
-import { type AnswerEpochs, answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince } from "../permissions/pending-answer-policy.js";
+import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, personAnswerStands } from "../permissions/pending-answer-policy.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
@@ -967,12 +967,17 @@ export async function executeAuthorizedToolInvocation(
   /** The late card's question judged again across memory-only allow-rule steps (pending-answer-policy.ts). Before the card is asked it
    * stands while it is still asked; once a person `answered`, also when the policy now allows the call, as on the main card. Never
    * when the question is denied or more forced than it was, and never across any other change. */
-  const lateApprovalStandsAcrossMemoryRules = (answered: boolean): boolean => {
+  const lateApprovalStands = (answered: boolean): boolean => {
     const manager = services.permissionManager;
-    if (!manager || lateApprovalAnswerEpochs === undefined || !permissionResult?.pipelineRequest || !onlyMemoryRulesChangedSince(manager, lateApprovalAnswerEpochs)) return false;
-    const forced = permissionResult.forceModal === true;
-    permissionResult = manager.recheckPermission(permissionResult, { acrossMemoryRuleChanges: true });
-    if (!(permissionResult.decision === "ask" || answered && permissionResult.decision === "allow") || !answerSurvivesRecheck(permissionResult, forced)) return false;
+    const pending = permissionResult;
+    if (!manager || lateApprovalAnswerEpochs === undefined || !pending?.pipelineRequest) return false;
+    if (!answered && !onlyMemoryRulesChangedSince(manager, lateApprovalAnswerEpochs)) return false;
+    const forced = pending.forceModal === true;
+    const recheck = () => {
+      permissionResult = manager.recheckPermission(pending, { acrossMemoryRuleChanges: true });
+      return permissionResult;
+    };
+    if (!personAnswerStands(manager, lateApprovalAnswerEpochs, forced, recheck) || !answered && permissionResult?.decision !== "ask") return false;
     lateApprovalAnswerEpochs = answerEpochsOf(manager);
     lateApprovalPolicyEpoch = lateApprovalAnswerEpochs.epoch;
     return true;
@@ -981,7 +986,7 @@ export async function executeAuthorizedToolInvocation(
     const manager = services.permissionManager;
     if (manager && lateApprovalPolicyEpoch !== manager.getPolicyEpoch()) {
       // A sibling stage's "Allow for this run", or a run that ended, does not withdraw a card that is about to be asked.
-      if (lateApprovalStandsAcrossMemoryRules(false)) return;
+      if (lateApprovalStands(false)) return;
       if (permissionResult?.pipelineRequest) permissionResult = manager.recheckPermission(permissionResult);
       throw new Error(permissionResult?.reason ?? "Permission policy changed before execution.");
     }
@@ -1110,11 +1115,12 @@ export async function executeAuthorizedToolInvocation(
       permissionResult = services.permissionManager.recheckPermission(permissionResult);
       if (permissionResult.decision !== "ask") throw new Error(permissionResult.reason);
     }
-    // The surface facts, the code of the decision that asked included, are the recheck's own: a card that is no longer a surface card carries none.
+    // Use the reason and surface facts from the current decision.
     const liveRequest: ApprovalRequestInput = { ...request,
       userOwnedSurface: undefined, userOwnedSurfaceReviewFallback: undefined, reasonCode: undefined,
       ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
       reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${permissionResult.reason}` : permissionResult.reason,
+      ...approvalReasonFields(permissionResult, { fileTarget: false }),
       ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
         ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}) } : {}),
       ...hostTerminalApprovalFacts(tool, invocationPermissionContext.approvalMemory, finalInput.command),
@@ -1124,10 +1130,11 @@ export async function executeAuthorizedToolInvocation(
     abortSignal?.throwIfAborted();
     const currentEpoch = services.permissionManager?.getPolicyEpoch();
     // The person's answer across another conversation's or run's memory-only allow rule stands; any other change refuses it.
-    if (lateApprovalPolicyEpoch !== currentEpoch &&
-        (lateApprovalPolicyEpoch === undefined || currentEpoch === undefined ||
-          !services.approvalGate!.allowsPolicyTransition(decision, lateApprovalPolicyEpoch, currentEpoch)) &&
-        !lateApprovalStandsAcrossMemoryRules(true)) {
+    const policyChanged = lateApprovalPolicyEpoch !== currentEpoch;
+    const sameCardPolicyTransition = policyChanged && lateApprovalPolicyEpoch !== undefined && currentEpoch !== undefined &&
+      services.approvalGate!.allowsPolicyTransition(decision, lateApprovalPolicyEpoch, currentEpoch);
+    const answerOutdated = !sameCardPolicyTransition && (services.permissionManager ? !lateApprovalStands(true) : policyChanged);
+    if (answerOutdated) {
       permissionResult = { ...permissionResult, decision: "deny", reason: "Permission policy changed before execution." };
       throw new Error(permissionResult.reason);
     }
