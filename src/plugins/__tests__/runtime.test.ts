@@ -4003,6 +4003,42 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     expect(f.stops()).toBe(f.constructed.length);
   });
 
+  it("stopAll waits for a restart that committed before shutdown but has not registered its retirement", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.load();
+    const [orphan] = f.constructed;
+    if (!orphan) throw new Error("load() constructed no instance");
+    // Hold the restart between its commit and its finally, where it registers the displaced plugin's retirement.
+    let committed!: () => void;
+    const commitReached = new Promise<void>((resolve) => { committed = resolve; });
+    let releasePostCommit!: () => void;
+    const postCommit = new Promise<void>((resolve) => { releasePostCommit = resolve; });
+    const requireLifecycle = f.internals.requireCapabilityCommitLifecycle.bind(f.runtime);
+    f.internals.requireCapabilityCommitLifecycle = (...args) => new Proxy(requireLifecycle(...args), {
+      get: (target, key) => key === "replaceRuntime"
+        ? async (...replaceArgs: unknown[]) => {
+          await (Reflect.get(target, key) as (...a: unknown[]) => Promise<void>).apply(target, replaceArgs);
+          committed();
+          await postCommit;
+        }
+        : Reflect.get(target, key),
+    });
+    const restart = f.runtime.restartPlugin(ID);
+    await commitReached;
+    const stopping = f.runtime.stopAll();
+    // Without a tracked handoff, shutdown settles before the retirement exists and the orphan is never stopped.
+    const settledEarly = await Promise.race([
+      stopping.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 500)),
+    ]);
+    releasePostCommit();
+    expect(await stopping).toEqual({ unfinished: [] });
+    expect({ settledEarly, orphanStops: orphan.stops }).toEqual({ settledEarly: false, orphanStops: 1 });
+    await expect(restart).resolves.toBe("started");
+    expect(f.stops()).toBe(f.constructed.length);
+  });
+
   it("a restart that commits but fails to publish leaves no loaded instance or sandbox HOME at shutdown", async () => {
     const f = await setup("success");
     bindNativeBundleLifecycle(f, { loopbackPublish: new Error("loopback publish failed") });
