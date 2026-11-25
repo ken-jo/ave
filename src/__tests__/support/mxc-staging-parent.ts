@@ -15,3 +15,11 @@ export function suiteMxcStagingParent(): string {
   parent ??= realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-staging-")));
   return parent;
 }
+
+const host = process.platform;
+
+/** The staging parent a suite mocks `mxcStagingParent` with: its own real one on a Windows host, the synthetic drive
+ * path on another kernel, which no disk call reaches. */
+export function hostMxcStagingParent(nativeHost: NodeJS.Platform = host): string {
+  return nativeHost === "win32" ? suiteMxcStagingParent() : SYNTHETIC_MXC_STAGING_PARENT;
+}

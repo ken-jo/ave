@@ -1,11 +1,19 @@
 import * as childProcess from "node:child_process";
 import * as filesystem from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTempDirs } from "../test-helpers.js";
 import { setProcessPlatform } from "./process-platform.js";
 import { useConfigurationOwner } from "./configuration-owner.js";
-import { simulatedConfigurationFs, simulatedConfigurationHandles, simulatedSandboxProcessHome, simulatedWindowsPathFacts } from "./simulated-win32-drive.js";
+import { hostMxcStagingParent, SYNTHETIC_MXC_STAGING_PARENT } from "./mxc-staging-parent.js";
+import { nativePluginLaunch } from "./mxc-plugin-launch.js";
+import {
+  SIMULATED_MXC_CACHE_HOME, simulatedConfigurationFs, simulatedConfigurationHandles, simulatedRuntimeRoot, simulatedSandboxProcessHome, simulatedWindowsPathFacts,
+} from "./simulated-win32-drive.js";
+import * as runtimeRoot from "../../permissions/mxc-runtime-root.js";
+import { assertMxcHolderStaging } from "../../permissions/mxc-filesystem-ownership.js";
+import { isWindowsDrivePath } from "../../permissions/mxc-runtime-root-windows.js";
+import { isPlainWindowsStampPath } from "../../permissions/windows-stamp-targets.js";
 import * as pathFacts from "../../shared/windows-path-facts.js";
 import * as configurationHandles from "../../shared/windows-configuration-handles.js";
 import type * as SandboxProcessHome from "../../permissions/sandbox-process-home.js";
@@ -106,5 +114,32 @@ describe("simulated sandbox process HOME", () => {
     expect(simulated.createSandboxProcessHome()).toBe(fixture);
     expect(simulated.createSandboxProcessHome("darwin")).toBe(fixture);
     expect(real.mock.calls).toEqual([[], ["darwin"]]);
+  });
+});
+
+describe("simulated container runtime root", () => {
+  it("keeps the real module on a Windows host", () => {
+    expect(simulatedRuntimeRoot(runtimeRoot, "win32")).toBe(runtimeRoot);
+  });
+
+  it("denies a drive-path root for a simulated win32 process whatever this kernel spells the run directory", () => {
+    const simulated = simulatedRuntimeRoot(runtimeRoot, "linux");
+    setProcessPlatform("win32");
+    vi.stubEnv("AVE_TEST_SANDBOX_BASE", "/home/alice/.ave/test-tmp/sbx-example");
+    try {
+      const floor = simulated.mxcRuntimeRootFloorPath();
+      expect(floor).toBe(win32.join(SIMULATED_MXC_CACHE_HOME, runtimeRoot.AVE_APP_ID, "mxc-runtime"));
+      expect(isWindowsDrivePath(floor) && isPlainWindowsStampPath(floor)).toBe(true);
+      expect(simulated.mxcRuntimeRootFloorPath("C:\\example")).toBe(runtimeRoot.mxcRuntimeRootFloorPath("C:\\example", "win32"));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each(["win32", "linux"] as const)("hands a %s host a staging parent its synthetic launch passes the holder check on", nativeHost => {
+    const parent = hostMxcStagingParent(nativeHost);
+    if (nativeHost !== "win32") expect(parent).toBe(SYNTHETIC_MXC_STAGING_PARENT);
+    const { home, temp } = nativePluginLaunch({}, parent);
+    expect(() => assertMxcHolderStaging({ stagingParent: parent, home, temp })).not.toThrow();
   });
 });
