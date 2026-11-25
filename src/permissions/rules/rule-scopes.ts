@@ -1,6 +1,8 @@
 import type { HostShellExecutionPlan } from "../host-shell-execution-plan.js";
 // Load project rules before synchronous permission evaluation; evaluating an unloaded scope is a contract violation and throws.
 import { isCurrentShellRule, withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
+import { analyzeShell, type ShellStatement } from "../../shared/shell-analysis.js";
+import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { stat } from "node:fs/promises";
 import { capturePersistedPolicyVersion, isPersistedPolicyVersionCurrent, persistedPolicyVersionForContent, type PersistedPolicyVersion } from "../persisted-policy-version.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
@@ -9,11 +11,12 @@ import { isMissingPathError } from "../../lib/atomic-file.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
 import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
-import { inspectPowerShellCommand, parsePowerShellCommand, powerShellRuleShape, proveLiteralPowerShell, type PowerShellCommandInput } from "./powershell-exfiltration.js";
+import { inspectPowerShellCommand, parsePowerShellCommand, powerShellBoundedDenyPrefix, powerShellRuleShape, proveLiteralPowerShell, type ParsedPowerShellCommand, type PowerShellCommandInput } from "./powershell-exfiltration.js";
 import { isRetiredHostTerminalRule, PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
 import { projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
 import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type ShellRuleSet } from "./shell-rule-matcher.js";
-import { type ShellCommandInput } from "./shell-prefix-policy.js";
+import { type ParsedShellCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
+import { SHELL_FLOOR_INPUT_LIMIT, SHELL_LITERAL_DATA_LIMIT } from "./shell-floor-policy.js";
 import { MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 
 import type { ApprovalPersistenceGuard } from "../approval-persistence-guard.js";
@@ -286,4 +289,77 @@ export function evaluatePowerShellSubject(
     if (!patterns.includes(rule.pattern)) patterns.push(rule.pattern);
   }
   return { decision: "allow", patterns, reason: `allow rules ${patterns.join(", ")}` };
+}
+
+function topLevelStatements(node: ShellStatement): readonly ShellStatement[] {
+  return node.kind === "sequence" ? node.statements : [node];
+}
+
+function bashBoundedDenyPrefix(command: string): { parsed?: ParsedShellCommand; firstStatementLimited?: true } {
+  const outline = analyzeShell(command);
+  if (!outline.ok) return {};
+  const statements = topLevelStatements(outline.program);
+  const source = Buffer.from(command);
+  let best: ParsedShellCommand | undefined;
+  let low = 1;
+  let high = statements.length;
+  while (low <= high) {
+    const count = Math.floor((low + high) / 2);
+    const last = statements[count - 1];
+    if (last === undefined) break;
+    const prefix = source.subarray(0, last.source.end).toString();
+    const analysis = prefix.length <= SHELL_FLOOR_INPUT_LIMIT
+      ? analyzeShell(prefix, "bash", { totalTokens: MAX_SHELL_ANALYSIS_TOKENS }) : undefined;
+    if (analysis?.ok) {
+      const actual = topLevelStatements(analysis.program);
+      if (actual.length === count && actual.every(({ source }, index) => {
+        const expected = statements[index]?.source;
+        return expected !== undefined && source.start === expected.start && source.end === expected.end;
+      })) {
+        best = { command: prefix, analysis, facts: new Map() };
+        low = count + 1;
+        continue;
+      }
+    }
+    high = count - 1;
+  }
+  if (best !== undefined) return { parsed: best };
+  return statements.length === 1 && command.length <= SHELL_FLOOR_INPUT_LIMIT &&
+    (outline.totalTokens ?? 0) > MAX_SHELL_ANALYSIS_TOKENS ? { firstStatementLimited: true } : {};
+}
+
+/** Only completed, bounded statements can prove a dialect deny. A prefix never supplies an allow or an ask rule. */
+export function shellDenyOnBoundedPrefix(input: {
+  command: string;
+  dialect: "bash" | "powershell";
+  cwd?: string | undefined;
+  parsed?: ParsedShellCommand | undefined;
+  parsedPowerShell?: ParsedPowerShellCommand | undefined;
+  ruleScopes: ReadonlyArray<readonly PermissionRule[]>;
+}): { pattern?: string; unreadable?: true; firstStatementLimited?: true } {
+  const { command, dialect, cwd, parsed, parsedPowerShell, ruleScopes } = input;
+  if (command.length > SHELL_FLOOR_INPUT_LIMIT + SHELL_LITERAL_DATA_LIMIT) return {};
+  const denies = ruleScopes.map((scope) => scope.filter((rule) => rule.action === "deny"));
+  if (dialect === "bash") {
+    const rules = collectShellRuleSet(...denies);
+    if (rules.deny.length === 0) return {};
+    const bounded = parsed?.analysis.ok ? { parsed }
+      : bashBoundedDenyPrefix(command);
+    const evaluated = evaluateShellRules(bounded.parsed ?? parsed ?? { command, analysis: { ok: false, reason: "No completed shell statement" }, facts: new Map() }, rules, cwd);
+    if (evaluated.decision === "deny") return { pattern: evaluated.pattern };
+    if ("firstStatementLimited" in bounded && bounded.firstStatementLimited) return { firstStatementLimited: true };
+    return evaluated.decision === "ask" ? { unreadable: true } : {};
+  }
+  const rules = collectPowerShellRules(...denies);
+  if (rules.deny.length === 0) return {};
+  if (parsedPowerShell && !parsedPowerShell.analysisLimited) {
+    const evaluated = evaluatePowerShellSubject({ command: parsedPowerShell, cwd, exactAllowOnly: false }, ...denies);
+    if (evaluated.decision === "deny") return { pattern: evaluated.pattern };
+    return evaluated.decision === "ask" ? { unreadable: true } : {};
+  }
+  const bounded = powerShellBoundedDenyPrefix(command, parsedPowerShell);
+  const visible = bounded.commands.map((argv) => ({ argv, normalized: restrictionTokens(argv) }));
+  const match = rules.deny.find((rule) => visible.some(({ argv, normalized }) =>
+    matchesPowerShellRule(rule.spec, argv) || matchesPowerShellRule(rule.restriction, normalized)));
+  return match ? { pattern: match.pattern } : bounded.firstStatementLimited ? { firstStatementLimited: true } : {};
 }

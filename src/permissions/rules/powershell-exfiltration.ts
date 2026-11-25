@@ -154,8 +154,9 @@ class Lexer {
   private grammarRecords = 0;
   // Complete command tokens remain usable for positive effects after refusal.
   readonly readable: PsCommand[] = [];
+  readonly completed: PsPipeline[] = [];
   private rootPartial: PsToken[] = [];
-  constructor(private readonly source: string, private readonly analysis: PowerShellAnalysisContext) {}
+  constructor(private readonly source: string, private readonly analysis: PowerShellAnalysisContext, private readonly clipped = false) {}
 
   parseProgram(): PsPipeline[] {
     // Alternate quote delimiters are outside this lexer's supported grammar.
@@ -190,7 +191,11 @@ class Lexer {
     };
     const endPipeline = (): void => {
       endCommand();
-      if (stages.length > 0) pipelines.push(toPipeline(stages, this.analysis));
+      if (stages.length > 0) {
+        const pipeline = toPipeline(stages, this.analysis);
+        pipelines.push(pipeline);
+        if (this.depth === 1) this.completed.push(pipeline);
+      }
       stages = [];
     };
     const src = this.source;
@@ -283,7 +288,7 @@ class Lexer {
       pushToken(this.parseBareword());
     }
     if (closer !== undefined) throw new PsUnreadable("unterminated group");
-    endPipeline();
+    if (!this.clipped) endPipeline();
     this.depth -= 1;
     return pipelines;
   }
@@ -928,7 +933,7 @@ function finalizeSignals(sensitive: string | null, exfiltration: string | null, 
 
 // Parsing and reusable exact identity
 
-type LexedPowerShell = { pipelines: PsPipeline[] | null; reason?: string; readable?: PsCommand[]; permissionPipelines?: PsPipeline[] };
+type LexedPowerShell = { pipelines: PsPipeline[] | null; reason?: string; readable?: PsCommand[]; permissionPipelines?: PsPipeline[]; boundedPrefix?: PsPipeline[] };
 let powerShellLexObserver: ((command: string) => void) | undefined;
 
 function lex(command: string, context: PowerShellAnalysisContext): LexedPowerShell {
@@ -946,7 +951,9 @@ function lex(command: string, context: PowerShellAnalysisContext): LexedPowerShe
     return { pipelines };
   }
   catch (error) {
-    if (error instanceof PowerShellStructuralLimitError) throw error;
+    if (error instanceof PowerShellStructuralLimitError) {
+      return { pipelines: null, reason: error.message, boundedPrefix: lexer.completed };
+    }
     if (error instanceof PsUnreadable) {
       const partial = lexer.partialCommand();
       return { pipelines: null, reason: error.message, readable: partial === undefined ? lexer.readable : [...lexer.readable, partial] };
@@ -979,7 +986,33 @@ export function parsePowerShellCommand(command: string, resolver?: VerifiedArgvR
     syntax = { pipelines: null, reason: error.message };
     analysisLimited = true;
   } finally { if (context.currentFrameDepth() > 0) context.leave(); }
-  return { command, syntax, analysisLimited: analysisLimited || context.limited, facts: context.facts, context };
+  return { command, syntax, analysisLimited: analysisLimited || context.limited || syntax.boundedPrefix !== undefined, facts: context.facts, context };
+}
+
+export function powerShellBoundedDenyPrefix(command: string, parsed?: ParsedPowerShellCommand): {
+  readonly commands: readonly (readonly (string | null)[])[];
+  readonly firstStatementLimited: boolean;
+} {
+  const bounded = parsed?.syntax.boundedPrefix;
+  if (parsed?.facts.get("unproven-quote-delimiter") === true) {
+    return { commands: [], firstStatementLimited: bounded?.length === 0 };
+  }
+  const context = new SharedPowerShellContext();
+  let pipelines = bounded;
+  const firstStatementLimited = bounded?.length === 0;
+  if (pipelines === undefined && parsed === undefined && command.length > POWERSHELL_ANALYSIS_LIMITS.inputChars) {
+    const lexer = new Lexer(command.slice(0, POWERSHELL_ANALYSIS_LIMITS.inputChars), context, true);
+    try {
+      lexer.parseProgram();
+    } catch (error) {
+      if (!(error instanceof PowerShellStructuralLimitError || error instanceof PsUnreadable)) throw error;
+    }
+    pipelines = lexer.completed;
+    if (context.facts.get("unproven-quote-delimiter") === true) pipelines = [];
+  }
+  const commands = (pipelines ?? []).flatMap((pipeline) => pipeline.stages).map(commandArgv)
+    .filter((argv): argv is (string | null)[] => argv !== null);
+  return { commands, firstStatementLimited };
 }
 
 function asPowerShellCommand(input: PowerShellCommandInput): ParsedPowerShellCommand {

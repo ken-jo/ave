@@ -30,7 +30,7 @@ import { permissionsFilePath as defaultPermissionsFilePath, readPermissionsFile,
 import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rules/rule-files.js";
 import { listStoredProjectRules, projectRulesLocation } from "./rules/project-rule-files.js";
 import type { ScopedPermissionRule, ScopedPermissionRuleError, ShellRuleDialect } from "../shared/permissions-events.js";
-import { ProjectRuleScopes, evaluatePowerShellSubject, evaluateShellSubject, type HostTerminalRuleTarget } from "./rules/rule-scopes.js";
+import { ProjectRuleScopes, evaluatePowerShellSubject, evaluateShellSubject, shellDenyOnBoundedPrefix, type HostTerminalRuleTarget } from "./rules/rule-scopes.js";
 import { isRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "./rules/rule-specifier.js";
 import { evaluateScopedRules, type ScopedRuleSubject, type ScopedRuleEvaluation } from "./rules/scoped-rule-matcher.js";
 import { parseShellFloorCommand } from "./rules/shell-exfiltration.js";
@@ -1867,11 +1867,20 @@ export class PermissionManager {
       this.holdsFloorSessionGrant(context.sessionId);
     const sessionRules = this.sessionRulesInScope(context.sessionId);
     const ruleScopes = [this.rules, projectRules, sessionRules];
-    // Exhausted analysis can still establish a deny from the parsed command. It cannot establish a reusable allow.
-    const shellRuleScopes = shellAnalysisLimited ? ruleScopes.map(scope => scope.filter(rule => rule.action === "deny")) : ruleScopes;
-    const shellRules = parsed && (!analysisLimited || parsed.analysis.ok) ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true,
+    const approvalKey = normalizeApprovalCacheKey(context.approvalCacheKey);
+    const denyTargets = approvalKey ? [toolName, approvalKey] : [toolName];
+    const allowTarget = approvalKey ?? toolName;
+    const matchingRule = (action: PermissionRule["action"]) => ruleScopes.flat().find((rule) =>
+      rule.action === action && (!rule.source || rule.source === source) && !isRuleSpecifier(rule.pattern) &&
+      (action === "allow" ? globMatch(allowTarget, rule.pattern) && grantCovers(normalizeTier(rule.tier), category) : denyTargets.some((target) => globMatch(target, rule.pattern))));
+    const deny = matchingRule("deny");
+    const shellDeny = ruleSubject === undefined || deny !== undefined ? undefined : shellDenyOnBoundedPrefix({
+      command: ruleSubject.command, dialect: ruleSubject.dialect, cwd: ruleSubject.cwd, parsed, parsedPowerShell, ruleScopes,
+    });
+    const shellRuleScopes = ruleScopes.map(scope => scope.filter(rule => rule.action !== "deny"));
+    const shellRules = !shellAnalysisLimited && parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true,
         ...(ruleSubject?.hostTerminal === undefined ? {} : { hostTerminal: ruleSubject.hostTerminal }) }, ...shellRuleScopes)
-      : parsedPowerShell && !parsedPowerShell.analysisLimited ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject?.cwd, hostShellExecutionPlan: context.hostShellExecutionPlan, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true }, ...shellRuleScopes) : undefined;
+      : !shellAnalysisLimited && parsedPowerShell ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject?.cwd, hostShellExecutionPlan: context.hostShellExecutionPlan, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true }, ...shellRuleScopes) : undefined;
     // Tree T:128, T:259: a saved rule that is exactly this command passes the sandbox-unavailable ask when the plan asks only for the missing
     // backend (boot home privacy verified) and no other floor applies. Session rules are not saved; a prefix rule, a tool-name rule and a
     // compound command keep the ask. It is offered only when its rule proof can be issued, so a pass never ends as a refused spawn.
@@ -1883,25 +1892,23 @@ export class PermissionManager {
       isPersistedPolicyVersionCurrent(this.userRulesVersion) && isPersistedPolicyVersionCurrent(exactRuleProjectVersion)
       ? Object.freeze([this.userRulesVersion, exactRuleProjectVersion]) : undefined;
     let exactHostRule: string | undefined;
-    if (exactRuleVersions && ruleSubject?.cwd !== undefined && command !== undefined) {
-      const saved = parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject.cwd, exactAllowOnly: true }, this.rules, projectRules)
-        : parsedPowerShell ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject.cwd, hostShellExecutionPlan: context.hostShellExecutionPlan, exactAllowOnly: true }, this.rules, projectRules) : undefined;
+    if (exactRuleVersions && ruleSubject?.cwd !== undefined && command !== undefined && deny === undefined &&
+      shellDeny?.pattern === undefined && !shellDeny?.unreadable) {
+      const savedRuleScopes = shellRuleScopes.slice(0, 2);
+      const saved = parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject.cwd, exactAllowOnly: true }, ...savedRuleScopes)
+        : parsedPowerShell ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject.cwd, hostShellExecutionPlan: context.hostShellExecutionPlan, exactAllowOnly: true }, ...savedRuleScopes) : undefined;
       const pattern = saved?.decision === "allow" && saved.patterns.length === 1 ? saved.patterns[0] : undefined;
       // A rule set in code (`setRules`) is not a saved rule, even when the rules file repeats it.
       if (pattern !== undefined && !this.baseRules.some((rule) => rule.action === "allow" && rule.pattern === pattern) && pattern === exactShellRuleFor(ruleSubject.dialect, command, ruleSubject.cwd, context.verifiedShellCommand, context.hostShellExecutionPlan)) exactHostRule = pattern;
     }
-    const approvalKey = normalizeApprovalCacheKey(context.approvalCacheKey);
-    const denyTargets = approvalKey ? [toolName, approvalKey] : [toolName];
-    const allowTarget = approvalKey ?? toolName;
-    const matchingRule = (action: PermissionRule["action"]) => [...this.rules, ...projectRules, ...sessionRules].find((rule) =>
-      rule.action === action && (!rule.source || rule.source === source) && !isRuleSpecifier(rule.pattern) &&
-      (action === "allow" ? globMatch(allowTarget, rule.pattern) && grantCovers(normalizeTier(rule.tier), category) : denyTargets.some((target) => globMatch(target, rule.pattern))));
-    const deny = matchingRule("deny");
     const ask = matchingRule("ask");
     const allow = matchingRule("allow");
     const rules: NonNullable<PermissionDecisionRequest["rules"]> = {};
-    if (deny || shellRules?.decision === "deny" || scopedRules?.decision === "deny") rules.deny = deny?.pattern ?? (shellRules?.decision === "deny" ? shellRules.pattern : undefined) ?? scopedRules?.pattern ?? "Deny rule matched";
-    if (ask || shellRules?.decision === "ask" || scopedRules?.decision === "ask") rules.ask = ask?.pattern ?? (shellRules?.decision === "ask" ? shellRules.pattern : undefined) ?? scopedRules?.pattern ?? "Ask rule matched";
+    if (deny || shellDeny?.pattern !== undefined || scopedRules?.decision === "deny") rules.deny = deny?.pattern ?? shellDeny?.pattern ?? scopedRules?.pattern ?? "Deny rule matched";
+    if (rules.deny === undefined && shellDeny?.firstStatementLimited) {
+      admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell analysis could not check saved deny rules for the over-budget statement." };
+    }
+    if (ask || shellRules?.decision === "ask" || scopedRules?.decision === "ask" || (!shellAnalysisLimited && shellDeny?.unreadable)) rules.ask = ask?.pattern ?? (shellRules?.decision === "ask" ? shellRules.pattern : undefined) ?? scopedRules?.pattern ?? "Ask rule matched";
     if (allow || shellRules?.decision === "allow" || scopedRules?.decision === "allow") rules.allow = allow?.pattern ?? (shellRules?.decision === "allow" ? shellRules.patterns.join(", ") : scopedRules?.pattern) ?? "Allow rule matched";
     if (floorSessionGranted) rules.floorSession = "You allowed shell commands without the sandbox for this session.";
     if (exactHostRule !== undefined) rules.exactHostRule = exactHostRule;
