@@ -32,19 +32,18 @@ const SANDBOX_PROTECTED_ROOT_ENTRIES = [...new Set([
 
 // Config that another agent or cloud tool loads from a project: Codex's own protected names, and an `.aws/config` whose
 // `credential_process` runs on the host. A confined command must not plant or edit them in a write root. Linux carries one row per
-// root. macOS carries each name once, as an any-depth pattern like the repository controls: a row per root costs the root's length for
-// every name, and the longest supported darwin layout has well under one such set left in MAX_POSIX_WRITE_DENY_POLICY_BYTES. The
-// Windows floor is stamped and watched per row and is not changed here.
+// root. macOS carries none here: a row per root costs the root's length for every name, which the longest supported darwin layout
+// cannot fit in MAX_POSIX_WRITE_DENY_POLICY_BYTES, so its wrap appends one name rule to the profile instead (macos-sandbox-wrap.ts).
+// The Windows floor is stamped and watched per row and is not changed here.
 const SANDBOX_FOREIGN_CONFIG_ENTRIES = [".codex", ".agents", ".aws"] as const;
 // What Ave itself loads from a project's `.ave` (custom-commands.ts, hook-source-controller.ts): the file tools ask before touching
 // any `.ave`, and a confined command must not edit them without that card. The two children are named, not `.ave` itself: under a
 // write root that holds the Ave home, `<root>/.ave` is the home, and a deny there would take the command's own HOME and temp with it.
 const SANDBOX_PROJECT_INPUT_ENTRIES = [".ave/commands", ".ave/hooks"] as const;
-const SANDBOX_NAMED_ENTRIES = [...SANDBOX_FOREIGN_CONFIG_ENTRIES, ...SANDBOX_PROJECT_INPUT_ENTRIES] as const;
+export const SANDBOX_NAMED_ENTRIES = [...SANDBOX_FOREIGN_CONFIG_ENTRIES, ...SANDBOX_PROJECT_INPUT_ENTRIES] as const;
 function caseInsensitivePattern(path: string): string {
   return path.replace(/[a-z]/gu, character => `[${character}${character.toUpperCase()}]`);
 }
-const MAC_NAMED_ENTRY_GLOBS = SANDBOX_NAMED_ENTRIES.map(entry => `/**/${caseInsensitivePattern(entry)}`);
 
 // Linux discovery depth; the admitted root is depth zero.
 export const SANDBOX_GIT_SCAN_DEPTH = 3;
@@ -89,11 +88,6 @@ const MAC_GIT_CONTROL_GLOBS = GIT_CONTROL_ENTRIES.flatMap(entry => [
   `/**/${caseInsensitivePattern(".git/modules")}/**/${caseInsensitivePattern(entry)}`,
   `/**/${caseInsensitivePattern(".git/worktrees")}/*/${caseInsensitivePattern(entry)}`,
 ]).concat(`/**/${caseInsensitivePattern(".git/ave-pins")}`, `/**/${caseInsensitivePattern(".git/modules")}/**/${caseInsensitivePattern("ave-pins")}`, `/**/${caseInsensitivePattern(".git/worktrees")}/*/${caseInsensitivePattern("ave.id")}`);
-// The patched sandbox runtime keeps every proxy backend socket of a host process in one `srt-sock-*` directory under the host temp
-// directory (ensurePrivateSocketDir in its sandbox manager), and that temp directory is a shell write root. Linux masks the directory in
-// every wrap; Seatbelt has no mask, so the name is write-denied wherever it appears. One short pattern holds for every temp spelling and
-// every running host, and costs the same few bytes whatever the roots are.
-const MAC_EGRESS_SOCKET_DIRECTORY_GLOB = "/**/srt-sock-*";
 interface GitDiscoveryBudget { entries: number; metadataBytes: number }
 interface GitControlEntryIdentity {
   readonly dev: number | bigint;
@@ -1124,7 +1118,7 @@ export function buildMandatorySandboxWritePolicy(
     entries.push(...[...routingPins].map(path => ({ path, literal: true } as const)));
   }
   // Backend globs cover future controls at any depth without denying ordinary object, ref, index and HEAD updates in existing metadata directories.
-  if (process.platform === "darwin") entries.push(...MAC_GIT_CONTROL_GLOBS, MAC_EGRESS_SOCKET_DIRECTORY_GLOB, ...MAC_NAMED_ENTRY_GLOBS);
+  if (process.platform === "darwin") entries.push(...MAC_GIT_CONTROL_GLOBS);
   // Mandatory loader denies scale with admitted root lengths, not metadata discovery.
   const backendEntries = nativeWriteDenyEntries(entries);
   const backendMandatoryPaths = new Set([...mandatoryPaths].map(nativeWriteDenyPath));

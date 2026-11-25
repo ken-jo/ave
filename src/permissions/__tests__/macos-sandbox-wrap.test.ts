@@ -50,6 +50,9 @@ describe("typed repository marker rules", () => {
     expect(hardenedWords.slice(5).map(word => word.value)).toEqual(originalWords.slice(5).map(word => word.value));
     expect(hardenedWords[4]?.value).toContain('(deny file-write-create file-write-unlink (regex #"/\\.[gG][iI][tT]$"))');
     expect(hardenedWords[4]?.value).toContain('(deny file-write-create file-write-unlink (regex #"/\\.[aA][vV][eE]$"))');
+    expect(hardenedWords[4]?.value).toContain('(deny file-write* file-write-create file-write-unlink (regex #"/('
+      + "\\.[cC][oO][dD][eE][xX]|\\.[aA][gG][eE][nN][tT][sS]|\\.[aA][wW][sS]|\\.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]|\\.[aA][vV][eE]/[hH][oO][oO][kK][sS]"
+      + '|srt-sock-[^/]*)(/|$)"))');
     expect(hardenedWords[4]?.value).toContain("(vnode-type REGULAR-FILE)");
     expect(hardenedWords[4]?.value.startsWith(originalWords[4]!.value)).toBe(true);
     expect(originalWords[4]?.value).not.toContain("REGULAR-FILE");
@@ -89,16 +92,11 @@ describe("app-owned directory write rules", () => {
     expect(macAppOwnedDirectoryWriteRules([home], ["/Users/example/.av"])).toBe("");
   });
 
-  it("denies the directory except the wrap's own roots inside it, and pins its ancestors", () => {
+  it("denies the directory except the wrap's own roots inside it", () => {
     const rules = macAppOwnedDirectoryWriteRules([home, runtime], ["/Users/example", `${home}/workspace`, `${home}/sandbox/home/x`, "/tmp"]).split("\n");
     expect(rules).toEqual([
       `(deny file-write* file-write-create file-write-unlink (require-all (subpath "${home}") (require-not (subpath "${home}/workspace")) (require-not (subpath "${home}/sandbox/home/x"))))`,
-      '(deny file-write-unlink (literal "/Users/example"))',
-      '(deny file-write-unlink (literal "/Users"))',
       `(deny file-write* file-write-create file-write-unlink (subpath "${runtime}"))`,
-      '(deny file-write-unlink (literal "/Users/example/Library/Caches/app"))',
-      '(deny file-write-unlink (literal "/Users/example/Library/Caches"))',
-      '(deny file-write-unlink (literal "/Users/example/Library"))',
     ]);
   });
 

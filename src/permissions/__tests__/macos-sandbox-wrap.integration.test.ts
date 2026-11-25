@@ -100,46 +100,52 @@ function statuses(stdout: string): Record<string, string> {
 
 describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())("native egress proxy socket directory", () => {
   // The sandbox runtime keeps every proxy backend socket of this process in one `srt-sock-*` directory under the host temp directory,
-  // and the shell's write roots include that temp directory.
-  const temp = realpathSync(tmpdir());
+  // and the shell's write roots include that temp directory. The suite gives this process a temp directory of its own, so the root
+  // holds nothing but the socket directory and its scan cannot be withdrawn over another suite's fixtures.
+  const inheritedTemp = process.env.TMPDIR;
   let root: string;
+  let temp: string;
   let socketDirectory: string;
   beforeAll(async () => {
-    root = realpathSync(mkdtempSync(join(temp, "sandbox-socket-floor-")));
+    root = realpathSync(mkdtempSync(join(tmpdir(), "sandbox-socket-floor-")));
+    temp = join(root, "t");
+    mkdirSync(temp);
+    mkdirSync(join(root, "project"));
+    process.env.TMPDIR = temp;
     await initializeRequiredSandbox({ allowedDomains: [] });
-    // Other suites' processes share the temp directory; this process's sockets carry its pid.
-    const own = readdirSync(temp).filter(name => name.startsWith("srt-sock-")
-      && readdirSync(join(temp, name)).some(socket => socket.includes(`-${process.pid}-`)));
-    expect(own).toHaveLength(1);
-    socketDirectory = join(temp, ...own);
+    const created = readdirSync(temp).filter(name => name.startsWith("srt-sock-"));
+    expect(created).toHaveLength(1);
+    socketDirectory = join(temp, ...created);
   });
   afterAll(async () => {
     if (isAsrtSandboxActive()) await resetAsrtSandbox();
+    if (inheritedTemp === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = inheritedTemp;
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
-  it("keeps another run's backend socket from being removed, renamed or replaced while the temp root stays writable", async () => {
+  it("keeps another run's backend socket from being renamed, removed or replaced when only the temp root is writable", async () => {
     const sockets = readdirSync(socketDirectory);
     expect(sockets.length).toBeGreaterThan(0);
     const socket = join(socketDirectory, sockets[0] ?? "");
-    const control = join(temp, "sandbox-socket-floor-control");
+    const project = join(root, "project");
+    // Each row leaves the directory as it found it when it is refused, so no row depends on an earlier one.
     const result = await runConfined([
-      `rm -f '${socket}' 2>/dev/null; test -e '${socket}'; echo "unlink=$?"`,
       `mv '${socket}' '${socket}.moved' 2>/dev/null; echo "rename=$?"`,
+      `rm -f '${socket}' '${socket}.moved' 2>/dev/null; echo "unlink=$?"`,
       `printf x > '${socketDirectory}/planted' 2>/dev/null; echo "plant=$?"`,
-      `mv '${socketDirectory}' '${socketDirectory}-moved' 2>/dev/null; echo "rename-directory=$?"`,
-      `rm -rf '${socketDirectory}' 2>/dev/null; test -d '${socketDirectory}'; echo "remove-directory=$?"`,
-      `printf x > '${control}' && rm '${control}'; echo "temp-write=$?"`,
+      `mv '${socketDirectory}' '${temp}/renamed' 2>/dev/null; echo "rename-directory=$?"`,
+      `mkdir '${temp}/srt-sock-forged' 2>/dev/null; echo "forge-directory=$?"`,
+      `printf x > '${temp}/control' && mv '${temp}/control' '${temp}/control-moved' && rm '${temp}/control-moved'; echo "temp-write=$?"`,
       `printf x > ordinary; echo "project-write=$?"`,
-    ].join("\n"), root, [root, socketDirectory, temp]);
-    // The directory is granted by name as well, so the case does not rest on the shared temp root: a scan that cannot finish there
-    // (other suites' fixtures) withdraws that root alone, and the control below follows what the wrap actually granted.
-    expect(result.grantedWrite).toContain(socketDirectory);
+    ].join("\n"), project, [project, temp]);
+    // Production shape: the temp root is granted, the socket directory is not named.
+    expect(result.grantedWrite).toEqual([project, temp]);
     expect(statuses(result.stdout)).toEqual({
-      unlink: "0", rename: "1", plant: "1", "rename-directory": "1", "remove-directory": "0",
-      "temp-write": result.grantedWrite.includes(temp) ? "0" : "1", "project-write": "0",
+      rename: "1", unlink: "1", plant: "1", "rename-directory": "1", "forge-directory": "1", "temp-write": "0", "project-write": "0",
     });
     expect(readdirSync(socketDirectory)).toEqual(sockets);
+    expect(readdirSync(temp)).toEqual([socketDirectory.slice(temp.length + 1)]);
   });
 });
 
@@ -306,5 +312,49 @@ describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())
       `printf x > '${join(aveHomeDirectory, "planted")}' 2>/dev/null; echo "home=$?"`,
     ].join("\n"), project, [project, ownHome]);
     expect(statuses(result.stdout)).toEqual({ project: "0", "own-home": "0", home: "1" });
+  });
+});
+
+// The Ave home and the write roots given in a spelling that is not the resolved one, as `/tmp` is for `/private/tmp`.
+describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())("native app-owned state under an ancestor root spelled through a link", () => {
+  const inherited = { home: process.env.AVE_HOME, base: process.env.AVE_TEST_SANDBOX_BASE };
+  let resolved: string;
+  let account: string;
+  beforeAll(async () => {
+    resolved = realpathSync(mkdtempSync(join("/tmp", "sandbox-link-floor-")));
+    expect(resolved.startsWith("/private/tmp/")).toBe(true);
+    account = join("/tmp", resolved.slice("/private/tmp/".length), "account");
+    mkdirSync(join(account, "Library", "Caches"), { recursive: true });
+    process.env.AVE_HOME = join(account, "ave-data");
+    process.env.AVE_TEST_SANDBOX_BASE = join(account, "Library", "Caches");
+    await initializeRequiredSandbox({ allowedDomains: [] });
+  });
+  afterAll(async () => {
+    if (isAsrtSandboxActive()) await resetAsrtSandbox();
+    for (const [name, value] of [["AVE_HOME", inherited.home], ["AVE_TEST_SANDBOX_BASE", inherited.base]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    if (resolved) rmSync(resolved, { recursive: true, force: true });
+  });
+
+  it("denies the home and keeps the wrap's own directories writable in either spelling", async () => {
+    const home = join(account, "ave-data");
+    const victim = join(home, "runtime", "layout");
+    const ownHome = join(home, "sandbox", "home", "own");
+    const workspace = join(home, "workspace");
+    for (const directory of [join(home, "runtime"), ownHome, workspace]) mkdirSync(directory, { recursive: true });
+    writeFileSync(victim, "host");
+    const physical = (path: string) => join("/private", path);
+    const result = await runConfined([
+      `printf x >> '${victim}' 2>/dev/null; echo "state=$?"`,
+      `printf x >> '${physical(victim)}' 2>/dev/null; echo "state-resolved=$?"`,
+      `printf x > '${join(home, "planted")}' 2>/dev/null; echo "plant=$?"`,
+      `printf x > '${join(ownHome, "file")}'; echo "own-home=$?"`,
+      `printf x > '${physical(join(workspace, "file"))}'; echo "workspace=$?"`,
+      `printf x > '${join(account, "ordinary")}'; echo "account=$?"`,
+    ].join("\n"), account, [account, ownHome, workspace]);
+    expect(statuses(result.stdout)).toEqual({ state: "1", "state-resolved": "1", plant: "1", "own-home": "0", workspace: "0", account: "0" });
+    expect(readFileSync(victim, "utf8")).toBe("host");
   });
 });
