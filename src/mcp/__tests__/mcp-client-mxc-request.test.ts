@@ -15,7 +15,8 @@ const state = vi.hoisted(() => ({
   nativeStarts: 0,
 }));
 
-const NODE = "C:\\Program Files\\nodejs\\node.exe";
+// Hoisted: the node:fs mock reads it while the imports above are still loading.
+const NODE = vi.hoisted(() => "C:\\Program Files\\nodejs\\node.exe");
 const SANDBOX = "C:\\ave\\mcp\\fs\\sandbox";
 const STAGING_HOME_PATTERN = new RegExp(String.raw`^${escapeRegExp(SYNTHETIC_MXC_STAGING_PARENT)}\\[0-9a-f]{32}\\home$`, "u");
 
