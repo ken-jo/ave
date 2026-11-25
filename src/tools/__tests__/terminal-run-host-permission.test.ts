@@ -16,7 +16,7 @@ import { runWithToolExecutionCwd } from "../execution-context.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { createTerminalRunTool } from "../terminal-run.js";
-import { TerminalBlockTracker, registerTerminalBlockTracker, __resetTerminalBlocksForTest } from "../../main/terminal/terminal-blocks.js";
+import { TerminalBlockTracker, registerTerminalBlockTracker } from "../../main/terminal/terminal-blocks.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { cardGate, sessionGate } from "../../__tests__/support/forced-shell-card.js";
 import { partialWindowsAsrt } from "../../__tests__/support/host-shell-sandbox-fixtures.js";
@@ -110,7 +110,6 @@ afterEach(async () => {
   _resetAveHomePrivacyForTest();
   __resetTerminalsForTest();
   pty = undefined;
-  __resetTerminalBlocksForTest();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
   await resources.cleanup();
@@ -228,7 +227,9 @@ async function run(command: string, options: {
               const effect = await request.effectCheck();
               if (effect.ok && !checked) {
                 checked = true;
-                attemptGenerations.push(hostTerminalControlState(ref, windowId)!.generation);
+                const control = hostTerminalControlState(ref, windowId);
+                if (!control) throw new Error("Host terminal control is unavailable");
+                attemptGenerations.push(control.generation);
                 await options.afterEffectCheck?.();
               }
               return effect;

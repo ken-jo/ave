@@ -169,6 +169,24 @@ describe("terminal write fence", () => {
     expect(terminal.bytes).toEqual([]);
   });
 
+  it("stops at the final send check when cancellation follows a successful pre-Enter check", async () => {
+    const terminal = editor();
+    const cancel = new AbortController();
+    let queued = false;
+    const fence = () => {
+      if (!queued && terminal.bytes.includes(PASTE) && terminal.bytes.at(-1) === TERMINAL_EDIT_LINE_QUERY) {
+        queued = true;
+        queueMicrotask(() => cancel.abort());
+      }
+      expect(cancel.signal.aborted).toBe(false);
+      return undefined;
+    };
+    expect(await terminal.run(fence, undefined, cancel.signal)).toMatchObject({ ok: false, reason: "aborted" });
+    expect(cancel.signal.aborted).toBe(true);
+    expect(terminal.bytes).toEqual([RESET, TERMINAL_EDIT_LINE_QUERY, PASTE, TERMINAL_EDIT_LINE_QUERY, RESET]);
+    expect(terminal.onBeforeEnter).not.toHaveBeenCalled();
+  });
+
   it("routes the reset, query, paste and Enter through send", () => {
     const source = readFileSync(new URL("../pty-manager.ts", import.meta.url), "utf8");
     const typing = source.slice(source.indexOf("export async function typeLineAtPrompt("), source.indexOf("const TERMINAL_NOT_READY_MESSAGES"));
