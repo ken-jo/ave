@@ -104,8 +104,8 @@ function plan(input: Parameters<typeof buildHostShellExecutionPlan>[0]): Observa
 // A shell on a sandbox-on host with no usable backend (T:128), with one saved allow rule. The plan and the pipeline are driven. One
 // manager step is restated: it offers the saved rule as `exactHostRule` only when the rule is exactly the command, the plan is one
 // `exactRulePassesUnsandboxedShellAsk` marks, and no other floor applies; a second floor also withdraws the session offer.
-function noBackendShell(saved: "exact" | "prefix", boot: { homePrivacyVerified?: boolean; unavailableSandboxRequiresAsk?: boolean }, secondFloor = false): Observation {
-  const built = buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "none"), ...boot });
+function noBackendShell(saved: "exact" | "prefix", boot: { homePrivacyVerified?: boolean; unavailableSandboxRequiresAsk?: boolean }, secondFloor = false, executionMode?: "host"): Observation {
+  const built = buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "none"), ...boot, ...(executionMode ? { executionMode } : {}) });
   expect(requiresUnsandboxedShellAsk(built)).toBe(true);
   const exact = saved === "exact" && !secondFloor && exactRulePassesUnsandboxedShellAsk(built);
   return pipeline({ tool: SHELL, shell: HOST_SHELL, mode: "allow", floor: { code: "sandbox-unavailable", reason: "fixture" },
@@ -265,6 +265,14 @@ const ROWS: readonly Row[] = [
   { id: "D25.d", point: "no usable backend: the exact rule with a second forced reason", tree: "T:128, T:220-221, T:259", unknown: "U2",
     today: { outcome: "ask-human", reason: "sandbox-unavailable", headless: "deny", waiver: "once" },
     observe: () => noBackendShell("exact", { homePrivacyVerified: true }, true) },
+  // An explicit host request on that host is the same uncontained shell: the same pass, and the same ask without it.
+  { id: "D25.e", point: "no usable backend: an explicit host request, with the exact rule and with a prefix rule", tree: "T:128, T:259", unknown: "-",
+    today: { outcome: "allow", reason: "exact-host-rule", headless: "deny" },
+    observe: () => {
+      expect(noBackendShell("prefix", { homePrivacyVerified: true }, false, "host")).toEqual(noBackendShell("prefix", { homePrivacyVerified: true }));
+      expect(noBackendShell("exact", {}, false, "host")).toEqual(noBackendShell("exact", {}));
+      return noBackendShell("exact", { homePrivacyVerified: true }, false, "host");
+    } },
   { id: "D26", point: "Windows capability that does not contain shells", tree: "T:128", unknown: "U2",
     today: { outcome: "ask", reason: "default:windows-partial-shell-acl-unsafe", waiver: "once" },
     core: { outcome: "ask-human", waiver: "session" },
