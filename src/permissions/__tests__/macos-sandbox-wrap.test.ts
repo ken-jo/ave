@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
-import { hardenMacSandboxGitMetadata, macAppOwnedDirectoryWriteRules, macWriteRootNameRules } from "../macos-sandbox-wrap.js";
+import { hardenMacSandboxGitMetadata, macAppOwnedDirectoryWriteRules, macLinkedNameTargetRules, macWriteRootNameRules } from "../macos-sandbox-wrap.js";
 import { parseSandboxWrappedWords, quoteSandboxWrappedWord } from "../sandbox-wrapped-command.js";
 import { t } from "../../i18n/index.js";
 
@@ -120,6 +120,41 @@ describe("named entry rules", () => {
     }
     // A root too long to anchor one name refuses the wrap instead of leaving the names open.
     expect(() => macWriteRootNameRules([`/${"r".repeat(990)}`])).toThrow(t("sandboxPolicy.tooLarge"));
+  });
+
+  it("counts the limit in bytes, for a root whose name takes several bytes a character", () => {
+    const root = `/${"가".repeat(300)}`;
+    const literals = [...macWriteRootNameRules([root]).matchAll(/#"([^"]*)"/gu)].map(match => match[1] ?? "");
+    // 901 bytes of root leave room for one or two names in a pattern, not all three.
+    expect(literals.length).toBeGreaterThan(2);
+    for (const literal of literals) expect(Buffer.byteLength(literal)).toBeLessThanOrEqual(1000);
+    for (const name of [".agents/skills/x", ".ave/commands/x.md", ".ave/hooks/x"]) expect(literals.some(literal => new RegExp(literal, "u").test(`${root}/${name}`)), name).toBe(true);
+    expect(() => macWriteRootNameRules([`/${"가".repeat(400)}`])).toThrow(t("sandboxPolicy.tooLarge"));
+  });
+
+  it("anchors a root that holds pattern characters at both of its readings", () => {
+    const rule = macWriteRootNameRules(["/tmp/a?b/s*r/k[1]"]).split("\n")[0] ?? "";
+    for (const denied of ["/tmp/a?b/s*r/k[1]/.agents", "/tmp/axb/sample-r/k[1]/.ave/hooks/x"]) expect(matches(rule, denied), denied).toBe(true);
+    for (const allowed of ["/tmp/a/b/s*r/k[1]/.agents", "/tmp/a?b/s/r/k[1]/.agents", "/tmp/a?b/s*r/k1/.agents", "/tmp/a?b/s*r/k[1]/sub/.agents"]) {
+      expect(matches(rule, allowed), allowed).toBe(false);
+    }
+    expect(matches(macWriteRootNameRules(["/tmp/**/out"]).split("\n")[0] ?? "", "/tmp/a/b/out/.agents")).toBe(true);
+  });
+});
+
+describe("linked name target rules", () => {
+  it("adds nothing without a target", () => {
+    expect(macLinkedNameTargetRules([], ["/Users/example/project"])).toBe("");
+  });
+
+  it("denies each target as a directory and pins it and the folders above it inside a write root", () => {
+    expect(macLinkedNameTargetRules(["/Users/example/project/tools/shared/agents", "/Users/example/elsewhere/cmds"], ["/Users/example/project/", "/tmp/x"]).split("\n")).toEqual([
+      '(deny file-write* file-write-create file-write-unlink (subpath "/Users/example/project/tools/shared/agents"))',
+      '(deny file-write-unlink (literal "/Users/example/project/tools/shared"))',
+      '(deny file-write-unlink (literal "/Users/example/project/tools"))',
+      '(deny file-write* file-write-create file-write-unlink (subpath "/Users/example/elsewhere/cmds"))',
+    ]);
+    expect(() => macLinkedNameTargetRules([`/${"가".repeat(400)}`], [])).toThrow(t("sandboxPolicy.tooLarge"));
   });
 });
 

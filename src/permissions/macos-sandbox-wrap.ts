@@ -24,10 +24,21 @@ const GIT_METADATA_RULES = [
   `(deny file-write* file-write-create file-write-unlink ${EGRESS_SOCKET_DIRECTORY_FILTER})`,
 ].join("\n");
 
-// Measured: a profile is read with strings of up to 1022 characters and refused ("Error reading string") from 1023.
-const MAX_SEATBELT_PATTERN_LENGTH = 960;
+// Measured: a profile is read with strings of up to 1022 bytes and refused ("Error reading string") from 1023. The limit is in
+// bytes, so a name outside ASCII counts for each byte it takes.
+const MAX_SEATBELT_STRING_BYTES = 1000;
 function nameExpression(name: string): string {
   return name.replace(/[.]/gu, "\\.").replace(/[a-z]/giu, letter => `[${letter.toLowerCase()}${letter.toUpperCase()}]`);
+}
+
+// A write root as the start of a pattern. The write policy reads `*`, `?` and `**` in a root as wildcards, and a folder can also
+// carry those characters in its name; the anchor matches both readings, which can only deny more. A regex literal (`#"…"`) keeps
+// its backslashes through every quoting layer a wrap passes; it cannot hold a quote or a line break, so one in a root's name is
+// matched as any character.
+function rootAnchor(root: string): string {
+  const body = root.replace(/\*\*|[.*+?^${}()|[\]\\"\r\n]/gu, part => part === "**" ? ".*" : part === "*" ? "[^/]*" : part === "?" ? "[^/]"
+    : /["\r\n]/u.test(part) ? "." : `\\${part}`);
+  return `^${body}/`;
 }
 
 // The named entries (SANDBOX_NAMED_ENTRIES: `.agents`, and the commands and hooks Ave loads from a project's `.ave`) directly beneath each
@@ -35,28 +46,27 @@ function nameExpression(name: string): string {
 // carries the `.ave` entries can be pinned too: the entries are path patterns, and an entry named `.ave` directly beneath a root
 // cannot be created, removed or renamed. Moved away, its contents could be edited under another name and moved back, and a prepared
 // directory could be renamed into an absent one. An existing `.ave` keeps its other children writable. Roots are given in their
-// resolved spelling, which is what Seatbelt matches.
+// resolved spelling, which is what Seatbelt matches; an entry that is a link, or lies behind one, resolves elsewhere and is held by
+// macLinkedNameTargetRules.
 export function macWriteRootNameRules(writeRoots: readonly string[]): string {
   const roots = [...new Set(writeRoots.map(root => root.replace(/\/+$/u, "")))].filter(root => root !== "");
   const carriers = [...new Set(SANDBOX_NAMED_ENTRIES.filter(entry => entry.includes("/")).map(entry => entry.slice(0, entry.indexOf("/"))))];
   const rules: string[] = [];
   for (const root of roots) {
-    // A regex literal (`#"…"`) keeps its backslashes through every quoting layer a wrap passes; it cannot hold a quote or a line
-    // break, so one in a root's name is matched as any character, which can only deny more.
-    const anchor = `^${root.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&").replace(/["\r\n]/gu, ".")}/`;
+    const anchor = rootAnchor(root);
+    const bytes = (names: readonly string[], tail: string): number => Buffer.byteLength(`${anchor}(${names.join("|")})${tail}`);
     const filters = (names: readonly string[], tail: string): string => {
-      // Seatbelt refuses a profile that holds a string of 1023 characters or more, so the names are spread over as many
-      // patterns as the root's length needs.
+      // Seatbelt refuses a profile that holds a string over its limit, so the names are spread over as many patterns as the
+      // root's length needs.
       const groups: string[][] = [[]];
       for (const name of names.map(nameExpression)) {
         const group = groups[groups.length - 1] ?? [];
-        if (group.length > 0 && anchor.length + [...group, name].join("|").length + tail.length + 2 > MAX_SEATBELT_PATTERN_LENGTH) groups.push([name]);
+        if (group.length > 0 && bytes([...group, name], tail) > MAX_SEATBELT_STRING_BYTES) groups.push([name]);
         else group.push(name);
       }
       return groups.map(group => {
-        const pattern = `${anchor}(${group.join("|")})${tail}`;
-        if (pattern.length > MAX_SEATBELT_PATTERN_LENGTH) throw new Error(t("sandboxPolicy.tooLarge"));
-        return `(regex #"${pattern}")`;
+        if (bytes(group, tail) > MAX_SEATBELT_STRING_BYTES) throw new Error(t("sandboxPolicy.tooLarge"));
+        return `(regex #"${anchor}(${group.join("|")})${tail}")`;
       }).join(" ");
     };
     rules.push(
@@ -65,6 +75,30 @@ export function macWriteRootNameRules(writeRoots: readonly string[]): string {
     );
   }
   return rules.join("\n");
+}
+
+// Where a named entry is a link, or lies behind one (`.agents -> tools/agents`, `.ave/commands -> ../cmds`, `.ave -> conf`), Seatbelt
+// sees a write at the resolved path, which the rules above do not name. Each resolved target is denied as a directory, present or
+// not, and it and the folders above it inside a write root cannot be moved away, so the name cannot be emptied and filled again.
+// The link itself is held by the rules above, which match its own path.
+export function macLinkedNameTargetRules(targets: readonly string[], writeRoots: readonly string[]): string {
+  const rules = new Set<string>();
+  const literal = (path: string): string => {
+    const text = JSON.stringify(path);
+    if (Buffer.byteLength(text) > MAX_SEATBELT_STRING_BYTES) throw new Error(t("sandboxPolicy.tooLarge"));
+    return text;
+  };
+  for (const target of targets) {
+    rules.add(`(deny file-write* file-write-create file-write-unlink (subpath ${literal(target)}))`);
+    for (const root of writeRoots) {
+      const base = root.replace(/\/+$/u, "");
+      if (!target.startsWith(`${base}/`)) continue;
+      for (let above = target.slice(0, target.lastIndexOf("/")); above.length > base.length; above = above.slice(0, above.lastIndexOf("/"))) {
+        rules.add(`(deny file-write-unlink (literal ${literal(above)}))`);
+      }
+    }
+  }
+  return [...rules].join("\n");
 }
 
 // The default macOS volume folds case and normalization, so two spellings that differ only there name one directory. On a volume that

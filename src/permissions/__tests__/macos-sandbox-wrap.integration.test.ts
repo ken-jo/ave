@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -205,6 +205,72 @@ describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())
     ].join("\n"), project);
     expect(statuses(result.stdout)).toEqual({ agents: "1", "agents-other-case": "1", "rename-into-agents": "1", ave: "1", "rename-into-ave": "1", nested: "0" });
     expect(readdirSync(project).sort()).toEqual(["deeper", "prepared", "staged"]);
+  });
+
+  it("holds the entries where a link stands in for them, at the link and at what it points to", async () => {
+    const project = join(root, "linked");
+    for (const directory of ["tools/agents/skills", ".ave", "cmds"]) mkdirSync(join(project, directory), { recursive: true });
+    symlinkSync("tools/agents", join(project, ".agents"));
+    symlinkSync("../cmds", join(project, ".ave", "commands"));
+    writeFileSync(join(project, "tools", "agents", "skills", "SKILL.md"), "host");
+    const result = await runConfined([
+      `printf x > .agents/skills/evil.md 2>/dev/null; echo "through-link=$?"`,
+      `printf x > tools/agents/skills/SKILL.md 2>/dev/null; echo "at-target=$?"`,
+      // Moving the target or a folder above it away would leave the name free to be filled again.
+      `mv tools/agents tools/moved 2>/dev/null; echo "move-target=$?"`,
+      `mv tools tools-moved 2>/dev/null; echo "move-above=$?"`,
+      `rm .agents 2>/dev/null; echo "remove-link=$?"`,
+      `printf x > .ave/commands/x.md 2>/dev/null; echo "commands-through-link=$?"`,
+      `printf x > cmds/x.md 2>/dev/null; echo "commands-at-target=$?"`,
+      `printf x > tools/other.txt; echo "beside-target=$?"`,
+      `printf x > ordinary.txt; echo "ordinary=$?"`,
+    ].join("\n"), project);
+    expect(statuses(result.stdout)).toEqual({
+      "through-link": "1", "at-target": "1", "move-target": "1", "move-above": "1", "remove-link": "1",
+      "commands-through-link": "1", "commands-at-target": "1", "beside-target": "0", ordinary: "0",
+    });
+    expect(readFileSync(join(project, "tools", "agents", "skills", "SKILL.md"), "utf8")).toBe("host");
+    expect(readdirSync(join(project, "cmds"))).toEqual([]);
+  });
+
+  it("holds the commands and hooks of a linked .ave, present or not yet created", async () => {
+    const project = join(root, "linked-carrier");
+    mkdirSync(join(project, "conf", "commands"), { recursive: true });
+    symlinkSync("conf", join(project, ".ave"));
+    const result = await runConfined([
+      `printf x > .ave/commands/x.md 2>/dev/null; echo "through-link=$?"`,
+      `printf x > conf/commands/x.md 2>/dev/null; echo "at-target=$?"`,
+      `mkdir conf/hooks 2>/dev/null; echo "absent-part=$?"`,
+      `mv conf conf-moved 2>/dev/null; echo "move-target=$?"`,
+      `printf x > conf/notes.md; echo "other=$?"`,
+    ].join("\n"), project);
+    expect(statuses(result.stdout)).toEqual({ "through-link": "1", "at-target": "1", "absent-part": "1", "move-target": "1", other: "0" });
+    expect(readdirSync(join(project, "conf")).sort()).toEqual(["commands", "notes.md"]);
+  });
+
+  // A working folder may carry a character the write policy reads as a pattern.
+  it.each(["a?b", "s*r", "k[1]"])("holds the entries beneath a root named %s", async name => {
+    const project = join(root, name);
+    mkdirSync(project);
+    const result = await runConfined([
+      `mkdir .agents 2>/dev/null; echo "agents=$?"`,
+      `mkdir -p .ave/commands 2>/dev/null; echo "ave=$?"`,
+      `printf x > ordinary.txt; echo "ordinary=$?"`,
+    ].join("\n"), project);
+    expect(statuses(result.stdout)).toEqual({ agents: "1", ave: "1", ordinary: "0" });
+  });
+
+  it("loads and holds the entries beneath a long root whose name takes several bytes a character", async () => {
+    // About 905 bytes of path: under the character count of one pattern for every name, over Seatbelt's limit in bytes.
+    let project = root;
+    while (Buffer.byteLength(project) < 905) project = join(project, "가".repeat(Math.min(70, Math.ceil((905 - Buffer.byteLength(project)) / 3))));
+    mkdirSync(project, { recursive: true });
+    const result = await runConfined([
+      `mkdir .agents 2>/dev/null; echo "agents=$?"`,
+      `mkdir -p .ave/hooks 2>/dev/null; echo "ave=$?"`,
+      `printf x > ordinary.txt; echo "ordinary=$?"`,
+    ].join("\n"), project);
+    expect(statuses(result.stdout)).toEqual({ agents: "1", ave: "1", ordinary: "0" });
   });
 });
 
