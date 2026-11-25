@@ -3,16 +3,19 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { CENSUS_TIER_TESTS } from "./lib/vitest-tiers.mjs";
+import { CENSUS_TIER_TESTS, NATIVE_TIER_TESTS } from "./lib/vitest-tiers.mjs";
 
 // Changes to these select every tier.
 export const TIER_INFRASTRUCTURE = [
+  ".github/scripts/check-windows-workflow.mjs",
   ".github/workflows/ci.yml",
   "config/vitest.analysis.config.ts",
   "package.json",
   "scripts/lib/vitest-collection.mjs",
   "scripts/lib/vitest-tiers.mjs",
   "scripts/plan-vitest-tiers.mjs",
+  "scripts/plan-windows-tests.ts",
+  "scripts/run-windows-test-list.mjs",
   "vitest.config.ts",
 ];
 export const CENSUS_TRIGGERS = [
@@ -21,25 +24,63 @@ export const CENSUS_TRIGGERS = [
   "src/permissions/rules/",
   "src/shared/shell-",
 ];
+export const NATIVE_TRIGGERS = [
+  "bun.lock",
+  "native/",
+  "patches/",
+  "src/permissions/",
+  "src/plugins/isolation/",
+  "src/sandbox/",
+  "tools/mxc-probes/",
+];
+// Paths naming the MXC, srt-win or sandbox runtimes anywhere in the tree.
+const NATIVE_TRIGGER_NAME = /mxc|srt-win|asrt|sandbox/iu;
 
 const startsWithAny = (path, prefixes) => prefixes.some(prefix => path === prefix || path.startsWith(prefix));
 
 /**
  * eventName and ref are the GitHub event; plan is the written CI suite plan; changedPaths is null when the diff is unresolved.
- * Pull requests and main pushes select a tier from the diff and the plan; every other event selects all tiers.
+ * Pull requests select a tier from the diff and the plan. Main pushes always select the native tier and select the census
+ * like a pull request. Every other event selects all tiers.
  */
 export function planVitestTiers({ eventName, ref, plan, changedPaths }) {
   const mainPush = eventName === "push" && ref === "refs/heads/main";
-  if (eventName !== "pull_request" && !mainPush) return { census: true, reason: `${eventName} runs every tier` };
-  if (!Array.isArray(changedPaths)) return { census: true, reason: "the diff is unresolved" };
-  if ((plan?.mode !== "full" && plan?.mode !== "affected") || !Array.isArray(plan.tests)) return { census: true, reason: "the suite plan is unreadable" };
+  const all = reason => ({ census: true, native: true, reason });
+  if (eventName !== "pull_request" && !mainPush) return all(`${eventName} runs every tier`);
+  if (!Array.isArray(changedPaths)) return all("the diff is unresolved");
+  if ((plan?.mode !== "full" && plan?.mode !== "affected") || !Array.isArray(plan.tests)) return all("the suite plan is unreadable");
   const infrastructure = changedPaths.find(path => TIER_INFRASTRUCTURE.includes(path));
-  if (infrastructure) return { census: true, reason: `${infrastructure} defines the tiers` };
-  const trigger = changedPaths.find(path => startsWithAny(path, CENSUS_TRIGGERS));
-  const selected = plan.mode === "affected" ? plan.tests.find(test => CENSUS_TIER_TESTS.includes(test)) : undefined;
-  if (trigger) return { census: true, reason: `${trigger} changes the shell rules` };
-  if (selected) return { census: true, reason: `the plan selects ${selected}` };
-  return { census: false, reason: "no shell rule change" };
+  if (infrastructure) return all(`${infrastructure} defines the tiers`);
+  const planned = tests => plan.mode === "affected" ? plan.tests.find(test => tests.includes(test)) : undefined;
+  const censusTrigger = changedPaths.find(path => startsWithAny(path, CENSUS_TRIGGERS));
+  const censusTest = planned(CENSUS_TIER_TESTS);
+  const nativeTrigger = changedPaths.find(path => startsWithAny(path, NATIVE_TRIGGERS) || NATIVE_TRIGGER_NAME.test(path) || NATIVE_TIER_TESTS.includes(path));
+  const nativeTest = planned(NATIVE_TIER_TESTS);
+  const census = censusTrigger ? `${censusTrigger} changes the shell rules` : censusTest ? `the plan selects ${censusTest}` : undefined;
+  const native = mainPush ? "a main push runs the native tier"
+    : plan.mode === "full" ? "the full plan runs the native tier"
+    : nativeTrigger ? `${nativeTrigger} changes a native boundary` : nativeTest ? `the plan selects ${nativeTest}` : undefined;
+  return {
+    census: census !== undefined,
+    native: native !== undefined,
+    reason: `census: ${census ?? "no shell rule change"}; native: ${native ?? "no native boundary change"}`,
+  };
+}
+
+/** The tiers the default Vitest shards, the tier job and the Windows tier shards run for one selection. */
+export function vitestTierOutputs(eventName, ref, tiers) {
+  const everyTier = eventName !== "pull_request" && !(eventName === "push" && ref === "refs/heads/main");
+  // Coverage runs only on events that select every tier; the default shards keep the native tier there.
+  const defaultTiers = everyTier ? "default,native" : "default";
+  const tierJobNative = tiers.native && !everyTier;
+  return {
+    census_tier: String(tiers.census),
+    native_tier: String(tiers.native),
+    default_vitest_tiers: defaultTiers,
+    tier_job_native: String(tierJobNative),
+    vitest_tier_job: String(tiers.census || tierJobNative),
+    windows_tiers: [tiers.native && "native", tiers.census && "census"].filter(Boolean).join(","),
+  };
 }
 
 function git(args) {
@@ -80,9 +121,9 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     plan,
     changedPaths: needsDiff ? changedPathsFor(eventName, process.env.AVE_CI_DIFF_BASE) : [],
   });
-  const outputs = { census_tier: String(tiers.census) };
+  const outputs = vitestTierOutputs(eventName, process.env.GITHUB_REF, tiers);
   const lines = Object.entries(outputs).map(([key, value]) => `${key}=${value}`);
   console.log(`[vitest-tiers] ${lines.join(" ")}: ${tiers.reason}`);
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${lines.join("\n")}\n`);
-  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n### Vitest tiers\n\nCensus: ${tiers.census ? "selected" : "not selected"} (${tiers.reason}).\n`);
+  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n### Vitest tiers\n\n${lines.map(line => `- ${line}`).join("\n")}\n\n${tiers.reason}.\n`);
 }

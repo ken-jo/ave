@@ -397,7 +397,7 @@ it("requires the arm64 result for selected runs, including docs-only main pushes
         VITEST_RESULT: docs === "true" ? "skipped" : "success", DOCS_ONLY: docs, PLATFORM_CHECKS: "false",
         WINDOWS_PREPARATION_RESULT: "skipped", WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
         WINDOWS_ARM64_PATH_KIND: selected, WINDOWS_ARM64_PATH_KIND_RESULT: arm64,
-        CENSUS_TIER: "false", VITEST_TIERS_RESULT: "skipped",
+        VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: "false", WINDOWS_TIER_RESULT: "skipped",
       } });
       assert.ifError(result.error);
       assert.equal(result.status, status, JSON.stringify({ docs, selected, arm64, output: result.stdout + result.stderr }));
@@ -456,6 +456,21 @@ it("rejects dropping a shard or its shard ID", () => {
   assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /must run every contained shard/);
   job.strategy.matrix.shard.push(3);
   delete job.env.AVE_WINDOWS_TEST_SHARD;
+  assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /must run every contained shard/);
+});
+
+it("rejects tier shards that skip tier selection, drop a shard or lose the tier", () => {
+  for (const change of [
+    job => { job.if = job.if.replace(" && needs.build.outputs.windows_tier_tests == 'true'", ""); },
+    job => { job.strategy.matrix.shard.pop(); },
+    job => { delete job.env.AVE_WINDOWS_TEST_TIER; },
+  ]) {
+    const parsed = parse(workflow);
+    change(parsed.jobs["windows-tier-tests"]);
+    assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /tier shards must follow|must run every contained shard/);
+  }
+  const parsed = parse(workflow);
+  parsed.jobs["windows-permission-tests"].env.AVE_WINDOWS_TEST_TIER = "tiers";
   assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /must run every contained shard/);
 });
 
