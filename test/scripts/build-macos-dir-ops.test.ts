@@ -129,14 +129,9 @@ describe("macOS download file helper wiring", () => {
     expect(packageJson.scripts.build).not.toContain("--test-builds");
     expect(packageJson.scripts["test:prepare"]).toContain("node scripts/build-macos-dir-ops.mjs --if-stale --test-builds");
     const runner = readFileSync(resolve("scripts/hooks/run-local-checks.mjs"), "utf8");
-    for (const [start, end] of [
-      ["function runAppTargetedVitestChecks", "function runVitestWithReport"],
-      ["function runAppFastSourceChecksHoldingSlot", "function runAppCommentOnlyChecks"],
-    ]) {
-      const segment = runner.slice(runner.indexOf(start), runner.indexOf(end));
-      expect(segment.indexOf("ensureMacosDirOps(dir);")).toBeGreaterThan(-1);
-      expect(segment.indexOf("ensureMacosDirOps(dir);")).toBeLessThan(segment.indexOf('"test:vitest"'));
-    }
+    // The hook never calls test:vitest directly; the manual stage runs `test`, whose test:prepare builds it.
+    expect(runner).not.toContain('"run", "test:vitest"');
+    expect(runner).toContain('runPackageScripts(dir, ["test", "build"]');
   });
 
   it("packages only the production helper, at the path the host resolves, and builds it for the packaged architecture", () => {
