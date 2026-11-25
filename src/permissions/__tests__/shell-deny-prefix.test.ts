@@ -60,6 +60,13 @@ describe.each([
         .toMatchObject({ decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit" });
     });
 
+    it.each([
+      { position: "leading", command: `# it’s a comment\n${first}\n${overBudgetTail}` },
+      { position: "inline", command: `${first} # it’s a comment\n${overBudgetTail}` },
+    ])("keeps a completed deny with a typographic apostrophe in a $position comment", async ({ command }) => {
+      expect((await savedDeny())(command)).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
+    });
+
     it("ignores quote ambiguity inside the clipped suffix after a completed deny", async () => {
       const check = await savedDeny();
       expect(check(`${first}; date ‘${"x".repeat(8000)}`)).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
