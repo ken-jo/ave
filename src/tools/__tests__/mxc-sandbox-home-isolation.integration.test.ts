@@ -83,7 +83,7 @@ describe.runIf(process.platform === "win32")("container shell and sibling sandbo
       vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([join(directory, "policy-home")]);
       establishMxcRuntimeRoot();
       await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } }, async () => false);
-      const { substrate } = planWindowsSandbox({ shellRequested: true, shellLocalNetworkAccess: true, workerRequested: false,
+      const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: false,
         mxc: { state: "available" }, windowsBuild: started.windowsBuild, srtWinReady: false });
       setWindowsSandboxSubstrate(substrate, mxcShellCapability());
       setActiveSandboxCapability(windowsProxyOnlyCapability(substrate));
