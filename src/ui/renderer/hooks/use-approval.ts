@@ -15,7 +15,7 @@ import type { ReviewerSuggestion } from "./use-permission-signals.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { getAccessibilitySignalEngine } from "../accessibility-signal-engine.js";
 
-export type ApprovalDecisionExtras = Pick<ApprovalDecision, "elicitationContent" | "egressScope" | "userOwnedSurfaceChoice" | "browserSiteChoice">;
+export type ApprovalDecisionExtras = Pick<ApprovalDecision, "elicitationContent" | "egressScope" | "userOwnedSurfaceChoice" | "browserSiteChoice" | "extensionStartChoices">;
 
 /** One window FIFO routes each card to the surface claiming its session or children.
  * Use live ownership predicates; the window dock receives only unclaimed requests. */
@@ -211,6 +211,8 @@ export function useApproval(): ApprovalQueueApi {
           hmac: current.hmac,
           ...(extras?.egressScope === undefined ? {} : { egressScope: extras.egressScope }),
           ...(extras?.browserSiteChoice === undefined ? {} : { browserSiteChoice: extras.browserSiteChoice }),
+          // Each start's own yes or no on an extension-start card; the host checks it against the starts the card listed.
+          ...(extras?.extensionStartChoices === undefined ? {} : { extensionStartChoices: extras.extensionStartChoices }),
           ...(extras?.userOwnedSurfaceChoice === undefined ? {} : { userOwnedSurfaceChoice: extras.userOwnedSurfaceChoice }),
           ...(extras && "elicitationContent" in extras
             ? { elicitationContent: extras.elicitationContent }

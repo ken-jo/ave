@@ -25,6 +25,7 @@ import { useApprovalSurfaceNotice, type ApprovalDecisionExtras } from "../hooks/
 import { HOME_FOLDER_REFUSED } from "../../../shared/permissions-events.js";
 import { EgressHostApprovalCard } from "./permissions/EgressHostApprovalCard.js";
 import { BrowserSiteApprovalCard } from "./permissions/BrowserSiteApprovalCard.js";
+import { ExtensionStartApprovalCard } from "./permissions/ExtensionStartApprovalCard.js";
 import { UserOwnedSurfaceApprovalCard, type HostTerminalCommandFacts } from "./permissions/UserOwnedSurfaceApprovalCard.js";
 import type { ReviewerSuggestion } from "../hooks/use-permission-signals.js";
 import type { ApprovalChoice, ApprovalRequest } from "../types.js";
@@ -945,6 +946,9 @@ export function ToolApprovalContent({
       targetDescription={request.userOwnedSurface === "browser" ? browserTargetText(tHook, request) : terminalTargetText(tHook, request)}
       notes={request.userOwnedSurface === "host-terminal" ? terminalCommandNotes(tHook, request) : []}
       command={request.userOwnedSurface === "host-terminal" ? hostTerminalCommandFacts(tHook, request) : null} />;
+  }
+  if (request.kind === "extension-start") {
+    return <ExtensionStartApprovalCard key={request.id} request={request} conversationLabel={conversationLabel} interactionLocked={interactionLocked} onDecide={onDecide} />;
   }
   if (request.kind === "egress-host") {
     return (
