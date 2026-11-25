@@ -32,6 +32,9 @@ import type { PluginOperationIdentityProvider } from "../../tools/invocation-ser
 import { isPluginRuntimeDetachedOperationError } from "../../plugins/runtime/detached-operation.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { HostPluginAuthLifecycle } from "../../tools/executor-contract.js";
+import { setExtensionStartAsker } from "../../permissions/extension-start-consent.js";
+import { createExtensionStartAsker } from "../../permissions/extension-start-asker.js";
+import { t } from "../../i18n/index.js";
 
 function toPluginToolInput(payload: unknown): Record<string, unknown> {
   if (payload === undefined || payload === null) return {};
@@ -48,6 +51,18 @@ function pluginInvocationSessionId(context: PluginToolInvocationContext): string
 
 export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
   const { toolRegistry, permissionManager, bashAstValidator, approvalGate, bootAuditLogger, pluginRuntime, lateBinding } = ctx;
+
+  setExtensionStartAsker(createExtensionStartAsker({
+    approvalGate,
+    notify: (start) => {
+      ctx.notificationService.deliver({
+        kind: "system",
+        title: t("extensionStart.notStartedTitle"),
+        body: t(start.cause === "no-backend" ? "extensionStart.notStartedNoBackend" : "extensionStart.notStartedHomePrivacy", { name: start.label }),
+        bypassFocusGate: true,
+      });
+    },
+  }));
 
   // External hooks use the single trust-quarantine path; the in-process runner is internal only.
   const hookRunner = createHookRunner();

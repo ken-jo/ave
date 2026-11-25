@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
-import { _resetAveHomePrivacyForTest, approveExtensionsWithoutIsolation, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
+import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
+import { EXTENSION_START_CONSENT_REQUIRED_CODE } from "../extension-start-consent.js";
 import { assertExtensionStartAllowed } from "../asrt-sandbox.js";
 import {
   decidePermission, NO_APPROVER_MESSAGE, offersFloorSessionAllow,
@@ -112,6 +113,8 @@ function extensionStart(options?: StartOptions): { outcome: Outcome; reason: str
     return { outcome: "unasked", reason: "none" };
   } catch (error) {
     const code = (error as { code?: unknown }).code;
+    // A start that waits for a person's answer to this one start.
+    if (code === EXTENSION_START_CONSENT_REQUIRED_CODE) return { outcome: "ask-human", reason: code };
     return { outcome: "deny", reason: typeof code === "string" ? code : `uncoded:${(error as Error).name}` };
   }
 }
@@ -278,21 +281,18 @@ const ROWS: readonly Row[] = [
       expect(publishExtensionPlan({ state: "unavailable", reason: "runtime-start-failed" }, true)).toBe("fallback:runtime-start-failed");
       return extensionStart({ backend: "mxc" });
     } },
-  // Listed under I8 only, but the uncoded reason is the I15 shape: the reason registry (PF2) must clear this row's reason too.
+  // No setting answers it: every start asks for itself (the single use is driven in extension-start-consent.test.ts).
   { id: "L4", point: "Windows extension start while home privacy failed", tree: "no row", unknown: "U2",
-    today: { outcome: "deny", reason: "uncoded:Error", waiver: "setting" },
-    core: { outcome: "ask-human", reason: "registry-code", waiver: "session" },
+    today: { outcome: "ask-human", reason: "extension-start-consent-required", waiver: "once" },
     observe: () => {
       setProcessPlatform("win32");
       setPluginWorkerConfinementRequestedAtBoot(true);
       setAveHomePrivacyAtBoot({ enforcement: "none", home: FIXTURE_HOME, category: "read-back-failed", reason: "fixture" });
-      const refused = extensionStart();
-      approveExtensionsWithoutIsolation();
-      return { ...refused, waiver: extensionStart().outcome === "unasked" ? "setting" : "none" };
+      const first = extensionStart();
+      return { ...first, waiver: extensionStart().outcome === "ask-human" ? "once" : "none" };
     } },
   { id: "L5", point: "Windows extension start, settled with no backend", tree: "no row", unknown: "U2",
-    today: { outcome: "unasked", reason: "unavailable:runtime-start-failed" },
-    core: { outcome: "ask-human" },
+    today: { outcome: "ask-human", reason: "unavailable:runtime-start-failed" },
     observe: () => {
       setProcessPlatform("win32");
       setPluginWorkerConfinementRequestedAtBoot(true);
@@ -344,9 +344,7 @@ const ROWS: readonly Row[] = [
 // Inconsistency id (policy design, section 3) -> the rows that still answer differently from the policy core.
 const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
   I1: ["D25"],
-  I2: ["L5"],
   I5: ["D34.b"],
-  I8: ["L4"], // also carries an uncoded reason (I15); PF2 clears it
   I10: ["L1"],
   I11: ["D26"],
   I12: ["D27"],
@@ -358,10 +356,12 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
 
 // Inconsistencies no driven row can show, and why.
 const INCONSISTENCIES_WITHOUT_ROW: Readonly<Record<string, string>> = {
+  I2: "per-start part closed (row L5 asks per start); the batch card waits for the owner",
   I3: "inference child route: spawn path, not driven",
   I4: "lives on the device-path branch, not on main",
   I6: "stage workspaces are not on main",
   I7: "a launch-count budget, not a decision",
+  I8: "closed: the session toggle is gone and row L4 asks per start",
   I9: "a checking plan cannot be published (per-holder readiness resolves it), so no start meets it at the gate driven here",
   I13: "boot abort versus degrade: boot step, not driven",
   I14: "headless wording spans the relay and tool results, not driven",

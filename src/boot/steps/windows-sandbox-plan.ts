@@ -153,6 +153,6 @@ export function windowsExtensionBootWarning(substrate: SandboxWindowsSubstrateIn
       ? "; agent shells run in Microsoft Execution Containers"
       : "; agent shells run in Microsoft Execution Containers once the container start check passes";
   return "boot: extension confinement is ON but the Windows sandbox (srt-win) is NOT ready — " +
-    "plugin workers, plugin children, plugin hooks and MCP stdio servers run with NO OS isolation " +
+    "plugin workers, plugin children, plugin hooks and MCP stdio servers each wait for a per-start approval and then run with NO OS isolation " +
     `until the one-time administrator install completes${shells}.`;
 }

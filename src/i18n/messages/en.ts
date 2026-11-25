@@ -3251,6 +3251,9 @@ export const en = {
   "gitMarketplace.authority.filesystem": "Filesystem: {grant}",
 
   // homePrivacy
+  "extensionStart.notStartedTitle": "Extension not started",
+  "extensionStart.notStartedNoBackend": "{name} was not started: it would run without OS isolation and nobody approved it. Install the Windows sandbox in Settings > Permissions to run it isolated.",
+  "extensionStart.notStartedHomePrivacy": "{name} was not started: it would run without OS isolation and nobody approved it. Fix the Ave folder permissions shown in Settings > Permissions and restart Ave to run it isolated.",
   "homePrivacy.configurationPreservedTitle": "Configuration copy preserved",
   "homePrivacy.configurationPreserved": "{file}: a root configuration file changed after migration. Review the copy at {path}.",
   "homePrivacy.configurationUntrustedTitle": "Ave cannot trust its configuration",
@@ -4217,7 +4220,7 @@ export const en = {
   "permissionsTab.osSandboxWindowsInstallFailedAmbient": "Windows did not accept the write protection on its shared system folders, so file confinement would be incomplete and Ave did not accept the setup. Re-provision from an account that can approve administrator prompts, and check that no policy or security software reverts permission changes on Windows system folders.",
   "permissionsTab.osSandboxWindowsInstallFailedHelperMissing": "The Windows sandbox helper that ships with Ave is missing, so setup could not start. Security software may have quarantined it. Reinstall Ave, then re-provision.",
   "permissionsTab.osSandboxWindowsHomePrivacyError": "Extensions are blocked by the startup AVE_HOME privacy check for {path}: {reason}.",
-  "permissionsTab.homePrivacyApproveHint": "You can approve this session without isolation.",
+  "permissionsTab.homePrivacyPerStartHint": "Each extension asks for your approval before it starts without isolation.",
   "permissionsTab.homePrivacySystemRootMissing": "the Windows system root is missing",
   "permissionsTab.homePrivacyBootFailed": "AVE_HOME privacy could not be established; isolation is OFF",
   "permissionsTab.osSandboxBootDegradedHomePrivacy": "The startup AVE_HOME privacy check failed for {path}: {reason}.",
@@ -4262,9 +4265,6 @@ export const en = {
   "permissionsTab.homePrivacyCommandIntro": "Run this in Command Prompt, then restart Ave:",
   "permissionsTab.homePrivacyCommandCopy": "Copy command",
   "permissionsTab.homePrivacyCommandCopied": "Copied",
-  "permissionsTab.homePrivacyApproveForSession": "Run extensions without isolation for this session",
-  "permissionsTab.homePrivacyApprovedForSession": "Isolation is OFF for this session. Folder privacy is checked only at startup, so restart Ave once the cause is fixed.",
-  "permissionsTab.homePrivacyApprovalFailed": "Session approval failed. Extensions remain blocked. Retry from Settings > Permissions.",
   "permissionsTab.homePrivacyDirectoryFailed": "the private directory could not be created",
   "permissionsTab.homePrivacyIdentityFailed": "the current account SID could not be determined",
   "permissionsTab.homePrivacyIcaclsFailed": "the directory permission command failed",

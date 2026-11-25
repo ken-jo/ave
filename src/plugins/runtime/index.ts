@@ -54,6 +54,7 @@ import { withPluginInstallLock, hasExclusivePluginLifecycleMutation, isPluginIns
 import type { SpawnConfinement } from "../../permissions/confined-child.js";
 import { prepareMxcPluginChildLaunch } from "../isolation/mxc-plugin-child-launch.js";
 import { isMxcExtensionBackendSelected } from "../../sandbox/wrap-bundled-command.js";
+import { deferExtensionStart, isExtensionStartConsentRequired, pluginChildStartKey, takeExtensionStartGrant } from "../../permissions/extension-start-consent.js";
 import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError, pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../isolation/out-of-process-plugin.js";
 import { PluginChildTerminationUnverifiedError } from "../isolation/plugin-child-transport.js";
 import { bindPluginInstanceIntegrity, recordPluginFactoryIntegrity } from "../runtime-integrity-evidence.js";
@@ -1598,6 +1599,8 @@ abstract class PluginRuntimeState {
   protected manifestValidator: ValidateFunction | null = null;
   protected manifestValidatorPromise: Promise<ValidateFunction> | null = null;
 
+  abstract addPlugin(pluginId: string): Promise<"started" | "preparing">;
+
   protected abstract instantiateAndStartSinglePlugin(
     plan: ManifestLoadPlan,
     manifest: PluginManifest,
@@ -2703,12 +2706,26 @@ abstract class PluginRuntimeState {
     };
   }
 
+  /** Nothing confines this child: its start waits for a person, asked at the next attended turn. */
+  private deferUnconfinedStart(manifest: PluginManifest, error: unknown): boolean {
+    if (!isExtensionStartConsentRequired(error)) return false;
+    deferExtensionStart({
+      key: pluginChildStartKey(manifest.id),
+      kind: "plugin-child",
+      label: manifest.name ?? manifest.id,
+      cause: error.unconfinedCause,
+      retry: async () => { await this.addPlugin(manifest.id); },
+    });
+    return true;
+  }
+
   /** Record refused replacements separately so the incumbent remains loaded; unrelated errors return false. */
   protected recordAttemptRefusal(
     manifest: PluginManifest,
     error: unknown,
     attempt: PluginAttemptRefusal["attempt"],
   ): boolean {
+    this.deferUnconfinedStart(manifest, error);
     if (
       !(error instanceof IncompatibleHostProtocolError)
       && !(error instanceof ProcessEntryUnconfinedError)
@@ -2792,6 +2809,8 @@ abstract class PluginRuntimeState {
       this.markProcessEntryUnconfined(manifest, err);
     } else if (err instanceof PluginSandboxGrantError) {
       this.refuseSandboxGrant(manifest, err);
+    } else if (this.deferUnconfinedStart(manifest, err)) {
+      this.markFailed(manifest.id, undefined, { installFailureMessage: (err as Error).message });
     } else {
       this.markFailed(manifest.id, undefined, containerRefusalDetail(err));
     }
@@ -4909,6 +4928,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         this.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
       onChildSpawned: (confinement: SpawnConfinement) =>
         this.recordChildSpawnConfinement(createPlugin, confinement),
+      takeExtensionStart: () => takeExtensionStartGrant(pluginChildStartKey(manifest.id)),
       ...(this.onMalformedCredentialSelector
         ? { onMalformedCredentialSelector: this.onMalformedCredentialSelector }
         : {}),

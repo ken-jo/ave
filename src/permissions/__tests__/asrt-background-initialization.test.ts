@@ -52,7 +52,7 @@ import * as facts from "../../shared/windows-path-facts.js";
 import * as denyAcl from "../windows-deny-acl.js";
 import * as stampTargets from "../windows-stamp-targets.js";
 import { windowsDenyOperandKey } from "../sandbox-write-policy.js";
-import { grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, isOfflineProcessConfinementActive, isPluginWorkerConfinementActive, resetAsrtSandbox, wrapToolCommand, wrapWorkerCommand } from "../asrt-sandbox.js";
+import { assertExtensionStartAllowed, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, isOfflineProcessConfinementActive, isPluginWorkerConfinementActive, resetAsrtSandbox, wrapToolCommand, wrapWorkerCommand } from "../asrt-sandbox.js";
 
 const manager = vi.hoisted(() => ({
   initialize: vi.fn(async () => undefined),
@@ -325,10 +325,13 @@ describe("background session isolation", () => {
     expect(isAsrtSandboxActive()).toBe(true);
     expect(isPluginWorkerConfinementActive()).toBe(false);
     expect(isOfflineProcessConfinementActive()).toBe(false);
+    expect(() => assertExtensionStartAllowed()).toThrow("extension-start-consent-required");
 
     succeed();
     await expect(initialization.windowsIsolation).resolves.toEqual({ status: "ready" });
     expect(isPluginWorkerConfinementActive()).toBe(true);
+    // A ready backend confines the start: nobody is asked and no consent is needed.
+    expect(() => assertExtensionStartAllowed()).not.toThrow();
     expect(isOfflineProcessConfinementActive()).toBe(true);
     expect(manager.reset).not.toHaveBeenCalled();
   });

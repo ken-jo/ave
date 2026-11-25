@@ -931,7 +931,6 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [PERMISSIONS.userApprovalRecord]: "required",
   [PERMISSIONS.userApprovalRevoke]: "required",
   [PERMISSIONS.sandboxWindowsInstall]: "required",
-  [PERMISSIONS.approveExtensionsWithoutIsolation]: "required",
   [PERMISSIONS.homeTrustApprove]: "required",
   [PERMISSIONS.homeTrustRemove]: "required",
   // Local-owner Tailnet sharing: all mutations are host-renderer-only and

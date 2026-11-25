@@ -22,7 +22,7 @@ import {
 const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
 import { errorMessage } from "../../shared/error-message.js";
 import { exactCanonicalStringify } from "../../shared/exact-json.js";
-import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, AveHomeConfigurationRefusedWriteError, getAveHomePrivacyFailure, isAveHomeBoundaryCategory, isAveHomePrivacyApprovable } from "../../shared/ave-home.js";
+import { AveHomeConfigurationRefusedWriteError, getAveHomePrivacyFailure } from "../../shared/ave-home.js";
 import { approveAveHomeTrustItems, AveHomeTrustReviewError, getAveHomeTrustReview, removeAveHomeTrustItem, type AveHomeTrustReviewView } from "../../shared/ave-home-trust.js";
 import { AveHomeConfigurationNotOwnerError } from "../../shared/ave-home-configuration-access.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
@@ -383,7 +383,6 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         path: privacyFailure.failedPath ?? privacyFailure.home,
         category: privacyFailure.category,
         extraPrincipals: privacyFailure.extraPrincipals,
-        approvedForSession: areExtensionsWithoutIsolationApproved(),
       } } : {}),
       // What the gate decided THIS boot. The runtime snapshot cannot stand in for it: a degraded gate never publishes a capability, so `runtime` reports the same "no OS
       // sandbox configured" it reports when the user never turned the sandbox on. Raw dependency messages stay main-side (boot log); the renderer gets the classified causes.
@@ -624,25 +623,6 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       return { ok: false, error: "not-applicable", message: "Windows sandbox install is only available on win32" };
     }
     return installAsrtWindowsSandbox();
-  });
-
-  ipcMain.handle(PERMISSIONS.approveExtensionsWithoutIsolation, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approveExtensionsWithoutIsolation, e); return UNAUTHORIZED_FRAME; }
-    const intent = requireUserKeyboardIntent(payloadRecord(payload).intent);
-    if (!intent.ok) return intent;
-    const failure = getAveHomePrivacyFailure();
-    if (failure === undefined || !isAveHomePrivacyApprovable(failure.category)) {
-      return { ok: false, error: "not-applicable", message: "Home privacy approval is not applicable" };
-    }
-    if (!areExtensionsWithoutIsolationApproved()) {
-      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
-        output: JSON.stringify({ action: "extensions_without_isolation_approved", who: "user-ui",
-          category: failure.category,
-          // A read-boundary refusal's audit carries its category and code only.
-          ...(isAveHomeBoundaryCategory(failure.category) ? { code: failure.reason } : { path: failure.failedPath ?? failure.home }) }) });
-      approveExtensionsWithoutIsolation();
-    }
-    return { ok: true };
   });
 
   ipcMain.handle(PERMISSIONS.homeTrustReview, async (e) => {

@@ -708,8 +708,6 @@ export function buildInternalApiSurface() {
      * point; only ever called from an explicit "Install now" click. Auto-injects the user-keyboard intent the sender-guarded handler requires. */
     sandboxWindowsInstall: async () =>
       ipcRenderer.invoke(PERMISSIONS.sandboxWindowsInstall, { intent: ipcUserKeyboardIntent() }),
-    approveExtensionsWithoutIsolation: async () =>
-      ipcRenderer.invoke(PERMISSIONS.approveExtensionsWithoutIsolation, { intent: ipcUserKeyboardIntent() }),
     homeTrustReview: async () => ipcRenderer.invoke(PERMISSIONS.homeTrustReview),
     /** MUTATING: approve rows of the served review snapshot; without keys, approve all (offered only for a clean legacy home). */
     homeTrustApprove: async (snapshotId: string, keys?: readonly string[]) =>

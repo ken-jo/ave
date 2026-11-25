@@ -40,6 +40,7 @@ import { errorMessage } from "../shared/error-message.js";
 import { boundBundledCredential, bundledConfigId, bundledCredentialDeclaration, bundledCredentialKey, parseBundledConfigId, readBoundBundledCredential, type BundledPackageRef } from "./bundled-credential.js";
 import { MCP_CONFIG_RECOVERY_REQUIRED, MCP_CREDENTIAL_MIGRATION_FAILED } from "../shared/mcp-error-code.js";
 import { userServerApproval, userServerFingerprint, userServerTrustSecretId } from "./user-server-trust.js";
+import { deferExtensionStart, isExtensionStartConsentRequired, mcpStdioStartKey } from "../permissions/extension-start-consent.js";
 const log = createLogger("mcp-manager");
 
 interface BundledCredentialDeclaration {
@@ -553,6 +554,11 @@ export class McpManager {
       });
     } catch (err) {
       if (this.clients.get(config.id) === client) this.clients.delete(config.id);
+      // Nothing confines this server: it waits for a person, who is asked at the next attended turn.
+      if (isExtensionStartConsentRequired(err)) {
+        deferExtensionStart({ key: mcpStdioStartKey(config.id), kind: "mcp-stdio", label: config.id,
+          cause: err.unconfinedCause, retry: () => this.connectServer(config) });
+      }
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
         sessionId: "mcp-manager",
