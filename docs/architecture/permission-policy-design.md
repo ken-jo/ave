@@ -826,10 +826,10 @@ each admitted write root, taking precedence over grants:
   `bunfig.toml` and `.husky/**`;
 - `.codex`, `.agents` and `.aws`, which another agent or cloud tool loads from the
   project, and `.ave/commands` and `.ave/hooks`, which Ave loads. On Linux these
-  are entries beneath each write root. On macOS each is one pattern that matches
-  the name at any depth, because a row per root does not fit the write policy
-  budget, and an entry named `.ave` cannot be created, removed or renamed. The
-  Windows floor does not carry these names yet;
+  are entries beneath each write root. On macOS one rule appended to the Seatbelt
+  profile denies the names at any depth, because a row per root does not fit the
+  write policy budget, and an entry named `.ave` cannot be created, removed or
+  renamed. The Windows floor does not carry these names yet;
 - configured `core.hooksPath` directories, including absent targets and their
   physical symlink targets;
 - Ave settings, permission settings, rules, policies and approval grants, with
@@ -837,7 +837,7 @@ each admitted write root, taking precedence over grants:
 
 On macOS two more denies sit outside the write roots' own entries. A directory
 named `srt-sock-*` (the sandbox runtime's proxy socket directory under the host
-temp directory) is write-denied wherever it appears. When a write root holds the
+temp directory) is write-denied wherever it appears, by the same appended rule. When a write root holds the
 Ave home or one of the confined processes' private roots, writes to that directory
 are denied except under the wrap's own write roots inside it. Linux masks both
 with a mount.
