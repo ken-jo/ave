@@ -27,8 +27,8 @@ owns state transitions. The following table defines the legacy start guard:
 | `checking` | `none` | Per-holder candidate only; never published as the boot snapshot (see below). Refuse until the bounded readiness queue settles. |
 | `ready` | `mxc` | Refuse legacy transport; only the explicit native entry may proceed. |
 | `fallback` | `srt-win` | Retain existing pinned account-backed admission and release. |
-| `unavailable` | `none` | Preserve settled initial degraded-host behavior and privacy/approval checks; no confinement relaxation. |
-| `rejected` | `none` | Refuse; a deadline rejection cannot become an unconfined start. |
+| `unavailable` | `none` | Preserve settled initial degraded-host behavior and privacy/approval checks; no confinement relaxation. An expired readiness deadline with no ready fallback settles here with reason `readiness-deadline` and takes the same per-start ask as any other no-backend start (owner decision 2026-11-25). |
+| `rejected` | `none` | Refuse; an admitted-ancestor or cancelled selection cannot become an unconfined start. |
 
 The native entry always requires `ready` plus `mxc`. A checking record
 is not permission to run and the synchronous guard itself does not queue.
@@ -207,8 +207,8 @@ below such a mask remains hard. No host DACL is augmented.
 Capability publication validates the serialized plan's complete field set,
 closed states/reasons and fixed D2/D3 posture. Readiness, requested/selected
 backend, selected-only fallback version and both outer egress identities must
-agree. Withdrawing a backend clears its fallback version; deadline rejection
-remains rejection when the runtime is absent.
+agree. Withdrawing a backend clears its fallback version; an expired deadline
+keeps its `readiness-deadline` reason when the runtime is absent.
 
 Threat model for path substitution: the attacker is a confined co-holder, not
 the signed-in user. The SDK opens string paths after the host's final identity

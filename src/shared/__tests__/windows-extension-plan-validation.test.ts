@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertSandboxWindowsExtensionPlan } from "../sandbox-capability-info.js";
+import { assertSandboxWindowsExtensionPlan, egressProtocolCoverageFor } from "../sandbox-capability-info.js";
 import { planWindowsExtensionHolder } from "../../permissions/mxc-extension-readiness.js";
 
 function ready() {
@@ -69,7 +69,11 @@ describe("serialized extension backend plan", () => {
     }
   });
 
-  it("does not accept a rejected deadline as settled degradation", () => {
-    expect(() => assertSandboxWindowsExtensionPlan({ ...ready(), selectedBackend: "none", readiness: "unavailable", reason: "readiness-deadline", egressIdentity: "shared" })).toThrow(/Invalid Windows/);
+  it("accepts an expired deadline as a start with no backend, never as a rejection", () => {
+    const none = { ...ready(), selectedBackend: "none", reason: "readiness-deadline", egressIdentity: "shared", egressProtocolCoverage: egressProtocolCoverageFor("none") };
+    expect(() => assertSandboxWindowsExtensionPlan({ ...none, readiness: "unavailable" })).not.toThrow();
+    expect(() => assertSandboxWindowsExtensionPlan({ ...none, readiness: "rejected" })).toThrow(/Invalid Windows/);
+    expect(planWindowsExtensionHolder({ requested: true, fallback: { version: "0.0.80", ready: false }, mxc: { state: "unavailable", reason: "readiness-deadline" } }))
+      .toMatchObject({ selectedBackend: "none", readiness: "unavailable", reason: "readiness-deadline" });
   });
 });

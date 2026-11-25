@@ -1265,7 +1265,10 @@ export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" 
   // An unpublished home, a helper that gave no answer, and every start with no consent route are refused here.
   if (failure === undefined || !isAveHomePrivacyApprovable(failure.category) || !waivable) assertAveHomePrivacyForConfinement();
   if (!waivable) return;
-  const cause = failure !== undefined ? "home-privacy-unverified" : !isPluginWorkerConfinementActive() ? "no-backend" : undefined;
+  // An expired readiness deadline is this same no-backend ask; it keeps its reason for the card and the notice.
+  const cause = failure !== undefined ? "home-privacy-unverified"
+    : isPluginWorkerConfinementActive() ? undefined
+      : plan?.reason === "readiness-deadline" ? "readiness-deadline" : "no-backend";
   if (cause === undefined) return;
   // No setting, rule or earlier answer stands in for it: one consent, one start.
   if (!presentExtensionStartConsent(legacy?.start)) throw new ExtensionStartConsentRequiredError(cause);
