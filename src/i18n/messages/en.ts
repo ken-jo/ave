@@ -5221,6 +5221,7 @@ export const en = {
   "shellExecution.blocked": "Shell execution is unavailable under the current execution plan.",
   "shellExecution.homePrivacyHelperUnavailable": "Shell commands and hooks are off: Ave could not check its home folder privacy at startup. Restart Ave; if it persists, reinstall Ave.",
   "shellExecution.boundaryUnverifiedAsk": "Ave home privacy could not be established at startup, so a shell command runs without the OS sandbox only after you approve it. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while home privacy stays unverified. Other permission checks still apply and may ask again.",
+  "shellExecution.boundaryUnverifiedOneTime": "Ave home privacy could not be established at startup, so this command would run without the OS sandbox. You can approve this command once.",
   "shellExecution.sandboxUnavailableAsk": "The OS sandbox is turned on but unavailable, so a shell command runs without it only after you approve it, or when a saved rule matches the command exactly. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while the sandbox is unavailable. Other permission checks still apply and may ask again.",
   "shellExecution.sandboxUnavailableOneTime": "The OS sandbox is unavailable. If you approve this command, it will run once without the sandbox.",
   "shellExecution.sandboxInstallHint": "To restore the OS sandbox, install {packages} on this computer and restart Ave.",

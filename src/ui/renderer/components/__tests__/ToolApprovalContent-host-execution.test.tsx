@@ -97,6 +97,26 @@ describe("explicit host execution approval", () => {
     });
   });
 
+  it.each(["en", "ko"] as const)("shows a one-time boundary warning in %s", (locale) => {
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      const approval = request(false);
+      approval.reason = SHELL_ANALYSIS_LIMIT_REASON;
+      approval.reasonCode = "shell-analysis-limit";
+      approval.executionPlan = getHostShellExecutionPlanAuditProjection(buildHostShellExecutionPlan({
+        platform: "linux", requestedSandbox: false, unavailableSandboxRequiresAsk: true,
+        activeCapability: { reason: "Fixture sandbox disabled", kind: "none", confidence: "verified", platform: "linux" },
+      }));
+      const { getByTestId } = renderApproval(approval, () => undefined);
+      const environment = getByTestId("tool-approval-shell-environment");
+      expect(environment.textContent).toMatch(locale === "en" ? /approve this command once/i : /이 명령을 한 번만 승인/u);
+      expect(environment.textContent).not.toContain(t("shellExecution.boundaryUnverifiedAsk"));
+    } finally {
+      setLocale(previous);
+    }
+  });
+
   // An unavailable sandbox is a forced ask: the card says the sandbox is unavailable and shows the host warning, without the explicit-request justification.
   it("warns that the sandbox is unavailable on the forced fallback ask, with what to install", () => {
     const fallback = request(false);

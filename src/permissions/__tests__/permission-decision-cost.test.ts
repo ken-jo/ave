@@ -87,7 +87,7 @@ interface DecisionWorkCase {
   command: string;
   dialect: "bash" | "powershell";
   runsSandboxed: boolean;
-  /** `limit`: the evidence budget is spent, so the mode answers this contained command without the analysis. */
+  /** `limit`: the evidence budget is spent and a person must approve. */
   expected: "ask" | "limit";
   words?: number;
   executableChars: number;
