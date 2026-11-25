@@ -65,6 +65,9 @@ beforeAll(() => {
   // The write floor reads the system and user Git configuration; neither may leak into the recording.
   vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
   vi.stubEnv("GIT_CONFIG_GLOBAL", join(fixture.root, "gitconfig"));
+  vi.stubEnv("GIT_CONFIG_SYSTEM", undefined);
+  // A runner that sets the XDG base directories would move the rows derived from them off the fixture home.
+  for (const name of ["XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]) vi.stubEnv(name, undefined);
 });
 
 afterEach(() => setProcessPlatform(HOST));
