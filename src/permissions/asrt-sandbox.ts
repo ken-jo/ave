@@ -43,7 +43,7 @@ import { isAveHomeReadReallowed } from "./ave-home-read-boundary.js";
 import { isBoundStageWorkspacePath } from "./stage-workspace-binding.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, resolvePathForPolicy, SENSITIVE_PATH_ENTRIES, sensitiveEntryOnSandboxFloor } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
-import { assertMacSandboxWrapperSize, hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
+import { assertMacSandboxWrapperSize, hardenMacSandboxGitMetadata, macAppOwnedDirectoryWriteRules } from "./macos-sandbox-wrap.js";
 import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-cleanup.js";
 import { createLogger } from "../lib/logger.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
@@ -1207,13 +1207,24 @@ function spelledPathEntries(entries: readonly FilesystemPathEntry[], field: stri
   });
 }
 
+// The Ave home and the private roots, for a wrap whose write roots hold one of them. A wrap on the shared config names no roots of
+// its own and gets no rule. Linux needs none: its read mask is a mount over the directory, which takes the writes with it.
+function macAppOwnedWriteRules(applied: Partial<FilesystemConfig> | undefined): string {
+  if (applied?.allowWrite === undefined) return "";
+  const spellings = (path: string): string[] => [...new Set([resolve(path), canonicalizePathForMatch(path)])];
+  return macAppOwnedDirectoryWriteRules(
+    [aveHome(), ...appOwnedSandboxPrivateRoots()].flatMap(spellings),
+    applied.allowWrite.flatMap(entry => spellings(typeof entry === "string" ? entry : entry.path)),
+  );
+}
+
 function applySandboxFilesystemPolicy(
   wrapped: SandboxWrapResult,
   applied: Partial<FilesystemConfig> | undefined,
   cleanupAfterCommand: () => void,
 ): SandboxWrapResult {
   try {
-    if (process.platform === "darwin") return hardenMacSandboxGitMetadata(wrapped);
+    if (process.platform === "darwin") return hardenMacSandboxGitMetadata(wrapped, macAppOwnedWriteRules(applied));
     if (process.platform !== "linux") return wrapped;
     // The same slice the wrap was built from — the re-allows and write denies ASRT was given, after the floor withheld what it withholds.
     return hardenLinuxSandboxWrap(wrapped, {

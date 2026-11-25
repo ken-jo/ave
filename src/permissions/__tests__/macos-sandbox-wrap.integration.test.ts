@@ -7,6 +7,7 @@ import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../_
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { cleanupAsrtSandboxAfterCommand, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
 import { openEgressInvocation } from "../egress-invocations.js";
+import { mxcRuntimeRootFloorPath } from "../mxc-runtime-root.js";
 
 describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())("native typed repository markers", () => {
   let root: string;
@@ -198,5 +199,87 @@ describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())
     expect(readdirSync(join(project, ".ave", "commands"))).toEqual(["deploy.md"]);
     expect(readdirSync(join(project, "fresh", ".ave"))).toEqual([]);
     expect(readdirSync(join(project, "absent"))).toEqual([]);
+  });
+});
+
+describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())("native app-owned state under an ancestor write root", () => {
+  const inherited = { home: process.env.AVE_HOME, base: process.env.AVE_TEST_SANDBOX_BASE };
+  let outside: string;
+  let account: string;
+  let aveHomeDirectory: string;
+  let runtimeRoot: string;
+  beforeAll(async () => {
+    outside = realpathSync(mkdtempSync(join(tmpdir(), "sandbox-home-floor-")));
+    // An account folder that holds the Ave home and the cache directory, as the user's home folder does. The home has a relocated
+    // name, so the `.ave` entry rule is not what holds it in place.
+    account = join(outside, "account");
+    aveHomeDirectory = join(account, "ave-data");
+    mkdirSync(join(account, "Library", "Caches"), { recursive: true });
+    process.env.AVE_HOME = aveHomeDirectory;
+    process.env.AVE_TEST_SANDBOX_BASE = join(account, "Library", "Caches");
+    runtimeRoot = mxcRuntimeRootFloorPath();
+    expect(runtimeRoot.startsWith(`${account}/Library/Caches/`)).toBe(true);
+    await initializeRequiredSandbox({ allowedDomains: [] });
+  });
+  afterAll(async () => {
+    if (isAsrtSandboxActive()) await resetAsrtSandbox();
+    for (const [name, value] of [["AVE_HOME", inherited.home], ["AVE_TEST_SANDBOX_BASE", inherited.base]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    if (outside) rmSync(outside, { recursive: true, force: true });
+  });
+
+  it("keeps the Ave home and the runtime root read-only, and the wrap's own directories inside the home writable", async () => {
+    const hostState = {
+      "other-home": join(aveHomeDirectory, "sandbox", "home", "other", "marker"),
+      handoff: join(aveHomeDirectory, "sandbox", "handoff", "terminal", "command"),
+      plugin: join(aveHomeDirectory, "plugins", "extension", "dist", "index.js"),
+      runtime: join(aveHomeDirectory, "runtime", "layout"),
+      mcp: join(aveHomeDirectory, "mcp", "server", "state"),
+      "runtime-root": join(runtimeRoot, "run", "state"),
+    };
+    for (const path of Object.values(hostState)) {
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, "host");
+    }
+    const ownHome = join(aveHomeDirectory, "sandbox", "home", "own");
+    const workspace = join(aveHomeDirectory, "workspace");
+    for (const directory of [ownHome, workspace]) mkdirSync(directory, { recursive: true });
+    const planted = [join(aveHomeDirectory, "runtime", "planted"), join(aveHomeDirectory, "planted"), join(runtimeRoot, "planted")];
+    const result = await runConfined([
+      ...Object.entries(hostState).map(([name, path]) => `printf x >> '${path}' 2>/dev/null; echo "${name}=$?"`),
+      ...planted.map((path, index) => `printf x > '${path}' 2>/dev/null; echo "plant-${index}=$?"`),
+      `mkdir '${join(aveHomeDirectory, "sandbox", "home", "new")}' 2>/dev/null; echo "new-home=$?"`,
+      `rm -f '${hostState.plugin}' 2>/dev/null; echo "remove=$?"`,
+      `mv '${join(aveHomeDirectory, "sandbox", "home", "other")}' '${join(ownHome, "taken")}' 2>/dev/null; echo "take=$?"`,
+      `mv '${aveHomeDirectory}' '${aveHomeDirectory}-moved' 2>/dev/null; echo "move-home=$?"`,
+      `mv '${join(account, "Library")}' '${join(account, "Library-moved")}' 2>/dev/null; echo "move-ancestor=$?"`,
+      `printf x > '${join(ownHome, "file")}'; echo "own-home=$?"`,
+      `mkdir '${join(ownHome, "tmp")}'; echo "own-home-create=$?"`,
+      `printf x > '${join(workspace, "file")}'; echo "workspace=$?"`,
+      `printf x > '${join(account, "ordinary")}'; echo "account=$?"`,
+    ].join("\n"), account, [account, ownHome, workspace]);
+    expect(result.grantedWrite).toEqual([account, ownHome, workspace]);
+    expect(statuses(result.stdout)).toEqual({
+      "other-home": "1", handoff: "1", plugin: "1", runtime: "1", mcp: "1", "runtime-root": "1",
+      "plant-0": "1", "plant-1": "1", "plant-2": "1", "new-home": "1", remove: "1", take: "1",
+      "move-home": "1", "move-ancestor": "1", "own-home": "0", "own-home-create": "0", workspace: "0", account: "0",
+    });
+    for (const path of Object.values(hostState)) expect(readFileSync(path, "utf8")).toBe("host");
+    for (const path of planted) expect(existsSync(path)).toBe(false);
+    expect(readdirSync(ownHome).sort()).toEqual(["file", "tmp"]);
+  });
+
+  it("adds nothing for a wrap whose roots do not hold the home", async () => {
+    const project = join(outside, "project");
+    const ownHome = join(aveHomeDirectory, "sandbox", "home", "own");
+    for (const directory of [project, ownHome]) mkdirSync(directory, { recursive: true });
+    const result = await runConfined([
+      `printf x > ordinary; echo "project=$?"`,
+      `printf x > '${join(ownHome, "file")}'; echo "own-home=$?"`,
+      `printf x > '${join(aveHomeDirectory, "planted")}' 2>/dev/null; echo "home=$?"`,
+    ].join("\n"), project, [project, ownHome]);
+    expect(statuses(result.stdout)).toEqual({ project: "0", "own-home": "0", home: "1" });
   });
 });

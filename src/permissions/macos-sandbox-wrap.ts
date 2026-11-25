@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import { parseSandboxWrappedWords, quoteSandboxWrappedWord } from "./sandbox-wrapped-command.js";
 import { t } from "../i18n/index.js";
 
@@ -21,9 +22,38 @@ const GIT_METADATA_RULES = [
   `(deny file-write-create file-write-unlink ${AVE_PROJECT_MARKER_FILTER})`,
 ].join("\n");
 
-// Add typed entry protection that the runtime's subtree-deny API cannot express.
+function isAtOrUnder(parent: string, path: string): boolean {
+  return path === parent || path.startsWith(parent.endsWith("/") ? parent : `${parent}/`);
+}
+
+// Write denies for app-owned directories (the Ave home, the confined processes' private roots) that lie inside one of the wrap's write
+// roots, as they do when the working directory is the user's home folder. The read floor already denies them as whole directories,
+// but a Seatbelt read deny leaves an appended or blind write open, and the runtime's write denies always win over its grants, so
+// they cannot hold a directory whose children the wrap itself is granted (its HOME, temp and workspace). These rules can: each
+// denies the directory except the wrap's own write roots inside it. They only deny, and only when a root contains the directory.
+// Every path is given in each spelling it has; Seatbelt matches the resolved one.
+export function macAppOwnedDirectoryWriteRules(directories: readonly string[], writeRoots: readonly string[]): string {
+  const rules = new Set<string>();
+  for (const directory of directories) {
+    if (!writeRoots.some(root => root !== directory && isAtOrUnder(root, directory))) continue;
+    const own = [...new Set(writeRoots.filter(root => isAtOrUnder(directory, root)))];
+    const filter = `(subpath ${JSON.stringify(directory)})`;
+    // Create and unlink are named beside the wildcard: the runtime re-allows those two operations for every write root by name, and a
+    // rule that names an operation outranks a wildcard rule whatever their order.
+    rules.add(`(deny file-write* file-write-create file-write-unlink ${own.length === 0 ? filter
+      : `(require-all ${filter} ${own.map(root => `(require-not (subpath ${JSON.stringify(root)}))`).join(" ")})`})`);
+    // Moving an ancestor would carry the directory out from under its path.
+    for (let ancestor = posix.dirname(directory); ancestor !== posix.dirname(ancestor); ancestor = posix.dirname(ancestor)) {
+      rules.add(`(deny file-write-unlink (literal ${JSON.stringify(ancestor)}))`);
+    }
+  }
+  return [...rules].join("\n");
+}
+
+// Add typed entry protection that the runtime's subtree-deny API cannot express, and the caller's own deny rules after it.
 export function hardenMacSandboxGitMetadata<T extends { readonly argv: string[]; readonly env: NodeJS.ProcessEnv }>(
   wrapped: T,
+  appOwnedRules = "",
 ): T {
   if (wrapped.argv.length !== 3 || wrapped.argv[1] !== "-c") {
     throw new Error("macOS sandbox wrapper has an unexpected command shape");
@@ -39,7 +69,7 @@ export function hardenMacSandboxGitMetadata<T extends { readonly argv: string[];
   if (!profile?.startsWith("(version 1)") || words[profileIndex + 2]?.value !== "-c" || words.length !== profileIndex + 4) {
     throw new Error("macOS sandbox wrapper has an unexpected profile shape");
   }
-  const argv = words.map((word, index) => index === profileIndex ? `${profile}\n${GIT_METADATA_RULES}` : word.value);
+  const argv = words.map((word, index) => index === profileIndex ? `${profile}\n${GIT_METADATA_RULES}${appOwnedRules ? `\n${appOwnedRules}` : ""}` : word.value);
   argv[0] = "/usr/bin/env";
   const command = argv.map(quoteSandboxWrappedWord).join(" ");
   const hardened = { ...wrapped, argv: [wrapped.argv[0]!, "-c", command] };
