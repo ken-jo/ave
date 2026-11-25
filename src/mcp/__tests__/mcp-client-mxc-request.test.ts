@@ -68,10 +68,13 @@ vi.mock("../../shared/ave-home.js", async (original) => ({
   aveHome: () => "C:\\ave",
 }));
 // The staging parent start-up establishes under the runtime root, as a synthetic drive-letter path.
-vi.mock("../../permissions/mxc-runtime-root.js", async (original) => ({
-  ...await original<typeof import("../../permissions/mxc-runtime-root.js")>(),
-  mxcStagingParent: () => "C:\\runtime\\staging",
-}));
+vi.mock("../../permissions/mxc-runtime-root.js", async (original) => {
+  const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../__tests__/support/mxc-staging-parent.js");
+  return {
+    ...await original<typeof import("../../permissions/mxc-runtime-root.js")>(),
+    mxcStagingParent: () => SYNTHETIC_MXC_STAGING_PARENT,
+  };
+});
 // Synthetic drive-letter paths: the server executable is a file, staging directories exist once made.
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();

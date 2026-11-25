@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTempDirs } from "../test-helpers.js";
 import { setProcessPlatform } from "./process-platform.js";
 import { useConfigurationOwner } from "./configuration-owner.js";
-import { hostMxcStagingParent, SYNTHETIC_MXC_STAGING_PARENT } from "./mxc-staging-parent.js";
+import { mxcStagingParentFor, SYNTHETIC_MXC_STAGING_PARENT } from "./mxc-staging-parent.js";
 import { nativePluginLaunch } from "./mxc-plugin-launch.js";
 import {
   SIMULATED_MXC_CACHE_HOME, simulatedConfigurationFs, simulatedConfigurationHandles, simulatedRuntimeRoot, simulatedSandboxProcessHome, simulatedWindowsPathFacts,
@@ -136,10 +136,21 @@ describe("simulated container runtime root", () => {
     }
   });
 
-  it.each(["win32", "linux"] as const)("hands a %s host a staging parent its synthetic launch passes the holder check on", nativeHost => {
-    const parent = hostMxcStagingParent(nativeHost);
-    if (nativeHost !== "win32") expect(parent).toBe(SYNTHETIC_MXC_STAGING_PARENT);
-    const { home, temp } = nativePluginLaunch({}, parent);
-    expect(() => assertMxcHolderStaging({ stagingParent: parent, home, temp })).not.toThrow();
+  // Production asks with a positional platform; the installed function must not read it as the host.
+  const asProductionAsks = (parent: () => string): string => (parent as (...args: unknown[]) => string)("win32");
+
+  it("hands a foreign host's win32 staging request the synthetic parent its launch passes the holder check on", () => {
+    const parent = mxcStagingParentFor("linux", () => "/tmp/mxc-staging-example");
+    const stagingParent = asProductionAsks(parent);
+    const { home, temp } = nativePluginLaunch({}, parent());
+    expect(() => assertMxcHolderStaging({ stagingParent, home, temp })).not.toThrow();
+    expect(stagingParent).toBe(SYNTHETIC_MXC_STAGING_PARENT);
+  });
+
+  it("hands a Windows host its suite parent with or without a platform argument", () => {
+    const parent = mxcStagingParentFor("win32", () => "D:\\example\\mxc-staging-x");
+    expect([parent(), asProductionAsks(parent)]).toEqual(["D:\\example\\mxc-staging-x", "D:\\example\\mxc-staging-x"]);
+    const { home, temp } = nativePluginLaunch({}, parent());
+    expect(() => assertMxcHolderStaging({ stagingParent: asProductionAsks(parent), home, temp })).not.toThrow();
   });
 });

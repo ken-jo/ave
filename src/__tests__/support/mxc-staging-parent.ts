@@ -19,7 +19,11 @@ export function suiteMxcStagingParent(): string {
 const host = process.platform;
 
 /** The staging parent a suite mocks `mxcStagingParent` with: its own real one on a Windows host, the synthetic drive
- * path on another kernel, which no disk call reaches. */
-export function hostMxcStagingParent(nativeHost: NodeJS.Platform = host): string {
-  return nativeHost === "win32" ? suiteMxcStagingParent() : SYNTHETIC_MXC_STAGING_PARENT;
+ * path on another kernel, which no disk call reaches. The host is bound here: the returned function ignores the
+ * platform production passes. */
+export function mxcStagingParentFor(
+  nativeHost: NodeJS.Platform = host,
+  suiteParent: () => string = suiteMxcStagingParent,
+): () => string {
+  return nativeHost === "win32" ? () => suiteParent() : () => SYNTHETIC_MXC_STAGING_PARENT;
 }

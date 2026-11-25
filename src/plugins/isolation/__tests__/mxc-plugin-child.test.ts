@@ -21,10 +21,13 @@ vi.mock("../../../lib/logger.js", async (importOriginal) => {
 
 const spawn = vi.hoisted(() => vi.fn());
 // The staging parent start-up establishes under the runtime root, as a synthetic path.
-vi.mock("../../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../../permissions/mxc-runtime-root.js")>(),
-  mxcStagingParent: () => "C:\\runtime\\staging",
-}));
+vi.mock("../../../permissions/mxc-runtime-root.js", async (importOriginal) => {
+  const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../../__tests__/support/mxc-staging-parent.js");
+  return {
+    ...await importOriginal<typeof import("../../../permissions/mxc-runtime-root.js")>(),
+    mxcStagingParent: () => SYNTHETIC_MXC_STAGING_PARENT,
+  };
+});
 vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../permissions/confined-child.js")>(),
   spawnMxcConfinedChild: spawn,

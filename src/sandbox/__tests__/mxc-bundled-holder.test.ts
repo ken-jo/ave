@@ -52,14 +52,17 @@ vi.mock("../../permissions/mxc-filesystem-ownership.js", async (original) => {
   };
 });
 // The staging parent start-up establishes under the runtime root, on the in-memory drive below.
-vi.mock("../../permissions/mxc-runtime-root.js", async (original) => ({
-  ...await original<typeof import("../../permissions/mxc-runtime-root.js")>(),
-  mxcStagingParent: () => {
-    state.stagingParentCalls += 1;
-    if (state.stagingParentRefusal !== undefined && state.stagingParentCalls >= state.stagingParentRefusalFrom) throw state.stagingParentRefusal;
-    return "C:\\runtime\\staging";
-  },
-}));
+vi.mock("../../permissions/mxc-runtime-root.js", async (original) => {
+  const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../__tests__/support/mxc-staging-parent.js");
+  return {
+    ...await original<typeof import("../../permissions/mxc-runtime-root.js")>(),
+    mxcStagingParent: () => {
+      state.stagingParentCalls += 1;
+      if (state.stagingParentRefusal !== undefined && state.stagingParentCalls >= state.stagingParentRefusalFrom) throw state.stagingParentRefusal;
+      return SYNTHETIC_MXC_STAGING_PARENT;
+    },
+  };
+});
 vi.mock("../../permissions/windows-process-start-time.js", () => ({ readWindowsProcessRunStates: state.probe }));
 // A small in-memory Windows drive for drive-letter paths; every other path reaches the real filesystem.
 vi.mock("node:fs", async (original) => {
