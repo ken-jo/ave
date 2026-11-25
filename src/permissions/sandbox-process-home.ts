@@ -13,7 +13,8 @@ import { basename, dirname, isAbsolute, join, win32 } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
 import { appOwnedSandboxHomeRoot, ensureSandboxPrivateRoot } from "./asrt-sandbox.js";
-import { mxcSandboxHomesParent } from "./mxc-runtime-root.js";
+import { t } from "../i18n/index.js";
+import { MxcRuntimeRootError, mxcSandboxHomesParent } from "./mxc-runtime-root.js";
 import { forgetIssuedContainerHome, liveSandboxProcessHomes, recordIssuedContainerHome } from "./sandbox-home-registry.js";
 import { drainAgentObservationHome, registerAgentObservationHome } from "../tools/agent-observation-context.js";
 import { readWindowsProcessRunStates, type ProcessRunStateProbe } from "./windows-process-start-time.js";
@@ -35,8 +36,29 @@ export function sandboxProcessHomesInUse(): ReadonlySet<string> {
 
 // Where a sandbox HOME is created. On a Windows host: `homes` under the container runtime root (`mxcSandboxHomesParent`), never the host temp directory; a root that cannot be proved private refuses the HOME. Elsewhere: the app-owned root (`appOwnedSandboxHomeRoot`). Either is on the sandbox read floor, and each confined process is re-opened its own HOME alone.
 function sandboxHomeParent(platform: NodeJS.Platform): string {
-  if (platform === "win32" && process.platform === "win32") return realpathSync.native(mxcSandboxHomesParent());
+  if (platform === "win32" && process.platform === "win32") {
+    try {
+      return realpathSync.native(mxcSandboxHomesParent());
+    } catch (error) {
+      if (error instanceof MxcRuntimeRootError) throw new SandboxHomeUnavailableError(error);
+      throw error;
+    }
+  }
   return realpathSync.native(ensureSandboxPrivateRoot(appOwnedSandboxHomeRoot()));
+}
+
+/** No sandbox HOME can be made on this Windows host until a restart proves the container runtime root private, so no
+ * process that needs one (terminal, shells, MCP servers, workers, plugins, the memory map) starts. */
+export class SandboxHomeUnavailableError extends Error {
+  readonly code = "sandbox-home-unavailable";
+  constructor(cause: unknown) {
+    super(t("sandboxPolicy.homesUnavailable"), { cause });
+    this.name = "SandboxHomeUnavailableError";
+  }
+}
+
+export function isSandboxHomeUnavailable(error: unknown): error is SandboxHomeUnavailableError {
+  return error instanceof Error && (error as { code?: unknown }).code === "sandbox-home-unavailable";
 }
 
 export interface SandboxHomeOwner {
