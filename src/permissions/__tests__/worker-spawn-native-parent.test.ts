@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 
-const state = vi.hoisted(() => ({ plan: undefined as unknown, holdCompletion: false,
+const state = vi.hoisted(() => ({ plan: undefined as unknown, holdCompletion: false, denyWrite: [] as string[],
   natives: [] as Array<{ label: string; dispose: ReturnType<typeof vi.fn> }> }));
 vi.mock("../asrt-sandbox.js", async (original) => ({
   ...await original<typeof import("../asrt-sandbox.js")>(),
@@ -13,7 +13,7 @@ vi.mock("../asrt-sandbox.js", async (original) => ({
   runWithSandboxWritePreflight: async (_signal: AbortSignal | undefined, compose: () => unknown) => compose(),
   getDefaultSensitiveReadDenyPaths: () => [], getDefaultSensitiveWriteDenyEntries: () => [],
   admitMxcExtensionFilesystem: (request: { allowRead: string[]; allowWrite: string[] }) => ({
-    policy: { allowRead: request.allowRead, allowWrite: request.allowWrite, denyRead: [], denyWrite: [], protectedFloor: [] },
+    policy: { allowRead: request.allowRead, allowWrite: request.allowWrite, denyRead: [], denyWrite: state.denyWrite, protectedFloor: [] },
     assertStillValid: () => {},
   }),
 }));
@@ -80,6 +80,7 @@ describe.skipIf(process.platform !== "win32")("contained worker under a real plu
     state.plan = planWindowsExtensionHolder({ requested: true, mxc: { state: "available" }, fallback: { version: "0.0.80", ready: false } });
     state.natives.length = 0;
     state.holdCompletion = false;
+    state.denyWrite = [];
     __resetActiveWrappedWorkersForTest();
     unregisterProbe = registerMxcHolderReadinessProbe(async () => EVIDENCE as never);
     for (const dir of [join(pluginRoot(), "gen"), join(dataDir(), "cache"), join(dataDir(), "models"), join(pluginRoot(), "socket"), work()]) {
@@ -100,9 +101,10 @@ describe.skipIf(process.platform !== "win32")("contained worker under a real plu
     const launch = await prepareMxcPluginChildLaunch(intent);
     return spawnMxcPluginChild(launch, { ...intent, floorPierces: [] });
   };
-  const startWorker = (grants: { read?: string[]; write?: string[] } = {}) => spawnWorker({
+  const startWorker = (grants: { read?: string[]; write?: string[]; stateDirectory?: boolean } = {}) => spawnWorker({
     pluginId: PLUGIN, workerId: "indexer", command: process.execPath, control: "output-only-v1",
     allowReadPaths: grants.read ?? [work()], allowWritePaths: grants.write ?? [work()],
+    ...(grants.stateDirectory === true ? { stateDirectory: true } : {}),
   });
 
   it("refuses a worker whose declared grants nest with its parent's writable roots, before anything is created", async () => {
@@ -137,6 +139,29 @@ describe.skipIf(process.platform !== "win32")("contained worker under a real plu
     await exited;
   });
 
+
+  it("refuses a delegated worker widened to its parent's data root once a floor deny lies under it, before its state dir exists", async () => {
+    // Production floor denies under a writable root reach the parent's footprint through row 2's denied grants.
+    state.denyWrite = [join(dataDir(), ".git")];
+    const child = await startPluginChild();
+    const stateDir = join(pluginRoot(), "workers", "indexer");
+    await expect(startWorker({ read: [dataDir()], write: [dataDir()], stateDirectory: true }))
+      .rejects.toThrow("refusing a container grant that nests with its plugin's container process");
+    expect(existsSync(stateDir)).toBe(false);
+    expect(state.natives).toHaveLength(1);
+    child.link.terminate("stop");
+    await child.waitForExit();
+
+    // Control: the same equal-root grant is admitted when no deny lies under the parent's root.
+    state.denyWrite = [];
+    const replacement = await startPluginChild();
+    const worker = await startWorker({ read: [dataDir()], write: [dataDir()], stateDirectory: true });
+    const exited = new Promise<unknown>((resolve) => { worker.onExit(resolve); });
+    expect(state.natives).toHaveLength(3);
+    replacement.link.terminate("stop");
+    await replacement.waitForExit();
+    await exited;
+  });
   it("treats a parent row 2 has released as gone, though its adapter never reported termination", async () => {
     await startPluginChild();
     const parent = liveMxcPluginChildHolder(PLUGIN);
