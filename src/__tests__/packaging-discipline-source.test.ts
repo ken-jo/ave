@@ -1608,6 +1608,7 @@ describe("installer smoke and packaging discipline", () => {
       ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: build, VITEST_RESULT: vitest, DOCS_ONLY: docs,
       PLATFORM_CHECKS: selected, WINDOWS_PREPARATION_RESULT: native, WINDOWS_RESULT: native, MACOS_RESULT: native, LINUX_RESULT: native,
       WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
+      VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: "false", WINDOWS_TIER_RESULT: "skipped",
     } });
     expect(result.status, result.stderr + result.stdout).toBe(status);
   });
@@ -1627,6 +1628,7 @@ describe("installer smoke and packaging discipline", () => {
       DOCS_ONLY: "false", PLATFORM_CHECKS: "true", WINDOWS_PREPARATION_RESULT: preparation,
       WINDOWS_RESULT: shards, MACOS_RESULT: "success", LINUX_RESULT: "success",
       WINDOWS_ARM64_PATH_KIND: "true", WINDOWS_ARM64_PATH_KIND_RESULT: "success",
+      VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: "false", WINDOWS_TIER_RESULT: "skipped",
     } });
     expect(result.status, result.stderr + result.stdout).toBe(status);
   });
@@ -1746,7 +1748,7 @@ describe("installer smoke and packaging discipline", () => {
     // a cancellation cannot skip either, fails unless both succeeded.
     // Independent gates must report success through the required aggregate.
     const body = verification as string;
-    expect(body).toMatch(/^ {4}needs: \[build, vitest, windows-native-preparation, windows-permission-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins\]$/mu);
+    expect(body).toMatch(/^ {4}needs: \[build, vitest, vitest-tiers, windows-native-preparation, windows-permission-tests, windows-tier-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins\]$/mu);
     expect(body).toMatch(/^ {4}if: always\(\)$/mu);
     expect(body).not.toContain("cancelled()");
     expect(body).toContain("      - name: Require the build and every Vitest shard\n        if: always()\n");
@@ -1766,7 +1768,7 @@ describe("installer smoke and packaging discipline", () => {
     }
     const windowsPreparation = jobs.get("windows-native-preparation") ?? "";
     expect(windowsPreparation).toContain("needs: build");
-    expect(windowsPreparation).toContain("if: needs.build.outputs.platform_checks == 'true'");
+    expect(windowsPreparation).toContain("if: needs.build.outputs.platform_checks == 'true' || needs.build.outputs.windows_tier_tests == 'true'");
     const windows = jobs.get("windows-permission-tests") ?? "";
     expect(windows).toContain("needs: [build, windows-native-preparation]");
     expect(windows).toContain("if: needs.build.outputs.platform_checks == 'true' && needs.windows-native-preparation.result == 'success'");
