@@ -13,6 +13,7 @@ import { ensureFileAccess } from "./file-access-policy.js";
 import { FileTransferError } from "./file-transfer-error.js";
 import { FILE_TRANSFER_LIMITS, validateFileTransferLimits } from "./file-transfer-policy.js";
 import type { CopyPathInput, FileTransferLimits, TransferResult, TransferSession, TransferSummary } from "./file-transfer-types.js";
+import type { TargetSeal } from "../permissions/target-seal.js";
 import type { ToolExecutionContext } from "./types.js";
 
 type EntryKind = "file" | "directory";
@@ -168,11 +169,13 @@ class OwnedTransfer {
   accepting = true;
   stopping = false;
   sourceBusy = false;
+  private seal: TargetSeal | undefined;
   readonly onAbort = (): void => this.stop(new FileTransferError("cancelled", "File transfer was cancelled"));
 
   constructor(readonly request: TransferRequest, readonly context: ToolExecutionContext, limits: Readonly<FileTransferLimits>) {
     validateFileTransferLimits(limits);
     this.limits = Object.freeze({ ...limits });
+    this.seal = context.fileTargetSeal;
     this.signal = context.abortSignal ?? new AbortController().signal;
     this.summary = { sourcePath: "", destinationPath: "", files: 0, directories: 0, bytesWritten: 0 };
     this.signal.addEventListener("abort", this.onAbort, { once: true });
@@ -183,7 +186,7 @@ class OwnedTransfer {
     this.assertLocality();
     if (this.signal.aborted) throw new FileTransferError("cancelled", "File transfer was cancelled");
     if (this.stopping) throw this.firstFailure ?? new Error("File transfer is stopped");
-    this.observeLocality(() => this.context.fileTargetSeal?.verify());
+    this.observeLocality(() => this.seal?.verify());
   }
 
   readonly assertLocality = (): void => rethrowLocalityFailure(this.firstFailure);
@@ -367,6 +370,7 @@ class OwnedTransfer {
       throw error;
     }
     await this.verifyOwned(entry);
+    if (relativePath === "") this.seal = this.seal?.afterMutation?.(path) ?? this.seal;
     this.check();
     return entry;
   }

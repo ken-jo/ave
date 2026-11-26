@@ -11,7 +11,7 @@ import { selectDeclaredPathValues } from "../shared/dotted-field-value.js";
 import { isConfinedHostShellExecution } from "../permissions/host-shell-execution-plan.js";
 import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { criticalDeleteTargetFor } from "../permissions/sensitive-paths.js";
-import { sealedPersistenceGuard, sealsHold, sealTargets, type TargetSeal } from "../permissions/target-seal.js";
+import { assertWindowsTarget, observeWindowsTarget, sealedPersistenceGuard, sealsHold, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
 import { hookChainFromDispatch } from "./pipeline/audit-entries.js";
 import { runScriptHook, scriptHookRefusal } from "./invocation-services.js";
 import { HookInputMutationRequest, attachHookControlContext, hookInfluenceContext } from "../hooks/hook-influence.js";
@@ -1588,14 +1588,24 @@ async function runToolInvocationAttempt(
     const canonicalTargets: Array<{ filePath: string; canonicalPath: string; runtimePath: string }> = [];
     const isWindows = process.platform === "win32";
     let unsealedRuleSubject = isWindows ? scopedRuleSubjectFor(tool, finalInput, executionCwd) : undefined;
-    const resolveFileTarget = (filePath: string): (typeof canonicalTargets)[number] => {
+    const resolveFileTarget = (filePath: string) => {
+      const seen = new Map<string, ReturnType<typeof observeWindowsTarget>>();
+      const observe = (path: string) => {
+        let target = seen.get(path);
+        if (target === undefined) {
+          target = observeWindowsTarget(path, unsealedRuleSubject?.kind === "edit");
+          seen.set(path, target);
+        }
+        return target.path;
+      };
       const runtimePath = unsealedRuleSubject?.kind === "edit"
-        ? resolveShellFilesystemPath(filePath, executionCwd)
-        : resolvePathForPolicy(filePath);
-      if (unsealedRuleSubject?.kind === "edit" && process.platform !== "win32" && runtimePath.includes("\\")) {
-        throw new Error("Ambiguous write path");
-      }
-      return { filePath, canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), runtimePath };
+        ? resolveShellFilesystemPath(filePath, executionCwd, undefined, observe) : observe(filePath);
+      // The lexical and physical readings of parent traversal must also agree on the object.
+      const evidence = [...seen.values()].filter(target => target.path === runtimePath);
+      const observation = evidence[0];
+      if (observation === undefined) throw new TargetIdentityChangedError();
+      for (const other of evidence.slice(1)) assertWindowsTarget(observation, other);
+      return { target: { filePath, canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), runtimePath }, observation };
     };
     // Sealed by the initial path judgment: each operand's runtime path and the project anchors of its write judgment.
     let fileTargetSeal: TargetSeal | undefined;
@@ -2061,7 +2071,8 @@ async function runToolInvocationAttempt(
           try {
             directorySeal = withLocalityDecision(() => {
               assertFileTargetsUnchanged();
-              return sealTargets(() => resolvePathForPolicy(grantedDirectory));
+              const expected = observeWindowsTarget(grantedDirectory);
+              return { verify: () => withLocalityDecision(() => assertWindowsTarget(expected, observeWindowsTarget(grantedDirectory))) };
             });
           } catch { return { allowed: false, result: await denyFileTargets(changedTargetReason) }; }
         }
@@ -2474,7 +2485,8 @@ async function runToolInvocationAttempt(
     const pathEffect = requiredTier(invocationCategory);
     const nativeFileWrite = isCanonicalFileTool(tool) && invocationCategory === "write" && !brokeredFileRouteSelected;
     const initialPathJudgment = () => withLocalityDecision(() => {
-      for (const target of targetFilePaths.map(resolveFileTarget)) canonicalTargets.push(target);
+      const expected = targetFilePaths.map(resolveFileTarget);
+      canonicalTargets.push(...expected.map(({ target }) => target));
       const sensitiveTarget = brokeredFileRouteSelected ? undefined : PermissionManager.checkPathScope({
         canonicalTargets,
         allowedDirectories: invocationAllowedScope.directories,
@@ -2490,15 +2502,28 @@ async function runToolInvocationAttempt(
       const rawProjectRoots = nativeFileWrite ? [executionCwd, ...(permissionContext.projectDirectories ?? [])] : [];
       const projectRoots = sanitizeAllowedDirectories(rawProjectRoots);
       const lexicalProjectRoots = rawProjectRoots.map((root) => caseFoldForMatch(foldCanonicalPathSeparators(resolveToolPathForPermission(root, executionCwd))));
-      const judgeProjectWrite = (roots: readonly string[]): boolean => nativeFileWrite && areProjectWriteTargetsInside(canonicalTargets,
+      const judgeProjectWrite = (targets: typeof canonicalTargets, roots: readonly string[]): boolean => nativeFileWrite && areProjectWriteTargetsInside(targets,
         lexicalProjectRoots, roots, unsealedRuleSubject?.kind === "edit" ? unsealedRuleSubject.paths : undefined);
-      const insideProject = judgeProjectWrite(projectRoots);
-      if (process.platform === "win32" && canonicalTargets.length > 0) fileTargetSeal = sealTargets(() => {
-        const targets = canonicalTargets.map((target) => resolveFileTarget(target.filePath).runtimePath);
-        if (!nativeFileWrite) return JSON.stringify(targets);
-        const roots = sanitizeAllowedDirectories(rawProjectRoots);
-        return JSON.stringify([targets, roots, judgeProjectWrite(roots)]);
+      const insideProject = judgeProjectWrite(canonicalTargets, projectRoots);
+      const targetKey = (path: string) => caseFoldForMatch(foldCanonicalPathSeparators(path));
+      const createFileSeal = (mutated: ReadonlySet<string>): TargetSeal => ({
+        verify: () => withLocalityDecision(() => {
+          const current = targetFilePaths.map(resolveFileTarget);
+          for (const [index, { target, observation }] of expected.entries()) {
+            const actual = current[index]!.observation;
+            if (mutated.has(targetKey(target.filePath)) || mutated.has(target.canonicalPath)) {
+              if (actual.path !== observation.path) throw new TargetIdentityChangedError();
+            } else assertWindowsTarget(observation, actual);
+          }
+          if (nativeFileWrite) {
+            const roots = sanitizeAllowedDirectories(rawProjectRoots);
+            if (JSON.stringify(roots) !== JSON.stringify(projectRoots) ||
+                judgeProjectWrite(current.map(({ target }) => target), roots) !== insideProject) throw new TargetIdentityChangedError();
+          }
+        }),
+        afterMutation: (path) => createFileSeal(new Set([...mutated, targetKey(path)])),
       });
+      if (canonicalTargets.length > 0) fileTargetSeal = createFileSeal(new Set());
       return { sensitiveTarget, linkedTargets, projectRoots, insideProject };
     });
     let initialPathScope: ReturnType<typeof initialPathJudgment> | undefined;

@@ -745,9 +745,13 @@ async function checkpointMutation<T>(
       return undefined;
     });
     const affected = new Set<StoredChange>();
+    let postEffectSeal = seal;
     const recordEffect = (path: string) => {
       const change = effectPaths.get(path);
-      if (change) affected.add(change);
+      if (change) {
+        affected.add(change);
+        postEffectSeal = postEffectSeal?.afterMutation?.(path) ?? postEffectSeal;
+      }
     };
     const removeUnchanged = async (inspectTargets: boolean) => {
       const discarded = new Set(tracksEffects ? changes.filter((change) => !affected.has(change)) : []);
@@ -771,7 +775,7 @@ async function checkpointMutation<T>(
         if (captures.at(-1) !== change
           || captures.some((entry, index) => index > 0 && captures[index - 1].afterHash !== entry.beforeHash)) continue;
         const current = isWindows
-          ? await snapshotForBookkeeping(change.path, seal)
+          ? await snapshotForBookkeeping(change.path, postEffectSeal)
           : await snapshot(change.path).catch(() => undefined);
         if (!current || hash(current.bytes) !== change.afterHash) continue;
         const first = captures[0];

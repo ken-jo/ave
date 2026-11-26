@@ -1,5 +1,5 @@
 import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
-import { sealTargets, type TargetSeal } from "./target-seal.js";
+import { assertWindowsTarget, observeWindowsTarget, TargetIdentityChangedError, type TargetSeal } from "./target-seal.js";
 import { bindPendingAnswerRequest, openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, spendStandingAnswer, type PendingAnswerVerdict, type StandingAnswer } from "./pending-answer-policy.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf, type RemoteControllerAuthority } from "../shared/chat-origin.js";
 // Actual host effects enter the common permission pipeline before recording and execution.
@@ -10,7 +10,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { ApprovalGate, ApprovalChoice, AnsweredRecord, AnsweredProvenance } from "./approval-gate.js";
 import type { PermissionCheckContext, PermissionCheckResult, PermissionManager } from "./permission-manager.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
-import { canonicalizePathForMatch, caseFoldForMatch, resolvePathForPolicy } from "./sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { decidePermission, NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { issueHostNetworkSubject } from "./host-network-subject.js";
 import type { ApprovalSurface } from "../shared/authorization-required.js";
@@ -250,14 +250,15 @@ function descriptorKey(pluginId: string, methodPath: string, identity: unknown):
 
 type EffectPath = { lexical: string; canonical: string; effect: "read" | "write" };
 
-function effectPaths(methodPath: string, effect: Effect, args: readonly unknown[], resolveStoragePath?: (relativePath: string) => string): EffectPath[] {
+function effectPaths(methodPath: string, effect: Effect, args: readonly unknown[], resolveStoragePath?: (relativePath: string) => string,
+  canonicalize = canonicalizePathForMatch): EffectPath[] {
   return withLocalityDecision(() => {
     const paths: EffectPath[] = [];
     if (methodPath.startsWith("storage.")) {
       const relativePath = methodPath === "storage.list" && args[0] === undefined ? "." : args[0];
       if (typeof relativePath !== "string" || !resolveStoragePath) throw new Error("Storage effects require a bound path resolver");
       const lexical = resolveStoragePath(relativePath);
-      paths.push({ lexical, canonical: canonicalizePathForMatch(lexical), effect });
+      paths.push({ lexical, canonical: canonicalize(lexical), effect });
     }
     if (methodPath === "spawnWorker") {
       const worker = args[0];
@@ -266,7 +267,7 @@ function effectPaths(methodPath: string, effect: Effect, args: readonly unknown[
           const grants = (worker as Record<string, unknown>)[field];
           if (Array.isArray(grants)) for (const path of grants) {
             if (typeof path !== "string") throw new Error("Worker filesystem grants must be paths");
-            paths.push({ lexical: path, canonical: canonicalizePathForMatch(path), effect });
+            paths.push({ lexical: path, canonical: canonicalize(path), effect });
           }
         }
       }
@@ -283,16 +284,37 @@ interface SealedEffectTargets {
 }
 
 function sealEffectTargets(methodPath: string, effect: Effect, args: readonly unknown[], resolveStoragePath?: (relativePath: string) => string): SealedEffectTargets {
-  return withLocalityDecision(() => {
-    const paths = effectPaths(methodPath, effect, args, resolveStoragePath);
-    const storageRootOf = (): string | undefined => resolveStoragePath && paths.length > 0 ? canonicalizePathForMatch(resolveStoragePath(".")) : undefined;
-    const storageRoot = storageRootOf();
-    const seal = sealTargets(() => JSON.stringify([
-      paths.map((path) => resolvePathForPolicy(path.lexical)),
-      resolveStoragePath && paths.length > 0 ? resolvePathForPolicy(resolveStoragePath(".")) : null,
-    ]));
-    return { paths, storageRoot, seal };
-  });
+  const observe = () => {
+    const observations = new Map<string, ReturnType<typeof observeWindowsTarget>>();
+    const canonicalize = (path: string): string => {
+      let observation = observations.get(path);
+      if (observation === undefined) {
+        observation = observeWindowsTarget(path);
+        observations.set(path, observation);
+      }
+      return foldCanonicalPathSeparators(observation.path);
+    };
+    const paths = effectPaths(methodPath, effect, args, resolveStoragePath, canonicalize);
+    const relativePath = methodPath === "storage.list" && args[0] === undefined ? "." : args[0];
+    const storageRoot = resolveStoragePath && paths.length > 0
+      ? canonicalize(methodPath.startsWith("storage.") && relativePath === "." ? paths[0]!.lexical : resolveStoragePath("."))
+      : undefined;
+    return { paths, storageRoot, observations };
+  };
+  const expected = withLocalityDecision(observe);
+  const seal: TargetSeal = {
+    verify: () => withLocalityDecision(() => {
+      const current = observe();
+      if (current.observations.size !== expected.observations.size || current.storageRoot !== expected.storageRoot
+        || current.paths.some((path, index) => path.lexical !== expected.paths[index]?.lexical)) throw new TargetIdentityChangedError();
+      for (const [path, observation] of expected.observations) {
+        const actual = current.observations.get(path);
+        if (actual === undefined) throw new TargetIdentityChangedError();
+        assertWindowsTarget(observation, actual);
+      }
+    }),
+  };
+  return { paths: expected.paths, storageRoot: expected.storageRoot, seal };
 }
 
 function insideOwnStorage(paths: readonly EffectPath[], storageRoot: string | undefined): boolean {

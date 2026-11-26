@@ -1530,21 +1530,25 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
 
     const sessionId = sessionIdOf(ctx);
     const summary: string[] = [];
+    let seal = ctx.fileTargetSeal;
     for (const change of planned) {
       if (change.kind === "delete") {
         if (sessionId !== undefined) forgetFileRead(sessionId, await fileReadKey(change.path));
-        await unlinkProjectFile(change.path, ctx.fileTargetSeal);
+        await unlinkProjectFile(change.path, seal);
+        seal = seal?.afterMutation?.(change.path) ?? seal;
         summary.push(`${PATCH_CHANGE_LETTER.delete} ${change.path}`);
         continue;
       }
       const written = change.kind === "add" ? change.path : change.destination;
-      ctx.fileTargetSeal?.verify();
+      seal?.verify();
       assertProjectWritePath(written);
       await mkdir(dirname(written), { recursive: true });
-      const identity = await atomicTextWrite(written, change.content, ctx.fileTargetSeal);
+      const identity = await atomicTextWrite(written, change.content, seal);
+      seal = seal?.afterMutation?.(written) ?? seal;
       if (change.kind === "update" && change.destination !== change.path) {
         if (sessionId !== undefined) forgetFileRead(sessionId, await fileReadKey(change.path));
-        await unlinkProjectFile(change.path, ctx.fileTargetSeal);
+        await unlinkProjectFile(change.path, seal);
+        seal = seal?.afterMutation?.(change.path) ?? seal;
       }
       if (sessionId !== undefined) await recordOwnWrite(sessionId, written, change.content, undefined, identity);
       summary.push(
@@ -2148,7 +2152,7 @@ async function noClobberMoveFile(
     seal?.verify();
     recordEffect?.(destination);
     await copyFile(source, destination, constants.COPYFILE_EXCL);
-    seal?.verify();
+    (seal?.afterMutation?.(destination) ?? seal)?.verify();
     await unlink(source);
     recordEffect?.(source);
     return { ok: true, value: null };

@@ -164,6 +164,8 @@ export interface LocalRoute {
   verdict: LocalPathVerdict;
   /** The physical path the walk reached; undefined when it found a missing name. */
   physical: string | undefined;
+  /** The last existing physical component when projecting a missing suffix. */
+  existingAncestor?: string;
   /** Whether the walk followed a symbolic link or junction to reach the physical path. */
   followedLink: boolean;
 }
@@ -332,9 +334,10 @@ export function admitRouteAncestor(route: LocalRoute, ancestor: string): LocalPa
 function walkWindowsRoute(
   path: string, decision: Decision, maxSymlinkHops: number, facts: LocalFilesystemFacts | undefined, projectMissing: boolean,
   rejectDanglingLink = false,
-): Pick<LocalRoute, "physical" | "followedLink"> {
+): Pick<LocalRoute, "physical" | "followedLink" | "existingAncestor"> {
   let hops = 0;
   let projectedMissing = false;
+  let existingAncestor: string | undefined;
   const entry = (candidate: string) => LocalPathVerdict.issue(candidate, false, decision);
   const routed = (candidate: string) => LocalPathVerdict.issue(candidate, true, decision);
   const reachedPastLink = (error: unknown, rest: readonly string[]): unknown => {
@@ -383,6 +386,7 @@ function walkWindowsRoute(
     const pending = components.slice(remaining);
     // A lookup that answers with another spelling re-enters the boundary: a share, a device or another drive.
     proveSpelling(physicalParent, decision, pending);
+    if (projectMissing) existingAncestor = physicalParent;
     facts?.onLocalPath(lexicalParent, physicalParent, false, hops !== 0);
     for (const [index, component] of pending.entries()) {
       if (component === ".") continue;
@@ -429,12 +433,13 @@ function walkWindowsRoute(
         catch (error) { throw unproven(candidate, rest, error); }
       } else physicalParent = candidate;
       proveSpelling(physicalParent, decision, rest);
+      if (projectMissing && !projectedMissing) existingAncestor = physicalParent;
       facts?.onLocalPath(lexicalParent, physicalParent, false, hops !== 0);
     }
     return physicalParent;
   };
   const physical = walk(path);
-  return { physical, followedLink: hops !== 0 };
+  return { physical, followedLink: hops !== 0, ...(existingAncestor === undefined ? {} : { existingAncestor }) };
 }
 
 function missingEntry(error: unknown): boolean {

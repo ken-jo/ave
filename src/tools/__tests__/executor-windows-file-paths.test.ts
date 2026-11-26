@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const filesystem = vi.hoisted(() => ({
   active: false,
   brokerActive: false,
-  entries: new Map<string, { path: string; directory: boolean; target?: string }>(),
+  entries: new Map<string, { path: string; directory: boolean; target?: string; ino: bigint }>(),
+  nextInode: 0n,
   acquire: vi.fn(),
   execute: vi.fn(),
   observeLstat: undefined as ((path: string) => void) | undefined,
@@ -49,7 +50,7 @@ vi.mock("node:fs", async (original) => {
         if (options?.throwIfNoEntry === false) return undefined;
         throw Object.assign(new Error("Virtual path does not exist"), { code: "ENOENT" });
       }
-      return { isSymbolicLink: () => entry.target !== undefined, isDirectory: () => entry.directory, isFile: () => !entry.directory };
+      return { dev: 1n, ino: entry.ino, isSymbolicLink: () => entry.target !== undefined, isDirectory: () => entry.directory, isFile: () => !entry.directory };
     },
     statSync: (path: Parameters<typeof actual.statSync>[0], options?: unknown) => {
       if (!isVirtual(path)) return actual.statSync(path, options as never);
@@ -104,7 +105,7 @@ let manager: PermissionManager;
 let requests: ApprovalRequestInput[];
 
 function entry(path: string, directory: boolean, target?: string) {
-  filesystem.entries.set(path.toLowerCase(), { path, directory, target });
+  filesystem.entries.set(path.toLowerCase(), { path, directory, target, ino: ++filesystem.nextInode });
 }
 beforeEach(() => {
   setWindowsDriveQueryForTest(() => LOCAL_DRIVE);
@@ -379,6 +380,13 @@ describe("sealed file targets up to their effects", () => {
   it.each(["allow-once", "allow-session"] as const)("commits no %s folder grant when the target changes during its audit", async (choice) => {
     const { result, execute, grants } = await runAnswered(choice, () => entry(OUTSIDE, false, INSIDE));
     expect(requests).toHaveLength(1);
+    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(t("be_executor.fileTargetChanged")) });
+    expect(grants).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("refuses a same-name replacement before granting or entering the file effect", async () => {
+    const { result, execute, grants } = await runAnswered("allow-once", () => entry(OUTSIDE, false));
     expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(t("be_executor.fileTargetChanged")) });
     expect(grants).toEqual([]);
     expect(execute).not.toHaveBeenCalled();
