@@ -9,7 +9,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { ApprovalGate, ApprovalChoice } from "./approval-gate.js";
 import type { PermissionCheckContext, PermissionCheckResult, PermissionManager } from "./permission-manager.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
-import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, resolvePathForPolicy } from "./sensitive-paths.js";
 import { decidePermission, NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { issueHostNetworkSubject } from "./host-network-subject.js";
 import type { ApprovalSurface } from "../shared/authorization-required.js";
@@ -67,6 +67,12 @@ export interface EffectGateContext {
 }
 
 const gateContextStorage = new AsyncLocalStorage<EffectGateContext>();
+const storageTargetSeal = new AsyncLocalStorage<TargetSeal>();
+
+export function verifyStorageEffectTargets(): void {
+  const seal = storageTargetSeal.getStore();
+  if (seal) holdEffectTargets(seal);
+}
 const authorizationRequiredLatch = new WeakMap<EffectGateContext, () => void>();
 const noApproverLatch = new WeakMap<EffectGateContext, () => void>();
 /** Frames whose invocation returned; work left running there keeps no once-grant. */
@@ -260,7 +266,10 @@ function sealEffectTargets(methodPath: string, effect: Effect, args: readonly un
     const paths = effectPaths(methodPath, effect, args, resolveStoragePath);
     const storageRootOf = (): string | undefined => resolveStoragePath && paths.length > 0 ? canonicalizePathForMatch(resolveStoragePath(".")) : undefined;
     const storageRoot = storageRootOf();
-    const seal = sealTargets(() => JSON.stringify([paths.map((path) => canonicalizePathForMatch(path.lexical)), storageRootOf() ?? null]));
+    const seal = sealTargets(() => JSON.stringify([
+      paths.map((path) => resolvePathForPolicy(path.lexical)),
+      resolveStoragePath && paths.length > 0 ? resolvePathForPolicy(resolveStoragePath(".")) : null,
+    ]));
     return { paths, storageRoot, seal };
   });
 }
@@ -596,7 +605,8 @@ export function enforceMutatingEffects<T extends object>(
           const effectContext = currentEffectGateContext();
           if (!isRemoteControllerBoundToSession(effectContext?.permissionContext?.remoteControllerAuthority, effectContext?.sessionId)) throw new Error("remote-controller-revoked");
           holdEffectTargets(targets.seal);
-          return Reflect.apply(original, target, snapshot.args);
+          const invoke = () => Reflect.apply(original, target, snapshot.args);
+          return path.startsWith("storage.") ? storageTargetSeal.run(targets.seal, invoke) : invoke();
         })();
       };
     } else if (typeof value === "function") {
