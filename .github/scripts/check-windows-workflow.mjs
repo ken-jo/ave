@@ -26,6 +26,14 @@ const TIER_JOB = "windows-tier-tests";
 const TEST_JOBS = [CONTAINED_JOB, TIER_JOB];
 const PREPARATION_JOB = "windows-native-preparation";
 const ARM64_JOB = "windows-arm64-path-kind";
+const PACKAGING_JOB = "windows-payload-packaging";
+const SCRIPT_TEST_JOB = "windows-script-tests";
+const DEV_BOOT_JOB = "windows-dev-boot";
+const VALIDATION_RESULTS = {
+  [PACKAGING_JOB]: "WINDOWS_PACKAGING_RESULT",
+  [SCRIPT_TEST_JOB]: "WINDOWS_SCRIPTS_RESULT",
+  [DEV_BOOT_JOB]: "WINDOWS_DEV_BOOT_RESULT",
+};
 const PATH_KIND_TIMEOUT_MINUTES = 30;
 // The condition each contained job's contained steps carry; arm64 steps carry only the job condition.
 const CONTAINED_CONDITIONS = new Map([
@@ -33,6 +41,9 @@ const CONTAINED_CONDITIONS = new Map([
   [CONTAINED_JOB, REGRESSION_CONDITION],
   [TIER_JOB, REGRESSION_CONDITION],
   [ARM64_JOB, undefined],
+  [PACKAGING_JOB, REGRESSION_CONDITION], // Contains both payload packaging commands and their child processes.
+  [SCRIPT_TEST_JOB, REGRESSION_CONDITION], // Contains the script test suite and its child processes.
+  [DEV_BOOT_JOB, REGRESSION_CONDITION], // Contains the development build and desktop boot smoke.
 ]);
 const CONTAINED_JOBS = [...CONTAINED_CONDITIONS.keys()];
 const WINDOWS_PLAN_PATH = "${{ runner.temp }}/windows-ci/windows-plan.json";
@@ -337,8 +348,8 @@ function checkPreparationCache(job) {
     || build.if !== REGRESSION_CONDITION + " && env.AVE_WINDOWS_PREP_VERIFIED != 'true'") {
     throw new Error("Windows preparation cache must verify or rebuild before any output is used");
   }
-  for (const name of ["Verify native background process ownership", "Verify both Windows native payload packages",
-    "Verify Windows folder classification", "Build and test patched Windows sandbox helper"]) {
+  for (const name of ["Verify native background process ownership", "Verify Windows folder classification",
+    "Build and test patched Windows sandbox helper"]) {
     const step = find(name);
     if (!before(build, step) || step.if !== REGRESSION_CONDITION || !before(step, seal)) {
       throw new Error("Windows preparation must run its checks on both cold and warm paths: " + name);
@@ -401,7 +412,9 @@ const HELPER_TRUST = {
     srtWin: "node .github/scripts/restore-windows-ci-inputs.mjs",
   },
 };
-HELPER_TRUST[TIER_JOB] = HELPER_TRUST[CONTAINED_JOB];
+for (const job of [TIER_JOB, PACKAGING_JOB, SCRIPT_TEST_JOB, DEV_BOOT_JOB]) {
+  HELPER_TRUST[job] = HELPER_TRUST[CONTAINED_JOB];
+}
 
 function executesHelper(line) {
   return CONTAINED_LINE_RE.test(line) || HELPER_EXECUTABLE_RE.test(line);
@@ -518,6 +531,23 @@ function checkTierSelection(jobs, tierCondition) {
   }
 }
 
+function checkValidationJobs(jobs, condition) {
+  const aggregate = jobs["build-and-test"];
+  for (const [id, variable] of Object.entries(VALIDATION_RESULTS)) {
+    const job = jobs[id];
+    if (job?.["runs-on"] !== "windows-2025" || job.if !== condition
+      || JSON.stringify(job.needs) !== JSON.stringify(["build", PREPARATION_JOB])
+      || !aggregate?.needs?.includes(id) || aggregate.steps?.[0]?.env?.[variable] !== `\${{ needs.${id}.result }}`) {
+      throw new Error(`${id}: Windows validation must follow preparation selection and feed build-and-test`);
+    }
+    const cleanup = job.steps?.at(-1);
+    if (cleanup?.run !== SETUP_COMMAND + " --cleanup"
+      || cleanup.if !== REGRESSION_CONDITION + " && always() && env.AVE_CI_JOB_ROOT != ''") {
+      throw new Error(`${id}: Windows validation must finish with containment cleanup`);
+    }
+  }
+}
+
 export function checkWindowsWorkflow(workflow, inspect) {
   const { jobs } = parse(workflow);
   checkArm64PathKindJob(jobs);
@@ -535,6 +565,7 @@ export function checkWindowsWorkflow(workflow, inspect) {
   }
   const tierJob = jobs[TIER_JOB];
   checkTierSelection(jobs, `${TIER_SELECTION} && ${prepared}`);
+  checkValidationJobs(jobs, `(${platform} || ${TIER_SELECTION}) && ${prepared}`);
   for (const [testJob, shards, tier] of [[job, WINDOWS_TEST_SHARDS, undefined], [tierJob, WINDOWS_TIER_TEST_SHARDS, "tiers"]]) {
     const strategy = testJob?.strategy;
     if (strategy?.["fail-fast"] !== false || Object.keys(strategy.matrix ?? {}).length !== 1
