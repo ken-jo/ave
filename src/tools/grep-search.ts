@@ -11,6 +11,7 @@ import { buildSafeChildEnv } from "./safe-env.js";
 import { resolvePinnedRipgrepExecutable } from "./ripgrep-executable.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../main/managed-child-processes.js";
 import { errorMessage } from "../shared/error-message.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 
 // Use only the pinned bundled search binary under an already-authorized root.
 // The search over the tree only names the files that match. Each one is then judged on its real path and read by the host
@@ -258,7 +259,6 @@ async function runRipgrep(
   // the file can lead out. An explicitly searched secret root admits what lies beneath it, judged on real paths too.
   const realRoot = await realpath(resolve(cwd, root));
   const explicitRealRoot = explicitSecretRoot === undefined ? undefined : realRoot;
-  // One policy pass for every listed path and real path of this search.
   const policy = createFilePathPolicy("read");
   const skip = createStageWorkspacesSkip(realRoot);
   const listing: ListingState = { exitCode: null, stderr: "" };
@@ -287,7 +287,8 @@ async function runRipgrep(
         searches.signal.throwIfAborted();
         // Check every result path: the search engine does not know the host's sensitive-path floor.
         const explicit = explicitSecretRoot !== undefined && isWithinAdmittedRoot(path, explicitSecretRoot);
-        if (policy.admissionDenied(path) !== null || (!explicit && policy.sensitive(path) !== null) || skip(resolve(cwd, path))) continue;
+        if (withLocalityDecision(() =>
+          policy.admissionDenied(path) !== null || (!explicit && policy.sensitive(path) !== null) || skip(resolve(cwd, path)))) continue;
         const search = searchBoundFile(executable, path, cwd, input, wanted, { real: realRoot, explicit: explicitRealRoot, skip }, policy, searches.signal);
         // A search cancelled after enough results were found settles with nobody waiting for it.
         search.catch(() => {});
@@ -451,7 +452,8 @@ async function searchBoundFile(
     judged = await realpath(resolve(cwd, path));
     if (!liesUnderRealRoot(judged, roots.real)) return [];
     explicit = roots.explicit !== undefined && isWithinAdmittedRoot(judged, roots.explicit);
-    if (policy.admissionDenied(judged) !== null || (!explicit && policy.sensitive(judged) !== null) || roots.skip(judged)) return [];
+    if (withLocalityDecision(() =>
+      policy.admissionDenied(judged) !== null || (!explicit && policy.sensitive(judged) !== null) || roots.skip(judged))) return [];
     handle = await open(judged, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   } catch {
     signal?.throwIfAborted();

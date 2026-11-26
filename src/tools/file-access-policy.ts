@@ -9,12 +9,13 @@ import {
   resolvePathForPolicy,
 } from "../permissions/sensitive-paths.js";
 import { createStageWorkspacesMatcher } from "../permissions/stage-workspace-binding.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 
 /** A path is judged as spelled and then as it resolves now. */
 function asSpelledThenResolved(match: (path: string) => string | null): (path: string) => string | null {
-  return (path) => match(path) ?? match(resolvePathForPolicy(path));
+  return (path) => withLocalityDecision(() => match(path) ?? match(resolvePathForPolicy(path)));
 }
 
 export function sensitiveFilePattern(path: string, effect: PathEffect = "read"): string | null {
@@ -26,9 +27,7 @@ export function admissionDeniedFilePattern(path: string, effect: PathEffect = "r
 }
 
 /**
- * `sensitiveFilePattern` and `admissionDeniedFilePattern` for the many paths of one pass, such as a search's results. The
- * policy's own locations (the Ave home, the configured key files) are looked up once for the pass; each path is still
- * resolved afresh.
+ * Reusable file path predicates. Resolved policy anchors are shared within the current locality decision.
  */
 export function createFilePathPolicy(effect: PathEffect = "read"): {
   sensitive: (path: string) => string | null;

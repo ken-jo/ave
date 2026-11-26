@@ -1,11 +1,12 @@
 // windows-permission
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, win32 } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { buildSandboxConfig } from "../../permissions/asrt-sandbox.js";
 import { createPathCanonicalizer, createSensitivePathCheck } from "../../permissions/sensitive-paths.js";
+import { createFilePathPolicy } from "../../tools/file-access-policy.js";
 import { openLocalityDecision, withLocalityDecision } from "../local-path-io.js";
 import { resolveShellFilesystemPath, verifyLocalFilesystemChain } from "../shell-filesystem-path.js";
 import { modelShellPath } from "../shell-native-path.js";
@@ -113,6 +114,25 @@ describe.runIf(process.platform === "win32")("drive locality is proven in each d
     expect(query.mock.calls).toEqual([[drive]]);
     expect(() => verifyLocalFilesystemChain(path)).not.toThrow();
     expect(query.mock.calls).toEqual([[drive], [drive]]);
+  });
+
+  it("rechecks relocated sensitivity anchors when reusing file policy after an await", async () => {
+    const home = join(root, "relocated");
+    const drive = home.slice(0, 2).toUpperCase();
+    mkdirSync(home);
+    vi.stubEnv("AVE_HOME", home);
+    const policy = createFilePathPolicy();
+    const secret = join(home, "secrets", "entry.txt");
+    expect(policy.admissionDenied(secret)).toBe("ave-home:secrets");
+    expect(policy.sensitive(secret)).toBe("ave-home:secrets");
+
+    await Promise.resolve();
+    mappings.set(drive, SHARE);
+    queries.length = 0;
+    const remappedSecret = win32.join("\\\\files.example\\share", secret.slice(3));
+    expect(policy.admissionDenied(remappedSecret)).toBe("ave-home:secrets");
+    expect(policy.sensitive(remappedSecret)).toBe("ave-home:secrets");
+    expect(queries).toContain(drive);
   });
 
   it("proves a listing's drive again for the first row after an await", async () => {
