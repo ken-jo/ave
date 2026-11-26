@@ -41,6 +41,20 @@ function entryDir(program?: string): string {
   return dir;
 }
 
+function replyFrame(message: unknown, payload = Buffer.alloc(0)): Buffer {
+  const json = Buffer.from(JSON.stringify(message));
+  const header = Buffer.alloc(8);
+  header.writeUInt32BE(json.length, 0);
+  header.writeUInt32BE(payload.length, 4);
+  return Buffer.concat([header, json, payload]);
+}
+
+function replyEntry(...frames: Buffer[]): string {
+  return `process.stdin.once("data", () => process.stdout.write(Buffer.from(${JSON.stringify(Buffer.concat(frames).toString("base64"))}, "base64")));
+setInterval(() => {}, 1000);
+`;
+}
+
 async function builtEntryDir(): Promise<string> {
   if (builtDir) return builtDir;
   const outdir = entryDir();
@@ -181,6 +195,16 @@ describe("browser capture stitch process", () => {
     corrupt = false;
     await recovered(session);
     await expect(session.capture({ fullPage: true })).resolves.toMatchObject({ height: CONTENT_HEIGHT });
+  });
+
+  it("settles a tile with an unconvertible error message when the child closes", async () => {
+    runtime.mainDir = entryDir(replyEntry(replyFrame({ id: 0, error: { message: { toString: null } } })));
+    const session = tiledSession();
+    const failure = await session.capture({ fullPage: true }, 2_000).catch((error: unknown) => error);
+    await expect.poll(getManagedChildProcessCount).toBe(0);
+    expect(failure).toMatchObject({ code: "screenshot-failed" });
+    expect(session.restore).toHaveBeenCalledOnce();
+    await recovered(session);
   });
 
   it.each([

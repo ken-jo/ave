@@ -62,10 +62,12 @@ export function startCaptureStitcher(width: number, height: number): CaptureStit
       const { id, error } = message as CaptureStitchReply;
       const job = jobs.get(id);
       if (!job) throw new Error("unexpected capture decoder reply");
-      jobs.delete(id);
-      if (!error) job.resolve(payload);
-      else job.reject(error.code === "screenshot-limit" || error.code === "screenshot-unavailable"
+      if (error && typeof error.message !== "string") throw new Error("invalid capture decoder error message");
+      const replyError = error && (error.code === "screenshot-limit" || error.code === "screenshot-unavailable"
         ? new BrowserActionError(error.code, error.message) : new Error(error.message));
+      jobs.delete(id);
+      if (replyError) job.reject(replyError);
+      else job.resolve(payload);
     });
     stdout.on("data", (chunk: Buffer) => {
       try { readFrames(chunk); } catch { stop(); }
