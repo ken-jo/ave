@@ -159,7 +159,8 @@ beforeEach(() => {
   const scratch = realpathSync.native(makeScratch());
   // A foreign drive operand resolves against the host's cwd in the real guard.
   process.chdir(scratch);
-  fixtureRoot = win32.join(ORIGINAL_PLATFORM === "win32" ? scratch : "D:\\", "fixture");
+  // Granted fixtures need two components below the drive root: Windows refuses a root or one-component grant.
+  fixtureRoot = win32.join(ORIGINAL_PLATFORM === "win32" ? scratch : "D:\\hosted", "fixture");
   setProcessPlatform("win32");
   setPluginWorkerConfinementRequestedAtBoot(true);
   manager.initializeWindowsIsolation.mockImplementation(() => new Promise<void>((resolve, reject) => {
