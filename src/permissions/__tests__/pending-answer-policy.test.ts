@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { proofOf } from "../../__tests__/support/standing-answer.js";
 import type { PermissionCheckResult } from "../permission-manager.js";
 import { answerEpochsOf, answerSurvivesRecheck, bindPendingAnswerRequest, forwardPendingAnswerRequest, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingAnswerDefersAllowSaves, pendingQuestionStillAsked, permissionQuestionOf, personAnswerStands, samePermissionQuestion, saveStandingAnswerRule, spendStandingAnswer, standingAnswerFor, type PendingAnswerBinding, type StandingAnswer, type StandingAnswerUse } from "../pending-answer-policy.js";
 import type { ApprovalRequestInput } from "../approval-gate.js";
@@ -170,8 +171,6 @@ describe("a person's answer across a policy change", () => {
   });
 
   const allowOnce = (requestId = "card") => ({ requestId, choice: "allow-once" as const });
-  const proofOf = (card: ReturnType<typeof openPendingAnswerCard>): StandingAnswer | undefined =>
-    card.verdict?.kind === "stands" ? card.verdict.proof : undefined;
 
   it("refuses an answer crossed between two cards open at the same epoch, and still takes each card's own", () => {
     const manager = policy();

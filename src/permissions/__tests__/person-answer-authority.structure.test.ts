@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import * as ts from "typescript/unstable/ast";
 import { parseSourceTexts } from "../../../scripts/lib/ts7-ast.mjs";
 import { describe, expect, it } from "vitest";
+import { proofOf } from "../../__tests__/support/standing-answer.js";
 import { authorizeToolInvocation, type AuthorizationStageContext } from "../../tools/invocation-authorization.js";
 import { executeAuthorizedToolInvocation, type ExecutionStageContext } from "../../tools/invocation-execution.js";
 import type { ApprovalDecision } from "../approval-gate.js";
@@ -74,7 +75,6 @@ const ACTION = toolUseAction("probe");
 const decisionFor = (requestId: string): ApprovalDecision => ({ requestId, choice: "allow-once" });
 const openCard = (requestId: string, action = ACTION) => openPendingAnswerCard(policy, asked, () => asked, "stale-refused",
   { gate: {}, requestId, action, uses: ["shell-permit", "shell-policy", "terminal-write"] });
-const proofOf = (card: ReturnType<typeof openCard>): StandingAnswer | undefined => card.verdict?.kind === "stands" ? card.verdict.proof : undefined;
 
 /** A host shell action that needs a person's answer. */
 function shellBinding(): HostShellExecutionPermitBinding {
