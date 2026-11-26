@@ -75,9 +75,7 @@ vi.mock("node:module", async (original) => {
 });
 vi.mock("../windows-stamp-targets.js", async (original) => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();
-  const simulated = (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(actual);
-  return { ...actual, pinWindowsFilesystemConfig: <T extends Parameters<typeof actual.pinWindowsFilesystemConfig>[0]>(filesystem: T): T =>
-    runtime.containerBackend ? actual.pinWindowsFilesystemConfig(filesystem) : simulated.pinWindowsFilesystemConfig(filesystem) };
+  return (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(actual, () => runtime.containerBackend);
 });
 // Keep both overrides in one mock. Container fixtures use literal drive paths so real pinning
 // reaches the holder's missing-grant decision, and only the worker path uses the async stamp stand-in.
@@ -835,7 +833,9 @@ describe("the browser download staging folder in the srt-win session floor and w
 
   it("keeps application write-deny targets isolated when the checkout lies under the account home", async () => {
     const checkoutScripts = hostPath.join(originalCwd, "dist", "skill-scripts");
-    expect(() => checkCheckoutStampTargets([checkoutScripts])).toThrow(/under the real/);
+    withProvidedContext("explicitTestTmpRoot", null, () => {
+      expect(() => checkCheckoutStampTargets([checkoutScripts])).toThrow(/under the real/);
+    });
     useLayout(PROFILE_CHILD, { staged: false });
     const filesystem = await sessionFloor();
     const writeDenies = spelledRows(filesystem.denyWrite).map(fold);

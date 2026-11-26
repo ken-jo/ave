@@ -151,9 +151,10 @@ export function simulatedDriveModule(actual: typeof Module, onDrive: () => boole
 }
 
 /** Lifecycle fixtures on another kernel validate spellings but cannot open native handles. */
-export function simulatedStampTargets(actual: typeof StampTargets): typeof StampTargets {
-  return { ...actual, pinWindowsFilesystemConfig: <T extends Parameters<typeof actual.pinWindowsFilesystemConfig>[0]>(filesystem: T): T => {
-    if (host === "win32") return actual.pinWindowsFilesystemConfig(filesystem);
+export function simulatedStampTargets(actual: typeof StampTargets, requiresNativePinning = () => false): typeof StampTargets {
+  const shouldPinNatively = () => host === "win32" || process.platform !== "win32" || requiresNativePinning();
+  const pinWindowsFilesystemConfig: typeof actual.pinWindowsFilesystemConfig = filesystem => {
+    if (shouldPinNatively()) return actual.pinWindowsFilesystemConfig(filesystem);
     for (const entries of [filesystem?.allowRead, filesystem?.allowWrite, filesystem?.denyRead, filesystem?.denyWrite]) {
       for (const entry of entries ?? []) {
         const path = typeof entry === "string" ? entry : entry.path;
@@ -161,5 +162,14 @@ export function simulatedStampTargets(actual: typeof StampTargets): typeof Stamp
       }
     }
     return filesystem;
-  } };
+  };
+  const projectGrants = (grants: StampTargets.WindowsGrantRequests["allowRead"]) => grants.map(({ entry }) => {
+    const path = typeof entry === "string" ? entry : entry.path;
+    // Expansion gives host fixture paths Windows separators. Restore them before policy composition.
+    const projected = /^\\(?!\\)/u.test(path) ? path.replaceAll("\\", "/") : path;
+    return typeof entry === "string" ? projected : { ...entry, path: projected };
+  });
+  return { ...actual, pinWindowsFilesystemConfig, pinWindowsGrantRequests: requests => shouldPinNatively()
+    ? actual.pinWindowsGrantRequests(requests)
+    : pinWindowsFilesystemConfig({ allowRead: projectGrants(requests.allowRead), allowWrite: projectGrants(requests.allowWrite) }) };
 }
