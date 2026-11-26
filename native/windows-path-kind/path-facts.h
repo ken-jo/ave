@@ -269,11 +269,14 @@ int hold_path(int argc, wchar_t** argv) {
     std::fputs("could not hold the directory\n", stderr);
     return 4;
   }
+  // The host refuses a reply over 8 MiB; stop building one before it gets there.
+  constexpr size_t kMaxReply = 8u * 1024u * 1024u;
   std::string row = facts_json(pinned.facts.back()); row.pop_back();
   row += ",\"ancestors\":[";
   for (size_t ancestor = 0; ancestor + 1 < pinned.facts.size(); ++ancestor) {
     if (ancestor != 0) row += ",";
     row += facts_json(pinned.facts[ancestor]);
+    if (row.size() + 5 > kMaxReply) { std::fputs("held directory reply exceeds the limit\n", stderr); return 3; }
   }
   const std::string output = "[" + row + "]}]\n";
   if (std::fwrite(output.data(), 1, output.size(), stdout) != output.size() || std::fflush(stdout) != 0) return 3;
