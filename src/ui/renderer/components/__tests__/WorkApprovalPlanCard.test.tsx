@@ -452,6 +452,33 @@ it("restores focus to the approval heading after a plan decision removes its car
   expect(screen.getByRole("heading", { name: t("workApprovals.title") })).toHaveFocus();
 });
 
+it("focuses the same plan's replanning row after requesting changes with another plan pending", async () => {
+  const first = plan();
+  const next = plan({ key: "plan:5", itemId: 5, runId: "run-5", title: "Review refund handling", arrivedAt: "2026-06-15T12:05:00.000Z" });
+  const note = "Cover refunds too";
+  let current = first;
+  const { api, decideWorkPlan } = stubApi(() => okList([current, next]), async () => {
+    current = { ...first, phase: "replanning", planNumber: 2, changeRequest: note };
+    return { ok: true, status: "changes_requested", redactedCount: 0 };
+  });
+  renderStack(api);
+
+  const requestChanges = await screen.findByTestId("work-approval-plan-request-changes");
+  await userEvent.type(screen.getByTestId("work-approval-plan-note"), note);
+  requestChanges.focus();
+  await userEvent.keyboard("{Enter}");
+
+  expect(decideWorkPlan).toHaveBeenCalledExactlyOnceWith(first.itemId, {
+    runId: first.runId, planHash: first.planHash, decision: "request_changes", note,
+  });
+  const row = within(await screen.findByTestId("work-approvals-replanning")).getByRole("listitem");
+  expect(requestChanges).not.toBeInTheDocument();
+  expect(row).toHaveAttribute("data-approval-key", first.key);
+  expect(screen.getByTestId("work-approval-head")).toHaveAttribute("data-approval-key", next.key);
+  expect(screen.getByTestId("work-approvals-count")).toHaveTextContent("1");
+  expect(row).toHaveFocus();
+});
+
 it("navigates from an all-projects summary without exposing plan controls", async () => {
   const { key, scope, title } = plan();
   const { api } = stubApi(okList([{ kind: "navigation", targetKind: "plan", key, scope, title, phase: "pending" }]));

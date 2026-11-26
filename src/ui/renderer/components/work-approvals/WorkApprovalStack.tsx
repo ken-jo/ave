@@ -549,7 +549,10 @@ function useRovingFocus(keys: readonly string[]) {
     else nodes.current.delete(key);
   }, []);
   const focusKey = useCallback((key: string) => {
-    nodes.current.get(key)?.focus();
+    const node = nodes.current.get(key);
+    if (!node) return false;
+    node.focus();
+    return node.ownerDocument.activeElement === node;
   }, []);
   const onKeyDown = useCallback((event: KeyboardEvent<HTMLElement>, onEscape: () => void) => {
     if (keys.length === 0) return;
@@ -710,21 +713,28 @@ export function WorkApprovalStack({
     onShowAllConsumed?.();
   }, [onShowAllConsumed, showAllRequest]);
 
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const stackHeading = useRef<HTMLHeadingElement>(null);
+  const focusedDecision = useRef<{ key: string; node: HTMLElement } | undefined>(undefined);
+  const focusNode = roving.focusKey;
+  useLayoutEffect(() => {
+    const focused = focusedDecision.current;
+    if (!fresh || !focused) return;
+    // A decision control can unmount while the same key remains in the Replanning section.
+    const movedToReplanning = !focused.node.isConnected && replanning.some(item => item.key === focused.key);
+    if (!movedToReplanning && order.includes(focused.key)) return;
+    focusedDecision.current = undefined;
+    if (document.activeElement !== document.body) return;
+    if (movedToReplanning && (focusNode(focused.key) || (head && focusNode(head.key)))) return;
+    stackHeading.current?.focus();
+  }, [fresh, order, replanning, head, focusNode]);
+
   // A popover or row navigation lands here: show the item in its section and focus it, then report the request consumed. Only a
   // list that answers the current request counts: after the popover switched projects, the previous project's list is still on screen.
   // When the target has disappeared, focus the first row or the stack itself.
   const handledFocusKey = useRef<string | null>(null);
-  const sectionRef = useRef<HTMLElement | null>(null);
-  const stackHeading = useRef<HTMLHeadingElement>(null);
-  const focusedDecision = useRef<string | undefined>(undefined);
-  useLayoutEffect(() => {
-    if (!fresh || !focusedDecision.current || order.includes(focusedDecision.current)) return;
-    focusedDecision.current = undefined;
-    if (document.activeElement === document.body) stackHeading.current?.focus();
-  }, [fresh, order]);
   const firstKeyRef = useRef<string | undefined>(undefined);
   firstKeyRef.current = order[0];
-  const focusNode = roving.focusKey;
   useEffect(() => {
     if (!focusKey) {
       handledFocusKey.current = null;
@@ -844,7 +854,8 @@ export function WorkApprovalStack({
       data-mode={allProjects ? "all" : "project"}
       ref={sectionRef}
       onFocusCapture={event => {
-        focusedDecision.current = event.target.closest<HTMLElement>("[data-approval-key]")?.dataset.approvalKey;
+        const key = event.target.closest<HTMLElement>("[data-approval-key]")?.dataset.approvalKey;
+        focusedDecision.current = key === undefined ? undefined : { key, node: event.target };
       }}
       tabIndex={-1}
       className="flex min-h-0 flex-col gap-2 outline-none"
