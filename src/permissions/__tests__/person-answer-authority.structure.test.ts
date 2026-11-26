@@ -189,6 +189,20 @@ describe("authority from a person's answer", () => {
     await expect(executeAuthorizedToolInvocation({ toolUse, humanApproved: proofOf(card) } as never)).rejects.toThrow(missing);
   });
 
+  // The owner reads an answer's choice. A host rejection (abort, failed integrity, a choice the card did not offer) is always
+  // written as deny-once, so none can stand as an Allow.
+  it("marks only deny-once decisions as host-rejected", () => {
+    const nodes = nodesMentioning("hostRejectedApprovalDecisions");
+    const rejected = nodes.flatMap(({ node }) => ts.isCallExpression(node) && node.expression.getText() === "markHostApprovalRejectedDecision"
+      ? [node.arguments[0]?.getText() ?? ""]
+      : ts.isVariableDeclaration(node) && node.name.getText() === "forcedDecision" ? [node.initializer?.getText() ?? ""] : []);
+    expect(rejected.length).toBeGreaterThan(8);
+    expect(rejected.filter((literal) => !/\bchoice: "deny-once"/.test(literal) || /\bchoice: "allow/.test(literal))).toEqual([]);
+    const marked = nodes.flatMap(({ where, node }) => ts.isCallExpression(node) && node.expression.getText() === "hostRejectedApprovalDecisions.add"
+      ? [`${where.split("#")[1]}: ${node.arguments[0]?.getText()}`] : []);
+    expect(new Set(marked)).toEqual(new Set(["markHostApprovalRejectedDecision: decision", "resolveDecision: forcedDecision"]));
+  });
+
   // The epoch form mints no standing answer, judges no fresh check while the policy stands still and honors no same-card receipt.
   // It is left to these routes, which reach no sink; a new caller fails here.
   it("leaves the epoch form only to the named routes that take no standing answer", () => {
