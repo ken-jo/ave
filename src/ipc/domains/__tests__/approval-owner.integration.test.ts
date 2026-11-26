@@ -8,6 +8,7 @@ import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuditLogger } from "../../../audit/audit-logger.js";
 import { t } from "../../../i18n/runtime.js";
+import { makeSubAgentApprovalAdapter } from "../../../engine/subagent-runner.js";
 import { terminalSessionFixture } from "../../../__tests__/support/terminal-session-fixtures.js";
 import { TERMINAL_TEST_NONCE, terminalMarker } from "../../../__tests__/support/terminal-markers.js";
 import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
@@ -18,7 +19,7 @@ import { buildPermissionEvaluationContext } from "../../../permissions/evaluatio
 import { createApprovalGateEgressRequester } from "../../../permissions/egress-approval.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../../../permissions/judge/judge-settings.js";
 import * as terminalWriteAuthority from "../../../permissions/host-terminal-write-authority.js";
-import { PermissionManager } from "../../../permissions/permission-manager.js";
+import { PermissionManager, type PermissionCheckResult } from "../../../permissions/permission-manager.js";
 import { matchesProjectRuleRootBinding, projectRulesLocation } from "../../../permissions/rules/project-rule-files.js";
 import { captureShellWorkingDirectoryIdentity } from "../../../permissions/shell-working-directory-identity.js";
 import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
@@ -200,7 +201,7 @@ async function subject(mode: "auto" | "default" = "auto") {
     });
     return { reached: reached.promise, release: held.resolve };
   };
-  const queueCard = (overrides: Partial<ApprovalRequestInput> = {}, card?: PendingAnswerCard) => {
+  const queueCard = (overrides: Partial<ApprovalRequestInput> = {}, card?: PendingAnswerCard, requestGate = gate) => {
     const request: ApprovalRequestInput = {
       id: randomUUID(), sessionId: SESSION_ID, category: "tool", kind: "tool", toolName: "write_probe", toolCategory: "write",
       source: "builtin", trustOrigin: "user-keyboard", args: { path: join(root, "remembered.txt") }, reason: "manual review", createdAt: Date.now(),
@@ -211,7 +212,7 @@ async function subject(mode: "auto" | "default" = "auto") {
       }),
       ...overrides,
     };
-    return { request, result: track(requestBoundShellCard(gate, request, root, card)) };
+    return { request, result: track(requestBoundShellCard(requestGate, request, root, card)) };
   };
   return { root, audit, auditLog, windowA, windowB, gate, manager, registry, executeAll, execute, complete, selectComplete, pause, start, cards, waitForCard, hold, holdNextPreToolUse, queueCard, setOwner: (next: AppWindow | undefined) => { owner = next; } };
 }
@@ -1000,6 +1001,40 @@ describe("live native approval ownership", () => {
     } else {
       expect(persist).not.toHaveBeenCalled();
     }
+  });
+
+  it.each(["stands", "stale", "denied", "declined"] as const)("holds a child card's remembered allow when the answer %s", async (outcome) => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    const childGate = makeSubAgentApprovalAdapter(f.gate, "child task", null);
+    const id = randomUUID();
+    const asked: PermissionCheckResult = { decision: "ask", reason: "manual review" };
+    let current = asked;
+    const opened = openPendingAnswerCard(f.manager, asked, () => current, "stale-refused", {
+      gate: childGate, requestId: id, action: "tool-use:child", uses: ["rule-save"],
+    });
+    const { result } = f.queueCard({ id }, opened, childGate);
+    const card = await f.waitForCard();
+    expect(card.reason).toContain("child task");
+    expect(card.persistentAllowAllowed).toBe(true);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "persistent",
+      verdictAtApproval: "low", intent: { inputOrigin: "user-keyboard", userActivation: true },
+    })).toEqual({ ok: true });
+    expect.soft(await approvals.listApprovals()).toEqual([]);
+
+    if (outcome === "stale") current = { ...asked, forceModal: true };
+    if (outcome === "denied") current = { decision: "deny", reason: "The current policy denies this action." };
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), {
+      ...allowOnceCardAnswer(card), choice: outcome === "declined" ? "deny-once" : "allow-always",
+    });
+    const answer = await result;
+    expect(personAnswerStands(opened, answer)).toBe(outcome === "stands");
+    expect(opened.verdict?.kind).toBe(outcome);
+    expect(await saveStandingAnswerRule(opened, answer)).toEqual({ saved: outcome === "stands" });
+    expect(await approvals.listApprovals()).toEqual(outcome === "stands"
+      ? [expect.objectContaining({ decision: "allow", scope: "persistent", toolName: "write_probe" })]
+      : []);
   });
 
   it("leaves a later request unaffected when a card was opened but never asked", async () => {

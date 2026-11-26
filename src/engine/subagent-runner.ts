@@ -32,6 +32,7 @@ import type {
   ApprovalRequestInput,
   PendingApprovalSummary,
 } from "../permissions/approval-gate.js";
+import { forwardPendingAnswerRequest } from "../permissions/pending-answer-policy.js";
 import {
   isModelComplexityLevel,
   resolveModelForComplexity,
@@ -923,7 +924,7 @@ export function makeSubAgentApprovalAdapter(
     // Dropped before the spread, not overwritten after it. Overwriting only covers the runs that HAVE provenance; the runs that deliberately have none; a remote wire
     // run, a host-orchestrated one; are exactly the ones a forged field would smuggle into tier 2, and the gate's only entry condition is that the field is present.
     const { childProvenance: _callerSupplied, ...safeReq } = req;
-    return base.requestAndWait({
+    const forwarded = {
       ...safeReq,
       // Child provenance makes the gate require explicit consent. A regular host-shell ask
       // must carry the matching one-shot choices while retaining its exact native binding.
@@ -943,7 +944,8 @@ export function makeSubAgentApprovalAdapter(
               background: provenance.background,
             },
           }),
-    });
+    };
+    return base.requestAndWait(forwardPendingAnswerRequest(req, wrapper, forwarded, base));
   };
   return wrapper;
 }

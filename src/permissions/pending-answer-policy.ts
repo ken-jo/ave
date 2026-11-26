@@ -182,7 +182,7 @@ interface BoundCard extends Omit<PendingAnswerBinding, "uses"> {
 }
 
 const boundCards = new WeakMap<PendingAnswerCard, BoundCard>();
-const boundRequests = new WeakMap<ApprovalRequestInput, BoundCard>();
+const boundRequests = new WeakMap<ApprovalRequestInput, Pick<BoundCard, "gate" | "requestId" | "uses">>();
 
 /** Open a card on `opened`, the decision it shows. `check` is the call's current permission check; the owner alone runs it. */
 export function openPendingAnswerCard(manager: EpochSource, opened: Questioned, check: () => PermissionCheckResult, onStale: StaleAnswerOutcome,
@@ -200,6 +200,20 @@ export function bindPendingAnswerRequest(request: ApprovalRequestInput, card: Pe
   if (bound === undefined || bound.requestId !== request.id) throw new Error("Approval request does not match its pending answer card");
   boundRequests.set(request, bound);
   return request;
+}
+
+/** Carry the hold across a host adapter's request transformation. The receiving gate checks its own binding at entry. */
+export function forwardPendingAnswerRequest(
+  request: ApprovalRequestInput, sourceGate: PendingAnswerBinding["gate"],
+  forwarded: ApprovalRequestInput, receivingGate: PendingAnswerBinding["gate"],
+): ApprovalRequestInput {
+  const bound = boundRequests.get(request);
+  if (bound === undefined) return forwarded;
+  if (bound.gate !== sourceGate || bound.requestId !== request.id || bound.requestId !== forwarded.id || boundRequests.has(forwarded)) {
+    throw new Error("Approval request does not match its pending answer binding");
+  }
+  boundRequests.set(forwarded, { gate: receivingGate, requestId: bound.requestId, uses: bound.uses });
+  return forwarded;
 }
 
 export function pendingAnswerDefersAllowSaves(request: ApprovalRequestInput, gate: PendingAnswerBinding["gate"]): boolean {

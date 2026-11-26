@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionCheckResult } from "../permission-manager.js";
-import { answerEpochsOf, answerSurvivesRecheck, bindPendingAnswerRequest, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingAnswerDefersAllowSaves, pendingQuestionStillAsked, permissionQuestionOf, personAnswerStands, samePermissionQuestion, saveStandingAnswerRule, spendStandingAnswer, standingAnswerFor, type PendingAnswerBinding, type StandingAnswer, type StandingAnswerUse } from "../pending-answer-policy.js";
+import { answerEpochsOf, answerSurvivesRecheck, bindPendingAnswerRequest, forwardPendingAnswerRequest, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingAnswerDefersAllowSaves, pendingQuestionStillAsked, permissionQuestionOf, personAnswerStands, samePermissionQuestion, saveStandingAnswerRule, spendStandingAnswer, standingAnswerFor, type PendingAnswerBinding, type StandingAnswer, type StandingAnswerUse } from "../pending-answer-policy.js";
 import type { ApprovalRequestInput } from "../approval-gate.js";
 
 /** A manager's two epochs, moved by hand. */
@@ -238,6 +238,25 @@ describe("a person's answer across a policy change", () => {
     expect(pendingAnswerDefersAllowSaves(boundRequest, gate)).toBe(true);
     expect(pendingAnswerDefersAllowSaves(request, gate)).toBe(false);
     expect(() => pendingAnswerDefersAllowSaves(boundRequest, {})).toThrow(/pending answer binding/);
+  });
+
+  it("forwards a hold only across the named gates and the unchanged request ID", () => {
+    const source = {};
+    const receiving = {};
+    const other = {};
+    const input: ApprovalRequestInput = { id: "card", category: "tool", toolName: "probe", args: {}, reason: "Review", createdAt: 0 };
+    const card = openPendingAnswerCard(policy(), floorAsk(true), () => floorAsk(true), "stale-refused", bound(source, input.id, ["rule-save"]));
+    const request = bindPendingAnswerRequest(input, card);
+    const forwarded = { ...request, reason: "Child review" };
+
+    expect(() => forwardPendingAnswerRequest(request, other, forwarded, receiving)).toThrow(/pending answer binding/);
+    expect(() => forwardPendingAnswerRequest(request, source, { ...forwarded, id: "other" }, receiving)).toThrow(/pending answer binding/);
+    expect(pendingAnswerDefersAllowSaves(forwarded, receiving)).toBe(false);
+    expect(forwardPendingAnswerRequest(request, source, forwarded, receiving)).toBe(forwarded);
+    expect(pendingAnswerDefersAllowSaves(forwarded, receiving)).toBe(true);
+    expect(() => pendingAnswerDefersAllowSaves(forwarded, other)).toThrow(/pending answer binding/);
+    expect(() => forwardPendingAnswerRequest(request, source, forwarded, other)).toThrow(/pending answer binding/);
+    expect(pendingAnswerDefersAllowSaves({ ...forwarded }, receiving)).toBe(false);
   });
 
   it("writes a held allow only for a standing answer, and voids the answer when the write is refused", async () => {
