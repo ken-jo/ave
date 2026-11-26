@@ -258,6 +258,20 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     } finally { held.release(); }
   }, 60_000);
 
+  it("refuses host Git while a command-created watched name is present, and moves it once", async () => {
+    const { workspace, held } = await grantedWorkspace();
+    try {
+      const { wrapped, invocation } = await runPlantingTasks(workspace);
+      vi.stubEnv("AVE_HOME", sameVolumeAveHome());
+      expect(isHostGitWorkspaceAvailable(workspace)).toBe(false);
+      invocation.release();
+      await wrapped.cleanupCompleted;
+      await vi.waitFor(() => expect(lstatSync(join(workspace, ".vscode"), { throwIfNoEntry: false })).toBeUndefined(), { timeout: 15_000 });
+      expect(listWatchedQuarantine()).toEqual([expect.objectContaining({ original: join(workspace, ".vscode") })]);
+      expect(isHostGitWorkspaceAvailable(workspace)).toBe(true);
+    } finally { held.release(); }
+  }, 60_000);
+
   it("fails closed and moves nothing when the created row cannot be quarantined", async () => {
     const { workspace, held } = await grantedWorkspace();
     try {
