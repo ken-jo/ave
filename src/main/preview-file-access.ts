@@ -62,7 +62,8 @@ function revoke(key: string): void {
   owner.keys.delete(key);
   if (owner.keys.size === 0) {
     owner.stop();
-    owners.delete(owner.frame);
+    if (process.platform === "win32") owners.delete(owner.frame);
+    else if (owner.event.senderFrame) owners.delete(owner.event.senderFrame);
   }
 }
 
@@ -76,16 +77,27 @@ function ownerFor(event: IpcMainInvokeEvent, deps: WindowRegistry): PreviewFileO
   const handleNavigationStart = (_event: unknown, _url: string, _inPlace: boolean,
     isMainFrame: boolean): void => { if (isMainFrame) release(); };
   let timer: ReturnType<typeof setTimeout>;
+  const recheckReceipts = (): void => {
+    withLocalityDecision(() => {
+      let snapshot: ReadScope | undefined;
+      const scope = (): ReadScope => snapshot ??= currentReadScope();
+      for (const key of [...owner.keys]) {
+        const receipt = receipts.get(key);
+        if (receipt && !isCurrent(receipt, receipt.owner.deps, scope)) revoke(key);
+      }
+    });
+  };
   const recheck = (): void => {
+    if (process.platform !== "win32") {
+      try {
+        recheckReceipts();
+      } finally {
+        if (owner.keys.size > 0) scheduleRecheck();
+      }
+      return;
+    }
     try {
-      withLocalityDecision(() => {
-        let snapshot: ReadScope | undefined;
-        const scope = (): ReadScope => snapshot ??= currentReadScope();
-        for (const key of [...owner.keys]) {
-          const receipt = receipts.get(key);
-          if (receipt && !isCurrent(receipt, receipt.owner.deps, scope)) revoke(key);
-        }
-      });
+      recheckReceipts();
     } catch {
       release();
       return;

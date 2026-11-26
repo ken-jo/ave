@@ -18,7 +18,7 @@ vi.mock("../app-state.js", () => ({ findSessionMainWindowContents: () => null })
 const readPermissionSettings = vi.hoisted(() => vi.fn<() => { permissions: { additionalDirectories: string[] } }>());
 vi.mock("../../permissions/permission-settings-store.js", () => ({ readPermissionSettings }));
 
-describe.runIf(process.platform === "win32")("preview file access drive queries", () => {
+describe("preview file access polling", () => {
   const query = vi.fn<(drive: string) => string | null>();
   let root: string;
   let sender: EventEmitter;
@@ -63,13 +63,24 @@ describe.runIf(process.platform === "win32")("preview file access drive queries"
     expect(drives).toEqual([...new Set(drives)]);
   }
 
-  it("queries each drive once for the current read scope and its receipt check", () => {
+  it.skipIf(process.platform === "win32")("propagates POSIX poll errors without releasing frame receipts", () => {
+    const paths = [receiptPath("first.txt"), receiptPath("second.txt")];
+    for (const path of paths) recordPreviewFileAccess(event, deps, path);
+    const failure = new Error("permission settings unavailable");
+    readPermissionSettings.mockImplementationOnce(() => { throw failure; });
+
+    expect(() => vi.advanceTimersByTime(PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs)).toThrow(failure);
+    for (const path of paths) expect(previewFileReadAuthorizes(event, deps, path)).toBe(true);
+    expect(sender.listenerCount("destroyed")).toBe(1);
+  });
+
+  it.runIf(process.platform === "win32")("queries each drive once for the current read scope and its receipt check", () => {
     recordPreviewFileAccess(event, deps, receiptPath("notes.txt"));
     expect(readPermissionSettings).toHaveBeenCalledTimes(1);
     expectOneQueryPerDrive();
   });
 
-  it("revokes the frame receipts and stops polling when a later drive query throws", () => {
+  it.runIf(process.platform === "win32")("revokes the frame receipts and stops polling when a later drive query throws", () => {
     const first = receiptPath("first.txt");
     const paths = [first, receiptPath("second.txt")];
     for (const path of paths) recordPreviewFileAccess(event, deps, path);
@@ -91,7 +102,7 @@ describe.runIf(process.platform === "win32")("preview file access drive queries"
     expectOneQueryPerDrive();
   });
 
-  it("queries each drive once per tick for multiple receipts and rechecks a revoked scope", () => {
+  it.runIf(process.platform === "win32")("queries each drive once per tick for multiple receipts and rechecks a revoked scope", () => {
     const paths = Array.from({ length: 12 }, (_, index) => receiptPath(`notes-${index}.txt`));
     for (const path of paths) {
       recordPreviewFileAccess(event, deps, path);

@@ -1402,9 +1402,11 @@ export class PermissionManager {
     root: string,
     options?: { preserveRoots?: readonly string[] },
   ): Promise<number> {
+    const posixMatcher = process.platform !== "win32"
+      ? withLocalityDecision(() => pathGrantRemovalMatcher(root, options?.preserveRoots)) : undefined;
     const file = await readPermissionsFile(this.permissionsFilePath);
     return withLocalityDecision(() => {
-      const isUnderRoot = pathGrantRemovalMatcher(root, options?.preserveRoots);
+      const isUnderRoot = posixMatcher ?? pathGrantRemovalMatcher(root, options?.preserveRoots);
       return (file?.rules ?? []).filter((r) => r.action === "allow" && !r.source && isUnderRoot(r.pattern)).length;
     });
   }
@@ -1416,12 +1418,14 @@ export class PermissionManager {
   ): Promise<PrunedGrant[]> {
     // The persisted file is the SOT for path grants: addAlwaysAllowedPersist writes the allow rule to the file + the in-memory alwaysAllowed Map, but NOT to `this.rules` (that array is only hydrated from the file at boot via loadRulesFromFile). Scan the file, not `this.rules`, so a grant made this session is still pruned. Do the read + filter inside ONE updatePermissionsFile pass (atomic under the store lock) and collect the pruned grants so in-memory state (rules + alwaysAllowed) is reconciled and the caller can audit per-pattern tuples.
     const pruned: PrunedGrant[] = [];
+    const posixMatcher = process.platform !== "win32"
+      ? withLocalityDecision(() => pathGrantRemovalMatcher(root, options?.preserveRoots)) : undefined;
     const prunedPatterns = new Set<string>();
     await this.updateRulesFile((file) => withLocalityDecision(() => {
-      const isUnderRoot = pathGrantRemovalMatcher(root, options?.preserveRoots);
+      const isUnderRoot = posixMatcher ?? pathGrantRemovalMatcher(root, options?.preserveRoots);
       file.rules = file.rules.filter((r) => {
         if (r.action === "allow" && !r.source && isUnderRoot(r.pattern)) {
-          prunedPatterns.add(r.pattern);
+          if (posixMatcher === undefined) prunedPatterns.add(r.pattern);
           pruned.push(describePrunedGrant(r.pattern, r.tier));
           return false;
         }
@@ -1429,17 +1433,26 @@ export class PermissionManager {
       });
     }));
     // Reconcile by scope on every retry, not only by patterns removed in this disk pass. A prior attempt may have committed the file shrink and then thrown while broadcasting/revoking bearers; the retry must still remove stale live cache entries and re-run the revoke signal.
-    // Judge first, then change the live caches, so a failed judgment leaves both untouched.
-    const { rules, revokedAllows } = withLocalityDecision(() => {
-      const isUnderRoot = pathGrantRemovalMatcher(root, options?.preserveRoots);
-      const shouldRevoke = (pattern: string): boolean => prunedPatterns.has(pattern) || isUnderRoot(pattern);
-      return {
-        rules: this.rules.filter((r) => !(r.action === "allow" && !r.source && shouldRevoke(r.pattern))),
-        revokedAllows: [...this.alwaysAllowed.keys()].filter(shouldRevoke),
-      };
-    });
-    this.rules = rules;
-    for (const pattern of revokedAllows) this.alwaysAllowed.delete(pattern);
+    if (posixMatcher !== undefined) {
+      this.rules = this.rules.filter(
+        (r) => !(r.action === "allow" && !r.source && posixMatcher(r.pattern)),
+      );
+      for (const pattern of [...this.alwaysAllowed.keys()]) {
+        if (posixMatcher(pattern)) this.alwaysAllowed.delete(pattern);
+      }
+    } else {
+      // Judge first, then change the live caches, so a failed judgment leaves both untouched.
+      const { rules, revokedAllows } = withLocalityDecision(() => {
+        const isUnderRoot = pathGrantRemovalMatcher(root, options?.preserveRoots);
+        const shouldRevoke = (pattern: string): boolean => prunedPatterns.has(pattern) || isUnderRoot(pattern);
+        return {
+          rules: this.rules.filter((r) => !(r.action === "allow" && !r.source && shouldRevoke(r.pattern))),
+          revokedAllows: [...this.alwaysAllowed.keys()].filter(shouldRevoke),
+        };
+      });
+      this.rules = rules;
+      for (const pattern of revokedAllows) this.alwaysAllowed.delete(pattern);
+    }
 
     this.policyGeneration += 1;
     this.broadcastConfigChanged?.();
@@ -2209,8 +2222,8 @@ export class PermissionManager {
 
     // Sample live confinement and rebuild the provider's exact view before accepting cached provider output.
     sandboxCacheState = readSandboxCacheState();
-    const reviewerContext = buildReviewerContext();
-    const preparedReview = process.platform === "win32" && userApproval?.verdictAtApproval == null
+    const reviewerContext = process.platform === "win32" ? buildReviewerContext() : undefined;
+    const preparedReview = reviewerContext !== undefined && userApproval?.verdictAtApproval == null
       ? options.tracingClassifier.prepareWindowsReview?.(reviewerContext)
       : undefined;
     const providerPromptHash = preparedReview?.providerPrompt === undefined
@@ -2277,17 +2290,18 @@ export class PermissionManager {
         verdictAtApproval: userApproval.verdictAtApproval,
       });
     } else if ((!preparedReview || providerPromptHash !== undefined) && cacheResult.hit && cacheResult.verdict) {
-      const ruleVerdict = preparedReview?.ruleVerdict ?? new RuleBasedRiskClassifier().classify(reviewerContext);
+      const ruleVerdict = preparedReview?.ruleVerdict ?? new RuleBasedRiskClassifier().classify(reviewerContext ?? buildReviewerContext());
       ruleVerdictForAudit = ruleVerdict.level;
       if (preparedReview) llmVerdictForAudit = cacheResult.verdict.level;
       verdict = preparedReview ? maxVerdict(ruleVerdict, cacheResult.verdict) : cacheResult.verdict;
       outcome = "cache";
     } else {
+      const ctx = reviewerContext ?? buildReviewerContext();
       try {
         const reviewOptions = { abortSignal: options.abortSignal };
         const trace = preparedReview
           ? await preparedReview.classify(reviewOptions)
-          : await options.tracingClassifier.classifyWithTrace(reviewerContext, reviewOptions);
+          : await options.tracingClassifier.classifyWithTrace(ctx, reviewOptions);
         assertRiskClassificationTrace(trace);
         verdict = trace.finalVerdict;
         outcome = trace.outcome;
@@ -2322,7 +2336,7 @@ export class PermissionManager {
         const message = errorMessage(err);
         verdict = { level: "high", reason: `reviewer error — ${message}` };
         outcome = "error";
-        ruleVerdictForAudit = (preparedReview?.ruleVerdict ?? new RuleBasedRiskClassifier().classify(reviewerContext)).level;
+        ruleVerdictForAudit = (preparedReview?.ruleVerdict ?? new RuleBasedRiskClassifier().classify(ctx)).level;
         llmVerdictForAudit = null;
       }
     }

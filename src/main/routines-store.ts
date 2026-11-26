@@ -277,6 +277,12 @@ function isWorkspaceKeyAtOrBelow(rootKey: string, candidate: string): boolean {
     : candidate.startsWith(`${rootKey}/`));
 }
 
+function isDirectoryAtOrBelow(rootKey: string, directory: string): boolean {
+  const candidate = workspaceRootKey(directory);
+  if (!candidate) return false;
+  return isWorkspaceKeyAtOrBelow(rootKey, candidate);
+}
+
 function isValidStoredRun(value: unknown, routineId: unknown): value is RoutineRun {
   if (!value || typeof value !== "object") return false;
   const run = value as RoutineRun;
@@ -370,6 +376,14 @@ function routineScopeRetention(
       && key !== rootKey
       && isWorkspaceKeyAtOrBelow(rootKey, key),
     );
+  if (process.platform !== "win32") {
+    return (directories) => directories.filter((directory) => {
+      if (!isDirectoryAtOrBelow(rootKey, directory)) return true;
+      return preservedRootKeys.some(
+        (preservedRootKey) => isDirectoryAtOrBelow(preservedRootKey, directory),
+      );
+    });
+  }
   return (directories) => directories.filter((directory) => {
     const key = workspaceRootKey(directory);
     if (!key || !isWorkspaceKeyAtOrBelow(rootKey, key)) return true;
@@ -709,10 +723,13 @@ export class RoutinesStore {
     directoriesRemoved: number;
   }> {
     if (!this.loaded) await this.load();
+    const isWindows = process.platform === "win32";
+    const posixRetention = isWindows ? undefined : routineScopeRetention(root, options?.preserveRoots);
+    if (!isWindows && !posixRetention) return { routinesUpdated: 0, directoriesRemoved: 0 };
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
       const { routinesUpdated, directoriesRemoved } = withLocalityDecision(() => {
-        const retainedOf = routineScopeRetention(root, options?.preserveRoots);
+        const retainedOf = posixRetention ?? routineScopeRetention(root, options?.preserveRoots);
         if (!retainedOf) return { routinesUpdated: 0, directoriesRemoved: 0 };
         let routinesUpdated = 0;
         let directoriesRemoved = 0;
@@ -742,10 +759,13 @@ export class RoutinesStore {
     options?: { preserveRoots?: readonly string[] },
   ): Promise<number> {
     if (!this.loaded) await this.load();
+    const isWindows = process.platform === "win32";
+    const posixRetention = isWindows ? undefined : routineScopeRetention(root, options?.preserveRoots);
+    if (!isWindows && !posixRetention) return 0;
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
       return withLocalityDecision(() => {
-        const retainedOf = routineScopeRetention(root, options?.preserveRoots);
+        const retainedOf = posixRetention ?? routineScopeRetention(root, options?.preserveRoots);
         if (!retainedOf) return 0;
         return file.routines.filter((routine) =>
           routine.scope ? retainedOf(routine.scope.directories).length !== routine.scope.directories.length : false,
