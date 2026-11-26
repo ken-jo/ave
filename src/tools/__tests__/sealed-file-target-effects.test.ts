@@ -20,7 +20,7 @@ import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
-import { WriteFileTool } from "../file-tools.js";
+import { ReadFileTool, WriteFileTool } from "../file-tools.js";
 
 const LOCAL_DRIVE = String.raw`\Device\HarddiskVolume1`;
 
@@ -66,6 +66,26 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     });
     return { result, execute };
   }
+
+  it("reads a local file when an unrelated project-write anchor moves", async () => {
+    const anchor = join(root, "anchor");
+    symlinkSync(project, anchor, "junction");
+    hooks.onExecutionRefresh = () => {
+      hooks.onExecutionRefresh = undefined;
+      unlinkSync(anchor);
+      symlinkSync(outside, anchor, "junction");
+    };
+    const tool = new ReadFileTool();
+    const registry = new ToolRegistry();
+    registry.register(tool);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined, audit);
+    const [result] = await executor.executeAll([{ id: "read-target", name: tool.name, input: { path: "sub/note.txt" } }], {
+      executionCwd: project, sessionId: "read-target", permissionContext: { trustOrigin: "user-keyboard", projectDirectories: [anchor] },
+    });
+    expect(hooks.onExecutionRefresh).toBeUndefined();
+    expect(result?.is_error).not.toBe(true);
+    expect(result?.content).toContain("before");
+  });
 
   it.each([false, true])("runs the handler only on the sealed directory (moved during the final wait: %s)", async (moved) => {
     await manager.addRulePersist({ pattern: "Edit(sub/note.txt)", action: "allow" }, { kind: "user" });

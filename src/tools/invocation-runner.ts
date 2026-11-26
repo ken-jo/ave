@@ -2416,15 +2416,17 @@ async function runToolInvocationAttempt(
         return canonicalPath === undefined ? [] : [{ filePath: target.filePath, canonicalPath, outsideProject: !inProject(target.canonicalPath) }];
       });
       // Exclude the broader directory defaults and per-turn temp grants.
-      const rawProjectRoots = [executionCwd, ...(permissionContext.projectDirectories ?? [])];
+      const rawProjectRoots = nativeFileWrite ? [executionCwd, ...(permissionContext.projectDirectories ?? [])] : [];
       const projectRoots = sanitizeAllowedDirectories(rawProjectRoots);
       const lexicalProjectRoots = rawProjectRoots.map((root) => caseFoldForMatch(foldCanonicalPathSeparators(resolveToolPathForPermission(root, executionCwd))));
       const judgeProjectWrite = (roots: readonly string[]): boolean => nativeFileWrite && areProjectWriteTargetsInside(canonicalTargets,
         lexicalProjectRoots, roots, unsealedRuleSubject?.kind === "edit" ? unsealedRuleSubject.paths : undefined);
       const insideProject = judgeProjectWrite(projectRoots);
       if (canonicalTargets.length > 0) fileTargetSeal = sealTargets(() => {
+        const targets = canonicalTargets.map((target) => resolveFileTarget(target.filePath).runtimePath);
+        if (!nativeFileWrite) return JSON.stringify(targets);
         const roots = sanitizeAllowedDirectories(rawProjectRoots);
-        return JSON.stringify([canonicalTargets.map((target) => resolveFileTarget(target.filePath).runtimePath), roots, judgeProjectWrite(roots)]);
+        return JSON.stringify([targets, roots, judgeProjectWrite(roots)]);
       });
       return { sensitiveTarget, linkedTargets, projectRoots, insideProject };
     });
