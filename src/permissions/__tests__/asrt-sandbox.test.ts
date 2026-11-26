@@ -1,5 +1,11 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+// A host that proves no Windows identities (any non-Windows kernel) keeps its denies unadmitted; a Windows host can stand in for one.
+const foreignHost = vi.hoisted(() => ({ active: false }));
+vi.mock("../admitted-obligation.js", async original => {
+  const actual = await original<typeof import("../admitted-obligation.js")>();
+  return { ...actual, windowsObligationsApply: () => !foreignHost.active && actual.windowsObligationsApply() };
+});
 
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 // The adapter stays inactive until initialized and resets inactive; per-command overrides contain only filesystem policy and cannot weaken sandbox/network gates. Isolate home paths without changing USERPROFILE needed by process creation.
@@ -1809,7 +1815,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     }
   });
 
-  it("refuses a deny routed through a link beneath a machine path", () => {
+  it.each([true, false])("refuses a deny routed through a link beneath a machine path where the host proves identities: %s", proving => {
     const fixture = realpathSync.native(mkdtempSync(join(tmpdir(), "sandbox-machine-deny-")));
     const machine = join(fixture, "machine");
     const target = join(fixture, "outside");
@@ -1821,17 +1827,22 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     writeFileSync(child, "fixture");
     vi.stubEnv("ProgramData", machine);
     setProcessPlatform("win32");
+    foreignHost.active = !proving;
     try {
       const build = () => buildSandboxConfig({ allowWrite: [target], denyWrite: [machine, child] });
-      if (ORIGINAL_PLATFORM_FOR_DENY_TEST === "win32") {
+      if (ORIGINAL_PLATFORM_FOR_DENY_TEST === "win32" && proving) {
         expect(build).toThrow(expect.objectContaining({
           code: "sandbox-obligation-unenforceable",
           rows: expect.arrayContaining([expect.objectContaining({ row: child, reason: "link-spelling" })]),
         }));
       } else {
-        expect(bare(build().filesystem.denyWrite)).toContain(join(target, "locked"));
+        // Unadmitted denies keep their spelling, as before admission: the linked child stays and its disjoint machine parent goes.
+        const denies = bare(build().filesystem.denyWrite);
+        expect(denies).toContain(child);
+        expect(denies).not.toContain(machine);
       }
     } finally {
+      foreignHost.active = false;
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       vi.unstubAllEnvs();
       rmSync(fixture, { recursive: true, force: true });
