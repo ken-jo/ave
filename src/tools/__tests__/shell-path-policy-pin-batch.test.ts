@@ -26,7 +26,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 describe.runIf(process.platform === "win32")("operands pinned in one batch per analysis", () => {
   let root: string;
-  const facts = () => hostShellAnalysisFacts(undefined, { substrate: "none" });
+  const facts = () => hostShellAnalysisFacts(undefined, { substrate: "none", executionRequest: "host", fallbackReason: "none" });
   const analyze = (command: string) => findShellPathPolicyViolation(command, root, root, [], true, facts());
   const chain = (names: readonly string[]) => names.map(name => `test -f ${name} && echo ok`).join("; ");
   beforeAll(() => {

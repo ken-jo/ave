@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 
 const childProcessMock = vi.hoisted(() => ({

@@ -1,4 +1,3 @@
-import { accessSync, constants, statSync } from "node:fs";
 import { isAbsolute, posix, relative as pathRelative, resolve as pathResolve, sep } from "node:path";
 import { analyzeShell, literalWord, staticShellWord, validatePreparedShellAnalysis, type PreparedShellAnalysis, type ShellAnalysis, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord, type ShellWordPart } from "./shell-analysis.js";
 import { effectiveShellCommand, stripCommandPath, type EffectiveShellCommand } from "./shell-effective-command.js";

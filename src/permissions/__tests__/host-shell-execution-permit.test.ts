@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { mkdirSync, mkdtempSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { judgedAnswer } from "../../__tests__/support/standing-answer.js";
