@@ -38,6 +38,7 @@ import {
 } from "../shared/tool-result-stub.js";
 import { SessionSearchIndex, type IndexedSessionInput, type SessionSearchIndexPolicy } from "./session-search-index.js";
 import { isRecord } from "../shared/is-record.js";
+import { parseStrictJsonText } from "../shared/strict-json.js";
 import { dlpSafeCandidate, isSafeStructuralId } from "../shared/dlp-safe-id.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { parseJsonlLines } from "../audit/jsonl-reader.js";
@@ -750,9 +751,24 @@ function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata
   };
 }
 
-function parseSessionMetadataObject(raw: string): Record<string, unknown> {
-  const parsed = JSON.parse(raw) as Record<string, unknown>;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+const SESSION_METADATA_FORBIDDEN_KEYS: ReadonlySet<string> = new Set();
+
+function readSessionMetadataObject(path: string): Record<string, unknown> | null {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && lstatSync(path, { throwIfNoEntry: false }) === undefined) return null;
+    throw error;
+  }
+  const parsed = parseStrictJsonText(raw, {
+    maxDepth: 32,
+    forbiddenKeys: SESSION_METADATA_FORBIDDEN_KEYS,
+    nullPrototypeObjects: true,
+    rejectNonFiniteNumbers: true,
+    fail: () => { throw new SyntaxError("invalid session metadata"); },
+  });
+  if (!isRecord(parsed)) {
     throw new TypeError("session metadata must be an object");
   }
   return parsed;
@@ -1047,10 +1063,8 @@ export class SessionRepository {
   }
 
   // Empty searchable content removes the index row; derive timestamps from transcript mtime, not indexing time.
-  private buildIndexInput(sessionId: string, messages: unknown[], strictMetadata = false): IndexedSessionInput | null {
+  private buildIndexInput(sessionId: string, messages: unknown[], metadata: SessionMetadata | null): IndexedSessionInput | null {
     const content = extractSearchableContent(messages);
-    if (!content && !strictMetadata) return null;
-    const metadata = strictMetadata ? this.readSessionMetadataForSearchRepair(sessionId) : this.loadSessionMetadata(sessionId);
     if (!content) return null;
     const summary = this.deriveSessionSummary(sessionId, messages);
     const mtimeMs = getFileMtimeMs(join(this.sessionsDir, `${sessionId}.jsonl`));
@@ -1068,9 +1082,18 @@ export class SessionRepository {
 
   // Open and close the index per operation so persistence leaves no database handle blocking directory cleanup.
   private indexSessionForSearch(sessionId: string, messages: unknown[]): void {
-    if (!this.canUseSearchIndex("write") || !this.searchIndex.open()) return;
+    if (!this.canUseSearchIndex("write")) return;
+    let metadata: SessionMetadata | null;
     try {
-      const input = this.buildIndexInput(sessionId, messages);
+      metadata = this.readSessionMetadataForSearch(sessionId);
+    } catch {
+      this.recordSearchRepairIntent();
+      log.warn("could not read session metadata for search indexing");
+      return;
+    }
+    if (!this.searchIndex.open()) return;
+    try {
+      const input = this.buildIndexInput(sessionId, messages, metadata);
       if (input) this.searchIndex.upsertSession(input);
       else this.searchIndex.deleteSession(sessionId);
     } finally {
@@ -1158,7 +1181,7 @@ export class SessionRepository {
       if (!isValidSessionId(sessionId)) continue;
       const messages = this.loadSession(sessionId);
       if (!Array.isArray(messages)) continue;
-      const input = this.buildIndexInput(sessionId, messages, true);
+      const input = this.buildIndexInput(sessionId, messages, this.readSessionMetadataForSearch(sessionId));
       if (input) yield input;
     }
   }
@@ -1493,6 +1516,8 @@ export class SessionRepository {
       ? this.projectRootGeneration(guardedProjectKey)
       : undefined;
     await withFileLock(this.sessionMetadataLockPath(sessionId), async () => {
+      // A metadata update must not replace an unreadable sidecar with default scope.
+      readSessionMetadataObject(targetPath);
       const sessionTombstones = this.detachedProjectRootsBySession.get(sessionId);
       const rootIsDetached = Boolean(
         guardedProjectKey && this.detachedProjectRoots.has(guardedProjectKey),
@@ -1563,17 +1588,15 @@ export class SessionRepository {
     if (!projectRootKey(projectRoot)) return 0;
     let count = 0;
     for (const { sessionId, targetPath } of this.sessionMetadataTargets()) {
-      const raw = readUtf8FileIfPresent(targetPath);
-      if (raw === null) continue;
-      let parsed: Record<string, unknown>;
+      let parsed: Record<string, unknown> | null;
       try {
-        parsed = parseSessionMetadataObject(raw);
+        parsed = readSessionMetadataObject(targetPath);
       } catch (error) {
         const errorName = error instanceof Error ? error.name : "UnknownError";
         log.warn("countSessionsInProject: invalid metadata for %s (%s)", sessionId, errorName);
         throw Object.assign(new Error("workspace session metadata unreadable"), { code: "SESSION_METADATA_INVALID", cause: error });
       }
-      if (sessionMetadataInProject(parsed, projectRoot)) count += 1;
+      if (parsed !== null && sessionMetadataInProject(parsed, projectRoot)) count += 1;
     }
     return count;
   }
@@ -1610,10 +1633,8 @@ export class SessionRepository {
       // Preflight every candidate while all locks are held before rewriting any metadata.
       for (const { sessionId, targetPath } of metadataTargets) {
         try {
-          const raw = readUtf8FileIfPresent(targetPath);
-          if (raw === null) continue;
-          const parsed = parseSessionMetadataObject(raw);
-          if (!sessionMetadataInProject(parsed, projectRoot)) continue;
+          const parsed = readSessionMetadataObject(targetPath);
+          if (parsed === null || !sessionMetadataInProject(parsed, projectRoot)) continue;
           const normalized = normalizeSessionMetadata(parsed);
           const terminalTombstone = this.detachedWireTerminalTombstones.get(sessionId);
           const next = terminalTombstone
@@ -1686,17 +1707,11 @@ export class SessionRepository {
     return readUtf8FileIfPresent(path) !== null;
   }
 
-  private readSessionMetadataForSearchRepair(sessionId: string): SessionMetadata | null {
+  private readSessionMetadataForSearch(sessionId: string): SessionMetadata | null {
     const path = join(this.sessionsDir, `${sessionId}.meta.json`);
-    let raw: string;
     try {
-      raw = readFileSync(path, "utf-8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT" && lstatSync(path, { throwIfNoEntry: false }) === undefined) return null;
-      throw error;
-    }
-    try {
-      const metadata = parseSessionMetadataObject(raw);
+      const metadata = readSessionMetadataObject(path);
+      if (metadata === null) return null;
       const { sessionKind, routineId, projectRoot } = metadata;
       if (sessionKind !== undefined && sessionKind !== normalizeSessionKind(sessionKind)
         || routineId !== undefined && (typeof routineId !== "string" || routineId.trim().length === 0)
@@ -1708,7 +1723,7 @@ export class SessionRepository {
       }
       return normalizeSessionMetadata(metadata);
     } catch {
-      throw new Error("invalid session metadata during search repair");
+      throw new Error("invalid session metadata for search");
     }
   }
 
@@ -1718,11 +1733,8 @@ export class SessionRepository {
     }
     const path = join(this.sessionsDir, `${sessionId}.meta.json`);
     try {
-      const raw = readUtf8FileIfPresent(path);
-      if (raw === null) return null;
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      if (!parsed || typeof parsed !== "object") return null;
-      return normalizeSessionMetadata(parsed);
+      const parsed = readSessionMetadataObject(path);
+      return parsed === null ? null : normalizeSessionMetadata(parsed);
     } catch (err) {
       // Warn on metadata parse or I/O failures while retaining the null return contract.
       log.warn(`loadSessionMetadata failed for ${sessionId}: %s`, (err as Error).message);

@@ -500,6 +500,65 @@ describe("MemoryManager workspace project detachment", () => {
     expect(restarted.searchSessions(`message-${SESSION_OTHER}`, { projectRoot: otherRoot })).toHaveLength(1);
   });
 
+  it.each([
+    ["projectRoot", "project\\u0052oot", undefined],
+    ["sessionKind", "session\\u004bind", "main"],
+    ["routineId", "routine\\u0049d", "second"],
+  ] as const)("rejects duplicate decoded scope in detach preflight and pending repair (%s)", async (key, escaped, value) => {
+    const otherRoot = "C:\\Work\\Beta";
+    const replacementRoot = "C:\\Work\\Gamma";
+    await seed(SESSION_A, ROOT, "detached session");
+    await seed(SESSION_OTHER, otherRoot, "scoped session");
+    const deferred = new SessionRepository({ aveDir: dir, getSearchIndexPolicy: () => "inactive" });
+    await expect(deferred.detachSessionsFromProject(ROOT)).resolves.toBe(1);
+    const marker = join(dir, "sessions", ".search-repair.json");
+    const metadata = join(dir, "sessions", `${SESSION_OTHER}.meta.json`);
+    const scope = key === "projectRoot" ? "" : `"projectRoot":${JSON.stringify(replacementRoot)},`;
+    const raw = `{${scope}"${key}":false,"${escaped}":${JSON.stringify(value ?? replacementRoot)}}`;
+    writeFileSync(metadata, raw);
+
+    const restarted = new SessionRepository({ aveDir: dir });
+    expect.soft(restarted.loadSessionMetadata(SESSION_OTHER)).toBeNull();
+    await restarted.verifyOrRebuildSearchIndex();
+    expect.soft(existsSync(marker)).toBe(true);
+    const previousIndex = new SessionSearchIndex(dir);
+    expect(previousIndex.open()).toBe(true);
+    try {
+      expect.soft(previousIndex.query(`message-${SESSION_A}`, { projectRoot: ROOT })).toHaveLength(1);
+      expect.soft(previousIndex.query(`message-${SESSION_OTHER}`, { projectRoot: otherRoot })).toHaveLength(1);
+      expect.soft(previousIndex.query(`message-${SESSION_OTHER}`, { projectRoot: replacementRoot })).toEqual([]);
+    } finally {
+      previousIndex.close();
+    }
+    expect.soft(() => restarted.countSessionsInProject(replacementRoot)).toThrow();
+    await expect.soft(deferred.detachSessionsFromProject(replacementRoot)).rejects.toMatchObject({ code: "SESSION_METADATA_INVALID" });
+    await expect.soft(restarted.updateSessionRowFields(SESSION_OTHER, { title: "Retitle" })).rejects.toThrow("invalid session metadata");
+    expect.soft(readFileSync(metadata, "utf-8")).toBe(raw);
+
+    writeFileSync(metadata, JSON.stringify({ projectRoot: otherRoot }));
+    await restarted.verifyOrRebuildSearchIndex();
+    expect.soft(existsSync(marker)).toBe(false);
+    expect.soft(restarted.searchSessions(`message-${SESSION_A}`, { projectRoot: ROOT })).toEqual([]);
+    expect(restarted.searchSessions(`message-${SESSION_OTHER}`, { projectRoot: otherRoot })).toHaveLength(1);
+  });
+
+  it("preserves incremental index rows when session metadata has duplicate decoded scope", async () => {
+    await seed(SESSION_A, ROOT, "original content");
+    const metadata = join(dir, "sessions", `${SESSION_A}.meta.json`);
+    const marker = join(dir, "sessions", ".search-repair.json");
+    const indexPath = join(dir, "search", "index.db");
+    const previous = readFileSync(indexPath);
+    writeFileSync(metadata, '{"projectRoot":false,"project\\u0052oot":"C:/Work/Other"}');
+
+    await memory.sessions.saveSession(SESSION_A, [{ role: "user", content: "replacement content" }]);
+    expect.soft(existsSync(marker)).toBe(true);
+    expect.soft(readFileSync(indexPath).equals(previous)).toBe(true);
+
+    writeFileSync(metadata, JSON.stringify({ projectRoot: ROOT }));
+    expect(memory.sessions.searchSessions("replacement content", { projectRoot: ROOT })).toHaveLength(1);
+    expect(existsSync(marker)).toBe(false);
+  });
+
   it("clears a deferred projection repair after authorized discard", async () => {
     await seed(SESSION_A, ROOT, "discard-repair");
     const deferred = new SessionRepository({ aveDir: dir, getSearchIndexPolicy: () => "inactive" });
