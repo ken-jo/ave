@@ -3462,7 +3462,7 @@ in its directory.
   A container runtime root that was not proved private is reported as
   `runtime-root-unproved`, whatever the container prerequisites, and the probe
   starts no container. Sandbox HOMEs live under that root, so every sandboxed
-  process (terminal, shells, MCP servers, workers, plugins, the memory map) is
+  process (terminal, shells, MCP servers, workers, extensions, the memory map) is
   then unavailable, each with that named reason, until a restart or an install
   repair.
 - **Integrity.** Detection hashes the launcher at boot, and the first command

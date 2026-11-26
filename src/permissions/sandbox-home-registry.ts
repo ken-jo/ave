@@ -7,7 +7,7 @@ import { markSandboxHomesUnavailable } from "./sandbox-capability.js";
 export const liveSandboxProcessHomes = new Set<string>();
 
 /** No sandbox HOME can be made on this Windows host until a restart proves the container runtime root private, so no
- * process that needs one (terminal, shells, MCP servers, workers, plugins, the memory map) starts. */
+ * process that needs one (terminal, shells, MCP servers, workers, extensions, the memory map) starts. */
 export class SandboxHomeUnavailableError extends Error {
   readonly code = "sandbox-home-unavailable";
   constructor(cause: unknown) {
