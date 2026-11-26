@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
-import { buildSandboxConfig } from "../../permissions/asrt-sandbox.js";
+import type { ConversationLoop } from "../../engine/conversation-loop.js";
+import { revokeWorkspaceRoot } from "../../engine/turn/session.js";
+import { _assertWindowsGrantBoundariesForTest, buildSandboxConfig } from "../../permissions/asrt-sandbox.js";
+import { LlmRiskClassifier, RuleBasedRiskClassifier, type LlmReviewerProvider } from "../../permissions/reviewer/risk-classifier.js";
+import { derivePluginChildEnvelope } from "../../plugins/isolation/out-of-process-plugin.js";
 import { createPathCanonicalizer, createSensitivePathCheck } from "../../permissions/sensitive-paths.js";
 import { createFilePathPolicy } from "../../tools/file-access-policy.js";
 import { openLocalityDecision, withLocalityDecision } from "../local-path-io.js";
@@ -14,6 +18,7 @@ import { setWindowsDriveQueryForTest } from "../windows-drive-locality.js";
 
 // The shared setup answers every drive as local; these checks read synthetic drive mappings.
 vi.unmock("../windows-drive-locality.js");
+vi.mock("../../permissions/workspace-authorized-roots.js", () => ({ listAuthorizedWorkspaceRoots: () => [] }));
 
 const probes = vi.hoisted(() => ({ calls: [] as string[], links: new Map<string, string>(), denied: new Set<string>() }));
 vi.mock("node:fs", async importOriginal => {
@@ -36,10 +41,14 @@ vi.mock("node:fs", async importOriginal => {
     readdirSync: wrap("readdirSync", actual.readdirSync), openSync: wrap("openSync", actual.openSync),
   };
 });
-vi.mock("node:os", async importOriginal => ({
-  ...await importOriginal<typeof import("node:os")>(),
-  userInfo: () => ({ homedir: process.env.USERPROFILE, username: "alice", uid: -1, gid: -1, shell: null }),
-}));
+vi.mock("node:os", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return {
+    ...actual,
+    homedir: () => process.env.USERPROFILE ?? actual.homedir(),
+    userInfo: () => ({ homedir: process.env.USERPROFILE, username: "alice", uid: -1, gid: -1, shell: null }),
+  };
+});
 
 const SHARE = String.raw`\Device\Mup\;LanmanRedirector\;Z:0000000000012345\files.example\share`;
 const mappings = new Map<string, string>();
@@ -133,6 +142,75 @@ describe.runIf(process.platform === "win32")("drive locality is proven in each d
     expect(policy.admissionDenied(remappedSecret)).toBe("ave-home:secrets");
     expect(policy.sensitive(remappedSecret)).toBe("ave-home:secrets");
     expect(queries).toContain(drive);
+  });
+
+  it("proves one drive per Windows grant boundary batch, including a fresh recheck", async () => {
+    const profile = join(root, "alice");
+    mkdirSync(profile);
+    vi.stubEnv("HOME", profile);
+    vi.stubEnv("USERPROFILE", profile);
+    vi.stubEnv("AVE_HOME", join(profile, "ave-data"));
+    const paths = ["first", "second", "third"].map(name => join(root, name));
+    for (const path of paths) mkdirSync(path);
+    const drive = root.slice(0, 2).toUpperCase();
+
+    _assertWindowsGrantBoundariesForTest(paths, paths.slice(1));
+    expect(queries.filter(query => query === drive)).toHaveLength(1);
+
+    await Promise.resolve();
+    _assertWindowsGrantBoundariesForTest(paths, paths.slice(1));
+    expect(queries.filter(query => query === drive)).toHaveLength(2);
+  });
+
+  it("proves one drive per live session revocation batch", () => {
+    const removed = join(root, "removed");
+    const preserved = join(removed, "preserved");
+    const self = {
+      sessionProjectRoot: null, sessionProjectName: null, sessionProjectIsDefault: false,
+      sessionAdditionalDirectories: [removed, preserved],
+      turnAdditionalDirectories: [join(removed, "nested"), join(preserved, "nested")],
+      deps: {},
+    };
+    const result = revokeWorkspaceRoot(self as unknown as ConversationLoop, removed, { preserveRoots: [preserved] });
+
+    expect(result).toEqual({ sessionDirectoriesRemoved: 1, turnDirectoriesRemoved: 1, projectRebound: false });
+    expect(self.sessionAdditionalDirectories).toEqual([preserved]);
+    expect(self.turnAdditionalDirectories).toEqual([join(preserved, "nested")]);
+    expect(queries).toEqual([root.slice(0, 2).toUpperCase()]);
+  });
+
+  it("proves one drive per plugin grant batch", () => {
+    const pluginDataDir = join(root, "plugin-data");
+    mkdirSync(pluginDataDir);
+    const chosen = (configKey: string) => ({ kind: "userChosenDirectory" as const, configKey, why: "Plugin work" });
+    const configValue = vi.fn((key: string) => join(pluginDataDir, key));
+    const result = derivePluginChildEnvelope({
+      pluginId: "example", pluginRoot: join(root, "plugins", "example"), pluginDataDir,
+      sandbox: { read: [chosen("first"), chosen("second")], write: [chosen("third")] },
+      configValue,
+    });
+
+    expect(configValue.mock.calls).toEqual([["first"], ["second"], ["third"]]);
+    expect(result.write).toContain(pluginDataDir);
+    expect(queries.filter(query => query === root.slice(0, 2).toUpperCase())).toHaveLength(1);
+  });
+
+  it("proves one drive per reviewer prompt facts batch", async () => {
+    const complete = vi.fn<LlmReviewerProvider["complete"]>()
+      .mockResolvedValue({ text: '{"level":"low","reason":"test"}', tokensIn: 0, tokensOut: 0, costUsd: 0 });
+    const rule = vi.spyOn(RuleBasedRiskClassifier.prototype, "classify").mockReturnValue({ level: "low", reason: "test" });
+    try {
+      await new LlmRiskClassifier({ complete }, "test").classify({
+        toolName: "example", source: "builtin", category: "read", pathFields: ["files"],
+        trustOrigin: "user-keyboard", finalInput: { files: ["first.txt", "second.txt", "third.txt"] },
+        executionCwd: root, allowedDirectories: [], sensitivePathsAdjacent: [],
+        sandboxCapability: { kind: "none", confidence: "verified", platform: "win32", reason: "none" },
+      });
+      expect(complete.mock.calls[0]?.[0].userPrompt).toContain('"declaredPathCount":3');
+      expect(queries.filter(query => query === root.slice(0, 2).toUpperCase())).toHaveLength(1);
+    } finally {
+      rule.mockRestore();
+    }
   });
 
   it("proves a listing's drive again for the first row after an await", async () => {

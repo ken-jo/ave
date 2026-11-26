@@ -357,29 +357,31 @@ export function derivePluginChildEnvelope(
     ...(inputs.sandbox?.read ?? []).map((grant) => ({ grant, access: "read" as const })),
     ...(inputs.sandbox?.write ?? []).map((grant) => ({ grant, access: "write" as const })),
   ];
-  for (const { grant, access } of grants) {
-    if (grant.kind === "hostDirectory") {
-      const directories = hostGrantDirectories(grant);
-      read.push(...directories);
-      // Logged, not merely declared: a child running with more reach than the base envelope is an operational fact, and `why`
-      // is the reviewed reason it holds; which is worth having in the log of the run rather than only in the diff that added it.
-      log.info(`[${inputs.pluginId}] envelope widened: read ${directories.join(", ")} — ${grant.why}`);
-      continue;
+  withLocalityDecision(() => {
+    for (const { grant, access } of grants) {
+      if (grant.kind === "hostDirectory") {
+        const directories = hostGrantDirectories(grant);
+        read.push(...directories);
+        // Logged, not merely declared: a child running with more reach than the base envelope is an operational fact, and `why`
+        // is the reviewed reason it holds; which is worth having in the log of the run rather than only in the diff that added it.
+        log.info(`[${inputs.pluginId}] envelope widened: read ${directories.join(", ")} — ${grant.why}`);
+        continue;
+      }
+      const chosen = resolveUserChosenDirectory(inputs, grant, access);
+      if (chosen === undefined) continue;
+      // Folded into the base envelope: nothing to add, nothing to register.
+      if (chosen === inputs.pluginDataDir) continue;
+      inputs.onUserChosenDirectory?.({ path: chosen, access });
+      // Read as well as write: the plugin has to list and re-open what it wrote. This is also the only thing that keeps `read` a
+      // superset of `write`; `DelegatedWorkerConfinement` documents that relation as maintained here rather than enforced anywhere.
+      read.push(chosen);
+      if (access === "write") write.push(chosen);
+      log.info(
+        `[${inputs.pluginId}] envelope widened: ${access} ${chosen} `
+          + `(config '${grant.configKey}') — ${grant.why}`,
+      );
     }
-    const chosen = resolveUserChosenDirectory(inputs, grant, access);
-    if (chosen === undefined) continue;
-    // Folded into the base envelope: nothing to add, nothing to register.
-    if (chosen === inputs.pluginDataDir) continue;
-    inputs.onUserChosenDirectory?.({ path: chosen, access });
-    // Read as well as write: the plugin has to list and re-open what it wrote. This is also the only thing that keeps `read` a
-    // superset of `write`; `DelegatedWorkerConfinement` documents that relation as maintained here rather than enforced anywhere.
-    read.push(chosen);
-    if (access === "write") write.push(chosen);
-    log.info(
-      `[${inputs.pluginId}] envelope widened: ${access} ${chosen} `
-        + `(config '${grant.configKey}') — ${grant.why}`,
-    );
-  }
+  });
   // The host-only storage directory beside `pluginDataDir` is in no child's write envelope (plugin-storage-layout.ts). Nothing above can produce
   // such a grant today; a chosen directory under the plugins root is refused unless it is inside the data directory; and this keeps it that way.
   const reaching = writeGrantsReachingHostStorage(inputs.pluginDataDir, write);

@@ -3948,36 +3948,40 @@ export function insideOwnWindowsSandboxHome(path: string, sandboxHome: string | 
   return resolved === home || resolved.startsWith(home + win32.sep);
 }
 
+export { assertWindowsGrantBoundaries as _assertWindowsGrantBoundariesForTest };
+
 function assertWindowsGrantBoundaries(read: readonly string[], write: readonly string[], sandboxHome?: string, issuedHome?: IssuedContainerHome): void {
-  assertPrivateHelperGrants(read, write);
-  assertWindowsMachineRootWriteGrants(write);
-  for (const path of read) {
-    if (windowsMachineRoots().some(root => win32.resolve(path).toLowerCase() === win32.resolve(root).toLowerCase())) {
-      throw new Error(`Windows filesystem grant refuses a machine root: ${path}`);
+  withLocalityDecision(() => {
+    assertPrivateHelperGrants(read, write);
+    assertWindowsMachineRootWriteGrants(write);
+    for (const path of read) {
+      if (windowsMachineRoots().some(root => win32.resolve(path).toLowerCase() === win32.resolve(root).toLowerCase())) {
+        throw new Error(`Windows filesystem grant refuses a machine root: ${path}`);
+      }
+      if ([...listAuthorizedWorkspaceRoots(), aveHome()]
+        .some(root => isGrantPathWithin(path, root))) {
+        throw new Error(`Windows filesystem grant refuses an ancestor of the workspace or Ave home: ${path}`);
+      }
+      // The private roots are closed to every grant but the caller's own HOME.
+      const privateRoots = insideOwnWindowsSandboxHome(path, sandboxHome) ? [] : appOwnedSandboxPrivateRoots();
+      if (protectedReadDenyCovering(path, [...getDefaultSensitiveDenyPaths(_baseTrustedSettings?.userDataDir), ...privateRoots])) {
+        throw new Error(`Windows filesystem grant is inside a protected sensitive target: ${path}`);
+      }
+      if (aveHomeReadBoundaryCovering(path) !== undefined) {
+        throw new Error(`Windows filesystem grant is inside the Ave home outside a re-allowed child: ${path}`);
+      }
     }
-    if ([...listAuthorizedWorkspaceRoots(), aveHome()]
-      .some(root => isGrantPathWithin(path, root))) {
-      throw new Error(`Windows filesystem grant refuses an ancestor of the workspace or Ave home: ${path}`);
+    const writeDenyCovering = write.length > 0 ? protectedReadDenyMatcher(getDefaultSensitiveWriteDenyEntries()) : undefined;
+    for (const path of write) {
+      if (writeDenyCovering?.(path) !== undefined) {
+        throw new Error(`Windows filesystem write grant is inside a protected sensitive target: ${path}`);
+      }
     }
-    // The private roots are closed to every grant but the caller's own HOME.
-    const privateRoots = insideOwnWindowsSandboxHome(path, sandboxHome) ? [] : appOwnedSandboxPrivateRoots();
-    if (protectedReadDenyCovering(path, [...getDefaultSensitiveDenyPaths(_baseTrustedSettings?.userDataDir), ...privateRoots])) {
-      throw new Error(`Windows filesystem grant is inside a protected sensitive target: ${path}`);
-    }
-    if (aveHomeReadBoundaryCovering(path) !== undefined) {
-      throw new Error(`Windows filesystem grant is inside the Ave home outside a re-allowed child: ${path}`);
-    }
-  }
-  const writeDenyCovering = write.length > 0 ? protectedReadDenyMatcher(getDefaultSensitiveWriteDenyEntries()) : undefined;
-  for (const path of write) {
-    if (writeDenyCovering?.(path) !== undefined) {
-      throw new Error(`Windows filesystem write grant is inside a protected sensitive target: ${path}`);
-    }
-  }
-  // The caller's own HOME lies in the runtime root's state; it is passed only while live and still the issuance held.
-  const held = heldIssuedContainerHome(issuedHome);
-  const ownHome = held !== undefined && sandboxHome !== undefined && insideOwnWindowsSandboxHome(sandboxHome, sandboxHome) ? held : undefined;
-  assertWriteGrantsOutsideConfinementState(write, declaredConfinementStatePaths(), undefined, ownHome);
+    // The caller's own HOME lies in the runtime root's state; it is passed only while live and still the issuance held.
+    const held = heldIssuedContainerHome(issuedHome);
+    const ownHome = held !== undefined && sandboxHome !== undefined && insideOwnWindowsSandboxHome(sandboxHome, sandboxHome) ? held : undefined;
+    assertWriteGrantsOutsideConfinementState(write, declaredConfinementStatePaths(), undefined, ownHome);
+  });
 }
 
 function assertWindowsGrantDenySnapshot(session: AsrtSandboxSession, revision: number, allowWrite: readonly string[]): void {

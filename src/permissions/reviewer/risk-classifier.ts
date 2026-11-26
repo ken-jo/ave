@@ -26,7 +26,6 @@ import {
   caseFoldForMatch,
   createSensitivePathMatcher,
   foldCanonicalPathSeparators,
-  isSensitivePath,
   resolvePathForPolicy,
 } from "../sensitive-paths.js";
 import { isPathAllowed } from "../allowed-directories.js";
@@ -1638,25 +1637,26 @@ function buildUserPrompt(
       ? maskSensitiveData(recentUserMessage).masked.slice(0, 500)
       : undefined;
   // Use the same resolver and predicates as the rule classifier. This is evidence about declared operands, not an attestation about tool code.
-  const declaredPaths = extractDeclaredPathTargets(input);
-  const guest = isDisposableSubstrateCapability(input.sandboxCapability);
-  const canonicalizeGuestPath = (path: string) => foldCanonicalPathSeparators(posix.normalize(path));
-  const sensitiveRead = guest ? createSensitivePathMatcher("read", undefined, canonicalizeGuestPath, { inspectKeyMaterial: false })
-    : (path: string) => isSensitivePath(path, "read");
-  const sensitiveWrite = guest ? createSensitivePathMatcher("write", undefined, canonicalizeGuestPath, { inspectKeyMaterial: false })
-    : (path: string) => isSensitivePath(path, "write");
-  const pathChecks = declaredPaths.map(({ nativePath, canonicalPath }) => ({
-    path: nativePath,
-    insideAllowedDirectories: isInsideAllowed(canonicalPath, input.allowedDirectories),
-    sensitiveRead: sensitiveRead(nativePath) !== null,
-    sensitiveWrite: sensitiveWrite(nativePath) !== null,
-  }));
+  const pathChecks = withLocalityDecision(() => {
+    const guest = isDisposableSubstrateCapability(input.sandboxCapability);
+    const canonicalizeGuestPath = (path: string) => foldCanonicalPathSeparators(posix.normalize(path));
+    const sensitiveRead = guest ? createSensitivePathMatcher("read", undefined, canonicalizeGuestPath, { inspectKeyMaterial: false })
+      : createSensitivePathMatcher("read");
+    const sensitiveWrite = guest ? createSensitivePathMatcher("write", undefined, canonicalizeGuestPath, { inspectKeyMaterial: false })
+      : createSensitivePathMatcher("write");
+    return extractDeclaredPathTargets(input).map(({ nativePath, canonicalPath }) => ({
+      path: nativePath,
+      insideAllowedDirectories: isInsideAllowed(canonicalPath, input.allowedDirectories),
+      sensitiveRead: sensitiveRead(nativePath) !== null,
+      sensitiveWrite: sensitiveWrite(nativePath) !== null,
+    }));
+  });
   const hostPolicyFacts = {
     ruleVerdict: input.permissionReason === undefined ? ruleVerdict
       : { ...ruleVerdict, reason: maskSensitiveData(input.permissionReason).masked },
     executionCwd: input.executionCwd.slice(0, 512),
     executionCwdTruncated: input.executionCwd.length > 512,
-    declaredPathCount: declaredPaths.length,
+    declaredPathCount: pathChecks.length,
     allDeclaredPathsInsideAllowedDirectories: pathChecks.length > 0 &&
       pathChecks.every((path) => path.insideAllowedDirectories),
     anyDeclaredPathSensitiveRead: pathChecks.some((path) => path.sensitiveRead),

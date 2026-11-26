@@ -170,25 +170,18 @@ export function revokeWorkspaceRoot(
   const previousProjectRoot = self.sessionProjectRoot;
   const previousProjectName = self.sessionProjectName;
   const previousProjectWasDefault = self.sessionProjectIsDefault;
-  // Share the workspace-root lifecycle revocation predicate with other live-scope owners.
-  const isRevoked = createWorkspaceRootRevocationFilter(
-    normalizedRoot,
-    options.preserveRoots ?? [],
-  );
-  if (workspaceRootRemovalOwnsSession(self, removedRoot)) {
-    self.revokeProjectWork();
-  }
+  const { ownsSession, retainedSessionDirectories, retainedTurnDirectories, projectNeedsReauthorization } = withLocalityDecision(() => {
+    const isRevoked = createWorkspaceRootRevocationFilter(normalizedRoot, options.preserveRoots);
+    return {
+      ownsSession: workspaceRootRemovalOwnsSession(self, removedRoot),
+      retainedSessionDirectories: previousSessionDirectories.filter(directory => !isRevoked(directory)),
+      retainedTurnDirectories: previousTurnDirectories.filter(directory => !isRevoked(directory)),
+      projectNeedsReauthorization: Boolean(previousProjectRoot && isRevoked(previousProjectRoot)),
+    };
+  });
+  if (ownsSession) self.revokeProjectWork();
 
-  const retainedSessionDirectories = previousSessionDirectories.filter(
-    (directory) => !isRevoked(directory),
-  );
-  self.turnAdditionalDirectories = previousTurnDirectories.filter(
-    (directory) => !isRevoked(directory),
-  );
-  const projectNeedsReauthorization = Boolean(
-    previousProjectRoot && isRevoked(previousProjectRoot),
-  );
-
+  self.turnAdditionalDirectories = retainedTurnDirectories;
   self.sessionAdditionalDirectories = retainedSessionDirectories;
   if (projectNeedsReauthorization) {
     applyProjectContext(self, currentProjectContext(self));
