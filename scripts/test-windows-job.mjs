@@ -16,9 +16,18 @@ const directory = mkdtempSync(join(tmpdir(), "ave job test "));
 const fixture = join(directory, "child fixture.cjs");
 writeFileSync(fixture, `const {spawn}=require('node:child_process');
 if(process.argv[2]==='leaf'){console.log(process.pid);setInterval(()=>{},1000)}
-else {const child=spawn(process.execPath,[__filename,'leaf'],{stdio:['ignore','pipe','inherit']});
-child.stdout.once('data',data=>{process.stdout.write(data); if(process.argv[2]==='root-exit') process.exit(23); if(process.argv[2]==='root-exit-zero') process.exit(0)});
-setInterval(()=>{},1000)}`);
+else {
+  // Keep the leaf alive after the root exits so the launcher owns its cleanup.
+  const child = spawn(process.execPath, [__filename, 'leaf'], {
+    detached: true, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true,
+  });
+  child.stdout.once('data', data => {
+    process.stdout.write(data);
+    if (process.argv[2] === 'root-exit') process.exit(23);
+    if (process.argv[2] === 'root-exit-zero') process.exit(0);
+  });
+  setInterval(() => {}, 1000);
+}`);
 function launch(exe, args, binary = helper, receipt, env = process.env) {
   const prefix = receipt === undefined ? [] : ['--receipt', receipt];
   const child = spawn(binary, [...prefix, exe, ...args], { cwd: directory, env, stdio: ['pipe','pipe','pipe'], windowsHide:true });
