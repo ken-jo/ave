@@ -7,6 +7,7 @@ import {
   ApprovalGate,
   IPC_APPROVAL_REQUEST,
   approvalDecisionTrustOrigin,
+  hostApprovalDenialReason,
   isAnsweredApprovalDenial,
   type ApprovalDecision,
   type ApprovalRequest,
@@ -65,14 +66,14 @@ describe("user-owned surface approval across the quit seal", () => {
     expect(resolved.provenance).toBeUndefined();
   });
 
-  it("ends on the quit for a deny no person answered through the gate", async () => {
+  it("keeps a fallback host refusal that settled before the quit", async () => {
     const { answer, asked, quit, resolution } = await surfaceFallback();
     const pending = await asked;
     answer.resolve({ requestId: pending.id, choice: "deny-once" });
     quit.abort(new HostExitAbortError());
-    // The cancellation comes back for the caller to end as a stop, so its terminal writer still runs.
     const resolved = await resolution;
-    expect(abortSupersedesApprovalDecision(quit.signal, resolved.decision)).toBe(true);
+    expect(hostApprovalDenialReason(resolved.decision)).toBe("approval rejected by host");
+    expect(abortSupersedesApprovalDecision(quit.signal, resolved.decision)).toBe(false);
     expect(resolved.provenance).toBeUndefined();
   });
 

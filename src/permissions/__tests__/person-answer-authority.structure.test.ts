@@ -79,6 +79,105 @@ function calls(name: string) {
       ? [{ node, where }] : []);
 }
 
+
+function requireNode<T>(node: T | undefined, label: string): T {
+  if (node === undefined) throw new Error(`Missing approval syntax: ${label}`);
+  return node;
+}
+
+function compactBinding(text: string): string {
+  return text.replace(/\s/g, "").replace(/,(?=})/g, "");
+}
+
+function directStatement(node: ts.Node): ts.Statement {
+  let parent = node;
+  while (!ts.isStatement(parent)) parent = parent.parent;
+  return parent;
+}
+
+function admissionStatement(call: ts.CallExpression, assigned: string | undefined): ts.Statement | undefined {
+  const parent = call.parent;
+  if (assigned === undefined) return ts.isExpressionStatement(parent) ? parent : undefined;
+  if (ts.isVariableDeclaration(parent) && parent.initializer === call && parent.name.getText() === assigned) {
+    return directStatement(parent);
+  }
+  if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      parent.right === call && parent.left.getText() === assigned && ts.isExpressionStatement(parent.parent)) {
+    return parent.parent;
+  }
+}
+
+function precedingApprovalStatement(admission: ts.Statement, use: ts.Node): boolean {
+  if (admission.end > use.getStart()) return false;
+  const block = admission.parent;
+  if (!ts.isBlock(block)) return false;
+  for (let cursor: ts.Node | undefined = use; cursor !== undefined; cursor = cursor.parent) {
+    if (cursor.pos === block.pos && cursor.end === block.end && cursor.kind === block.kind) return true;
+  }
+  const guarded = block.parent;
+  if (!ts.isTryStatement(guarded) || guarded.tryBlock !== block || guarded.catchClause === undefined) return false;
+  const last = guarded.catchClause.block.statements.at(-1);
+  if (last && (ts.isReturnStatement(last) || ts.isThrowStatement(last))) return precedingApprovalStatement(guarded, use);
+  // The coordinator starts with a refusal and only a successful admission changes it.
+  if (guarded.catchClause.block.statements.length === 1 && last && ts.isIfStatement(last) &&
+      last.thenStatement.kind === ts.SyntaxKind.ThrowStatement) {
+    const outcome = block.statements.at(-1);
+    if (outcome?.getText() !== "approvalOutcome = approvalFailureKind(decision);") return false;
+    for (let cursor: ts.Node | undefined = use; cursor !== undefined; cursor = cursor.parent) {
+      const branch: ts.Node | undefined = cursor.parent;
+      if (branch && ts.isIfStatement(branch) && branch.thenStatement === cursor &&
+          branch.expression.getText() === "decision !== null && approvalOutcome === undefined") return true;
+    }
+  }
+  return false;
+}
+
+function assertRequestSource(ask: ts.CallExpression, admission: ts.CallExpression, label: string): void {
+  let sent = ask.arguments[0];
+  if (sent && ts.isCallExpression(sent) && sent.expression.getText() === "bindPendingAnswerRequest") sent = sent.arguments[0];
+  const expected = requireNode(admission.arguments[1], label);
+  if (!ts.isObjectLiteralExpression(expected)) {
+    expect(sent?.getText(), label).toBe(expected.getText());
+    return;
+  }
+  const field = (object: ts.ObjectLiteralExpression, key: string): string | undefined => {
+    const prop = object.properties.find((entry) =>
+      (ts.isPropertyAssignment(entry) || ts.isShorthandPropertyAssignment(entry)) && entry.name.getText() === key);
+    return prop && (ts.isPropertyAssignment(prop) ? prop.initializer.getText() : ts.isShorthandPropertyAssignment(prop) ? prop.name.getText() : undefined);
+  };
+  const requestId = field(expected, "requestId");
+  if (requestId === undefined) {
+    expect(sent?.getText(), label).toBe("binding.card.requestId");
+    expect(ask.arguments[1]?.getText(), label).toContain("requestId: binding.card.requestId");
+    return;
+  }
+  if (sent && ts.isObjectLiteralExpression(sent)) {
+    const givenId = field(sent, ask.expression.getText() === "requestHumanApproval" ? "requestId" : "id");
+    if (givenId === undefined) {
+      expect(sent.properties.filter(ts.isSpreadAssignment).some((spread) => spread.expression.getText() === "approvalRequest"), label).toBe(true);
+      expect(["approvalRequest.id", "approvalRequestId"], label).toContain(requestId);
+    } else {
+      expect(givenId, label).toBe(requestId);
+      if (ask.expression.getText() !== "requestHumanApproval") {
+        expect(field(sent, "toolName"), label).toBe(field(expected, "toolName"));
+        const toolUseId = field(expected, "toolUseId");
+        if (toolUseId === "ctx.toolUseId") {
+          expect(compactBinding(sent.getText()), label).toContain("...(ctx.toolUseId===undefined?{}:{invocationToolUseId:ctx.toolUseId})");
+        } else {
+          expect(field(sent, "invocationToolUseId") ?? "undefined", label).toBe(toolUseId);
+        }
+      }
+    }
+  } else if (sent?.getText() === "fallback") {
+    expect(requestId, label).toBe("fallbackId");
+    expect(sent.getSourceFile().text.slice(0, sent.pos), label).toMatch(/const fallback: ApprovalRequestInput = \{\s*\.\.\.request,\s*id: fallbackId,/);
+  } else {
+    const argument = sent?.getText();
+    const resolvesDesktop = ts.isPropertyAccessExpression(ask.expression) && ask.expression.name.getText() === "resolveFromDesktopRendererWithFreshIdentity";
+    expect(requestId, label).toBe(resolvesDesktop ? argument : `${argument}.id`);
+  }
+}
+
 const policy = { getPolicyEpoch: () => "1:0:0", getPolicyContextEpoch: () => "1" } as unknown as PermissionManager;
 const asked: PermissionCheckResult = { decision: "ask", reason: "Run it on the host.", provenance: RULE_PROVENANCE };
 const ACTION = toolUseAction("probe");
@@ -331,49 +430,85 @@ describe("authority from a person's answer", () => {
     }
   });
 
-  it("admits every gate answer before inspecting the raw choice", () => {
+  it("binds each consumed approval to the request that produced it", () => {
     const forwarding = "engine/subagent-runner.ts#wrappedRequestAndWait";
+    const toolUse = "toolName: toolUse.name, toolUseId: toolUse.id";
+    const request = "requestId: request.id, toolName: request.toolName, toolUseId: request.invocationToolUseId";
+    const sealed = "requestId: ticketId, toolName: context.control.sealedAction.toolName, toolUseId: context.control.sealedAction.toolUseId";
+    const card = "requestId: card.id, toolName: card.toolName, toolUseId: undefined";
+    const namedTool = "requestId, toolName, toolUseId: undefined";
     const sites = [
-      ["requestAndWait", "boot/steps/plugin-tool-executor.ts#setupPluginToolExecutor", "decision"],
-      ["requestAndWait", "engine/turn/query-loop.ts#gateCrossAgentInterceptedMetaTools", "decision"],
-      ["requestAndWait", "hooks/hook-command-policy.ts#createHookCommandAuthorizer", "approval"],
-      ["requestAndWait", "mcp/mcp-elicitation-resolver.ts#createElicitationResolverFactory", "decision"],
-      ["requestAndWait", "permissions/agent-action-approver.ts#buildSingleFlightAgentActionApprover", "decision"],
-      ["requestAndWait", "permissions/effect-enforcement.ts#gateMutatingEffect", "decision"],
-      ["requestAndWait", "permissions/egress-approval.ts#createApprovalGateEgressRequester", "decision"],
-      ["requestAndWait", "permissions/extension-start-asker.ts#ask", "decision"],
-      ["requestAndWait", "permissions/permission-mode-apply.ts#applyPermissionModeChange", "decision"],
-      ["requestAndWait", "tools/invocation-authorization.ts#authorizeToolInvocation", "decision"],
-      ["requestAndWait", "tools/invocation-execution.ts#authorizeBrowserSite", "actionDecision", "admitBrowserApproval"],
-      ["requestAndWait", "tools/invocation-execution.ts#authorizeBrowserSite", "siteDecision", "admitBrowserApproval"],
-      ["requestAndWait", "tools/invocation-execution.ts#requestLateApproval", "decision"],
-      ["requestAndWait", "tools/invocation-runner.ts#requestOutOfAllowedDirectoryAccess", "decision"],
-      ["requestAndWait", "tools/pipeline/user-owned-surface.ts#resolveSurface", "decision"],
-      ["requestAndWait", "tools/skill-load.ts#execute", "decision"],
-      ["requestHumanApproval", "tools/pipeline/rationale-host-coordinator.ts#promptForApproval", "decision"],
-      ["resolveFromDesktopRendererWithFreshIdentity", "ipc/domains/permissions.ts#registerPermissionsHandlers", "honoredDecision"],
-      ["resolveWithFreshIdentity", "main/telegram-remote-approval.ts#handleCallbackQuery", "decision"],
+      ["requestAndWait", "boot/steps/plugin-tool-executor.ts#setupPluginToolExecutor", "decision", card, "answer"],
+      ["requestAndWait", "engine/turn/query-loop.ts#gateCrossAgentInterceptedMetaTools", "decision", request],
+      ["requestAndWait", "hooks/hook-command-policy.ts#createHookCommandAuthorizer", "approval", 'requestId: id, toolName: "bash", toolUseId: undefined', "admitted"],
+      ["requestAndWait", "mcp/mcp-elicitation-resolver.ts#createElicitationResolverFactory", "decision", namedTool, "admitted"],
+      ["requestAndWait", "permissions/agent-action-approver.ts#buildSingleFlightAgentActionApprover", "decision", card],
+      ["requestAndWait", "permissions/effect-enforcement.ts#gateMutatingEffect", "decision", "requestId, toolName: ctx.toolName, toolUseId: ctx.toolUseId", "admitted"],
+      ["requestAndWait", "permissions/egress-approval.ts#createApprovalGateEgressRequester", "decision", namedTool, "answer"],
+      ["requestAndWait", "permissions/extension-start-asker.ts#ask", "decision", 'requestId, toolName: "extension_start", toolUseId: undefined', "admitted"],
+      ["requestAndWait", "permissions/permission-mode-apply.ts#applyPermissionModeChange", "decision", "requestId: request.id, toolName: request.toolName, toolUseId: undefined"],
+      ["requestAndWait", "tools/invocation-authorization.ts#authorizeToolInvocation", "decision", `requestId: approvalRequestId, ${toolUse}`],
+      ["requestAndWait", "tools/invocation-execution.ts#authorizeBrowserSite", "actionDecision", "actionRequest"],
+      ["requestAndWait", "tools/invocation-execution.ts#authorizeBrowserSite", "siteDecision", "siteRequest"],
+      ["requestAndWait", "tools/invocation-execution.ts#requestLateApproval", "decision", `requestId: liveRequest.id, ${toolUse}`],
+      ["requestAndWait", "tools/invocation-runner.ts#requestOutOfAllowedDirectoryAccess", "decision", `requestId: approvalRequest.id, ${toolUse}`],
+      ["requestAndWait", "tools/pipeline/user-owned-surface.ts#resolveSurface", "decision", "requestId: fallbackId, toolName: fallback.toolName, toolUseId: fallback.invocationToolUseId", "admitted"],
+      ["requestAndWait", "tools/skill-load.ts#execute", "decision", 'requestId, toolName: "skill_load", toolUseId: undefined', "admitted"],
+      ["requestHumanApproval", "tools/pipeline/rationale-host-coordinator.ts#promptForApproval", "decision", sealed],
+      ["resolveFromDesktopRendererWithFreshIdentity", "ipc/domains/permissions.ts#registerPermissionsHandlers", "honoredDecision", "requestId: decision.requestId, toolName: snapshot.toolName, toolUseId: snapshot.toolUseId", "answer"],
+      ["resolveWithFreshIdentity", "main/telegram-remote-approval.ts#handleCallbackQuery", "decision", "...binding.card, ...(partialRow ? { extensionStartRow: binding.card.row } : {})", "answer"],
     ] as const;
+    const observers = [
+      ["tools/invocation-authorization.ts#onSettled", "answer", `requestId: approvalRequestId, ${toolUse}`],
+      ["tools/invocation-runner.ts#onSettled", "answer", `requestId: directoryRequestId, ${toolUse}`],
+      ["tools/pipeline/rationale-host-coordinator.ts#onSettled", "answer", sealed],
+      ["main/telegram-remote-approval.ts#finalTextFor", "decision", "card", "answer"],
+      ["tools/invocation-execution.ts#admitBrowserApproval", "decision", request],
+      ["tools/pipeline/user-owned-surface.ts#resolveSurface", "decision", request, "initialAnswer"],
+    ] as const;
+
     const admissions = [...calls("admitApprovalAnswer"), ...calls("admitBrowserApproval")];
-    expect(admissions.some(({ where }) => where === "tools/invocation-execution.ts#admitBrowserApproval")).toBe(true);
-    expect(admissions.some(({ where, node }) => where === "main/telegram-remote-approval.ts#finalTextFor" &&
-      node.arguments[0]?.getText() === "decision")).toBe(true);
-    const observers = calls("selectRationaleDenial").filter(({ where }) => !where.startsWith("tools/invocation-ledger.ts#"));
-    expect(observers.map(({ where }) => where).sort()).toEqual([
-      "tools/invocation-authorization.ts#onSettled", "tools/invocation-runner.ts#onSettled",
-    ]);
-    for (const observer of observers) {
-      expect(admissions.some(({ where, node }) => where === observer.where &&
-        node.end <= observer.node.pos && node.arguments[0]?.getText() === observer.node.arguments[0]?.getText())).toBe(true);
-    }
-    const earlyReads = [
-      ...nodesMentioning("choice").filter(({ node }) =>
-        (ts.isPropertyAccessExpression(node) && node.name.getText() === "choice") ||
-        (ts.isElementAccessExpression(node) && /^["']choice["']$/.test(node.argumentExpression.getText())) ||
-        (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && /\bchoice\b/.test(node.name.getText()))),
-      ...["approvalFailureKind", "hostApprovalDenialReason", "isSettledRefusal", "isAnsweredApprovalDenial"]
+    const covered = new Set<ts.CallExpression>();
+    const usage = [
+      ...nodesMentioning("admitApprovalAnswer").filter(({ node }) =>
+        ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ||
+        ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name)),
+      ...["approvalFailureKind", "approvalFailureOutcome", "hostApprovalDenialReason", "isSettledRefusal",
+        "isAnsweredApprovalDenial", "isHostApprovalCancelledDecision", "answeredApprovalProvenance",
+        "consumeUserOwnedSurfaceChoice", "consumeBrowserSiteChoice", "selectRationaleDenial", "onApprovalDecision"]
         .flatMap(calls),
     ];
+
+    function assertConsumer(where: string, result: string, binding: string, assigned: string | undefined, after = 0, before = Infinity): ts.CallExpression {
+      const label = `${where} (${result})`;
+      const matching = admissions.filter(({ where: owner, node }) => owner === where && node.pos >= after && node.end <= before &&
+        node.arguments[0]?.getText() === result);
+      expect(matching, label).toHaveLength(1);
+      const { node } = requireNode(matching[0], label);
+      covered.add(node);
+      const delegated = binding === "actionRequest" || binding === "siteRequest";
+      expect(node.expression.getText(), label).toBe(delegated ? "admitBrowserApproval" : "admitApprovalAnswer");
+      const expected = delegated || binding === "card" ? binding : `{ ${binding} }`;
+      expect(compactBinding(node.arguments[1]?.getText() ?? ""), label).toBe(compactBinding(expected));
+      const statement = admissionStatement(node, assigned);
+      expect(statement !== undefined && ts.isBlock(statement.parent), label).toBe(true);
+
+      const reads = usage.filter(({ where: owner, node: use }) => owner === where && use.pos >= after && use.end <= before &&
+        (ts.isCallExpression(use) ? use.arguments[0]?.getText() === result
+          : ts.isVariableDeclaration(use) ? use.initializer?.getText() === result
+            : (ts.isPropertyAccessExpression(use) || ts.isElementAccessExpression(use)) && use.expression.getText() === result));
+      for (const { node: use } of reads) {
+        expect(statement && precedingApprovalStatement(statement, use), `${label} must admit before ${use.getText()}`).toBe(true);
+      }
+      if (assigned !== undefined && statement !== undefined) {
+        // A result-bound consumer must read the admitted record downstream. Writing it and consulting
+        // only the raw decision could turn a host-owned result into approval.
+        const text = statement.getSourceFile().text.slice(statement.end, before);
+        expect(text, label).toMatch(new RegExp(`\\b${assigned}\\??\\.(?:choice|decision|trustOrigin)\\b|\\bif \\(${assigned}\\)|\\b${assigned} === undefined\\b`));
+      }
+      return node;
+    }
+
     for (const entry of new Set(sites.map(([entry]) => entry))) {
       const asks = calls(entry);
       const matching = sites.filter(([name]) => name === entry);
@@ -381,25 +516,45 @@ describe("authority from a person's answer", () => {
       expect(asks.map(({ where }) => where).sort()).toEqual(
         (entry === "requestAndWait" ? [...expected, forwarding] : expected).sort(),
       );
-      for (const [, where, result, helper = "admitApprovalAnswer"] of matching) {
+      for (const site of matching) {
+        const [, where, result, binding] = site;
+        const assigned = site.length === 5 ? site[4] : undefined;
         const candidates = asks.filter((ask) => ask.where === where);
         const ask = candidates.length === 1 ? candidates[0] : candidates.find(({ node }) => {
           const awaited = node.parent;
           const declaration = awaited.parent;
           return ts.isAwaitExpression(awaited) && ts.isVariableDeclaration(declaration) && declaration.name.getText() === result;
         });
-        const admission = admissions.find(({ node, where: owner }) =>
-          owner === where && ask !== undefined && node.pos >= ask.node.end &&
-          node.expression.getText() === helper && node.arguments[0]?.getText() === result,
-        );
-        expect(admission, `${where} (${result})`).toBeDefined();
-        expect(earlyReads.filter(({ node, where: owner }) => {
-          if (owner !== where || node.pos < (ask?.node.end ?? Infinity) || node.pos >= (admission?.node.pos ?? -Infinity)) return false;
-          if (ts.isCallExpression(node)) return node.arguments[0]?.getText() === result;
-          if (ts.isVariableDeclaration(node)) return node.initializer?.getText() === result;
-          return (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) && node.expression.getText() === result;
-        }), `${where} (${result})`).toEqual([]);
+        const produced = requireNode(ask, where).node;
+        const admission = assertConsumer(where, result, binding, assigned, produced.end);
+        assertRequestSource(produced, admission, where);
       }
     }
+
+    const fallbackAsk = calls("requestAndWait").find(({ where }) => where === "tools/pipeline/user-owned-surface.ts#resolveSurface");
+    for (const site of observers) {
+      const [where, result, binding] = site;
+      const assigned = site.length === 4 ? site[3] : undefined;
+      const before = where.endsWith("#resolveSurface") ? fallbackAsk?.node.pos : undefined;
+      const admission = assertConsumer(where, result, binding, assigned, 0, before);
+      if (where.endsWith("#resolveSurface")) {
+        const original = admission.getSourceFile().text.slice(directStatement(admission).parent.pos, admission.pos);
+        expect(original, where).toContain("let { permission, decision } = input;");
+        expect(original, where).not.toMatch(/\binput\.decision\b/);
+      }
+    }
+    // This also catches new settlement observers and forwarders that start consuming answers.
+    expect(admissions.filter(({ node }) => !covered.has(node)).map(({ where }) => where)).toEqual([]);
+
+    const pluginConsumer = "boot/steps/plugin-tool-executor.ts#setupPluginToolExecutor";
+    const plugin = requireNode(admissions.find(({ where }) => where === pluginConsumer), pluginConsumer).node;
+    const issuance = requireNode(calls("issueInspectedPluginOperationGrant").find(({ where }) => where === pluginConsumer), pluginConsumer).node;
+    const gate = directStatement(issuance).parent;
+    expect(ts.isBlock(gate)).toBe(true);
+    if (!ts.isBlock(gate)) return;
+    const guard = gate.statements.find((statement) => ts.isIfStatement(statement) &&
+      statement.expression.getText() === 'denialReason !== undefined || answer?.choice !== "allow-once"');
+    expect(guard?.getText()).toContain("throw new Error");
+    expect(guard !== undefined && plugin.end < guard.pos && guard.end <= issuance.pos).toBe(true);
   });
 });
