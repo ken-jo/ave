@@ -52,6 +52,13 @@ vi.mock("../../shared/ave-home-test-guard.js", async (original) => {
 });
 
 vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
+// A foreign host keeps its own separator, so obligations never apply to its simulated win32 process. The drive answers identities as a
+// Windows kernel does, so a test of admitted rows admits them on every host.
+const windowsAdmission = vi.hoisted(() => ({ native: false }));
+vi.mock("../admitted-obligation.js", async (original) => {
+  const actual = await original<typeof import("../admitted-obligation.js")>();
+  return { ...actual, windowsObligationsApply: () => actual.windowsObligationsApply() || (windowsAdmission.native && process.platform === "win32") };
+});
 // Keep the production vendor path composition on both hosts. Only the package location is supplied by the fixture.
 vi.mock("node:module", async (original) => {
   const actual = await original<typeof import("node:module")>();
@@ -561,6 +568,7 @@ afterEach(async () => {
     drive.identities.clear();
     drive.readable.clear();
     drive.pins.clear();
+    windowsAdmission.native = false;
     runtime.policyFrames.length = 0;
   }
 });
@@ -936,6 +944,8 @@ describe("the browser download staging folder in the srt-win session floor and w
   });
 
   it("freezes generated floor lists, so a list derived from one keeps an added row as its own deny and never creates an absent one", async () => {
+    // Only an admitted request row is kept by its origin.
+    windowsAdmission.native = true;
     useLayout(OUTSIDE_PROFILE, { staged: false });
     await sessionFloor();
     // A floor write row inside the profile that no grant reaches is dropped; the request's own row is kept.
