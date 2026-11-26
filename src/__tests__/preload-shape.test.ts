@@ -85,25 +85,53 @@ beforeAll(async () => {
 });
 
 describe("preload contextBridge world shape lock", () => {
-  it("bridges template requests, local confirmation intent and change unsubscribe", async () => {
+  it("bridges retained run reads, progress snapshots and gesture-bound decisions", async () => {
+    const api = exposed.get("aveApi") as AveApi;
+    const runId = "run-a";
+    const hash = "e".repeat(64);
+    const stage = { runId, stageId: "report", attempt: 2, resultHash: hash, decision: "approve" } as const;
+    const join = { runId, joinId: "step-1", conflictHash: hash, generation: 1, decision: "retry_merge" } as const;
+    await api.getWorkBoardItem(8, runId);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.get, 8, runId);
+    mockUserActivation.isActive = true;
+    await api.decideWorkStage(8, stage);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.decideStage, 8, stage);
+    mockUserActivation.isActive = false;
+    await api.decideWorkJoin(8, join);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.decideJoin, 8, join);
+    const receive = vi.fn();
+    const unsubscribe = api.onWorkBoardRunProgress(receive);
+    const [, listener] = mockOn.mock.calls.at(-1) ?? [];
+    const progress = { itemId: 8, phase: "executing", workflowRun: { runId } };
+    listener({}, progress);
+    expect(receive).toHaveBeenCalledWith(progress);
+    unsubscribe();
+    expect(mockRemoveListener).toHaveBeenLastCalledWith(WORK_BOARD.runProgress, listener);
+  });
+
+  it("bridges template requests and change unsubscribe without activation assertions", async () => {
     const api = exposed.get("aveApi") as AveApi;
     await api.listWorkflowTemplates(); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateList);
     await api.getWorkflowTemplate("t"); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateGet, "t");
     await api.getWorkflowTemplateProposal("p"); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateProposalGet, "p");
     const input = { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" };
     mockUserActivation.isActive = true; await api.confirmWorkflowTemplate("t", input);
-    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input, { inputOrigin: "user-keyboard", userActivation: true });
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input);
     mockUserActivation.isActive = false; await api.confirmWorkflowTemplate("t", input);
-    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input, { inputOrigin: "user-keyboard", userActivation: false });
-    const attachment = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily" };
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input);
+    const attachment = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily", expectedScope: { kind: "all" as const } };
     mockUserActivation.isActive = true; await api.attachWorkflowTemplateSchedule(attachment);
-    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment, { inputOrigin: "user-keyboard", userActivation: true });
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment);
     mockUserActivation.isActive = false; await api.attachWorkflowTemplateSchedule(attachment);
-    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment, { inputOrigin: "user-keyboard", userActivation: false });
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment);
+    const { scheduleId: _, ...pin } = attachment;
+    const newSchedule = { ...pin, schedule: { at: "2030-01-01T12:00:00Z" } };
+    await api.attachWorkflowTemplateSchedule(newSchedule);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, newSchedule);
     mockUserActivation.isActive = true; await api.detachWorkflowTemplateSchedule("attachment");
-    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateDetachSchedule, "attachment", { inputOrigin: "user-keyboard", userActivation: true });
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateDetachSchedule, "attachment");
     mockUserActivation.isActive = false; await api.detachWorkflowTemplateSchedule("attachment");
-    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateDetachSchedule, "attachment", { inputOrigin: "user-keyboard", userActivation: false });
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateDetachSchedule, "attachment");
     const handler = vi.fn(); const unsubscribe = api.onWorkflowTemplatesChanged(handler);
     const listener = requiredValue(mockOn.mock.calls.at(-1))[1]; listener(); expect(handler).toHaveBeenCalledOnce();
     unsubscribe(); expect(mockRemoveListener).toHaveBeenLastCalledWith(WORK_BOARD.templatesChanged, listener);
@@ -633,6 +661,7 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "openExternalUrl": "function",
           "openSettingsFile": "function",
+          "openWorkBoardJoin": "function",
           "pauseRoutine": "function",
           "pauseSessionGoal": "function",
           "pickSettingsDirectory": "function",
@@ -682,6 +711,7 @@ describe("preload contextBridge world shape lock", () => {
           "setPluginContributionTrust": "function",
           "setPluginEnabled": "function",
           "setWebApiKey": "function",
+          "setWorkBoardProjectScope": "function",
           "sideChat": [
             "abort",
             "controlShellTask",

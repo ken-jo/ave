@@ -1,3 +1,4 @@
+import { RetiredModelError } from "../llm/retired-model-error.js";
 import type { ConversationLoop } from "../conversation-loop.js";
 import { compactionModelSelection } from "../../shared/compaction-model.js";
 import { systemSubagentLlmSettings } from "../system-subagent-route.js";
@@ -51,7 +52,7 @@ const SUBSCRIPTION_FALLBACK_USABLE_CONTEXT = getUsableContext(
 
 interface RuntimeContextBudget
   extends RouteModelCapabilities,
-    Pick<RouteContextWindow, "catalogEntry" | "inputLimit" | "inputLimitSource" | "baseUrl" | "catalogModel" | "reportedPricing"> {
+    Pick<RouteContextWindow, "catalogEntry" | "inputLimit" | "inputLimitSource" | "baseUrl" | "catalogModel" | "reportedPricing" | "reportedPricingEndpoint"> {
   readonly model: string;
   readonly preflight: number;
   readonly usableContext: number;
@@ -237,6 +238,7 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
     ...(route.toolCall !== undefined ? { toolCall: route.toolCall } : {}),
     ...(route.reasoning !== undefined ? { reasoning: route.reasoning } : {}),
     ...(route.reportedPricing !== undefined ? { reportedPricing: route.reportedPricing } : {}),
+    ...(route.reportedPricingEndpoint !== undefined ? { reportedPricingEndpoint: route.reportedPricingEndpoint } : {}),
   };
 }
 
@@ -406,10 +408,14 @@ export async function manualCompact(self: ConversationLoop, callbacks?: ManualCo
     } catch (err) {
       log.error("manualCompact failed: %s", (err as Error).message);
       // Return a safe failure instead of rejecting IPC; callers show the compact error.
+      // The named refusal carries the model; its own message is fixed English.
+      const message = err instanceof RetiredModelError
+        ? t("app.retiredModelNoticeTitle", { model: err.model })
+        : (err as Error).message;
       return {
         compacted: false,
         compactedAt: null,
-        summary: t("be_conversationLoop.manualCompactFailed", { message: (err as Error).message }),
+        summary: t("be_conversationLoop.manualCompactFailed", { message }),
         removedMessageCount: 0,
       };
     } finally {

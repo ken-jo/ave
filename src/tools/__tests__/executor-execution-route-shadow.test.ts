@@ -1,12 +1,15 @@
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { PATH_POLICY_DECISION_MISMATCH_ERROR } from "../../permissions/execution-router.js";
 import * as executionRouter from "../../permissions/execution-router.js";
-import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
-import { configureHostResources } from "../../main/host-resources.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
+import { SHELL_ANALYSIS_LIMIT_REASON } from "../../permissions/decision-pipeline.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import {
   __resetActiveSandboxCapabilityForTest,
@@ -19,6 +22,8 @@ import { ToolRegistry } from "../registry.js";
 import { BashTool } from "../shell-tools.js";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
 import type { OperatorContainerCapability } from "../../permissions/operator-container-attestation.js";
+
+withSourceHostResources();
 
 const operatorHarness = vi.hoisted(() => ({
   current: null as object | null,
@@ -101,6 +106,7 @@ function makeExecutor(
   mode: "strict" | "default" | "auto" | "allow",
   bashAstValidator?: BashAstValidator,
   scriptHookManager?: object,
+  approvalGate?: ApprovalGate,
 ): { executor: ToolExecutor; appendPermissionAuditEntry: ReturnType<typeof vi.fn> } {
   const registry = new ToolRegistry();
   registry.register(new BashTool());
@@ -119,7 +125,7 @@ function makeExecutor(
       undefined,
       permissions,
       bashAstValidator,
-      undefined,
+      approvalGate,
       scriptHookManager as never,
       auditLogger as never,
     ),
@@ -127,8 +133,6 @@ function makeExecutor(
   };
 }
 
-// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
-beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("execution route shadow metadata", () => {
   it("refuses a host decision rebuilt to a disposable route before execution", async () => {
@@ -227,6 +231,163 @@ describe("execution route shadow metadata", () => {
             kind: "dynamic-path",
           }],
         }),
+      }));
+    } finally {
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it("executes repeated conditions with literal operands and equivalent branches on the host", async () => {
+    setShellSandboxRequestedAtBoot(false);
+    const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-conditions-"));
+    try {
+      const { executor, appendPermissionAuditEntry } = makeExecutor(dir, "allow", new BashAstValidator({ mode: "deny" }));
+      const conditions = Array.from({ length: 8 }, (_, index) => `if test -d branch${index}; then :; fi`).join("; ");
+      const [result] = await executor.executeAll(
+        [{ id: "condition-check", name: "bash", input: { command: `${conditions}; printf ok > marker` } }],
+        { sessionId: "condition-check", executionCwd: dir, permissionContext: { trustOrigin: "llm-tool-arg" } },
+      );
+      expect(result?.is_error, result?.content).toBeFalsy();
+      expect(existsSync(join(dir, "marker"))).toBe(true);
+      expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+        executionRoute: expect.objectContaining({ decision: "selected", route: "host", unresolvedRequirements: [] }),
+      }));
+    } finally {
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it.each([
+    { route: "host", change: "none" },
+    { route: "contained", change: "none" },
+    { route: "host", change: "mode" },
+    { route: "contained", change: "mode" },
+    { route: "contained", change: "session rule" },
+  ])("checks the $route analysis-limit answer after a policy change of $change", async ({ route, change }) => {
+    __resetActiveSandboxCapabilityForTest();
+    setShellSandboxRequestedAtBoot(false);
+    if (route === "contained") activateDisposableCapability();
+    const dir = mkdtempSync(join(tmpdir(), "ave-analysis-limit-"));
+    const abort = new AbortController();
+    try {
+      const cards: ApprovalRequest[] = [];
+      const owner = { isDestroyed: () => false, send: (channel: string, card: ApprovalRequest) => {
+        if (channel === "ave:approval:request") cards.push(card);
+      } };
+      const gate = new ApprovalGate(owner as never);
+      const registry = new ToolRegistry();
+      registry.register(new BashTool());
+      const permissions = new PermissionManager(join(dir, "permissions.json"));
+      permissions.setMode("allow");
+      const validator = new BashAstValidator({ mode: "deny" });
+      const executor = new ToolExecutor(registry, undefined, permissions, validator, gate);
+      const tests = Array.from({ length: 7 }, (_, index) => `if test -f q${index}; then v${index}=1; fi`).join("; ");
+      const pending = executor.executeAll(
+        [{ id: "tu-analysis-limit", name: "bash", input: { command: `${tests}; printf ok > marker` } }],
+        { sessionId: "sess-analysis-limit", executionCwd: dir, permissionContext: { trustOrigin: "llm-tool-arg" }, abortSignal: abort.signal },
+      );
+      const opened = await Promise.race([
+        vi.waitFor(() => {
+          expect(cards).toHaveLength(1);
+          return true;
+        }, { timeout: 30_000 }),
+        pending.then(([result]) => result?.content),
+      ]);
+      expect(opened).toBe(true);
+      expect(cards[0]).toMatchObject({ reason: SHELL_ANALYSIS_LIMIT_REASON, reasonCode: "shell-analysis-limit", allowedChoices: ["allow-once", "deny-once"] });
+      expect(existsSync(join(dir, "marker"))).toBe(false);
+      const [card] = cards;
+      if (!card) throw new Error("no approval card");
+      const recheck = vi.spyOn(permissions, "checkDetailed");
+      if (change === "mode") permissions.setMode("strict");
+      if (change === "session rule") permissions.addSessionRule("sess-analysis-limit", "Bash(printf ready)");
+      gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac }, owner as never);
+      const [result] = await pending;
+      if (change === "mode") {
+        expect(result?.is_error).toBe(true);
+        expect(result?.content).toContain("Permission policy changed while approval was pending");
+      } else {
+        expect(result?.is_error, result?.content).toBeFalsy();
+      }
+      if (change === "session rule") {
+        expect(recheck.mock.results[0]?.value).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit" });
+      }
+      expect(existsSync(join(dir, "marker"))).toBe(change !== "mode");
+      expect(operatorHarness.consumeCount).toBe(route === "contained" && change !== "mode" ? 1 : 0);
+    } finally {
+      abort.abort();
+      await cleanupTmpDir(dir);
+    }
+  }, 60_000);
+
+  it.each([false, true])("keeps a competing floor or saved deny for a bounded command (denied: %s)", async (denied) => {
+    setShellSandboxRequestedAtBoot(false);
+    activateDisposableCapability();
+    const dir = mkdtempSync(join(tmpdir(), "ave-analysis-limit-principal-"));
+    const abort = new AbortController();
+    try {
+      const cards: ApprovalRequest[] = [];
+      const owner = { isDestroyed: () => false, send: (channel: string, card: ApprovalRequest) => {
+        if (channel === "ave:approval:request") cards.push(card);
+      } };
+      const gate = new ApprovalGate(owner as never);
+      const registry = new ToolRegistry();
+      registry.register(new BashTool());
+      const manager = new PermissionManager(join(dir, "permissions.json"));
+      manager.setMode("allow");
+      if (denied) await manager.addRulePersist({ action: "deny", pattern: "Bash(printf denied)" }, { kind: "user" });
+      const check = vi.spyOn(manager, "checkDetailed");
+      const executor = new ToolExecutor(registry, undefined, manager, new BashAstValidator({ mode: "deny" }), gate);
+      const tail = Array.from({ length: Math.ceil(MAX_SHELL_ANALYSIS_TOKENS / 20) }, () => `:${" x".repeat(19)}`).join("; ");
+      const command = denied ? `printf denied; bash -c '${tail}'` : `${tail}; :`;
+      const pending = executor.executeAll(
+        [{ id: "principal-limit", name: "bash", input: { command } }],
+        { sessionId: "principal-limit", executionCwd: dir, permissionContext: { trustOrigin: "llm-tool-arg", otherPrincipal: true }, abortSignal: abort.signal },
+      );
+      if (denied) {
+        const [result] = await pending;
+        expect(result?.is_error).toBe(true);
+        expect(check.mock.results[0]?.value).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
+        expect(cards).toHaveLength(0);
+        return;
+      }
+      const card = await Promise.race([
+        vi.waitFor(() => {
+          const [opened] = cards;
+          if (opened === undefined) throw new Error("No approval card");
+          return opened;
+        }),
+        pending.then(([result]) => { throw new Error(result?.content); }),
+      ]);
+      const decision = check.mock.results[0]?.value;
+      expect(decision).toMatchObject({ decision: "ask", reasonCode: "other-principal", forceModal: true });
+      expect(card).toMatchObject({ reason: decision?.reason, shellAnalysisLimited: true, args: { command }, allowedChoices: ["allow-once", "deny-once"] });
+      gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac }, owner as never);
+      await pending;
+    } finally {
+      abort.abort();
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it.each(["host", "contained"] as const)("denies a structural refusal on the %s route without a card", async (route) => {
+    setShellSandboxRequestedAtBoot(false);
+    if (route === "contained") activateDisposableCapability();
+    const dir = mkdtempSync(join(tmpdir(), "ave-structural-refusal-"));
+    try {
+      const gate = new ApprovalGate({ isDestroyed: () => false, send: vi.fn() } as never);
+      const request = vi.spyOn(gate, "requestAndWait");
+      const { executor, appendPermissionAuditEntry } = makeExecutor(dir, "allow", new BashAstValidator({ mode: "deny" }), undefined, gate);
+      const [result] = await executor.executeAll(
+        [{ id: "structural-refusal", name: "bash", input: { command: 'printf "%s" "$IFS"' } }],
+        { sessionId: "structural-refusal", executionCwd: dir, permissionContext: { trustOrigin: "llm-tool-arg" } },
+      );
+      expect(result?.is_error).toBe(true);
+      expect(result?.content).toContain("ifs-command-injection");
+      expect(request).not.toHaveBeenCalled();
+      expect(operatorHarness.consumeCount).toBe(0);
+      expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+        executionRoute: expect.objectContaining({ route: route === "host" ? "host" : "disposable-container" }),
       }));
     } finally {
       await cleanupTmpDir(dir);

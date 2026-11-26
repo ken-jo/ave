@@ -51,7 +51,7 @@ describe("system executable admission", () => {
     expect(() => sanitizedCodexConversationEnvironment("C:\\fixture\\runtime", "C:\\fixture\\sqlite", "C:\\fixture\\tmp", {}, "win32")).toThrow(/system root/i);
     await expect(grantAsrtWindowsBackendAcl()).rejects.toThrow(/system root/i);
     expect(() => startWindowsAclGrantHolder("fixture")).toThrow(/system root/i);
-    expect(() => powerShellMxcCommandLine("", "exit 0")).toThrow(/system root/i);
+    expect(() => powerShellMxcCommandLine("", "exit 0", "C:\\fixture")).toThrow(/system root/i);
   });
 
   it("keeps former executable resolvers on the shared fail-closed boundary", () => {

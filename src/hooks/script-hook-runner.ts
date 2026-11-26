@@ -240,7 +240,7 @@ export async function runOneHookScript(
         timedOut: false, cancelled: abortSignal?.aborted === true, timeoutMs, hookId: runnable.id,
         hookType: runnable.hookType, durationMs: Date.now() - start });
     } catch {
-      return deny("HTTP hook request failed");
+      return deny(abortSignal?.aborted ? "Hook execution cancelled" : "HTTP hook request failed");
     }
   }
 
@@ -248,13 +248,22 @@ export async function runOneHookScript(
   let admittedPlan: HostShellExecutionPlan | undefined;
   let refreshCommandAllowed: (() => Promise<void>) | undefined;
   let assertCommandAllowed: (() => void) | undefined;
+  let disposeCommandWorkingDirectory: (() => void) | undefined;
+  try {
   if (!confinement && options.authorizeCommand) {
     try {
       const admission = await raceWithAbort(turnExtensionPolicyContext.run({
         ...inherited, allowExternalHooks: inherited?.allowExternalHooks !== false, abortSignal,
-      }, () => options.authorizeCommand!(runnable, payload, cwd, projectDir)), abortSignal);
+      }, () => options.authorizeCommand!(runnable, payload, cwd, projectDir, (physicalCwd, dispose) => {
+        if (abortSignal?.aborted) { dispose(); return; }
+        cwd = physicalCwd;
+        disposeCommandWorkingDirectory = dispose;
+      })), abortSignal);
       if (abortSignal?.aborted) return deny("Hook execution cancelled");
-      if (admission.decision !== "allow") return deny(`hook command denied: ${admission.reason}`);
+      if (admission.decision !== "allow") {
+        return deny(`hook command denied: ${admission.reason}`, admission.commandAdmissionFailure === undefined
+          ? undefined : { commandAdmissionFailure: admission.commandAdmissionFailure });
+      }
       admittedPlan = admission.plan;
       assertCommandAllowed = admission.assertAllowed;
       refreshCommandAllowed = admission.refreshAllowed;
@@ -332,6 +341,7 @@ export async function runOneHookScript(
         const identity = extensionStartIdentity({ pluginId: confinement.pluginId, hookId: runnable.id, command: spawnCmd, args: spawnArgs, cwd });
         const authority = await requestExtensionStartConsent({ key, identity, kind: "plugin-hook",
           label: `${confinement.pluginId} (${runnable.id})`, cause: error.unconfinedCause }, turnExtensionStartSession(payload.sessionId));
+        if (typeof authority === "string") return deny(`sandbox unavailable: ${error.message} [approval=${authority}]`);
         assertExtensionStartAllowed({ start: { key, identity, authority, spend: true } });
       }
     } catch (error) {
@@ -472,7 +482,7 @@ export async function runOneHookScript(
   }
 
   if (contained) {
-    return runContainedHook({ holder: contained, stdinJson, timeoutMs, abortSignal, hookId: runnable.id, deny,
+    return await runContainedHook({ holder: contained, stdinJson, timeoutMs, abortSignal, hookId: runnable.id, deny,
       outcome: (observed) => hookOutcome(forensics, deny, { ...observed, timeoutMs, hookId: runnable.id,
         hookType: runnable.hookType, durationMs: Date.now() - start }) });
   }
@@ -487,14 +497,14 @@ export async function runOneHookScript(
     return child;
   };
   if (hookResources) {
-    return runPosixHook({ start: startHook, stdinJson, timeoutMs, abortSignal, hookId: runnable.id, deny,
+    return await runPosixHook({ start: startHook, stdinJson, timeoutMs, abortSignal, hookId: runnable.id, deny,
       noteProcessGroup: (pid) => noteProcessGroup?.(pid),
       resources: hookResources,
       outcome: (observed) => hookOutcome(forensics, deny, { ...observed, timeoutMs, hookId: runnable.id,
         hookType: runnable.hookType, durationMs: Date.now() - start }) });
   }
 
-  return new Promise<ScriptHookInvocationResult>((resolve) => {
+  return await new Promise<ScriptHookInvocationResult>((resolve) => {
     let child: ChildProcess;
     let settled = false;
     let timedOut = false;
@@ -526,10 +536,18 @@ export async function runOneHookScript(
     const outputDrained: Promise<void> = windowsSpawn === undefined
       ? Promise.resolve()
       : new Promise<void>((resolveDrained) => {
-        const done = (): void => resolveDrained();
-        windowsSpawn!.stdout.once("end", done);
-        windowsSpawn!.stdout.once("close", done);
-        setTimeout(done, 1_000).unref();
+        const stdout = windowsSpawn!.stdout;
+        const done = (): void => {
+          clearTimeout(drainTimer);
+          stdout.removeListener("end", done);
+          stdout.removeListener("close", done);
+          abortSignal?.removeEventListener("abort", done);
+          resolveDrained();
+        };
+        stdout.once("end", done);
+        stdout.once("close", done);
+        const drainTimer = setTimeout(done, 1_000).unref();
+        abortSignal?.addEventListener("abort", done, { once: true });
       });
 
     const stdoutChunks: Buffer[] = [];
@@ -625,6 +643,7 @@ export async function runOneHookScript(
       });
     }
   });
+  } finally { disposeCommandWorkingDirectory?.(); }
 }
 
 function stopPreparedHolder(holder: MxcBundledHolder, hookId: string): void {

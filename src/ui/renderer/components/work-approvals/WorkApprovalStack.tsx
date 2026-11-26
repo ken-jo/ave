@@ -1,11 +1,11 @@
+import { WorkflowDecisionCard, workflowDecisionKey } from "../work-board/WorkflowDecisionCard.js";
 // 확인 필요: work-level decisions for one project (plus the shared unscoped and global ones), or every authorized project grouped. The top
 // item is a real card; the rest are rows. Every action goes through its source's own channel (plan decide-plan, proposal accept/dismiss,
 // the routine panel); this component decides nothing by itself and has no approve shortcut — a decision is always a button press, and a
-// queued plan is expanded into the card before it can be decided. Tool-execution approvals are never here; they stay in their
-// conversation's ApprovalDock.
+// queued plan is expanded into the card before it can be decided. Stage tool approvals that waited for a project use its queue.
 import { EmptyState } from "../../../../components/ui/empty-state.js";
 import { Loader } from "../../../../components/ui/loader.js";
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { CheckSquare } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { Badge } from "../../../../components/ui/badge.js";
@@ -15,6 +15,7 @@ import type { AveApi } from "../../types.js";
 import type { ProjectIdentity } from "../../../../shared/project-identity.js";
 import type {
   RoutineAttentionApprovalView,
+  WorkApprovalNavigationView,
   WorkApprovalProject,
   WorkApprovalView,
   WorkPlanApprovalView,
@@ -47,10 +48,12 @@ export function approvalAge(arrivedAt: string | null, now: number): string | nul
 /** Arrival order, oldest first; an item without a time sorts last, then by key so the order is stable. */
 export function sortByArrival(items: readonly WorkApprovalView[]): WorkApprovalView[] {
   return [...items].sort((a, b) => {
-    if (a.arrivedAt === b.arrivedAt) return a.key.localeCompare(b.key);
-    if (a.arrivedAt === null) return 1;
-    if (b.arrivedAt === null) return -1;
-    return a.arrivedAt.localeCompare(b.arrivedAt) || a.key.localeCompare(b.key);
+    const first = "arrivedAt" in a ? a.arrivedAt : null;
+    const second = "arrivedAt" in b ? b.arrivedAt : null;
+    if (first === second) return a.key.localeCompare(b.key);
+    if (first === null) return 1;
+    if (second === null) return -1;
+    return first.localeCompare(second) || a.key.localeCompare(b.key);
   });
 }
 
@@ -62,13 +65,27 @@ export function isShared(item: WorkApprovalView): boolean {
 
 /** A plan sent back for changes waits for the agent, not the user: it is listed but never counted. */
 export function isCounted(item: WorkApprovalView): boolean {
-  return item.kind !== "plan" || item.phase === "pending";
+  return !("phase" in item) || item.phase === "pending";
+}
+
+function targetKind(item: WorkApprovalView) {
+  return item.kind === "navigation" ? item.targetKind : item.kind;
 }
 
 export function kindLabel(item: WorkApprovalView): string {
-  if (item.kind === "plan") return t("workApprovals.kindPlan");
-  if (item.kind === "proposal") return t("workApprovals.kindProposal");
-  return item.failure ? t("workApprovals.kindRoutineFailed") : t("workApprovals.kindRoutineAttention");
+  const kind = targetKind(item);
+  if (kind === "plan") return t("workApprovals.kindPlan");
+  if (kind === "proposal") return t("workApprovals.kindProposal");
+  if (kind === "stage-gate") return t("workflowTemplates.stageGate");
+  if (kind === "join-conflict") return t("workflowTemplates.joinConflict");
+  return item.kind === "routine-attention" && item.failure ? t("workApprovals.kindRoutineFailed") : t("workApprovals.kindRoutineAttention");
+}
+
+export function approvalProjectRoot(item: WorkApprovalView, projects: readonly WorkApprovalProject[]): string | undefined {
+  if (item.scope.type === "project") return item.scope.projectRoot;
+  if (item.kind !== "navigation" || item.scope.type !== "unscoped") return undefined;
+  if (item.targetKind !== "proposal") return projects.find(project => project.isDefault)?.projectRoot;
+  return undefined;
 }
 
 function KindChip({ item }: { item: WorkApprovalView }) {
@@ -405,16 +422,17 @@ interface FocusableProps {
 }
 
 function HeadCard({
-  item, index, count, actions, targetProjectRoot, projectChoices, api, now, onChanged, focusRef, tabIndex, onFocusItem,
+  item, index, count, actions, targetProjectRoot, projectChoices, api, now, onChanged, onOpen, focusRef, tabIndex, onFocusItem,
 }: FocusableProps & {
   index: number;
   count: number;
   actions: WorkApprovalActions;
   targetProjectRoot: string | undefined;
   projectChoices?: readonly WorkApprovalProject[];
-  api: Pick<AveApi, "decideWorkPlan">;
+  api: Pick<AveApi, "decideWorkPlan" | "decideWorkStage" | "decideWorkJoin" | "openWorkBoardJoin">;
   now: number;
   onChanged: () => void;
+  onOpen?: () => void;
 }) {
   return (
     <article
@@ -437,9 +455,15 @@ function HeadCard({
           {t("workApprovals.position", { index: index + 1, total: count })}
         </span>
       </header>
-      {item.kind === "plan" ? (
+      {item.kind === "navigation" ? (
+        <Button type="button" size="sm" className="mt-2" onClick={onOpen}>{t("workApprovals.openApproval")}</Button>
+      ) : item.kind === "plan" ? (
         <div className="mt-2">
           <PlanBody item={item} api={api} now={now} onChanged={onChanged} />
+        </div>
+      ) : item.kind === "stage-gate" || item.kind === "join-conflict" ? (
+        <div className="mt-2">
+          <WorkflowDecisionCard key={workflowDecisionKey(item)} review={item} itemId={item.itemId} api={api} onChanged={onChanged} />
         </div>
       ) : (
         <>
@@ -473,7 +497,7 @@ function QueuedRow({
   selectOnly?: boolean;
   onExpand: (key: string) => void;
 }) {
-  const age = approvalAge(item.arrivedAt, now);
+  const age = "arrivedAt" in item ? approvalAge(item.arrivedAt, now) : null;
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key === "Enter" && event.target === event.currentTarget) {
       event.preventDefault();
@@ -509,7 +533,7 @@ function QueuedRow({
       {isShared(item) && <SharedChip />}
       {age !== null && <span className="shrink-0 text-dense text-muted-foreground">{age}</span>}
       {/* A queued plan is decided only on the card, after it is expanded there. */}
-      {!selectOnly && item.kind !== "plan" && (
+      {!selectOnly && (item.kind === "proposal" || item.kind === "routine-attention") && (
         <ItemActions key={actionsKey(item)} item={item} actions={actions} targetProjectRoot={targetProjectRoot} compact />
       )}
     </li>
@@ -525,7 +549,10 @@ function useRovingFocus(keys: readonly string[]) {
     else nodes.current.delete(key);
   }, []);
   const focusKey = useCallback((key: string) => {
-    nodes.current.get(key)?.focus();
+    const node = nodes.current.get(key);
+    if (!node) return false;
+    node.focus();
+    return node.ownerDocument.activeElement === node;
   }, []);
   const onKeyDown = useCallback((event: KeyboardEvent<HTMLElement>, onEscape: () => void) => {
     if (keys.length === 0) return;
@@ -550,10 +577,12 @@ function useRovingFocus(keys: readonly string[]) {
 }
 
 export interface WorkApprovalStackProps {
-  api: Pick<AveApi, "listWorkApprovals" | "onWorkApprovalsChanged" | "decideWorkPlan">;
+  api: Pick<AveApi, "listWorkApprovals" | "onWorkApprovalsChanged" | "decideWorkPlan" | "decideWorkStage" | "decideWorkJoin" | "openWorkBoardJoin">;
   /** The project whose home shows this stack; accepted proposals join it. Undefined means the default project. */
   project?: ProjectIdentity;
   actions: WorkApprovalActions;
+  parkedToolApprovals?: { count: number; cards: ReactNode };
+  onOpenApproval?: (key: string, root: string | undefined) => void;
   /** Navigation target from the title-bar popover: the item to bring to the top and focus, once. */
   focusKey?: string | null;
   onFocusConsumed?: () => void;
@@ -587,23 +616,36 @@ function groupByProject(items: readonly WorkApprovalView[], projects: readonly W
   return groups.filter((group) => group.items.length > 0);
 }
 
-function ReplanningList({ items }: { items: readonly WorkPlanApprovalView[] }) {
+function ReplanningList({ items, onOpen, focusRef, tabIndexFor, onFocusItem }: {
+  items: readonly (WorkPlanApprovalView | WorkApprovalNavigationView)[];
+  onOpen: (item: WorkApprovalNavigationView) => void;
+  focusRef: FocusableProps["focusRef"];
+  tabIndexFor: (key: string) => number;
+  onFocusItem: FocusableProps["onFocusItem"];
+}) {
   if (items.length === 0) return null;
   return (
     <section className="space-y-1.5 opacity-(--opacity-strong)" data-testid="work-approvals-replanning">
       <h3 className="text-xs text-muted-foreground">{t("workApprovals.replanningHeading", { count: items.length })}</h3>
       <ul className="space-y-1.5">
         {items.map((item) => (
-          <li key={item.key} className="rounded-md border border-dashed bg-card px-3 py-2 text-xs" data-approval-key={item.key}>
+          <li key={item.key} ref={node => focusRef(item.key, node)} tabIndex={tabIndexFor(item.key)}
+            onFocus={() => onFocusItem(item.key)}
+            className="rounded-md border border-dashed bg-card px-3 py-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring" data-approval-key={item.key}>
             <div className="flex items-center gap-2">
               <KindChip item={item} />
               <span className="min-w-0 flex-1 truncate">{item.title}</span>
-              <span className="shrink-0 text-dense text-muted-foreground">{t("workApprovals.replanningRevision", { count: item.planNumber })}</span>
+              {item.kind === "plan" && (
+                <span className="shrink-0 text-dense text-muted-foreground">{t("workApprovals.replanningRevision", { count: item.planNumber })}</span>
+              )}
             </div>
-            {item.changeRequest !== undefined && (
+            {item.kind === "plan" && item.changeRequest !== undefined && (
               <p className="mt-1 text-muted-foreground">{t("workApprovals.replanningRequest", { note: item.changeRequest })}</p>
             )}
             <p className="mt-1 text-dense text-muted-foreground">{t("workApprovals.replanningFooter")}</p>
+            {item.kind === "navigation" && (
+              <Button type="button" size="sm" className="mt-2" onClick={() => onOpen(item)}>{t("workApprovals.openApproval")}</Button>
+            )}
           </li>
         ))}
       </ul>
@@ -614,7 +656,7 @@ function ReplanningList({ items }: { items: readonly WorkPlanApprovalView[] }) {
 /** The project-home stack: this project's items plus the shared ones, oldest first, the top one as a real card. In all-projects mode the
  * rows are grouped by project and the selected one is the card beside them. */
 export function WorkApprovalStack({
-  api, project, actions, focusKey, onFocusConsumed, showAllProjects = false, showAllRequest, onShowAllConsumed, onCountChange, now = Date.now,
+  api, project, actions, parkedToolApprovals, onOpenApproval, focusKey, onFocusConsumed, showAllProjects = false, showAllRequest, onShowAllConsumed, onCountChange, now = Date.now,
 }: WorkApprovalStackProps) {
   const projectRoot = project?.projectRoot;
   const [allProjects, setAllProjects] = useState(showAllProjects);
@@ -638,28 +680,31 @@ export function WorkApprovalStack({
   const sorted = useMemo(() => (state.status === "ready" ? sortByArrival(state.items) : []), [state]);
   const decidable = useMemo(() => sorted.filter(isCounted), [sorted]);
   const replanning = useMemo(
-    () => sorted.filter((item): item is WorkPlanApprovalView => item.kind === "plan" && item.phase === "replanning"),
+    () => sorted.filter((item): item is WorkPlanApprovalView | WorkApprovalNavigationView => "phase" in item && item.phase === "replanning"),
     [sorted],
   );
   const projects = state.status === "ready" ? state.projects : [];
-  const filtered = useMemo(() => (filter === "all" ? decidable : decidable.filter((item) => item.kind === filter)), [filter, decidable]);
+  const filtered = useMemo(() => (filter === "all" ? decidable : decidable.filter((item) => targetKind(item) === filter)), [filter, decidable]);
   const groups = useMemo(() => (allProjects ? groupByProject(filtered, projects) : []), [allProjects, filtered, projects]);
   // All-projects mode reads top to bottom by group, so its first item (the one Esc returns to) is the first row, not the oldest.
   const listed = useMemo(() => (allProjects ? groups.flatMap((group) => group.items) : filtered), [allProjects, filtered, groups]);
   const head = listed.find((item) => item.key === expandedKey) ?? listed[0] ?? null;
   const queued = listed.filter((item) => item !== head);
-  // All-projects rows list every item (the card is the selected one); a project home lists the rest under its card.
+  // All-projects rows follow project order. A project home puts the selected card first.
   const order = useMemo(
-    () => (allProjects ? groups.flatMap((group) => group.items.map((item) => item.key)) : head ? [head.key, ...queued.map((item) => item.key)] : []),
-    [allProjects, groups, head, queued],
+    () => [...(allProjects ? listed.map(item => item.key) : head ? [head.key, ...queued.map(item => item.key)] : []),
+      ...replanning.map(item => item.key)],
+    [allProjects, listed, head, queued, replanning],
   );
   const roving = useRovingFocus(order);
   const clock = now();
   const fresh = state.status === "ready" && state.requestKey === requestKey;
 
+  const parkedToolCount = parkedToolApprovals?.count ?? 0;
+  const totalCount = decidable.length + parkedToolCount;
   useEffect(() => {
-    onCountChange?.(state.status === "ready" ? decidable.length : null);
-  }, [decidable.length, onCountChange, state.status]);
+    onCountChange?.(state.status === "ready" || parkedToolCount > 0 ? totalCount : null);
+  }, [totalCount, parkedToolCount, onCountChange, state.status]);
 
   useEffect(() => {
     if (!showAllRequest) return;
@@ -668,58 +713,88 @@ export function WorkApprovalStack({
     onShowAllConsumed?.();
   }, [onShowAllConsumed, showAllRequest]);
 
-  // A popover navigation lands here: show that item as the card and focus it, then report the request consumed (once per request). Only a
-  // list that answers the current request counts: after the popover switched projects, the previous project's list is still on screen.
-  // A target that is no longer listed (decided elsewhere, or waiting on the agent) lands on the card on top, or on the stack when it is
-  // empty, so the popover never leaves focus on the page body.
-  const handledFocusKey = useRef<string | null>(null);
   const sectionRef = useRef<HTMLElement | null>(null);
+  const stackHeading = useRef<HTMLHeadingElement>(null);
+  const focusedDecision = useRef<{ key: string; node: HTMLElement } | undefined>(undefined);
+  const focusNode = roving.focusKey;
+  useLayoutEffect(() => {
+    const focused = focusedDecision.current;
+    if (!fresh || !focused) return;
+    // A decision control can unmount while the same key remains in the Replanning section.
+    const movedToReplanning = !focused.node.isConnected && replanning.some(item => item.key === focused.key);
+    if (!movedToReplanning && order.includes(focused.key)) return;
+    focusedDecision.current = undefined;
+    if (document.activeElement !== document.body) return;
+    if (movedToReplanning && (focusNode(focused.key) || (head && focusNode(head.key)))) return;
+    stackHeading.current?.focus();
+  }, [fresh, order, replanning, head, focusNode]);
+
+  // A popover or row navigation lands here: show the item in its section and focus it, then report the request consumed. Only a
+  // list that answers the current request counts: after the popover switched projects, the previous project's list is still on screen.
+  // When the target has disappeared, focus the first row or the stack itself.
+  const handledFocusKey = useRef<string | null>(null);
   const firstKeyRef = useRef<string | undefined>(undefined);
   firstKeyRef.current = order[0];
-  const focusNode = roving.focusKey;
   useEffect(() => {
     if (!focusKey) {
       handledFocusKey.current = null;
       return;
     }
+    if (allProjects) {
+      setAllProjects(false);
+      return;
+    }
     if (!fresh || handledFocusKey.current === focusKey) return;
     handledFocusKey.current = focusKey;
-    const listedNow = decidable.some((item) => item.key === focusKey);
-    if (listedNow) {
+    const targetItem = sorted.find(item => item.key === focusKey);
+    if (targetItem && isCounted(targetItem)) {
       setFilter("all");
       setExpandedKey(focusKey);
     }
     requestAnimationFrame(() => {
-      const target = listedNow ? focusKey : firstKeyRef.current;
+      const target = targetItem?.key ?? firstKeyRef.current;
       if (target !== undefined) focusNode(target);
       else sectionRef.current?.focus();
     });
     onFocusConsumed?.();
-  }, [decidable, focusKey, focusNode, fresh, onFocusConsumed]);
+  }, [allProjects, sorted, focusKey, focusNode, fresh, onFocusConsumed]);
 
+  const parkedTools = parkedToolApprovals && (
+    <section className="space-y-1.5" aria-label={t("workApprovals.stageToolApprovals")}>
+      <h3 className="text-xs font-semibold text-muted-foreground">{t("workApprovals.stageToolApprovals")}</h3>
+      {parkedToolApprovals.cards}
+    </section>
+  );
   if (state.status === "loading") {
     return (
       <section aria-busy="true" aria-label={t("workApprovals.loading")} data-testid="work-approvals-loading" className="space-y-2">
         <div className="h-28 animate-pulse rounded-lg bg-muted motion-reduce:animate-none" />
         <div className="h-10 animate-pulse rounded-md bg-muted motion-reduce:animate-none" />
         <div className="h-10 animate-pulse rounded-md bg-muted motion-reduce:animate-none" />
+        {parkedTools}
       </section>
     );
   }
   if (state.status === "error") {
     return (
-      <section data-testid="work-approvals-error" role="alert" className="rounded-md border border-destructive/(--opacity-medium) p-3 text-xs text-destructive">
-        {formatIpcError(state.error, undefined)}
-      </section>
+      <div className="space-y-2">
+        <section data-testid="work-approvals-error" role="alert" className="rounded-md border border-destructive/(--opacity-medium) p-3 text-xs text-destructive">
+          {formatIpcError(state.error, undefined)}
+        </section>
+        {parkedTools}
+      </div>
     );
   }
 
   const projectCount = decidable.filter((item) => !isShared(item)).length;
   const sharedCount = decidable.length - projectCount;
-  const countOf = (kind: WorkApprovalView["kind"]) => decidable.filter((item) => item.kind === kind).length;
+  const countOf = (kind: WorkApprovalView["kind"]) => decidable.filter((item) => targetKind(item) === kind).length;
   const kinds: Array<{ id: KindFilter; label: string }> = [
     { id: "all", label: t("workApprovals.filterAll", { count: decidable.length }) },
     { id: "plan", label: t("workApprovals.filterPlan", { count: countOf("plan") }) },
+    ...(["stage-gate", "join-conflict"] as const).filter(kind => countOf(kind) > 0).map(id => ({
+      id, label: t(id === "stage-gate" ? "workflowTemplates.filterStageGates" : "workflowTemplates.filterJoinConflicts", { count: countOf(id) }),
+    })),
     { id: "proposal", label: t("workApprovals.filterProposal", { count: countOf("proposal") }) },
     { id: "routine-attention", label: t("workApprovals.filterRoutine", { count: countOf("routine-attention") }) },
   ];
@@ -733,6 +808,11 @@ export function WorkApprovalStack({
     setExpandedKey(null);
   };
 
+  const openNavigation = (item: WorkApprovalView) => {
+    switchMode(false);
+    onOpenApproval?.(item.key, approvalProjectRoot(item, projects));
+  };
+
   const headCard = head && (
     <HeadCard
       item={head}
@@ -744,6 +824,7 @@ export function WorkApprovalStack({
       api={api}
       now={clock}
       onChanged={relist}
+      onOpen={() => openNavigation(head)}
       // In all-projects mode the row is the focus target; the card beside it is reached with Tab.
       focusRef={allProjects ? () => {} : roving.focusRef}
       tabIndex={allProjects ? -1 : roving.tabIndexFor(head.key)}
@@ -772,6 +853,10 @@ export function WorkApprovalStack({
       data-testid="work-approvals"
       data-mode={allProjects ? "all" : "project"}
       ref={sectionRef}
+      onFocusCapture={event => {
+        const key = event.target.closest<HTMLElement>("[data-approval-key]")?.dataset.approvalKey;
+        focusedDecision.current = key === undefined ? undefined : { key, node: event.target };
+      }}
       tabIndex={-1}
       className="flex min-h-0 flex-col gap-2 outline-none"
       onKeyDown={(event) => roving.onKeyDown(event, () => {
@@ -781,12 +866,12 @@ export function WorkApprovalStack({
     >
       <header className="flex flex-wrap items-center gap-2">
         <CheckSquare className="h-4 w-4 text-muted-foreground" aria-hidden />
-        <h2 className="text-sm font-semibold">{t("workApprovals.title")}</h2>
-        <Badge variant="outline" data-testid="work-approvals-count">{decidable.length}</Badge>
+        <h2 ref={stackHeading} tabIndex={-1} className="text-sm font-semibold">{t("workApprovals.title")}</h2>
+        <Badge variant="outline" data-testid="work-approvals-count">{totalCount}</Badge>
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" data-testid="work-approvals-scope">
           {allProjects
-            ? t("workApprovals.headerAllProjects", { count: decidable.length })
-            : t("workApprovals.headerScope", { project: projectCount, shared: sharedCount })}
+            ? t("workApprovals.headerAllProjects", { count: totalCount })
+            : t("workApprovals.headerScope", { project: projectCount + parkedToolCount, shared: sharedCount })}
         </span>
         <div role="group" aria-label={t("workApprovals.modeLabel")} className="flex gap-1">
           <Button
@@ -829,7 +914,7 @@ export function WorkApprovalStack({
       )}
 
       {head === null ? (
-        <EmptyState align="center" className="rounded-md border border-dashed" data-testid="work-approvals-empty" title={t("workApprovals.empty")} />
+        replanning.length === 0 && parkedToolCount === 0 && <EmptyState align="center" className="rounded-md border border-dashed" data-testid="work-approvals-empty" title={t("workApprovals.empty")} />
       ) : allProjects ? (
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-64 flex-1 basis-64 space-y-2">
@@ -864,7 +949,9 @@ export function WorkApprovalStack({
       {head !== null && (
         <p className="text-dense text-muted-foreground" data-testid="work-approvals-keyboard-legend">{t("workApprovals.keyboardLegend")}</p>
       )}
-      <ReplanningList items={replanning} />
+      {parkedTools}
+      <ReplanningList items={replanning} onOpen={openNavigation} focusRef={roving.focusRef}
+        tabIndexFor={roving.tabIndexFor} onFocusItem={roving.setFocusedKey} />
       <p className="text-dense text-muted-foreground" data-testid="work-approvals-tool-note">{t("workApprovals.toolApprovalsNote")}</p>
     </section>
   );

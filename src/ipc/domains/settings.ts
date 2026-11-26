@@ -1,3 +1,4 @@
+import { showNativeMessage, pickNativeFiles } from "../../main/desktop-approval-presentation.js";
 import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { hasUserKeyboardIntent, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
 import { isSubAgentMaxRounds } from "../../shared/subagent-policy.js";
@@ -7,7 +8,7 @@ import { refreshWindowsBackgroundAdmission } from "../../permissions/windows-bac
 import { isWebSearchProvider } from "../../data/settings-normalization.js";
 /** Settings domain IPC handlers. Covers: ave:settings:*, ave:shell:open-external */
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
-import { app, dialog, ipcMain } from "electron";
+import { app, ipcMain } from "electron";
 import { validateExternalUrl } from "../../shared/external-url.js";
 import type { OpenOAuthLogin } from "../../main/oauth-login.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
@@ -83,7 +84,9 @@ import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
 import { isValidFontFamilyOverride } from "../../shared/appearance-font.js";
 import { parseMainLayout } from "../../shared/main-layout.js";
 import { applyShortcutBindingsPatch, ShortcutBindingsPatchError, shortcutPlatformOf } from "../../shared/shortcuts.js";
+import { createLogger } from "../../lib/logger.js";
 
+const log = createLogger("settings-ipc");
 let subscriptionRuntimeStatusRevision = 0;
 
 function normalizeSubscriptionLoginMethod(value: unknown): SubscriptionLoginMethod | null {
@@ -630,7 +633,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   ipcMain.handle(SETTINGS.pickDirectory, async (event, payload: unknown) => {
     const refused = authorizeSettingsEditorAction(event, payload, SETTINGS.pickDirectory);
     if (refused) return refused;
-    const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+    const result = await pickNativeFiles({ properties: ["openDirectory"] });
     if (!result.canceled && !result.filePaths[0]) return { ok: false, error: "directory-picker-empty-result" };
     return { ok: true, path: result.canceled ? null : result.filePaths[0] };
   });
@@ -724,6 +727,15 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         error: "active-chat-runtime-requires-subscription-selection",
       };
     }
+    if (llmPatch && Object.hasOwn(llmPatch, "modelListCache")) {
+      return { ok: false, error: "model-list-cache-main-owned" };
+    }
+    if (llmPatch && Object.hasOwn(llmPatch, "dismissedModelDeprecations")
+      && Object.keys(llmPatch).length === 1 && Object.keys(partial).length === 1) {
+      const result = await settingsService.patch(partial);
+      await broadcastSettingsSnapshot(deps);
+      return rendererSettingsSnapshot(settingsService, result);
+    }
     // LOW: validate vendors["azure-foundry"].baseUrl at write time so an invalid Foundry endpoint is rejected before it reaches the settings store.
     const foundryVendorPatch = (llmPatch?.vendors as Record<string, unknown> | undefined)
       ?.["azure-foundry"] as Record<string, unknown> | undefined;
@@ -777,7 +789,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       partial = { ...partial, system: { ...partial.system, mainLayout: browserTabRegistry.prepareLayoutBindings(window.id, parsed.layout) } };
     }
     let switchRefused = false;
-    const persistSettings = (switchAdmission === undefined ? settingsService.patch(partial) : settingsService.patch(partial, switchAdmission)).catch((error: unknown) => {
+    const persistSettings = (switchAdmission === undefined ? settingsService.patch(partial) : settingsService.patch(partial, { admission: switchAdmission })).catch((error: unknown) => {
       if (!(error instanceof SettingsWriteRefusedError)) throw error;
       // Only the switch was kept out of the save; the rest of the patch is on disk and still needs its follow-up.
       switchRefused = true;
@@ -955,18 +967,51 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       vendor,
       credentialScope,
     );
-    const { listLlmModelsFromSettings } = await import("../../engine/llm/model-list.js");
-    return listLlmModelsFromSettings(settingsService, {
+    const { listLlmModelsFromSettings, modelListCacheAddress, persistRouteModelList } = await import("../../engine/llm/model-list.js");
+    const hostRequest = {
       vendor,
       baseUrl,
       ...(request?.wire !== undefined ? { wire: customProviderWire(request.wire) } : {}),
       credentialScope,
       ...(modelDiscoveryPolicy ? { modelDiscoveryPolicy } : {}),
-    }, {
+    };
+    const address = modelListCacheAddress(settingsService, vendor, hostRequest);
+    const result = await listLlmModelsFromSettings(settingsService, hostRequest, {
       // Main owns Electron, so main supplies the transport. On Node's `fetch` this request ignores the machine's proxy configuration and goes direct;
       // `deps.singleHopNetworkFetch` is Chromium's stack, which follows it. It returns a 3xx rather than chasing it, so the SSRF guard still gets to re-validate every hop.
       fetchImpl: deps.singleHopNetworkFetch,
     });
+    if (!result.ok) return result;
+
+    const previous = settingsService.get("llm");
+    const presets = settingsService.get("marketplace").installedProviderPresets;
+    try {
+      const saveStatus = await persistRouteModelList(settingsService, address, result);
+      if (saveStatus === "route-mismatch") return { ...result, cacheSaveFailed: true as const };
+      if (saveStatus !== "saved") return result;
+    } catch (err) {
+      log.warn({ err }, "could not save model listing");
+      return { ...result, cacheSaveFailed: true as const };
+    }
+
+    const current = settingsService.get("llm");
+    try {
+      if (deps.rewireReviewerAgent && activeLlmIdentity(previous, presets) !== activeLlmIdentity(current, presets)) {
+        await deps.rewireReviewerAgent();
+      }
+    } catch (err) {
+      log.warn({ err }, "could not refresh the reviewer after model discovery");
+    }
+    if (canonicalStringify(previous.retiredProvider ?? null) !== canonicalStringify(current.retiredProvider ?? null)) {
+      try {
+        await refreshChatRuntimeProviders(deps);
+      } catch (err) {
+        log.warn({ err }, "could not refresh chat providers after model discovery");
+      }
+      deps.refreshActiveLlmWildcard?.();
+    }
+    await broadcastSettingsSnapshot(deps);
+    return result;
   });
 
   // All providers pass through this host-only boundary. The renderer can name only a static provider
@@ -998,7 +1043,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       auditSubscriptionMutation("choose-runtime", providerValue, "rejected", "subscription-provider-not-supported");
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
-    const selected = await dialog.showOpenDialog({
+    const selected = await pickNativeFiles({
       title: `Select ${subscriptionRuntimeDescriptor(providerValue).label} executable`,
       properties: ["openFile", "dontAddToRecent"],
       ...(process.platform === "win32"
@@ -1125,7 +1170,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       return { ok: false as const, error: "subscription-logout-not-supported" as const };
     }
     if (providerValue === "grok-build") {
-      const confirmation = await dialog.showMessageBox({
+      const confirmation = await showNativeMessage({
         type: "warning",
         buttons: ["Cancel", "Sign out"],
         defaultId: 0,
@@ -1133,7 +1178,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         message: "Sign out of Grok Build?",
         detail: "This clears only Ave's isolated Grok Build session. Other provider sessions are unchanged.",
       });
-      if (confirmation.response !== 1) {
+      if (confirmation?.response !== 1) {
         const status = await runSubscriptionMutation(providerValue, (runtime, provider) => runtime.getStatus(provider));
         auditSubscriptionMutation("logout", providerValue, status.ok ? "cancelled" : "failed", status.ok ? undefined : status.error);
         return status;

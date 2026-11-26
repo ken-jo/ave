@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { PermissionManager, type ReviewerDispatchResult } from "../permission-manager.js";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApprovalGateEgressRequester } from "../egress-approval.js";
+import type { ApprovalRequestInput } from "../approval-gate.js";
 import type { EgressShellApprovalRequest } from "../egress-ask.js";
 
 const request: EgressShellApprovalRequest = {
@@ -29,7 +31,7 @@ describe("sandbox domain review", () => {
   // The real manager applies the shared mode/reviewer decision before the requester asks a person.
   it("escalates an ambiguous auto-reviewed request to the existing approval gate", async () => {
     const manager = reviewer("ask");
-    const requestAndWait = vi.fn(async () => ({ requestId: "network-ask", choice: "deny-once" as const }));
+    const requestAndWait = answeringRequestAndWait<ApprovalRequestInput>(() => ({ choice: "deny-once" }));
     await expect(createApprovalGateEgressRequester({ requestAndWait }, manager)(request))
       .resolves.toEqual({ allow: false, humanDenied: true, reason: "denied by the user" });
     expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
@@ -51,7 +53,7 @@ describe("sandbox domain review", () => {
 
   it("keeps an attended ordinary request on its approval dock", async () => {
     const manager = reviewer("allow", "default");
-    const requestAndWait = vi.fn(async () => ({ requestId: "network-ask", choice: "allow-once" as const, egressScope: "always" as const }));
+    const requestAndWait = answeringRequestAndWait<ApprovalRequestInput>(() => ({ choice: "allow-once", egressScope: "always" }));
     await expect(createApprovalGateEgressRequester({ requestAndWait }, manager)(request))
       .resolves.toEqual({ allow: true, scope: "always" });
     expect(manager.dispatchReviewer).not.toHaveBeenCalled();

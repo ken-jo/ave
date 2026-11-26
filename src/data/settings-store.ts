@@ -43,12 +43,12 @@ import {
   type LLMVendor,
   type LlmRouteRetirement,
   type RetiredLLMVendor,
-  type RetiredLlmModel,
   type LLMVendorSettingsMap,
   type LLMVendorSettings,
   type MarketplaceEligibleLLMVendor,
 } from "../shared/llm-vendor-defaults.js";
-import { resolveRouteModelRetirement } from "../shared/context-budget.js";
+import { resolveRouteModelRetirement, type LlmRouteProviderPreset } from "../shared/context-budget.js";
+import type { ModelDeprecation } from "../shared/model-deprecation.js";
 import { isAppearanceMode, isDarkSchemeId, isGlassTint, isLightSchemeId, isTerminalFontSize, isTerminalLineHeight, mergeTerminalBehavior, type AppearanceSettings } from "../shared/appearance-settings.js";
 export type { AppearanceSettings } from "../shared/appearance-settings.js";
 import {
@@ -200,11 +200,18 @@ function retiredLlmProviderOf(rawLlm: unknown): RetiredLLMVendor | undefined {
   return isRetiredLLMVendor(record.retiredProvider) ? record.retiredProvider : undefined;
 }
 
-/** The active API route's saved model, when the vendor's own complete listing no longer names it (the retired tier, design `model-capability-catalog.md` §6.1). A model the catalog only calls deprecated keeps working and
- * gets no marker; the window tells the user from the settings snapshot instead. Judged afresh on every load, so a model that comes back is released and a stored marker for a model the profile no longer names is dropped. */
-function retiredLlmModelOf(llm: LLMSettings): RetiredLlmModel | undefined {
-  if (resolveRouteModelRetirement(llm) !== "unlisted") return undefined;
-  return { vendor: llm.provider, model: activeLlmRouteModel(llm), reason: "unlisted" };
+/** Reconcile the blocking marker against the selected route and its current listing (design `model-capability-catalog.md` §6.1). */
+function reconcileLlmModelRetirement(
+  llm: LLMSettings,
+  installedProviderPresets: readonly LlmRouteProviderPreset[],
+): LLMSettings {
+  if (isRetiredLLMVendor(llm.retiredProvider)) return llm;
+  if (resolveRouteModelRetirement(llm, installedProviderPresets) === "unlisted") {
+    return { ...llm, retiredProvider: { vendor: llm.provider, model: activeLlmRouteModel(llm), reason: "unlisted" } };
+  }
+  if (!llm.retiredProvider) return llm;
+  const { retiredProvider: _retiredProvider, ...resolved } = llm;
+  return resolved;
 }
 
 /** Every global one-time migration this build knows. Fresh-install and corrupt-recovery settings start with ALL of them marked applied: a state built from current defaults is by definition post-migration, and
@@ -363,8 +370,10 @@ export interface LLMSettings {
    * Never trusted on read. A pinned id may name a model that has since left the catalogue, or one whose provider is no longer connected; the chooser intersects this list with what is actually available and shows the rest of it not at all. The id STAYS stored through that, so reconnecting a provider brings its pins back rather than silently dropping them. */
   pinnedModels: string[];
   /** Retired vendors or models leave the route unresolved and block paid API turns until the user chooses a replacement.
-   * Only loading sets the marker; saving a provider clears it, and mere deprecation does not set it. */
+   * The model marker follows the current native listing. The removed vendor marker requires an explicit provider selection. */
   retiredProvider?: LlmRouteRetirement;
+  /** Acknowledged notices for particular model ids and catalog deprecations. */
+  dismissedModelDeprecations?: ModelDeprecation[];
   /** The model catalog refresh (design `model-capability-catalog.md` §7). Absent means the default, `"auto"`: once a day the host fetches the public models.dev document and caches
    * it for the next launch. `"off"` keeps the catalog to the last cached copy or the bundled snapshot. The `AVE_MODEL_CATALOG` pin and the managed policy file can also turn it off. */
   modelCatalogRefresh?: "auto" | "off";
@@ -385,6 +394,8 @@ export interface LLMSettingsPatch {
   streamSmoothing?: "none" | "word" | "char";
   fallbackChain?: Array<{ provider: LLMVendor; model: string }>;
   modelListCache?: LlmModelListCache;
+  /** Merge acknowledgments instead of overwriting other windows' dismissals. */
+  dismissedModelDeprecations?: ModelDeprecation[];
   pricingOverrides?: PricingOverride[];
   pinnedModels?: string[];
   modelCatalogRefresh?: "auto" | "off";
@@ -998,7 +1009,7 @@ export class SettingsService {
     return key === "marketplace" ? withInstalledStateMutation(persist) : persist();
   }
 
-  /** Observes durable writes through set, and every durable feature commit; callbacks must not block the writer. */
+  /** Observes writes after they reach disk. Callbacks must not block the writer. */
   onChanged(key: keyof AppSettings, listener: () => void): () => void {
     let listeners = this.changeListeners.get(key);
     if (!listeners) this.changeListeners.set(key, (listeners = new Set()));
@@ -1026,14 +1037,17 @@ export class SettingsService {
       // and demanding the whole block would make every such write a read-modify-write the caller could get wrong.
       telemetry?: Partial<TelemetrySettings>;
     },
-    admission?: SettingsWriteAdmission,
+    options: { admission?: SettingsWriteAdmission; notifyLlmListeners?: boolean } = {},
   ): Promise<AppSettings> {
     return partial.marketplace
-      ? withInstalledStateMutation(() => this.patchSettings(partial, admission))
-      : this.patchSettings(partial, admission);
+      ? withInstalledStateMutation(() => this.patchSettings(partial, options))
+      : this.patchSettings(partial, options);
   }
 
-  private async patchSettings(partial: Parameters<SettingsService["patch"]>[0], admission?: SettingsWriteAdmission): Promise<AppSettings> {
+  private async patchSettings(
+    partial: Parameters<SettingsService["patch"]>[0],
+    { admission, notifyLlmListeners = false }: NonNullable<Parameters<SettingsService["patch"]>[1]>,
+  ): Promise<AppSettings> {
     if (partial.chat?.subAgentMaxRounds !== undefined && !isSubAgentMaxRounds(partial.chat.subAgentMaxRounds)) throw new Error("Invalid sub-agent round budget");
     if (partial.telemetry?.level !== undefined && !isTelemetryLevel(partial.telemetry.level)) throw new Error("Invalid telemetry level");
     const terminalFontPatch = partial.appearance?.terminalFont;
@@ -1098,7 +1112,6 @@ export class SettingsService {
         }
       }
       this.settings.llm = nextLlm;
-      this.providerConfigChanged();
     }
     if (partial.chat) this.settings.chat = normalizeChat({ ...this.settings.chat, ...partial.chat });
     if (partial.a2aRemote) this.settings.a2aRemote = normalizeA2ARemote({ ...this.settings.a2aRemote, ...partial.a2aRemote });
@@ -1116,7 +1129,14 @@ export class SettingsService {
         nextMarketplace.installedProviderPresets,
         this.settings.appliedMigrations ??= [],
       );
-      this.providerConfigChanged();
+    }
+    if (partial.llm || partial.marketplace) {
+      this.settings.llm = reconcileLlmModelRetirement(this.settings.llm, nextMarketplace.installedProviderPresets);
+      if (partial.marketplace
+        || Object.keys(partial.llm ?? {}).some((key) => key !== "dismissedModelDeprecations")
+        || !isDeepStrictEqual(previousSettings.llm.retiredProvider, this.settings.llm.retiredProvider)) {
+        this.providerConfigChanged();
+      }
     }
     if (partial.routine) {
       this.settings.routine = { ...this.settings.routine, ...partial.routine };
@@ -1379,8 +1399,10 @@ export class SettingsService {
       };
     }
     await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds, staged);
-    for (const key of ["permissions", "appearance", "shortcuts", "telemetry"] as const) {
+    for (const key of ["llm", "permissions", "appearance", "shortcuts", "telemetry"] as const) {
       if (!partial[key]) continue;
+      // Interactive settings writers already publish their own guarded updates.
+      if (key === "llm" && !notifyLlmListeners) continue;
       for (const listener of this.changeListeners.get(key) ?? []) {
         try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
       }
@@ -1438,6 +1460,7 @@ export class SettingsService {
         nextMarketplace.installedProviderPresets,
         this.settings.appliedMigrations ??= [],
       );
+      this.settings.llm = reconcileLlmModelRetirement(this.settings.llm, nextMarketplace.installedProviderPresets);
       this.providerConfigChanged();
       await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
       return this.getAll();
@@ -1565,10 +1588,10 @@ export class SettingsService {
 
   async replaceLlm(llm: LLMSettings): Promise<AppSettings> {
     const replacement = structuredClone(llm);
-    this.settings.llm = {
+    this.settings.llm = reconcileLlmModelRetirement({
       ...replacement,
       activeChatRuntime: normalizeActiveChatRuntime(replacement.activeChatRuntime),
-    };
+    }, this.settings.marketplace.installedProviderPresets);
     this.providerConfigChanged();
     await this.commit();
     return this.getAll();
@@ -1789,9 +1812,6 @@ export class SettingsService {
       if (retiredProvider) {
         llm = { ...llm, retiredProvider };
         if (isRetiredLLMVendor((rawLlm as { provider?: unknown }).provider)) migrationWriteBack = true;
-      } else {
-        const retiredModel = retiredLlmModelOf(llm);
-        if (retiredModel) llm = { ...llm, retiredProvider: retiredModel };
       }
       const marketplaceParsed: Record<string, unknown> = { ...(parsed.marketplace ?? {}) };
       const pluginConfigs = sanitizeStoredPluginConfigs(parsed.pluginConfigs);
@@ -1838,6 +1858,9 @@ export class SettingsService {
         appliedMigrations,
         rawLlm?.vendors?.["openai-compatible"]?.presetModels,
       );
+      llm = reconcileLlmModelRetirement(llm, marketplace.installedProviderPresets);
+      if (rawLlm?.dismissedModelDeprecations !== undefined
+        && !isDeepStrictEqual(rawLlm.dismissedModelDeprecations, llm.dismissedModelDeprecations)) migrationWriteBack = true;
       if (appliedMigrations.length !== migrationsBeforeMarketDefaults) migrationWriteBack = true;
 
       if ((parsed.webSearch?.provider as unknown) === "google") {

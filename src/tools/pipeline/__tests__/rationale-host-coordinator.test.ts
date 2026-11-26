@@ -1,13 +1,16 @@
+import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { captureApprovalWorkingDirectory } from "../../../permissions/user-approval-store.js";
 import { createRationaleApprovalCallback } from "../../../__tests__/support/rationale-approval-callback.js";
 import { describe, expect, it, vi } from "vitest";
+import { answeredApprovalDecision } from "../../../__tests__/support/answering-approval-gate.js";
 import { HookRunner } from "../../../hooks/hook-runner.js";
 import { captureRationalePolicySnapshot, type RationalePolicySnapshot } from "../rationale-policy-epoch.js";
-import { ApprovalGate, isHostApprovalCancelledDecision } from "../../../permissions/approval-gate.js";
+import { answeredProvenanceRecord, ApprovalGate, isHostApprovalCancelledDecision } from "../../../permissions/approval-gate.js";
 import type {
   ApprovalChoice,
   ApprovalDecision,
   ApprovalRequest,
+  ApprovalRequestInput,
 } from "../../../permissions/approval-gate.js";
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
 import type { PermissionCheckResult } from "../../../permissions/permission-manager.js";
@@ -58,7 +61,7 @@ const eligibilityContext = {
   approvalReasonPrefix: null,
 } as const;
 const permission = {
-  decision: "ask",
+  decision: "ask", provenance: RULE_PROVENANCE,
   reason: "Automatic review requires human approval.",
   reasonCode: "reviewer-human-required",
   reviewer: {
@@ -179,7 +182,7 @@ function setup(options: SetupOptions = {}) {
     readonly projection: RationaleUiAuditProjection;
     readonly at: number;
   }> = [];
-  const approvalRequests: Array<Omit<ApprovalRequest, "requireExplicit">> = [];
+  const approvalRequests: ApprovalRequestInput[] = [];
   // Modal tests use a high re-evaluation; allow cases supply a low/medium reviewer.
   const reviewer = options.reviewer ?? {
     async reevaluate(input) {
@@ -212,23 +215,25 @@ function setup(options: SetupOptions = {}) {
     const resolve = pendingApprovals.get(requestId);
     if (!resolve) return false;
     pendingApprovals.delete(requestId);
-    resolve({ requestId, choice });
+    if (choice.startsWith("allow")) {
+      const card = approvalRequests.find((request) => request.id === requestId);
+      if (!card) throw new Error("fixture approval request was not captured");
+      void answeredApprovalDecision({ requestId, choice }, "desk", card.toolName, card.invocationToolUseId).then(resolve);
+    } else resolve({ requestId, choice });
     return true;
   };
   const fallbackApprovalGate = {
-    requestAndWait: vi.fn(async (
-      request: Omit<ApprovalRequest, "requireExplicit">,
-    ) => {
+    requestAndWait: vi.fn(async (request: ApprovalRequestInput) => {
       approvalRequests.push(request);
       if (options.deferApproval) {
         return await new Promise<ApprovalDecision>((resolve) => {
           pendingApprovals.set(request.id, resolve);
         });
       }
-      return {
+      return await answeredApprovalDecision({
         requestId: request.id,
         choice: options.approvalChoice ?? "allow-once",
-      };
+      }, "desk", request.toolName, request.invocationToolUseId);
     }),
     cancelPendingRequest: vi.fn((requestId: string) =>
       resolvePendingApproval(requestId, "deny-once")
@@ -449,6 +454,10 @@ describe("RationaleHostCoordinator", () => {
       sealed!.hostConsumedAllowOnceReceipt,
       NOW + 3,
     )).toBe(true);
+    // The resume carries the answer the desk gave on the card, independently of any policy change.
+    const resumeProvenance = sealed ? state.coordinator.loadHostResumeProvenance(sealed.resumeRequest) : null;
+    expect(resumeProvenance?.kind).toBe("answered");
+    expect(resumeProvenance?.kind === "answered" && answeredProvenanceRecord(resumeProvenance)).toMatchObject({ decision: "allow", choice: "allow-once", answerer: "desk", trustOrigin: "user-keyboard" });
     expect(await state.coordinator.createSealedResume({
       ticketId: materialized.control.ticketId,
       currentEligibilityContext: eligibilityContext,
@@ -1139,6 +1148,8 @@ describe("RationaleHostCoordinator", () => {
       sealed!.hostConsumedAllowOnceReceipt,
       NOW + 3,
     )).toBe(true);
+    // The reviewer, not a person, authorized this resume.
+    expect(sealed && state.coordinator.loadHostResumeProvenance(sealed.resumeRequest)).toEqual({ kind: "rule" });
     expect(await state.coordinator.createSealedResume({
       ticketId: materialized.control.ticketId,
       currentEligibilityContext: eligibilityContext,
@@ -1354,6 +1365,27 @@ it.each(["allow-once", "allow-session", "allow-always"] as const)("normal ration
   expect(await state.coordinator.promptForApproval(control.ticketId, { now: NOW })).toBeNull();
 });
 
+
+it.each([false, true])("attributes a rationale denial only to its bound answer (authenticated=%s)", async (authenticated) => {
+  const recordTerminalDenial = vi.fn(async () => {});
+  const state = setup({
+    recordTerminalDenial,
+    ...(authenticated ? { approvalChoice: "deny-once" as const }
+      : { requestHumanApproval: async ({ requestId }: { requestId: string }) => ({ requestId, choice: "deny-once" as const }) }),
+  });
+  const { control } = materialize(state);
+  await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: responseFor(control) }] }, now: NOW });
+  const result = await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  if (authenticated) {
+    expect(result).toMatchObject({ outcome: "denied", ticket: { state: "denied" } });
+    expect(recordTerminalDenial).toHaveBeenCalledExactlyOnceWith("The user denied this permission request.");
+  } else {
+    expect(result).toMatchObject({ outcome: "denied", reason: "approval rejected by host", ticket: { state: "denied", terminalReason: "host-denied" } });
+    expect(recordTerminalDenial).toHaveBeenCalledExactlyOnceWith("approval rejected by host");
+  }
+  expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext, now: NOW })).toBeNull();
+});
 
 it("preserves an explicit hook or policy denial without relabeling it as user cancellation", async () => {
   const state = setup({ requestHumanApproval: async () => { throw new RationaleHumanApprovalDeniedError("The permission hook blocked this request."); } });
@@ -1620,7 +1652,7 @@ it.each([false, true])("records a final model-accepted denial once without openi
   expect(recordTerminalDenial).toHaveBeenCalledTimes(1);
 });
 
-it("does not record a denied tool while the card is pending or when its caller cancels", async () => {
+it("records no denial while the card is pending and one stop row when its caller cancels", async () => {
   const recordTerminalDenial = vi.fn(async (_reason: string) => {});
   const state = setup({ recordTerminalDenial, deferApproval: true });
   const { control } = materialize(state);
@@ -1632,7 +1664,8 @@ it("does not record a denied tool while the card is pending or when its caller c
   expect(recordTerminalDenial).not.toHaveBeenCalled();
   caller.abort();
   await expect(pending).resolves.toBeNull();
-  expect(recordTerminalDenial).not.toHaveBeenCalled();
+  // The cancelled card ends the attempt it holds: one stop row, never a user deny.
+  expect(recordTerminalDenial).toHaveBeenCalledExactlyOnceWith("The permission request was stopped; the action was not executed.", true);
 });
 
 it("requires the original non-headless approval callback instead of constructing a fallback card", async () => {

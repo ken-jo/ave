@@ -278,7 +278,9 @@ describe("settings persistence", () => {
     const canCommit = () => admitted;
 
     const first = service.patch({ system: { ...service.get("system"), hardwareAcceleration: true } });
-    const indexing = service.patch({ features: { sessionIndexingWithoutContainment: false } }, { field: ["features", "sessionIndexingWithoutContainment"], canCommit })
+    const indexing = service.patch({ features: { sessionIndexingWithoutContainment: false } }, {
+      admission: { field: ["features", "sessionIndexingWithoutContainment"], canCommit },
+    })
       .catch((error: unknown) => error);
     const inference = service.set("memoryEmbedding", { source: "local", localInferenceWithoutSandbox: false }, { field: ["memoryEmbedding", "localInferenceWithoutSandbox"], canCommit })
       .catch((error: unknown) => error);
@@ -327,7 +329,9 @@ describe("settings persistence", () => {
   });
 
   it("saves a switch whose admission still holds in the step that writes it", async () => {
-    await service.patch({ features: { sessionIndexingWithoutContainment: false } }, { field: ["features", "sessionIndexingWithoutContainment"], canCommit: () => true });
+    await service.patch({ features: { sessionIndexingWithoutContainment: false } }, {
+      admission: { field: ["features", "sessionIndexingWithoutContainment"], canCommit: () => true },
+    });
     expect(JSON.parse(readFileSync(settingsFilePath(root), "utf8")).features.sessionIndexingWithoutContainment).toBe(false);
   });
 });

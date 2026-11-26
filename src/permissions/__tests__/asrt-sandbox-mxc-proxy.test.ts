@@ -270,7 +270,7 @@ describe.skipIf(process.platform !== "win32")("proxy-only connection revocation"
     const client = connectClient(relay);
     await expect.poll(client.output).toContain("403");
     expect(await annotateWithSandboxViolations(TOKEN, "stderr")).toBe(
-      ["stderr", "<sandbox_violations>", `deny network-outbound ${DESTINATION.host}:${DESTINATION.port} (user denied)`, "</sandbox_violations>"].join(EOL),
+      ["stderr", "<sandbox_violations>", `deny network-outbound ${DESTINATION.host}:${DESTINATION.port} (permission prompt refused)`, "</sandbox_violations>"].join(EOL),
     );
     expect(await annotateWithSandboxViolations("another-invocation-token-00000002", "stderr")).toBe("stderr");
   });

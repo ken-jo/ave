@@ -6,6 +6,7 @@ import { windowsSystemRoot } from "../shared/windows-system-path.js";
 import { pinWindowsPaths, windowsObjectKey } from "../shared/windows-path-facts.js";
 
 import { appOwnedSandboxPrivateRoots, aveHomeReadBoundaryCovering, getProtectedReadDenyFloor, getUserReadDenies, insideOwnWindowsSandboxHome, protectedReadDenyMatcher } from "../permissions/asrt-sandbox.js";
+import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "../permissions/confinement-state-paths.js";
 import { openInvocationProxyListener } from "../permissions/egress-invocation-listener.js";
 import { openHostEgressListener } from "../permissions/egress-host-listener.js";
 import { egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../permissions/egress-invocations.js";
@@ -20,15 +21,17 @@ import {
   rankMxcFilesystem,
   resolveHostWxcExecPath,
 } from "../permissions/mxc-windows.js";
-import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../permissions/policy-model.js";
+import { buildPolicyModel, policyFloorRow, policyGrantRow, requiredWriteDenyRow, type PolicyModel } from "../permissions/policy-model.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
-import { assertIssuedContainerHomeInPlace, isIssuedContainerHome } from "../permissions/sandbox-home-registry.js";
+import { assertIssuedContainerHomeInPlace, heldIssuedContainerHome, isIssuedContainerHome, issuedContainerHome } from "../permissions/sandbox-home-registry.js";
+import { claimMxcWatchedRows, hasWatchedWork, sweepWatchedRows, WatchedQuarantineError } from "../permissions/windows-watched-rows.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 
 export interface MxcShellLaunch {
   /** `wxc-exec.exe` followed by its arguments; spawn with `shell: false`. */
   readonly argv: readonly string[];
   readonly proxyPort: number;
+  readonly watchedNotice?: string | undefined;
   /** Admit connections after the final shell admission checks, immediately before spawn. */
   activate(): WindowsBackendObservation;
   /** Bind policy delivery immediately after spawning the launcher. */
@@ -41,8 +44,11 @@ export interface MxcShellPolicyLists {
   readonly allowRead: readonly string[];
   /** Read denies a more specific grant re-opens (the session read boundary, the Ave home, sandbox private directories). */
   readonly denyRead: readonly string[];
-  /** The write floor. */
+  /** The mandatory write floor. A spelling also on `requiredWriteDenies` is that required row. */
   readonly denyWrite: readonly string[];
+  /** Write denies stated on their own (the sensitive floor, configured rows): kept at a required row's spelling, with their own outcome. */
+  readonly independentWriteDenies?: readonly string[];
+  readonly requiredWriteDenies?: readonly string[];
   /** The protected read floor. A grant at or beneath a row is dropped. */
   readonly protectedFloor: readonly string[];
   /** The user's read denies. A grant at or beneath a row is dropped, and no pierce covers one. */
@@ -56,10 +62,13 @@ export interface MxcShellPolicyLists {
  * grant stands behind a root. A path on both deny lists is stated twice; the container adapter reads the two lists differently.
  */
 export function shellPolicyModel(lists: MxcShellPolicyLists): PolicyModel {
+  const required = new Set(lists.requiredWriteDenies);
   return buildPolicyModel({
     floors: [
       ...lists.denyRead.map((path) => policyFloorRow(path, "denied", "read-boundary", false)),
-      ...lists.denyWrite.map((path) => policyFloorRow(path, "ro", "protected-name", false)),
+      ...lists.denyWrite.filter(path => !required.has(path)).map((path) => policyFloorRow(path, "ro", "protected-name", false)),
+      ...(lists.independentWriteDenies ?? []).map((path) => policyFloorRow(path, "ro", "protected-name", false)),
+      ...[...required].map((path) => requiredWriteDenyRow(path)),
       ...lists.protectedFloor.map((path) => policyFloorRow(path, "denied", "secrets", false)),
       ...(lists.userDenyRead ?? []).map((path) => policyFloorRow(path, "denied", "user-deny", false)),
     ],
@@ -98,6 +107,8 @@ const MXC_TIMEOUT_MARGIN_MS = 30_000;
  * change) revokes the lifecycle, which stops all forwarding at once.
  */
 export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle): Promise<MxcShellLaunch> {
+  // The HOME issuance this launch holds through every wait below.
+  const issuedHome = issuedContainerHome(input.sandboxHome);
   const capability = detectMxcShellCapability();
   if (capability === undefined) throw new Error("Container shell route is unavailable");
   // Before anything is allocated: a runtime root that was not proved private refuses every container start.
@@ -162,6 +173,14 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   assertIssuedContainerHomeInPlace(input.sandboxHome);
   // No working directory inside the root except the invocation's own issued HOME itself, by identity.
   if (privateRootCovering(input.cwd) !== undefined && !isIssuedContainerHome(input.cwd, input.sandboxHome)) throw new Error("Container shell working directory is inside the sandbox runtime root");
+  // The invocation's own HOME lies in the runtime root's state; it is passed only while live and still the issuance held.
+  const ownHome = (): string | undefined => {
+    if (issuedHome === undefined) return undefined;
+    const held = heldIssuedContainerHome(issuedHome);
+    return insideOwnWindowsSandboxHome(issuedHome.home, issuedHome.home) ? held : undefined;
+  };
+  // Before ranking: the runtime root is only an ordinary read deny there, which an equal or enclosing write survives.
+  assertWriteGrantsOutsideConfinementState(input.filesystem.allowWrite, declaredConfinementStatePaths(), undefined, ownHome());
   const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
   const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
   const denyRead = [...new Set([...input.filesystem.denyRead, ...privateRoots])];
@@ -204,6 +223,9 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   });
   assertAdmission();
   relay.registerPort(listener.port);
+  // Again on what the request grants, after the waits above: no pin holds a shell root, so this is the last check.
+  assertIssuedContainerHomeInPlace(input.sandboxHome);
+  assertWriteGrantsOutsideConfinementState(grants.readwrite, declaredConfinementStatePaths(), undefined, ownHome());
   const systemRoot = windowsSystemRoot();
   const env: Record<string, string> = { ...input.env };
   if (!Object.keys(env).some((key) => key.toUpperCase() === "SYSTEMROOT")) env["SYSTEMROOT"] = systemRoot;
@@ -218,12 +240,36 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   const transport = await openMxcRequestTransport(request, wxcExec, { root: runtimeRoot, signal: lifecycle.signal, assertStillValid: assertDispatch });
   lifecycle.defer(() => transport.release());
   assertAdmission();
+  let watchedNotice: string | undefined;
+  const claim = grants.watched === undefined ? undefined : claimMxcWatchedRows(grants.watched, { commandId: token });
+  // Command end is a detection point: this launch's own names first, then every watched name and the receipts no result carried yet.
+  lifecycle.defer(async () => {
+    if (!active) return;
+    const notices: string[] = [];
+    let failure: unknown;
+    for (const check of [() => claim?.release(), () => hasWatchedWork() ? sweepWatchedRows({ commandId: token }) : undefined]) {
+      try {
+        const notice = await check();
+        if (notice !== undefined) notices.push(notice);
+      } catch (error) {
+        if (error instanceof WatchedQuarantineError) notices.push(error.message);
+        failure = error;
+        // The wider check would only report the same failed move again.
+        break;
+      }
+    }
+    if (notices.length > 0) watchedNotice = notices.join("\n");
+    if (failure !== undefined) throw failure;
+  });
   return {
     argv: [wxcExec, ...transport.args],
     proxyPort: listener.port,
+    get watchedNotice() { return watchedNotice; },
     activate: () => {
       assertDispatch();
       const observation = observeWindowsBackend("container", "shell");
+      // The last synchronous check before the launcher is spawned: a watched name that appeared since ranking refuses the launch.
+      claim?.start();
       active = true;
       return observation;
     },

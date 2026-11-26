@@ -30,7 +30,8 @@ const chmodSyncMock = vi.fn<(path: unknown, mode: unknown) => void>(() => undefi
 const lstatSyncMock = vi.fn<(path: unknown) => { isSymbolicLink: () => boolean }>(() => ({
   isSymbolicLink: () => false,
 }));
-vi.mock("node:fs/promises", () => ({
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs/promises")>()),
   mkdir: (path: unknown, opts?: unknown) => mkdirMock(path, opts),
 }));
 vi.mock("node:fs", async (importOriginal) => ({
@@ -233,6 +234,9 @@ beforeEach(() => {
   __resetActiveWrappedWorkersForTest();
   process.env.SystemRoot = "C:\\Windows";
   process.env.WINDIR = "C:\\Windows";
+  // The faked win32 helper spawn reads the host's state location, which a POSIX host does not have.
+  vi.stubEnv("LOCALAPPDATA", "C:\\Users\\alice\\AppData\\Local");
+  vi.stubEnv("ProgramData", "C:\\ProgramData");
   spawnMock.mockReset();
   wrapWorkerCommandMock.mockReset();
   cleanupMock.mockClear();
@@ -253,6 +257,7 @@ beforeEach(() => {
 afterEach(() => {
   __resetActiveWrappedWorkersForTest();
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   if (REAL_SYSTEM_ROOT === undefined) {
     delete process.env.SystemRoot;
   } else {
@@ -1236,9 +1241,10 @@ describe("spawnWorker — Windows with gate ON", () => {
     const restoreEnv = setEnvForTest({
       COMSPEC: "C:\\Windows\\System32\\cmd.exe",
       PATHEXT: ".COM;.EXE;.BAT;.CMD",
-      LOCALAPPDATA: "C:\\Users\\test\\AppData\\Local",
-      TEMP: "C:\\Users\\test\\AppData\\Local\\Temp",
-      TMP: "C:\\Users\\test\\AppData\\Local\\Temp",
+      LOCALAPPDATA: "C:\\Users\\alice\\AppData\\Local",
+      ProgramData: "C:\\ProgramData",
+      TEMP: "C:\\Users\\alice\\AppData\\Local\\Temp",
+      TMP: "C:\\Users\\alice\\AppData\\Local\\Temp",
       ANTHROPIC_API_KEY: "sk-should-not-reach-worker",
       AVE_INTERNAL_SECRET: "ave-should-not-reach-worker",
     });
@@ -1335,6 +1341,9 @@ describe("spawnWorker — Windows with gate ON", () => {
       SystemRoot: "C:\\Windows",
       WINDIR: "C:\\Windows",
       SystemDrive: "C:",
+      // The host's, which every helper spawn gets for its ledger; the child's profile is the sandbox HOME's.
+      LOCALAPPDATA: "C:\\Users\\alice\\AppData\\Local",
+      ProgramData: "C:\\ProgramData",
     });
     expect(workerOpts.shell).toBe(false);
     expect(workerOpts.stdio).toEqual(["pipe", "pipe", "pipe"]);

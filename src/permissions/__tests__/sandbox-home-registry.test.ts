@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { __resetSandboxHomesUnavailableForTest, getSandboxHomesUnavailable } from "../sandbox-capability.js";
-import { assertIssuedContainerHomeInPlace, forgetIssuedContainerHome, isIssuedContainerHome, recordIssuedContainerHome } from "../sandbox-home-registry.js";
+import { assertIssuedContainerHomeInPlace, forgetIssuedContainerHome, isIssuedContainerHome, issuedContainerHome, liveIssuedContainerHome,
+  recordIssuedContainerHome } from "../sandbox-home-registry.js";
 
 describe("the container HOME a launch was issued", () => {
   let base = "";
@@ -83,6 +84,29 @@ describe("the container HOME a launch was issued", () => {
     symlinkSync(moved, parent(), "junction");
     expect(isIssuedContainerHome(own, own)).toBe(false);
     expect(() => assertIssuedContainerHomeInPlace(own)).toThrow(expect.objectContaining({ code: "sandbox-home-unavailable" }));
+    expect(getSandboxHomesUnavailable()).toBe(true);
+  });
+
+  it("holds one issuance across a launch's preparation: the same record, still in place, observed once", () => {
+    const issued = issuedContainerHome(own);
+    expect(issuedContainerHome(undefined)).toBeUndefined();
+    expect(issuedContainerHome(join(own, "work"))).toBeUndefined();
+    expect(liveIssuedContainerHome(undefined)).toBeUndefined();
+    expect(liveIssuedContainerHome(issued)).toBe(own);
+    // Issued again at the same name: the new issuance is not the one the launch holds.
+    forgetIssuedContainerHome(own);
+    expect(liveIssuedContainerHome(issued)).toBeUndefined();
+    recordIssuedContainerHome(own, base);
+    expect(liveIssuedContainerHome(issued)).toBeUndefined();
+    expect(liveIssuedContainerHome(issuedContainerHome(own))).toBe(own);
+    expect(getSandboxHomesUnavailable()).toBe(false);
+  });
+
+  it("refuses with the named reason once the HOME it holds is replaced", () => {
+    const issued = issuedContainerHome(own);
+    renameSync(own, `${own}.old`);
+    mkdirSync(own);
+    expect(() => liveIssuedContainerHome(issued)).toThrow(expect.objectContaining({ code: "sandbox-home-unavailable" }));
     expect(getSandboxHomesUnavailable()).toBe(true);
   });
 

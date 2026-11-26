@@ -1,10 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { LLMSettings } from "../../data/settings-store.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
+import { llmModelListCacheKey, type LlmModelListCache } from "../../shared/llm-model-list.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { ToolRegistry } from "../../tools/registry.js";
-import type { LLMVendor } from "../llm/types.js";
+import type { LLMProvider, LLMVendor, ProviderConfig } from "../llm/types.js";
 
 async function loadProviderLoop(vendor: LLMVendor) {
   const createProvider = vi.fn(() => ({
@@ -502,6 +504,229 @@ async function collectStream(iterable: AsyncIterable<unknown>,
       marketplaceProviderPresetSecretKey("future-router"),
     );
     expect(getSecret).not.toHaveBeenCalledWith("llm.apiKey.openai-compatible");
+  });
+
+  it("reports the saved model retirement when a fallback fails in its retry window", async () => {
+    vi.useFakeTimers();
+    let settings = {
+      ...fakeLlmSettings({ provider: "deepseek", model: "deepseek-v4-pro" }),
+      fallbackChain: [{ provider: "openai", model: "o4-mini" }, { provider: "gemini", model: "fixture-next" }] as LLMSettings["fallbackChain"],
+      retiredProvider: undefined as LLMSettings["retiredProvider"],
+    };
+    const fallbackDispatch = vi.fn();
+    const createProvider = vi.fn(({ vendor }: ProviderConfig): LLMProvider => ({
+      vendor,
+      async *streamTurn() {
+        if (vendor === "deepseek") {
+          yield { type: "error", error: "429 rate limit" };
+          return;
+        }
+        fallbackDispatch();
+        yield { type: "error", error: "503 fallback unavailable" };
+      },
+    }));
+    vi.doMock("../llm/provider-factory.js", () => ({ createProvider, secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}` }));
+    const { buildProvider } = await import("../turn/provider.js");
+    const getSecret = vi.fn(async (_key: string) => "fixture-key");
+    const provider = await buildProvider({
+      settingsService: { get: () => settings, getSecret },
+      modelOverride: "fixture-primary",
+      networkFetch: unusedNetworkFetch,
+    } as unknown as Parameters<typeof buildProvider>[0]);
+    assert(provider);
+    const outcome = collectStream(provider.streamTurn({
+      model: "fixture-primary", systemPrompt: "sys", messages: [{ role: "user", content: "hi" }],
+    })).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(5_500);
+    expect(fallbackDispatch).toHaveBeenCalledOnce();
+    settings = {
+      ...settings,
+      retiredProvider: { vendor: "deepseek", model: "deepseek-v4-pro", reason: "unlisted" },
+    };
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fallbackDispatch).toHaveBeenCalledOnce();
+    expect(getSecret.mock.calls).toEqual([["llm.apiKey.deepseek"], ["llm.apiKey.openai"]]);
+    expect(await outcome).toMatchObject({ name: "RetiredModelError", model: "deepseek-v4-pro" });
+  });
+
+  it.each([
+    { name: "continues to a fallback when the primary override is unlisted during its retry window", hasFallback: true, markerSet: false },
+    { name: "reports retirement when the primary is unlisted and no fallback is configured", hasFallback: false, markerSet: true },
+    { name: "reports retirement without fetching fallback credentials when the active route is blocked", hasFallback: true, markerSet: true },
+  ])("$name", async ({ hasFallback, markerSet }) => {
+    vi.useFakeTimers();
+    const primaryDispatch = vi.fn();
+    const createProvider = vi.fn(({ vendor }: ProviderConfig): LLMProvider => ({
+      vendor,
+      async *streamTurn({ model }) {
+        if (vendor === "deepseek") {
+          primaryDispatch();
+          yield { type: "error", error: "429 rate limit", classification: "rate-limit" };
+        } else {
+          yield { type: "text_delta", text: model };
+        }
+      },
+    }));
+    vi.doMock("../llm/provider-factory.js", () => ({
+      createProvider,
+      secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
+    }));
+    const { ConversationLoop } = await import("../conversation-loop.js");
+    let settings = {
+      ...fakeLlmSettings({ provider: "deepseek", model: markerSet ? "deepseek-v4-pro" : "deepseek-flash" }),
+      modelListCache: {} as LlmModelListCache,
+      fallbackChain: hasFallback ? [{ provider: "openai" as const, model: "o4-mini" }] : [],
+    };
+    const getSecret = vi.fn((_key: string) => "fixture-key");
+    const loop = new ConversationLoop({
+      settingsService: { get: () => settings, getSecret },
+      ...(markerSet ? {} : { modelOverride: "deepseek-v4-pro" }),
+      ...makeLoopDeps(new ToolRegistry()),
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    await loop.whenProviderReady();
+
+    const provider = loop.provider;
+    assert(provider);
+    const pending = collectStream(provider.streamTurn({
+      model: "deepseek-v4-pro",
+      systemPrompt: "sys",
+      messages: [{ role: "user", content: "hi" }],
+    }));
+    const outcome = pending.then((events) => ({ events }), (error: unknown) => ({ error }));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(primaryDispatch).toHaveBeenCalledOnce();
+    expect(getSecret.mock.calls).toEqual([["llm.apiKey.deepseek"]]);
+    settings = {
+      ...settings,
+      ...(markerSet ? { retiredProvider: { vendor: "deepseek", model: "deepseek-v4-pro", reason: "unlisted" } as const } : {}),
+      modelListCache: {
+        [llmModelListCacheKey("deepseek", settings.vendors.deepseek.baseUrl)]: {
+          vendor: "deepseek",
+          endpoint: "https://api.deepseek.com/v1/models",
+          complete: true,
+          models: ["deepseek-flash"],
+          fetchedAt: "2026-10-13T00:00:00.000Z",
+        },
+      },
+    };
+    await vi.advanceTimersByTimeAsync(500);
+    const attemptsAtRetryBoundary = primaryDispatch.mock.calls.length;
+    const providersAtRetryBoundary = createProvider.mock.calls.map(([{ vendor }]) => vendor);
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    const fellBack = hasFallback && !markerSet;
+    if (fellBack) {
+      expect(await outcome).toEqual({ events: [{ type: "text_delta", text: "o4-mini" }] });
+    } else {
+      expect(await outcome).toMatchObject({ error: { name: "RetiredModelError" } });
+    }
+    expect(attemptsAtRetryBoundary).toBe(1);
+    expect(primaryDispatch).toHaveBeenCalledOnce();
+    expect(providersAtRetryBoundary).toEqual(fellBack ? ["deepseek", "openai"] : ["deepseek"]);
+    expect(getSecret.mock.calls).toEqual(fellBack
+      ? [["llm.apiKey.deepseek"], ["llm.apiKey.openai"]]
+      : [["llm.apiKey.deepseek"]]);
+  });
+
+  it.each([
+    {
+      name: "skips a fallback retired during primary retries and continues to a listed deprecated fallback",
+      listingDelay: 1_000,
+      firstFallbackAttempted: false,
+    },
+    {
+      name: "stops retrying a fallback retired after its first failure and continues the walk",
+      listingDelay: 5_000,
+      firstFallbackAttempted: true,
+    },
+  ])("$name", async ({ listingDelay, firstFallbackAttempted }) => {
+    vi.useFakeTimers();
+    const firstFallbackDispatch = vi.fn();
+    const createProvider = vi.fn(({ vendor }: ProviderConfig): LLMProvider => ({
+      vendor,
+      async *streamTurn({ model }) {
+        if (vendor === "gemini") {
+          yield { type: "error", error: "503 unavailable", classification: "network" };
+        } else if (vendor === "deepseek") {
+          firstFallbackDispatch();
+          yield { type: "error", error: "502 fallback unavailable", classification: "network" };
+        } else {
+          yield { type: "text_delta", text: model };
+        }
+      },
+    }));
+    vi.doMock("../llm/provider-factory.js", () => ({
+      createProvider,
+      secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
+    }));
+    const { ConversationLoop } = await import("../conversation-loop.js");
+    const { FallbackProvider } = await import("../llm/vercel/fallback-chain.js");
+    const initialSettings = fakeLlmSettings({ provider: "gemini", model: "fixture-primary" });
+    let settings = {
+      ...initialSettings,
+      modelListCache: {} as LlmModelListCache,
+      fallbackChain: [
+        { provider: "deepseek" as const, model: "deepseek-v4-pro" },
+        { provider: "openai" as const, model: "o4-mini" },
+      ],
+    };
+    const getSecret = vi.fn((_key: string) => "fixture-key");
+    const loop = new ConversationLoop({
+      settingsService: { get: () => settings, getSecret },
+      ...makeLoopDeps(new ToolRegistry()),
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    await loop.whenProviderReady();
+    expect(loop.provider).toBeInstanceOf(FallbackProvider);
+
+    const onFallback = vi.fn();
+    const onStatus = vi.fn();
+    const pending = collectStream((loop.provider as InstanceType<typeof FallbackProvider>)
+      .withCallbacks({ onFallback, onStatus }).streamTurn({
+        model: "fixture-primary",
+        systemPrompt: "sys",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [],
+      }));
+    await vi.advanceTimersByTimeAsync(listingDelay);
+    const expectedFirstFallbackAttempts = firstFallbackAttempted ? 1 : 0;
+    expect(firstFallbackDispatch).toHaveBeenCalledTimes(expectedFirstFallbackAttempts);
+    settings = {
+      ...settings,
+      modelListCache: {
+        [llmModelListCacheKey("deepseek", settings.vendors.deepseek.baseUrl)]: {
+          vendor: "deepseek",
+          endpoint: "https://api.deepseek.com/v1/models",
+          complete: true,
+          models: ["deepseek-flash"],
+          fetchedAt: "2026-10-13T00:00:00.000Z",
+        },
+        [llmModelListCacheKey("openai", settings.vendors.openai.baseUrl)]: {
+          vendor: "openai",
+          endpoint: "https://api.openai.com/v1/models",
+          complete: true,
+          models: ["o4-mini"],
+          fetchedAt: "2026-10-13T00:00:00.000Z",
+        },
+      },
+    };
+    await vi.advanceTimersByTimeAsync(10_000 - listingDelay);
+
+    expect(await pending).toEqual([{ type: "text_delta", text: "o4-mini" }]);
+    expect(firstFallbackDispatch).toHaveBeenCalledTimes(expectedFirstFallbackAttempts);
+    const attempted = [
+      { vendor: "gemini", model: "fixture-primary" },
+      ...(firstFallbackAttempted ? [{ vendor: "deepseek", model: "deepseek-v4-pro" }] : []),
+      { vendor: "openai", model: "o4-mini" },
+    ];
+    expect(getSecret.mock.calls).toEqual(attempted.map(({ vendor }) => [`llm.apiKey.${vendor}`]));
+    expect(createProvider.mock.calls.map(([{ model }]) => model)).toEqual(attempted.map(({ model }) => model));
+    const labels = attempted.map(({ vendor, model }) => `${vendor}/${model}`);
+    expect(onFallback.mock.calls).toEqual(labels.slice(1).map((to, index) => [labels[index], to]));
+    expect(onStatus).toHaveBeenCalledWith(expect.objectContaining({
+      phase: "fallback",
+      to: "openai/o4-mini",
+      reason: firstFallbackAttempted ? "502 fallback unavailable" : "503 unavailable",
+    }));
   });
 
   it("does not create ordinary keyed providers when the API key is missing", async () => {

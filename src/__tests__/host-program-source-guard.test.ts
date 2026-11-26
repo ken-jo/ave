@@ -35,6 +35,7 @@ const LAUNCH_FILES = [
   "main/acp-subscription-runtime-client.ts",
   "main/acp-subscription-session-client.ts",
   "main/auto-updater.ts",
+  "main/browser/browser-capture-stitch-process.ts", // capture stitch child: fixed entry, Node runtime, safe env, managed kill tree
   "main/browser/browser-download-files.ts",
   "main/claude-code-authenticity.ts",
   "main/claude-code-conversation-runtime.ts",

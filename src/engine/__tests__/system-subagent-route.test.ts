@@ -166,6 +166,19 @@ describe("system subagent routes", () => {
     expect(route.llmSettings.retiredProvider).toBeUndefined();
   });
 
+  it("projects retirement from the selected summary route", () => {
+    const { deps, settings } = fixture();
+    const route = systemSubagentRouteIdentity(settings.llm, "deepseek");
+    assert(route);
+    settings.llm.modelListCache[llmModelListCacheKey("deepseek", route.baseUrl)] = {
+      vendor: "deepseek", endpoint: "https://api.deepseek.com/v1/models",
+      models: ["deepseek-flash"], complete: true, fetchedAt: "2026-10-13T00:00:00.000Z",
+    };
+    const projected = systemSubagentLlmSettings(deps.settingsService, { vendor: "deepseek", model: "deepseek-v4-pro", route });
+    expect(projected.retiredProvider).toEqual({ vendor: "deepseek", model: "deepseek-v4-pro", reason: "unlisted" });
+    expect(settings.llm.retiredProvider).toBeUndefined();
+  });
+
   it("rejects a summary model removed from the connected endpoint listing", async () => {
     const { deps, settings, selection } = fixture();
     const selected = selection("summary-a");

@@ -35,7 +35,9 @@ import type {
   ToolUseBlock,
 } from "../../tools/executor.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../../tools/registry.js";
-import { collectActiveRuntimeRoundStream } from "./stream-collector.js";
+import { admitApprovalAnswer, approvalFailureKind, type ApprovalFailureKind, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
+import { approvalFailureOutcome } from "../../tools/pipeline/approval-outcome.js";
+import { collectActiveRuntimeRoundStream, type ActiveRuntimeStreamGuard } from "./stream-collector.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import { vendorSupportsLengthContinuation } from "../llm/vendor-capabilities.js";
 import { rejectedToolNameFromError, withoutDroppedTools } from "../llm/rejected-tool-schema.js";
@@ -56,7 +58,14 @@ import { planReasoning } from "../llm/reasoning-plan.js";
 import { activeModelCatalog } from "../../shared/model-catalog/active.js";
 import type { ContextWindowSource } from "../../shared/context-budget.js";
 import type { RunModelSettings } from "../../shared/run-model-settings.js";
-import { resolveModelPricing, type ModelPricingRoute } from "../../shared/model-pricing.js";
+import {
+  resolveModelPricing,
+  type ModelPricingRoute,
+  type ResolvedModelPricing,
+  type ServedPricingRoute,
+  type ServedRouteEvidence,
+} from "../../shared/model-pricing.js";
+import { configuredEndpointId } from "../llm/pricing.js";
 import { resolvePricingOverrides, type PricingOverride } from "../../shared/pricing-overrides.js";
 import { isA2AQuestionInputRequiredControl } from "../../tools/agent-send.js";
 import {
@@ -149,6 +158,10 @@ export async function queryLoop(
     // What history stores of an answer. A routine loop keeps its <summary> block out of the conversation; the turn's return keeps it.
     const storedText = (text: string, partial = false): string => (self.deps.stripRoutineSummary ? stripRoutineSummary(text, { partial }) : text);
     const llmSettings = self.deps.settingsService.get("llm");
+    const activeRuntime: ActiveRuntimeStreamGuard = {
+      getLlm: () => self.deps.settingsService.get("llm"),
+      onMismatch: () => self.abortCurrentTurn(new Error("active chat route became unavailable")),
+    };
     const storedBlock = getLlmVendorSettings(
       llmSettings.vendors,
       llmSettings.provider,
@@ -212,11 +225,14 @@ export async function queryLoop(
       ? []
       : withoutDroppedTools(self.rebuildToolSchemas(scope), droppedToolSchemaNames);
     let toolSchemas: ToolSchema[] = rebuildTurnToolSchemas();
+    // Where the primary route's model list was read, and what it reported. Each request's
+    // recorded address decides whether these apply to it.
     const primaryPricingRoute = subscriptionRuntime
       ? undefined
       : {
           ...(runtimeContextBudget.baseUrl !== undefined ? { baseUrl: runtimeContextBudget.baseUrl } : {}),
           ...(runtimeContextBudget.reportedPricing !== undefined ? { reported: runtimeContextBudget.reportedPricing } : {}),
+          ...(runtimeContextBudget.reportedPricingEndpoint !== undefined ? { reportedAt: runtimeContextBudget.reportedPricingEndpoint } : {}),
         };
     // Capacity is turn-stable; record reasoning at each request because retries may change its shape.
     const modelSettingsBase: RunModelSettings | undefined = apiRound === undefined || effectiveOutput === undefined
@@ -235,9 +251,14 @@ export async function queryLoop(
           ...(toolsWithheld
             ? { tools: { sent: false as const, source: toolsWithheld.source, catalogEntry: toolsWithheld.catalogEntry } }
             : {}),
-          pricing: resolveModelPricing(llmSettings.provider, model, turnPricingOverrides, primaryPricingRoute),
+          // A price is recorded when a request answers. The pre-send estimate is the
+          // composer's; a turn whose requests all fail records no price.
+          pricing: { source: "unknown" },
         };
     let turnModelSettings: RunModelSettings | undefined;
+    // The price the turn's last answered primary request was recorded at. Until a request
+    // answers, the turn record carries no price.
+    let primaryRequestPricing: ResolvedModelPricing | undefined;
     const withServingIdentity = (
       result: {
         text: string;
@@ -316,7 +337,8 @@ export async function queryLoop(
         cacheReadTokens: (turnUsage?.cacheReadTokens ?? 0) + cacheRead,
         cacheWriteTokens: (turnUsage?.cacheWriteTokens ?? 0) + cacheWrite,
       };
-      appendUsageForServingModel(
+      const servedByPrimaryLabel = servingVendorProvider === llmSettings.provider && servingVendorModel === model;
+      const requestPricing = appendUsageForServingModel(
         usageByModel,
         servingVendorProvider,
         servingVendorModel,
@@ -328,8 +350,17 @@ export async function queryLoop(
           ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
         },
         turnPricingOverrides,
-        primaryPricingRoute ? { vendor: llmSettings.provider, model, ...primaryPricingRoute } : undefined,
+        {
+          ...(servedByPrimaryLabel ? primaryPricingRoute : {}),
+          ...(usage.servedRoute !== undefined
+            ? { served: servedPricingRoute(usage.servedRoute, servedByPrimaryLabel ? primaryPricingRoute?.baseUrl : undefined) }
+            : {}),
+        },
       );
+      if (requestPricing !== undefined && servedByPrimaryLabel && turnModelSettings !== undefined) {
+        primaryRequestPricing = requestPricing;
+        turnModelSettings = { ...turnModelSettings, pricing: requestPricing };
+      }
       self.cumulativeUsage.inputTokens += adjustedInput;
       self.cumulativeUsage.outputTokens += usage.outputTokens;
       self.cumulativeUsage.cacheReadTokens =
@@ -862,7 +893,12 @@ export async function queryLoop(
                 callbacks?.onTextDelta?.(text);
               }
             : callbacks?.onTextDelta,
-          onRequestStarted: () => { turnModelSettings = requestModelSettings; },
+          // A later request that ends without usage must not put the projection back.
+          onRequestStarted: () => {
+            turnModelSettings = requestModelSettings !== undefined && primaryRequestPricing !== undefined
+              ? { ...requestModelSettings, pricing: primaryRequestPricing }
+              : requestModelSettings;
+          },
           ...(apiRound === undefined ? {} : {
             onRequestControls: (controls: NonNullable<RunModelSettings["requestControls"]>) => {
               if (turnModelSettings === undefined) return;
@@ -877,8 +913,7 @@ export async function queryLoop(
             },
           }),
         },
-        self.deps.settingsService.get("llm").activeChatRuntime,
-        () => self.abortCurrentTurn(new Error("active chat runtime changed")),
+        activeRuntime,
       );
       // Consume prefill once; the continuation branch re-arms it only if the chain extends.
       continuationPrefillText = undefined;
@@ -1293,11 +1328,21 @@ export async function queryLoop(
         });
       }
 
-      const toolUses: ToolUseBlock[] = pendingToolCallsCapped
+      const advertisedToolNames = turnExtensionPolicyContext.getStore()?.unattendedStage
+        ? new Set(toolSchemas.map(tool => tool.name))
+        : undefined;
+      const parsedToolUses: ToolUseBlock[] = pendingToolCallsCapped
         .filter((tc) => !tc.invalidInput)
         .map((tc) => ({
           id: tc.id, name: tc.name, input: tc.input,
         }));
+      // Send unadvertised calls straight to the executor's refusal, including intercepted meta names.
+      const unadvertisedToolUses = advertisedToolNames
+        ? parsedToolUses.filter(toolUse => !advertisedToolNames.has(toolUse.name))
+        : [];
+      const toolUses = advertisedToolNames
+        ? parsedToolUses.filter(toolUse => advertisedToolNames.has(toolUse.name))
+        : parsedToolUses;
 
       const availableRationaleCoordinatorFactory =
         typeof self.deps.rationaleCoordinatorFactory === "function"
@@ -1471,7 +1516,7 @@ export async function queryLoop(
       });
       toolSearches = searchOutcome.nextTurnSearches;
       self.sessionToolSearches = searchOutcome.nextSessionSearches;
-      toolUsesForExecutor = [...searchOutcome.remaining, ...deferredOrderedToolUses];
+      toolUsesForExecutor = [...searchOutcome.remaining, ...deferredOrderedToolUses, ...unadvertisedToolUses];
       searchPromotedThisRound = searchOutcome.promotedToolNames.length > 0;
       promotedToolNamesForTurn.push(...searchOutcome.promotedToolNames);
 
@@ -1580,6 +1625,7 @@ export async function queryLoop(
       };
       let pendingToolResult = Promise.resolve();
       const executeOptions = {
+          ...(advertisedToolNames ? { advertisedToolNames } : {}),
           onToolResult: async (result) => {
             pendingToolResult = pendingToolResult.then(() => appendToolResult(result));
             await pendingToolResult;
@@ -1656,6 +1702,7 @@ export async function queryLoop(
       const orderedMetaToolHandler: InterceptedMetaToolHandler | undefined =
         rationaleOrchestrationEnabled
           ? async (toolUse) => {
+              if (advertisedToolNames && !advertisedToolNames.has(toolUse.name)) return null;
               const gated = await gateCrossAgentInterceptedMetaTools(
                 self,
                 [toolUse],
@@ -1841,6 +1888,7 @@ export async function queryLoop(
             provider: turnProvider,
             model,
             llmSettings: roundLlmSettings,
+            activeRuntime,
             ...(abortSignal ? { abortSignal } : {}),
             requestAnchor: bounds.requestAnchor ?? null,
             rationaleProvenance: currentRationaleProvenance,
@@ -2128,6 +2176,22 @@ function toolResultMeta(
   };
 }
 
+/**
+ * A request answered from under a configured endpoint can use the primary route's report
+ * only when that endpoint is the primary's own setting. A fallback that keeps the vendor
+ * and model but is configured elsewhere, even on the same host or under the vendor's own
+ * API path, does not qualify. A request on a vendor's default route names its canonical base.
+ */
+function servedPricingRoute(evidence: ServedRouteEvidence, primaryBaseUrl: string | undefined): ServedPricingRoute {
+  if (evidence.kind === "unknown") return { kind: "unknown" };
+  const servedByPrimarySetting = primaryBaseUrl !== undefined && evidence.configuredBaseId === configuredEndpointId(primaryBaseUrl);
+  if (evidence.kind === "vendor-native") {
+    if (evidence.configuredBaseId === undefined) return { kind: "vendor-native", base: evidence.base };
+    return servedByPrimarySetting ? { kind: "vendor-native", base: primaryBaseUrl } : { kind: "vendor-native" };
+  }
+  return servedByPrimarySetting ? { kind: "report-endpoint", base: primaryBaseUrl } : { kind: "unknown" };
+}
+
 // Record API usage only with a verified serving identity.
 function appendUsageForServingModel(
   usageByModel: TokenUsageByModel[],
@@ -2135,20 +2199,16 @@ function appendUsageForServingModel(
   vendorModel: string | undefined,
   usage: TokenUsage,
   pricingOverrides: readonly PricingOverride[],
-  primaryRoute?: { vendor: string; model: string } & ModelPricingRoute,
-): void {
+  route: ModelPricingRoute,
+): ResolvedModelPricing | undefined {
   if (vendorProvider === undefined || vendorModel === undefined) {
-    return;
+    return undefined;
   }
+  const pricing = resolveModelPricing(vendorProvider, vendorModel, pricingOverrides, route);
   usageByModel.push({
     vendorProvider,
     vendorModel,
-    pricing: resolveModelPricing(
-      vendorProvider,
-      vendorModel,
-      pricingOverrides,
-      primaryRoute?.vendor === vendorProvider && primaryRoute.model === vendorModel ? primaryRoute : undefined,
-    ),
+    pricing,
     tokenUsage: {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
@@ -2157,6 +2217,7 @@ function appendUsageForServingModel(
       ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
     },
   });
+  return pricing;
 }
 
 // At round exhaustion, make one output-bounded, tool-free handoff call; it cannot extend the work.
@@ -2668,22 +2729,17 @@ export async function gateCrossAgentInterceptedMetaTools(
     }
 
     const gate = self.deps.approvalGate;
-    let allowed = false;
-    if (!gate) {
-      self.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId,
-        type: "error",
-        input: `cross-agent-meta-approval-unavailable:${toolUse.name}`,
-      });
-    } else {
+    let failure: ApprovalFailureKind | undefined = "unavailable";
+    let detail: string | undefined;
+    if (gate) {
       try {
-        const decision = await gate.requestAndWait({
+        const request = {
           id: randomUUID(),
           category: "tool",
           kind: "tool",
           toolName: toolUse.name,
           toolCategory: "meta",
+          invocationToolUseId: toolUse.id,
           sessionId,
           args: toolUse.input,
           reason: `${approvalReasonPrefix} cross-agent message requested ${toolUse.name}`,
@@ -2694,25 +2750,31 @@ export async function gateCrossAgentInterceptedMetaTools(
           ...(self.currentAbortController === null
             ? {}
             : { abortSignal: self.currentAbortController.signal }),
-        });
-        allowed = isApprovalChoiceAllowed(decision.choice);
+        } satisfies ApprovalRequestInput;
+        const decision = await gate.requestAndWait(request);
+        admitApprovalAnswer(decision, { requestId: request.id, toolName: request.toolName, toolUseId: request.invocationToolUseId });
+        failure = approvalFailureKind(decision);
+        if (failure === undefined && !isApprovalChoiceAllowed(decision.choice)) failure = "rejected";
+        detail = approvalFailureOutcome(decision, toolUse.name)?.content;
       } catch {
-        self.auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId,
-          type: "error",
-          input: `cross-agent-meta-approval-failed:${toolUse.name}`,
-        });
+        failure = "rejected";
       }
     }
 
-    if (allowed) {
+    if (failure === undefined) {
       approved.push(toolUse);
     } else {
+      self.auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId,
+        type: "error",
+        input: `cross-agent-meta-approval-${failure}:${toolUse.name}`,
+        ...(detail === undefined ? {} : { output: detail }),
+      });
       denied.push({
         toolUseId: toolUse.id,
         toolName: toolUse.name,
-        content: `cross-agent-approval-denied: ${toolUse.name}`,
+        content: `cross-agent-approval-${failure}: ${toolUse.name}${detail === undefined ? "" : ` (${detail})`}`,
       });
     }
   }

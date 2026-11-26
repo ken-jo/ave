@@ -1,23 +1,28 @@
+import { RULE_PROVENANCE } from "../decision-provenance.js";
 import { withShellPolicyMutation } from "../shell-policy-handoff.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { mkdirSync, mkdtempSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { configureHostResources } from "../../main/host-resources.js";
+import { join } from "node:path";
 import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { judgedAnswer } from "../../__tests__/support/standing-answer.js";
+import { spendStandingAnswer, toolUseAction } from "../pending-answer-policy.js";
 import {
   ApprovalGate,
   type ApprovalDecision,
   type ApprovalRequest,
 } from "../approval-gate.js";
 import { offersFloorSessionAllow } from "../decision-pipeline.js";
+import { captureShellWorkingDirectoryIdentity } from "../shell-working-directory-identity.js";
 import { buildHostShellExecutionPlan, requiresExplicitHostShellApproval } from "../host-shell-execution-plan.js";
 import { updatePermissionsFile } from "../permissions-store.js";
 import { __resetWindowsSandboxSubstrateForTest } from "../sandbox-capability.js";
 import {
   buildHostShellExecutionPermitBinding,
+  createShellApprovalDirectory,
   resolveHostShellWorkingDirectory,
   consumeHostShellExecutionPermit,
   consumeHostShellExecutionPermitForSpawn,
@@ -34,7 +39,7 @@ import {
   type PermissionCheckResult,
 } from "../permission-manager.js";
 
-beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
+withSourceHostResources();
 
 // An explicit host retry on a host whose sandbox is available: the route invocation authorization passes, so a wildcard allow may match.
 const HOST_ROUTE_ON_SANDBOX_HOST = { runsSandboxed: false } as const;
@@ -66,6 +71,7 @@ function makeBinding(
     requestedCwd: undefined,
     executionCwd: tmpdir(),
     resolvedCwd: tmpdir(),
+    cwdIdentity: captureShellWorkingDirectoryIdentity(overrides.resolvedCwd ?? tmpdir()),
     timeoutSeconds: 30,
       executionMode: "default",
       justification: undefined,
@@ -78,13 +84,13 @@ function makeBinding(
 
 let approvalSequence = 0;
 
-async function issueHostApprovedDecision(
-  binding: HostShellExecutionPermitBinding,
-): Promise<ApprovalDecision> {
-  const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
-  const gate = new ApprovalGate(wc as never);
+/** The owner's standing answer for the card `decision` answered, or none when it does not stand. */
+const answerTo = (decision: ApprovalDecision, binding: HostShellExecutionPermitBinding) => judgedAnswer(toolUseAction(binding.toolUseId), decision);
+
+function requestHostApproval(gate: ApprovalGate, directory: ReturnType<typeof createShellApprovalDirectory>) {
+  const { binding } = directory;
   const id = `partial-shell-permit-${++approvalSequence}`;
-  const pending = gate.requestAndWait({
+  return { id, pending: gate.requestAndWait({
     id,
     category: "tool",
     toolName: binding.toolName,
@@ -103,18 +109,31 @@ async function issueHostApprovedDecision(
     allowedChoices: ["allow-once", "deny-once"],
     forceExplicit: true,
     hostShellExecutionPermitBinding: binding,
-  });
-  const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest | undefined;
-  if (!request?.nonce || !request.hmac) {
-    throw new Error("ApprovalGate did not publish an HMAC-sealed request");
+    processCwd: { directory },
+  }) };
+}
+
+async function issueHostApprovedDecision(binding: HostShellExecutionPermitBinding): Promise<ApprovalDecision> {
+  const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+  const gate = new ApprovalGate(wc as never);
+  const directory = createShellApprovalDirectory(binding);
+  try {
+    const { id, pending } = requestHostApproval(gate, directory);
+    const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest | undefined;
+    if (!request?.nonce || !request.hmac) {
+      throw new Error("ApprovalGate did not publish an HMAC-sealed request");
+    }
+    gate.resolveFromDesktopRenderer(id, {
+      requestId: id,
+      choice: "allow-once",
+      nonce: request.nonce,
+      hmac: request.hmac,
+    }, wc as never);
+    return await pending;
+  } finally {
+    gate.disposeAll();
+    directory.dispose();
   }
-  gate.resolveFromDesktopRenderer(id, {
-    requestId: id,
-    choice: "allow-once",
-    nonce: request.nonce,
-    hmac: request.hmac,
-  }, wc as never);
-  return pending;
 }
 
 function permitInput(
@@ -138,13 +157,99 @@ function permitInput(
   };
 }
 
+describe("host shell working directory freshness", () => {
+  let workspace: string;
+  let cwd: string;
+  let original: string;
+
+  beforeEach(() => {
+    workspace = mkdtempSync(join(tmpdir(), "ave-permit-cwd-"));
+    cwd = join(workspace, "current");
+    original = join(workspace, "original");
+    mkdirSync(cwd);
+  });
+
+  afterEach(async () => {
+    await cleanupTmpDir(workspace);
+  });
+
+  function replaceDirectory() {
+    renameSync(cwd, original);
+    mkdirSync(cwd);
+  }
+
+  function bindCard() {
+    const binding = buildHostShellExecutionPermitBinding({
+      plan: windowsPlan(),
+      toolName: "bash",
+      toolUseId: "cwd-freshness",
+      rawInput: { command: "echo one-shot" },
+      executionCwd: cwd,
+      extraAllowedDirectories: [],
+    });
+    if (!binding?.cwdIdentity) throw new Error("Shell fixture has no working directory identity");
+    return binding;
+  }
+
+  async function expectCardRefused(binding: HostShellExecutionPermitBinding) {
+    const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+    const gate = new ApprovalGate(wc as never);
+    const directory = createShellApprovalDirectory(binding);
+    try {
+      const { pending } = requestHostApproval(gate, directory);
+      expect(wc.send).not.toHaveBeenCalled();
+      await expect(pending).resolves.toMatchObject({
+        choice: "deny-once",
+        rememberPattern: "Shell working directory changed before the card opened",
+      });
+    } finally {
+      gate.disposeAll();
+      directory.dispose();
+    }
+  }
+
+  it("reads a fresh identity for card binding after an earlier observation", async () => {
+    const previous = bindCard();
+    replaceDirectory();
+    const binding = bindCard();
+    expect(binding.cwdIdentity?.realpath).toBe(previous.cwdIdentity?.realpath);
+    expect(binding.cwdIdentity).not.toEqual(previous.cwdIdentity);
+
+    renameSync(cwd, join(workspace, "replacement"));
+    renameSync(original, cwd);
+    await expectCardRefused(binding);
+  });
+
+  it("refuses a replaced directory during pre-card cwd revalidation", async () => {
+    const binding = bindCard();
+    replaceDirectory();
+    await expectCardRefused(binding);
+  });
+
+  it("refuses a directory replaced after the card answer during permit mint", async () => {
+    const binding = bindCard();
+    const answer = answerTo(await issueHostApprovedDecision(binding), binding);
+    replaceDirectory();
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, answer })).toBeUndefined();
+  });
+
+  it("refuses a directory replaced after minting during permit consumption", async () => {
+    const binding = bindCard();
+    const answer = answerTo(await issueHostApprovedDecision(binding), binding);
+    const permit = mintHostShellExecutionPermit({ plan: binding.plan, binding, answer });
+    expect(permit).toBeDefined();
+    replaceDirectory();
+    expect(consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))).toBeUndefined();
+  });
+});
+
 describe("Windows partial-shell execution permit", () => {
   afterEach(() => __resetWindowsSandboxSubstrateForTest());
 
   it("binds host policy authorization to one action and consumes it once", () => {
     const binding = makeBinding();
-    recordHostShellPolicyAuthorization(binding);
-    const mint = (candidate = binding) => mintHostShellExecutionPermit({ plan: candidate.plan, binding: candidate, approvalDecision: undefined });
+    recordHostShellPolicyAuthorization(binding, answerTo({ requestId: "policy-card", choice: "allow-once" }, binding));
+    const mint = (candidate = binding) => mintHostShellExecutionPermit({ plan: candidate.plan, binding: candidate, answer: undefined });
     expect(mint({ ...binding, command: "echo changed" })).toBeUndefined();
     const permit = mint();
     expect(permit).toBeDefined();
@@ -152,12 +257,40 @@ describe("Windows partial-shell execution permit", () => {
     expect(consumeHostShellExecutionPermit({ ...permitInput(binding, permit), command: "echo changed" })).toBe(false);
     expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(false);
   });
+  it("records a host policy authorization only for an unspent standing answer to the same call", () => {
+    const binding = makeBinding();
+    const mint = () => mintHostShellExecutionPermit({ plan: binding.plan, binding, answer: undefined });
+    const decision = { requestId: "policy-card", choice: "allow-once" as const };
+    const answer = answerTo(decision, binding);
+    recordHostShellPolicyAuthorization(binding, answer);
+    expect(mint()).toBeDefined();
+    // Spent: the same answer authorizes nothing a second time.
+    recordHostShellPolicyAuthorization(binding, answer);
+    expect(mint()).toBeUndefined();
+    recordHostShellPolicyAuthorization(binding, answerTo(decision, { ...binding, toolUseId: "tool-2" }));
+    expect(mint()).toBeUndefined();
+    // The raw answer and a look-alike are not the owner's proof.
+    recordHostShellPolicyAuthorization(binding, decision as never);
+    recordHostShellPolicyAuthorization(binding, Object.create(Object.getPrototypeOf(answer ?? null)) as never);
+    recordHostShellPolicyAuthorization(binding, true as never);
+    expect(mint()).toBeUndefined();
+  });
+  it("issues no permit for a spent standing answer or one for another call", async () => {
+    const binding = makeBinding();
+    const elsewhere = answerTo(await issueHostApprovedDecision(binding), { ...binding, toolUseId: "tool-2" });
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, answer: elsewhere })).toBeUndefined();
+    const decision = await issueHostApprovedDecision(binding);
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, answer: decision as never })).toBeUndefined();
+    const answer = answerTo(decision, binding);
+    expect(spendStandingAnswer(answer, "shell-permit", toolUseAction(binding.toolUseId))).toMatchObject({ decision });
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, answer })).toBeUndefined();
+  });
   it("mints nothing for a Windows Plan B binding without a Gate receipt or a host policy authorization", () => {
     const binding = makeBinding();
-    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: undefined })).toBeUndefined();
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, answer: undefined })).toBeUndefined();
     expect(mintHostShellExecutionPermit({
-      plan: binding.plan, binding, approvalDecision: undefined,
-      allowRuleDecision: { decision: "allow", reason: "allow rule" },
+      plan: binding.plan, binding, answer: undefined,
+      allowRuleDecision: { decision: "allow", provenance: RULE_PROVENANCE, reason: "allow rule" },
     })).toBeUndefined();
   });
   it("accepts exactly its Gate-approved bound action once", async () => {
@@ -165,7 +298,7 @@ describe("Windows partial-shell execution permit", () => {
     const decision = await issueHostApprovedDecision(binding);
     const permit = mintHostShellExecutionPermit({
       plan: binding.plan,
-      approvalDecision: decision,
+      answer: answerTo(decision, binding),
       binding,
     });
 
@@ -179,7 +312,7 @@ describe("Windows partial-shell execution permit", () => {
     const decision = await issueHostApprovedDecision(binding);
     const permit = mintHostShellExecutionPermit({
       plan: binding.plan,
-      approvalDecision: decision,
+      answer: answerTo(decision, binding),
       binding,
     });
 
@@ -198,7 +331,7 @@ describe("Windows partial-shell execution permit", () => {
     expect(
       mintHostShellExecutionPermit({
         plan: binding.plan,
-        approvalDecision: forged,
+        answer: answerTo(forged, binding),
         binding,
       }),
     ).toBeUndefined();
@@ -208,14 +341,14 @@ describe("Windows partial-shell execution permit", () => {
     expect(
       mintHostShellExecutionPermit({
         plan: binding.plan,
-        approvalDecision: commandDecision,
+        answer: answerTo(commandDecision, binding),
         binding: substitutedCommand,
       }),
     ).toBeUndefined();
     expect(
       mintHostShellExecutionPermit({
         plan: binding.plan,
-        approvalDecision: commandDecision,
+        answer: answerTo(commandDecision, binding),
         binding,
       }),
     ).toBeUndefined();
@@ -224,14 +357,14 @@ describe("Windows partial-shell execution permit", () => {
     expect(
       mintHostShellExecutionPermit({
         plan: windowsPlan(),
-        approvalDecision: planDecision,
+        answer: answerTo(planDecision, binding),
         binding,
       }),
     ).toBeUndefined();
     expect(
       mintHostShellExecutionPermit({
         plan: binding.plan,
-        approvalDecision: planDecision,
+        answer: answerTo(planDecision, binding),
         binding,
       }),
     ).toBeUndefined();
@@ -293,33 +426,33 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     const binding = hostBinding();
     const decision = ruleDecision();
     const permit = mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
     });
     expect(permit).toBeDefined();
     expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(true);
     expect(mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
     })).toBeUndefined();
   });
 
   it("rejects a structural allow lookalike, another command or cwd, and a non-host plan", () => {
     const binding = hostBinding();
-    const lookalike: PermissionCheckResult = { decision: "allow", reason: "forged" };
+    const lookalike: PermissionCheckResult = { decision: "allow", provenance: RULE_PROVENANCE, reason: "forged" };
     expect(isIssuedShellAllowRuleDecision(lookalike)).toBe(false);
     expect(mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: lookalike, permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: lookalike, permissionManager: pm, binding,
     })).toBeUndefined();
     expect(mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision("echo other"), permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: ruleDecision("echo other"), permissionManager: pm, binding,
     })).toBeUndefined();
     expect(mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision("echo one-shot", directory), permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: ruleDecision("echo one-shot", directory), permissionManager: pm, binding,
     })).toBeUndefined();
     // An ordinary host-request rule decision cannot mint a permit for a default shell under the floor.
     const planB = windowsPlan();
     const planBBinding = hostBinding(planB);
     expect(mintHostShellExecutionPermit({
-      plan: planB, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding: planBBinding,
+      plan: planB, answer: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding: planBBinding,
     })).toBeUndefined();
   });
 
@@ -334,7 +467,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     expect(marked.identity.endsWith(":ask")).toBe(true);
     const binding = hostBinding(marked);
     expect(mintHostShellExecutionPermit({
-      plan: marked, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+      plan: marked, answer: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
     })).toBeUndefined();
   });
 
@@ -354,7 +487,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
       ruleSubject: { kind: "shell", dialect: "bash", command, cwd }, hostShellExecutionPlan: plan, shellExecution: HOST_ROUTE_ON_SANDBOX_HOST, sessionId: "exact-rule", ...extra,
     });
     const mint = (decision: PermissionCheckResult, plan = verified, bound = hostBinding(plan), manager = pm) => mintHostShellExecutionPermit({
-      plan, approvalDecision: undefined, allowRuleDecision: decision, floorSessionDecision: decision, permissionManager: manager, binding: bound,
+      plan, answer: undefined, allowRuleDecision: decision, floorSessionDecision: decision, permissionManager: manager, binding: bound,
     });
     const asks = (decision: PermissionCheckResult) => {
       expect(decision).toMatchObject({ decision: "ask", forceModal: true });
@@ -447,7 +580,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     });
     const binding = hostBinding(marked);
     const mint = (decision: PermissionCheckResult, plan = marked, bound = binding, manager = pm) => mintHostShellExecutionPermit({
-      plan, approvalDecision: undefined, floorSessionDecision: decision, permissionManager: manager, binding: bound,
+      plan, answer: undefined, floorSessionDecision: decision, permissionManager: manager, binding: bound,
     });
     // The grant answers only the floor: a command no rule allows keeps the floor's card in the default mode; the allow mode then decides.
     expect(floorDecision("echo unruled")).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
@@ -485,7 +618,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     const unmarked = explicitHostPlan();
     expect(mint(floorDecision(), unmarked, hostBinding(unmarked))).toBeUndefined();
     // The saved exact-rule proof lane stays closed for the marked plan.
-    expect(mintHostShellExecutionPermit({ plan: marked, approvalDecision: undefined, allowRuleDecision: floorDecision(), permissionManager: pm, binding })).toBeUndefined();
+    expect(mintHostShellExecutionPermit({ plan: marked, answer: undefined, allowRuleDecision: floorDecision(), permissionManager: pm, binding })).toBeUndefined();
     // Ending the conversation drops the grant.
     const outstanding = floorDecision();
     pm.endSession("floor-session");
@@ -534,7 +667,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     const outstanding = issue();
     const mintable = issue();
     const permit = mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: mintable, permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: mintable, permissionManager: pm, binding,
     });
     expect(permit).toBeDefined();
 
@@ -567,13 +700,13 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     expect(decision).toMatchObject({ decision: "allow" });
     expect(isIssuedShellAllowRuleDecision(decision, pm)).toBe(false);
     expect(mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
     })).toBeUndefined();
   });
 
   it("refreshes authority before joining the policy queue, so a slow probe never holds other policy writers", async () => {
     const binding = hostBinding();
-    const permit = mintHostShellExecutionPermit({ plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding });
+    const permit = mintHostShellExecutionPermit({ plan: binding.plan, answer: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding });
     const authority = consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))!;
     let release!: () => void;
     const waiting = withShellPolicyMutation(() => new Promise<void>(resolve => { release = resolve; }));
@@ -593,7 +726,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
 
   it("runs the synchronous handoff fence after the queue wait that follows a successful refresh", async () => {
     const binding = hostBinding();
-    const permit = mintHostShellExecutionPermit({ plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding });
+    const permit = mintHostShellExecutionPermit({ plan: binding.plan, answer: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding });
     const authority = consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))!;
     let release!: () => void;
     const waiting = withShellPolicyMutation(() => new Promise<void>(resolve => { release = resolve; }));
@@ -619,7 +752,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
   it("only grants a consumed spawn authority once and rejects a structural copy", async () => {
     const binding = hostBinding();
     const permit = mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
     });
     const authority = consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))!;
     expect(authority).toBeDefined();
@@ -634,7 +767,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
   it.each(["project", "user"] as const)("waits for a queued %s deny before the final grant", async (scope) => {
     const binding = hostBinding();
     const permit = mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
     });
     const authority = consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))!;
     expect(authority).toBeDefined();
@@ -651,7 +784,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     const binding = hostBinding();
     await pm.addRulePersist({ pattern: "Bash(echo one-shot)", action: "allow" }, { kind: "user" });
     const permit = mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
     });
     const authority = consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))!;
     expect(authority).toBeDefined();
@@ -679,7 +812,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
   it("honours an uncoordinated edit after final validation from the next execution handoff", async () => {
     const binding = hostBinding();
     const prepare = () => consumeHostShellExecutionPermitForSpawn(permitInput(binding, mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
     })))!;
     const current = prepare();
     const next = prepare();
@@ -702,10 +835,10 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     const other = new PermissionManager(join(directory, "other-permissions.json"));
     other.setRules(([{ pattern: "Bash(echo one-shot)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect(mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: other, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: decision, permissionManager: other, binding,
     })).toBeUndefined();
     expect(mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
     })).toBeUndefined();
   });
 
@@ -713,7 +846,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     const binding = hostBinding();
     const decision = ruleDecision();
     const mint = () => mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
     });
     const permit = when === "before spawning" ? mint() : undefined;
     if (when === "before spawning") expect(permit).toBeDefined();
@@ -740,7 +873,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
       ? { kind: "project", projectCwd: binding.resolvedCwd } : { kind: "user" });
     const outstanding = ruleDecision();
     const permit = mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
     });
     expect(permit).toBeDefined();
     const other = new PermissionManager(join(directory, "permissions.json"));
@@ -769,7 +902,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
       ruleSubject: { kind: "shell", dialect: "bash", command: binding.command, cwd: binding.resolvedCwd },
     });
     expect(isIssuedShellAllowRuleDecision(decision, pm)).toBe(false);
-    expect(mintHostShellExecutionPermit({ plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: pm, binding })).toBeUndefined();
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, answer: undefined, allowRuleDecision: decision, permissionManager: pm, binding })).toBeUndefined();
   });
 
   it("does not bless unseen user denies when writing another rule", async () => {
@@ -788,7 +921,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     const binding = hostBinding();
     const outstanding = ruleDecision();
     const permit = mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
     });
     expect(permit).toBeDefined();
     const filePath = join(directory, "permissions.json");
@@ -808,7 +941,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     const binding = hostBinding();
     const outstanding = ruleDecision();
     const permit = mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+      plan: binding.plan, answer: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
     });
     expect(permit).toBeDefined();
     symlinkSync(join(directory, "missing-store"), join(directory, scope === "project" ? "permissions" : "store"), "junction");
@@ -870,7 +1003,7 @@ describe.skipIf(process.platform !== "win32")("host permits on a sandbox-capable
         });
         expect(isIssuedShellAllowRuleDecision(allowRuleDecision, manager)).toBe(true);
       }
-      const permit = mintHostShellExecutionPermit({ plan, binding, approvalDecision, allowRuleDecision, permissionManager: manager });
+      const permit = mintHostShellExecutionPermit({ plan, binding, answer: approvalDecision && answerTo(approvalDecision, binding), allowRuleDecision, permissionManager: manager });
       expect(permit).toBeDefined();
       const spawnInput = { ...permitInput(binding, permit), executionCwd,
         resolvedCwd: resolveHostShellWorkingDirectory(executionCwd, undefined) };
@@ -892,7 +1025,7 @@ describe("shell-off plan under an unverifiable Ave home boundary", () => {
 
   it("mints one spawn permit from a gate-signed allow-once and refuses its replay", async () => {
     const binding = makeBinding(sandboxOff(true));
-    const permit = mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: await issueHostApprovedDecision(binding) });
+    const permit = mintHostShellExecutionPermit({ plan: binding.plan, binding, answer: answerTo(await issueHostApprovedDecision(binding), binding) });
     expect(permit).toBeDefined();
     expect(consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))).toBeDefined();
     expect(consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))).toBeUndefined();
@@ -900,10 +1033,10 @@ describe("shell-off plan under an unverifiable Ave home boundary", () => {
 
   it("refuses a missing receipt, a receipt for another action and a changed spawn", async () => {
     const binding = makeBinding(sandboxOff(true));
-    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: undefined })).toBeUndefined();
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, answer: undefined })).toBeUndefined();
     const other = makeBinding(binding.plan, { command: "echo other" });
-    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: await issueHostApprovedDecision(other) })).toBeUndefined();
-    const permit = mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: await issueHostApprovedDecision(binding) });
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, answer: answerTo(await issueHostApprovedDecision(other), binding) })).toBeUndefined();
+    const permit = mintHostShellExecutionPermit({ plan: binding.plan, binding, answer: answerTo(await issueHostApprovedDecision(binding), binding) });
     expect(consumeHostShellExecutionPermitForSpawn({ ...permitInput(binding, permit), command: "echo changed" })).toBeUndefined();
   });
 

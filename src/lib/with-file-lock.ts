@@ -61,6 +61,7 @@ export function createSerialQueue(): SerialQueue {
 export interface FileLockOptions {
   stale?: number;
   retries?: number;
+  createTarget?: boolean;
 }
 
 /** The callback completed but release is unconfirmed; durable writers may reconcile their exact output. */
@@ -140,9 +141,11 @@ async function withCrossProcessFileLock<T>(
 
   let result: T;
   try {
-    // Create the target without overwriting only after lock acquisition; an unlocked Windows open can block replacement.
-    const handle = await open(targetPath, "a", 0o600);
-    await handle.close();
+    // Opening an unlocked target in append mode can block replacement on Windows.
+    if (opts.createTarget !== false) {
+      const handle = await open(targetPath, "a", 0o600);
+      await handle.close();
+    }
     result = await fn();
   } catch (callbackError) {
     try {

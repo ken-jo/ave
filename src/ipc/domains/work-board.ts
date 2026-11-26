@@ -1,8 +1,10 @@
+import { readWorkflowDecisionHistory } from "../workflow-decision-history.js";
+import { maskWorkflowText, withoutWorkflowProjection } from "../../work-board/workflow/run-read-projection.js";
 import { isGraphHash, isStageId, isTemplateId, isTemplateVersion, WorkflowTemplateError } from "../../work-board/template-graph.js";
 import type { RunAuthoritySource, TemplateVersionPin } from "../../shared/workflow-template-types.js";
 import { registerWorkflowTemplateHandlers } from "../workflow-template-handlers.js";
 // Work-board mutations use the store's lifecycle; execution and reports require their separately wired services.
-import { ipcMain, type IpcMainInvokeEvent } from "electron";
+import { ipcMain, shell, type IpcMainInvokeEvent, type WebContents, type WebFrameMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { broadcastToAppWindows } from "../window-fanout.js";
 import type { IpcDeps } from "../types.js";
@@ -13,23 +15,27 @@ import type {
   TemplateRunRequest,
   WorkBoardSteerIpcResult,
   WorkItemRunResult,
+  WorkBoardRunFailure,
   StageGateDecideInput,
   StageGateDecideIpcResult,
   StageJoinDecideIpcResult,
+  StageJoinDecideInput,
   StageRetryIpcResult,
   WorkPlanDecideInput,
   WorkPlanDecideIpcResult,
   WorkPlanDecision,
 } from "../../shared/work-board-types.js";
-import { MAX_PLAN_NOTE_LENGTH } from "../../shared/work-board-types.js";
-import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
+import { MAX_PLAN_NOTE_LENGTH, workBoardOriginSessionId } from "../../shared/work-board-types.js";
+import { workBoardDecisionChannel, workBoardDecisionKey, type WorkBoardDecisionChannel } from "../../shared/work-board-decision-intent.js";
+import { securitySettingsGestures, type SecuritySettingsGestureProof } from "../security-settings-gesture.js";
+import { deliverWorkBoardFailure, setWorkBoardProjectScope, workBoardProjectAllows } from "../work-board-project-scope.js";
 import { parseFileMentionReferences } from "../../shared/file-mention-reference.js";
 import { sanitizeOutgoingInput } from "../handlers/chat.js";
 import { PARENT_DIRECTIVE_MAX_CHARS } from "../../engine/parent-directive.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { createLogger } from "../../lib/logger.js";
 import { WorkBoardWriteRefusal } from "../../main/storage/rewrite-keeping-bytes.js";
-import { WORK_BOARD } from "../../shared/ipc-channels.js";
+import { WORK_APPROVALS, WORK_BOARD } from "../../shared/ipc-channels.js";
 import { createDirStorage } from "../../work-board/storage.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { readRunTranscript } from "../../work-board/run-transcript.js";
@@ -171,6 +177,15 @@ function parseDecideStageInput(raw: unknown): StageGateDecideInput | null {
 }
 
 /** The `Create and run` tuple the user saw, with the project the card showed. Null when the renderer sent none or a malformed one. */
+function parseJoinBinding(record: Record<string, unknown> | null): Omit<StageJoinDecideInput, "decision"> | null {
+  if (!record) return null;
+  const { runId, joinId, conflictHash, generation } = record;
+  if (typeof runId !== "string" || !RUN_ID_PATTERN.test(runId) || !isTemplateId(joinId)
+    || typeof conflictHash !== "string" || !PLAN_HASH_PATTERN.test(conflictHash)
+    || typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 0) return null;
+  return { runId, joinId, conflictHash, generation };
+}
+
 function parseTemplateRunTuple(raw: unknown): { pin: TemplateVersionPin; projectRoot?: string } | null {
   const record = exactRecord(raw, ["templateId", "version", "graphHash", "projectRoot"]);
   if (!record || !isTemplateId(record.templateId) || !isTemplateVersion(record.version) || !isGraphHash(record.graphHash)) return null;
@@ -179,7 +194,6 @@ function parseTemplateRunTuple(raw: unknown): { pin: TemplateVersionPin; project
 }
 
 export function registerWorkBoardHandlers(deps: IpcDeps): void {
-  registerWorkflowTemplateHandlers(deps);
   const { workBoardStore, workBoardEngine, workBoardReport, auditLogger } = deps;
   const handle = (channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void => {
     ipcMain.handle(channel, async (event, ...args: unknown[]) => {
@@ -189,7 +203,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
         const code = error instanceof WorkBoardWriteRefusal ? error.code
           : error instanceof WorkflowTemplateError && error.code === "invalid-template-run" ? error.code : undefined;
         if (code === undefined) throw error;
-        if (channel === WORK_BOARD.decidePlan || channel === WORK_BOARD.decideStage || channel === WORK_BOARD.decideJoin || channel === WORK_BOARD.retryStage) {
+        if (channel === WORK_BOARD.decidePlan || channel === WORK_BOARD.decideStage || channel === WORK_BOARD.decideJoin || channel === WORK_BOARD.openJoin || channel === WORK_BOARD.retryStage) {
           return { ok: false, reason: code };
         }
         if (channel === WORK_BOARD.list || channel === WORK_BOARD.get || channel === WORK_BOARD.steerRun || channel === WORK_BOARD.cancelRun) {
@@ -207,6 +221,41 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return windows.some((window) => window && !window.isDestroyed() && window.webContents === sender);
   };
 
+  const decisionTokens = new WeakMap<WebContents, { frame: WebFrameMain; token: string; proof: SecuritySettingsGestureProof }>();
+  handle(WORK_BOARD.captureDecisionIntent, (e, token: unknown, key: unknown) => {
+    if (!validateHostRendererSender(e) || !isBoardOwnerFrame(e)) {
+      auditUnauthorized(auditLogger, WORK_BOARD.captureDecisionIntent, e);
+      return false;
+    }
+    const channel = workBoardDecisionChannel(key);
+    if (!channel || typeof token !== "string" || !/^[0-9a-f-]{36}$/u.test(token)) return false;
+    const proof = securitySettingsGestures.consume(e.sender, { channel, payload: key });
+    if (!proof) return false;
+    decisionTokens.set(e.sender, { frame: e.sender.mainFrame, token, proof });
+    return true;
+  });
+
+  function spendDecisionIntent(e: IpcMainInvokeEvent, channel: WorkBoardDecisionChannel, id: unknown, input: unknown, token: unknown): boolean {
+    const captured = decisionTokens.get(e.sender);
+    if (!captured || captured.token !== token) return false;
+    decisionTokens.delete(e.sender);
+    return captured.frame === e.senderFrame
+      && securitySettingsGestures.matches(e.sender, captured.proof, { channel, payload: workBoardDecisionKey(channel, id, input) });
+  }
+
+  registerWorkflowTemplateHandlers(deps, isBoardOwnerFrame, spendDecisionIntent);
+
+  const reconcileProjectApprovals = () => deps.approvalGate?.reconcileWorkBoardProjectApprovals();
+  handle(WORK_BOARD.setProjectScope, (e, root: unknown) => {
+    if (!validateHostRendererSender(e) || !isBoardOwnerFrame(e)) {
+      auditUnauthorized(auditLogger, WORK_BOARD.setProjectScope, e);
+      return false;
+    }
+    const scoped = setWorkBoardProjectScope(e.sender, root, reconcileProjectApprovals);
+    reconcileProjectApprovals();
+    return scoped;
+  });
+
   const broadcastItemChanged = (
     itemId: number | undefined,
     change: WorkItemChangedEventPayload["change"],
@@ -220,9 +269,9 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   };
 
   /** What the board shows of a template run comes from the host (the run file and the scheduler), never from the row. */
-  const withTemplateRuns = async (items: readonly WorkItemResolved[]): Promise<WorkItemResolved[]> => {
-    if (workBoardEngine) return workBoardEngine.projectTemplateRuns(items);
-    return items.map((item) => { const clean = { ...item }; delete clean.templateRunState; return clean; });
+  const withTemplateRuns = async (items: readonly WorkItemResolved[], detail?: { runId?: string }): Promise<WorkItemResolved[]> => {
+    if (workBoardEngine) return workBoardEngine.projectTemplateRuns(items, detail);
+    return items.map(withoutWorkflowProjection);
   };
 
   const loadAuthorizedItem = async (id: number): Promise<WorkItemGetResult> => {
@@ -230,7 +279,15 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     const result = await workBoardStore.get(id);
     if (result.status !== "found") return result;
     if (!isAuthorizedStoredWorkItem(result.item)) return { status: "not_found", itemId: id };
-    return { ...result, item: (await withTemplateRuns([result.item]))[0] ?? result.item };
+    return result;
+  };
+
+  const canReadItem = (event: IpcMainInvokeEvent, item: WorkItemResolved) =>
+    isBoardOwnerFrame(event) && workBoardProjectAllows(event.sender, item.projectRoot);
+
+  const itemNavigation = (item: WorkItemResolved): WorkItemResolved => {
+    const { id, status, status_resolved, projectRoot, projectName, priority, created_at, updated_at, runStatus } = item;
+    return { id, title: maskWorkflowText(item.title), status, status_resolved, projectRoot, projectName, priority, created_at, updated_at, runStatus };
   };
 
   handle(WORK_BOARD.list, async (e, filter?: WorkItemListFilter) => {
@@ -239,20 +296,74 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     if (!workBoardStore) return NO_STORE;
+    if (filter !== undefined && !exactRecord(filter, ["status", "priority", "due_before", "projectRoot", "includeUnscoped", "limit"])) return { ok: false, error: "invalid-input" };
     const listed = await workBoardStore.list(normalizeProjectListFilter(filter));
-    return listed.status === "ok" ? { ...listed, items: await withTemplateRuns(listed.items) } : listed;
+    if (listed.status !== "ok") return listed;
+    const authorized = listed.items.filter(isAuthorizedStoredWorkItem);
+    const byId = new Map((await withTemplateRuns(authorized.filter(item => canReadItem(e, item)))).map(item => [item.id, item]));
+    return { ...listed, items: authorized.map(item => canReadItem(e, item) ? byId.get(item.id) ?? itemNavigation(item) : itemNavigation(item)) };
   });
 
-  handle(WORK_BOARD.get, async (e, id: number) => {
+  handle(WORK_BOARD.get, async (e, id: number, runId?: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.get, e);
       return UNAUTHORIZED_FRAME;
     }
     if (!workBoardStore) return NO_STORE;
-    return loadAuthorizedItem(id);
+    if (runId !== undefined && (typeof runId !== "string" || !RUN_ID_PATTERN.test(runId))) return { ok: false, error: "invalid-input" };
+    const result = await loadAuthorizedItem(id);
+    if (result.status !== "found") return result;
+    if (!canReadItem(e, result.item)) return { status: "not_found", itemId: id };
+    const [item] = await withTemplateRuns([result.item], { runId });
+    if (runId !== undefined && item.workflowRun?.runId !== runId) return { status: "not_found", itemId: id };
+    if (item.workflowRun && typeof auditLogger.search === "function") {
+      item.workflowRun = { ...item.workflowRun, decisions: await readWorkflowDecisionHistory(auditLogger, id, item.workflowRun) };
+    }
+    const parentSessionId = item.templateId === undefined ? item.runSessionId : undefined;
+    const runner = parentSessionId ? deps.getSubAgentRunner?.() : undefined;
+    // A persisted child is an association only under the exact board run session that hosted it.
+    if (parentSessionId && runner?.isPersistedSpawnOfOrigin(workBoardOriginSessionId(id), parentSessionId)) {
+      item.delegatedSessions = runner.listPersistedSpawnsForOrigin(parentSessionId).map(({ childSessionId, title }) =>
+        ({ parentSessionId, childSessionId, title: maskWorkflowText(title) }));
+    }
+    return canReadItem(e, result.item) ? { ...result, item } : { status: "not_found", itemId: id };
   });
 
-  handle(WORK_BOARD.add, async (e, input: WorkItemCreateInput) => {
+  const sendRunFailure = (event: WorkBoardRunFailure, root: string | undefined) =>
+    deliverWorkBoardFailure(deps.getAppWindows?.() ?? [deps.getMainWindow()], event, root);
+
+  async function executeRun(
+    engine: NonNullable<IpcDeps["workBoardEngine"]>, id: number, sender: WebContents, root: string | undefined,
+    agentName?: string, templateSource?: RunAuthoritySource,
+  ): Promise<WorkItemRunResult> {
+    broadcastToAppWindows(deps, WORK_BOARD.runStarted, {
+      itemId: id,
+      at: new Date().toISOString(),
+    });
+    try {
+      const result: WorkItemRunResult = await engine.runItem(
+        id,
+        { ...(agentName ? { agentName } : {}), ...(templateSource ? { templateSource } : { approvalSurface: sender }) },
+      );
+      broadcastToAppWindows(deps, WORK_BOARD.runFinished, {
+        itemId: id,
+        status: result.status,
+        at: new Date().toISOString(),
+      });
+      if (templateSource && (result.status === "error" || result.status === "not_found" || result.status === "already_running" || result.status === "denied")) {
+        sendRunFailure({ itemId: id, reason: result.reasonCode ?? "workflow-start-failed", at: new Date().toISOString() }, root);
+      }
+      return result;
+    } catch (err) {
+      const code = err instanceof WorkBoardWriteRefusal ? err.code : undefined;
+      const reason = code ?? errorMessage(err);
+      sendRunFailure({ itemId: id, reason, at: new Date().toISOString() }, root);
+      // Convert engine failures to its stable error envelope; do not throw across IPC.
+      return { status: "error", reason, ...(code === undefined ? {} : { reasonCode: code }) } satisfies WorkItemRunResult;
+    }
+  }
+
+  handle(WORK_BOARD.add, async (e, input: WorkItemCreateInput, launch?: unknown, intent?: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.add, e);
       return UNAUTHORIZED_FRAME;
@@ -260,12 +371,32 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     if (!workBoardStore) return NO_STORE;
     const normalized = normalizeCreateInputProject(input);
     if (!normalized.ok) return normalized.result;
+    let source: RunAuthoritySource | undefined;
+    if (launch !== undefined) {
+      if (!isBoardOwnerFrame(e)) {
+        auditUnauthorized(auditLogger, WORK_BOARD.add, e);
+        return UNAUTHORIZED_FRAME;
+      }
+      const tuple = parseTemplateRunTuple(launch);
+      if (!tuple || tuple.pin.templateId !== input.templateId || tuple.projectRoot !== normalized.input.projectRoot) {
+        return { status: "invalid", reason: "invalid-input" };
+      }
+      if (!spendDecisionIntent(e, WORK_BOARD.add, input, launch, intent)) return { status: "invalid", reason: "user-gesture-required" };
+      if (!workBoardEngine) return NO_ENGINE;
+      source = { kind: "local-create-and-run", pin: tuple.pin, projectRoot: tuple.projectRoot };
+    }
     // A create never shows the renderer a raw failure.
     const result = await workBoardStore.create(normalized.input).catch((error: unknown) => {
       log.warn("[work-board] an item was not created: %s", errorMessage(error));
       return { status: "invalid" as const, reason: error instanceof WorkBoardWriteRefusal ? error.code : "work-board-write-failed" };
     });
-    if (result.status === "created") broadcastItemChanged(result.itemId, "created");
+    if (result.status === "created") {
+      broadcastItemChanged(result.itemId, "created");
+      if (source && workBoardEngine) {
+        const root = result.item.projectRoot;
+        void executeRun(workBoardEngine, result.itemId, e.sender, root, undefined, source).catch((error: unknown) => log.warn("Workflow start could not be reported: %s", errorMessage(error)));
+      }
+    }
     return result;
   });
 
@@ -278,8 +409,9 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     const existing = await loadAuthorizedItem(id);
     if (existing.status !== "found") return existing;
     const result = await workBoardStore.update(id, patch);
-    if (result.status === "updated") broadcastItemChanged(result.itemId, "updated");
-    return result;
+    if (result.status !== "updated") return result;
+    broadcastItemChanged(result.itemId, "updated");
+    return canReadItem(e, result.item) ? result : { ...result, item: itemNavigation(result.item) };
   });
 
   handle(WORK_BOARD.transition, async (e, id: number, to: WorkItemStatusStored, expectedRevision?: string) => {
@@ -294,8 +426,9 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       return { status: "invalid", itemId: id, reason: "work-item-changed" };
     }
     const result = await workBoardStore.transition(id, to, "transitioned", expectedRevision);
-    if (result.status === "transitioned") broadcastItemChanged(result.itemId, "transitioned");
-    return result;
+    if (result.status !== "transitioned") return result;
+    broadcastItemChanged(result.itemId, "transitioned");
+    return canReadItem(e, result.item) ? result : { ...result, item: itemNavigation(result.item) };
   });
 
   handle(WORK_BOARD.complete, async (e, id: number, expectedRevision?: string) => {
@@ -310,8 +443,9 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       return { status: "invalid", itemId: id, reason: "work-item-changed" };
     }
     const result = await workBoardStore.complete(id, expectedRevision);
-    if (result.status === "completed") broadcastItemChanged(result.itemId, "completed");
-    return result;
+    if (result.status !== "completed") return result;
+    broadcastItemChanged(result.itemId, "completed");
+    return canReadItem(e, result.item) ? result : { ...result, item: itemNavigation(result.item) };
   });
 
   handle(WORK_BOARD.reopen, async (e, id: number, expectedRevision?: string) => {
@@ -326,8 +460,9 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       return { status: "invalid", itemId: id, reason: "work-item-changed" };
     }
     const result = await workBoardStore.reopen(id, expectedRevision);
-    if (result.status === "reopened") broadcastItemChanged(result.itemId, "reopened");
-    return result;
+    if (result.status !== "reopened") return result;
+    broadcastItemChanged(result.itemId, "reopened");
+    return canReadItem(e, result.item) ? result : { ...result, item: itemNavigation(result.item) };
   });
 
   handle(WORK_BOARD.remove, async (e, id: number | null, target?: unknown) => {
@@ -373,8 +508,9 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     const existing = await loadAuthorizedItem(id);
     if (existing.status !== "found") return existing;
     const result = await workBoardEngine.clearMissingRun(id, { revision, runId });
-    if (result.status === "updated") broadcastItemChanged(result.itemId, "updated");
-    return result;
+    if (result.status !== "updated") return result;
+    broadcastItemChanged(result.itemId, "updated");
+    return canReadItem(e, result.item) ? result : { ...result, item: itemNavigation(result.item) };
   });
 
   // Run returns a terminal result while progress events update the renderer.
@@ -394,14 +530,13 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
 
     if (existing.item.templateRunError === "template-run-not-found") return { status: "error", reason: "template-run-not-found", reasonCode: "template-run-not-found" } satisfies WorkItemRunResult;
     if (existing.item.templateRunError) return { status: "error", reason: "invalid-template-run" } satisfies WorkItemRunResult;
-    // A template run starts only from a consumed keyboard gesture, for the exact tuple and project the user saw on the card. The source
-    // is minted here; nothing in a renderer payload is one.
+    // A native receipt binds the exact launch request. Main mints the run source.
     let templateSource: RunAuthoritySource | undefined;
     if (opts?.template !== undefined) {
       const refused = (code: string): WorkItemRunResult => ({ status: "error", reason: code, reasonCode: code });
-      if (!hasUserKeyboardIntent(intent)) return refused("user-gesture-required");
-      const tuple = parseTemplateRunTuple(opts?.template);
+      const tuple = parseTemplateRunTuple(opts.template);
       if (tuple === null) return refused("invalid-input");
+      if (!spendDecisionIntent(e, WORK_BOARD.run, id, opts, intent)) return refused("user-gesture-required");
       let cardRoot: string | undefined;
       if (tuple.projectRoot !== undefined) {
         // The registry root replaces whatever alias the renderer sent, as the attach handler does.
@@ -411,49 +546,27 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       }
       templateSource = { kind: "local-create-and-run", pin: tuple.pin, ...(cardRoot !== undefined ? { projectRoot: cardRoot } : {}) };
     }
-    broadcastToAppWindows(deps, WORK_BOARD.runStarted, {
-      itemId: id,
-      at: new Date().toISOString(),
-    });
-    try {
-      const result: WorkItemRunResult = await workBoardEngine.runItem(
-        id,
-        { ...(opts?.agentName ? { agentName: opts.agentName } : {}), approvalSurface: e.sender, ...(templateSource ? { templateSource } : {}) },
-      );
-      broadcastToAppWindows(deps, WORK_BOARD.runFinished, {
-        itemId: id,
-        status: result.status,
-        at: new Date().toISOString(),
-      });
-      return result;
-    } catch (err) {
-      const code = err instanceof WorkBoardWriteRefusal ? err.code : undefined;
-      const reason = code ?? errorMessage(err);
-      broadcastToAppWindows(deps, WORK_BOARD.runFailed, {
-        itemId: id,
-        reason,
-        at: new Date().toISOString(),
-      });
-      // Convert engine failures to its stable error envelope; do not throw across IPC.
-      return { status: "error", reason, ...(code === undefined ? {} : { reasonCode: code }) } satisfies WorkItemRunResult;
-    }
+    const result = await executeRun(workBoardEngine, id, e.sender, existing.item.projectRoot, opts?.agentName, templateSource);
+    return canReadItem(e, existing.item) ? result : { status: result.status, ...(result.reasonCode && { reasonCode: result.reasonCode }) };
   });
 
   // Steer a running execution (permission-decision-tree.md S→T). Only a sender-validated board-window main frame carrying a consumed local
   // keyboard gesture may steer; anything else is refused, never downgraded to another principal (contrast chat guide). The engine picks the
   // child from its own record and the text enters as host-fenced non-principal guidance, so the child's permissions do not widen.
-  handle(WORK_BOARD.steerRun, async (e, id: number, text: unknown, intent?: unknown, stage?: unknown): Promise<WorkBoardSteerIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
+  handle(WORK_BOARD.steerRun, async (e, id: number, text: unknown, stage?: unknown): Promise<WorkBoardSteerIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.steerRun, e);
       return UNAUTHORIZED_FRAME;
     }
     if (!workBoardEngine) return NO_ENGINE;
-    if (!hasUserKeyboardIntent(intent)) return { ok: false, reason: "user-gesture-required" };
     // The same owner check as starting the run: a board window's main frame, never a subframe or another webContents. It precedes
     // the item lookup so a non-owner frame learns nothing about which items exist.
     if (!isBoardOwnerFrame(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.steerRun, e);
       return UNAUTHORIZED_FRAME;
+    }
+    if (!securitySettingsGestures.consume(e.sender, { channel: WORK_BOARD.steerRun, payload: [id, text, stage] })) {
+      return { ok: false, reason: "user-gesture-required" };
     }
     const target = await loadAuthorizedItem(id);
     if (target.status !== "found") return { ok: false, reason: "not-found" };
@@ -492,11 +605,11 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
         return UNAUTHORIZED_FRAME;
       }
       if (!workBoardEngine) return NO_ENGINE;
-      if (!hasUserKeyboardIntent(intent)) return { ok: false, reason: "user-gesture-required" };
       if (!isBoardOwnerFrame(e)) {
         auditUnauthorized(auditLogger, WORK_BOARD.decidePlan, e);
         return UNAUTHORIZED_FRAME;
       }
+      if (!spendDecisionIntent(e, WORK_BOARD.decidePlan, id, input, intent)) return { ok: false, reason: "user-gesture-required" };
       if (typeof id !== "number" || !Number.isInteger(id)) return { ok: false, reason: "invalid-input" };
       const parsed = parseDecidePlanInput(input);
       if (parsed === null) return { ok: false, reason: "invalid-input" };
@@ -535,7 +648,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
         broadcastToAppWindows(deps, WORK_BOARD.runStarted, { itemId: id, at: new Date().toISOString(), resumed: true });
         void outcome.continuation.then(
           (result) => broadcastToAppWindows(deps, WORK_BOARD.runFinished, { itemId: id, status: result.status, at: new Date().toISOString() }),
-          (err: unknown) => broadcastToAppWindows(deps, WORK_BOARD.runFailed, { itemId: id, reason: errorMessage(err), at: new Date().toISOString() }),
+          (err: unknown) => sendRunFailure({ itemId: id, reason: errorMessage(err), at: new Date().toISOString() }, existing.item.projectRoot),
         );
       }
       return redactedCount > 0 ? { ...outcome.result, redactedCount } : outcome.result;
@@ -544,17 +657,17 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
 
   /** The work-approval boundary every stage decision shares with decide-plan: a validated sender, a consumed local keyboard gesture, the
    * board window's main frame, and an item this window may see. Returns the refusal, or null when the caller may go on. */
-  const stageDecisionRefusal = async (channel: string, e: IpcMainInvokeEvent, id: unknown, intent: unknown) => {
+  const stageDecisionRefusal = async (channel: WorkBoardDecisionChannel, e: IpcMainInvokeEvent, id: unknown, input: unknown, intent: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, channel, e);
       return UNAUTHORIZED_FRAME;
     }
     if (!workBoardEngine) return NO_ENGINE;
-    if (!hasUserKeyboardIntent(intent)) return { ok: false as const, reason: "user-gesture-required" as const };
     if (!isBoardOwnerFrame(e)) {
       auditUnauthorized(auditLogger, channel, e);
       return UNAUTHORIZED_FRAME;
     }
+    if (!spendDecisionIntent(e, channel, id, input, intent)) return { ok: false as const, reason: "user-gesture-required" as const };
     if (typeof id !== "number" || !Number.isInteger(id)) return { ok: false as const, reason: "invalid-input" as const };
     const existing = await loadAuthorizedItem(id);
     if (existing.status !== "found") return { ok: false as const, reason: "not_found" as const };
@@ -574,7 +687,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   handle(
     WORK_BOARD.decideStage,
     async (e, id: unknown, input: unknown, intent?: unknown): Promise<StageGateDecideIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
-      const refusal = await stageDecisionRefusal(WORK_BOARD.decideStage, e, id, intent);
+      const refusal = await stageDecisionRefusal(WORK_BOARD.decideStage, e, id, input, intent);
       if (refusal !== null) return refusal;
       const parsed = parseDecideStageInput(input);
       if (parsed === null || !workBoardEngine) return { ok: false, reason: "invalid-input" };
@@ -587,11 +700,12 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
           if (event.kind === "privacy.redacted") redactedCount += event.count;
         }, parsed.note);
       const { note: _sent, ...bound } = parsed;
-      const result = await workBoardEngine.decideStageGate(id as number, { ...bound, ...(note !== undefined ? { note } : {}) }, { approvalSurface: e.sender });
+      const result = await workBoardEngine.decideStageGate(id as number, { ...bound, ...(note !== undefined ? { note } : {}) });
       if (!result.ok) return result;
       // The decision only; the note body stays on the item.
       auditStageDecision(id as number, { runId: parsed.runId, stageId: parsed.stageId, attempt: parsed.attempt, result: parsed.resultHash.slice(0, 8), decision: result.status, note: note !== undefined });
       broadcastItemChanged(id as number, "updated");
+      broadcastToAppWindows(deps, WORK_APPROVALS.changed, undefined);
       return redactedCount > 0 ? { ...result, redactedCount } : result;
     },
   );
@@ -599,31 +713,43 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   handle(
     WORK_BOARD.decideJoin,
     async (e, id: unknown, input: unknown, intent?: unknown): Promise<StageJoinDecideIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
-      const refusal = await stageDecisionRefusal(WORK_BOARD.decideJoin, e, id, intent);
+      const refusal = await stageDecisionRefusal(WORK_BOARD.decideJoin, e, id, input, intent);
       if (refusal !== null) return refusal;
-      const record = exactRecord(input, ["runId", "joinId", "conflictHash", "decision"]);
-      if (!record || !workBoardEngine || typeof record.runId !== "string" || !RUN_ID_PATTERN.test(record.runId) || !isTemplateId(record.joinId)
-        || typeof record.conflictHash !== "string" || !PLAN_HASH_PATTERN.test(record.conflictHash) || (record.decision !== "retry_merge" && record.decision !== "reject")) {
-        return { ok: false, reason: "invalid-input" };
-      }
-      const result = await workBoardEngine.decideStageJoin(id as number, { runId: record.runId, joinId: record.joinId, conflictHash: record.conflictHash, decision: record.decision }, { approvalSurface: e.sender });
+      const record = exactRecord(input, ["runId", "joinId", "conflictHash", "generation", "decision"]);
+      const binding = parseJoinBinding(record);
+      const decision = record?.decision;
+      if (!binding || !workBoardEngine || (decision !== "retry_merge" && decision !== "reject")) return { ok: false, reason: "invalid-input" };
+      const result = await workBoardEngine.decideStageJoin(id as number, { ...binding, decision });
       if (!result.ok) return result;
-      auditStageDecision(id as number, { runId: record.runId, joinId: record.joinId, conflict: record.conflictHash.slice(0, 8), decision: record.decision });
+      auditStageDecision(id as number, { runId: binding.runId, joinId: binding.joinId, generation: binding.generation, conflict: binding.conflictHash.slice(0, 8), decision });
       broadcastItemChanged(id as number, "updated");
+      broadcastToAppWindows(deps, WORK_APPROVALS.changed, undefined);
       return result;
     },
   );
 
+  handle(WORK_BOARD.openJoin, async (e, id: unknown, input: unknown, intent?: unknown) => {
+    const refusal = await stageDecisionRefusal(WORK_BOARD.openJoin, e, id, input, intent);
+    if (refusal !== null) return refusal;
+    const binding = parseJoinBinding(exactRecord(input, ["runId", "joinId", "conflictHash", "generation"]));
+    if (!binding || !workBoardEngine) return { ok: false, reason: "invalid-input" };
+    return workBoardEngine.openStageJoin(id as number, binding, async path => {
+      try { return await shell.openPath(path) === ""; }
+      catch { return false; }
+    });
+  });
+
   handle(
     WORK_BOARD.retryStage,
     async (e, id: unknown, input: unknown, intent?: unknown): Promise<StageRetryIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
-      const refusal = await stageDecisionRefusal(WORK_BOARD.retryStage, e, id, intent);
+      const refusal = await stageDecisionRefusal(WORK_BOARD.retryStage, e, id, input, intent);
       if (refusal !== null) return refusal;
-      const record = exactRecord(input, ["runId", "stageId"]);
-      if (!record || !workBoardEngine || typeof record.runId !== "string" || !RUN_ID_PATTERN.test(record.runId) || !isStageId(record.stageId)) return { ok: false, reason: "invalid-input" };
-      const result = await workBoardEngine.retryStage(id as number, { runId: record.runId, stageId: record.stageId }, { approvalSurface: e.sender });
+      const record = exactRecord(input, ["runId", "stageId", "attempt"]);
+      if (!record || !workBoardEngine || typeof record.runId !== "string" || !RUN_ID_PATTERN.test(record.runId) || !isStageId(record.stageId)
+        || typeof record.attempt !== "number" || !Number.isSafeInteger(record.attempt) || record.attempt < 1) return { ok: false, reason: "invalid-input" };
+      const result = await workBoardEngine.retryStage(id as number, { runId: record.runId, stageId: record.stageId, attempt: record.attempt });
       if (!result.ok) return result;
-      auditStageDecision(id as number, { runId: record.runId, stageId: record.stageId, decision: "retry" });
+      auditStageDecision(id as number, { runId: record.runId, stageId: record.stageId, attempt: record.attempt, decision: "retry" });
       broadcastItemChanged(id as number, "updated");
       return result;
     },
@@ -636,12 +762,14 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     if (!workBoardEngine) return NO_ENGINE;
-    if (!hasUserKeyboardIntent(intent)) return { ok: false, reason: "user-gesture-required" };
     // The same owner check as starting the run: a board window's main frame, never a subframe or another webContents. It precedes
     // the item lookup so a non-owner frame learns nothing about which items exist.
     if (!isBoardOwnerFrame(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.cancelRun, e);
       return UNAUTHORIZED_FRAME;
+    }
+    if (intent !== undefined || !securitySettingsGestures.consume(e.sender, { channel: WORK_BOARD.cancelRun, payload: id })) {
+      return { ok: false, reason: "user-gesture-required" };
     }
     if ((await loadAuthorizedItem(id)).status !== "found") return { ok: false, reason: "not-found" };
     return workBoardEngine.cancelRun(id);
@@ -660,11 +788,17 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
         return UNAUTHORIZED_FRAME;
       }
       if (!workBoardReport) return NO_REPORTER;
+      const briefingKind = kind === "weekly" ? "weekly" : "daily";
+      if (input !== undefined && !exactRecord(input, ["date", "weekIso", "weekOffset", "projectRoot", "includeUnscoped"])) return { ok: false, error: "invalid-input" };
+      const filter = normalizeProjectListFilter(input);
+      const canRead = () => isBoardOwnerFrame(e) && workBoardProjectAllows(e.sender, filter.projectRoot);
+      if (!canRead()) return { status: "error" as const, kind: briefingKind, reason: PROJECT_NOT_ALLOWED_REASON };
       try {
-        return await workBoardReport.generate(kind === "weekly" ? "weekly" : "daily", normalizeProjectListFilter(input));
+        const report = await workBoardReport.generate(briefingKind, filter);
+        return canRead() ? report : { status: "error" as const, kind: briefingKind, reason: PROJECT_NOT_ALLOWED_REASON };
       } catch (err) {
-        const reason = errorMessage(err);
-        return { status: "error" as const, kind, reason };
+        const reason = canRead() ? errorMessage(err) : PROJECT_NOT_ALLOWED_REASON;
+        return { status: "error" as const, kind: briefingKind, reason };
       }
     },
   );
@@ -678,9 +812,10 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     if (typeof runId !== "string" || !/^[A-Za-z0-9_-]+$/.test(runId)) return { events: [] };
     if (!workBoardStore) return { events: [] };
     const existing = await loadAuthorizedItem(itemId);
-    if (existing.status !== "found") return { events: [] };
+    if (existing.status !== "found" || !canReadItem(e, existing.item)) return { events: [] };
     const storage = createDirStorage(openFeatureNamespace("work-board").dir);
-    return { events: await readRunTranscript(storage, itemId, runId) };
+    const events = await readRunTranscript(storage, itemId, runId);
+    return { events: canReadItem(e, existing.item) ? events : [] };
   });
 
   // Resolve the active project when accepting; unscoped proposals do not choose project identity.
@@ -738,15 +873,16 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
         auditUnauthorized(auditLogger, WORK_BOARD.runBriefing, e);
         return UNAUTHORIZED_FRAME;
       }
+      if (!workBoardProjectAllows(e.sender, resolved.project.projectRoot)) return { status: "error", kind: briefingKind, reason: PROJECT_NOT_ALLOWED_REASON };
       try {
         const result = await workBoardEngine.runBriefing(briefingKind, {
           projectRoot: resolved.project.projectRoot,
           includeUnscoped: resolved.project.isDefault === true,
           approvalSurface: e.sender,
         });
-        return result;
+        return workBoardProjectAllows(e.sender, resolved.project.projectRoot) ? result : { status: "error", kind: briefingKind, reason: PROJECT_NOT_ALLOWED_REASON };
       } catch (err) {
-        const reason = errorMessage(err);
+        const reason = workBoardProjectAllows(e.sender, resolved.project.projectRoot) ? errorMessage(err) : PROJECT_NOT_ALLOWED_REASON;
         return { status: "error", kind: briefingKind, reason } satisfies WorkBoardBriefingResult;
       }
     },

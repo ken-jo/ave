@@ -1,3 +1,9 @@
+// Faked win32 on a POSIX host: no backend state to check here; a Windows host keeps its own.
+const { hostPlatform } = vi.hoisted(() => ({ hostPlatform: process.platform }));
+vi.mock("../../permissions/confinement-state-paths.js", async (original) => {
+  const actual = await original<typeof import("../../permissions/confinement-state-paths.js")>();
+  return hostPlatform === "win32" ? actual : { ...actual, declaredConfinementStatePaths: () => [] };
+});
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
@@ -5,9 +11,10 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 import { EventEmitter } from "node:events";
 import * as backendEvidence from "../../permissions/windows-confinement-evidence.js";
 import { PassThrough } from "node:stream";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, win32 } from "node:path";
+import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { consumeMxcExtensionAdmission, createMxcExtensionAdmission, registerMxcReleaseGateEvidence } from "../../permissions/mxc-extension-admission.js";
@@ -47,6 +54,10 @@ vi.mock("../mxc-shell-launch.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../mxc-shell-launch.js")>(),
   prepareMxcShellLaunch: mxcLaunchMock.prepare,
 }));
+vi.mock("../../permissions/host-shell-execution-permit.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../permissions/host-shell-execution-permit.js")>();
+  return { ...actual, holdHostShellSpawnDirectory: vi.fn(actual.holdHostShellSpawnDirectory) };
+});
 // Mock Windows profile creation on POSIX so backslash paths cannot become entries in the working tree.
 vi.mock("../../permissions/sandbox-process-home.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../permissions/sandbox-process-home.js")>();
@@ -84,8 +95,10 @@ import * as egressHostListener from "../../permissions/egress-host-listener.js";
 import { egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../../permissions/egress-invocations.js";
 import * as mxcWindows from "../../permissions/mxc-windows.js";
 import * as policyHome from "../../shared/policy-home.js";
-import { t } from "../../i18n/index.js";
 import * as mxcPolicyPipe from "../../permissions/mxc-policy-pipe.js";
+import { holdHostShellSpawnDirectory } from "../../permissions/host-shell-execution-permit.js";
+import type { WindowsHoldVerdict } from "../../shared/windows-path-facts.js";
+import { isWatchedWorkspaceConsumable, listWatchedQuarantine, pruneWatchedRows, WATCHED_ROW_VIOLATION } from "../../permissions/windows-watched-rows.js";
 import * as asrtSandbox from "../../permissions/asrt-sandbox.js";
 import { getConfiguredSessionReadRoot } from "../../permissions/sensitive-paths.js";
 import { AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
@@ -314,6 +327,7 @@ describe("builtin shell — Windows MXC containers", () => {
     sandboxHomeMock.onCreate.mockReset();
     sandboxHomeMock.onCleanup.mockReset();
     installationMock.resolve.mockReset();
+    vi.mocked(holdHostShellSpawnDirectory).mockReset();
     vi.restoreAllMocks();
   });
 
@@ -352,12 +366,14 @@ describe("builtin shell — Windows MXC containers", () => {
     const [parserLaunch] = mxcLaunchMock.prepare.mock.calls[0] as [{ commandLine: string }];
     expect(isParserLaunch(parserLaunch)).toBe(true);
     const [launch] = mxcLaunchMock.prepare.mock.calls[1] as [Record<string, unknown>];
-    for (const [prepared] of mxcLaunchMock.prepare.mock.calls as [{ commandLine: string; env: Record<string, string> }][]) {
+    for (const [prepared] of mxcLaunchMock.prepare.mock.calls as [{ commandLine: string; cwd: string; env: Record<string, string> }][]) {
       const script = Buffer.from(prepared.commandLine.split(" ").at(-1)!, "base64").toString("utf16le");
       expect(prepared.commandLine).toContain("-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -EncodedCommand");
       expect(script).toContain("$PSModuleAutoLoadingPreference = 'None'");
       expect(script).toContain("[System.IO.Path]::Combine($PSHOME, 'Modules')");
       expect(script).toContain("Microsoft.PowerShell.Core\\Import-Module -Name");
+      const encodedCwd = Buffer.from(win32.normalize(prepared.cwd), "utf16le").toString("base64");
+      expect(script).toContain(`[System.Convert]::FromBase64String('${encodedCwd}')`);
       expect(prepared.env.PSModulePath).toBe("");
       expect(script).toContain(POWERSHELL_EGRESS_PROXY_PRELUDE);
     }
@@ -538,6 +554,24 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
     expect(result.output).toBe("PowerShell spawn failed: the sandbox proxy is not running");
     expect(childProcessMock.spawn.mock.calls.some((call) => call[0] === WXC_EXEC)).toBe(false);
+  });
+
+  it.each(["en", "ko"] as const)("keeps the refusal code and a bounded grant in the %s result for a long refused write", async (locale) => {
+    const { getLocale, setLocale } = await import("../../i18n/index.js");
+    const { ConfinementStateWriteGrantError } = await import("../../permissions/confinement-state-paths.js");
+    const grant = `D:\\${"프로젝트-작업폴더\\".repeat(16)}leaf-grant`;
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      bootMxcShells();
+      mxcLaunchMock.prepare.mockRejectedValueOnce(new ConfinementStateWriteGrantError(grant, "container-runtime"));
+      const result = await executePowerShell(context(`ps-mxc-state-${locale}`));
+      expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+      expect(result.output).toMatch(/^PowerShell spawn failed: .*D:\\프로젝트.*….*\\leaf-grant.*\(confinement-state-write-grant\)$/su);
+      expect(Buffer.byteLength(result.output.slice("PowerShell spawn failed: ".length))).toBeLessThanOrEqual(500);
+    } finally {
+      setLocale(previous);
+    }
   });
 
   it("reports an isolated HOME that cannot be created as an unavailable spawn and prepares nothing", async () => {
@@ -770,6 +804,49 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(checkStart).toHaveBeenCalledTimes(2);
     expect(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch);
     expect(owner.isCurrent(receipt)).toBe(false);
+  });
+
+  it("reports a held launcher that never starts as an unconfirmed container spawn failure", async () => {
+    bootMxcShells();
+    const verdict = deferred<WindowsHoldVerdict>();
+    const hold = vi.mocked(holdHostShellSpawnDirectory);
+    const holdDirectory = hold.getMockImplementation();
+    if (holdDirectory === undefined) throw new Error("no hold implementation");
+    hold.mockImplementation(async (authorization) => ({
+      ...await holdDirectory(authorization),
+      bind: (child) => {
+        if (child.pid !== undefined) return undefined;
+        child.once("error", () => { verdict.resolve({ kind: "unconfirmed" }); });
+        return { verdict: verdict.promise, stop: () => verdict.promise };
+      },
+    }));
+    childProcessMock.spawn.mockImplementation((_command: string, args: readonly string[]) =>
+      args.includes(PARSER_REQUEST) ? fakeChild(PARSED, 0) : childWithSpawnError(Object.assign(new Error("spawn failed"), { code: "ENOENT" })));
+
+    const result = await executePowerShell(context("held-launcher-spawn-error"));
+    expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE, notice: expect.stringContaining("cwd-pin-unconfirmed") });
+    expect(result.output).toMatch(/^PowerShell spawn failed: container launcher error ENOENT\ncwd-pin-unconfirmed:/u);
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["parser", "command"] as const)("omits the launcher exit code when the held container %s has no verdict", async (phase) => {
+    bootMxcShells();
+    const hold = vi.mocked(holdHostShellSpawnDirectory);
+    const holdDirectory = hold.getMockImplementation();
+    if (holdDirectory === undefined) throw new Error("no hold implementation");
+    if (phase === "command") hold.mockImplementationOnce(holdDirectory);
+    hold.mockImplementationOnce(async (authorization) => ({
+      ...await holdDirectory(authorization),
+      bind: (child) => {
+        const verdict = deferred<WindowsHoldVerdict>();
+        child.once("exit", () => { verdict.resolve({ kind: "unconfirmed" }); });
+        return { verdict: verdict.promise, stop: () => verdict.promise };
+      },
+    }));
+    const result = await executePowerShell(context("held-container-unconfirmed"));
+    expect(result).toMatchObject({ isError: true, notice: expect.stringContaining("cwd-pin-unconfirmed") });
+    expect(result.metadata).not.toHaveProperty("returncode");
+    expect(result.output).not.toMatch(/exited with code|terminated by signal/u);
   });
 
   it("keeps a running launcher's abort watch after an error and releases only on close", async () => {
@@ -1170,6 +1247,59 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
     expect(childProcessMock.spawn.mock.calls.filter(([command, args]) => command === WXC_EXEC && !args.includes(PARSER_REQUEST))).toHaveLength(0);
     expect(releasePipe).toHaveBeenCalledOnce();
+  });
+
+  it.runIf(ORIGINAL_PLATFORM === "win32")("includes the watched-row failure and partial quarantine in the shell result", async () => {
+    bootMxcShells();
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-mxc-mixed-quarantine-")));
+    const blockedRoot = join(root, "blocked");
+    const movableRoot = join(root, "movable");
+    const home = join(root, "home");
+    const blocked = join(blockedRoot, ".ave", "commands");
+    const movable = join(movableRoot, ".ave", "hooks");
+    const protectedPaths = [blocked, movable];
+    for (const folder of [blockedRoot, movableRoot, home]) mkdirSync(folder);
+    vi.stubEnv("AVE_HOME", home);
+    try {
+      await configureCommandLauncher(async () => ({ bindChild: vi.fn(), release: vi.fn(async () => {}) }), undefined, {
+        cwd: movableRoot,
+        filesystem: { allowWrite: [blockedRoot, movableRoot], allowRead: [], denyRead: [], denyWrite: protectedPaths, requiredWriteDenies: protectedPaths },
+      });
+      const prepare = mxcLaunchMock.prepare.getMockImplementation();
+      if (prepare === undefined) throw new Error("Missing command launch fixture");
+      mxcLaunchMock.prepare.mockImplementation(async (input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle) => {
+        const launch = await prepare(input, lifecycle);
+        if (!isParserLaunch(input)) {
+          // What a contained process does once it runs: after the launch's last check, before its release.
+          const activate = launch.activate;
+          launch.activate = () => {
+            activate();
+            renameSync(blockedRoot, join(root, "previous"));
+            mkdirSync(blocked, { recursive: true });
+            mkdirSync(movable, { recursive: true });
+          };
+        }
+        return launch;
+      });
+      const result = await executePowerShell({ ...context("mixed-watched-quarantine"), cwd: movableRoot });
+      expect(result, result.output).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true, sandboxed: true } });
+      const failure = t("sandboxPolicy.watchedQuarantineUnverified", {
+        path: JSON.stringify(blocked),
+        reason: `the folder ${JSON.stringify(blockedRoot)} changed identity`,
+      });
+      expect(result.output).toContain(`\n${failure}`);
+      expect(result.output).toContain(`\n[${WATCHED_ROW_VIOLATION}]`);
+      expect(result.output).toContain(`\n${JSON.stringify(movable)} -> `);
+      expect(existsSync(blocked)).toBe(true);
+      expect(isWatchedWorkspaceConsumable(blockedRoot)).toBe(false);
+      expect(existsSync(movable)).toBe(false);
+      expect(isWatchedWorkspaceConsumable(movableRoot)).toBe(true);
+      expect(listWatchedQuarantine()).toEqual([expect.objectContaining({ original: movable })]);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+      pruneWatchedRows([]);
+    }
   });
 
   it.runIf(ORIGINAL_PLATFORM === "win32").each([

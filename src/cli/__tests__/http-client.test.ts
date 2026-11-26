@@ -18,6 +18,7 @@
  * Every started server is torn down in afterEach so vitest exits clean.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { mkdtempSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -226,10 +227,11 @@ describe("permission:set-mode over the real transport (approval-mediated externa
           },
         },
       },
-      approvalGate: { requestAndWait: async () => ({ requestId: "x", choice: "allow-once" as const }) },
+      approvalGate: { requestAndWait: answeringRequestAndWait(() => ({ requestId: "x", choice: "allow-once" })) },
       auditLogger: {
         isPermissionAuditChainReady: () => true,
         appendPermissionAuditEntry: async () => undefined,
+        log: vi.fn(),
       },
       getMainWindow: () => ({ isDestroyed: () => false, webContents: { isDestroyed: () => false, send: () => {} } }),
     } as unknown as IpcDeps;
@@ -240,7 +242,7 @@ describe("permission:set-mode over the real transport (approval-mediated externa
       createLocalApi({
         ipc: mutationIpc(),
         conversationCommandPort: inertConversationCommandPort,
-        externalMutationApprover: async () => true,
+        externalMutationApprover: async () => ({ approved: true }),
       }),
     );
     const client = createAveClient(createHttpLocalApi(conn), "cli");
@@ -259,7 +261,7 @@ describe("permission:set-mode over the real transport (approval-mediated externa
       createLocalApi({
         ipc: mutationIpc(),
         conversationCommandPort: inertConversationCommandPort,
-        externalMutationApprover: async () => false,
+        externalMutationApprover: async () => ({ approved: false, outcome: "denied" }),
       }),
     );
     const httpApi = createHttpLocalApi(conn);
@@ -279,7 +281,7 @@ describe("permission:set-mode over the real transport (approval-mediated externa
       createLocalApi({
         ipc: mutationIpc(),
         conversationCommandPort: inertConversationCommandPort,
-        externalMutationApprover: async () => false,
+        externalMutationApprover: async () => ({ approved: false, outcome: "denied" }),
       }),
     );
     const client = createAveClient(createHttpLocalApi(conn), "cli");

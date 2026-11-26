@@ -1,5 +1,6 @@
 // AVE_HOME points at a temporary directory; every real loopback listener is closed after each test.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -20,7 +21,7 @@ import { makeDeepProxy } from "../../__tests__/support/deep-proxy.js";
 import type { AppServices } from "../../boot.js";
 import type { SettingsService } from "../../data/settings-store.js";
 import type { FeatureFlags, SystemSettings } from "../../data/settings-store.js";
-import type { ApprovalGate } from "../../permissions/approval-gate.js";
+import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import type { A2AHttpRouter } from "../../api/a2a-router.js";
 import { PERMISSIONS, EXTERNAL_MUTATION_DENIED } from "../../contract/app-contract.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -317,11 +318,11 @@ describe("local-api-server", () => {
     it("shares one single-flight consent coordinator across /v1 and A2A", async () => {
       process.env.AVE_LOCAL_API = "1";
       process.env.AVE_A2A = "1";
-      let releaseGate!: (value: { requestId: string; choice: "allow-once" }) => void;
-      const gateResult = new Promise<{ requestId: string; choice: "allow-once" }>((resolve) => {
+      let releaseGate!: (value: { choice: "allow-once" }) => void;
+      const gateResult = new Promise<{ choice: "allow-once" }>((resolve) => {
         releaseGate = resolve;
       });
-      const requestAndWait = vi.fn(async () => await gateResult);
+      const requestAndWait = answeringRequestAndWait(() => gateResult);
       let approveA2A: Parameters<NonNullable<Parameters<typeof maybeStartLocalApiServer>[0]["createA2ARouter"]>>[0]["approveAgentAction"];
       const result = await maybeStartLocalApiServer({
         services: makeServices({}, "plan", { requestAndWait }),
@@ -351,8 +352,8 @@ describe("local-api-server", () => {
 
       expect(localMutation.status).toBe(403);
       expect(requestAndWait).toHaveBeenCalledOnce();
-      releaseGate({ requestId: "shared-consent", choice: "allow-once" });
-      await expect(pendingA2A).resolves.toMatchObject({ decisionId: "shared-consent" });
+      releaseGate({ choice: "allow-once" });
+      await expect(pendingA2A).resolves.toMatchObject({ approved: true, decisionId: requestAndWait.mock.calls[0]?.[0].id });
     });
 
     it("isolates A2A initialization failure while keeping /v1 available", async () => {
@@ -532,7 +533,7 @@ describe("local-api-server", () => {
     });
 
     it("calls requestAndWait with category 'agent-action' + English reason; allow-once -> true", async () => {
-      const requestAndWait = vi.fn(async () => ({ requestId: "r", choice: "allow-once" as const }));
+      const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }));
       const approver = buildExternalMutationApprover(
         { requestAndWait } as unknown as ApprovalGate,
         () => {},
@@ -545,7 +546,7 @@ describe("local-api-server", () => {
         origin: "local-api",
       });
 
-      expect(approved).toBe(true);
+      expect(approved).toMatchObject({ approved: true });
       expect(requestAndWait).toHaveBeenCalledTimes(1);
       const req = requestAndWait.mock.calls[0][0] as Record<string, unknown>;
       expect(req.category).toBe("agent-action");
@@ -572,7 +573,7 @@ describe("local-api-server", () => {
         args: { mode: "auto" },
         origin: "cli",
       });
-      expect(approved).toBe(false);
+      expect(approved).toEqual({ approved: false, outcome: "rejected" });
     });
 
     it("a thrown gate → false (fail-closed) and logs one line", async () => {
@@ -589,7 +590,7 @@ describe("local-api-server", () => {
         args: { mode: "auto" },
         origin: "local-api",
       });
-      expect(approved).toBe(false);
+      expect(approved).toEqual({ approved: false, outcome: "rejected" });
       expect(logs).toEqual([
         `[local-api] external-mutation approval errored channel=${PERMISSIONS.setMode} origin=local-api → denied`,
       ]);
@@ -601,10 +602,10 @@ describe("local-api-server", () => {
     describe("in-flight cap (attention-DoS hardening, fail-closed)", () => {
       it("two concurrent asks → gate's requestAndWait called exactly once; the second resolves false immediately", async () => {
         let releaseGate!: (choice: "allow-once") => void;
-        const gateResult = new Promise<{ requestId: string; choice: "allow-once" }>((resolve) => {
-          releaseGate = (choice) => resolve({ requestId: "r", choice });
+        const gateResult = new Promise<{ choice: "allow-once" }>((resolve) => {
+          releaseGate = (choice) => resolve({ choice });
         });
-        const requestAndWait = vi.fn(async () => gateResult);
+        const requestAndWait = answeringRequestAndWait(() => gateResult);
         const logs: string[] = [];
         const approver = buildExternalMutationApprover(
           { requestAndWait } as unknown as ApprovalGate,
@@ -625,7 +626,7 @@ describe("local-api-server", () => {
           origin: "cli",
         });
 
-        expect(second).toBe(false);
+        expect(second).toEqual({ approved: false, outcome: "concurrent" });
         expect(requestAndWait).toHaveBeenCalledTimes(1);
         expect(
           logs.some((l) => l.includes("external mutation approval already pending — denying concurrent request")),
@@ -638,11 +639,11 @@ describe("local-api-server", () => {
         expect(capLog).not.toContain("auto");
 
         releaseGate("allow-once");
-        await expect(first).resolves.toBe(true);
+        await expect(first).resolves.toMatchObject({ approved: true });
       });
 
       it("after the first ask resolves allow, a subsequent ask calls the gate again (guard released)", async () => {
-        const requestAndWait = vi.fn(async () => ({ requestId: "r", choice: "allow-once" as const }));
+        const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }));
         const approver = buildExternalMutationApprover(
           { requestAndWait } as unknown as ApprovalGate,
           () => {},
@@ -659,16 +660,14 @@ describe("local-api-server", () => {
           origin: "local-api",
         });
 
-        expect(firstApproved).toBe(true);
-        expect(secondApproved).toBe(true);
+        expect(firstApproved).toMatchObject({ approved: true });
+        expect(secondApproved).toMatchObject({ approved: true });
         expect(requestAndWait).toHaveBeenCalledTimes(2);
       });
 
       it("the guard releases even when the gate throws, so the next ask calls the gate again", async () => {
-        const requestAndWait = vi
-          .fn()
-          .mockRejectedValueOnce(new Error("gate exploded"))
-          .mockResolvedValueOnce({ requestId: "r", choice: "allow-once" as const });
+        const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }))
+          .mockRejectedValueOnce(new Error("gate exploded"));
         const approver = buildExternalMutationApprover(
           { requestAndWait } as unknown as ApprovalGate,
           () => {},
@@ -685,20 +684,33 @@ describe("local-api-server", () => {
           origin: "local-api",
         });
 
-        expect(firstApproved).toBe(false);
-        expect(secondApproved).toBe(true);
+        expect(firstApproved).toEqual({ approved: false, outcome: "rejected" });
+        expect(secondApproved).toMatchObject({ approved: true });
         expect(requestAndWait).toHaveBeenCalledTimes(2);
       });
     });
   });
 
   describe("HTTP passthrough — approval-denied set-mode", () => {
-    it("POST /v1/dispatch set-mode with a stub approver-denied gate → 403 external-mutation-denied", async () => {
+    it.each(["denied", "rejected", "expired", "unavailable", "cancelled"] as const)("audits the mode approval outcome before returning the public 403 (%s)", async (outcome) => {
       process.env.AVE_LOCAL_API = "1";
-      // Stub gate that denies (deny-once) → approver resolves false.
-      const requestAndWait = vi.fn(async () => ({ requestId: "r", choice: "deny-once" as const }));
+      const surface = {
+        isDestroyed: () => false,
+        send: vi.fn((_channel: string, card: ApprovalRequest) => {
+          if (card?.nonce === undefined || outcome === "expired") return;
+          queueMicrotask(() => {
+            if (outcome === "cancelled") gate.disposeAll();
+            else gate.resolve(card.id, { requestId: card.id, choice: "deny-once",
+              ...(outcome === "denied" ? { nonce: card.nonce, hmac: card.hmac } : {}),
+            }, "desk");
+          });
+        }),
+      };
+      const gate = new ApprovalGate(outcome === "unavailable" ? null : surface as never, undefined, outcome === "expired" ? 5 : undefined);
+      const requestAndWait = vi.fn(gate.requestAndWait.bind(gate));
+      const audit = vi.fn();
       const result = await maybeStartLocalApiServer({
-        services: makeServices({}, "plan", { requestAndWait }),
+        services: makeServices({}, "plan", { requestAndWait }, {}, audit),
         ...START_ARGS,
       });
       const info = readInfo(home);
@@ -715,6 +727,7 @@ describe("local-api-server", () => {
       expect(res.status).toBe(403);
       expect(await res.json()).toEqual({ ok: false, error: EXTERNAL_MUTATION_DENIED });
       expect(requestAndWait).toHaveBeenCalledTimes(1);
+      expect(audit).toHaveBeenCalledWith(expect.objectContaining({ output: `approval=${outcome}` }));
     });
   });
 });

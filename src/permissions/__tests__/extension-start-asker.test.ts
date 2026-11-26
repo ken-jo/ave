@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { extensionStartApprovalRows, type ExtensionStartApprovalRow } from "../../shared/permissions-events.js";
 import { createExtensionStartAsker } from "../extension-start-asker.js";
-import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../approval-gate.js";
+import { ApprovalGate, type ApprovalDecision, type ApprovalRequestInput } from "../approval-gate.js";
 import type { PendingExtensionStart } from "../extension-start-consent.js";
 
 const START: PendingExtensionStart = { key: "mcp-stdio:files", identity: "i-files", kind: "mcp-stdio", label: "files", cause: "no-backend" };
@@ -16,9 +17,20 @@ const idOf = (rows: readonly ExtensionStartApprovalRow[], index: number): string
 
 type Answer = (rows: readonly ExtensionStartApprovalRow[]) => Partial<ApprovalDecision>;
 
-function asker(answer: Answer) {
-  const requestAndWait = vi.fn(async (request: ApprovalRequestInput) =>
-    ({ requestId: request.id, choice: "deny-once", ...answer(extensionStartApprovalRows(request.args) ?? []) }) as ApprovalDecision);
+function asker(answer: Answer, { outsideAllowedChoices = false, recordless = false } = {}) {
+  const requestAndWait = vi.fn(async (request: ApprovalRequestInput): Promise<ApprovalDecision> => {
+    const decision: ApprovalDecision = { requestId: request.id, choice: "deny-once", ...answer(extensionStartApprovalRows(request.args) ?? []) };
+    if (recordless) return decision;
+    if (outsideAllowedChoices) return answeredApprovalDecision(decision, "desk", request.toolName);
+
+    const surface = { isDestroyed: () => false, send: vi.fn() };
+    const gate = new ApprovalGate(surface as never);
+    const pending = gate.requestAndWait(request);
+    const [card] = gate.listPendingRendererRequests(surface as never);
+    if (!card?.nonce || !card.hmac) throw new Error("No sealed extension start card");
+    gate.resolveFromDesktopRenderer(card.id, { ...decision, nonce: card.nonce, hmac: card.hmac }, surface as never);
+    return pending;
+  });
   const notify = vi.fn();
   return { requestAndWait, notify,
     asker: createExtensionStartAsker({ approvalGate: { requestAndWait } as unknown as Pick<ApprovalGate, "requestAndWait">, reason: REASON, notify }) };
@@ -54,13 +66,13 @@ describe("the extension start card", () => {
     }
   });
 
-  it("answers only the rows it showed: a start the answer does not name gets no answer", async () => {
+  it("refuses answers that name rows the card did not show", async () => {
     const { asker: subject } = asker((rows) => ({ choice: "allow-once", extensionStartChoices: { [idOf(rows, 0)]: "yes", "mcp-stdio:files": "yes", "plugin-child:notes": "yes" } }));
-    expect(await subject.ask([START, ...OTHERS], SESSION)).toEqual(new Map([["mcp-stdio:files", "yes"]]));
+    expect(await subject.ask([START, ...OTHERS], SESSION)).toBe("rejected");
   });
 
   it("never reads a yes for several starts out of one allow that names none of them", async () => {
-    const { asker: subject } = asker(() => ({ choice: "allow-once" }));
+    const { asker: subject } = asker(() => ({ choice: "allow-once" }), { outsideAllowedChoices: true });
     expect(await subject.ask([START, ...OTHERS], SESSION)).toEqual(new Map());
   });
 
@@ -69,8 +81,12 @@ describe("the extension start card", () => {
     expect(await subject.ask([START, ...OTHERS], SESSION)).toEqual(new Map([["mcp-stdio:files", "no"], ["plugin-child:notes", "no"], ["worker:notes/index", "no"]]));
   });
 
-  it.each(["deny-once", "allow-session", "allow-always"] as const)("treats %s as a no", async (choice) => {
-    expect(await asker(() => ({ choice })).asker.ask([START], SESSION)).toEqual(new Map([["mcp-stdio:files", "no"]]));
+  it.each(["deny-once", "deny-always"] as const)("treats recordless %s as unanswered", async (choice) => {
+    expect(await asker(() => ({ choice }), { recordless: true }).asker.ask([START], SESSION)).toBe("rejected");
+  });
+
+  it.each(["allow-session", "allow-always"] as const)("treats the unsupported %s as unanswered", async (choice) => {
+    expect(await asker(() => ({ choice }), { outsideAllowedChoices: true }).asker.ask([START], SESSION)).toBe("rejected");
   });
 
   it("passes the notice reason and the audit row through", () => {
@@ -87,14 +103,14 @@ describe("the extension start card", () => {
     const { asker: subject, requestAndWait } = asker(() => ({ choice: "allow-once" }));
     const cancelled = new AbortController();
     cancelled.abort();
-    expect(await subject.ask([START], { ...SESSION, abortSignal: cancelled.signal })).toBe("no-approver");
+    expect(await subject.ask([START], { ...SESSION, abortSignal: cancelled.signal })).toBe("cancelled");
     expect(requestAndWait).not.toHaveBeenCalled();
   });
 
   it("ignores a yes that arrives after the turn was cancelled", async () => {
     const cancelled = new AbortController();
-    const requestAndWait = vi.fn(async () => { cancelled.abort(); return { choice: "allow-once" }; });
+    const requestAndWait = answeringRequestAndWait(() => { cancelled.abort(); return { choice: "allow-once" }; });
     const subject = createExtensionStartAsker({ approvalGate: { requestAndWait } as unknown as Pick<ApprovalGate, "requestAndWait">, reason: REASON, notify: vi.fn() });
-    expect(await subject.ask([START], { ...SESSION, abortSignal: cancelled.signal })).toBe("no-approver");
+    expect(await subject.ask([START], { ...SESSION, abortSignal: cancelled.signal })).toBe("cancelled");
   });
 });

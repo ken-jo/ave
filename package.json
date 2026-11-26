@@ -118,7 +118,8 @@
     "dist:win:fast": "node scripts/build-installers.mjs --win --fast",
     "release": "node scripts/release.mjs",
     "build:srt-win": "node scripts/build-srt-win.mjs",
-    "build:windows-job": "node scripts/build-windows-job.mjs"
+    "build:windows-job": "node scripts/build-windows-job.mjs",
+    "build:windows-path-kind": "node scripts/build-windows-path-kind.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "~4.0.106",
@@ -137,7 +138,7 @@
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/ext-apps": "2.0.4",
     "@modelcontextprotocol/sdk": "1.32.2",
-    "@napi-rs/canvas": "1.0.10",
+    "@napi-rs/canvas": "1.1.1",
     "@nodable/entities": "3.1.0",
     "@opentelemetry/api": "^1.10.0",
     "@opentelemetry/context-async-hooks": "^3.1.1",
@@ -448,16 +449,25 @@
       "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(darwin){,/**/*}"],
       "category": "public.app-category.productivity",
       "target": [
-        "dmg",
-        "zip"
+        { "target": "dmg", "arch": ["arm64"] },
+        { "target": "zip", "arch": ["arm64"] }
       ],
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "minimumSystemVersion": "13.0",
+      "signIgnore": ["/Contents/Resources/mxc/arm64/mxc-exec-mac$"],
       "extraResources": [
         {
           "from": "resources/macos-dir-ops/${arch}/ave-dir-ops",
           "to": "macos-dir-ops/${arch}/ave-dir-ops"
+        },
+        {
+          "from": "resources/mxc/${arch}/mxc-exec-mac",
+          "to": "mxc/${arch}/mxc-exec-mac"
+        },
+        {
+          "from": "resources/licenses/mxc",
+          "to": "licenses/mxc"
         }
       ]
     },
@@ -489,6 +499,16 @@
         "AppImage",
         "deb",
         "rpm"
+      ],
+      "extraResources": [
+        {
+          "from": "resources/mxc/${arch}/lxc-exec",
+          "to": "mxc/${arch}/lxc-exec"
+        },
+        {
+          "from": "resources/licenses/mxc",
+          "to": "licenses/mxc"
+        }
       ]
     },
     "appImage": {
@@ -528,6 +548,7 @@
     "win": {
       "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(win32){,/**/*}"],
       "signExts": [
+        "!ave-path-kind.exe",
         "!srt-win.exe",
         "!wxc-exec.exe",
         "!mxc_ffi.dll",

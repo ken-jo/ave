@@ -13,7 +13,7 @@ import type { CustomProviderWire } from "../../shared/custom-provider.js";
 // path while the type definition cannot drift between modules.
 import type { RequestGenerationControls, RunModelSettings } from "../../shared/run-model-settings.js";
 import type { OutputCeilingSource, RouteModelCapabilities } from "../../shared/context-budget.js";
-import type { ModelUsageSegment } from "../../shared/model-pricing.js";
+import type { ModelUsageSegment, ServedRouteEvidence } from "../../shared/model-pricing.js";
 import {
   type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import type { MarketplaceInstalledProviderPreset } from "../../shared/marketplace-package-assets.js";
@@ -24,6 +24,7 @@ import type {
 } from "../../shared/subscription-runtime.js";
 import type { ToolCategory, ToolResultImage, ToolSource } from "../../tools/types.js";
 import type { ProviderErrorDiagnostics } from "./provider-error-diagnostics.js";
+import type { RetiredModelProbe } from "./model-wire-gate.js";
 import type { RiskLevel } from "../../shared/permission-review-status.js";
 export type { LLMVendor };
 export { isLLMVendor } from "../../shared/llm-vendor-defaults.js";
@@ -451,6 +452,12 @@ export interface TokenUsage {
    * Priced apart only where the model's rates state a reasoning price.
    */
   reasoningTokens?: number;
+  /**
+   * Dispatch evidence for pricing: what the transport established about where this
+   * request was served. Engine-internal; the request's recorded price is resolved from
+   * it, and it is never persisted or sent to a window.
+   */
+  servedRoute?: ServedRouteEvidence;
 }
 
 export type TokenUsageByModel = ModelUsageSegment<LLMVendor>;
@@ -669,6 +676,11 @@ export interface ProviderConfig {
    * only for Azure Foundry private-endpoint host mappings.
    */
   fetch?: typeof fetch;
+  /**
+   * Live retirement evidence for this route, reread on every wire attempt. A route with no listing that could prove
+   * retirement passes `noRetirementEvidence` by name.
+   */
+  getRetiredModelId: RetiredModelProbe;
   /** Vertex AI — GCP project ID (required for vendor="vertex-ai"). */
   vertexProject?: string;
   /** Vertex AI — GCP region (default "us-central1"). */

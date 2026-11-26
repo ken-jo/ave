@@ -1,6 +1,6 @@
 import childProcess from "node:child_process";
 import { dirname } from "node:path";
-import { resolveWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
+import { withWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
 import { assertManagedChildProcessAdmissionOpen, retainUnterminatedChildProcess, trackManagedChildProcess } from "../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
@@ -24,16 +24,15 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?:
 }> {
   if (!bytes.length || bytes.length > MAX_POLICY_BYTES) throw new Error("Windows sandbox policy frame length is invalid");
   if (!/^\\\\\.\\pipe\\ave-mxc-[a-f0-9]{32}$/u.test(pipe)) throw new Error("Windows sandbox policy pipe name is invalid");
-  const helper = resolveWindowsPathKindHelper();
   assertManagedChildProcessAdmissionOpen("mxc:policy");
   const assertLive = () => { admission?.signal.throwIfAborted(); admission?.assertStillValid(); };
   const gate = admission ? commitUnderAdmission(assertLive, () => createMxcReleaseGate(admission.root)) : undefined;
   let server: childProcess.ChildProcessWithoutNullStreams;
   try {
-    server = commitUnderAdmission(assertLive, () => childProcess.spawn(helper,
+    server = withWindowsPathKindHelper(helper => commitUnderAdmission(assertLive, () => childProcess.spawn(helper,
       ["--mxc-policy", pipe, String(TOOL_TIMEOUT_POLICY.mxcRequestTransportMs), ...(gate ? [gate.path] : [])], {
         cwd: dirname(helper), windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"],
-      }));
+      })));
   } catch (error) { gate?.revoke(); throw error; }
   let stopTracking: ReturnType<typeof trackManagedChildProcess> | undefined;
   let bound: childProcess.ChildProcess | undefined;

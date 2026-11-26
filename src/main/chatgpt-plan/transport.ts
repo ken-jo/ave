@@ -171,6 +171,8 @@ export class ChatGptPlanTransport implements Pick<LLMProvider, "streamTurn" | "l
       baseUrl: CHATGPT_PLAN_API_BASE_URL,
       fetch: planFetch,
       openaiWire: "responses",
+      // Read at the wire after the token is in hand: a catalog refresh can retire the model during either wait.
+      getRetiredModelId: (wireModel) => runtime.getRetiredModelId(wireModel),
     });
     // `max_output_tokens` is refused on this route. Background callers keep their ceiling: generateText stops the
     // stream locally at the same limit. Chat turns on subscription runtimes never carry one.

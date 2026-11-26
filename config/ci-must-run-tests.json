@@ -52,6 +52,7 @@
     "out-of-process": [
       "src/__tests__/packaging-discipline-source.test.ts",
       "src/__tests__/tsx-child-env.test.ts",
+      "src/audit/__tests__/dlp-performance.test.ts",
       "src/audit/__tests__/hmac-chain.test.ts",
       "src/audit/__tests__/permission-audit-proof.test.ts",
       "src/boot/steps/__tests__/desktop-network-fetch-lease.test.ts",
@@ -64,6 +65,8 @@
       "src/main/__tests__/codex-conversation-runtime.test.ts",
       "src/main/__tests__/process-group-reaper.test.ts",
       "src/main/__tests__/windows-program-lookup.test.ts",
+      "src/main/browser/__tests__/browser-actions.test.ts",
+      "src/main/browser/__tests__/browser-capture-stitch-process.test.ts",
       "src/main/memory-map/__tests__/inference-child-native.test.ts",
       "src/mcp/__tests__/tasks-extension.test.ts",
       "src/plugins/__tests__/registry-atomicity.test.ts",

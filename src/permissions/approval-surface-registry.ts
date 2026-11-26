@@ -1,7 +1,13 @@
 import type { WebContents } from "electron";
 
+export interface WorkBoardApprovalProject {
+  readonly itemId: number;
+  readonly projectRoot: string | undefined;
+}
+
 type ApprovalOwner =
   | { readonly surface: WebContents | null }
+  | { readonly project: WorkBoardApprovalProject }
   | { readonly parentSessionId: string };
 
 function requireIdentity(identity: string): void {
@@ -16,13 +22,30 @@ function requireSurface(owner: WebContents | null): void {
   }
 }
 
+function resolveSessionOwner(
+  sessions: ReadonlyMap<string, ApprovalOwner>,
+  sessionId: string,
+): Exclude<ApprovalOwner, { parentSessionId: string }> | undefined {
+  requireIdentity(sessionId);
+  const visited = new Set<string>();
+  let cursor = sessionId;
+  for (;;) {
+    if (visited.has(cursor)) throw new Error("approval-surface: cyclic parent registration");
+    visited.add(cursor);
+    const owner = sessions.get(cursor);
+    if (!owner || !("parentSessionId" in owner)) return owner;
+    cursor = owner.parentSessionId;
+  }
+}
+
 /** Store explicit delivery attachments without borrowing another run's surface. */
 export class ApprovalSurfaceRegistry {
-  private readonly sessions = new Map<string, ApprovalOwner>();
   private readonly terminals = new Map<string, WebContents | null>();
   private readonly terminalSessions = new Map<string, string>();
   private unattributed: WebContents | null = null;
   private readonly ownerReleaseListeners = new Set<(owner: WebContents) => void>();
+
+  constructor(private readonly sessions = new Map<string, ApprovalOwner>()) {}
 
   observeOwnerReleased(listener: (owner: WebContents) => void): void {
     this.ownerReleaseListeners.add(listener);
@@ -36,6 +59,12 @@ export class ApprovalSurfaceRegistry {
     requireIdentity(sessionId);
     requireSurface(owner);
     this.sessions.set(sessionId, { surface: owner });
+  }
+
+  registerProject(sessionId: string, project: WorkBoardApprovalProject): void {
+    requireIdentity(sessionId);
+    const snapshot = Object.freeze({ itemId: project.itemId, projectRoot: project.projectRoot });
+    this.sessions.set(sessionId, { project: snapshot });
   }
 
   /** Keep a live parent link so children follow ownership transfers immediately. */
@@ -52,7 +81,7 @@ export class ApprovalSurfaceRegistry {
       if (visited.has(cursor)) throw new Error("approval-surface: cyclic parent registration");
       visited.add(cursor);
       const owner = this.sessions.get(cursor);
-      if (!owner || "surface" in owner) break;
+      if (!owner || !("parentSessionId" in owner)) break;
       cursor = owner.parentSessionId;
     }
     this.sessions.set(sessionId, { parentSessionId });
@@ -66,6 +95,7 @@ export class ApprovalSurfaceRegistry {
     if (!owner) throw new Error("approval-surface: unregistered outgoing session");
     if (previousSessionId === sessionId) return;
     if ("parentSessionId" in owner) this.inherit(sessionId, owner.parentSessionId);
+    else if ("project" in owner) this.registerProject(sessionId, owner.project);
     else this.register(sessionId, owner.surface);
     this.sessions.delete(previousSessionId);
   }
@@ -133,20 +163,8 @@ export class ApprovalSurfaceRegistry {
     } else if (sessionId === undefined) {
       surface = this.unattributed;
     } else {
-      requireIdentity(sessionId);
-      const visited = new Set<string>();
-      let cursor = sessionId;
-      for (;;) {
-        if (visited.has(cursor)) throw new Error("approval-surface: cyclic parent registration");
-        visited.add(cursor);
-        const owner = this.sessions.get(cursor);
-        if (!owner) return null;
-        if ("surface" in owner) {
-          surface = owner.surface;
-          break;
-        }
-        cursor = owner.parentSessionId;
-      }
+      const owner = resolveSessionOwner(this.sessions, sessionId);
+      surface = owner && "surface" in owner ? owner.surface : null;
     }
     return surface && !surface.isDestroyed() ? surface : null;
   }
@@ -154,6 +172,7 @@ export class ApprovalSurfaceRegistry {
 
 export type ApprovalSurfaceUpdate =
   | { kind: "attach"; sessionId: string; surface: WebContents | null }
+  | { kind: "attach-project"; sessionId: string; project: WorkBoardApprovalProject }
   | { kind: "inherit"; sessionId: string; parentSessionId: string | undefined }
   | { kind: "move"; previousSessionId: string; sessionId: string }
   | { kind: "release"; sessionId: string }
@@ -165,7 +184,8 @@ export type ApprovalSurfaceUpdate =
   | { kind: "observe-owner-release" | "unobserve-owner-release"; listener: (owner: WebContents) => void;
       registry?: Readonly<Pick<ApprovalSurfaceRegistry, "observeOwnerReleased" | "unobserveOwnerReleased">> };
 
-const registeredApprovalSurfaces = new ApprovalSurfaceRegistry();
+const registeredSessions = new Map<string, ApprovalOwner>();
+const registeredApprovalSurfaces = new ApprovalSurfaceRegistry(registeredSessions);
 
 /** Read-only delivery and terminal-binding lookups; all attachment and lifecycle updates use one host function. */
 export const approvalSurfaceRegistry: Readonly<Pick<ApprovalSurfaceRegistry, "resolve" | "terminalSessionId">> = Object.freeze({
@@ -173,6 +193,12 @@ export const approvalSurfaceRegistry: Readonly<Pick<ApprovalSurfaceRegistry, "re
     registeredApprovalSurfaces.resolve(sessionId, terminalTabId),
   terminalSessionId: (tabId: string) => registeredApprovalSurfaces.terminalSessionId(tabId),
 });
+
+/** Look up the work-board delivery scope through the same live parent links as window delivery. */
+export function workBoardApprovalProjectOf(sessionId: string | undefined): WorkBoardApprovalProject | undefined {
+  const owner = sessionId === undefined ? undefined : resolveSessionOwner(registeredSessions, sessionId);
+  return owner && "project" in owner ? owner.project : undefined;
+}
 
 /**
  * App windows are one trust level; a defense against a compromised app renderer
@@ -189,6 +215,9 @@ export function updateApprovalSurface(update: ApprovalSurfaceUpdate): void {
   switch (update.kind) {
     case "attach":
       return registeredApprovalSurfaces.register(update.sessionId, update.surface);
+    case "attach-project":
+      registeredApprovalSurfaces.registerProject(update.sessionId, update.project);
+      return;
     case "inherit":
       return registeredApprovalSurfaces.inherit(update.sessionId, update.parentSessionId);
     case "move":

@@ -1,14 +1,15 @@
 import { registerRunSession, __resetRunGrantsForTest } from "../../permissions/run-grants.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { t } from "../../i18n/index.js";
 import { join } from "node:path";
-import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
-import { configureHostResources } from "../../main/host-resources.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { verifyChain } from "../../audit/hmac-chain.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
-import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { ApprovalGate, answeredApprovalProvenance, answeredRecordForAction, type ApprovalDecision, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { JudgeContractError } from "../../permissions/judge/judge-contract.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../../permissions/judge/judge-settings.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -23,6 +24,9 @@ import { ToolExecutor } from "../executor.js";
 import { BashTool } from "../shell-tools.js";
 import * as invocationExecution from "../invocation-execution.js";
 import * as hostShellPermits from "../../permissions/host-shell-execution-permit.js";
+import * as preparedShell from "../prepared-shell-invocation.js";
+import * as userOwnedSurface from "../pipeline/user-owned-surface.js";
+import { HostExitAbortError } from "../../shared/host-exit-abort.js";
 import { WriteFileTool } from "../file-tools.js";
 import { approvalIdentityFor } from "../pipeline/display-mask.js";
 import { createTestRequestAnchor, rationaleResponseFor } from "../pipeline/__tests__/rationale-fixtures.js";
@@ -34,6 +38,8 @@ import { tryUserApprovalMemorySkip } from "../pipeline/approval-memory-skip.js";
 import { ToolRegistry } from "../registry.js";
 import { makeWriteProbeTool } from "./approval-memory-test-fixtures.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+
+withSourceHostResources();
 
 const SESSION_ID = "automatic-pause-session";
 const resources = new PermissionTestResources();
@@ -181,7 +187,7 @@ function manualGate() {
   }, nativeWebContents as never);
   const approve = (card: ApprovalRequest) => answer(card, "allow-once");
   const deny = (card: ApprovalRequest) => answer(card, "deny-once");
-  return { gate, cards, approve, deny, parkedAt };
+  return { gate, cards, approve, deny, parkedAt, nativeWebContents };
 }
 
 function heldHandlerFinalizers(toolUseId: string, count: number) {
@@ -256,8 +262,6 @@ function memoryReview(current: Awaited<ReturnType<typeof subject>>, input: Recor
   );
 }
 
-// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
-beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("executor automated approval pause", () => {
   it("denies a late hook replacement without replaying an earlier completed hook effect", async () => {
@@ -298,25 +302,43 @@ describe("executor automated approval pause", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it("cancels a pending late native card without entering the handler", async () => {
+  it.each(["caller", "quit", "project-scope-changed", "scope-before-stop", "stop-before-scope", "timeout-before-stop", "refusal-before-quit"] as const)("cancels a pending late native card without entering the handler (%s)", async (by) => {
     const f = await subject();
     const controller = new AbortController();
     const execute = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();
     registry.register(makeWriteProbeTool(execute));
     const { hooks, reached, release } = heldPreToolUse();
-    const { gate, cards, approve } = manualGate();
+    const { gate, cards, approve, nativeWebContents } = manualGate();
     const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const auditLog = vi.spyOn(f.audit, "log");
     const pending = executor.executeAll([{ id: "cancel-late-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root, abortSignal: controller.signal,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
     });
     await reached;
     await f.pause();
+    if (by === "timeout-before-stop") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     release();
     await vi.waitFor(() => expect(cards).toHaveLength(1));
     expect(gate.pendingCount).toBe(1);
-    controller.abort(new Error("caller cancelled pending late card"));
+    if (by === "timeout-before-stop") vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs);
+    if (by === "refusal-before-quit") {
+      const [card] = cards;
+      expect(gate.resolveFromDesktopRenderer(card.id, {
+        requestId: card.id, choice: "allow-once", nonce: "invalid", hmac: card.hmac,
+      }, nativeWebContents as never)?.choice).toBe("deny-once");
+    }
+    const cancelScope = () => gate.cancelPendingRequest(cards[0].id, SESSION_ID, "project-scope-changed");
+    const scopeSettles = by === "project-scope-changed" || by === "scope-before-stop";
+    if (scopeSettles) {
+      expect(cancelScope()).toBe(true);
+      expect(controller.signal.aborted).toBe(false);
+    }
+    if (by !== "project-scope-changed") {
+      controller.abort(by === "quit" || by === "refusal-before-quit" ? new HostExitAbortError() : new Error("caller cancelled pending late card"));
+    }
+    if (by === "stop-before-scope") expect(cancelScope()).toBe(false);
     let settled = false;
     void pending.then(() => { settled = true; });
     await vi.waitFor(() => expect(settled).toBe(true), { timeout: 1_000 });
@@ -326,6 +348,110 @@ describe("executor automated approval pause", () => {
     expect(gate.pendingCount).toBe(0);
     expect(approve(cards[0])).toBeNull();
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
+    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+    if (by === "quit") {
+      expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "cancel-late-card", denyReasons: [{ reason: "host-shutdown" }], trustOrigin: "unknown" });
+    } else if (by === "timeout-before-stop" || by === "refusal-before-quit") {
+      const reason = by === "timeout-before-stop" ? "approval request expired" : "approval rejected by host";
+      expect.soft(result.content).toBe(by === "timeout-before-stop" ? t("be_executor.approvalExpired", { name: "write_probe" })
+        : t("be_executor.approvalRejectedByHost", { name: "write_probe", reason: "approval integrity check failed" }));
+      expect(rows.at(-1)).toMatchObject({ decision: "deny", terminalKind: "denied", trustOrigin: "unknown", denyReasons: [{ reason, source: "approval-gate" }] });
+    } else if (scopeSettles) {
+      const detail = "project-scope-changed";
+      expect.soft(result.content).toContain(detail);
+      expect.soft(rows.at(-1)).toMatchObject({ decision: "deny", terminalKind: "cancelled", toolUseId: "cancel-late-card",
+        denyReasons: [expect.objectContaining({ reason: expect.stringContaining(detail) })], trustOrigin: "unknown" });
+      expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({ type: "tool_call", output: expect.stringContaining(detail),
+        toolCalls: [expect.objectContaining({ permissionDecision: "cancelled", permissionReason: expect.stringContaining(detail) })] }));
+    } else {
+      expect(result.content).toBe(t("be_executor.toolExecutionCancelled"));
+      expect(rows.at(-1)).toMatchObject({ decision: "deny", terminalKind: "cancelled", toolUseId: "cancel-late-card" });
+    }
+  });
+
+  it("keeps an answered late denial as the user's when the quit lands before the executor resumes", async () => {
+    const f = await subject();
+    const quit = new AbortController();
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const { hooks, reached, release } = heldPreToolUse();
+    const { gate, cards, deny } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const pending = executor.executeAll([{ id: "deny-late-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: f.root, abortSignal: quit.signal,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    await reached;
+    await f.pause();
+    release();
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    // The person's answer settles the gate; the quit lands before the awaiting executor runs again.
+    expect(deny(cards[0])?.choice).toBe("deny-once");
+    quit.abort(new HostExitAbortError());
+    const [result] = await pending;
+    expect(result.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+    const denied = rows.filter((row) => row.toolUseId === "deny-late-card" && row.decision === "deny");
+    expect(denied).toEqual([expect.objectContaining({ trustOrigin: "user-keyboard" })]);
+    expect(JSON.stringify(denied)).not.toContain("host-shutdown");
+  });
+
+  it("records a plugin-emitted write approved on a late desk card as the desk's", async () => {
+    const f = await subject();
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const { hooks, reached, release } = heldPreToolUse();
+    const { gate, cards, approve } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const pending = executor.executeAll([{ id: "plugin-late-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ trustOrigin: "plugin-emitted", additionalDirectories: [f.root] }),
+    });
+    await reached;
+    await f.pause();
+    release();
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    expect(approve(cards[0])?.choice).toBe("allow-once");
+    const [result] = await pending;
+    expect(result.is_error, result.content).not.toBe(true);
+    expect(execute).toHaveBeenCalledOnce();
+    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+    const allowed = rows.filter((row) => row.toolUseId === "plugin-late-card" && row.decision === "allow");
+    expect(allowed.at(-1)).toMatchObject({ trustOrigin: "user-keyboard" });
+  });
+
+  it("binds a late card's answer to its invocation, so another invocation of the tool cannot settle with it", async () => {
+    const f = await subject();
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(vi.fn(async () => "wrote")));
+    const held = heldHandlerFinalizers("bound-late-card", 1);
+    const { gate, cards, approve } = manualGate();
+    const answered: ApprovalDecision[] = [];
+    const requestAndWait = gate.requestAndWait.bind(gate);
+    vi.spyOn(gate, "requestAndWait").mockImplementation(async (request) => {
+      const decision = await requestAndWait(request);
+      answered.push(decision);
+      return decision;
+    });
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const pending = executor.executeAll([{ id: "bound-late-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    await held.waits[0].reached;
+    await f.pause();
+    held.waits[0].release();
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    approve(cards[0]);
+    const [result] = await pending;
+    expect(result.is_error, result.content).not.toBe(true);
+    expect(answered).toHaveLength(1);
+    const provenance = answeredApprovalProvenance(answered[0]);
+    expect(answeredRecordForAction(provenance, "allow", "write_probe", "bound-late-card").toolUseId).toBe("bound-late-card");
+    expect(() => answeredRecordForAction(provenance, "allow", "write_probe", "other-invocation")).toThrow("does not settle this allow of write_probe");
   });
 
   it("settles caller cancellation while a late PermissionRequest hook is still held", async () => {
@@ -780,6 +906,66 @@ describe("executor automated approval pause", () => {
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   });
 
+  it("mints no late host permit when quit aborts the invocation during surface resolution", async () => {
+    const f = await subject();
+    f.manager.setMode("auto");
+    const registry = new ToolRegistry();
+    const shell = new BashTool();
+    const execute = vi.spyOn(shell, "execute");
+    registry.register(shell);
+    const mint = vi.spyOn(hostShellPermits, "mintHostShellExecutionPermit");
+    const held = heldHandlerFinalizers("late-host-shutdown", 1);
+    const { gate, cards, approve } = manualGate();
+    const turn = new AbortController();
+    const resolveSurface = userOwnedSurface.resolveUserOwnedSurfaceApproval;
+    vi.spyOn(userOwnedSurface, "resolveUserOwnedSurfaceApproval").mockImplementation(async (args) => {
+      const resolved = await resolveSurface(args);
+      if (cards.length > 0) turn.abort(new HostExitAbortError());
+      return resolved;
+    });
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const pending = executor.executeAll([{ id: "late-host-shutdown", name: "bash", input: { command: "printf late-shutdown", executionMode: "host", justification: "Read fixture output" } }], {
+      sessionId: SESSION_ID, executionCwd: f.root, abortSignal: turn.signal,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    await held.waits[0].reached;
+    expect(mint).toHaveBeenCalledTimes(1);
+    await f.pause();
+    held.waits[0].release();
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    approve(cards[0]);
+    const [result] = await pending;
+    expect(result.is_error).toBe(true);
+    expect(turn.signal.aborted).toBe(true);
+    expect(mint).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
+    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+    expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "late-host-shutdown", denyReasons: [{ reason: "host-shutdown" }], trustOrigin: "unknown" });
+  });
+
+  it("records a shell preparation failure as the host's deny, never as the rule's allow", async () => {
+    const f = await subject();
+    const command = "printf prep-failure";
+    await f.manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
+    const registry = new ToolRegistry();
+    const shell = new BashTool();
+    const execute = vi.spyOn(shell, "execute");
+    registry.register(shell);
+    vi.spyOn(preparedShell, "prepareShellInvocation").mockImplementation(() => { throw new Error("snapshot unavailable"); });
+    const { gate } = denyingGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const [result] = await executor.executeAll([{ id: "shell-prep-failure", name: "bash", input: { command, executionMode: "host", justification: "Read fixture output" } }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", additionalDirectories: [f.root] }),
+    });
+    expect(result.is_error).toBe(true);
+    expect(result.content).toContain("Shell preparation failed: snapshot unavailable");
+    expect(execute).not.toHaveBeenCalled();
+    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter(row => row.toolUseId === "shell-prep-failure" && row.decision !== "ask");
+    expect(rows).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
+  });
+
   // The late card is judged like the main card when only a memory-only allow rule moved the policy: the person's Allow stands also when
   // the policy now allows the call, their Deny stands whatever it says, and a call now denied or asked under a forced card is refused.
   it.each([
@@ -806,13 +992,12 @@ describe("executor automated approval pause", () => {
       await vi.waitFor(() => expect(cards).toHaveLength(1));
       registerRunSession("work-board:7#run-a", "sibling-stage-session", { stageId: "build", stageName: "Build", lane: "attended" });
       f.manager.addRunRule("sibling-stage-session", "Bash(npm test)");
-      // What the policy says of the pending call when it is judged again.
-      const original = f.manager.recheckPermission.bind(f.manager);
-      vi.spyOn(f.manager, "recheckPermission").mockImplementation((result, options) => {
-        const rechecked = original(result, options);
-        if (options?.acrossMemoryRuleChanges !== true) return rechecked;
+      // What the card's bound check says of the pending call when it is judged.
+      const original = f.manager.checkDetailed.bind(f.manager);
+      vi.spyOn(f.manager, "checkDetailed").mockImplementation((...args) => {
+        const rechecked = original(...args);
         if (recheck === "allow") rechecked.decision = "allow";
-        if (recheck === "deny") rechecked.decision = "deny";
+        if (recheck === "deny") Object.assign(rechecked, { decision: "deny", reason: "Denied now." });
         if (recheck === "forced ask") rechecked.forceModal = true;
         return rechecked;
       });
@@ -820,6 +1005,14 @@ describe("executor automated approval pause", () => {
       if (expected === "runs") {
         await held.waits[1].reached;
         held.waits[1].release();
+      }
+      // An Allow whose question changed is asked again on a new card; its Deny ends the call.
+      const reasked = recheck === "forced ask" && answer === "approve";
+      if (reasked) {
+        await held.waits[1].reached;
+        held.waits[1].release();
+        await vi.waitFor(() => expect(cards).toHaveLength(2));
+        deny(cards[1]);
       }
       const [result] = await pending;
       if (expected === "runs") {
@@ -829,11 +1022,11 @@ describe("executor automated approval pause", () => {
       } else {
         expect(result.is_error).toBe(true);
         expect(execute).not.toHaveBeenCalled();
-        // A Deny is refused as the person's own answer, by the card's reason; a changed question is refused as a changed policy.
-        if (answer === "deny") expect(result.content).toBe(cards[0].reason);
-        else expect(result.content).toBe("Permission policy changed before execution.");
+        // A Deny is refused as the person's own answer, by its card's reason; an Allow of a call now denied, by the policy's reason.
+        if (answer === "deny" || reasked) expect(result.content).toBe(cards.at(-1)?.reason);
+        else expect(result.content).toBe("Denied now.");
       }
-      expect(cards).toHaveLength(1);
+      expect(cards).toHaveLength(reasked ? 2 : 1);
     } finally {
       __resetRunGrantsForTest();
     }
@@ -922,7 +1115,7 @@ describe("executor automated approval pause", () => {
     const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
     const pending = executor.executeAll([{ id: "normal-human-policy-race", name: "write_probe", input: { path: join(f.root, "approved.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root,
-      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+      permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", additionalDirectories: [f.root] }),
     });
     await vi.waitFor(() => expect(cards).toHaveLength(1));
     approve(cards[0]);
@@ -935,6 +1128,10 @@ describe("executor automated approval pause", () => {
     expect(result.content).toBe("Permission policy changed before execution.");
     expect(execute).not.toHaveBeenCalled();
     expect(cards).toHaveLength(1);
+    // The policy refused it, so the row carries the invocation's origin, never the answer's.
+    expect(readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)
+      .filter(row => row.toolUseId === "normal-human-policy-race" && row.decision !== "ask" && row.grantLifetime === undefined))
+      .toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "llm-tool-arg" })]);
   });
 
   it("counts repeated classification of one invocation once after grant escalation", async () => {

@@ -191,7 +191,7 @@ const CLASSIFIED: Record<string, Classified> = {
     classification: "computed: the plugin HostApi proxy's Reflect.get; plugins reach no turn entry through it",
   },
   "boot/steps/plugin-tool-executor.ts": {
-    sites: { userKeyboardLiteral: 3 },
+    sites: { userKeyboardLiteral: 1 },
     classification: "the trust origin of forced explicit approval cards a person answers; not a turn origin",
   },
   "engine/a2a-agent-message-bus.ts": {
@@ -266,6 +266,10 @@ const CLASSIFIED: Record<string, Classified> = {
     sites: { computedCall: 2 },
     classification: "computed: a logger method chosen by level; no turn entry",
   },
+  "permissions/approval-gate.ts": {
+    sites: { userKeyboardLiteral: 1 },
+    classification: "the trust origin the gate records on a decision the desk window answered; not a turn origin",
+  },
   "permissions/manifest-integrity.ts": {
     sites: { computedCall: 2 },
     classification: "computed: the frozen-manifest proxy's Reflect.get; no turn entry",
@@ -291,8 +295,8 @@ const CLASSIFIED: Record<string, Classified> = {
     classification: "preload gesture tokens: minted only during an active gesture, consumed once",
   },
   "preload/internal-api-surface.ts": {
-    sites: { userKeyboardLiteral: 2 },
-    classification: "side-chat send bridge and work-board steer: each reports userActivation from the consumed token only (side-chat: queue-auto otherwise; steer: main refuses without it)",
+    sites: { userKeyboardLiteral: 1 },
+    classification: "side-chat send bridge reports userActivation only from its consumed token and otherwise sends queue-auto. Work-board steer claims no keyboard origin and main verifies native input before accepting the guidance.",
   },
   "preload/public-surface.ts": {
     sites: { userKeyboardLiteral: 5 },

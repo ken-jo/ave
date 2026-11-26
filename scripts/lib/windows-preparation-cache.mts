@@ -18,7 +18,7 @@ function canonicalJson(value: unknown): string {
 }
 
 export function windowsPreparationKey(manifest: WindowsPreparationManifest) {
-  return `ave-windows-native-helpers-v2-${createHash("sha256").update(canonicalJson(manifest)).digest("hex")}`;
+  return `ave-windows-native-helpers-v3-${createHash("sha256").update(canonicalJson(manifest)).digest("hex")}`;
 }
 
 async function hashFile(path: string) {

@@ -17,9 +17,9 @@ const committedPlan = () => planWindowsTests(collected, windowsTestDurations(tim
 const tieredPlan = () => planWindowsTests(collected, windowsTestDurations(times), ["native", "census"]);
 
 describe("Windows shard planning", () => {
-  it("assigns every collected suite outside the native tier to exactly one of the fixed shards", () => {
+  it("assigns every collected suite outside the native tier to exactly one of eight shards", () => {
     const plan = committedPlan();
-    expect(plan.shards.map(shard => shard.id)).toEqual([...WINDOWS_TEST_SHARDS]);
+    expect(plan.shards.map(shard => shard.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(plan.suites).toBe(defaultSuites.length);
     expect(defaultSuites.length).toBe(collected.length - NATIVE_TIER_TESTS.length);
     expect(plan.shards.flatMap(shard => shard.files).sort()).toEqual(defaultSuites);
@@ -34,6 +34,21 @@ describe("Windows shard planning", () => {
     const nativeOnly = planWindowsTests(collected, windowsTestDurations(times), ["native"]);
     expect(nativeOnly.tierShards.flatMap(shard => shard.files).sort()).toEqual([...NATIVE_TIER_TESTS].sort());
     expect(nativeOnly.shards).toEqual(plan.shards);
+  });
+
+  it("uses the full census duration only when planning the selected census tier", () => {
+    const [censusFile] = CENSUS_TIER_TESTS;
+    if (censusFile === undefined) throw new Error("No census suites");
+    const duration = windowsTestDurations({
+      unit: "ms",
+      files: { [censusFile]: 7 },
+      macEstimate: { scale: 1, files: {} },
+      census: { [censusFile]: 10_000_000 },
+    });
+
+    const plan = planWindowsTests(collected, duration, ["native", "census"]);
+    expect(plan.shards).toEqual(planWindowsTests(collected, file => duration(file)).shards);
+    expect(plan.tierShards[0]).toEqual({ id: 1, files: [censusFile], weightMs: 10_001_000 });
   });
 
   it("reads the selected tiers from AVE_WINDOWS_TEST_TIERS", () => {
@@ -51,8 +66,17 @@ describe("Windows shard planning", () => {
     const [heaviest] = collected;
     if (heaviest === undefined) throw new Error("No collected suites");
     const result = planWindowsTests(collected, file => file === heaviest ? 10_000_000 : 1000);
-    expect(result.shards[0]?.files).toEqual([heaviest]);
-    expect(result.shards[0]?.weightMs).toBe(10_001_000);
+    const [first] = result.shards;
+    expect(first.files).toContain(heaviest);
+    expect(first.weightMs).toBe(10_001_000 + (first.files.length - 1) * 2000);
+  });
+
+  it("weighs concurrent regular workers separately", () => {
+    const files = defaultSuites.slice(0, 16);
+    const plan = planWindowsTests(files, file => 2000 - 100 * files.indexOf(file));
+    expect(plan.shards.map(shard => shard.files)).toEqual(
+      files.slice(0, 8).map((file, index) => [file, files[index + 8]].sort()),
+    );
   });
 
   it("stays within ten percent between the heaviest and lightest shard on the committed timings", () => {
@@ -147,6 +171,8 @@ it.each([
 
   const shards: number[] = job.strategy.matrix.shard;
   expect(shards).toEqual([...WINDOWS_TEST_SHARDS]);
+  expect(shards).toHaveLength(8);
+  expect(job.env.AVE_VITEST_MAX_WORKERS).toBe("2");
   const tierShards: number[] = workflow.jobs["windows-tier-tests"].strategy.matrix.shard;
   expect(tierShards).toEqual([...WINDOWS_TIER_TEST_SHARDS]);
   const windowsPlan = planWindowsTests(collected, windowsTestDurations(times), ["native"]);

@@ -3,9 +3,49 @@
   "version": "1.1.0",
   "tarballSha512Base64": "tSOPZ14ddCiXHc4hVNQp5Yi22HSQEfXh58Z4O/tLzERi+23rfRmMrJoxVK5jZYhlll68u4eF/UlQSaXWyUMj4w==",
   "licenseSha256": "d9a1b1e30d633d5732ea18e3cba9538d293ebc53e1a9e4e96ab739e0c5c4f1cb",
-  "wxcExecSha256": {
-    "x64": "6d466c6b0109bab4bcace6738e11f886d801ea977346db49707488fcbd3afc8a",
-    "arm64": "afbffebc7ba0ef06c6cd24eff0a3792db3e25faca388e4aaca092745ea328fd6"
+  "targets": {
+    "win32-x64": {
+      "launcher": {
+        "member": "bin/x64/wxc-exec.exe",
+        "sha256": "6d466c6b0109bab4bcace6738e11f886d801ea977346db49707488fcbd3afc8a"
+      }
+    },
+    "win32-arm64": {
+      "launcher": {
+        "member": "bin/arm64/wxc-exec.exe",
+        "sha256": "afbffebc7ba0ef06c6cd24eff0a3792db3e25faca388e4aaca092745ea328fd6"
+      }
+    },
+    "darwin-arm64": {
+      "launcher": {
+        "member": "bin/arm64/mxc-exec-mac",
+        "sha256": "4c68a4ff34ed14134a94a4312a8ec172bd2099dd26453e4a7893d91515f42687"
+      },
+      "library": {
+        "member": "bin/arm64/libmxc_ffi.dylib",
+        "sha256": "b99eba8c95bde9a104c025a17e077f71ad420c4ac58f873af41170e8ac848e3f"
+      }
+    },
+    "linux-x64": {
+      "launcher": {
+        "member": "bin/x64/lxc-exec",
+        "sha256": "1c0ef66ef237405051747ff5bab0b3796932a7938137f516dc2c5f076756095a"
+      },
+      "library": {
+        "member": "bin/x64/libmxc_ffi.so",
+        "sha256": "bf0762b450ddcd63ef6f6c3c9dd26f98007d643ee07e8ae0db559175e09a6ed9"
+      }
+    },
+    "linux-arm64": {
+      "launcher": {
+        "member": "bin/arm64/lxc-exec",
+        "sha256": "a95e210bce1fe937d7a8d1dd7edcc40befb6eef66715b0e8d2d96d04a14c81b7"
+      },
+      "library": {
+        "member": "bin/arm64/libmxc_ffi.so",
+        "sha256": "09ad8fbd76280c468d999f8b48f301424d682cbad23d0364b8a45843fbf60374"
+      }
+    }
   },
   "sdk": {
     "versions": {

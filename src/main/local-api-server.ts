@@ -274,12 +274,12 @@ function buildExternalMutationApproverFromAgentAction(
 ): ExternalMutationApprover | undefined {
   if (!approve) return undefined;
 
-  return async ({ channel, args, origin }) => Boolean(await approve({
+  return ({ channel, args, origin }) => approve({
     toolName: channel,
     args,
     reason: "An external CLI/API requested a permission-mode change. Do you want to allow it?",
     trustOrigin: origin,
-  }));
+  });
 }
 
 // A disabled gate opens no socket and writes no state; repeated starts return the existing server.

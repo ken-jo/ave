@@ -1,6 +1,6 @@
 // Per-command deny arrays replace the shared boot floor, even when empty; this primitive always restates it so children cannot regain secret reads. Callers provide allow paths only.
 import { spawn, type ChildProcess, type SpawnOptions, type StdioOptions } from "node:child_process";
-import { assertSrtWinSpawnIntegrity } from "./srt-win-integrity.js";
+import { assertSrtWinSpawnIntegrity, srtWinSpawnEnvironment } from "./srt-win-integrity.js";
 import { resolveHostProgram } from "../shared/host-program-path.js";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { existsSync } from "node:fs";
@@ -21,6 +21,7 @@ import {
   appOwnedSandboxTempRoot,
   appOwnedTerminalHandoffRoot,
   runWithSandboxWritePreflight,
+  userDenyInsidePierceNotices,
   wrapWorkerCommand,
   type SandboxTempPrincipal,
   type WrapOptions,
@@ -40,6 +41,7 @@ import type { HostShellExecutionPlan } from "./host-shell-execution-plan.js";
 import { openMxcEgressLease } from "./egress-host-listener.js";
 import { buildMxcConfinedChildRequest } from "./mxc-confined-child-request.js";
 import { isWindowsPathAtOrUnder, rankMxcFilesystem, strictlyUnder, type MxcFilesystemGrants } from "./mxc-windows.js";
+import { claimMxcWatchedRows, deferWatchedReceipt, WatchedQuarantineError } from "./windows-watched-rows.js";
 import { spawnMxcExtensionProcess, type OwnedMxcExtensionProcess } from "./mxc-extension-process.js";
 import {
   MxcExtensionReadinessRefusedError,
@@ -55,7 +57,8 @@ import type { PluginWorkerControl } from "../plugins/public-contract.js";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { onMxcHolderLifetimeAdmissionSealed, registerMxcHolderLifetime } from "./mxc-holder-lifetime.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
-import { assertIssuedContainerHomeInPlace, isIssuedContainerHome } from "./sandbox-home-registry.js";
+import { assertIssuedContainerHomeInPlace, heldIssuedContainerHome, isIssuedContainerHome, issuedContainerHome } from "./sandbox-home-registry.js";
+import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "./confinement-state-paths.js";
 import { assertMxcHolderPrivateDirectories, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { isSandboxWrapperEnvKey } from "../tools/safe-env.js";
 import {
@@ -65,6 +68,7 @@ import {
 } from "../main/managed-child-processes.js";
 import { buildLauncherEnvironment, prepareSandboxTargetLaunch, type SandboxTargetLaunch } from "./launcher-environment.js";
 import { createLogger } from "../lib/logger.js";
+import { errorMessage } from "../shared/error-message.js";
 import { mainDir } from "../main/main-paths.js";
 import {
   assertRelayRequest,
@@ -181,6 +185,8 @@ export interface MxcConfinedChildSpec extends Pick<ConfinedChildSpec,
   readonly temp: string;
   /** Captured by the host from the owning incarnation, independently of requested grants. */
   readonly filesystemOwnership: MxcExtensionFilesystemOwnership;
+  /** The holder's host-minted staging root, the one write grant inside the container's own state. */
+  readonly stagingRoot?: string;
   readonly holder: object;
   readonly parent?: MxcConfinedChildSpawn;
   /** The adapter's own check of the exact request, on a snapshot, before the receipt is minted. A throw refuses the start. */
@@ -319,6 +325,22 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       writeRoots: Object.freeze([...spec.filesystemOwnership.writeRoots]), hostStorageRoots: Object.freeze([...spec.filesystemOwnership.hostStorageRoots]) }),
   });
   assertIssuedContainerHomeInPlace(spec.home);
+  // The child writes its HOME: inside the runtime root only as the issuance this start holds (one that lapses refuses
+  // the start), beneath its own staging root when it has one, which waives only the runtime declaration; every other
+  // declared state refuses it.
+  const issuedHome = issuedContainerHome(spec.home);
+  const assertHomeOutsideState = (): void => {
+    const live = heldIssuedContainerHome(issuedHome);
+    const staged = live !== undefined && (spec.stagingRoot === undefined
+      || (isWindowsPathAtOrUnder(spec.home, spec.stagingRoot) && !isWindowsPathAtOrUnder(spec.stagingRoot, spec.home)));
+    const homeTarget = admitWindowsLookupPaths([spec.home], "mxc-launch").get(spec.home)?.target;
+    if (homeTarget === undefined) throw new MxcProcessContractError("Container filesystem footprint could not be admitted");
+    if (!staged && [winPath.normalize(spec.home), homeTarget].some((form) => isWindowsPathAtOrUnder(form, runtimeRoot))) {
+      throw new MxcProcessContractError("Container HOME inside the sandbox runtime root is not the one issued to this start");
+    }
+    assertWriteGrantsOutsideConfinementState([spec.home], declaredConfinementStatePaths(), undefined, staged ? live : undefined);
+  };
+  assertHomeOutsideState();
   // No working directory inside the runtime root except the launch's own issued HOME itself, by identity.
   const cwdTarget = admitWindowsLookupPaths([spec.cwd], "mxc-launch").get(spec.cwd)?.target;
   if (cwdTarget === undefined) throw new MxcProcessContractError("Container filesystem footprint could not be admitted");
@@ -334,13 +356,20 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   spec.assertStillValid?.();
   assertManagedChildProcessAdmissionOpen(spec.label);
   // The floor and the admission share one Ave home boundary snapshot.
-  const admitted = await runWithSandboxWritePreflight(spec.signal, () => createAveHomeBoundarySnapshot().run(() => admitMxcExtensionFilesystem({
+  const boundary = createAveHomeBoundarySnapshot();
+  const admitted = await runWithSandboxWritePreflight(spec.signal, () => boundary.run(() => admitMxcExtensionFilesystem({
     allowRead: [...(spec.allowRead ?? [])], allowWrite: [...(spec.allowWrite ?? [])],
     denyWrite: getDefaultSensitiveWriteDenyEntries(),
     floorPierces: spec.floorPierces, denyPluginsRoot: true, pinWriteRoots: true,
-  }, spec.filesystemOwnership)));
+  }, spec.filesystemOwnership, spec.stagingRoot)));
   const grants = rankMxcFilesystem(admitted.model);
   assertWritesInsideEnvelope(grants, spec.filesystemOwnership);
+  // The plugin runtime emits this notice once its child has started.
+  if (spec.egressOwner.role !== "plugin-child") {
+    boundary.run(() => {
+      for (const notice of userDenyInsidePierceNotices(spec.floorPierces ?? [])) log.warn(notice);
+    });
+  }
   assertMxcHolderPrivateDirectories({ home: spec.home, temp: spec.temp, ownership: spec.filesystemOwnership,
     sharedPrivateRoots: [appOwnedSandboxHomeRoot(), appOwnedSandboxTempRoot(), appOwnedTerminalHandoffRoot()] });
   const footprintPaths = admitWindowsLookupPaths([
@@ -368,6 +397,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   const egress = openEgressInvocation(spec.egressOwner, { abortSignal: signal });
   let lease: Awaited<ReturnType<typeof openMxcEgressLease>> | undefined;
   let native: OwnedMxcExtensionProcess | undefined;
+  const watchedClaim = grants.watched === undefined ? undefined : claimMxcWatchedRows(grants.watched, { commandId: egress.token });
   let binding: NativeHolderBinding | undefined;
   let starting: Promise<unknown> | undefined;
   let settleStartup!: () => void;
@@ -398,6 +428,14 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       admittedNativeHolderIdentities.delete(spec.holder);
       liveHolderFootprints.delete(ownRoots);
       if (spec.parent) nativeHolderBindings.get(spec.parent)?.children.delete(lifetime);
+      // Holder release is a detection point. A holder has no command result: the next sandboxed command's result carries the receipt.
+      try {
+        const notice = await watchedClaim?.release();
+        if (notice !== undefined) deferWatchedReceipt(notice);
+      } catch (error) {
+        log.warn(errorMessage(error));
+        if (error instanceof WatchedQuarantineError) deferWatchedReceipt(error.message);
+      }
     });
     admittedNativeHolderIdentities.add(spec.holder);
     // Owned from registration until verified termination, so a concurrent admission sees these roots.
@@ -441,8 +479,11 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
         },
         beforeSpawn: () => {
           assertPreparation();
+          assertHomeOutsideState();
           consumeMxcExtensionAdmission(admission, currentIdentity());
           spent = true;
+          // A name that appeared since ranking still refuses the start.
+          watchedClaim?.start();
         },
         watchRelease: revoke => {
           const check = () => {
@@ -548,7 +589,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
       windowsHide: true,
       // A wrapped child starts its own process session, so the sandbox profile's refusal to read other processes' arguments and environment (the carried ASRT patch) covers this process group too: Seatbelt only refuses it across sessions.
       ...(egress !== undefined && process.platform !== "win32" ? { detached: true } : {}),
-      env,
+      env: srtWinSpawnEnvironment(program, env),
       // On the relay the program's directory also travels in its request; srt-win itself still starts in it.
       ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
     };

@@ -44,6 +44,7 @@ describe("host shell execution plan", () => {
       shellSubstrate: "mxc",
     });
     expect(plan).toMatchObject({
+      identity: "host-shell-execution-plan/v4:win32:mxc",
       mode: "asrt", substrate: "mxc", requiresExplicitUserApproval: false,
       egressProtocolCoverage: { dns: "host-resolver", rawIp: "unknown" },
     });
@@ -436,10 +437,28 @@ describe("host shell execution plan — Windows MXC substrate", () => {
     expect(getHostShellExecutionPlanCacheIdentity(mxc)).not.toBe(getHostShellExecutionPlanCacheIdentity(asrt));
   });
 
-  it("refuses the MXC substrate off Windows", () => {
+  it.each(["darwin", "linux"] as const)("accepts a container plan on %s with unknown egress coverage", (platform) => {
+    expect(buildHostShellExecutionPlan({
+      platform, requestedSandbox: true, activeCapability: { ...FULL_ASRT, platform }, shellSubstrate: "mxc",
+    })).toMatchObject({
+      mode: "asrt", substrate: "mxc", sandboxed: true,
+      egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" },
+    });
+  });
+
+  it.each([
+    ["darwin", "host-shell-execution-plan/v4:darwin:asrt"],
+    ["linux", "host-shell-execution-plan/v4:linux:asrt"],
+  ] as const)("keeps the default %s route and identity", (platform, identity) => {
+    expect(buildHostShellExecutionPlan({
+      platform, requestedSandbox: true, activeCapability: { ...FULL_ASRT, platform },
+    })).toMatchObject({ identity, mode: "asrt", substrate: "asrt", sandboxed: true });
+  });
+
+  it("refuses the container substrate on an OS without a backend", () => {
     expect(() =>
-      buildHostShellExecutionPlan({ platform: "darwin", requestedSandbox: true, activeCapability: FULL_ASRT, shellSubstrate: "mxc" }),
-    ).toThrow(/only on Windows/);
+      buildHostShellExecutionPlan({ platform: "freebsd", requestedSandbox: true, activeCapability: FULL_ASRT, shellSubstrate: "mxc" }),
+    ).toThrow(/No container backend exists on freebsd/);
   });
 
   it("keeps an explicit host request on the plain, approved route even when MXC is live", () => {

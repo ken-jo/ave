@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,12 +7,63 @@ import { contentHash } from "../../__tests__/support/content-hash.js";
 import { assertMxcSdkInventory, MxcIntegrityError, verifyMxcSdk, verifyMxcSdkSource } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
 import type { MxcSdkPins } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
 import PINS from "../mxc-launcher-pins.json" with { type: "json" };
+// @ts-expect-error standalone packaging script has no declaration output
+import { assertPackagedLauncher } from "../../../scripts/lib/mxc-sdk-packaging.mjs";
 
 const roots: string[] = [];
 
 function createTemporaryDirectory(prefix: string) {
   return realpathSync(mkdtempSync(prefix));
 }
+
+describe("packaged launcher inventory", () => {
+  it.each(Object.entries(PINS.targets))("verifies the regular file, hash and selected directory for %s", (target, { launcher }) => {
+    const resources = createTemporaryDirectory(path.join(tmpdir(), "ave-launcher-packaging-"));
+    roots.push(resources);
+    const directory = path.join(resources, "mxc", path.basename(path.dirname(launcher.member)));
+    const binary = path.join(directory, path.basename(launcher.member));
+    const installed = path.join("node_modules", PINS.package, launcher.member);
+    mkdirSync(directory, { recursive: true });
+    expect(() => assertPackagedLauncher(resources, target)).toThrow(/launcher missing/u);
+    copyFileSync(installed, binary);
+    chmodSync(binary, 0o755);
+    if (process.platform === "win32" && !target.startsWith("win32-")) {
+      // A Windows checkout cannot represent executable mode bits.
+      expect(() => assertPackagedLauncher(resources, target)).toThrow(/not executable/u);
+      return;
+    }
+    expect(() => assertPackagedLauncher(resources, target)).not.toThrow();
+    const extra = path.join(directory, "extra");
+    writeFileSync(extra, "");
+    expect(() => assertPackagedLauncher(resources, target)).toThrow(/unexpected packaged launcher entry/iu);
+    unlinkSync(extra);
+    if (!target.startsWith("win32-")) {
+      chmodSync(binary, 0o644);
+      expect(() => assertPackagedLauncher(resources, target)).toThrow(/not executable/u);
+      chmodSync(binary, 0o755);
+    }
+    writeFileSync(binary, "changed");
+    expect(() => assertPackagedLauncher(resources, target)).toThrow(/hash mismatch/u);
+  });
+
+  it.runIf(process.platform !== "win32")("fails the macOS post-sign hook if signing changed the launcher bytes", async () => {
+    const appOutDir = createTemporaryDirectory(path.join(tmpdir(), "ave-launcher-after-sign-"));
+    roots.push(appOutDir);
+    const productFilename = "App";
+    const resources = path.join(appOutDir, `${productFilename}.app`, "Contents", "Resources");
+    const directory = path.join(resources, "mxc", "arm64");
+    const { launcher } = PINS.targets["darwin-arm64"];
+    const binary = path.join(directory, path.basename(launcher.member));
+    mkdirSync(directory, { recursive: true });
+    copyFileSync(path.join("node_modules", PINS.package, launcher.member), binary);
+    chmodSync(binary, 0o755);
+    const afterSign = createRequire(import.meta.url)("../../../scripts/electron-after-sign.cjs");
+    const context = { appOutDir, electronPlatformName: "darwin", packager: { appInfo: { productFilename } } };
+    await expect(afterSign(context)).resolves.toBeUndefined();
+    writeFileSync(binary, "changed");
+    await expect(afterSign(context)).rejects.toThrow(/hash mismatch/u);
+  });
+});
 
 function installation() {
   const directory = createTemporaryDirectory(path.join(tmpdir(), "ave-sdk-integrity-")); roots.push(directory);

@@ -1,5 +1,7 @@
+import type { OpenJoinIpcResult } from "../../shared/work-board-types.js";
 import type { MemoryMapApi } from '../../shared/memory-map.js';
-import type { ScheduleAttachment, ScheduleAttachmentInput, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../../shared/workflow-template-types.js";
+import type { PermissionAuditIntegrity } from "../../audit/audit-schema.js";
+import type { ScheduleAttachment, ScheduleAttachmentRequest, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../../shared/workflow-template-types.js";
 import type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 export type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 import type { WindowControlsPlacement } from "../../shared/shell-geometry.js";
@@ -112,7 +114,7 @@ export type { PluginPerfStats, PluginContributionTrustRow, PluginBackgroundEffec
 
 // Usage aggregates come from the engine/IPC owners; only the renderer-side
 // derived shapes (UsagePerX, UsageTrendPt, UsageConv) are declared here.
-import type { UsageTotals } from "../../engine/usage-stats.js";
+import type { UsageSummary, UsageTotals } from "../../engine/usage-stats.js";
 import type { UsageDailySummaryInput, UsageDailySummaryResult } from "../../ipc/handlers/usage.js";
 import type { WorkspacePreviewRemoveRootResult } from "../../ipc/domains/workspace.js";
 
@@ -304,7 +306,7 @@ type SubscriptionUsageSummaryShape = {
   sources: Record<SubscriptionUsageSource, SubscriptionUsageTotals>;
 };
 
-export type UsageSummaryShape = {
+export type UsageSummaryShape = Pick<UsageSummary, "auditIncomplete" | "topConversationsByTokens"> & {
   today: UsageTotals;
   thisWeek: UsageTotals;
   thisMonth: UsageTotals;
@@ -426,7 +428,7 @@ export type AvePreloadApi = {
   getWorkflowTemplateProposal: (id: string) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateProposal>>;
   draftWorkflowTemplate: (id: string | null, input: WorkflowTemplateDraftInput) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>;
   confirmWorkflowTemplate: (id: string, input: WorkflowTemplateConfirmInput) => Promise<WorkflowTemplateIpcResult<TemplateVersion>>;
-  attachWorkflowTemplateSchedule: (input: ScheduleAttachmentInput) => Promise<WorkflowTemplateIpcResult<ScheduleAttachment>>;
+  attachWorkflowTemplateSchedule: (input: ScheduleAttachmentRequest) => Promise<WorkflowTemplateIpcResult<ScheduleAttachment>>;
   detachWorkflowTemplateSchedule: (id: string) => Promise<WorkflowTemplateIpcResult<boolean>>;
   archiveWorkflowTemplate: (id: string) => Promise<WorkflowTemplateIpcResult<null>>;
   onWorkflowTemplatesChanged: (handler: () => void) => () => void;
@@ -467,7 +469,9 @@ export type AvePreloadApi = {
   getSettingsDefaults: () => Promise<AppSettings>;
   openSettingsFile: () => Promise<{ ok: true } | { ok: false; error: string }>;
   pickSettingsDirectory: () => Promise<{ ok: true; path: string | null } | { ok: false; error: string }>;
-  updateSettings: (patch: DeepPartial<AppSettings>) => Promise<SettingsUpdateResult>;
+  updateSettings: (patch: DeepPartial<Omit<AppSettings, "llm"> & {
+    llm: Omit<AppSettings["llm"], "modelListCache">;
+  }>) => Promise<SettingsUpdateResult>;
   /** Settings paths the boot environment is forcing ON; presence only, never values. */
   envForcedSettings: () => Promise<readonly string[]>;
   /** Hosts `telemetry.endpoint` may point at. Read-only: the bound, not a setting. */
@@ -1009,6 +1013,9 @@ export type AvePreloadApi = {
   // Result envelopes are the store's discriminated `status` unions (or
   // `{ ok:false, error }` for unauthorized-frame / no-store). Shared types come
   // from the renderer-safe `shared/work-board-types.js` (no Node built-ins).
+  setWorkBoardProjectScope: (root: string | undefined) => Promise<boolean>;
+  openWorkBoardJoin: (itemId: number, input: Omit<import("../../shared/work-board-types.js").StageJoinDecideInput, "decision">) =>
+    Promise<OpenJoinIpcResult | { ok: false; error: string }>;
   listWorkBoard: (
     filter?: import("../../shared/work-board-types.js").WorkItemListFilter,
   ) => Promise<
@@ -1017,12 +1024,14 @@ export type AvePreloadApi = {
   >;
   getWorkBoardItem: (
     id: number,
+    runId?: string,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkItemGetResult
     | { ok: false; error: string }
   >;
   addWorkBoardItem: (
     input: import("../../shared/work-board-types.js").WorkItemCreateInput,
+    launch?: import("../../shared/work-board-types.js").TemplateRunRequest,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkItemCreateResult
     | { ok: false; error: string }
@@ -1146,11 +1155,9 @@ export type AvePreloadApi = {
   // Steer or stop a running execution (local user only: a consumed keyboard
   // gesture, permission-decision-tree.md S→T). The host picks the execute child;
   // the steer text reaches it as host-fenced guidance at its next round boundary.
-  // `userIntent` is captured at the gesture with captureUserKeyboardIntent().
   steerWorkBoardRun?: (
     itemId: number,
     text: string,
-    userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot,
     stageId?: string,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkBoardSteerIpcResult
@@ -1587,17 +1594,17 @@ export type AvePermissionApi = {
   ) => Promise<import("../../shared/permission-judge-settings.js").PermissionJudgeWriteResult>;
   /** Permission policy — `/permission audit show` — recent permission audit entries. */
   auditShow: (last: number) => Promise<
-    | {
+    | (PermissionAuditIntegrity & {
         ok: true;
         entries: PermissionAuditEntrySummary[];
         total: number;
         summary: { files: number; bytes: number };
-      }
+      })
     | { ok: false; error: string }
   >;
   /** Permission policy — `/permission audit verify` — HMAC chain integrity check. */
   auditVerify: () => Promise<
-    | {
+    | (PermissionAuditIntegrity & {
         ok: true;
         intact: boolean;
         totalFiles: number;
@@ -1611,21 +1618,20 @@ export type AvePermissionApi = {
           reason?: string;
           sealMatch: boolean | null;
         }>;
-      }
+      })
     | { ok: false; error: string }
   >;
 };
 
 /**
  * Permission policy — minimal audit entry shape surfaced to the renderer's
- * `AuditPanel`. The full discriminated union (with `decision` field
- * + per-decision payload) is sent verbatim — this type is just a
- * structural tag the panel uses to gate the expand/filter UI.
+ * `AuditPanel`. Deny entries include their resolved terminal kind.
  */
 export interface PermissionAuditEntrySummary {
   ts: string;
   auditId: string;
   decision: string;
+  terminalKind?: import("../../audit/audit-schema.js").AuditDenyKind;
   trustOrigin: string;
   prevHash: string;
   /** Anything else from the discriminated union — opaque to the renderer. */

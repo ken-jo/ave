@@ -29,7 +29,7 @@ function setApproved(directories: string[]): void {
 
 class WithdrawalRuntime extends PluginRuntime {
   register(path: string, pluginRoot: string, pluginDataDir: string, pluginId = PLUGIN_ID) {
-    return this.registerSandboxEnvelope(pluginId, [path], pluginRoot, pluginDataDir);
+    return this.registerSandboxEnvelope(pluginId, [{ path, access: "write" }], pluginRoot, pluginDataDir);
   }
 
   attach(stop: () => Promise<void>, retire: () => Error[] = () => [], pluginId = PLUGIN_ID): void {

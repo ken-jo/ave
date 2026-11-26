@@ -14,6 +14,7 @@ import { initializeAveHomeFixture } from "../../../__tests__/support/ave-home-pr
 import { DEFAULT_SETTINGS } from "../../../data/settings-defaults.js";
 import { systemSubagentRouteIdentity } from "../../../shared/system-subagent-model.js";
 import { getLlmVendorSettings } from "../../../shared/llm-vendor-defaults.js";
+import { llmModelListCacheKey, type LlmModelListCache } from "../../../shared/llm-model-list.js";
 import type { MarketplaceInstalledProviderPreset } from "../../../shared/marketplace-package-assets.js";
 
 const homePath = useTempPaths("settings-broadcast-", ".ave");
@@ -96,6 +97,29 @@ function makeDeps(appWindows: ReturnType<typeof makeWindow>[], vendorBaseUrl?: s
     getAppWindows: vi.fn(() => appWindows),
     // Main's Chromium-stack transport; the handler is expected to hand it to the engine rather than let the engine reach for ambient `fetch`.
     singleHopNetworkFetch: vi.fn() as unknown as typeof fetch,
+  };
+}
+
+function depsWithOpenAiListing(before: readonly string[] | null, after: readonly string[]) {
+  const entry = (models: readonly string[]) => ({ vendor: "openai", endpoint: "https://api.openai.com/v1/models", models: [...models], fetchedAt: "2026-10-23T00:00:00.000Z" });
+  const llm = {
+    provider: "openai",
+    activeChatRuntime: { kind: "api" },
+    vendors: { openai: { model: "gpt-4o" } },
+    modelListCache: (before ? { [llmModelListCacheKey("openai")]: entry(before) } : {}) as LlmModelListCache,
+  };
+  const deps = makeDeps([]);
+  listLlmModelsFromSettingsMock.mockResolvedValueOnce({ ok: true, ...entry(after) });
+  return {
+    ...deps,
+    settingsService: {
+      ...deps.settingsService,
+      get: vi.fn((key: string) => key === "llm" ? structuredClone(llm) : {}),
+      patch: vi.fn(async (patch: { llm: { modelListCache: LlmModelListCache } }) => {
+        llm.modelListCache = patch.llm.modelListCache;
+      }),
+    },
+    rewireReviewerAgent: vi.fn(),
   };
 }
 
@@ -573,36 +597,11 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
       permissions: { judge: { model: null, chain: [{ id: "stage", provider: "builtin-llm", model: "openai/team-stage" }] } },
     }));
     try {
-      const rewire = vi.fn();
-      const llm = (models: readonly string[] | null) => ({
-        provider: "openai",
-        activeChatRuntime: { kind: "api" },
-        vendors: { openai: { model: "gpt-4o" } },
-        ...(models ? {
-          modelListCache: {
-            std: { vendor: "openai", endpoint: "https://api.openai.com/v1/models", models: [...models], fetchedAt: "2026-10-23T00:00:00.000Z" },
-          },
-        } : {}),
-      });
-      let llmReads = 0;
-      const baseDeps = makeDeps([]);
-      const deps = {
-        ...baseDeps,
-        settingsService: {
-          ...baseDeps.settingsService,
-          get: vi.fn((key: string) => {
-            if (key === "marketplace") return {};
-            llmReads += 1;
-            return llm(llmReads === 1 ? before : after);
-          }),
-          patch: vi.fn(async (p: unknown) => p),
-        },
-        rewireReviewerAgent: rewire,
-      };
+      const deps = depsWithOpenAiListing(before, after);
       const { registerSettingsHandlers } = await import("../settings.js");
       registerSettingsHandlers(deps as never);
-      await invoke("ave:settings:update", { llm: { modelListCache: llm(after).modelListCache } });
-      expect(rewire).toHaveBeenCalledTimes(rewires);
+      await invoke("ave:settings:list-llm-models", { vendor: "openai" });
+      expect(deps.rewireReviewerAgent).toHaveBeenCalledTimes(rewires);
     } finally {
       vi.unstubAllEnvs();
       rmSync(home, { recursive: true, force: true });
@@ -616,37 +615,11 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     const home = await createSettingsHome();
     writePermissionSettingsFixture(home, JSON.stringify({ permissions: { judge: { model: "openai/team-reviewer" } } }));
     try {
-      const rewire = vi.fn();
-      const llm = (models: readonly string[] | null) => ({
-        provider: "openai",
-        activeChatRuntime: { kind: "api" },
-        vendors: { openai: { model: "gpt-4o" } },
-        ...(models ? {
-          modelListCache: {
-            std: { vendor: "openai", endpoint: "https://api.openai.com/v1/models", models: [...models], fetchedAt: "2026-10-23T00:00:00.000Z" },
-          },
-        } : {}),
-      });
-      let llmReads = 0;
-      const baseDeps = makeDeps([]);
-      const deps = {
-        ...baseDeps,
-        settingsService: {
-          ...baseDeps.settingsService,
-          get: vi.fn((key: string) => {
-            if (key === "marketplace") return {};
-            llmReads += 1;
-            return llm(llmReads === 1 ? null : listed);
-          }),
-          patch: vi.fn(async (p: unknown) => p),
-        },
-        rewireReviewerAgent: rewire,
-      };
+      const deps = depsWithOpenAiListing(null, listed);
       const { registerSettingsHandlers } = await import("../settings.js");
       registerSettingsHandlers(deps as never);
-      // The chat route itself is unchanged: only the synced catalogue moves.
-      await invoke("ave:settings:update", { llm: { modelListCache: llm(listed).modelListCache } });
-      expect(rewire).toHaveBeenCalledTimes(rewires);
+      await invoke("ave:settings:list-llm-models", { vendor: "openai" });
+      expect(deps.rewireReviewerAgent).toHaveBeenCalledTimes(rewires);
     } finally {
       vi.unstubAllEnvs();
       rmSync(home, { recursive: true, force: true });

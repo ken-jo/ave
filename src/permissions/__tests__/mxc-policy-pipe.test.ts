@@ -1,6 +1,8 @@
 import childProcess from "node:child_process";
-import { dirname, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as helperPath from "../../main/windows-path-kind-launcher.js";
 import * as managedChildren from "../../main/managed-child-processes.js";
@@ -17,19 +19,28 @@ function helperChild() {
 }
 
 beforeEach(() => {
-  vi.spyOn(helperPath, "resolveWindowsPathKindHelper").mockReturnValue(String.raw`C:\Ave\ave-path-kind.exe`);
+  vi.spyOn(helperPath, "withWindowsPathKindHelper").mockImplementation(launch => launch(String.raw`C:\Ave\ave-path-kind.exe`));
   vi.spyOn(managedChildren, "trackManagedChildProcess").mockReturnValue(() => {});
 });
 
 describe.skipIf(process.platform !== "win32")("native policy pipe EOF", () => {
-  for (const probe of [false, true]) it(`reads the full multi-chunk payload to EOF after an existence probe: ${probe}`, async (context) => {
+  for (const { probe, gated } of [
+    { probe: false, gated: false },
+    { probe: true, gated: false },
+    { probe: true, gated: true },
+  ]) it(`reads the full multi-chunk payload to EOF (existence probe: ${probe}, release gate: ${gated})`, async (context) => {
     vi.restoreAllMocks();
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     requireMxcPolicyPipeHelper(context.skip);
     const payload = Buffer.from("policy-".repeat(12_000));
     const pipe = String.raw`\\.\pipe\ave-mxc-${randomBytes(16).toString("hex")}`;
-    const transport = await openMxcPolicyPipe(payload, pipe);
+    const root = gated ? mkdtempSync(join(tmpdir(), "mxc-policy-gate-")) : undefined;
+    let transport: Awaited<ReturnType<typeof openMxcPolicyPipe>> | undefined;
     try {
+      const owned = await openMxcPolicyPipe(payload, pipe, root === undefined ? undefined : {
+        root, signal: new AbortController().signal, assertStillValid: () => {},
+      });
+      transport = owned;
       const result = await new Promise<{ error: Error | null; stdout: string; stderr: string }>((resolveResult) => {
         const child = childProcess.execFile(process.execPath, ["-e", `
           const fs = require("node:fs");
@@ -56,7 +67,7 @@ describe.skipIf(process.platform !== "win32")("native policy pipe EOF", () => {
           windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.mxcRequestTransportMs,
           env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
         }, (error, stdout, stderr) => resolveResult({ error, stdout, stderr }));
-        transport.bindChild(child);
+        owned.bindChild(child);
       });
       expect(result.stderr).toBe("");
       expect(result.error).toBeNull();
@@ -65,7 +76,10 @@ describe.skipIf(process.platform !== "win32")("native policy pipe EOF", () => {
       if (probe) expect(counts[0]).toBe(0);
       else expect(counts[0]).toBeGreaterThan(1);
       expect(counts[1]).toBeGreaterThan(1);
-    } finally { await transport.release(); }
+    } finally {
+      try { await transport?.release(); }
+      finally { if (root !== undefined) rmSync(root, { recursive: true, force: true }); }
+    }
   });
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -254,7 +268,7 @@ describe("native policy pipe lifecycle", () => {
     expect(received.readUInt32LE(0)).toBe(6);
     expect(received.subarray(4, 10).toString()).toBe("policy");
     expect(received.readUInt32LE(10)).toBe(1234);
-    expect(helperPath.resolveWindowsPathKindHelper).toHaveBeenCalledOnce();
+    expect(helperPath.withWindowsPathKindHelper).toHaveBeenCalledOnce();
     const resolvedHelper = String.raw`C:\Ave\ave-path-kind.exe`;
     expect(spawn.mock.calls[0]?.[0]).toBe(resolvedHelper);
     expect(spawn.mock.calls[0]?.[2]).toEqual({
@@ -269,7 +283,7 @@ describe("native policy pipe lifecycle", () => {
   });
 
   it("refuses to search for a helper when resource identity resolution fails", async () => {
-    vi.mocked(helperPath.resolveWindowsPathKindHelper).mockImplementation(() => { throw new Error("missing helper"); });
+    vi.mocked(helperPath.withWindowsPathKindHelper).mockImplementation(() => { throw new Error("missing helper"); });
     const spawn = vi.spyOn(childProcess, "spawn");
     await expect(openMxcPolicyPipe(Buffer.from("policy"), PIPE)).rejects.toThrow("missing helper");
     expect(spawn).not.toHaveBeenCalled();

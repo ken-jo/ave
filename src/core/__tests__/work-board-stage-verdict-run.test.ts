@@ -58,7 +58,7 @@ it("holds a failed verdict for the ordinary stage retry", () => withRun(async h 
   expect(h.children).toHaveLength(1);
   const { runId } = await h.item(id);
   assert(runId);
-  expect(await h.engine.retryStage(id, { runId, stageId: "a" })).toEqual({ ok: true });
+  expect(await h.engine.retryStage(id, { runId, stageId: "a", attempt: 1 })).toEqual({ ok: true });
   (await h.untilLive(1))[0].finish({ summary: PASS });
   await h.until(id, item => item.runStatus === "completed");
   expect(await h.stageRun(id, "a")).toMatchObject({ attempt: 2, status: "passed", gate: { passed: true, judgedBy: "model" } });

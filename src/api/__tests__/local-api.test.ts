@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
   createLocalApi,
@@ -188,7 +189,7 @@ function makeMutationDeps(
   const setModePersist = vi.fn(async (next: string) => {
     mode = next;
   });
-  const gateRequestAndWait = vi.fn(async () => ({ requestId: "x", choice: "allow-once" as const }));
+  const gateRequestAndWait = answeringRequestAndWait(() => ({ requestId: "x", choice: "allow-once" }));
   const appendPermissionAuditEntry = vi.fn(async () => undefined);
   const ipc = {
     conversationLoop: {
@@ -205,6 +206,7 @@ function makeMutationDeps(
     auditLogger: {
       isPermissionAuditChainReady: () => true,
       appendPermissionAuditEntry,
+      log: vi.fn(),
     },
     getMainWindow: () => fakeWin.win,
   } as unknown as IpcDeps;
@@ -226,7 +228,7 @@ describe("local-api dispatch — external mutation default posture (no approver)
 describe("local-api dispatch — external mutation with approver wired", () => {
   it("approver returns false → external-mutation-denied (mode NOT changed)", async () => {
     const fakeWin = makeFakeWindow();
-    const approver = vi.fn(async () => false);
+    const approver = vi.fn(async () => ({ approved: false as const, outcome: "denied" as const }));
     const deps = makeMutationDeps(approver, fakeWin);
     const api = createLocalApi(deps);
 
@@ -236,7 +238,7 @@ describe("local-api dispatch — external mutation with approver wired", () => {
       origin: "local-api",
     });
 
-    expect(result).toEqual({ ok: false, error: EXTERNAL_MUTATION_DENIED });
+    expect(result).toEqual({ ok: false, error: EXTERNAL_MUTATION_DENIED, approvalOutcome: "denied" });
     expect(approver).toHaveBeenCalledWith({
       channel: PERMISSIONS.setMode,
       args: { mode: "auto" },
@@ -259,13 +261,13 @@ describe("local-api dispatch — external mutation with approver wired", () => {
       origin: "cli",
     });
 
-    expect(result).toEqual({ ok: false, error: EXTERNAL_MUTATION_DENIED });
+    expect(result).toEqual({ ok: false, error: EXTERNAL_MUTATION_DENIED, approvalOutcome: "rejected" });
     expect(fakeWin.send).not.toHaveBeenCalled();
   });
 
   it("approver returns true → routes to handleSetPermissionMode (mode applied + broadcast attempted) and returns ok", async () => {
     const fakeWin = makeFakeWindow();
-    const approver = vi.fn(async () => true);
+    const approver = vi.fn(async () => ({ approved: true as const }));
     const deps = makeMutationDeps(approver, fakeWin);
     const api = createLocalApi(deps);
 
@@ -284,7 +286,7 @@ describe("local-api dispatch — external mutation with approver wired", () => {
 
   it("a gesture channel NOT in the external-mutation allowlist (policy set) is STILL gesture-required even with an approver", async () => {
     const fakeWin = makeFakeWindow();
-    const approver = vi.fn(async () => true);
+    const approver = vi.fn(async () => ({ approved: true as const }));
     const deps = makeMutationDeps(approver, fakeWin);
     const api = createLocalApi(deps);
 
@@ -316,7 +318,7 @@ function makeDurabilityDeps(fakeWin: ReturnType<typeof makeFakeWindow>) {
       permissionManager: { getMode: () => runtimeMode, setMode, setModePersist },
     },
     approvalGate: {
-      requestAndWait: vi.fn(async () => ({ requestId: "x", choice: "allow-once" as const })),
+      requestAndWait: answeringRequestAndWait(() => ({ requestId: "x", choice: "allow-once" })),
     },
     auditLogger: {
       isPermissionAuditChainReady: () => true,
@@ -325,7 +327,7 @@ function makeDurabilityDeps(fakeWin: ReturnType<typeof makeFakeWindow>) {
     getMainWindow: () => fakeWin.win,
   } as unknown as IpcDeps;
   return {
-    deps: { ipc, conversationCommandPort, externalMutationApprover: async () => true } as LocalApiDeps,
+    deps: { ipc, conversationCommandPort, externalMutationApprover: async () => ({ approved: true }) } as LocalApiDeps,
     setMode,
     setModePersist,
     reload: () => {

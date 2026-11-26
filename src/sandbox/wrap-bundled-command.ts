@@ -19,6 +19,7 @@ import { join, win32 as winPath } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { t } from "../i18n/index.js";
 import { errorMessage } from "../shared/error-message.js";
+import { isContainerRouteEnabled } from "../shared/container-platform.js";
 import { createLogger } from "../lib/logger.js";
 import {
   liveMxcHolderWritableRoots,
@@ -50,6 +51,7 @@ import { isPathWithin } from "../plugins/plugin-storage-containment.js";
 import { AVE_HOME_RUNTIME_DIRECTORY, AVE_RUNTIME_LAYOUT, aveHome } from "../shared/ave-home.js";
 import { assertMxcHolderStaging } from "../permissions/mxc-filesystem-ownership.js";
 import { mxcStagingParent } from "../permissions/mxc-runtime-root.js";
+import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "../permissions/confinement-state-paths.js";
 import { renameDirectory, renameDirectorySyncOnce } from "../lib/transient-fs-lock-retry.js";
 import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "../permissions/egress-invocations.js";
 
@@ -279,7 +281,7 @@ export function hostRuntimeReads(command: string): string[] {
 
 /** The selected boot plan routes extension holders to containers. A checking or rejected plan is refused by the guard. */
 export function isMxcExtensionBackendSelected(): boolean {
-  if (process.platform !== "win32") return false;
+  if (!isContainerRouteEnabled(process.platform)) return false;
   const plan = getWindowsExtensionBackendPlan();
   return plan?.selectedBackend === "mxc" && plan.readiness === "ready";
 }
@@ -481,6 +483,8 @@ function createHolderStaging(): HolderStaging {
   try {
     // Exclusive: an existing entry under a fresh random name is not this holder's.
     for (const directory of [root, home, temp]) mkdirSync(directory);
+    // Ave owns this fresh staging directory and can prepare the carrier here.
+    mkdirSync(winPath.join(root, ".ave"));
   } catch (error) {
     liveStaging.delete(root);
     try { removeStagingTree(root); } catch { /* the marked remainder is left for a sweep */ }
@@ -712,6 +716,8 @@ export function prepareMxcHolderStart(input: {
   assertMxcHolderNotBashForm(executable);
   assertExecutableAdmissible(executable, input.allowWrite, []);
   assertNoLiveWorkspaceWriter(input.allowWrite, []);
+  // Caller writes only, before this holder's own staging root, which the state root holds, joins them.
+  assertWriteGrantsOutsideConfinementState(input.allowWrite, declaredConfinementStatePaths());
   const staging = createHolderStaging();
   return { root: staging.root, home: staging.home, temp: staging.temp, release: () => removeHolderStaging(staging.root) };
 }
@@ -728,6 +734,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
   const workspaceRoots = input.workspaceRoots ?? [];
   assertExecutableAdmissible(executable, input.allowWrite, workspaceRoots);
   assertNoLiveWorkspaceWriter(input.allowWrite, workspaceRoots);
+  assertWriteGrantsOutsideConfinementState(input.allowWrite, declaredConfinementStatePaths());
   const staging = createHolderStaging();
   const allowWrite = [...new Set([...input.allowWrite, staging.root])];
   const allowRead = [...new Set([...input.allowRead, winPath.dirname(executable)])];
@@ -749,6 +756,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
       cwd,
       home: staging.home,
       temp: staging.temp,
+      stagingRoot: staging.root,
       filesystemOwnership: { readRoots: [...input.ownedReadRoots], writeRoots: allowWrite, hostStorageRoots: [] },
       holder: Object.freeze({ label: input.label }),
       ...(input.floorPierces !== undefined ? { floorPierces: [...input.floorPierces] } : {}),

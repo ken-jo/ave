@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertSkillScriptInventory, SKILL_SCRIPT_ENTRIES } from "../../scripts/lib/skill-script-inventory.mjs";
+import { copyMxcLauncherPackageInputs } from "../../src/__tests__/support/mxc-runtime-package.js";
 
 const require = createRequire(import.meta.url);
 const PACKAGE = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { build: { beforePack: string } };
@@ -91,10 +92,10 @@ describe("packaged skill script inventory", () => {
     expect(() => assertSkillScriptInventory(directory)).toThrow(/regular files/);
   });
 
-  it.each(["darwin", "linux"])("checks existing skill script output before packaging the %s payload, without rebuilding it", async (platform) => {
+  it.each(["darwin", "linux"] as const)("checks existing skill script output before packaging the %s payload, without rebuilding it", async (platform) => {
     vi.stubEnv("AVE_MXC_VERIFICATION_BUILD", "0");
     const { root, directory } = fixture();
-    const context = { electronPlatformName: platform, arch: HOST_ARCH, packager: { projectDir: root } };
+    const context = { electronPlatformName: platform, arch: platform === "darwin" ? 3 : HOST_ARCH, packager: { projectDir: root } };
     if (platform === "darwin") {
       // The macOS package also builds its download file helper, from the fixture's copy of its sources.
       mkdirSync(join(root, "native", "macos-dir-ops"), { recursive: true });
@@ -104,9 +105,10 @@ describe("packaged skill script inventory", () => {
     if (platform === "darwin" && process.platform !== "darwin") {
       await expect(beforePack(context)).rejects.toThrow(/requires a native macOS build/);
     } else {
+      copyMxcLauncherPackageInputs(root, platform === "darwin" ? "darwin-arm64" : context.arch === 3 ? "linux-arm64" : "linux-x64");
       await expect(beforePack(context)).resolves.toBeUndefined();
     }
-    if (platform === "darwin") expect(existsSync(join(root, "resources", "macos-dir-ops", process.arch, "ave-dir-ops"))).toBe(process.platform === "darwin");
+    if (platform === "darwin") expect(existsSync(join(root, "resources", "macos-dir-ops", "arm64", "ave-dir-ops"))).toBe(process.platform === "darwin");
     writeFileSync(join(directory, "xlsx-publication-012345abcdef.cjs"), "leftover fixture");
     await expect(beforePack(context)).rejects.toThrow(/xlsx-publication-012345abcdef\.cjs/);
   });

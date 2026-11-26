@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { describe, expect, it } from "vitest";
 import type { PermissionCheckResult, ReviewerDispatchOutcome } from "../../../permissions/permission-manager.js";
 import {
@@ -24,7 +25,7 @@ import {
 import { createTestRequestAnchor } from "./rationale-fixtures.js";
 
 const eligiblePermission: PermissionCheckResult = {
-  decision: "ask",
+  decision: "ask", provenance: RULE_PROVENANCE,
   reason: "Automatic review requires human approval.",
   reasonCode: "reviewer-human-required",
   reviewer: {

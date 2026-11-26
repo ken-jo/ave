@@ -1,22 +1,50 @@
+import { crc32 } from "node:zlib";
 import { BROWSER_CAPTURE_LIMITS, type BrowserCaptureScroll, type BrowserViewportImage } from "../../shared/browser-capture.js";
 import { BrowserActionError, throwIfAborted, type CdpSession } from "./browser-action-guard.js";
 import { captureScrollContext, scrollBrowserCapture } from "./browser-capture-scroll.js";
+import { CAPTURE_DECODE_PIXELS } from "./browser-capture-stitch-protocol.js";
+import type { CaptureStitcher } from "./browser-capture-stitch-process.js";
+
+const PNG_COLOR_CHUNKS = new Set(["cHRM", "cICP", "gAMA", "iCCP", "sRGB"]);
+const PNG_HEADER_BYTES = 33;
+
+function captureColorChunks(png: Buffer, keepPrefix = false): { color: Buffer; prefix: Buffer[]; imageOffset: number } {
+  const color: Buffer[] = [];
+  const seen = new Set<string>();
+  const prefix = [png.subarray(0, PNG_HEADER_BYTES)];
+  for (let offset = PNG_HEADER_BYTES; offset + 12 <= png.length;) {
+    const end = offset + png.readUInt32BE(offset) + 12;
+    const kind = png.toString("ascii", offset + 4, offset + 8);
+    if (end > png.length) break;
+    if (kind === "IDAT") return { color: Buffer.concat(color), prefix, imageOffset: offset };
+    if (PNG_COLOR_CHUNKS.has(kind)) {
+      if (seen.has(kind) || crc32(png.subarray(offset + 4, end - 4)) !== png.readUInt32BE(end - 4)) break;
+      seen.add(kind);
+      color.push(png.subarray(offset, end));
+    } else if (keepPrefix) {
+      prefix.push(png.subarray(offset, end));
+    }
+    offset = end;
+  }
+  throw new BrowserActionError("screenshot-unavailable", "the capture tile has invalid PNG metadata");
+}
 
 /** Compose only the requested snapshot height. Sticky content is intentionally kept in every tile where it paints. */
 export async function captureBrowserTiles(
-  cdp: CdpSession, signal: AbortSignal, width: number, height: number,
+  cdp: CdpSession, signal: AbortSignal, height: number,
   original: { pageX: number; pageY: number; clientWidth: number; clientHeight: number },
   captureViewport: () => Promise<BrowserViewportImage>,
   onRestore: (position: BrowserCaptureScroll) => void,
+  stitcher: CaptureStitcher,
+  trackDecode: <T>(decode: Promise<T>) => Promise<T>,
 ): Promise<{ data: string }> {
   const executionContextId = await captureScrollContext(cdp);
   throwIfAborted(signal);
   onRestore({ executionContextId, x: original.pageX, y: original.pageY });
-  const { createCanvas, loadImage } = await import("@napi-rs/canvas");
-  throwIfAborted(signal);
-  const canvas = createCanvas(width, height), context = canvas.getContext("2d");
   let copied = 0;
+  let pendingDecodes: Array<Promise<void>> = [];
   let initialScale: number | undefined;
+  let colorProfile: Buffer | undefined;
   while (copied < height) {
     throwIfAborted(signal);
     await scrollBrowserCapture(cdp, { executionContextId, x: 0, y: copied });
@@ -36,22 +64,44 @@ export async function captureBrowserTiles(
       || current.cssVisualViewport.pageY !== viewport.pageY) throw new BrowserActionError("screenshot-unavailable", "the viewport changed during capture");
     if (Buffer.byteLength(tile.data, "base64") > BROWSER_CAPTURE_LIMITS.bytes) throw new BrowserActionError("screenshot-limit", "a capture tile exceeds the byte limit");
     const bytes = Buffer.from(tile.data, "base64");
-    if (bytes.length < 24 || bytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a"
-      || bytes.readUInt32BE(16) < 1 || bytes.readUInt32BE(20) < 1
-      || bytes.readUInt32BE(16) * bytes.readUInt32BE(20) > BROWSER_CAPTURE_LIMITS.pixels) {
+    if (bytes.length < PNG_HEADER_BYTES || bytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
       throw new BrowserActionError("screenshot-limit", "a capture tile has invalid dimensions");
     }
-    const image = await loadImage(bytes);
-    throwIfAborted(signal);
-    const scale = tile.cssScale ?? image.height / viewport.clientHeight;
+    const pixelWidth = bytes.readUInt32BE(16), pixelHeight = bytes.readUInt32BE(20);
+    if (pixelWidth < 1 || pixelHeight < 1 || pixelWidth * pixelHeight > BROWSER_CAPTURE_LIMITS.pixels) {
+      throw new BrowserActionError("screenshot-limit", "a capture tile has invalid dimensions");
+    }
+    const scale = tile.cssScale ?? pixelHeight / viewport.clientHeight;
     if (initialScale !== undefined && scale !== initialScale) throw new BrowserActionError("screenshot-unavailable", "the viewport changed during capture");
     initialScale = scale;
     const rows = Math.min(height - copied, Math.floor(viewport.clientHeight - skip));
-    if (!Number.isFinite(scale) || scale <= 0 || rows < 1 || image.height <= skip * scale) throw new BrowserActionError("screenshot-unavailable", "the tile has no valid capture scale");
-    context.drawImage(image, 0, skip * scale, Math.min(image.width, width * scale), Math.min(image.height - skip * scale, rows * scale), 0, copied, width, rows);
+    if (!Number.isFinite(scale) || scale <= 0 || rows < 1 || pixelHeight <= skip * scale) throw new BrowserActionError("screenshot-unavailable", "the tile has no valid capture scale");
+    const { color } = captureColorChunks(bytes);
+    if (colorProfile && !colorProfile.equals(color)) throw new BrowserActionError("screenshot-unavailable", "the tile color profile changed during capture");
+    colorProfile ??= color;
+    const decode = () => {
+      throwIfAborted(signal);
+      return trackDecode(stitcher.decode(bytes, { pixelWidth, pixelHeight, scale, skip, copied, rows }));
+    };
+    // Two small fractional tiles can decode concurrently within the raw-pixel budget. A third is handed over
+    // ahead and waits in the stitcher, so a freed slot is refilled without a round trip.
+    if (!Number.isInteger(scale) && pixelWidth * pixelHeight <= CAPTURE_DECODE_PIXELS / 2) {
+      const oldestDecode = pendingDecodes.length === 2 ? pendingDecodes.shift() : undefined;
+      pendingDecodes.push(decode());
+      await oldestDecode;
+    } else {
+      await Promise.all(pendingDecodes);
+      pendingDecodes = [];
+      await decode();
+    }
     copied += rows;
   }
-  const bytes = await canvas.encode("png");
+  await Promise.all(pendingDecodes);
   throwIfAborted(signal);
-  return { data: bytes.toString("base64") };
+  // The stitcher resampled the encoded color values; restore their color tags here.
+  const bytes = await trackDecode(stitcher.encode());
+  throwIfAborted(signal);
+  const { prefix, imageOffset } = captureColorChunks(bytes, true);
+  const png = Buffer.concat([...prefix, colorProfile ?? Buffer.alloc(0), bytes.subarray(imageOffset)]);
+  return { data: png.toString("base64") };
 }

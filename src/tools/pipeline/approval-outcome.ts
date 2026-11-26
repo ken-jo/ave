@@ -1,35 +1,117 @@
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { t } from "../../i18n/index.js";
 import {
+  answeredApprovalProvenance,
+  HOST_PROVENANCE,
+  hostApprovalDenialReason,
+  isHostApprovalCancelledDecision,
   isHostApprovalTimeoutDecision,
   isHostApprovalRejectedDecision,
   type ApprovalDecision,
+  type DecisionProvenance,
 } from "../../permissions/approval-gate.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { maskSensitiveData } from "../../shared/dlp.js";
 
-/** Preserve host-owned failures in both tool and directory approval results. */
+/** The host's refusal of a call the quit seal stopped; no person decided it. */
+export function hostShutdownDenial(): PermissionCheckResult {
+  return { decision: "deny", reason: "host-shutdown", provenance: HOST_PROVENANCE };
+}
+
+/** The refusal of a call the user's abort stopped; every user-abort row carries this one. */
+export function userAbortRefusal(): PermissionCheckResult {
+  return { decision: "deny", reason: "user aborted turn", provenance: RULE_PROVENANCE };
+}
+
+/** A refusal an invocation selected for its terminal row before the host ended it. */
+export function isSelectedRefusal(selected: unknown): selected is PermissionCheckResult {
+  return typeof selected === "object" && selected !== null && (selected as PermissionCheckResult).decision === "deny";
+}
+
+/** A fresh refusal with its own reason and provenance; nothing an earlier result carried, such as its deny reasons, survives into it. */
+export function refusal(reason: string, provenance: DecisionProvenance): PermissionCheckResult {
+  return { decision: "deny", reason, provenance };
+}
+
+/** The host's refusal of an approved call; an answered approval stays on the row as the answer the host overrode. */
+export function hostRefusalOfApproval(reason: string, approved: DecisionProvenance): PermissionCheckResult {
+  return { ...refusal(reason, HOST_PROVENANCE), ...(approved.kind === "answered" ? { answer: approved } : {}) };
+}
+
+/** A result an answerer decided: it carries the gate's record of who answered, and throws when the gate kept none. */
+export function answeredPermission(permission: PermissionCheckResult, decision: ApprovalDecision): PermissionCheckResult {
+  return { ...permission, provenance: answeredApprovalProvenance(decision) };
+}
+
+/** A card answer that is not an allow, or that the host rejected: terminal whatever the policy says afterwards. */
+export function isSettledRefusal(decision: ApprovalDecision): boolean {
+  return !decision.choice.startsWith("allow") || isHostApprovalRejectedDecision(decision);
+}
+
+/** A bare cancellation from the gate delegates attribution to the invocation signal. */
+export function abortSupersedesApprovalDecision(
+  abortSignal: AbortSignal | undefined,
+  decision: ApprovalDecision | undefined,
+): boolean {
+  if (abortSignal?.aborted !== true) return false;
+  return decision === undefined || !isSettledRefusal(decision)
+    || (isHostApprovalCancelledDecision(decision) && decision.rememberPattern === undefined);
+}
+
+export class BrowserApprovalError extends Error {
+  constructor(content: string, readonly permission: PermissionCheckResult, readonly cancelled = false) {
+    super(content);
+  }
+}
+
+export function browserApprovalErrorOf(error: unknown): BrowserApprovalError | undefined {
+  if (error instanceof BrowserApprovalError) return error;
+  if (error instanceof Error && error.cause instanceof BrowserApprovalError) return error.cause;
+}
+
+export function approvalCancellationMessage(detail?: string): string {
+  const cancellation = t("be_executor.toolExecutionCancelled");
+  return detail ? `${cancellation} (${detail})` : cancellation;
+}
+
+/** Preserve host-owned failures in tool approval results. */
 export function approvalFailureOutcome(
   decision: ApprovalDecision,
   toolName: string,
-  permission: PermissionCheckResult,
 ): { content: string; permission: PermissionCheckResult } | null {
+  const reason = hostApprovalDenialReason(decision);
+  if (reason === undefined) return null;
+  if (decision.reasonCode === "unattended-approval-denied") {
+    const unattendedReason = t("reasonCodes.unattended-approval-denied");
+    return {
+      content: unattendedReason,
+      permission: {
+        ...refusal(unattendedReason, HOST_PROVENANCE),
+        reasonCode: decision.reasonCode,
+        denyReasons: [{ source: "approval-gate", reason: unattendedReason }],
+      },
+    };
+  }
   const expired = isHostApprovalTimeoutDecision(decision);
-  if (!expired && !isHostApprovalRejectedDecision(decision)) return null;
-  const autoSkipped = expired && decision.rememberPattern === NO_APPROVER_MESSAGE;
-  const reason = autoSkipped ? NO_APPROVER_MESSAGE : expired ? "approval request expired" : "approval rejected by host";
+  const autoSkipped = reason === NO_APPROVER_MESSAGE;
+  const cancelled = isHostApprovalCancelledDecision(decision);
   const detail = decision.rememberPattern
     ? maskSensitiveData(decision.rememberPattern).masked
     : t("be_executor.approvalHostRejectedReason");
+  const cancellationDetail = cancelled && decision.rememberPattern ? detail : undefined;
+  const auditReason = cancellationDetail ?? reason;
   return {
-    content: autoSkipped ? NO_APPROVER_MESSAGE : expired ? t("be_executor.approvalExpired", { name: toolName })
+    content: cancelled ? approvalCancellationMessage(cancellationDetail) : autoSkipped ? NO_APPROVER_MESSAGE : expired ? t("be_executor.approvalExpired", { name: toolName })
       : t("be_executor.approvalRejectedByHost", { name: toolName, reason: detail }),
     permission: {
-      ...permission,
       decision: "deny",
-      reason,
+      reason: auditReason,
+      ...(cancellationDetail === undefined ? {} : { reasonCode: "approval-cancelled" }),
       // Denial audit must record why approval ended, not merely why it was requested.
-      denyReasons: [{ source: "approval-gate", reason }],
+      denyReasons: [{ source: "approval-gate", reason: auditReason }],
+      // The host ended the approval; no person's origin belongs on its row.
+      provenance: HOST_PROVENANCE,
     },
   };
 }

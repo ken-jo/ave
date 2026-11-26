@@ -89,6 +89,11 @@ interface WorkflowTemplateDraft extends WorkflowTemplateDraftInput {
   updatedAt: string;
 }
 export interface ScheduleAttachmentInput extends TemplateVersionPin { scheduleId: string }
+/** The pin and scope shown on the local card, plus a new schedule or the routine to reattach. */
+export type ScheduleAttachmentRequest = TemplateVersionPin & { expectedScope: TemplateScope } & (
+  | { scheduleId: string }
+  | { schedule: import("./routines-types.js").RoutineSchedule }
+);
 export interface ScheduleAttachment extends ScheduleAttachmentInput {
   id: string;
   /** Approved project-registry root, canonicalized at authorization; compared exactly. */
@@ -108,10 +113,10 @@ export interface WorkflowTemplateConfirmInput { expectedGraphHash: string; expec
 export type WorkflowTemplateErrorCode =
   | "invalid-input" | "template-not-found" | "unknown-version" | "graph-hash-mismatch"
   | "confirmed-version-immutable" | "stale-draft" | "no-draft" | "template-archived"
-  | "bad-stage-id" | "too-many-entries" | "envelope-refused"
+  | "bad-stage-id" | "too-many-entries" | "envelope-refused" | "not-current-version" | "routine-not-found"
   | "scope-changed" | "project-mismatch" | "scope-not-authorised" | "output-not-declared"
   | "invalid-template-file" | "invalid-template-run" | "schedule-requires-read-only" | "gate-check-unsupported";
-export type WorkflowTemplateIpcResult<T> = { ok: true; value: T } | { ok: false; refusals?: EnvelopeRefusal[]; error: WorkflowTemplateErrorCode | "unauthorized-frame" | "no-store" | "user-gesture-required" | "storage-error" };
+export type WorkflowTemplateIpcResult<T> = { ok: true; value: T } | { ok: false; refusals?: EnvelopeRefusal[]; error: WorkflowTemplateErrorCode | "unauthorized-frame" | "no-store" | "user-gesture-required" | "user-keyboard-required" | "storage-error" };
 
 export interface WorkItemStageRun {
   stageId: string;
@@ -146,7 +151,7 @@ interface OutputFile { path: string; sha256: string; size: number }
 export interface RequestedOutput { id: string; decl: RequestedOutputDecl; args: string; files?: OutputFile[]; summary: string }
 interface OutputExecution { id: string; status: "pending" | "done" | "failed" | "denied"; at?: string; detail?: string }
 interface JoinConflict { conflictHash: string; reason: "merge-conflict" | "same-path" | "identity-missing" | "interrupted"; files: { path: string; stageIds: string[] }[]; excerpt?: string }
-export interface StageJoin { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflict?: JoinConflict; decidedAt?: string }
+export interface StageJoin { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflictGeneration?: number; conflict?: JoinConflict; decidedAt?: string }
 export interface TemplateRunStart extends RunPin { source: RunAuthoritySource; stageRuns: WorkItemStageRun[] }
 /** The first envelope entry that fails the unattended qualification: stages in graph order, then the collections in this order, then entry order. */
 export interface EnvelopeToolRef { stageId: string; collection: "tools" | "mcpReadOnlyTools" | "mcpGenerationTools" | "pluginGenerationTools"; name: string }

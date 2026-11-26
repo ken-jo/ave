@@ -150,7 +150,7 @@ describe("TelemetryService — audit log uses warn + sanitized url", () => {
       fetchImpl: unusedNetworkFetch,
       settings: () => ({ enabled: true, endpoint: "http://bad.example/x?secret=abc" } as TelemetrySettings),
       isPackaged: true,
-      auditLogger: { log: (e) => entries.push(e) },
+      auditLogger: { log: (e) => { entries.push(e); } },
     });
     expect(svc.isActive()).toBe(false);
     expect(entries.length).toBe(1);

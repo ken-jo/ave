@@ -1,7 +1,9 @@
-/** Catalog keys whose text the model reads: system prompt sections, tool descriptions and results, reviewer instructions (the `be_` namespace), the shell execution environment the system prompt describes, and the routine request the routine panel sends as the
- * user's own message. Compiled catalogs supply these keys. `model-facing-keys.test.ts` fails when a key reaches the model from outside this set. */
+/** Catalog keys for system prompts, tool descriptions and results, reviewer instructions,
+ * shell execution guidance, routine requests, and notices recorded in conversation history.
+ * Compiled catalogs supply these keys. `model-facing-keys.test.ts` guards their coverage. */
 const MODEL_FACING_PREFIXES = ["be_", "shellExecution.", "sandboxPolicy."] as const;
 const MODEL_FACING_KEYS: ReadonlySet<string> = new Set([
+  "app.retiredModelNoticeTitle",
   "routinePanel.naturalRoutinePrompt",
   "pluginPromptOrigin.notDirectInput",
   "pluginPromptOrigin.packageAuthored",

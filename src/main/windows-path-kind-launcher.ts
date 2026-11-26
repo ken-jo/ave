@@ -1,16 +1,21 @@
 import { execFile, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { accessSync, readFileSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { dirname, join, win32 } from "node:path";
+import { lockWindowsExecutable, lockWindowsExecutableAsync, WindowsExecutableError } from "../../scripts/lib/windows-locked-executable.mjs";
+import { windowsPeImageDigest } from "../../scripts/lib/windows-path-kind-image-digest.mjs";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
 import { getHostResources } from "./host-resources.js";
+
+// The signing-stable image digest of the helper built with this bundle; packaging requires the shipped helper to match.
+declare const __AVE_WINDOWS_PATH_KIND_SHA256__: string | null;
 
 // The helper's one answer about a drive: the OS has no mapping for it (native/windows-path-kind/README.md).
 const EXIT_NO_MAPPING = 1;
 
 // What to do when the helper is broken: it ships with Ave, so the install is incomplete.
-const REPAIR = "Reinstall Ave; in a development checkout, build it with scripts/build-windows-job.ps1 -Helper path-kind.";
+const REPAIR = "Reinstall Ave; in a development checkout, build it with bun run build:windows-path-kind.";
 // What to do when the helper gave no answer (helper-unavailable): the same restart wording as the home privacy notice.
 const RESTART = "Restart Ave; if it persists, reinstall Ave.";
 
@@ -19,20 +24,78 @@ export function windowsPathKindHelperIn(resourcePath: string): string {
   return join(resourcePath, "windows-path-kind", process.arch, "ave-path-kind.exe");
 }
 
-export function resolveWindowsPathKindHelper(): string {
-  const binary = windowsPathKindHelperIn(getHostResources().resourcePath);
-  if (!existsSync(binary)) {
-    throw missingWindowsPathKindHelper();
+export function resolveWindowsPathKindHelper(resourcePath = getHostResources().resourcePath): string {
+  const binary = windowsPathKindHelperIn(resourcePath);
+  try {
+    accessSync(binary);
+  } catch (error) {
+    throw helperOpenFailure(error);
   }
+  verifyWindowsPathKindHelper(resourcePath);
   return binary;
 }
 
-function missingWindowsPathKindHelper(): Error {
-  return windowsPathKindHelperUnavailable("Windows folder classifier is missing. Ave cannot tell whether a drive is on another computer, "
-    + `so it reads no folder on a drive. ${RESTART}`);
+/** Dispatch synchronously while the file and its parents are held. An async child is opened before spawn returns. */
+export function withWindowsPathKindHelper<T>(launch: (helper: string) => T, resourcePath = getHostResources().resourcePath): T {
+  if (!pinned()) return launch(resolveWindowsPathKindHelper(resourcePath));
+  let executable: ReturnType<typeof lockWindowsExecutable>;
+  try {
+    executable = lockWindowsExecutable(windowsPathKindHelperIn(resourcePath));
+  } catch (error) {
+    throw helperOpenFailure(error);
+  }
+  try {
+    assertBuiltHelper(executable.bytes);
+    return launch(executable.path);
+  } finally {
+    executable.close();
+  }
+}
+
+// Unbundled source modules under unit tests carry no pin.
+const pinned = (): boolean => typeof __AVE_WINDOWS_PATH_KIND_SHA256__ !== "undefined";
+
+function assertBuiltHelper(bytes: Buffer): void {
+  let digest: string | undefined;
+  try {
+    digest = windowsPeImageDigest(bytes);
+  } catch {
+    digest = undefined;
+  }
+  if (digest === undefined || digest !== __AVE_WINDOWS_PATH_KIND_SHA256__) {
+    throw windowsPathKindHelperUnavailable(`Windows folder classifier does not match this build of Ave. ${REPAIR}`);
+  }
+}
+
+/** Packaged, system-directory and checkout helpers alike must carry the image this bundle was built with. */
+export function verifyWindowsPathKindHelper(resourcePath: string): void {
+  if (!pinned()) return;
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(windowsPathKindHelperIn(resourcePath));
+  } catch (error) {
+    throw helperOpenFailure(error);
+  }
+  assertBuiltHelper(bytes);
 }
 
 const HELPER_UNAVAILABLE = Symbol.for("ave.windows-path-kind-helper-unavailable");
+
+export class WindowsPathKindHelperMissingError extends Error {
+  readonly [HELPER_UNAVAILABLE] = true;
+
+  constructor() {
+    super("Windows folder classifier is missing. Ave cannot tell whether a drive is on another computer, "
+      + `so it reads no folder on a drive. ${RESTART}`);
+  }
+}
+
+function helperOpenFailure(error: unknown): Error {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code === "ENOENT") return new WindowsPathKindHelperMissingError();
+  const detail = error instanceof WindowsExecutableError ? ` ${error.message}.` : typeof code === "string" ? ` (${code}).` : ".";
+  return windowsPathKindHelperUnavailable(`Windows folder classifier could not be opened${detail} ${RESTART}`);
+}
 
 /** The helper is missing, could not start, or did not answer in time: no answer, as opposed to a wrong one. No message names the
  * helper's install path: it reaches the privacy failure reason, the boot gate and the audit log. */
@@ -63,8 +126,7 @@ function helperTimeout(what: string, ms: number): NodeJS.ErrnoException {
 
 export async function queryWindowsDocumentsDirectory(signal?: AbortSignal): Promise<string> {
   signal?.throwIfAborted();
-  const helper = resolveWindowsPathKindHelper();
-  return new Promise((resolve, reject) => {
+  return withWindowsPathKindHelper(helper => new Promise((resolve, reject) => {
     execFile(helper, ["--documents-directory"], {
       windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs, encoding: "buffer", maxBuffer: 128 * 1024, signal,
     }, (error, stdout) => {
@@ -77,21 +139,15 @@ export async function queryWindowsDocumentsDirectory(signal?: AbortSignal): Prom
         reject(cause);
       }
     });
-  });
+  }));
 }
 
 // QueryDosDeviceW opens nothing on the drive; no-mapping is a classification, while helper failure is a broken-install error.
 // See multi-source-git-marketplace.md §18.4.1 for the path contract.
-export function queryDosDevice(drive: string): Promise<string | null> {
-  if (process.platform !== "win32") return Promise.reject(new Error("the folder classifier requires Windows"));
-  if (!/^[A-Za-z]:$/u.test(drive)) return Promise.reject(new Error(`not a drive letter: ${drive}`));
-  let helper: string;
-  try {
-    helper = resolveWindowsPathKindHelper();
-  } catch (error) {
-    return Promise.reject(error);
-  }
-  return new Promise((resolve, reject) => {
+export async function queryDosDevice(drive: string): Promise<string | null> {
+  if (process.platform !== "win32") throw new Error("the folder classifier requires Windows");
+  if (!/^[A-Za-z]:$/u.test(drive)) throw new Error(`not a drive letter: ${drive}`);
+  return withWindowsPathKindHelper(helper => new Promise((resolve, reject) => {
     execFile(helper, [drive], { windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs, encoding: "buffer" }, (error, stdout, stderr) => {
       try {
         // A slow start is no broken install: a restart, not a reinstall, recovers it. Partial output is not read.
@@ -126,27 +182,28 @@ export function queryDosDevice(drive: string): Promise<string | null> {
         reject(cause);
       }
     });
-  });
+  }));
 }
 
-// The packaged helper asks the OS directly; environment variables cannot choose a system verifier.
+// The helper asks the OS directly; environment variables cannot choose a system verifier.
 export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT_POLICY.globalCeilingMs, deadline?: number): Promise<string> {
   if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
-  const helper = windowsPathKindHelperIn(getHostResources().resourcePath);
-  try {
-    await access(helper);
-  } catch {
-    throw missingWindowsPathKindHelper();
-  }
-  return new Promise((resolve, reject) => {
-    const options = windowsSystemDirectorySpawnOptions(helper);
-    const remaining = deadline === undefined ? timeout : Math.min(timeout, deadline - performance.now());
-    if (deadline !== undefined && remaining <= 0) {
-      reject(new DOMException("Windows system directory query timed out", "TimeoutError"));
-      return;
-    }
+  const { resourcePath } = getHostResources();
+  const isPinned = pinned();
+  const timeoutAt = isPinned ? performance.now() + timeout : Infinity;
+  const expiresAt = Math.min(timeoutAt, deadline ?? Infinity);
+  const expired = () => deadline !== undefined && deadline <= timeoutAt
+    ? new DOMException("Windows system directory query timed out", "TimeoutError")
+    : helperTimeout("The Windows system directory query", timeout);
+  const remaining = () => {
+    const ms = Math.min(timeout, expiresAt - performance.now());
+    if (ms <= 0) throw expired();
+    return Math.ceil(ms);
+  };
+  const budget = remaining();
+  const launch = (helper: string, childTimeout: number) => new Promise<string>((resolve, reject) => {
     execFile(helper, ["--system-directory"], {
-      ...options, timeout: Math.ceil(remaining), encoding: "buffer",
+      ...windowsSystemDirectorySpawnOptions(helper), timeout: childTimeout, encoding: "buffer",
     }, (error, stdout, stderr) => {
       if (error && isWindowsPathKindHelperTimeout(error)) {
         reject(helperTimeout("The Windows system directory query", timeout));
@@ -163,18 +220,61 @@ export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT
       }
     });
   });
+  const helper = windowsPathKindHelperIn(resourcePath);
+  if (isPinned) {
+    const cancellation = new AbortController();
+    const checkDeadline = () => {
+      cancellation.signal.throwIfAborted();
+      return remaining();
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const preparationTimeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const error = expired();
+        cancellation.abort(error);
+        reject(error);
+      }, budget);
+    });
+    const prepareAndLaunch = async () => {
+      const executable = await lockWindowsExecutableAsync(helper, checkDeadline).catch((error: unknown) => {
+        checkDeadline();
+        throw helperOpenFailure(error);
+      });
+      try {
+        checkDeadline();
+        assertBuiltHelper(executable.bytes);
+        const spawnTimeout = checkDeadline();
+        clearTimeout(timer);
+        return launch(executable.path, spawnTimeout);
+      } finally {
+        executable.close();
+      }
+    };
+    try {
+      return await Promise.race([prepareAndLaunch(), preparationTimeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  try {
+    await access(helper);
+  } catch (error) {
+    throw helperOpenFailure(error);
+  }
+  return launch(helper, remaining());
 }
 
 export function queryWindowsSystemDirectorySync(): string {
   if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
-  const helper = resolveWindowsPathKindHelper();
-  const options = windowsSystemDirectorySpawnOptions(helper);
-  const result = spawnSync(helper, ["--system-directory"], options);
-  if (isWindowsPathKindHelperTimeout(result.error)) throw helperTimeout("The Windows system directory query", options.timeout);
-  if (result.error || result.status !== 0 || result.stderr.length > 0) {
-    throw new Error(`Windows system directory query failed. ${REPAIR}`, { cause: result.error });
-  }
-  return parseWindowsSystemDirectory(result.stdout);
+  return withWindowsPathKindHelper(helper => {
+    const options = windowsSystemDirectorySpawnOptions(helper);
+    const result = spawnSync(helper, ["--system-directory"], options);
+    if (isWindowsPathKindHelperTimeout(result.error)) throw helperTimeout("The Windows system directory query", options.timeout);
+    if (result.error || result.status !== 0 || result.stderr.length > 0) {
+      throw new Error(`Windows system directory query failed. ${REPAIR}`, { cause: result.error });
+    }
+    return parseWindowsSystemDirectory(result.stdout);
+  });
 }
 
 export function windowsSystemDirectorySpawnOptions(helper: string) {

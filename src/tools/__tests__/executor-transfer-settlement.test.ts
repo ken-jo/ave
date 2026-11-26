@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -83,7 +84,7 @@ async function startInvocation(options: {
   registry.register(tool);
   const permissions = new PermissionManager(join(directory, "permissions.json"));
   vi.spyOn(permissions, "checkDetailed").mockReturnValue({
-    decision: "allow",
+    decision: "allow", provenance: RULE_PROVENANCE,
     reason: "test invocation admitted",
     });
   const auditLogger = new AuditLogger(join(directory, "audit"));
@@ -245,6 +246,20 @@ describe.each(INTERRUPTIONS)("builtin cancellation settlement after %s", (reason
     expect(invocation.terminalAudits()[0].output?.length).toBeLessThanOrEqual(1024);
   });
 
+  it("keeps a settled result's notice after the cut, inside the same bound", async () => {
+    const invocation = await startInvocation();
+    await invocation.interrupt(reason);
+    const notice = "cwd-pin-unconfirmed: the run is treated as failed";
+    invocation.task.resolve({ output: `${"x".repeat(TOOL_RESULT_READ_MAX_CHARS * 2)}\n${notice}`, isError: true, notice });
+    const [result] = await invocation.execution;
+    const prefix = `${interruptionText(reason)}\n\n[Tool result after interruption]\n`;
+    expect(result.content.length - prefix.length).toBe(TOOL_RESULT_READ_MAX_CHARS);
+    for (const surface of [result.content, invocation.onToolEnd.mock.calls[0]?.[1]]) {
+      expect(surface).toContain(`[Settled detail truncated]\n${notice}`);
+    }
+    if (reason !== "ceiling") expect(result.content.endsWith(notice)).toBe(true);
+  });
+
   it.each([
     ["result", false], ["result", true], ["error", false], ["error", true],
   ] as const)("masks settled %s detail for display and audit with PII policy %s", async (kind, pii) => {
@@ -313,6 +328,17 @@ describe.each(INTERRUPTIONS)("builtin cancellation settlement after %s", (reason
     await vi.advanceTimersByTimeAsync(0);
     expect(invocation.onToolEnd).toHaveBeenCalledOnce();
     expect(result.content).not.toContain("late output");
+  });
+});
+
+describe.each(INTERRUPTIONS)("an ordinary handler still settling after %s", (reason) => {
+  it("names the interruption in the plain record, never ok", async () => {
+    const invocation = await startInvocation({ marked: false });
+    await invocation.interrupt(reason);
+    const [result] = await invocation.execution;
+    invocation.task.resolve({ output: "late success", isError: false });
+    expect(result.is_error).toBe(true);
+    expect(invocation.terminalAudits()[0].toolCalls?.[0]).toMatchObject({ terminationReason: reason, isError: true });
   });
 });
 

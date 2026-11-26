@@ -1,4 +1,5 @@
-import { dialog, type IpcMainInvokeEvent } from 'electron';
+import { pickNativeFiles } from "../../main/desktop-approval-presentation.js";
+import type { IpcMainInvokeEvent } from 'electron';
 import { watch } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import { permissionSettingsPath } from '../../permissions/permission-settings-store.js';
@@ -207,7 +208,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
       const admission = await refreshLocalInferenceAdmission();
       assertCurrentModelRequest(generation);
       localRuntime(admission);
-      const selection = await dialog.showOpenDialog({ properties: ['openDirectory'] });
+      const selection = await pickNativeFiles({ properties: ['openDirectory'] });
       const folder = selection.filePaths[0];
       if (selection.canceled || !folder) return null;
       return startModelOperation(generation, event, onProgress => model.adoptExistingFolder(folder, onProgress, onAdmission));

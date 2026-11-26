@@ -3,12 +3,13 @@ import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 /** The agent browser tools through the real ToolExecutor, PermissionManager, ApprovalGate and approval store, over the real main-side tab registry with fake guests and fake page actions. Covers
  * who is asked when (agent tab vs user tab, per origin, per action), the TOCTOU re-check, window scope, denied schemes, the untrusted-content fence, and user takeover cancelling a pending action. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { t } from "../../i18n/index.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
-import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { ApprovalGate, answeredApprovalProvenance, answeredRecordForAction, type ApprovalDecision, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { registerRunSession, __resetRunGrantsForTest } from "../../permissions/run-grants.js";
@@ -166,6 +167,8 @@ describe("browser tools", () => {
     logicalReview?: (input: import("../../permissions/reviewer/user-owned-surface-reviewer.js").UserOwnedSurfaceReviewInput) => Promise<{ consistent: boolean; reason: string }>;
     headless?: boolean;
     onCard?: (card: ApprovalRequest) => void | Promise<void>;
+    leaveCardUnanswered?: boolean;
+    approvalWaitMs?: number;
     denyAction?: boolean;
     beforeActions?: () => void | Promise<void>;
     onPrepare?: (target: BrowserActionTab<FakeGuest>) => void | Promise<void>;
@@ -234,6 +237,7 @@ describe("browser tools", () => {
             });
           }
           await options.onCard?.(request);
+          if (options.leaveCardUnanswered) return;
           gate.resolveFromDesktopRenderer(request.id, {
             requestId: request.id,
             choice: options.denyAction && !request.browserSite || options.denySurface && request.userOwnedSurface || options.denySite && request.browserSite ? "deny-once" : "allow-once",
@@ -245,7 +249,7 @@ describe("browser tools", () => {
         })());
       },
     };
-    const gate = new ApprovalGate(nativeWebContents as never);
+    const gate = new ApprovalGate(nativeWebContents as never, undefined, options.approvalWaitMs);
     const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
     let seq = 0;
     const run = async (name: string, input: Record<string, unknown>, sessionId: string | undefined = HOST_SESSION) => {
@@ -286,6 +290,79 @@ describe("browser tools", () => {
     return { run, cards, settled, gate, page, tabs, userTab, agentTab, ops, browserTools, manager };
   }
 
+  it.each(["site consent", "destination action"] as const)(
+    "honors %s after the destination check reloads project rules", async (approval) => {
+      const h = harness();
+      const tab = await h.agentTab("https://a.example/");
+      const url = "https://b.example/redirect";
+      await h.manager.ensureProjectRulesLoaded(dir);
+      const externalWriter = new PermissionManager(join(dir, "permissions.json"));
+      const checkNetworkRules = h.manager.checkNetworkRules.bind(h.manager);
+      const destinationCheck = vi.spyOn(h.manager, "checkNetworkRules").mockImplementationOnce(async (...args) => {
+        expect(args[0]).toBe(url);
+        const before = h.manager.getPolicyEpoch();
+        await externalWriter.addRulePersist({
+          pattern: "WebFetch(domain:b.example)", action: approval === "site consent" ? "allow" : "ask",
+        }, { kind: "project", projectCwd: dir });
+        const rules = await checkNetworkRules(...args);
+        expect(h.manager.getPolicyEpoch()).not.toBe(before);
+        return rules;
+      });
+      let continued = false;
+      h.page.actions.click = async target => {
+        if (!target.authorizeSite) throw new Error("Missing site authorization");
+        await target.authorizeSite(url);
+        continued = true;
+      };
+      const result = await h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+      expect(destinationCheck).toHaveBeenCalled();
+      expect(h.cards.map(card => card.browserSite)).toEqual(
+        approval === "site consent" ? [browserOrigin(url)] : [undefined, browserOrigin(url)],
+      );
+      expect(result.isError, String(result.output)).toBe(false);
+      expect(continued).toBe(true);
+    },
+  );
+
+  describe.each(["site consent", "destination action"] as const)("%s card", (kind) => {
+    it.each(["denied", "rejected", "expired", "cancelled"] as const)("preserves the %s outcome in the result and audit", async (outcome) => {
+      await auditLogger.setupPermissionAuditChain("aa".repeat(32));
+      const h = harness({
+        denySite: outcome === "denied", denyAction: outcome === "denied",
+        leaveCardUnanswered: outcome === "expired",
+        approvalWaitMs: outcome === "expired" ? 10 : undefined,
+        onCard: (card) => {
+          if (outcome === "cancelled") expect(h.gate.cancelPendingRequest(card.id, HOST_SESSION, "project-scope-changed")).toBe(true);
+        },
+      });
+      if (outcome === "rejected") vi.spyOn(h.gate, "requestAndWait").mockImplementationOnce(async ({ id }) => ({ requestId: id, choice: "deny-once" }));
+      const tab = await h.agentTab("https://a.example/");
+      const url = "https://restricted.example/";
+      if (kind === "destination action") await h.manager.addRulePersist({ pattern: "WebFetch(domain:restricted.example)", action: "ask" }, { kind: "user" });
+      let navigated = false;
+      h.page.actions.click = async target => {
+        await target.authorizeSite?.(url);
+        navigated = true;
+      };
+      const result = await h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+      const detail = {
+        denied: t("be_executor.approvalDeniedByUser", { name: BROWSER_TOOL.click }),
+        rejected: t("be_executor.approvalHostRejectedReason"),
+        expired: t("be_executor.approvalExpired", { name: BROWSER_TOOL.click }),
+        cancelled: "project-scope-changed",
+      }[outcome];
+      expect.soft(result).toMatchObject({ isError: true, output: expect.stringContaining(detail) });
+      const terminal = readFileSync(auditLogger.getPermissionAuditLogFile(), "utf8").trim().split("\n")
+        .map(line => JSON.parse(line)).at(-1);
+      expect(terminal).toMatchObject({
+        toolUseId: "call-1", decision: "deny", terminalKind: outcome === "cancelled" ? "cancelled" : "denied",
+        trustOrigin: outcome === "denied" ? "user-keyboard" : "unknown",
+      });
+      expect(navigated).toBe(false);
+      expect(h.manager.browserSites.allows(HOST_SESSION, url)).toBe(false);
+    });
+  });
+
   it("asks for a new site once and lets later tools and same-origin navigation run", async () => {
     const h = harness();
     const tab = await h.agentTab("https://a.example");
@@ -318,7 +395,7 @@ describe("browser tools", () => {
     expect(h.page.calls).toHaveLength(before);
   });
 
-  it.each(["allow", "deny", "revoke"])("enforces destination ask before remembered site consent: %s", async (answer) => {
+  it.each(["allow", "deny", "revoke", "mode change"])("enforces destination ask before remembered site consent: %s", async (answer) => {
     let resolve!: () => void;
     const wait = new Promise<void>(done => { resolve = done; });
     const h = harness({ denyAction: answer === "deny", onCard: () => wait });
@@ -337,6 +414,7 @@ describe("browser tools", () => {
     expect(h.cards[0]?.browserSite).toBeUndefined();
     expect(h.cards[0]).toMatchObject({ exactRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"] });
     if (answer === "revoke") await h.manager.addRulePersist({ pattern: "WebFetch(domain:restricted.example)", action: "deny" }, { kind: "user" });
+    if (answer === "mode change") h.manager.setMode("strict");
     resolve();
     expect((await action).isError).toBe(answer !== "allow");
     expect(continued).toBe(answer === "allow");
@@ -748,16 +826,39 @@ describe("browser tools", () => {
     if (action === "ask") expect(cards.some(card => card.browserSite === undefined && card.exactRecordAllowed === false)).toBe(true);
   });
 
+  it("binds the browser action and site answers to their invocation, so another invocation cannot settle with them", async () => {
+    const { run, cards, agentTab, manager, gate } = harness({ mode: "default" });
+    const tab = await agentTab("https://example.com/");
+    await manager.addRulePersist({ pattern: "WebFetch(domain:evil.com)", action: "ask" }, { kind: "user" });
+    const answered: ApprovalDecision[] = [];
+    const requestAndWait = gate.requestAndWait.bind(gate);
+    vi.spyOn(gate, "requestAndWait").mockImplementation(async (request) => {
+      const decision = await requestAndWait(request);
+      answered.push(decision);
+      return decision;
+    });
+    expect((await run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://evil.com/x" })).isError).toBe(false);
+    expect(answered.length).toBe(cards.length);
+    expect(cards.some((card) => card.browserSite !== undefined)).toBe(true);
+    expect(cards.some((card) => card.browserSite === undefined && card.reason === "A destination rule requires approval for this navigation.")).toBe(true);
+    for (const decision of answered) {
+      const provenance = answeredApprovalProvenance(decision);
+      expect(answeredRecordForAction(provenance, "allow", BROWSER_TOOL.navigate, "call-1").toolUseId).toBe("call-1");
+      expect(() => answeredRecordForAction(provenance, "allow", BROWSER_TOOL.navigate, "other-invocation")).toThrow("does not settle this allow");
+    }
+  });
+
   // The site card is answered while the policy moves (pending-answer-policy.ts): a sibling stage's "Allow for this run" leaves the
   // answer standing; any other change refuses it, and so does a destination the rules now treat more strictly than when it was asked.
   // The same with rules as they are really saved and dropped, no stand-in for the re-check: a run's own network rule that goes with
   // its run is a memory-only step and leaves the answer standing; a deny or an ask rule saved for the destination refuses it.
-  it.each(["run with a network rule ends", "deny rule saved", "ask rule saved"] as const)("a site card answered while real rules change: %s", async (change) => {
+  it.each(["run with a network rule ends", "deny rule saved", "ask rule saved", "mode change"] as const)("a site card answered while real rules change: %s", async (change) => {
     let changed = false;
     const h = harness({ mode: "default", onCard: async (card) => {
       if (card.browserSite === undefined || changed) return;
       changed = true;
       if (change === "run with a network rule ends") expect(h.manager.endRun("work-board:7#run-a")).toBe(true);
+      else if (change === "mode change") h.manager.setMode("strict");
       else await h.manager.addRulePersist({ pattern: "WebFetch(domain:evil.com)", action: change === "deny rule saved" ? "deny" : "ask" }, { kind: "user" });
     } });
     try {

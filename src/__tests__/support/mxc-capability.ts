@@ -1,6 +1,7 @@
 import type { TestContext } from "vitest";
-import { readdirSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { resolve } from "node:path";
+import { windowsPathKindCrateFiles } from "../../../scripts/lib/windows-path-kind-build.mjs";
 import { resolveWindowsPathKindHelper } from "../../main/windows-path-kind-launcher.js";
 import { detectHostMxcPrerequisites, probeHostMxcPowerShellStart } from "../../permissions/mxc-windows.js";
 import type { MxcSupport } from "../../permissions/mxc-windows.js";
@@ -30,10 +31,9 @@ export async function requireMxcPrerequisites(skip: TestContext["skip"]): Promis
 /** Native pipe tests need the current helper; the build is an owner action. */
 export function requireMxcPolicyPipeHelper(skip: TestContext["skip"]): void {
   const helper = resolveWindowsPathKindHelper();
-  const sources = resolve("native/windows-path-kind");
+  const root = process.cwd();
   const built = statSync(helper).mtimeMs;
-  if (readdirSync(sources).filter((name) => /\.(cpp|h)$/.test(name))
-    .some((name) => statSync(resolve(sources, name)).mtimeMs > built)) {
+  if (windowsPathKindCrateFiles(root).some((file) => statSync(resolve(root, file)).mtimeMs > built)) {
     skip("Native policy pipe helper is stale; owner must rebuild the Windows path-kind helper");
   }
 }

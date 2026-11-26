@@ -3,18 +3,18 @@ import { EnvHttpProxyAgent, fetch as undiciFetch, setGlobalDispatcher, type Disp
 import { createNodeSecretEncryption } from "../data/node-secret-encryption.js";
 import { createSafeLlmFetch } from "../main/safe-llm-fetch.js";
 import type { HostFetchTransport } from "../main/host-fetch-guard.js";
+import type { HostResources } from "../main/host-resources.js";
 import { ensureCorporateCaInjected } from "../main/corp-ca-runtime.js";
 import { readPersistedCorpCaConfigSync } from "../main/persisted-corp-ca.js";
 import { getRuntimeSensitiveKeyPaths, protectRuntimeSettingsPath } from "../permissions/sensitive-paths.js";
 import { settingsFilePath } from "../data/settings-store.js";
 import { WIRE_BYTES_MAX } from "../plugins/isolation/host-api-wire.js";
+import { openLocalityDecision, withLocalityDecision } from "../shared/local-path-io.js";
 import type { BootHost } from "./host-runtime.js";
 
-export interface NodeBootHostOptions {
+export interface NodeBootHostOptions extends HostResources {
   userDataPath: string;
-  resourcePath: string;
   keyFilePath?: string;
-  isPackaged: boolean;
 }
 
 async function prepareBufferedBody(input: string, init: RequestInit): Promise<RequestInit> {
@@ -79,7 +79,7 @@ export function createNodeHostFetchTransport(dispatcher: Dispatcher): HostFetchT
 /** Owns server egress and credentials for the lifetime of one host process. */
 export async function createNodeBootHost(options: NodeBootHostOptions): Promise<BootHost> {
   const encryption = createNodeSecretEncryption(options.keyFilePath);
-  getRuntimeSensitiveKeyPaths();
+  withLocalityDecision(getRuntimeSensitiveKeyPaths, openLocalityDecision(options.resourcePath));
   await ensureCorporateCaInjected(readPersistedCorpCaConfigSync(options.userDataPath));
   const ca = https.globalAgent.options.ca;
   const dispatcher = new EnvHttpProxyAgent({
@@ -102,7 +102,10 @@ export async function createNodeBootHost(options: NodeBootHostOptions): Promise<
     relaunch: () => { throw new Error("relaunch-unsupported"); },
     close: () => dispatcher.destroy(),
   };
-  const releaseSettingsPath = protectRuntimeSettingsPath(settingsFilePath(host.userDataPath));
+  const releaseSettingsPath = withLocalityDecision(
+    () => protectRuntimeSettingsPath(settingsFilePath(host.userDataPath)),
+    openLocalityDecision(host.resourcePath),
+  );
   const close = host.close.bind(host);
   host.close = async () => {
     try { await close(); } finally { releaseSettingsPath(); }

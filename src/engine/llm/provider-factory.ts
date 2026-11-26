@@ -50,6 +50,7 @@ class LazyVercelProvider implements LLMProvider {
               vertexLocation: cfg.vertexLocation,
               ...(cfg.openaiWire ? { openaiWire: cfg.openaiWire } : {}),
               ...(cfg.wire ? { wire: cfg.wire } : {}),
+              getRetiredModelId: cfg.getRetiredModelId,
             },
           ] as const;
           return cfg.providerMetadata
@@ -84,7 +85,10 @@ export function createProvider(config: ProviderConfig): LLMProvider {
 export async function createEmbeddingModel(config: ProviderConfig, modelId: string) {
   const { VercelUnifiedProvider } = await loadAdapterModule();
   if (!config.fetch) throw new Error('Embedding transport is required');
-  return new VercelUnifiedProvider(config.vendor, config.apiKey, config.baseUrl, config.fetch, { wire: config.wire }, config.providerMetadata).embeddingModel(modelId);
+  return new VercelUnifiedProvider(
+    config.vendor, config.apiKey, config.baseUrl, config.fetch,
+    { wire: config.wire, getRetiredModelId: config.getRetiredModelId }, config.providerMetadata,
+  ).embeddingModel(modelId);
 }
 
 export { llmVendorSecretKey as secretKeyFor } from "../../shared/llm-vendor-defaults.js";

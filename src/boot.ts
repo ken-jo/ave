@@ -2,7 +2,7 @@ import type { MainWindow } from "./main/main-window-host.js";
 import { readPluginRegistry, vouchedInstalledPluginIds } from "./plugins/registry.js";
 import { requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
 import { approvalSurfaceResolver } from "./boot/approval-surface.js";
-import { configureHostResources } from "./main/host-resources.js";
+import { configureHostResources, getConfiguredHostResources } from "./main/host-resources.js";
 /**
  * Boot Sequence — §4.2 (thin orchestrator).
  *
@@ -171,8 +171,13 @@ export async function bootstrap(
   startupSignal?: AbortSignal,
 ): Promise<AppServices> {
   startupSignal?.throwIfAborted();
+  const resources = getConfiguredHostResources();
+  if (resources === undefined) {
+    configureHostResources(host);
+  } else if (resources.resourcePath !== host.resourcePath || resources.isPackaged !== host.isPackaged) {
+    throw new Error("host-resources-mismatch");
+  }
   configureAppShutdownHost(host);
-  configureHostResources(host);
   log.info("boot: starting...");
   const bootStarted = performance.now();
   let phaseStarted = bootStarted;
@@ -319,7 +324,7 @@ export async function bootstrap(
   // Construct the audited approval gate before services bind effect permissions.
   const approvalGate = await createApprovalGate(
     // Resolve the current conversation owner on delivery, listing and response.
-    mainWindow === null ? null : approvalSurfaceResolver(),
+    mainWindow === null ? null : approvalSurfaceResolver(undefined, () => host.desktop?.getAppWindows() ?? []),
     ctx.bootAuditLogger,
     ctx.notificationService,
 

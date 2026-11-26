@@ -42,10 +42,9 @@ function boardApi({ surface = "chat", items = [runningItem()] }: BoardOptions = 
   const progress: Array<(p: RunProgressEventPayload) => void> = [];
   const started: Array<(p: { itemId: number }) => void> = [];
   const noop = () => () => {};
-  const steer = vi.fn(async (_id: number, _text: string, _intent?: unknown): Promise<unknown> => ({ ok: true, messageId: "m-1" }));
+  const steer = vi.fn(async (_id: number, _text: string): Promise<unknown> => ({ ok: true, messageId: "m-1" }));
   const cancel = vi.fn(async (_id: number): Promise<unknown> => ({ ok: true }));
   const update = vi.fn(async (_id: number, _patch: unknown): Promise<unknown> => ({ status: "updated" }));
-  const intent = { inputOrigin: "user-keyboard" as const, token: "tok" };
   const api = {
     listWorkBoard: vi.fn(async () => ({ status: "ok" as const, items })),
 
@@ -68,7 +67,6 @@ function boardApi({ surface = "chat", items = [runningItem()] }: BoardOptions = 
     steerWorkBoardRun: steer,
     cancelWorkBoardRun: cancel,
     updateWorkBoardItem: update,
-    captureUserKeyboardIntent: () => intent,
   } as unknown as AveApi;
   // A phase entry re-lists the board; settle that read so the cards are back before the test looks.
   const emit = async (ev: Omit<RunProgressEventPayload, "at"> & { at?: string }) => {
@@ -79,7 +77,7 @@ function boardApi({ surface = "chat", items = [runningItem()] }: BoardOptions = 
   const start = async (itemId: number) => {
     await act(async () => { for (const h of started) h({ itemId }); });
   };
-  return { api, emit, start, steer, cancel, update, intent };
+  return { api, emit, start, steer, cancel, update };
 }
 
 function childApproval(): ApprovalRequest {
@@ -223,8 +221,8 @@ describe("Work Board — live step panel", () => {
     expect(within(panel).getByTestId("live-step-summary").textContent).toContain(t("workBoard.liveSummaryTurn", { turn: 2 }));
   });
 
-  it("sends a steer from Enter with the gesture's intent, and shows it sent, then delivered", async () => {
-    const { emit, steer, intent } = await mountBoard();
+  it("sends a steer from Enter, and shows it sent, then delivered", async () => {
+    const { emit, steer } = await mountBoard();
     await emit({ itemId: 4, phase: "executing", runSessionId: CHILD });
     await emit({ itemId: 4, phase: "executing", turn: 2, text: "Wrote the failing test" });
     const panel = await openSteps();
@@ -232,7 +230,7 @@ describe("Work Board — live step panel", () => {
     fireEvent.change(input, { target: { value: "also cover the refresh path" } });
     expect(within(panel).getByTestId("live-step-steer-count").textContent).toBe(t("workBoard.liveSteerCounter", { count: 27, max: 4000 }));
     await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); });
-    expect(steer).toHaveBeenCalledWith(4, "also cover the refresh path", intent);
+    expect(steer).toHaveBeenCalledWith(4, "also cover the refresh path");
     const bubble = await within(panel).findByTestId("live-step-steer");
     expect(bubble.dataset.status).toBe("sent");
     expect(bubble.textContent).toContain("also cover the refresh path");

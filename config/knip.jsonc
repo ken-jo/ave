@@ -38,6 +38,7 @@
         // Executed as a separate managed child, not imported into the host loop.
         "src/tools/image-preparation-child.ts",
         "src/tools/preview-document-child-main.ts",
+        "src/main/browser/browser-capture-stitch-child-main.ts",
         "src/main/memory-map/inference-child-main.ts",
         // Started as the resident repository-inspection worker thread by its built path.
         "src/permissions/rules/git-repository-inspection-worker-main.ts",
@@ -168,6 +169,8 @@
     "hdiutil",
     // Windows ACL inspection from the ave-home privacy regression.
     "icacls",
+    // The macOS release architecture audit reads Mach-O slices through the system tool.
+    "lipo",
     "lsof",
     "mountvol",
     "mkfifo",
@@ -180,6 +183,7 @@
     // Windows PowerShell 5.1 env helper survives an inherited 7.x module path.
     "pwsh.exe",
     "python3",
+    "rustup",
     "subst",
     "taskkill",
     "where"

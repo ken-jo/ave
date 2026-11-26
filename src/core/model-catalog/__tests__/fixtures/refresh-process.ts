@@ -1,13 +1,44 @@
+import lockfile from "proper-lockfile";
 import { promises as dns } from "node:dns";
+import * as fs from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
+import { deferred } from "../../../../__tests__/support/deferred.js";
+
+const [, , home, writer] = process.argv;
+const send = process.send?.bind(process);
+if (!home || (writer !== "first" && writer !== "second") || !send) throw new Error("Expected a refresh writer with an IPC channel");
+
+const releaseResponse = deferred<void>();
+if (writer === "first") {
+  process.once("message", (message) => {
+    if (message === "release-response") releaseResponse.resolve();
+  });
+} else {
+  const lock = lockfile.lock;
+  let notified = false;
+  lockfile.lock = (path, options) => lock(path, {
+    ...options,
+    fs: {
+      ...fs,
+      mkdir(lockPath: string, callback: (error: NodeJS.ErrnoException | null) => void) {
+        fs.mkdir(lockPath, (error) => {
+          if (error?.code === "EEXIST" && !notified) {
+            notified = true;
+            send("lock-contended");
+          }
+          callback(error);
+        });
+      },
+    },
+  });
+}
 
 dns.lookup = (async () => [{ address: "93.184.215.14", family: 4 }]) as unknown as typeof dns.lookup;
 syncBuiltinESMExports();
 const { buildModelCatalogDocument } = await import("../../document-builder.js");
 const { refreshModelCatalogCache, MODEL_CATALOG_REFRESH_URL } = await import("../../refresh.js");
-const home = process.argv[2]!;
 const input = { openai: { id: "openai", models: { fixture: { id: "fixture", limit: { context: 400_000 } } } } };
 const reference = buildModelCatalogDocument({
   input, providerIds: ["openai"],
@@ -16,7 +47,10 @@ const reference = buildModelCatalogDocument({
 }).document;
 const fetchImpl = (async () => {
   await appendFile(join(home, "requests.log"), "request\n");
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  if (writer === "first") {
+    send("response-held");
+    await releaseResponse.promise;
+  }
   return new Response(JSON.stringify(input));
 }) as typeof fetch;
 const result = await refreshModelCatalogCache({

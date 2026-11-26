@@ -16,7 +16,7 @@ import { holdWindowsFilesystemGrant } from "../windows-acl-grant-holder.js";
 import { win32SystemBinary } from "../../shared/ave-home.js";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { configureHostResources } from "../../main/host-resources.js";
-import { prepareSrtWinExecutable, srtWinPrivateDirectories, sweepStaleSrtWinDirectories } from "../srt-win-integrity.js";
+import { prepareSrtWinExecutable, srtWinConfinementStatePaths, srtWinPrivateDirectories, sweepStaleSrtWinDirectories } from "../srt-win-integrity.js";
 import { recoverWindowsAcl, restoreWindowsAcl, stampWindowsAcl } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { readWindowsDenyAcls } from "../windows-deny-acl.js";
 import { openEgressInvocation } from "../egress-invocations.js";
@@ -211,7 +211,7 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     }
   }, 60_000);
 
-  it("creates nothing for a fresh git workspace grant or a home-root grant, and git status stays clean", async () => {
+  it("creates nothing for a fresh git workspace grant or a refused home-root grant, and git status stays clean", async () => {
     const workspace = join(root, "workspace");
     mkdirSync(workspace);
     const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=alice", "-c", "user.email=alice@example.com", ...args],
@@ -222,13 +222,18 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     git("commit", "-q", "-m", "fixture");
     const before = entriesBelow(root);
     await initializeRequiredSandbox({ allowRead: [root] });
-    for (const allowWrite of [[workspace], [root]]) {
-      const held = await holdWindowsFilesystemGrant({ label: "watched-fresh-native", allowRead: [], allowWrite });
-      try {
-        expect(entriesBelow(root)).toEqual(before);
-        expect(watchedProtectedRows()).toContain(join(allowWrite[0] ?? "", ".vscode"));
-      } finally { held.release(); }
-    }
+    const held = await holdWindowsFilesystemGrant({ label: "watched-fresh-native", allowRead: [], allowWrite: [workspace] });
+    try {
+      expect(entriesBelow(root)).toEqual(before);
+      expect(watchedProtectedRows()).toEqual(expect.arrayContaining(
+        [".vscode", ".agents", ".ave/commands", ".ave/hooks"].map(name => join(workspace, name)),
+      ));
+    } finally { held.release(); }
+    // The profile root holds the helper's default ledger, so a write grant on it is refused before anything is stamped.
+    expect(srtWinConfinementStatePaths()).toContain(join(root, "AppData", "Local", "sandbox-runtime"));
+    await expect(holdWindowsFilesystemGrant({ label: "watched-fresh-native", allowRead: [], allowWrite: [root] }))
+      .rejects.toMatchObject({ code: "confinement-state-write-grant", reason: "helper-ledger", path: root });
+    expect(entriesBelow(root)).toEqual(before);
     await resetAsrtSandbox();
     expect(entriesBelow(root)).toEqual(before);
     expect(git("status", "--porcelain")).toBe("");
@@ -238,7 +243,6 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     const { workspace, held } = await grantedWorkspace();
     try {
       const { wrapped, invocation } = await runPlantingTasks(workspace);
-      expect(isHostGitWorkspaceAvailable(workspace)).toBe(false);
       vi.stubEnv("AVE_HOME", sameVolumeAveHome());
       invocation.release();
       const outcome = await wrapped.cleanupCompleted;
@@ -250,6 +254,20 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
       expect(entry).toMatchObject({ original: join(workspace, ".vscode"), row: join(workspace, ".vscode"), commandId: invocation.token });
       expect(readFileSync(join(entry?.quarantined ?? "", "tasks.json"), "utf8")).toContain("planted");
       expect(readFileSync(join(workspace, "allowed"), "utf8")).toContain("allowed");
+      expect(isHostGitWorkspaceAvailable(workspace)).toBe(true);
+    } finally { held.release(); }
+  }, 60_000);
+
+  it("refuses host Git while a command-created watched name is present, and moves it once", async () => {
+    const { workspace, held } = await grantedWorkspace();
+    try {
+      const { wrapped, invocation } = await runPlantingTasks(workspace);
+      vi.stubEnv("AVE_HOME", sameVolumeAveHome());
+      expect(isHostGitWorkspaceAvailable(workspace)).toBe(false);
+      invocation.release();
+      await wrapped.cleanupCompleted;
+      await vi.waitFor(() => expect(lstatSync(join(workspace, ".vscode"), { throwIfNoEntry: false })).toBeUndefined(), { timeout: 15_000 });
+      expect(listWatchedQuarantine()).toEqual([expect.objectContaining({ original: join(workspace, ".vscode") })]);
       expect(isHostGitWorkspaceAvailable(workspace)).toBe(true);
     } finally { held.release(); }
   }, 60_000);
@@ -404,6 +422,16 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     } finally { restoreWindowsAcl({ sandboxUserSid: sid, srtWin }); }
     expect(descriptor(dirname(directory))).not.toContain(sid);
     expect(descriptor(os.tmpdir())).not.toContain(sid);
+  }, 60_000);
+
+  it("refuses to stamp a deny target that does not exist and leaves it absent", () => {
+    const { sid, srtWin } = helper();
+    const target = join(container, "vanished", "hooks");
+    mkdirSync(dirname(target));
+    try {
+      expect(() => stampWindowsAcl({ sandboxUserSid: sid, srtWin, denyRead: [], denyWrite: [target] })).toThrow(/does not exist/);
+      expect(lstatSync(target, { throwIfNoEntry: false })).toBeUndefined();
+    } finally { restoreWindowsAcl({ sandboxUserSid: sid, srtWin }); }
   }, 60_000);
 
   it("diagnoses a legacy temp-root ACE without changing that ACL", () => {

@@ -4,6 +4,7 @@ import { embedMany } from 'ai';
 import type { SettingsService } from '../../data/settings-store.js';
 import { createEmbeddingModel, secretKeyFor } from '../../engine/llm/provider-factory.js';
 import { createPublicModelProviderFetch, selectProviderRuntimeFetch } from '../../engine/llm/marketplace-provider-fetch.js';
+import { noRetirementEvidence } from '../../engine/llm/model-wire-gate.js';
 import { LLM_VENDORS, getLlmVendorSettings, canUseLlmVendorWithoutApiKey, isOpenAICompatibleVendor } from '../../shared/llm-vendor-defaults.js';
 import { marketplaceProviderPresetSecretKey } from '../../shared/marketplace-package-assets.js';
 import { createSafeLlmFetch } from '../safe-llm-fetch.js';
@@ -156,7 +157,7 @@ export class ProviderEmbeddings {
       const apiKey = await this.settings.getSecret(route.secret) ?? '';
       if (!apiKey && (route.preset ? route.preset.requiresApiKey !== false : !canUseLlmVendorWithoutApiKey(route.vendor, route.block))) throw new MemoryMapHostError('provider-unavailable');
       assertCurrent();
-      const model = await createEmbeddingModel({ vendor: route.vendor, apiKey, baseUrl: route.baseUrl, wire: route.block.wire, fetch: fetchImpl, providerMetadata: route.preset }, modelId);
+      const model = await createEmbeddingModel({ vendor: route.vendor, apiKey, baseUrl: route.baseUrl, wire: route.block.wire, fetch: fetchImpl, providerMetadata: route.preset, getRetiredModelId: noRetirementEvidence }, modelId);
       const outcome = await runWithCeiling(abortSignal => embedMany({ model, values, abortSignal, maxParallelCalls: 1, maxRetries: 0, telemetry: { isEnabled: false, recordInputs: false, recordOutputs: false } }), TOOL_TIMEOUT_POLICY.modelStreamIdleCeilingMs, signal, 'memory embeddings');
       if (!outcome.ok) throw outcome.error;
       const { embeddings } = outcome.value;

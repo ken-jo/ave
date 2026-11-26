@@ -1,13 +1,14 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-import type { AuditLogger } from "../../audit/audit-logger.js";
+import { AuditLogger } from "../../audit/audit-logger.js";
 import { HookRunner } from "../../hooks/hook-runner.js";
 import type { ScriptHookManager } from "../../hooks/script-hook-manager.js";
-import type { ApprovalGate } from "../../permissions/approval-gate.js";
+import { answeredApprovalProvenance, type ApprovalGate } from "../../permissions/approval-gate.js";
+import { answeredApprovalDecision } from "../../__tests__/support/answering-approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { makePermissionManager } from "./executor-reviewer-fixtures.js";
 import { createDynamicTool } from "../base.js";
@@ -204,7 +205,7 @@ function tracedStartCas(
   };
 }
 
-async function fixture() {
+async function fixture(audit?: (directory: string) => Promise<AuditLogger>) {
   const directory = mkdtempSync(join(tmpdir(), "ave-rationale-resume-"));
   const order: string[] = [];
   const invocationAudits: InvocationAuditRecord[] = [];
@@ -240,6 +241,7 @@ async function fixture() {
     }),
   } as unknown as ApprovalGate;
   const scriptHooks = createScriptHooks(order);
+  const auditLogger = audit ? await audit(directory) : createAuditLogger(order, directory);
   const executor = new ToolExecutor(
     registry,
     hooks,
@@ -247,7 +249,7 @@ async function fixture() {
     undefined,
     approvalGate,
     scriptHooks,
-    createAuditLogger(order, directory),
+    auditLogger,
   );
 
   let reviewerRequestId: string | undefined;
@@ -297,6 +299,7 @@ async function fixture() {
     createRationaleTicketCasExpectation(snapshot),
   );
   if (!receipt) throw new Error("allow-once receipt failed");
+  const resumeAnswer = await answeredApprovalDecision({ choice: "allow-once" }, "desk", control.action.toolName, "sealed-use");
 
   const request = createSealedRationaleResumeRequest({
     control,
@@ -328,6 +331,7 @@ async function fixture() {
       ticketStore.isAuthenticConsumedAllowOnceReceipt(receipt),
     resolveCurrentActionIdentity: identity,
     loadHostConsumedAllowOnceReceipt: loadReceipt,
+    loadHostResumeProvenance: (candidate) => candidate.ticketId === request.ticketId ? answeredApprovalProvenance(resumeAnswer) : null,
     isAuthenticConsumedAllowOnceReceipt: authenticateReceipt,
     hostInvocationStartCas: tracedStartCas(order, startStore),
     onInvocationAudit: (record) => {
@@ -372,6 +376,7 @@ async function fixture() {
     loadReceipt,
     control,
     invocationAudits,
+    auditLogger,
   };
 }
 
@@ -417,6 +422,73 @@ describe("ToolExecutor sealed rationale resume", () => {
         "tool-end",
       ]);
     } finally {
+      await cleanupTmpDir(f.directory);
+    }
+  });
+
+  it("records the resumed allow as the desk's answer with one terminal row", async () => {
+    const f = await fixture();
+    try {
+      const append = vi.mocked(f.auditLogger.appendPermissionAuditEntry);
+      const before = append.mock.calls.length;
+      const result = await resumeFixture(f);
+      expect(result.is_error).toBeUndefined();
+      const terminal = append.mock.calls.slice(before).map(([entry]) => entry).filter(entry => entry.decision !== "ask" && !("grantLifetime" in entry));
+      expect(terminal).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);
+    } finally {
+      await cleanupTmpDir(f.directory);
+    }
+  });
+
+  it.each([
+    [true, "executes once as the desk's answer"],
+    [false, "refuses it as unrelated drift"],
+  ] as const)("resumes after a policy change turned the ask into an allow (same-card transition: %s) and %s", async (transition, _outcome) => {
+    const f = await fixture();
+    try {
+      await f.manager.addAlwaysAllowedPersist("sealed_write");
+      Object.assign(f.resumeRuntime, { hasApprovedPolicyTransition: () => transition });
+      const append = vi.mocked(f.auditLogger.appendPermissionAuditEntry);
+      const before = append.mock.calls.length;
+      const result = await resumeFixture(f);
+      const terminal = append.mock.calls.slice(before).map(([entry]) => entry).filter(entry => entry.decision !== "ask" && !("grantLifetime" in entry));
+      if (transition) {
+        expect(result.is_error, JSON.stringify(result)).toBeUndefined();
+        expect(f.execute).toHaveBeenCalledOnce();
+        expect(terminal).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);
+      } else {
+        expect(result.is_error).toBe(true);
+        expect(f.execute).not.toHaveBeenCalled();
+        expect(terminal).toEqual([expect.objectContaining({ decision: "deny" })]);
+      }
+      expect(f.approvalGate.requestAndWait).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTmpDir(f.directory);
+    }
+  });
+
+  it("ends a script-hook mutation during the resume with the rule's one deny row, its one denial and no host row", async () => {
+    const realAudit = async (directory: string) => {
+      const logger = new AuditLogger(join(directory, "audit"));
+      await logger.setupPermissionAuditChain("ef".repeat(32));
+      return logger;
+    };
+    const f = await fixture(realAudit);
+    const audit = f.auditLogger as AuditLogger;
+    try {
+      vi.mocked(f.scriptHooks.runPreToolUse).mockResolvedValue({ decision: "allow", reason: "rewrites the payload",
+        updatedInput: { payload: "changed" }, results: [] });
+      const result = await resumeFixture(f);
+      expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("could not safely restart") });
+      expect(f.execute).not.toHaveBeenCalled();
+      await audit.close();
+      const rows = readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.toolUseId === "sealed-use" && row.decision !== "ask");
+      expect(rows).toEqual([expect.objectContaining({ decision: "deny",
+        denyReasons: [{ reason: "Hook input mutation could not safely restart permission classification", source: "hook-input-mutation" }] })]);
+      expect(vi.mocked(f.scriptHooks.runLifecycleEvent).mock.calls.filter(([event]) => event === "PermissionDenied")).toHaveLength(1);
+    } finally {
+      await audit.close();
       await cleanupTmpDir(f.directory);
     }
   });
@@ -625,6 +697,25 @@ describe("ToolExecutor sealed rationale resume", () => {
 
       expect(result.is_error).toBe(true);
       expect(result.content).toContain("invocation audit sink is unavailable");
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.invocationAudits).toEqual([]);
+    } finally {
+      await cleanupTmpDir(f.directory);
+    }
+  });
+
+  it("fails closed before the receipt when the resume provenance loader is missing", async () => {
+    const f = await fixture();
+    try {
+      const { loadHostResumeProvenance: _missing, ...withoutProvenance } = f.resumeRuntime;
+      const result = await f.executor.executeSealedRationaleResume(f.request, {
+        ...f.options,
+        rationaleResumeRuntime: withoutProvenance as unknown as RationaleResumeHostRuntime,
+      });
+
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain("provenance loader is unavailable");
+      expect(f.loadReceipt).not.toHaveBeenCalled();
       expect(f.execute).not.toHaveBeenCalled();
       expect(f.invocationAudits).toEqual([]);
     } finally {

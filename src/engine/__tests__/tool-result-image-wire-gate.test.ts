@@ -6,6 +6,7 @@ import { estimateMessagesTokens } from "../auto-compact.js";
 import { genericToModelMessages, VercelUnifiedProvider } from "../llm/vercel/adapter.js";
 import { estimateRequestInputProjection } from "../request-input-projection.js";
 import { prepareMarkedToolResultsForWire } from "../wire-serialize.js";
+import { noRetirementEvidence } from "../llm/model-wire-gate.js";
 
 const IMAGE_ROW: GenericMessage = {
   role: "tool_result",
@@ -141,7 +142,7 @@ describe("tool_result image wire gate — actual request and estimates", () => {
       "openai-compatible",
       "test-key",
       "https://provider.invalid/v1",
-      customFetch,
+      customFetch, { getRetiredModelId: noRetirementEvidence },
     );
 
     for await (const _event of provider.streamTurn({
@@ -175,7 +176,7 @@ describe("tool_result image wire gate — actual request and estimates", () => {
       JSON.stringify({ error: { message: "synthetic endpoint response" } }),
       { status: 400, headers: { "content-type": "application/json" } },
     ));
-    const provider = new VercelUnifiedProvider("openai", "test-key", undefined, customFetch);
+    const provider = new VercelUnifiedProvider("openai", "test-key", undefined, customFetch, { getRetiredModelId: noRetirementEvidence });
 
     for await (const _event of provider.streamTurn({
       model: "gpt-5.4-mini",
@@ -205,7 +206,7 @@ describe("tool_result image wire gate — actual request and estimates", () => {
       JSON.stringify({ error: { message: "synthetic endpoint response" } }),
       { status: 400, headers: { "content-type": "application/json" } },
     ));
-    const provider = new VercelUnifiedProvider("gemini", "test-key", undefined, customFetch);
+    const provider = new VercelUnifiedProvider("gemini", "test-key", undefined, customFetch, { getRetiredModelId: noRetirementEvidence });
 
     for await (const _event of provider.streamTurn({
       model: "gemini-2.5-flash",
@@ -241,7 +242,7 @@ describe("tool_result image wire gate — actual request and estimates", () => {
       JSON.stringify({ error: { message: "synthetic endpoint response" } }),
       { status: 400, headers: { "content-type": "application/json" } },
     ));
-    const provider = new VercelUnifiedProvider("claude", "test-key", undefined, customFetch);
+    const provider = new VercelUnifiedProvider("claude", "test-key", undefined, customFetch, { getRetiredModelId: noRetirementEvidence });
 
     for await (const _event of provider.streamTurn({
       model: "claude-sonnet-4-6",

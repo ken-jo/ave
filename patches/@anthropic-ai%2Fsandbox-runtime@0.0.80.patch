@@ -2147,6 +2147,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..5aea50d2b57919fb5a2d8d4e021ab725
 +/** Supply a helper executable under the test runner. */
 +export declare function setWindowsIsolationForTesting(srtWin: { exe: string; prependArgs: string[] } | undefined): void;
  //# sourceMappingURL=sandbox-manager.d.ts.map
+\ No newline at end of file
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
 index 810b0aa54..e4f008dac 100644
 --- a/dist/sandbox/sandbox-manager.js
@@ -4664,14 +4665,14 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..63657daab9a18cf9b9718b95f2c06614
  //# sourceMappingURL=sandbox-schemas.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-utils.js b/dist/sandbox/sandbox-utils.js
-index 3c92084..620c33e 100644
+index 3c92084..a4c0727 100644
 --- a/dist/sandbox/sandbox-utils.js
 +++ b/dist/sandbox/sandbox-utils.js
 @@ -377,6 +377,8 @@ function warnIfParentRefUnfolded(normalizedPath) {
   */
  export function normalizePathForSandbox(pathPattern, opts) {
      const isGlobSpelling = (p) => !opts?.literal && containsGlobCharsForPlatform(p);
-+    // Ave patch: Windows spellings take Windows path rules whatever module the host loads.
++    // The explicit platform switch only matters in simulated-platform tests.
 +    const platformPath = getPlatform() === 'windows' ? path.win32 : path;
      // Windows pre-processing: expand `%USERPROFILE%` / `%HOMEDRIVE%` /
      // `%HOMEPATH%`, strip the `\\?\` / `\\?\UNC\` extended prefix (its
@@ -4934,7 +4935,7 @@ index 760a10b1d1c475a7636ff78092d3c9daaafe7335..a7a39777c3584689fc7efd44e8f298e1
              if (!clientGone) {
                  try {
 diff --git a/dist/sandbox/windows-sandbox-utils.d.ts b/dist/sandbox/windows-sandbox-utils.d.ts
-index 65b8eefe5..3116fa929 100644
+index 65b8eefe5..f362756e3 100644
 --- a/dist/sandbox/windows-sandbox-utils.d.ts
 +++ b/dist/sandbox/windows-sandbox-utils.d.ts
 @@ -76,10 +76,14 @@ export type WindowsSandboxErrorCode =
@@ -5032,7 +5033,16 @@ index 65b8eefe5..3116fa929 100644
  /**
   * Per-path outcome from `srt-win acl restore --json` /
   * `revoke --json`. The status set is intentionally loose: the
-@@ -884,7 +928,16 @@ export declare function restoreWindowsAcl(opts: {
+@@ -872,6 +916,8 @@
+ export interface WindowsAclAceOutcome {
+     path: string;
+     status: string;
++    /** Object identity verified by the native grant cleanup. */
++    objectIdentity?: string;
+ }
+ /**
+  * Release this holder's deny ACEs and remove the sandbox-user ACE
+@@ -884,7 +930,16 @@ export declare function restoreWindowsAcl(opts: {
      sandboxUserSid: string;
      holderPid?: number;
      srtWin?: SrtWinSpawn;
@@ -5049,7 +5059,7 @@ index 65b8eefe5..3116fa929 100644
  export interface WindowsAclGrantOptions {
      /** Paths to grant `MODIFY_NO_FDC` on (the working tree, `allowWrite`). */
      write: readonly string[];
-@@ -909,6 +962,7 @@ export interface WindowsAclGrantOptions {
+@@ -909,6 +964,7 @@ export interface WindowsAclGrantOptions {
   *   {@link revokeWindowsAcl} to release whatever WAS granted.
   */
  export declare function grantWindowsAcl(opts: WindowsAclGrantOptions): void;
@@ -5057,7 +5067,7 @@ index 65b8eefe5..3116fa929 100644
  /**
   * Release this holder's grants and remove the sandbox-user ACE on
   * any path whose refcount falls to zero. Best-effort (does not
-@@ -918,7 +972,16 @@ export declare function revokeWindowsAcl(opts: {
+@@ -918,7 +974,16 @@ export declare function revokeWindowsAcl(opts: {
      sandboxUserSid: string;
      holderPid?: number;
      srtWin?: SrtWinSpawn;
@@ -5074,7 +5084,7 @@ index 65b8eefe5..3116fa929 100644
  /**
   * Build the spawn descriptor for running `command` inside the Windows
   * sandbox: an `argv` array plus the `env` to spawn it with.
-@@ -966,4 +1029,4 @@ export declare function checkWindowsDependenciesAsync(opts?: {
+@@ -966,4 +1031,4 @@ export declare function checkWindowsDependenciesAsync(opts?: {
      sublayerGuid?: string;
      srtWin?: SrtWinSpawn;
  }): Promise<SandboxDependencyCheck>;
@@ -5082,7 +5092,7 @@ index 65b8eefe5..3116fa929 100644
 \ No newline at end of file
 +//# sourceMappingURL=windows-sandbox-utils.d.ts.map
 diff --git a/dist/sandbox/windows-sandbox-utils.js b/dist/sandbox/windows-sandbox-utils.js
-index 3e8876a37..5f88d4dd3 100644
+index 3e8876a37..15e5c2911 100644
 --- a/dist/sandbox/windows-sandbox-utils.js
 +++ b/dist/sandbox/windows-sandbox-utils.js
 @@ -312,6 +312,18 @@ function runSrtWinJsonAllowFail(args, opts) {
@@ -5256,7 +5266,7 @@ index 3e8876a37..5f88d4dd3 100644
   * PROTECTED rewrite, no SD snapshot. Idempotent and refcounted via
   * srt-win's `working_aces` table.
   *
-@@ -1176,12 +1239,85 @@ export function parseWindowsSandboxError(stderr) {
+@@ -1176,12 +1239,90 @@ export function parseWindowsSandboxError(stderr) {
   *   2, so on throw the caller should call {@link restoreWindowsAcl}
   *   to release whatever WAS stamped.
   */
@@ -5271,14 +5281,15 @@ index 3e8876a37..5f88d4dd3 100644
 +    logForDebugging(`[Sandbox Windows] acl stamp targets=${JSON.stringify(rows)}`);
 +}
 +// Bound the ACL helper's stdin allocation and work before serializing or spawning.
-+// A 240-character profile needs 317 rows and 86,041 bytes for its write floor.
-+// The shared 256 KiB / 1,024-row ceiling leaves 176,103 bytes and 707 rows for
++// A 240-character profile needs 317 rows and about 84 KiB for its write floor.
++// The shared 256 KiB / 1,024-row ceiling leaves about 172 KiB and 707 rows for
 +// read and configured denies. Native local stamps measured 57–65 ms for 4–5
 +// rows including startup. Accounting at the slowest observed per-row rate
 +// gives about 17 seconds for 1,024 rows. The existing 60-second deadline
 +// still bounds individual stamps regardless of filesystem latency.
 +const WINDOWS_ACL_POLICY_BYTES = 256 * 1024;
 +const WINDOWS_ACL_POLICY_ROWS = 1024;
++const WINDOWS_ACL_STAMP_ENVELOPE_BYTES = Buffer.byteLength(serializeWindowsAclStamp([], []));
 +export function assertWindowsAclPolicyBudget(denyRead = [], denyWrite = [], extraRead = []) {
 +    const readCount = denyRead.length + extraRead.length;
 +    const fail = () => {
@@ -5286,7 +5297,7 @@ index 3e8876a37..5f88d4dd3 100644
 +    };
 +    if (readCount + denyWrite.length > WINDOWS_ACL_POLICY_ROWS)
 +        fail();
-+    let bytes = 30 + Math.max(0, readCount - 1) + Math.max(0, denyWrite.length - 1); // JSON envelope and row separators.
++    let bytes = WINDOWS_ACL_STAMP_ENVELOPE_BYTES + Math.max(0, readCount - 1) + Math.max(0, denyWrite.length - 1);
 +    for (const entries of [denyRead, denyWrite, extraRead]) {
 +        for (const entry of entries) {
 +            const spelling = typeof entry === 'string' ? entry : entry.path;
@@ -5330,9 +5341,13 @@ index 3e8876a37..5f88d4dd3 100644
 +    assertWindowsAclPolicyBudget(denyRead, denyWrite, credentialDeny);
 +    return { denyRead, denyWrite, credentialDeny, admitted: [...admitted] };
 +}
++function serializeWindowsAclStamp(denyRead, denyWrite) {
++    // Ave patch (existing deny targets): a missing target is refused, never created.
++    return JSON.stringify({ denyRead, denyWrite, existingOnly: true });
++}
 +function windowsAclStampInput(opts) {
 +    assertWindowsAclPolicyBudget(opts.denyRead, opts.denyWrite);
-+    return JSON.stringify({ denyRead: opts.denyRead, denyWrite: opts.denyWrite });
++    return serializeWindowsAclStamp(opts.denyRead, opts.denyWrite);
 +}
  export function stampWindowsAcl(opts) {
 +    const stdin = windowsAclStampInput(opts);
@@ -5346,7 +5361,7 @@ index 3e8876a37..5f88d4dd3 100644
      const r = runSrtWin([
          'acl',
          'stamp',
-@@ -1190,13 +1326,70 @@ export function stampWindowsAcl(opts) {
+@@ -1190,13 +1331,70 @@ export function stampWindowsAcl(opts) {
          '--sandbox-user-sid',
          opts.sandboxUserSid,
      ], { timeoutMs: 60000, stdin, srtWin: opts.srtWin });
@@ -5418,7 +5433,7 @@ index 3e8876a37..5f88d4dd3 100644
  /**
   * Release this holder's deny ACEs and remove the sandbox-user ACE
   * on any path whose refcount falls to zero. Best-effort (does not
-@@ -1221,6 +1414,47 @@ export function restoreWindowsAcl(opts) {
+@@ -1221,6 +1419,47 @@ export function restoreWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });
@@ -5466,7 +5481,7 @@ index 3e8876a37..5f88d4dd3 100644
          if (!r.ok) {
              logForDebugging(`[Sandbox Windows] acl restore exited non-zero (per-path ` +
                  `outcomes preserved): ${r.stderr}`, { level: 'error' });
-@@ -1266,6 +1500,22 @@ export function grantWindowsAcl(opts) {
+@@ -1266,6 +1505,22 @@ export function grantWindowsAcl(opts) {
          throw new WindowsSandboxError('acl_grant_failed', `srt-win acl grant exited ${r.status}: ${r.stderr || r.stdout}`);
      }
  }
@@ -5489,7 +5504,7 @@ index 3e8876a37..5f88d4dd3 100644
  /**
   * Release this holder's grants and remove the sandbox-user ACE on
   * any path whose refcount falls to zero. Best-effort (does not
-@@ -1283,6 +1533,34 @@ export function revokeWindowsAcl(opts) {
+@@ -1283,6 +1538,34 @@ export function revokeWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });
@@ -5524,7 +5539,7 @@ index 3e8876a37..5f88d4dd3 100644
          if (!r.ok) {
              logForDebugging(`[Sandbox Windows] acl revoke exited non-zero: ${r.stderr}`, { level: 'error' });
          }
-@@ -1298,6 +1576,25 @@ export function revokeWindowsAcl(opts) {
+@@ -1298,6 +1581,25 @@ export function revokeWindowsAcl(opts) {
  // ────────────────────────────────────────────────────────────────────
  // Wrap
  // ────────────────────────────────────────────────────────────────────
@@ -5550,7 +5565,16 @@ index 3e8876a37..5f88d4dd3 100644
  /**
   * Build the spawn descriptor for running `command` inside the Windows
   * sandbox: an `argv` array plus the `env` to spawn it with.
-@@ -1393,14 +1690,11 @@ export function wrapCommandWithSandboxWindows(p) {
+@@ -1365,6 +1667,8 @@ export function wrapCommandWithSandboxWindows(p) {
+         argv.push('--deny-read', d);
+     for (const d of p.denyWrite ?? [])
+         argv.push('--deny-write', d);
++    if ((p.denyRead ?? []).length > 0 || (p.denyWrite ?? []).length > 0)
++        argv.push('--deny-existing-only');
+     // The two-hop runner starts with the SANDBOX user's profile env
+     // (USERPROFILE/TEMP isolated) and overlays exactly what we pass as
+     // `--env`. The broker does NOT enumerate its own env — the overlay
+@@ -1393,14 +1697,11 @@ export function wrapCommandWithSandboxWindows(p) {
      // cmd /s) so the inner shell receives it intact. See launch.rs.
      const sh = p.binShell ?? parseWindowsBinShell(undefined);
      argv.push(sh.exe, ...sh.args, p.command);
@@ -5572,12 +5596,12 @@ index 3e8876a37..5f88d4dd3 100644
      // env (`lpEnvironment = NULL` + `LOGON_WITH_PROFILE`), so the
 diff --git a/vendor/srt-win/object-only-parent-guard.patch b/vendor/srt-win/object-only-parent-guard.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16c263bc57
+index 0000000000000000000000000000000000000000..0d85767002fa79d73df99fa01ec25b257b5729f3
 --- /dev/null
 +++ b/vendor/srt-win/object-only-parent-guard.patch
-@@ -0,0 +1,3320 @@
+@@ -0,0 +1,3495 @@
 +diff --git a/vendor/srt-win-src/src/acl.rs b/vendor/srt-win-src/src/acl.rs
-+index 0efb5956f..0a8424ad5 100644
++index 0efb5956f..ae787b88b 100644
 +--- a/vendor/srt-win-src/src/acl.rs
 ++++ b/vendor/srt-win-src/src/acl.rs
 +@@ -9,7 +9,7 @@
@@ -5947,7 +5971,7 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 ++    apply_sandbox_aces_with_identity(canonical_path, sandbox_sid, set, None)
 ++}
 ++
-++/// Bind a verified placeholder identity to the actual handle used for the write.
+++/// Bind the expected object identity to the actual handle used for the write.
 ++pub(crate) fn apply_sandbox_aces_with_identity(
 ++    canonical_path: &str,
 ++    sandbox_sid: &str,
@@ -5992,7 +6016,7 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 ++    if let Some(file_id) = expected
 ++        && crate::path_id::file_id_from_handle(handle.0)? != file_id
 ++    {
-++        bail!("recorded placeholder '{canonical_path}': identity changed before ACL write");
+++        bail!("'{canonical_path}': identity changed before ACL write");
 ++    }
 ++    let (sd, old) = read_local_dacl(&handle)?;
 ++    let new = compose(old)?;
@@ -6651,7 +6675,7 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +     fn canonicalize_rejects_globs() {
 +         for p in ["C:\\foo\\*.txt", "C:\\foo\\bar?.txt"] {
 +diff --git a/vendor/srt-win-src/src/state_db.rs b/vendor/srt-win-src/src/state_db.rs
-+index d3778f4e6..daf9df65d 100644
++index d3778f4e6..6b35cb4a6 100644
 +--- a/vendor/srt-win-src/src/state_db.rs
 ++++ b/vendor/srt-win-src/src/state_db.rs
 +@@ -46,7 +46,7 @@
@@ -6737,7 +6761,42 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +         Ok(AceWitness {
 +             canon: canon.to_string(),
 +             ace: eff,
-+@@ -992,6 +1032,16 @@ impl Locked {
++@@ -875,11 +915,16 @@ impl Locked {
++         let want_id = FileId::from_bytes(&fid)?;
++         match identity_gate(canon, want_id) {
++             IdGate::Match => {
++-                recompose_at(&self.conn, canon, sandbox_sid)?;
+++                recompose_at_with_identity(
+++                    &self.conn,
+++                    canon,
+++                    sandbox_sid,
+++                    (kind == "grant").then_some(want_id),
+++                )?;
++                 Ok(match new_eff {
++-                    Some(e) if e.as_str() == stored => AceRelease::StillHeld,
++-                    Some(_) => AceRelease::Downgraded,
++-                    None => AceRelease::Revoked,
+++                    Some(e) if e.as_str() == stored => AceRelease::StillHeld(want_id),
+++                    Some(_) => AceRelease::Downgraded(want_id),
+++                    None => AceRelease::Revoked(want_id),
++                 })
++             }
++             IdGate::Mismatch if kind == "grant" => {
++@@ -895,8 +940,11 @@ impl Locked {
++                             "srt-win: grant '{canon}': file_id moved \
++                              to '{at}'; revoking there"
++                         );
++-                        recompose_at(&self.conn, &at, sandbox_sid)?;
++-                        AceRelease::Relocated { moved_to: at }
+++                        recompose_at_with_identity(&self.conn, &at, sandbox_sid, Some(want_id))?;
+++                        AceRelease::Relocated {
+++                            moved_to: at,
+++                            file_id: want_id,
+++                        }
++                     }
++                     None => {
++                         eprintln!(
++@@ -992,6 +1040,16 @@ impl Locked {
 +         Ok(())
 +     }
 +
@@ -6754,7 +6813,7 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +     /// Every recorded placeholder that is a STRICT ancestor of
 +     /// `canon` (i.e. `canon` starts with `placeholder || '\'`) —
 +     /// the discovery half of the full-chain hold (see the
-+@@ -1019,6 +1069,15 @@ impl Locked {
++@@ -1019,6 +1077,15 @@ impl Locked {
 + /// here so a path with both a grant AND a deny (or a parent that is
 + /// both granted and `deny_fdc`'d) is handled consistently.
 + fn recompose_at(conn: &Connection, canon: &str, sandbox_sid: &str) -> Result<()> {
@@ -6770,7 +6829,7 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +     let rows: Vec<(String, String)> = query_vec(
 +         conn,
 +         "SELECT kind, mask FROM working_aces \
-+@@ -1044,7 +1103,7 @@ fn recompose_at(conn: &Connection, canon: &str, sandbox_sid: &str) -> Result<()>
++@@ -1044,7 +1111,7 @@ fn recompose_at(conn: &Connection, canon: &str, sandbox_sid: &str) -> Result<()>
 +     if crate::install::ambient_deny_recorded(canon) {
 +         set.deny.get_or_insert(acl::DenyMask::WriteDeny);
 +     }
@@ -6779,7 +6838,56 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +         .with_context(|| format!("recompose '{canon}' ({set:?})"))
 + }
 +
-+@@ -1406,6 +1465,138 @@ mod tests {
++@@ -1066,16 +1133,19 @@ pub struct AceWitness {
++ #[derive(Debug, Clone, PartialEq, Eq)]
++ pub enum AceRelease {
++     /// ACE removed (last holder); row deleted.
++-    Revoked,
+++    Revoked(FileId),
++     /// Other holders remain at the SAME effective mask; ACE
++     /// untouched.
++-    StillHeld,
+++    StillHeld(FileId),
++     /// Other holders remain at a NARROWER mask; ACE re-applied at
++     /// the new MAX(want_mask).
++-    Downgraded,
+++    Downgraded(FileId),
++     /// `file_id` mismatch; for `grant` the ACE was revoked at the
++     /// relocated path. Row deleted.
++-    Relocated { moved_to: String },
+++    Relocated {
+++        moved_to: String,
+++        file_id: FileId,
+++    },
++     /// `file_id` mismatch — row deleted, ACE on the foreign object
++     /// not touched.
++     Mismatch,
++@@ -1086,11 +1156,21 @@ pub enum AceRelease {
++ }
++
++ impl AceRelease {
+++    pub fn file_id(&self) -> Option<FileId> {
+++        match self {
+++            Self::Revoked(id)
+++            | Self::StillHeld(id)
+++            | Self::Downgraded(id)
+++            | Self::Relocated { file_id: id, .. } => Some(*id),
+++            Self::Mismatch | Self::Missing | Self::NoRow => None,
+++        }
+++    }
+++
++     pub fn as_str(&self) -> &'static str {
++         match self {
++-            AceRelease::Revoked => "revoked",
++-            AceRelease::StillHeld => "stillHeld",
++-            AceRelease::Downgraded => "downgraded",
+++            AceRelease::Revoked(_) => "revoked",
+++            AceRelease::StillHeld(_) => "stillHeld",
+++            AceRelease::Downgraded(_) => "downgraded",
++             AceRelease::Relocated { .. } => "relocated",
++             AceRelease::Mismatch => "mismatch",
++             AceRelease::Missing => "missing",
++@@ -1406,6 +1486,138 @@ mod tests {
 +         });
 +     }
 +
@@ -6919,10 +7027,41 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +     fn aliveness_self_is_alive() {
 +         let ct = process_create_time(unsafe { GetCurrentProcess() }).unwrap();
 +diff --git a/vendor/srt-win-src/src/cli.rs b/vendor/srt-win-src/src/cli.rs
-+index 677f89568..61c5e3022 100644
++index 677f895..7c4ce53 100644
 +--- a/vendor/srt-win-src/src/cli.rs
 ++++ b/vendor/srt-win-src/src/cli.rs
-+@@ -388,6 +388,8 @@ struct AceTargets {
++@@ -212,6 +212,10 @@ enum Cmd {
++         /// Per-exec write-deny — see `--deny-read`.
++         #[arg(long = "deny-write")]
++         deny_write: Vec<String>,
+++        /// Fail the exec when a per-exec deny path does not exist,
+++        /// instead of creating a placeholder for it.
+++        #[arg(long = "deny-existing-only")]
+++        deny_existing_only: bool,
++         /// `KEY=VALUE` pair overlaid on the sandbox-user runner's
++         /// profile environment when building the child's env block.
++         /// Repeatable. The broker forwards exactly these — it does
++@@ -364,6 +368,10 @@ struct AclStampInput {
++     deny_read: Vec<String>,
++     #[serde(default)]
++     deny_write: Vec<String>,
+++    /// Refuse a deny path that does not exist instead of creating a
+++    /// placeholder for it.
+++    #[serde(default)]
+++    existing_only: bool,
++ }
++
++ #[derive(serde::Deserialize, Default)]
++@@ -380,6 +388,8 @@ struct AclGrantInput {
++ struct AceReleaseEntry {
++     path: String,
++     status: &'static str,
+++    #[serde(rename = "objectIdentity", skip_serializing_if = "Option::is_none")]
+++    object_identity: Option<String>,
++ }
++
++ /// Output of [`canonicalize_ace_targets`].
++@@ -388,6 +398,8 @@ struct AceTargets {
 +     targets: Vec<(String, srt_win::acl::SbAce)>,
 +     /// Inputs that could not be canonicalized (soft-skip → exit 2).
 +     bad_inputs: Vec<(String, String)>,
@@ -6931,7 +7070,12 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 + }
 +
 + /// Canonicalize `(paths, ace)` pairs for `acl grant`/`acl stamp`
-+@@ -429,11 +431,13 @@ fn canonicalize_ace_targets(
++@@ -425,15 +437,18 @@ fn canonicalize_ace_targets(
++     db: &srt_win::state_db::Locked,
++     label: &str,
++     inputs: &[(&[String], srt_win::acl::SbAce)],
+++    existing_only: bool,
++ ) -> anyhow::Result<AceTargets> {
 +     use anyhow::anyhow;
 +     use srt_win::acl::SbAce;
 +     use srt_win::path_id::{
@@ -6946,7 +7090,7 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +     // Deepest-first so overlapping non-existent denies (`['y',
 +     // 'y\secret']`) materialize as `y/` DIR + `secret` FILE, not
 +     // `y` FILE (which would then fail `y\secret` with "ancestor is
-+@@ -455,64 +459,103 @@ fn canonicalize_ace_targets(
++@@ -455,64 +470,110 @@ fn canonicalize_ace_targets(
 +         )
 +     });
 +     for (p, ace) in flat {
@@ -7025,6 +7169,13 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 ++                        );
 ++                        continue;
 ++                    }
+++                    if existing_only {
+++                        bad_inputs.push((
+++                            p.clone(),
+++                            "deny target does not exist; refusing to create it".to_string(),
+++                        ));
+++                        continue;
+++                    }
 ++                    let leaf_is_dir = p.ends_with(['\\', '/']);
 ++                    match create_placeholder_chain(p, leaf_is_dir, |c| db.record_placeholder(c)) {
 ++                        Ok((leaf_canon, chain)) => {
@@ -7096,7 +7247,7 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +             }
 +         };
 +         targets.push((canon.clone(), ace));
-+@@ -526,6 +569,7 @@ fn canonicalize_ace_targets(
++@@ -526,6 +587,7 @@ fn canonicalize_ace_targets(
 +     Ok(AceTargets {
 +         targets: merge_ace_targets(targets),
 +         bad_inputs,
@@ -7104,7 +7255,12 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +     })
 + }
 +
-+@@ -1165,12 +1209,14 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++@@ -1161,16 +1223,19 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++                                 acl::SbAce::Deny(acl::DenyMask::WriteDeny),
++                             ),
++                         ],
+++                        input.existing_only,
++                     )?;
 +                     for (p, e) in &at.bad_inputs {
 +                         eprintln!("srt-win: skipped: '{p}': {e}");
 +                     }
@@ -7120,7 +7276,15 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +             } = at;
 +             let fresh = witnesses.iter().filter(|w| !w.already).count();
 +             eprintln!(
-+@@ -1241,6 +1287,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++@@ -1231,6 +1296,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++                             (&input.read, acl::SbAce::Grant(acl::GrantMask::ReadOnly)),
++                             (&input.write, acl::SbAce::Grant(acl::GrantMask::Modify)),
++                         ],
+++                        false,
++                     )?;
++                     for (p, e) in &at.bad_inputs {
++                         eprintln!("srt-win: skipped: '{p}': {e}");
++@@ -1241,6 +1307,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
 +             let AceTargets {
 +                 targets,
 +                 bad_inputs,
@@ -7128,7 +7292,42 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +             } = at;
 +             let fresh = witnesses.iter().filter(|w| !w.already).count();
 +             eprintln!(
-+@@ -1483,7 +1530,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++@@ -1309,6 +1376,13 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++                     .map(|(p, r)| AceReleaseEntry {
++                         path: p.clone(),
++                         status: r.as_str(),
+++                        object_identity: r.file_id().map(|id| {
+++                            format!(
+++                                "0x{:016x}:0x{:032x}",
+++                                id.volume_serial,
+++                                u128::from_le_bytes(id.id128),
+++                            )
+++                        }),
++                     })
++                     .collect();
++                 serde_json::to_writer(std::io::stdout(), &out)
++@@ -1351,6 +1425,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++                     .map(|(p, r)| AceReleaseEntry {
++                         path: p.clone(),
++                         status: r.as_str(),
+++                        object_identity: None,
++                     })
++                     .collect();
++                 serde_json::to_writer(std::io::stdout(), &out)
++@@ -1400,6 +1475,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++         Cmd::Exec {
++             deny_read,
++             deny_write,
+++            deny_existing_only,
++             env,
++             quiet,
++             target,
++@@ -1479,11 +1555,12 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++                             (&deny_read, acl::SbAce::Deny(acl::DenyMask::ReadDeny)),
++                             (&deny_write, acl::SbAce::Deny(acl::DenyMask::WriteDeny)),
++                         ],
+++                        deny_existing_only,
++                     )?;
 +                     if let Some((p, e)) = at.bad_inputs.first() {
 +                         return Err(anyhow!("per-exec --deny-*: '{p}': {e}"));
 +                     }

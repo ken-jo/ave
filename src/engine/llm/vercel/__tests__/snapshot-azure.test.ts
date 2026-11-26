@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { collectStreamEvents as collect } from "./test-helpers.js";
 import type { StreamEvent } from "../../types.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../../../../tools/registry.js";
+import { noRetirementEvidence } from "../../model-wire-gate.js";
 
 describe("VercelUnifiedProvider azure-foundry", () => {
   it("normalizes Azure endpoints and routes through @ai-sdk/azure Responses API", async () => {
@@ -35,7 +36,7 @@ describe("VercelUnifiedProvider azure-foundry", () => {
     const provider = new VercelUnifiedProvider(
       "azure-foundry",
       "azure-key",
-      endpoint,
+      endpoint, undefined, { getRetiredModelId: noRetirementEvidence },
     );
 
     const events = await collect(
@@ -49,6 +50,7 @@ describe("VercelUnifiedProvider azure-foundry", () => {
     expect(createAzureSpy).toHaveBeenCalledWith({
       baseURL: "https://myresource.openai.azure.com/openai",
       apiKey: "azure-key",
+      fetch: expect.any(Function),
     });
     expect(responsesSpy).toHaveBeenCalledWith("gpt-5.4-mini");
     expect(events.at(-1)?.type).toBe("message_complete");
@@ -91,7 +93,7 @@ describe("VercelUnifiedProvider azure-foundry", () => {
     const provider = new VercelUnifiedProvider(
       "azure-foundry",
       "azure-key",
-      "https://myresource.openai.azure.com/openai/v1/",
+      "https://myresource.openai.azure.com/openai/v1/", undefined, { getRetiredModelId: noRetirementEvidence },
     );
 
     const events = await collect(
@@ -170,7 +172,7 @@ describe("VercelUnifiedProvider azure-foundry", () => {
     const provider = new VercelUnifiedProvider(
       "azure-foundry",
       "azure-key",
-      "https://myresource.openai.azure.com/openai/v1/",
+      "https://myresource.openai.azure.com/openai/v1/", undefined, { getRetiredModelId: noRetirementEvidence },
     );
 
     const events = await collect(
@@ -314,7 +316,7 @@ describe("VercelUnifiedProvider azure-foundry", () => {
     });
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("azure-foundry", "k");
+    const provider = new VercelUnifiedProvider("azure-foundry", "k", undefined, undefined, { getRetiredModelId: noRetirementEvidence });
 
     const events = await collect(
       provider.streamTurn({
@@ -333,6 +335,7 @@ describe("VercelUnifiedProvider azure-foundry", () => {
     vi.resetModules();
     const { createProvider } = await import("../../provider-factory.js");
     const p = createProvider({
+      getRetiredModelId: noRetirementEvidence,
       vendor: "azure-foundry",
       apiKey: "k",
       baseUrl: "https://example.openai.azure.com/openai/deployments/x/",

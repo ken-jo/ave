@@ -3,10 +3,12 @@ import { BROWSER_CAPTURE_LIMITS, parseBrowserScreenshotOptions, type BrowserCapt
 import { BrowserActionError, throwIfAborted, type CdpSession } from "./browser-action-guard.js";
 import type { WebContents } from "electron";
 import { captureBrowserTiles } from "./browser-capture-tiles.js";
+import { startCaptureStitcher, type CaptureStitcher } from "./browser-capture-stitch-process.js";
 import { captureScrollContext, captureScrollParameters, scrollBrowserCapture } from "./browser-capture-scroll.js";
 import { runBrowserCapture, type BrowserCaptureOperation } from "./browser-capture-operation.js";
 
 const activeCaptures = new WeakSet<object>();
+const drainingTileDecodes = new WeakSet<object>();
 const CAPTURE_VIEWPORT_FIELDS = ["pageX", "pageY", "clientWidth", "clientHeight", "zoom", "scale"] as const;
 export interface CaptureViewport {
   pageX: number; pageY: number; clientWidth: number; clientHeight: number;
@@ -59,12 +61,14 @@ async function capturePage(
   expectedViewport?: CaptureViewport,
 ): Promise<BrowserScreenshot> {
   const key = cdp.captureKey ?? cdp;
-  if (activeCaptures.has(key)) throw new BrowserActionError("screenshot-busy", "another capture is using this tab");
+  if (activeCaptures.has(key) || drainingTileDecodes.has(key)) throw new BrowserActionError("screenshot-busy", "another capture is using this tab");
   activeCaptures.add(key);
   let metricsOverridden = false;
   let scrollRestore: BrowserCaptureScroll | undefined;
   const tiled = options.fullPage === true && cdp.fullPageTiling === true;
   const captureSignal = operation.signal;
+  const tileDecodes = new Set<Promise<unknown>>();
+  let stitcher: CaptureStitcher | undefined;
   const capture = async (): Promise<BrowserScreenshot> => {
     throwIfAborted(captureSignal);
     if (!parseBrowserScreenshotOptions(options) || options.ref !== undefined) throw new BrowserActionError("invalid-capture", "use one capture mode with valid CSS capture bounds");
@@ -110,7 +114,37 @@ async function capturePage(
     let result: { data?: string; cssScale?: number };
     if (tiled) {
       if (!captureViewport) throw new BrowserActionError("screenshot-unavailable", "the tab has no native viewport readback");
-      result = await captureBrowserTiles(cdp, captureSignal, originalWidth, captureHeight, viewport, captureViewport, (position) => { scrollRestore = position; });
+      const decoder = new AbortController();
+      const tileSignal = AbortSignal.any([captureSignal, decoder.signal]);
+      const decodeFailure = new Promise<never>((_resolve, reject) => {
+        decoder.signal.addEventListener("abort", () => reject(decoder.signal.reason), { once: true });
+      });
+      const trackDecode = <T>(decode: Promise<T>): Promise<T> => {
+        tileDecodes.add(decode);
+        void decode.then(
+          () => { tileDecodes.delete(decode); },
+          (error) => {
+            tileDecodes.delete(decode);
+            decoder.abort(error);
+          },
+        );
+        return decode;
+      };
+      // Composition runs in a child that ends with this capture, so a decode that never returns is reclaimed.
+      const active = startCaptureStitcher(originalWidth, captureHeight, (error, closed) => {
+        // An unsolicited reply can fault the protocol even when no request is outstanding.
+        trackDecode(closed);
+        decoder.abort(error);
+      });
+      stitcher = active;
+      try {
+        result = await Promise.race([
+          captureBrowserTiles(cdp, tileSignal, captureHeight, viewport, captureViewport, (position) => { scrollRestore = position; }, active, trackDecode),
+          decodeFailure,
+        ]);
+      } finally {
+        decoder.abort();
+      }
     } else if (!options.fullPage && captureViewport) {
       result = await operation.wait(captureViewport());
     } else {
@@ -168,6 +202,13 @@ async function capturePage(
       ...(tiled ? { captureMethod: "scroll-and-stitch" as const, stickyHeadersDeduplicated: false as const } : {}) };
   };
   return operation.wait(capture()).finally(async () => {
+    // The deadline and cancellation end the capture while a decode may still be owed; ending the child reclaims it.
+    stitcher?.stop();
+    if (tileDecodes.size > 0) {
+      // A job settles on its reply or on the confirmed exit of its child. Join independently of scroll restoration.
+      drainingTileDecodes.add(key);
+      void Promise.allSettled(tileDecodes).then(() => { drainingTileDecodes.delete(key); });
+    }
     let releaseCapture = true;
     try {
       if (metricsOverridden || scrollRestore) {

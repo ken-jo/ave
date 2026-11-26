@@ -25,9 +25,9 @@ vi.mock("../mxc-runtime-root.js", async original => {
 });
 vi.mock("../windows-stamp-targets.js", async original => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();
-  return { ...actual, pinWindowsFilesystemConfig: (...args: Parameters<typeof actual.pinWindowsFilesystemConfig>) => {
+  return { ...actual, pinWindowsGrantRequests: (...args: Parameters<typeof actual.pinWindowsGrantRequests>) => {
     phase.before?.();
-    const pinned = actual.pinWindowsFilesystemConfig(...args);
+    const pinned = actual.pinWindowsGrantRequests(...args);
     phase.after?.();
     return pinned;
   } };
@@ -36,6 +36,10 @@ vi.mock("@anthropic-ai/sandbox-runtime", async original => ({
   ...await original<typeof import("@anthropic-ai/sandbox-runtime")>(),
   grantWindowsAcl: vi.fn(), revokeWindowsAcl: vi.fn(),
   getWindowsSandboxUserStatus: vi.fn(() => ({ provisioned: true, credPresent: true, sid: "S-1-5-21-100-200-300-1001" })),
+}));
+vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", async original => ({
+  ...await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>(),
+  stampWindowsAclAsync: vi.fn().mockResolvedValue(undefined),
 }));
 
 useVerifiedAveHomePrivacy();
@@ -80,6 +84,7 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
         };
         await expect(sandbox.grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, allowWrite: [target] }))
           .rejects.toThrow(/reparse|identity changed/);
+        expect(phase[timing]).toBeUndefined();
         expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
         expect(update).not.toHaveBeenCalled();
       });
@@ -100,12 +105,22 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
   it.each(["allowWrite", "allowRead"] as const)("pins the resolved identity through a reparse ancestor in %s", async list => {
     const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
     const target = scratch(); mkdirSync(join(target, "leaf"));
+    if (list === "allowWrite") {
+      const { createWindowsProtectedWriteTargets } = await import("../../__tests__/support/windows-protected-write-fixture.js");
+      createWindowsProtectedWriteTargets(join(target, "leaf"));
+      const denyAcl = await import("../windows-deny-acl.js");
+      vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => paths.map(() => ({
+        denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: denyAcl.WINDOWS_WRITE_DENY_MASK, parentMask: 0x40, directory: true,
+      })));
+    }
     const alias = link(target, join(scratch(), "alias"));
     const identity = observeWindowsGrantIdentity(join(target, "leaf"));
     const pinned = pinWindowsFilesystemConfig({ [list]: [join(alias, "leaf")] });
     expect(pinned[list]).toEqual([{ path: identity.canonical, literal: true }]);
     const { sandbox, runtime } = await setup();
-    vi.mocked(runtime.revokeWindowsAcl).mockReturnValue([{ path: identity.canonical, status: "revoked" }]);
+    vi.mocked(runtime.revokeWindowsAcl).mockReturnValue([{
+      path: identity.canonical, status: "revoked", objectIdentity: identity.objectIdentity,
+    }]);
     const grant = await sandbox.grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, [list]: [join(alias, "leaf")] });
     try {
       expect(runtime.grantWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({

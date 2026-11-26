@@ -1,3 +1,4 @@
+import { pickNativeSavePath } from "../../main/desktop-approval-presentation.js";
 import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";
@@ -7,14 +8,13 @@ import { resolvePricingOverrides, type PricingOverride } from "../../shared/pric
 
 export function registerUsageHandlers(deps: IpcDeps): void {
   const { auditLogger } = deps;
-  // Read price corrections per call so saved changes affect the next query without restart.
   const pricingOverrides = () => deps.settingsService.get("llm")?.pricingOverrides;
 
-  ipcMain.handle(CHANNELS.usage.summary, async (_e, days?: number) => handleUsageSummary(days, auditLogger, pricingOverrides()));
+  ipcMain.handle(CHANNELS.usage.summary, async (_e, days?: number) => handleUsageSummary(days, auditLogger));
 
   ipcMain.handle(CHANNELS.usage.range, async (e, opts: { dateFrom: string; dateTo: string }) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.usage.range, e); return UNAUTHORIZED_FRAME; }
-    return handleUsageRange(opts, auditLogger, pricingOverrides());
+    return handleUsageRange(opts, auditLogger);
   });
 
   // Resolve shared pricing corrections in main, where environment overrides are authoritative.
@@ -30,11 +30,11 @@ export function registerUsageHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.usage.exportCsv, async (e, rows: Array<Record<string, string | number>>) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.usage.exportCsv, e); return UNAUTHORIZED_FRAME; }
-    const { dialog, BaseWindow } = await import("electron");
+    const { BaseWindow } = await import("electron");
     const win = BaseWindow.getFocusedWindow() ?? undefined;
     const result = win
-      ? await dialog.showSaveDialog(win, { defaultPath: "ave-usage.csv", filters: [{ name: "CSV", extensions: ["csv"] }] })
-      : await dialog.showSaveDialog({ defaultPath: "ave-usage.csv", filters: [{ name: "CSV", extensions: ["csv"] }] });
+      ? await pickNativeSavePath(win, { defaultPath: "ave-usage.csv", filters: [{ name: "CSV", extensions: ["csv"] }] })
+      : await pickNativeSavePath({ defaultPath: "ave-usage.csv", filters: [{ name: "CSV", extensions: ["csv"] }] });
     if (result.canceled || !result.filePath) return { ok: false, canceled: true };
     const { writeFileSync } = await import("node:fs");
     const headers = [
@@ -48,10 +48,16 @@ export function registerUsageHandlers(deps: IpcDeps): void {
       "totalTokens",
       "cost",
       "unknownCostTurns",
+      "endpointPriceUnavailableTurns",
+      "legacyRouteUnrecordedTurns",
+      "auditIncomplete",
     ];
     const lines = [
       headers.join(","),
-      ...rows.map((r) => headers.map((h) => typeof r[h] === "number" ? String(r[h]) : `"${String(r[h] ?? "").replaceAll('"', '""')}"`).join(",")),
+      ...rows.map((row) => headers.map((header) => {
+        const value = header === "cost" && row.auditIncomplete === 1 ? "" : row[header];
+        return typeof value === "number" ? String(value) : `"${String(value ?? "").replaceAll('"', '""')}"`;
+      }).join(",")),
     ];
     writeFileSync(result.filePath, lines.join("\r\n"), "utf-8");
     return { ok: true, filePath: result.filePath };

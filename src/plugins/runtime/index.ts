@@ -1,3 +1,4 @@
+import type { AuditLogger } from "../../audit/audit-logger.js";
 /** Owns plugin admission, generation publication, dispatch, and retirement for one runtime lifetime. */
 
 import type { PluginAccessSpec, PluginManifest, PluginHostApi, PluginToolHandler, RuntimePlugin, RuntimePluginFactory, PluginAuthSpec, PluginConfigSchema, PluginOnboardingSpec, PluginUiExtension, PluginRegistryTrust } from "../types.js";
@@ -58,7 +59,7 @@ import {
   deferExtensionStart, dropPluginExtensionStarts, isExtensionStartConsentRequired, pluginChildStartKey, pluginStartLabel, takeExtensionStartGrant,
 } from "../../permissions/extension-start-consent.js";
 import { probeExtensionStart } from "../../permissions/asrt-sandbox.js";
-import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError, pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../isolation/out-of-process-plugin.js";
+import { capturePluginSandboxGrant, type ChosenSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError, pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../isolation/out-of-process-plugin.js";
 import { PluginChildTerminationUnverifiedError } from "../isolation/plugin-child-transport.js";
 import { bindPluginInstanceIntegrity, recordPluginFactoryIntegrity } from "../runtime-integrity-evidence.js";
 import {
@@ -224,6 +225,7 @@ export interface PluginRuntimeOptions {
   deploymentGuard?: PluginDeploymentGuard;
   installReceiptCacheRoot?: string;
   auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
+  effectAudit?: Pick<AuditLogger, "logShadow">;
   onMalformedCredentialSelector?: (pluginId: string) => void;
   /** Teardown callbacks must be idempotent because failed startup can invoke them after an earlier stop. */
   onDisable?: (pluginId: string) => void;
@@ -1330,6 +1332,7 @@ abstract class PluginRuntimeState {
   ) => PluginHostApi;
   protected readonly deploymentGuard?: PluginDeploymentGuard;
   protected readonly installReceiptCacheRoot?: string;
+  protected readonly effectAudit?: Pick<AuditLogger, "logShadow">;
   protected readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
   protected readonly onMalformedCredentialSelector?: (pluginId: string) => void;
   protected readonly onDisable?: (pluginId: string) => void;
@@ -1352,7 +1355,7 @@ abstract class PluginRuntimeState {
     resolveSettled: (settlement: SandboxEnvelopeSettlement) => void;
   }>>();
 
-  protected registerSandboxEnvelope(pluginId: string, paths: readonly string[], pluginRoot: string, pluginDataDir: string): {
+  protected registerSandboxEnvelope(pluginId: string, grants: readonly ChosenSandboxGrant[], pluginRoot: string, pluginDataDir: string): {
     assertCurrent(): void;
     dispose(): void;
     quarantine(reason: string): void;
@@ -1378,7 +1381,7 @@ abstract class PluginRuntimeState {
     const deadline = factoryAttemptDeadline.getStore();
     let resolveSettled!: (settlement: SandboxEnvelopeSettlement) => void;
     const settled = new Promise<SandboxEnvelopeSettlement>((resolve) => { resolveSettled = resolve; });
-    const record = { grants: paths.map(capturePluginSandboxGrant), pluginRoot, pluginDataDir, active: true, quarantined: false, terminating: false, settled, resolveSettled };
+    const record = { grants: grants.map(capturePluginSandboxGrant), pluginRoot, pluginDataDir, active: true, quarantined: false, terminating: false, settled, resolveSettled };
     const entries = this.sandboxEnvelopes.get(pluginId) ?? new Set<typeof record>();
     entries.add(record);
     this.sandboxEnvelopes.set(pluginId, entries);
@@ -1658,6 +1661,7 @@ abstract class PluginRuntimeState {
       ? resolve(options.installReceiptCacheRoot)
       : undefined;
     this.auditLog = options.auditLog;
+    this.effectAudit = options.effectAudit;
     this.onMalformedCredentialSelector = options.onMalformedCredentialSelector;
     this.onDisable = options.onDisable;
     this.onPluginUiRevisionChange = options.onPluginUiRevisionChange;
@@ -5049,9 +5053,10 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     const outOfProcess = {
       manifest,
       auditLog: this.auditLog,
+      effectAudit: this.effectAudit,
       childEntryPath: this.childEntryPath,
-      registerSandboxEnvelope: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) =>
-        this.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
+      registerSandboxEnvelope: (grants: readonly ChosenSandboxGrant[], pluginRoot: string, pluginDataDir: string) =>
+        this.registerSandboxEnvelope(manifest.id, grants, pluginRoot, pluginDataDir),
       onChildSpawned: (confinement: SpawnConfinement) =>
         this.recordChildSpawnConfinement(createPlugin, confinement),
       takeExtensionStart: () => takeExtensionStartGrant(pluginChildStartKey(manifest.id)),

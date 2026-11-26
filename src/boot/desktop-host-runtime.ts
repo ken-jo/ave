@@ -1,5 +1,7 @@
+import { approvalPresentationDenial, installApprovalCardPresenters } from "../permissions/approval-presentation.js";
+import { desktopApprovalCardPresenters, pickNativeFiles } from "../main/desktop-approval-presentation.js";
 import { closeMainWindowDocuments } from "../main/main-window-host.js";
-import { app, BaseWindow, dialog, nativeImage, Notification, powerMonitor, session, shell } from "electron";
+import { app, BaseWindow, nativeImage, Notification, powerMonitor, session, shell } from "electron";
 import { createDeviceCodePresentation } from "../main/device-code-dialog.js";
 import { desktopSecretEncryption } from "../main/desktop-secret-encryption.js";
 import { browserCapturePixelRatio } from "../main/browser/browser-capture-desktop.js";
@@ -20,6 +22,7 @@ import { ElectronFloatingDockSurface, hostDockThemeSource } from "../main/floati
 import { peekFloatingDock } from "./steps/plugin-runtime/host-api-factory.js";
 import { pickFoldersForPlugin } from "../main/host-api/pick-folders.js";
 import { getBrowserWorkspaceService } from "../main/browser/browser-workspace-desktop.js";
+import { openLocalityDecision, withLocalityDecision } from "../shared/local-path-io.js";
 import type { BootHost } from "./host-runtime.js";
 import { desktopResourcePath } from "../main/desktop-resource-path.js";
 import { queryWindowsDocumentsDirectory } from "../main/windows-path-kind-launcher.js";
@@ -83,9 +86,11 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       createFloatingDockSurface: (settings) => new ElectronFloatingDockSurface(hostDockThemeSource, settings),
       pickFolders: (pluginId, parentWindow) => pickFoldersForPlugin(pluginId, { parentWindow }),
       pickBrowserUploadFiles: async (request) => {
+        const unattended = approvalPresentationDenial();
+        if (unattended) throw new Error(unattended);
         const owner = getMainWindows().find((window) => window.id === request.windowId && !window.isDestroyed());
         if (!owner || request.signal.aborted) return null;
-        const selection = await dialog.showOpenDialog(owner, { title: request.origin, properties: ["openFile", "multiSelections"] });
+        const selection = await pickNativeFiles(owner, { title: request.origin, properties: ["openFile", "multiSelections"] });
         return owner.isDestroyed() || request.signal.aborted || selection.canceled ? null : selection.filePaths;
       },
       browserGuestContentOrigin: (guest) => {
@@ -107,8 +112,12 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       closeDocuments: (signal) => closeMainWindowDocuments(getAppWindows(), signal),
     },
   };
-  const releaseSettingsPath = protectRuntimeSettingsPath(settingsFilePath(host.userDataPath));
+  const releaseSettingsPath = withLocalityDecision(
+    () => protectRuntimeSettingsPath(settingsFilePath(host.userDataPath)),
+    openLocalityDecision(host.resourcePath),
+  );
   const releaseOAuthOpener = installOAuthLoginOpener(openLogin);
-  host.close = async () => { releaseOAuthOpener(); releaseSettingsPath(); };
+  const releaseApprovalCardPresenters = installApprovalCardPresenters(desktopApprovalCardPresenters);
+  host.close = async () => { releaseApprovalCardPresenters(); releaseOAuthOpener(); releaseSettingsPath(); };
   return host;
 }

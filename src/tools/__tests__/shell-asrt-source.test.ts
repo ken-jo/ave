@@ -51,7 +51,7 @@ describe("background shell lifetime contract", () => {
   // Background processes are managed children killed at shutdown; model-facing descriptions must disclose that lifetime.
   it("registers the background child with the managed-child registry", () => {
     expect(bashSection).toMatch(/trackManagedChildProcess\(child,\s*\{\s*label:\s*"tool:bash:background",\s*killProcessGroup,?\s*\}\)/);
-    expect(bashSection).toContain('spawnWindowsJobProcess(shell.cmd, [...argv], { cwd, env })');
+    expect(bashSection).toContain('spawnWindowsJobProcess(shell.cmd, [...argv], { cwd, env }, hold)');
     expect(bashSection).toContain("detached: true");
     expect(bashSection).toContain('killProcessGroup: process.platform !== "win32"');
   });

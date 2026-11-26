@@ -18,12 +18,14 @@ export function hasCppBuildTools(options?: {
   runSync?: (command: string, args: string[], options: object) => { status: number | null; stdout?: unknown };
 }): boolean;
 export function missingBuildToolsMessage(launcher: string): string;
-/** Build each native helper when missing or stale; return the original job launcher state. */
+/** Prepare the local or CI path helper and refresh the job launcher when needed. Return the original job launcher state. */
 export function prepareWindowsJob(options?: {
   root?: string;
   platform?: NodeJS.Platform;
   arch?: string;
+  env?: NodeJS.ProcessEnv;
   findBuildTools?: () => boolean;
   runSync?: (command: string, args: string[], options: object) => { status: number | null; error?: Error };
+  buildPathKind?: (options: { root: string; arch: string; fixture: boolean }) => void;
   log?: (line: string) => void;
 }): WindowsJobLauncherState;

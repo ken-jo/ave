@@ -1,8 +1,9 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolve, win32 } from "node:path";
 import { aveHome } from "../../shared/ave-home.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { setProcessPlatform } from "../../__tests__/test-helpers.js";
+import { stubSimulatedWindowsStateEnvironment } from "../../__tests__/support/simulated-win32-drive.js";
 import { admitMxcExtensionFilesystem, assertExtensionStartAllowed } from "../asrt-sandbox.js";
 import { MxcExtensionReadinessRefusedError, MxcProcessContractError } from "../mxc-extension-errors.js";
 import {
@@ -15,21 +16,31 @@ import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 
 // Admission projects the Ave home boundary, which pins a profile-child home natively.
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
 // A simulated win32 process denies its runtime root on the simulated drive, never under the run directory this kernel spells.
 vi.mock("../mxc-runtime-root.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedRuntimeRoot(await original()));
 const identity = vi.hoisted(() => ({ valid: true }));
 vi.mock("../windows-stamp-targets.js", async original => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();
-  return { ...actual, pinWindowsFilesystemConfig: (filesystem: Parameters<typeof actual.pinWindowsFilesystemConfig>[0]) => {
-    if (filesystem === undefined) return filesystem;
-    const pin = (entries: typeof filesystem.allowRead) => (entries ?? []).map(entry => ({
-      get path() {
-        if (!identity.valid) throw new Error("Holder root identity changed");
-        return typeof entry === "string" ? entry : entry.path;
-      }, literal: true as const,
-    }));
-    return { ...filesystem, allowRead: pin(filesystem.allowRead), allowWrite: pin(filesystem.allowWrite) };
-  } };
+  const { assertWindowsGrantGrammar, windowsGrantBase } = await import("../windows-grant-targets.js");
+  const pin = (entries: Parameters<typeof actual.windowsPinnedPaths>[0]) => entries.map(entry => ({
+    get path() {
+      if (!identity.valid) throw new Error("Holder root identity changed");
+      return typeof entry === "string" ? entry : entry.path;
+    }, literal: true as const,
+  }));
+  const pinRequests = (requests: Parameters<typeof actual.pinWindowsGrantRequests>[0]["allowRead"]) => pin(requests.map(request => {
+    assertWindowsGrantGrammar(windowsGrantBase(request));
+    return request.entry;
+  }));
+  return {
+    ...actual,
+    pinWindowsFilesystemConfig: (filesystem: Parameters<typeof actual.pinWindowsFilesystemConfig>[0]) => filesystem === undefined
+      ? filesystem : { ...filesystem, allowRead: pin(filesystem.allowRead ?? []), allowWrite: pin(filesystem.allowWrite ?? []) },
+    pinWindowsGrantRequests: ({ allowRead, allowWrite }: Parameters<typeof actual.pinWindowsGrantRequests>[0]) => ({
+      allowRead: pinRequests(allowRead), allowWrite: pinRequests(allowWrite),
+    }),
+  };
 });
 vi.mock("../sandbox-write-policy.js", async original => {
   const actual = await original<typeof import("../sandbox-write-policy.js")>();
@@ -40,6 +51,7 @@ vi.mock("../sandbox-write-policy.js", async original => {
 });
 
 const HOST_PLATFORM = process.platform;
+const RUNTIME_READ_ROOT = "C:\\runtime\\bin";
 const HOLDER_OWNERSHIP = { readRoots: [], writeRoots: ["C:\\holder\\data"], hostStorageRoots: [] };
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 afterEach(() => {
@@ -51,6 +63,11 @@ afterEach(() => {
 });
 
 describe("holder filesystem admission", () => {
+  beforeEach(() => {
+    stubSimulatedWindowsStateEnvironment();
+    return () => vi.unstubAllEnvs();
+  });
+
   it("requires the native platform and explicit holder roots", () => {
     setProcessPlatform("darwin");
     expect(() => admitMxcExtensionFilesystem({ allowRead: [], allowWrite: [] })).toThrow(/requires win32/);
@@ -60,9 +77,9 @@ describe("holder filesystem admission", () => {
 
   it("keeps only this holder's roots and shared mandatory controls without a session", () => {
     setProcessPlatform("win32");
-    const admitted = admitMxcExtensionFilesystem({ allowRead: ["C:\\runtime"], allowWrite: ["C:\\holder\\data"],
+    const admitted = admitMxcExtensionFilesystem({ allowRead: [RUNTIME_READ_ROOT], allowWrite: ["C:\\holder\\data"],
       denyRead: ["C:\\holder\\data\\private"], denyWrite: ["C:\\holder\\data\\readonly"] }, HOLDER_OWNERSHIP);
-    expect(mxcPolicyRows(admitted.model).readGrants).toEqual(["C:\\runtime"]);
+    expect(mxcPolicyRows(admitted.model).readGrants).toEqual([RUNTIME_READ_ROOT]);
     expect(mxcPolicyRows(admitted.model).writeGrants).toEqual(["C:\\holder\\data"]);
     expect(mxcPolicyRows(admitted.model).readDenies).toContain("C:\\holder\\data\\private");
     expect(mxcPolicyRows(admitted.model).writeFloor).toEqual(expect.arrayContaining(["C:\\holder\\data\\readonly", "C:\\holder\\data\\.envrc"]));
@@ -79,30 +96,40 @@ describe("holder filesystem admission", () => {
     expect(rankMxcRowsBySpelling(admitted.model, () => true)).toMatchObject({ readwrite: [], readonly: [] });
   });
 
+  it("refuses a holder write when the host state environment is missing", () => {
+    setProcessPlatform("win32");
+    vi.stubEnv("LOCALAPPDATA", undefined);
+    vi.stubEnv("ProgramData", undefined);
+    expect(() => admitMxcExtensionFilesystem({ allowRead: [], allowWrite: HOLDER_OWNERSHIP.writeRoots }, HOLDER_OWNERSHIP))
+      .toThrow(expect.objectContaining({ code: "confinement-state-write-grant", path: undefined }));
+  });
+
   it("binds every write grant to the host-captured write roots, inside or outside plugin namespaces", () => {
     setProcessPlatform("win32");
     for (const ownership of [undefined, { ...HOLDER_OWNERSHIP, writeRoots: ["C:\\holder\\other"] }]) {
-      expect(() => admitMxcExtensionFilesystem({ allowRead: ["C:\\runtime"], allowWrite: ["C:\\holder\\data"] }, ownership))
+      expect(() => admitMxcExtensionFilesystem({ allowRead: [RUNTIME_READ_ROOT], allowWrite: ["C:\\holder\\data"] }, ownership))
         .toThrow(/outside this holder's captured write roots/);
     }
   });
 
   it("rejects pattern denies whose future matches cannot be fixed in a container policy", () => {
     setProcessPlatform("win32");
-    expect(() => admitMxcExtensionFilesystem({ allowRead: ["C:\\runtime"], allowWrite: [], denyRead: ["C:\\holder\\*.secret"] })).toThrow(/represented literally/);
+    expect(() => admitMxcExtensionFilesystem({ allowRead: [RUNTIME_READ_ROOT], allowWrite: [], denyRead: ["C:\\holder\\*.secret"] })).toThrow(/represented literally/);
   });
 
   it("refuses a volume root that holds host storage as an ownership overlap", () => {
     setProcessPlatform("win32");
     expect(() => admitMxcExtensionFilesystem({ allowRead: ["C:\\"], allowWrite: [] }, {
-      readRoots: [], writeRoots: [], hostStorageRoots: ["C:\\host-storage"],
+      readRoots: [], writeRoots: [], hostStorageRoots: ["C:\\host\\storage"],
     })).toThrow(/reaches another holder or host storage/);
   });
 
-  it("refuses volume-root file-content grants", () => {
+  it("refuses volume-root and one-component file-content grants", () => {
     setProcessPlatform("win32");
     const unrelatedRoot = win32.parse(aveHome()).root.toUpperCase() === "Z:\\" ? "Y:\\" : "Z:\\";
-    expect(() => admitMxcExtensionFilesystem({ allowRead: [unrelatedRoot], allowWrite: [] })).toThrow(/query access only/);
+    for (const grant of [unrelatedRoot, win32.join(unrelatedRoot, "runtime")]) {
+      expect(() => admitMxcExtensionFilesystem({ allowRead: [grant], allowWrite: [] })).toThrow(/refuses a root or one-component path/);
+    }
   });
 });
 

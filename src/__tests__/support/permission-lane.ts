@@ -28,3 +28,8 @@ export function checkShellPermission(
     headless,
   });
 }
+
+/** Exhausted shell analysis needs a person on either route. */
+export function analysisLimitAnswer(headless: boolean): Record<string, unknown> {
+  return headless ? { decision: "deny", reasonCode: "no-approver" } : { decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit" };
+}

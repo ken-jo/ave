@@ -17,7 +17,7 @@ function packageFile(directory, path) {
 /** Validate the target's physical packages without loading a foreign native addon. */
 function assertImageRuntimeFiles(nodeModules, platform, arch) {
   const target = `${platform}-${arch}`;
-  if (!/^(?:linux|darwin|win32)-(?:x64|arm64)$/.test(target)) throw new Error(`unsupported image runtime target: ${target}`);
+  if (!/^(?:darwin-arm64|(?:linux|win32)-(?:x64|arm64))$/.test(target)) throw new Error(`unsupported image runtime target: ${target}`);
   const wrapper = join(nodeModules, "sharp");
   const wrapperPackage = JSON.parse(readFileSync(requireFile(join(wrapper, "package.json")), "utf8"));
   packageFile(wrapper, wrapperPackage.main);

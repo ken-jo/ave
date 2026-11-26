@@ -1,3 +1,4 @@
+import type { AuditLogger } from "../../audit/audit-logger.js";
 /** Isolated factories preserve the runtime contract (docs/blueprints/plugin-process-isolation.md).
  * Worker confinement is independent of shell confinement: disabled children receive no isolation relaxation; enabled wrapping is mandatory and failure prevents loading. */
 import { mkdirSync, statSync } from "node:fs";
@@ -38,6 +39,7 @@ import {
 } from "../../permissions/asrt-sandbox.js";
 import { extensionStartIdentity, pluginChildStartKey, type ExtensionStartAuthority } from "../../permissions/extension-start-consent.js";
 import { holdWindowsFilesystemGrant, type HeldWindowsGrant } from "../../permissions/windows-acl-grant-holder.js";
+import { assertWriteGrantsOutsideConfinementState, ConfinementStateWriteGrantError, declaredConfinementStatePaths } from "../../permissions/confinement-state-paths.js";
 import {
   resolvePluginSocketDir,
   writeGrantsReachingHostStorage,
@@ -110,7 +112,15 @@ export interface PluginChildEnvelopeInputs {
   /** `~/.ave/plugins/<id>/data`. */
   readonly pluginDataDir: string;
   readonly configValue: (key: string) => unknown;
-  readonly onUserChosenDirectory?: (path: string) => void;
+  readonly onUserChosenDirectory?: (grant: ChosenSandboxGrant) => void;
+}
+
+export type SandboxGrantAccess = "read" | "write";
+
+/** A user-chosen directory as the envelope grants it. */
+export interface ChosenSandboxGrant {
+  readonly path: string;
+  readonly access: SandboxGrantAccess;
 }
 
 /** Refuse a widening, and say which grant asked for what. An `Error` subtype rather than a boundary error: this runs on the SPAWN path, so a refusal here fails the plugin's construction; there is no
@@ -200,6 +210,7 @@ function ceilingSubtractions(
 function resolveUserChosenDirectory(
   inputs: PluginChildEnvelopeInputs,
   grant: Extract<PluginEnvelopeGrant, { kind: "userChosenDirectory" }>,
+  access: SandboxGrantAccess,
 ): string | undefined {
   const raw = inputs.configValue(grant.configKey);
   // `""` is the default several plugin config schemas ship for an unset string key, and `resolve("")` is the host's cwd; a value that would silently grant something nobody chose.
@@ -267,12 +278,21 @@ function resolveUserChosenDirectory(
         + `the user approved covers it — approve the directory in the host first`,
     );
   }
+  // A write is refused before a backend is chosen and before the launch creates the directory; a read stays on the read floor above.
+  if (access === "write") {
+    try { assertWriteGrantsOutsideConfinementState([target], declaredConfinementStatePaths()); }
+    catch (error) {
+      if (error instanceof ConfinementStateWriteGrantError) rejectEnvelopeGrant(inputs.pluginId, grant.configKey, error.message);
+      throw error;
+    }
+  }
   return target;
 }
 
 /** Bind a running grant to the path and filesystem object granted at spawn. */
-export function capturePluginSandboxGrant(path: string): {
+export function capturePluginSandboxGrant({ path, access }: ChosenSandboxGrant): {
   path: string;
+  access: SandboxGrantAccess;
   canonicalPath: string;
   identity?: FileIdentity;
 } {
@@ -282,6 +302,7 @@ export function capturePluginSandboxGrant(path: string): {
     const { identity } = admitted;
     return {
       path,
+      access,
       canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(admitted.target)),
       ...(identity === null ? {} : { identity: { dev: BigInt(identity.volumeSerial), ino: BigInt(identity.fileId) } }),
     };
@@ -290,6 +311,7 @@ export function capturePluginSandboxGrant(path: string): {
   const entry = statSync(path, { bigint: true, throwIfNoEntry: false });
   return {
     path,
+    access,
     canonicalPath,
     ...(entry ? { identity: { dev: entry.dev, ino: entry.ino } } : {}),
   };
@@ -302,7 +324,7 @@ export function isPluginSandboxGrantCovered(
   pluginDataDir: string,
 ): boolean {
   try {
-    const current = capturePluginSandboxGrant(grant.path);
+    const current = capturePluginSandboxGrant(grant);
     if (current.canonicalPath !== grant.canonicalPath) return false;
     if (grant.identity && (!current.identity || !sameFileIdentity(current.identity, grant.identity))) return false;
     if (!grant.identity && current.identity) grant.identity = current.identity;
@@ -311,7 +333,7 @@ export function isPluginSandboxGrantCovered(
       pluginRoot,
       pluginDataDir,
       configValue: () => grant.path,
-    }, { kind: "userChosenDirectory", configKey: "directory", why: "approved directory" }) !== undefined;
+    }, { kind: "userChosenDirectory", configKey: "directory", why: "approved directory" }, grant.access) !== undefined;
   } catch {
     return false;
   }
@@ -342,11 +364,11 @@ export function derivePluginChildEnvelope(
       log.info(`[${inputs.pluginId}] envelope widened: read ${directories.join(", ")} — ${grant.why}`);
       continue;
     }
-    const chosen = resolveUserChosenDirectory(inputs, grant);
+    const chosen = resolveUserChosenDirectory(inputs, grant, access);
     if (chosen === undefined) continue;
     // Folded into the base envelope: nothing to add, nothing to register.
     if (chosen === inputs.pluginDataDir) continue;
-    inputs.onUserChosenDirectory?.(chosen);
+    inputs.onUserChosenDirectory?.({ path: chosen, access });
     // Read as well as write: the plugin has to list and re-open what it wrote. This is also the only thing that keeps `read` a
     // superset of `write`; `DelegatedWorkerConfinement` documents that relation as maintained here rather than enforced anywhere.
     read.push(chosen);
@@ -715,6 +737,7 @@ export async function spawnConfinedPluginChild(
 export interface OutOfProcessPluginSpec {
   readonly manifest: PluginManifest;
   readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
+  readonly effectAudit?: Pick<AuditLogger, "logShadow">;
   /** How the plugin's process is produced, and so what construct's `entryPath` says (decision 33): the resolved, real path of the plugin's JS module (not
    * of the child runtime) for an `entry` plugin; for a `process` plugin the launch `resolveProcessLaunch` built, whose command path construct carries. */
   readonly launch:
@@ -743,7 +766,7 @@ export interface OutOfProcessPluginSpec {
     readonly baseEnv: NodeJS.ProcessEnv;
     readonly envelope: DelegatedWorkerConfinement;
   }) => Promise<MxcPluginChildLaunch>;
-  readonly registerSandboxEnvelope?: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) => {
+  readonly registerSandboxEnvelope?: (grants: readonly ChosenSandboxGrant[], pluginRoot: string, pluginDataDir: string) => {
     assertCurrent(): void;
     /** Verified termination: the grants leave with the incarnation. */
     dispose(): void;
@@ -831,16 +854,16 @@ export function createOutOfProcessPluginFactory(
     const hostApi = context.hostApi as unknown as DispatchableHostApi;
     // Derived ONCE, here, and then held: the spawn wraps the child with it and the dispatch table checks delegated workers against it, so the two cannot be looking at different answers
     // to the same question. Deriving it before the spawn is also what makes a refused widening fail construction rather than produce a child confined more narrowly than the host decided.
-    const chosenPaths: string[] = [];
+    const chosenGrants: ChosenSandboxGrant[] = [];
     const envelope = derivePluginChildEnvelope({
       pluginId,
       ...(spec.manifest.sandbox === undefined ? {} : { sandbox: spec.manifest.sandbox }),
       pluginRoot: context.pluginRoot,
       pluginDataDir: context.pluginDataDir,
       configValue: (key) => hostApi.config.get(key),
-      onUserChosenDirectory: (path) => chosenPaths.push(path),
+      onUserChosenDirectory: (grant) => chosenGrants.push(grant),
     });
-    const registration = spec.registerSandboxEnvelope?.(chosenPaths, context.pluginRoot, context.pluginDataDir);
+    const registration = spec.registerSandboxEnvelope?.(chosenGrants, context.pluginRoot, context.pluginDataDir);
     // Both launch paths receive the same captured envelope used by the effect boundary.
     let child: ConfinedPluginChild | MxcPluginChild | undefined;
     // A native child's `windows-mxc` marker is published only after the handshake and withdrawn when it begins terminating.
@@ -872,6 +895,7 @@ export function createOutOfProcessPluginFactory(
         });
         child = native;
         // Named only once the child is admitted and running, so a refused launch records no notice.
+        for (const notice of userDenyInsidePierceNotices(floorPierces)) log.warn(notice);
         logUserDeniesInsidePierces(pluginId, floorPierces);
         // Whoever starts termination (teardown, a transport fault, revocation or the child's own exit), the
         // registration learns at once, and an unverified result quarantines it without waiting for onClosed,
@@ -941,6 +965,7 @@ export function createOutOfProcessPluginFactory(
         entryPath: spec.launch.kind === "entry" ? spec.launch.entryPath : spec.launch.command,
         table,
         ...(spec.auditLog ? { auditLog: spec.auditLog } : {}),
+        effectAudit: spec.effectAudit,
         onClosed: async () => {
           try {
             await spawned.waitForExit?.();
