@@ -1,5 +1,6 @@
 import { ipcMain, type IpcMainInvokeEvent } from 'electron';
 import { z } from 'zod';
+import { isDeepStrictEqual } from 'node:util';
 import { CHANNELS } from '../../contract/app-contract.js';
 import { validateHostRendererSender, auditUnauthorized, UNAUTHORIZED_FRAME } from '../gated.js';
 import type { IpcDeps } from '../types.js';
@@ -7,6 +8,7 @@ import type { MemoryMapScope, MemoryMapError } from '../../shared/memory-map.js'
 import { MemoryMapScopeSchema, MemoryRetrievalSchema, MemoryEmbeddingSettingsSchema } from '../../shared/memory-map-validation.js';
 import type { NoteEntry, ProjectScopedMemoryOptions } from '../../memory/memory-manager.js';
 import type { MemoryMapRuntime } from './memory-map-runtime.js';
+import { commitUnderAdmission } from '../../shared/admission-commit.js';
 
 export type MemoryMapScopeResolver = (raw: unknown) => { ok: true; options: ProjectScopedMemoryOptions } | { ok: false; error: string };
 
@@ -22,31 +24,48 @@ export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: MemoryMap
     );
     return loading;
   };
-  function handle<T>(channel: string, schema: z.ZodType<T>, action: (current: MemoryMapRuntime, value: T, event: IpcMainInvokeEvent) => unknown) {
+  function handle<T>(channel: string, schema: z.ZodType<T>, action: (current: MemoryMapRuntime, value: T, event: IpcMainInvokeEvent, onAdmission: (assertLive: () => void) => void) => unknown) {
     ipcMain.handle(channel, async (event, raw: unknown, ...extra: unknown[]) => {
       if (!validateHostRendererSender(event)) { auditUnauthorized(deps.auditLogger, channel, event); return UNAUTHORIZED_FRAME; }
       const parsed = schema.safeParse(raw);
       if (!parsed.success || extra.length) return { ok: false, error: 'invalid-input' };
       const scope = channel === CHANNELS.memoryMap.retrieve ? (parsed.data as { scope?: MemoryMapScope }).scope : parsed.data;
-      if ([CHANNELS.memoryMap.get, CHANNELS.memoryMap.build, CHANNELS.memoryMap.facets, CHANNELS.memoryMap.retrieve].includes(channel as never) && !resolveScope(scope).ok) return { ok: false, error: 'project-not-allowed' };
+      const scoped = [CHANNELS.memoryMap.get, CHANNELS.memoryMap.build, CHANNELS.memoryMap.facets, CHANNELS.memoryMap.retrieve].includes(channel as never);
+      const original = scoped ? resolveScope(scope) : undefined;
+      const projectDenied = { ok: false, error: 'project-not-allowed' } as const;
+      if (original?.ok === false) return projectDenied;
+      const refusal = () => {
+        if (!validateHostRendererSender(event)) {
+          auditUnauthorized(deps.auditLogger, channel, event);
+          return UNAUTHORIZED_FRAME;
+        }
+        if (original?.ok) {
+          const latest = resolveScope(scope);
+          if (!latest.ok || !isDeepStrictEqual(latest.options, original.options)) return projectDenied;
+        }
+      };
       let current: MemoryMapRuntime | undefined;
       try {
         current = await loadRuntime();
-        return { ok: true, value: await action(current, parsed.data, event) };
+        const denied = refusal();
+        if (denied) return denied;
+        let assertReply: (() => void) | undefined;
+        const value = await action(current, parsed.data, event, assertLive => { assertReply = assertLive; });
+        return refusal() ?? commitUnderAdmission(() => assertReply?.(), () => ({ ok: true, value }));
       } catch (error) {
-        return { ok: false, error: current?.errorCode(error) ?? ('graph-build-failed' satisfies MemoryMapError) };
+        return refusal() ?? { ok: false, error: current?.errorCode(error) ?? ('graph-build-failed' satisfies MemoryMapError) };
       }
     });
   }
   handle(CHANNELS.memoryMap.get, MemoryMapScopeSchema.optional(), (current, scope) => current.get(scope));
-  handle(CHANNELS.memoryMap.build, MemoryMapScopeSchema.optional(), (current, scope, event) => current.build(scope, event));
+  handle(CHANNELS.memoryMap.build, MemoryMapScopeSchema.optional(), (current, scope, event, onAdmission) => current.build(scope, event, onAdmission));
   handle(CHANNELS.memoryMap.cancel, z.undefined(), current => current.cancel());
   handle(CHANNELS.memoryMap.facets, MemoryMapScopeSchema.optional(), (current, scope) => current.facets(scope));
-  handle(CHANNELS.memoryMap.retrieve, MemoryRetrievalSchema, (current, request) => current.retrieve(request));
-  handle(CHANNELS.memoryMap.modelStatus, z.undefined(), current => current.modelStatus());
-  handle(CHANNELS.memoryMap.modelDownload, z.undefined(), (current, _value, event) => current.modelDownload(event));
+  handle(CHANNELS.memoryMap.retrieve, MemoryRetrievalSchema, (current, request, _event, onAdmission) => current.retrieve(request, onAdmission));
+  handle(CHANNELS.memoryMap.modelStatus, z.undefined(), (current, _value, _event, onAdmission) => current.modelStatus(onAdmission));
+  handle(CHANNELS.memoryMap.modelDownload, z.undefined(), (current, _value, event, onAdmission) => current.modelDownload(event, onAdmission));
   handle(CHANNELS.memoryMap.modelCancel, z.undefined(), current => current.modelCancel());
-  handle(CHANNELS.memoryMap.modelUseExisting, z.undefined(), (current, _value, event) => current.modelUseExisting(event));
+  handle(CHANNELS.memoryMap.modelUseExisting, z.undefined(), (current, _value, event, onAdmission) => current.modelUseExisting(event, onAdmission));
   handle(CHANNELS.memoryMap.settingsGet, z.undefined(), current => current.settingsGet());
   handle(CHANNELS.memoryMap.settingsSet, MemoryEmbeddingSettingsSchema, (current, input) => current.settingsSet(input));
   // Before the first request no catalog has been read, so there is no source to locate.

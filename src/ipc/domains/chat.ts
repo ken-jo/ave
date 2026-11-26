@@ -24,6 +24,8 @@ import type { ChatUtteranceMode } from "../../shared/chat-utterance.js";
 import { formatAppMessageEnvelope, isAppMessageOrigin } from "../../shared/mcp-app-message-source.js";
 import { parseStagedEnvelope, isMissingStagedEnvelopeErrorMessage } from "../../shared/staged-origins.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
+import { commitUnderAdmission } from "../../shared/admission-commit.js";
+import { isDeepStrictEqual } from "node:util";
 import { listCustomCommands } from "../../core/custom-commands.js";
 import { isValidSessionId } from "../../shared/session-id.js";
 import type { SessionListQuery } from "../../shared/session-lookup.js";
@@ -1921,7 +1923,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.sessionsSearch, e); return UNAUTHORIZED_FRAME; }
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return [];
-    return await memoryManager.sessions.searchSessionsWithCurrentPolicy(query, project.options);
+    let assertReply: (() => void) | undefined;
+    const matches = await memoryManager.sessions.searchSessionsWithCurrentPolicy(query, project.options, assertLive => { assertReply = assertLive; });
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.sessionsSearch, e); return UNAUTHORIZED_FRAME; }
+    const latest = parseMemoryProjectOptions(opts);
+    if (!latest.ok || !isDeepStrictEqual(latest.options, project.options) || !assertReply) return [];
+    try { return commitUnderAdmission(assertReply, () => matches); } catch { return []; }
   });
   ipcMain.handle(CHANNELS.memory.agentsMdGet, (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.agentsMdGet, e); return UNAUTHORIZED_FRAME; }

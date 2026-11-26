@@ -11,7 +11,7 @@ import { MemoryMapHostError } from '../../main/memory-map/errors.js';
 import type { MemoryWorkerRunner } from '../../main/memory-map/worker-client.js';
 const state = vi.hoisted(() => ({
   handles: new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>>(),
-  get: vi.fn(async (_readCatalog: ReadMemoryMapCatalog) => null), build: vi.fn(async () => ({ snapshotId: 'snapshot' })), cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
+  get: vi.fn(async (_readCatalog: ReadMemoryMapCatalog) => null), build: vi.fn(async (_readCatalog?: ReadMemoryMapCatalog, _onAdmission?: (assertLive: () => void) => void) => ({ snapshotId: 'snapshot' })), cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
   status: vi.fn(async () => ({ status: 'unconfigured' })), download: vi.fn(async () => ({ status: 'ready' })), modelCancel: vi.fn(), adoptExistingFolder: vi.fn(async () => ({ status: 'ready' })),
   readModelPath: undefined as ((signal: AbortSignal) => Promise<string>) | undefined,
   validatedPath: vi.fn(async () => '/example/model'),
@@ -65,6 +65,33 @@ beforeEach(() => {
 });
 afterEach(() => { Object.defineProperty(process, 'platform', originalPlatform); });
 describe('memory map host boundary', () => {
+  it('refuses a completed build whose publication receipt expires before the IPC reply', async () => {
+    state.build.mockImplementationOnce(async (_catalog, onAdmission) => {
+      let live = true;
+      onAdmission?.(() => { if (!live) throw new MemoryMapHostError('local-runtime-unavailable'); });
+      queueMicrotask(() => { live = false; });
+      return { snapshotId: 'snapshot' };
+    });
+    await expect(invoke('build')).resolves.toEqual({ ok: false, error: 'local-runtime-unavailable' });
+  });
+
+  it.each(['sender', 'scope'] as const)('checks the original %s again before delivering a result', async change => {
+    let live = true;
+    const senderFrame = { url: 'file:///app/index.html' };
+    const event = { ...hostEvent, senderFrame } as unknown as IpcMainInvokeEvent;
+    registerMemoryMapHandlers({ auditLogger: { log: state.audit }, settingsService: { get: () => undefined } } as unknown as IpcDeps,
+      () => ({ ok: true, options: { projectRoot: live ? '/example/first' : '/example/replacement' } }));
+    state.build.mockImplementationOnce(async () => {
+      queueMicrotask(() => {
+        if (change === 'sender') senderFrame.url = 'ave-mcp-app://isolated/index.html';
+        else live = false;
+      });
+      return { snapshotId: 'snapshot' };
+    });
+    const expected = change === 'sender' ? { ok: false, error: 'unauthorized-frame' } : { ok: false, error: 'project-not-allowed' };
+    await expect(invoke('build', undefined, event)).resolves.toMatchObject(expected);
+  });
+
   it('rechecks switch eligibility when a queued settings write runs', async () => {
     const firstWrite = deferred<void>();
     const set = vi.fn(async () => {}).mockImplementationOnce(() => firstWrite.promise);
@@ -365,6 +392,6 @@ describe('memory map host boundary', () => {
     expect(await invoke('modelUseExisting')).toEqual({ ok: true, value: null });
     expect(state.adoptExistingFolder).not.toHaveBeenCalled();
     state.dialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/example/model'] });
-    expect(await invoke('modelUseExisting')).toMatchObject({ ok: true }); expect(state.adoptExistingFolder).toHaveBeenCalledWith('/example/model');
+    expect(await invoke('modelUseExisting')).toMatchObject({ ok: true }); expect(state.adoptExistingFolder).toHaveBeenCalledWith('/example/model', expect.any(Function), expect.any(Function));
   });
 });

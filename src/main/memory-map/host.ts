@@ -166,7 +166,7 @@ export class MemoryMapHost {
     }
     return cache;
   }
-  async build(readCatalog: ReadMemoryMapCatalog): Promise<GraphSnapshot> {
+  async build(readCatalog: ReadMemoryMapCatalog, onAdmission?: (assertLive: () => void) => void): Promise<GraphSnapshot> {
     const catalog = readCatalog(); this.activate(catalog); this.cancel(); this.hydrated = true;
     const selected = this.selectedNamespace();
     const generation = this.generation; const controller = new AbortController(); this.controller = controller;
@@ -256,8 +256,10 @@ export class MemoryMapHost {
         this.cache = result.cache; this.snapshot = result.snapshot; this.pending = null;
       });
       if (!committed) throw new MemoryMapHostError('request-stale');
-      assertCurrent();
-      return result.snapshot;
+      return commitUnderAdmission(assertCanPublish, () => {
+        onAdmission?.(assertCanPublish);
+        return result.snapshot;
+      });
     } catch (error) {
       if (generation !== this.generation || controller.signal.aborted) throw new MemoryMapHostError('request-stale');
       if (this.pending) this.pending = { ...this.pending, status: error instanceof MemoryMapHostError && error.code === 'model-unconfigured' ? 'unconfigured' : 'failed' };
@@ -267,7 +269,7 @@ export class MemoryMapHost {
       stopWatching?.();
     }
   }
-  async retrieve(readCatalog: ReadMemoryMapCatalog, request: { question: string; filters: MemoryMapFilters; snapshotId: string; queryId: string }): Promise<RetrievalAnswer> {
+  async retrieve(readCatalog: ReadMemoryMapCatalog, request: { question: string; filters: MemoryMapFilters; snapshotId: string; queryId: string }, onAdmission?: (assertLive: () => void) => void): Promise<RetrievalAnswer> {
     const catalog = readCatalog(); this.activate(catalog);
     this.queryController?.abort();
     const queryGeneration = ++this.queryGeneration;
@@ -295,11 +297,18 @@ export class MemoryMapHost {
     }
     catch (error) { if (controller.signal.aborted || queryGeneration !== this.queryGeneration) throw new MemoryMapHostError('request-stale'); throw error; }
     finally { stopWatching?.(); }
-    if (controller.signal.aborted || queryGeneration !== this.queryGeneration || snapshot !== this.snapshot || catalogRevision(catalog.records) !== catalogRevision(readCatalog().records) || catalog.authorizationScopeId !== readCatalog().authorizationScopeId) throw new MemoryMapHostError('request-stale');
-    const answer = () => retrieveMatches(catalog.records, this.cache, vector, request.filters, { snapshotId: snapshot.snapshotId, catalogRevision: snapshot.catalogRevision, queryId: request.queryId }, selected);
-    if (assertConsent) return commitUnderAdmission(assertConsent, answer);
-    if (assertInference === undefined) throw new MemoryMapHostError('local-runtime-unavailable');
-    return commitUnderAdmission(assertInference, answer);
+    const assertAdmission = assertConsent ?? assertInference;
+    if (!assertAdmission) throw new MemoryMapHostError('local-runtime-unavailable');
+    const assertReply = () => {
+      assertAuthority();
+      const latest = readCatalog();
+      if (snapshot !== this.snapshot || catalogRevision(catalog.records) !== catalogRevision(latest.records) || catalog.authorizationScopeId !== latest.authorizationScopeId) throw new MemoryMapHostError('request-stale');
+      assertAdmission();
+    };
+    return commitUnderAdmission(assertReply, () => {
+      onAdmission?.(assertReply);
+      return retrieveMatches(catalog.records, this.cache, vector, request.filters, { snapshotId: snapshot.snapshotId, catalogRevision: snapshot.catalogRevision, queryId: request.queryId }, selected);
+    });
   }
 
 }

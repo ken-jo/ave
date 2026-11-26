@@ -942,8 +942,18 @@ export class SessionRepository {
   }
 
   /** Searches after the queued writes, with the policy refreshed for this call. */
-  searchSessionsWithCurrentPolicy(query: string, options: Pick<ListSessionsOptions, "kind" | "routineId" | "projectRoot" | "includeUnscoped"> = {}): Promise<SessionSearchEntry[]> {
-    return this.answerFromSearchIndex((admit) => this.querySearchIndex(query, options, admit));
+  searchSessionsWithCurrentPolicy(query: string, options: Pick<ListSessionsOptions, "kind" | "routineId" | "projectRoot" | "includeUnscoped"> = {},
+    onAdmission?: (assertLive: () => void) => void): Promise<SessionSearchEntry[]> {
+    return this.answerFromSearchIndex((admit) => {
+      if (!onAdmission) return this.querySearchIndex(query, options, admit);
+      const revision = this.searchSourceRevision;
+      const policy = admit();
+      const result = this.querySearchIndex(query, options, admit);
+      onAdmission(() => {
+        if (revision !== this.searchSourceRevision || this.searchSourceWrites !== 0 || admit() !== policy) throw new Error("Session search authorization changed");
+      });
+      return result;
+    });
   }
 
   /** A synchronous search cannot refresh the policy, so a repository that requires a refresh answers nothing. */

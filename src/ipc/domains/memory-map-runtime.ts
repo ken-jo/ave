@@ -36,17 +36,18 @@ const MEMORY_EMBEDDING_ALLOWED_DOMAINS = [
 
 type MemoryRetrievalRequest = z.infer<typeof MemoryRetrievalSchema>;
 type MemoryEmbeddingSettingsInput = z.infer<typeof MemoryEmbeddingSettingsSchema>;
+type OnReplyAdmission = (assertLive: () => void) => void;
 
 export interface MemoryMapRuntime {
   get(scope: MemoryMapScope | undefined): unknown;
-  build(scope: MemoryMapScope | undefined, event: IpcMainInvokeEvent): unknown;
+  build(scope: MemoryMapScope | undefined, event: IpcMainInvokeEvent, onAdmission: OnReplyAdmission): unknown;
   cancel(): null;
   facets(scope: MemoryMapScope | undefined): unknown;
-  retrieve(request: MemoryRetrievalRequest): unknown;
-  modelStatus(): unknown;
-  modelDownload(event: IpcMainInvokeEvent): unknown;
+  retrieve(request: MemoryRetrievalRequest, onAdmission: OnReplyAdmission): unknown;
+  modelStatus(onAdmission: OnReplyAdmission): unknown;
+  modelDownload(event: IpcMainInvokeEvent, onAdmission: OnReplyAdmission): unknown;
   modelCancel(): null;
-  modelUseExisting(event: IpcMainInvokeEvent): unknown;
+  modelUseExisting(event: IpcMainInvokeEvent, onAdmission: OnReplyAdmission): unknown;
   settingsGet(): Promise<MemoryEmbeddingSettings>;
   settingsSet(input: MemoryEmbeddingSettingsInput): unknown;
   errorCode(error: unknown): string | undefined;
@@ -178,7 +179,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   };
   return {
     get: scope => host.get(catalog(scope)),
-    build: async (scope, event) => {
+    build: async (scope, event, onAdmission) => {
       const generation = ++buildGeneration;
       if (deps.settingsService.get('memoryEmbedding')?.source !== 'provider') {
         const admission = await refreshLocalInferenceAdmission();
@@ -186,18 +187,21 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
         localRuntime(admission);
       }
       buildEvent = event;
-      return host.build(catalog(scope));
+      return host.build(catalog(scope), assertLive => onAdmission(() => {
+        if (generation !== buildGeneration) throw new MemoryMapHostError('request-stale');
+        assertLive();
+      }));
     },
     cancel: () => { cancelBuild(); return null; },
     facets: async scope => { await host.get(catalog(scope)); return memoryFacets(catalog(scope)().records); },
-    retrieve: request => host.retrieve(catalog(request.scope), request),
-    modelStatus: async () => {
+    retrieve: (request, onAdmission) => host.retrieve(catalog(request.scope), request, onAdmission),
+    modelStatus: async onAdmission => {
       const assertStillValid = await refreshLocalAdmission();
-      return model.status(assertStillValid);
+      return model.status(assertStillValid, onAdmission);
     },
-    modelDownload: event => startModelOperation(++modelGeneration, event, onProgress => model.download(onProgress)),
+    modelDownload: (event, onAdmission) => startModelOperation(++modelGeneration, event, onProgress => model.download(onProgress, onAdmission)),
     modelCancel: () => { cancelModel(); return null; },
-    modelUseExisting: async event => {
+    modelUseExisting: async (event, onAdmission) => {
       const generation = ++modelGeneration;
       const admission = await refreshLocalInferenceAdmission();
       assertCurrentModelRequest(generation);
@@ -205,7 +209,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
       const selection = await dialog.showOpenDialog({ properties: ['openDirectory'] });
       const folder = selection.filePaths[0];
       if (selection.canceled || !folder) return null;
-      return startModelOperation(generation, event, onProgress => model.adoptExistingFolder(folder, onProgress));
+      return startModelOperation(generation, event, onProgress => model.adoptExistingFolder(folder, onProgress, onAdmission));
     },
     settingsGet: settings,
     settingsSet: async input => {

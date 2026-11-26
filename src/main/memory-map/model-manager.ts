@@ -113,12 +113,16 @@ export class LocalModelManager {
     if (!(await this.isManagedPath(folder)) || this.options.readPath() !== path) throw new MemoryModelError('model-integrity-failed');
     return folder;
   }
-  async status(assertStillValid?: () => void): Promise<MemoryModelStatus> {
+  async status(assertStillValid?: () => void, onAdmission?: (assertLive: () => void) => void): Promise<MemoryModelStatus> {
     assertStillValid?.();
-    if (this.state.status === 'downloading' || this.state.status === 'failed') return { ...this.state };
     const path = this.options.readPath();
-    if (!path) return { ...this.state };
     const generation = this.generation;
+    const assertReply = () => {
+      assertStillValid?.();
+      if (generation !== this.generation || this.options.readPath() !== path) throw new MemoryModelError('model-cancelled');
+    };
+    onAdmission?.(assertReply);
+    if (this.state.status === 'downloading' || this.state.status === 'failed' || !path) return { ...this.state };
     let status: MemoryModelStatus['status'];
     let error: MemoryModelStatus['error'];
     try {
@@ -128,15 +132,13 @@ export class LocalModelManager {
       status = 'failed';
       error = 'model-integrity-failed';
     }
-    return commitUnderAdmission(() => {
-      assertStillValid?.();
-      if (generation !== this.generation || this.options.readPath() !== path) throw new MemoryModelError('model-cancelled');
-    }, () => this.publish({ ...this.state, status, error }));
+    return commitUnderAdmission(assertReply, () => this.publish({ ...this.state, status, error }));
   }
   private run(
     action: (signal: AbortSignal, assertStillValid: () => void, publish: (state: MemoryModelStatus) => MemoryModelStatus) => Promise<void>,
     onProgress?: (status: MemoryModelStatus) => void,
     sourceFolder?: string,
+    onAdmission?: (assertLive: () => void) => void,
   ): Promise<MemoryModelStatus> {
     this.cancel();
     const generation = ++this.generation;
@@ -160,6 +162,7 @@ export class LocalModelManager {
         assertStillValid();
         await action(controller.signal, assertStillValid, publish);
         assertStillValid();
+        onAdmission?.(assertStillValid);
         return publish({ ...this.state, status: 'ready', error: undefined });
       } catch (error) {
         if (generation !== this.generation) return cancelled();
@@ -171,7 +174,7 @@ export class LocalModelManager {
     this.task = operation.catch(() => ({ ...this.state }));
     return operation;
   }
-  adoptExistingFolder(folder: string, onProgress?: (status: MemoryModelStatus) => void): Promise<MemoryModelStatus> {
+  adoptExistingFolder(folder: string, onProgress?: (status: MemoryModelStatus) => void, onAdmission?: (assertLive: () => void) => void): Promise<MemoryModelStatus> {
     return this.run(async (signal, assertStillValid) => {
       if (!folder) throw new MemoryModelError('model-folder-invalid');
       const path = await verifyModelFolder(folder, this.files, signal);
@@ -200,9 +203,9 @@ export class LocalModelManager {
         assertStillValid();
         await verifyModelFolder(staging, this.files, signal);
       });
-    }, onProgress, folder);
+    }, onProgress, folder, onAdmission);
   }
-  download(onProgress?: (status: MemoryModelStatus) => void): Promise<MemoryModelStatus> {
+  download(onProgress?: (status: MemoryModelStatus) => void, onAdmission?: (assertLive: () => void) => void): Promise<MemoryModelStatus> {
     return this.run((signal, assertStillValid, publish) => this.install(signal, assertStillValid, async name => {
       publish({ status: 'downloading', receivedBytes: 0, totalBytes: this.files.reduce((n, f) => n + f.bytes, 0), completedFiles: 0, totalFiles: this.files.length });
       for (const file of this.files) {
@@ -239,7 +242,7 @@ export class LocalModelManager {
         assertStillValid();
         publish({ ...this.state, completedFiles: this.state.completedFiles + 1 });
       }
-    }), onProgress);
+    }), onProgress, undefined, onAdmission);
   }
   private async verifyManagedSlot(path: string, signal: AbortSignal): Promise<string> {
     const directory = await this.checkedDirectory(path);
