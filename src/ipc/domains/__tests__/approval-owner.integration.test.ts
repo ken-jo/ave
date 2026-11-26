@@ -15,6 +15,7 @@ import { __resetTerminalBlocksForTest, registerTerminalBlockTracker, TerminalBlo
 import { PermissionTestResources } from "../../../permissions/__tests__/test-resources.js";
 import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput, IPC_APPROVAL_REQUEST, IPC_APPROVAL_SETTLED } from "../../../permissions/approval-gate.js";
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
+import { createApprovalGateEgressRequester } from "../../../permissions/egress-approval.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../../../permissions/judge/judge-settings.js";
 import * as terminalWriteAuthority from "../../../permissions/host-terminal-write-authority.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
@@ -958,6 +959,47 @@ describe("live native approval ownership", () => {
     expect(f.manager.listSessionRules(SESSION_ID)).toEqual([]);
     expect(rows()).toHaveLength(action === "deny" ? 1 : 0);
     if (action === "allow") expect(result.content).toContain("Permission policy changed");
+  });
+
+  it.each(["stands", "policy changed", "destination refused", "declined"] as const)("holds the edited network allow when consent %s", async (outcome) => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    const request = createApprovalGateEgressRequester(f.gate, f.manager)({
+      origin: "shell", sessionId: SESSION_ID, toolName: "bash", toolUseId: "network-call",
+      destination: { host: "downloads.example.com", port: 443 }, network: "public",
+      scopes: ["once", "session", "always"], workspaceRoot: f.root, abortSignal: undefined,
+    });
+    const card = await f.waitForCard();
+    expect(card.egressHost?.scopes).toContain("always");
+    const pattern = "Network(*.example.com)";
+    const persist = vi.spyOn(f.manager, "addRulePersist");
+    const currentCheck = f.manager.checkLoadedNetworkPermission.bind(f.manager);
+    const check = vi.spyOn(f.manager, "checkLoadedNetworkPermission");
+    expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "persistent",
+      verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
+      rule: { action: "allow", scope: "always", pattern },
+      intent: { inputOrigin: "user-keyboard", userActivation: true },
+    })).toMatchObject({ ok: true });
+    expect.soft(persist).not.toHaveBeenCalled();
+    if (outcome === "policy changed") f.manager.setMode("strict");
+    if (outcome === "destination refused") {
+      check.mockImplementationOnce((...args) => {
+        const current = currentCheck(...args);
+        return { ...current, permission: { decision: "deny", reason: "Destination refused." } };
+      });
+    }
+    const answer = allowOnceCardAnswer(card);
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), outcome === "declined"
+      ? { ...answer, choice: "deny-once" }
+      : { ...answer, egressScope: "once" });
+    expect(await request).toMatchObject({ allow: outcome === "stands" });
+    if (outcome === "stands") {
+      expect(check).toHaveBeenCalledBefore(persist);
+      expect(persist.mock.calls.map(([rule]) => rule)).toEqual([{ pattern, action: "allow" }]);
+    } else {
+      expect(persist).not.toHaveBeenCalled();
+    }
   });
 
   it("writes a held allow only against a standing answer that names the rule-save use", async () => {

@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApprovalGateEgressRequester } from "../egress-approval.js";
+import type { ApprovalRequestInput } from "../approval-gate.js";
 import type { EgressShellApprovalRequest } from "../egress-ask.js";
 
 const request: EgressShellApprovalRequest = {
@@ -51,7 +52,7 @@ describe("sandbox domain review", () => {
 
   it("keeps an attended ordinary request on its approval dock", async () => {
     const manager = reviewer("allow", "default");
-    const requestAndWait = vi.fn(async () => ({ requestId: "network-ask", choice: "allow-once" as const, egressScope: "always" as const }));
+    const requestAndWait = vi.fn(async (card: ApprovalRequestInput) => ({ requestId: card.id, choice: "allow-once" as const, egressScope: "always" as const }));
     await expect(createApprovalGateEgressRequester({ requestAndWait }, manager)(request))
       .resolves.toEqual({ allow: true, scope: "always" });
     expect(manager.dispatchReviewer).not.toHaveBeenCalled();

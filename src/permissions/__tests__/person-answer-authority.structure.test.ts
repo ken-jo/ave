@@ -211,8 +211,6 @@ describe("authority from a person's answer", () => {
       .filter(({ node }) => ts.isCallExpression(node) && node.expression.getText() === "personAnswerStands" && node.arguments.length === 4)
       .map(({ where }) => where);
     expect(legacy.sort()).toEqual([
-      // Egress: held network consent, checked again against the current policy and destination before use.
-      "permissions/egress-approval.ts#createApprovalGateEgressRequester",
       // The write fence's refusal: it judges the check it has just run and only ever withdraws authority.
       "permissions/host-terminal-write-authority.ts#refusal",
       // Browser site access: three site cards, each a policy decision about one site.
@@ -241,19 +239,36 @@ describe("authority from a person's answer", () => {
   // The gate writes a held allow against the standing answer and spends its rule-save use.
   it("writes a held allow only through the owner and the gate's proof spend", () => {
     const calls = (name: string) => nodesMentioning(name)
-      .filter(({ node }) => ts.isCallExpression(node) &&
-        (ts.isPropertyAccessExpression(node.expression) ? node.expression.name.getText() : node.expression.getText()) === name);
+      .flatMap(({ node, where }) => ts.isCallExpression(node) &&
+        (ts.isPropertyAccessExpression(node.expression) ? node.expression.name.getText() : node.expression.getText()) === name
+        ? [{ node, where }] : []);
     const sites = (name: string) => calls(name).map(({ where }) => where).sort();
     expect(sites("commitStagedAllowSaves")).toEqual([`${OWNER}#saveStandingAnswerRule`]);
     expect(sites("deferAllowSaves")).toEqual([`${OWNER}#openPendingAnswerCard`]);
     expect(sites("stageAllowSave")).toEqual(["ipc/domains/permissions.ts#registerPermissionsHandlers", "ipc/domains/permissions.ts#registerPermissionsHandlers"]);
     const cards = calls("openPendingAnswerCard");
     const saves = calls("saveStandingAnswerRule");
-    const verdicts = calls("personAnswerStands");
+    const verdicts = calls("personAnswerStands").filter(({ node }) => node.arguments.length === 2);
     expect(saves.map(({ where }) => where).sort()).toEqual(cards.map(({ where }) => where).sort());
+    expect(cards.map(({ where }) => where)).toContain("permissions/egress-approval.ts#createApprovalGateEgressRequester");
+    // Only a card open captures a question to judge an answer. The terminal write fence seals and compares an already settled question.
+    expect(sites("permissionQuestionOf")).toEqual([
+      "permissions/host-terminal-write-authority.ts#issueHostTerminalWriteAuthority",
+      "permissions/host-terminal-write-authority.ts#refusal",
+      `${OWNER}#asksNoMoreThan`,
+      `${OWNER}#judgeCard`,
+      `${OWNER}#openPendingAnswerCard`,
+      `${OWNER}#pendingQuestionStillAsked`,
+    ]);
+    const cardSources = nodesMentioning("openPendingAnswerCard");
     for (const { node, where } of cards) {
-      expect(ts.isCallExpression(node)).toBe(true);
-      if (!ts.isCallExpression(node)) continue;
+      const card = cardSources.find(({ node: assignment, where: scope }) => scope === where &&
+        (ts.isVariableDeclaration(assignment) && (assignment.initializer?.getText() === node.getText() ||
+          assignment.initializer !== undefined && ts.isConditionalExpression(assignment.initializer) &&
+          assignment.initializer.whenTrue.getText() === node.getText()) ||
+          ts.isBinaryExpression(assignment) && assignment.right.getText() === node.getText()))?.node;
+      const cardName = card && (ts.isVariableDeclaration(card) ? card.name.getText() : ts.isBinaryExpression(card) ? card.left.getText() : undefined);
+      expect(cardName, where).toBeDefined();
       const binding = node.arguments[4]?.getText();
       // Shared use lists still have to declare the sink at their definition.
       const uses = binding?.match(/\buses: (\w+) \}$/)?.[1];
@@ -261,12 +276,14 @@ describe("authority from a person's answer", () => {
         ? nodesMentioning(uses).find(({ node: declaration, where: scope }) => scope === where &&
           ts.isVariableDeclaration(declaration) && declaration.name.getText() === uses)?.node.getText()
         : binding, where).toContain('"rule-save"');
-      const verdict = verdicts.find(({ where: scope, node: call }) => scope === where && call.pos > node.pos);
+      const verdict = verdicts.find(({ where: scope, node: call }) => scope === where && call.pos > node.pos &&
+        call.arguments[0]?.getText() === cardName);
       expect(verdict, where).toBeDefined();
-      expect(saves.some(({ where: scope, node: call }) => scope === where && call.pos > (verdict?.node.pos ?? Infinity)), where).toBe(true);
+      expect(saves.some(({ where: scope, node: call }) => scope === where && call.pos > (verdict?.node.pos ?? Infinity) &&
+        call.arguments[0]?.getText() === cardName && call.arguments[1]?.getText() === verdict?.node.arguments[1]?.getText()), where).toBe(true);
     }
     const spends = calls("spendStandingAnswer")
-      .filter(({ node }) => (node as ts.CallExpression).arguments[1]?.getText() === '"rule-save"').map(({ where }) => where);
+      .filter(({ node }) => node.arguments[1]?.getText() === '"rule-save"').map(({ where }) => where);
     expect(spends).toEqual(["permissions/approval-gate.ts#commitStagedAllowSaves"]);
   });
 });

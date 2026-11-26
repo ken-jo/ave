@@ -1,5 +1,5 @@
 // Egress scopes must be among those offered by the gate; terminal asks stay in the owning window/tab. Grants belong to the egress store, never user-decision memory.
-import { type AnswerEpochs, personAnswerStands } from "./pending-answer-policy.js";
+import { openPendingAnswerCard, type PendingAnswerCard, personAnswerStands, saveStandingAnswerRule } from "./pending-answer-policy.js";
 import type { NetworkPermissionEvaluation, NetworkRuleScope, PermissionManager } from "./permission-manager.js";
 import type { EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
@@ -66,7 +66,7 @@ export function createShellNetworkPermissionEvaluator(manager?: PermissionManage
 }
 
 export function createApprovalGateEgressRequester(
-  gate: Pick<ApprovalGate, "requestAndWait">,
+  gate: Pick<ApprovalGate, "requestAndWait"> & Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer" | "deferAllowSaves" | "commitStagedAllowSaves">>,
   permissionManager?: PermissionManager,
 ): EgressApprovalRequester {
   const evaluateShellPermission = createShellNetworkPermissionEvaluator(permissionManager);
@@ -78,9 +78,7 @@ export function createApprovalGateEgressRequester(
     const toolName = terminal ? TERMINAL_EGRESS_TOOL_NAME : request.toolName;
     let reviewerVerdict;
     let forced = false;
-    // What the card is asked under, and the destination judged again by the policy as it is now (pending-answer-policy.ts).
-    let opened: AnswerEpochs | undefined;
-    let recheckDestination: (() => { decision: "allow" | "ask" | "deny"; forceModal?: boolean }) | undefined;
+    let card: PendingAnswerCard | undefined;
     if (request.origin === "shell") {
       if (!permissionManager) throw new Error("Shell egress requires a permission manager");
       const cwd = request.workspaceRoot ?? process.cwd();
@@ -92,8 +90,6 @@ export function createApprovalGateEgressRequester(
       if (evaluated.destination.host !== host || evaluated.destination.port !== port) throw new Error("Network permission destination changed");
       let permission = evaluated.permission;
       forced = permission.forceModal === true;
-      opened = { epoch: evaluated.policyEpoch, contextEpoch: evaluated.policyContextEpoch };
-      recheckDestination = () => evaluated.recheck(undefined, request.approvalSurface ?? (headless ? "unavailable" : "interactive")).permission;
       if (permission.reviewer && permission.decision === "ask" && !permission.forceModal) {
         const review = await permissionManager.dispatchReviewer("sandbox_network", {
           permissionDecision: permission,
@@ -113,6 +109,11 @@ export function createApprovalGateEgressRequester(
         return { allow: false, reason: permission.reason };
       }
       if (headless) { request.onNoApprover?.(); return { allow: false, reason: NO_APPROVER_MESSAGE }; }
+      const recheckDestination = () => evaluated.recheck(undefined, request.approvalSurface ?? "interactive").permission;
+      card = openPendingAnswerCard(permissionManager, evaluated.permission, recheckDestination, "stale-refused", {
+        gate, requestId, action: `egress:${requestId}`, uses: ["rule-save"],
+        epochs: { epoch: evaluated.policyEpoch, contextEpoch: evaluated.policyContextEpoch },
+      });
     }
     const remoteControllerAuthority = terminal ? undefined : request.permissionContext?.remoteControllerAuthority;
     const decision = await gate.requestAndWait({
@@ -152,12 +153,15 @@ export function createApprovalGateEgressRequester(
     });
     if (!terminal && decision.rememberPattern === NO_APPROVER_MESSAGE) { request.onNoApprover?.(); return { allow: false, reason: NO_APPROVER_MESSAGE }; }
     if (decision.choice === "allow-once" && decision.egressScope !== undefined && request.scopes.includes(decision.egressScope)) {
-      // Only an allow depends on the policy it was asked under. A deny stands, so the rule a "deny always" answer saves is not read as an outside change.
-      // A sibling stage's "Allow for this run", or a run that ended, leaves the answer standing; every other change refuses it.
-      if (!terminal && !(opened !== undefined && recheckDestination !== undefined && personAnswerStands(permissionManager!, opened, forced, recheckDestination))) {
-        return { allow: false, reason: "Permission policy changed during network approval." };
-      }
       if (forced && decision.egressScope !== "once") return { allow: false, reason: "A forced network approval is valid for one connection only." };
+      if (!terminal) {
+        if (request.abortSignal?.aborted) return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected };
+        if (card === undefined || !personAnswerStands(card, decision)) {
+          return { allow: false, reason: "Permission policy changed during network approval." };
+        }
+        const { refusal } = await saveStandingAnswerRule(card, decision);
+        if (refusal !== undefined) return { allow: false, reason: refusal };
+      }
       return { allow: true, scope: decision.egressScope, ...(forced ? { oneConnection: true as const } : {}) };
     }
     const timedOut = Boolean(isHostApprovalTimeoutDecision(decision));

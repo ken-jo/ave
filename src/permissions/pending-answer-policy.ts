@@ -170,6 +170,7 @@ export interface PendingAnswerBinding {
   readonly requestId: string;
   readonly action: string;
   readonly uses: readonly StandingAnswerUse[];
+  readonly epochs?: AnswerEpochs;
 }
 
 interface BoundCard extends Omit<PendingAnswerBinding, "uses"> {
@@ -185,7 +186,7 @@ const boundCards = new WeakMap<PendingAnswerCard, BoundCard>();
 /** Open a card on `opened`, the decision it shows. `check` is the call's current permission check; the owner alone runs it. */
 export function openPendingAnswerCard(manager: EpochSource, opened: Questioned, check: () => PermissionCheckResult, onStale: StaleAnswerOutcome,
   binding: PendingAnswerBinding): PendingAnswerCard {
-  const card: PendingAnswerCard = { epochs: answerEpochsOf(manager), question: permissionQuestionOf(opened), forced: opened.forceModal === true };
+  const card: PendingAnswerCard = { epochs: binding.epochs ?? answerEpochsOf(manager), question: permissionQuestionOf(opened), forced: opened.forceModal === true };
   boundCards.set(card, { manager, check, onStale, gate: binding.gate, requestId: binding.requestId, action: binding.action,
     uses: new Set(binding.uses), judged: false });
   if (binding.uses.includes("rule-save")) binding.gate.deferAllowSaves?.(binding.requestId);
