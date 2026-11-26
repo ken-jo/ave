@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } from "../../../shared/ave-home.js";
+import * as hostWorkspaceGate from "../../../shared/host-workspace-gate.js";
 import type { StageInputDecl } from "../../../shared/workflow-template-types.js";
 import { type NameReader, plainFolderIgnore, projectFoldsCase } from "../folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
@@ -107,6 +108,17 @@ afterEach(async () => {
 });
 
 describe("folder stage workspaces", () => {
+  it("copies nothing from a project while its workspace gate refuses", async () => {
+    const handle = await start(project);
+    const gate = vi.spyOn(hostWorkspaceGate, "isHostWorkspaceConsumable").mockReturnValue(false);
+    try {
+      expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("src/a.ts")] }), 1)).toEqual({ ok: false, code: "seed-unreadable" });
+    } finally {
+      gate.mockRestore();
+    }
+    expect(read(await stageRoot(handle, "s2", { inputFiles: [fromProject("src/a.ts")] }), "src/a.ts")).toBe("a\n");
+  });
+
   it("the layout carries no raw path, run id or title, and no stage is named like a host folder", async () => {
     // Both ends as they really are on disk: the home may be reached through a link.
     const under = (path: string): string[] => relative(realpathSync.native(aveHome()), realpathSync.native(path)).split(sep);

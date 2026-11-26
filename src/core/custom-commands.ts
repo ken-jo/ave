@@ -3,6 +3,7 @@ import { open, readdir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { readAveHomeEntrySync } from "../shared/ave-home-trust.js";
+import { isHostWorkspaceConsumable } from "../shared/host-workspace-gate.js";
 import type { CustomCommandEntry, CustomCommandScope } from "../shared/custom-command.js";
 import { parseFrontmatterBlock, unquoteFrontmatterValue } from "../main/skill-store.js";
 
@@ -14,9 +15,10 @@ interface CustomCommandDefinition extends CustomCommandEntry {
   body: string;
 }
 
+// A project whose protected names are unresolved after a sandboxed run contributes no commands.
 function commandDirectories(projectRoot: string | undefined): Array<{ scope: CustomCommandScope; dir: string }> {
   return [
-    ...(projectRoot ? [{ scope: "project" as const, dir: join(projectRoot, ".ave", "commands") }] : []),
+    ...(projectRoot && isHostWorkspaceConsumable(projectRoot) ? [{ scope: "project" as const, dir: join(projectRoot, ".ave", "commands") }] : []),
     { scope: "user" as const, dir: join(aveHome(), "commands") },
   ];
 }

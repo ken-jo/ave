@@ -1,9 +1,10 @@
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import * as hostWorkspaceGate from "../../shared/host-workspace-gate.js";
 import {
   CUSTOM_COMMAND_MAX_BYTES,
   expandCustomCommand,
@@ -45,6 +46,21 @@ describe("custom command files", () => {
       { name: "review", scope: "project", description: "Review a PR", argumentHint: "<pr>" },
       { name: "standup", scope: "user", description: "Daily notes" },
     ]);
+  });
+
+  it("contributes no project commands while the project's workspace gate refuses", async () => {
+    await command(userDir, "standup", "Summarize today.");
+    await command(projectDir, "review", "Review $ARGUMENTS.");
+    const gate = vi.spyOn(hostWorkspaceGate, "isHostWorkspaceConsumable").mockImplementation(workspace => workspace !== project);
+    try {
+      expect((await listCustomCommands(project)).map(entry => entry.name)).toEqual(["standup"]);
+      expect(await loadCustomCommand("review", project)).toBeNull();
+      expect(await loadCustomCommand("standup", project)).toMatchObject({ scope: "user" });
+    } finally {
+      gate.mockRestore();
+    }
+    expect((await listCustomCommands(project)).map(entry => entry.name)).toEqual(["review", "standup"]);
+    expect(await loadCustomCommand("review", project)).toMatchObject({ scope: "project" });
   });
 
   it("lets the project file win a name clash", async () => {

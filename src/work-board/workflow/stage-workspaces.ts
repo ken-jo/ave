@@ -15,6 +15,7 @@ import type { RemovedRunProject, RunRef, StageWorkspaceProvider, WORKSPACE_REFUS
 import { ADMIN_MARK, adminPinOf, IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, PIN_DIR, RUN_FILE, RUN_MARK, runBranch, runPinOf, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
 import { isRecordFilePath, isWorkspaceRecord, type LiveRepo, type OutputFile, ownerOf, recordFits, type Registration, runFolderOf, type StageEntry, samePath, vetRecordPath, type WorkspaceRecord } from "./workspace-record.js";
 import { copySeedFiles, hashSeedFile, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
+import { isHostWorkspaceConsumable } from "../../shared/host-workspace-gate.js";
 
 const log = createLogger("work-board-stage-workspace");
 
@@ -679,7 +680,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         if (input.from === "project") {
           // The folder that is listed is the one the files are then read from: the caller's open project, not the record's path.
           const project = file.project as NonNullable<WorkspaceRecord["project"]>;
-          if (root === undefined || realDirId(root) !== project.id) return "seed-unreadable";
+          // A project whose protected names are unresolved after a sandboxed run seeds nothing.
+          if (root === undefined || realDirId(root) !== project.id || !isHostWorkspaceConsumable(root)) return "seed-unreadable";
           source = { path: root, id: project.id };
           const listed = await listSeedFiles(root, input.paths, seedRules(plain?.ignored ?? ignoreRulesOf(at)));
           if (!listed.ok) return listed.code;

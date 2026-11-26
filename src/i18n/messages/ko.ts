@@ -5030,7 +5030,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "sandboxPolicy.quarantined": "샌드박스가 보호하는 Git 항목을 삭제하지 않고 격리 위치로 옮겼습니다:\n{moves}\n내용을 확인한 뒤 표시된 격리 경로에서 원래 경로로 각 항목을 복원하세요.",
   "sandboxPolicy.quarantineFailed": "{path} 항목 격리 실패: {reason}. 삭제를 시도하지 않았습니다. 이미 옮긴 항목은 다음 위치에 보존됩니다:\n{moves}",
   "sandboxPolicy.watchedQuarantined": "[{code}] 컨테이너 프로세스가 시작할 때 없던 보호 경로를 만들었습니다. Ave 가 삭제하지 않고 격리 위치로 옮겼습니다:\n{moves}\n직접 만든 항목이라면 Ave 의 격리 목록에서 복원하세요.",
-  "sandboxPolicy.watchedQuarantineFailed": "컨테이너 프로세스가 보호 경로 {path} 를 만들었지만 Ave 가 격리 위치로 옮기지 못했습니다: {reason}. 아무것도 삭제하지 않았습니다. 이 경로를 지우거나 옮길 때까지 Ave 는 이 폴더에서 자체 Git 을 실행하지 않습니다.",
+  "sandboxPolicy.watchedQuarantineFailed": "컨테이너 프로세스가 보호 경로 {path} 를 만들었지만 Ave 가 격리 위치로 옮기지 못했습니다: {reason}. 아무것도 삭제하지 않았습니다. 이 경로를 지우거나 옮길 때까지 Ave 는 이 폴더에서 자체 Git 을 실행하지 않고, 프로젝트 명령과 프로젝트 훅을 불러오지 않으며, 파일을 스테이지 폴더로 복사하지 않습니다.",
   "sandboxPolicy.watchedQuarantineRestoreFailed": "Ave 가 격리된 경로를 복원하지 못했습니다. 격리 위치에 그대로 있으며 아무것도 삭제하지 않았습니다.",
   "sandboxPolicy.watchedQuarantineUnreadable": "Ave 가 격리 목록을 읽지 못했습니다.",
   "sandboxPolicy.placeholderLeftovers": "이전 Ave 버전이 다음 보호 경로에 빈 자리표시 항목을 남겼습니다. Ave 는 지우지 않았습니다. 각 항목을 확인하고 쓰지 않으면 삭제하세요:\n{paths}",
