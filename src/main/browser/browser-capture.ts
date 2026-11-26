@@ -7,6 +7,7 @@ import { captureScrollContext, captureScrollParameters, scrollBrowserCapture } f
 import { runBrowserCapture, type BrowserCaptureOperation } from "./browser-capture-operation.js";
 
 const activeCaptures = new WeakSet<object>();
+const drainingTileDecodes = new WeakSet<object>();
 const CAPTURE_VIEWPORT_FIELDS = ["pageX", "pageY", "clientWidth", "clientHeight", "zoom", "scale"] as const;
 export interface CaptureViewport {
   pageX: number; pageY: number; clientWidth: number; clientHeight: number;
@@ -59,12 +60,13 @@ async function capturePage(
   expectedViewport?: CaptureViewport,
 ): Promise<BrowserScreenshot> {
   const key = cdp.captureKey ?? cdp;
-  if (activeCaptures.has(key)) throw new BrowserActionError("screenshot-busy", "another capture is using this tab");
+  if (activeCaptures.has(key) || drainingTileDecodes.has(key)) throw new BrowserActionError("screenshot-busy", "another capture is using this tab");
   activeCaptures.add(key);
   let metricsOverridden = false;
   let scrollRestore: BrowserCaptureScroll | undefined;
   const tiled = options.fullPage === true && cdp.fullPageTiling === true;
   const captureSignal = operation.signal;
+  const tileDecodes = new Set<Promise<void>>();
   const capture = async (): Promise<BrowserScreenshot> => {
     throwIfAborted(captureSignal);
     if (!parseBrowserScreenshotOptions(options) || options.ref !== undefined) throw new BrowserActionError("invalid-capture", "use one capture mode with valid CSS capture bounds");
@@ -110,7 +112,30 @@ async function capturePage(
     let result: { data?: string; cssScale?: number };
     if (tiled) {
       if (!captureViewport) throw new BrowserActionError("screenshot-unavailable", "the tab has no native viewport readback");
-      result = await captureBrowserTiles(cdp, captureSignal, originalWidth, captureHeight, viewport, captureViewport, (position) => { scrollRestore = position; });
+      const decoder = new AbortController();
+      const tileSignal = AbortSignal.any([captureSignal, decoder.signal]);
+      const decodeFailure = new Promise<never>((_resolve, reject) => {
+        decoder.signal.addEventListener("abort", () => reject(decoder.signal.reason), { once: true });
+      });
+      const trackDecode = (decode: Promise<void>) => {
+        tileDecodes.add(decode);
+        void decode.then(
+          () => { tileDecodes.delete(decode); },
+          (error) => {
+            tileDecodes.delete(decode);
+            decoder.abort(error);
+          },
+        );
+        return decode;
+      };
+      try {
+        result = await Promise.race([
+          captureBrowserTiles(cdp, tileSignal, originalWidth, captureHeight, viewport, captureViewport, (position) => { scrollRestore = position; }, trackDecode),
+          decodeFailure,
+        ]);
+      } finally {
+        decoder.abort();
+      }
     } else if (!options.fullPage && captureViewport) {
       result = await operation.wait(captureViewport());
     } else {
@@ -168,6 +193,11 @@ async function capturePage(
       ...(tiled ? { captureMethod: "scroll-and-stitch" as const, stickyHeadersDeduplicated: false as const } : {}) };
   };
   return operation.wait(capture()).finally(async () => {
+    if (tileDecodes.size > 0) {
+      // Join outstanding decodes independently of scroll restoration and the deadline.
+      drainingTileDecodes.add(key);
+      void Promise.allSettled(tileDecodes).then(() => { drainingTileDecodes.delete(key); });
+    }
     let releaseCapture = true;
     try {
       if (metricsOverridden || scrollRestore) {

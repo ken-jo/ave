@@ -253,6 +253,7 @@ async function decodeCaptureTile(
   input: Sharp, target: Buffer, signal: AbortSignal, pixelWidth: number, pixelHeight: number,
   scale: number, skip: number, width: number, copied: number, rows: number,
 ): Promise<void> {
+  throwIfAborted(signal);
   const sourceTop = skip * scale;
   const stepX = Math.min(pixelWidth, width * scale) / width;
   const stepY = Math.min(pixelHeight - sourceTop, rows * scale) / rows;
@@ -264,9 +265,10 @@ async function decodeCaptureTile(
     const last = start + count - 1;
     const bottom = Math.ceil(footprintEnd(sourceTop, stepY, last, pixelHeight, footprintStart(sourceTop, stepY, last, pixelHeight)));
     const height = bottom - top;
-    const { data, info } = await input.clone().extract({ left: 0, top, width: pixelWidth, height })
+    const decoded = await input.clone().extract({ left: 0, top, width: pixelWidth, height })
       .raw().toBuffer({ resolveWithObject: true });
     throwIfAborted(signal);
+    const { data, info } = decoded;
     if (info.width !== pixelWidth || info.height !== height || (info.channels !== 3 && info.channels !== 4)) {
       throw new BrowserActionError("screenshot-unavailable", "the tile has an unsupported pixel format");
     }
@@ -280,6 +282,7 @@ export async function captureBrowserTiles(
   original: { pageX: number; pageY: number; clientWidth: number; clientHeight: number },
   captureViewport: () => Promise<BrowserViewportImage>,
   onRestore: (position: BrowserCaptureScroll) => void,
+  trackDecode: (decode: Promise<void>) => Promise<void>,
 ): Promise<{ data: string }> {
   const executionContextId = await captureScrollContext(cdp);
   throwIfAborted(signal);
@@ -327,12 +330,11 @@ export async function captureBrowserTiles(
     colorProfile ??= color;
     // Keep the encoded color values through resampling and restore their color tags after encoding.
     const input = sharp(bytes, { ignoreIcc: true, limitInputPixels: BROWSER_CAPTURE_LIMITS.pixels });
-    const decode = () => decodeCaptureTile(input, pixels, signal, pixelWidth, pixelHeight, scale, skip, width, copied, rows);
+    const decode = () => trackDecode(decodeCaptureTile(input, pixels, signal, pixelWidth, pixelHeight, scale, skip, width, copied, rows));
     // Two small fractional tiles can decode concurrently within the raw-pixel budget.
     if (!Number.isInteger(scale) && pixelWidth * pixelHeight <= CAPTURE_DECODE_PIXELS / 2) {
       const previousDecode = pendingDecode;
       pendingDecode = decode();
-      void pendingDecode.catch(() => {}); // The next iteration or final encode joins this decode.
       await previousDecode;
     } else {
       await pendingDecode;
