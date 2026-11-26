@@ -46,6 +46,16 @@ interface WatchedRow extends AnchorPin {
   restored?: boolean;
 }
 
+interface StoredFileIdentity {
+  readonly dev: string;
+  readonly ino: string;
+}
+
+interface RestoreIdentity {
+  readonly source: StoredFileIdentity;
+  readonly parent: StoredFileIdentity;
+}
+
 interface ManifestEntry {
   readonly original: string;
   readonly quarantined: string;
@@ -55,9 +65,10 @@ interface ManifestEntry {
   readonly sessionId?: string;
   readonly command?: string;
   restored?: string;
+  readonly restoreIdentity?: RestoreIdentity;
 }
 
-export interface WatchedQuarantineEntry extends ManifestEntry {
+export interface WatchedQuarantineEntry extends Omit<ManifestEntry, "restoreIdentity"> {
   readonly slot: string;
   readonly index: number;
 }
@@ -377,6 +388,14 @@ function quarantineFailureAt(path: string): string | undefined {
   return undefined;
 }
 
+function storeFileIdentity(identity: Pick<Stats | BigIntStats, "dev" | "ino">): StoredFileIdentity {
+  return { dev: identity.dev.toString(), ino: identity.ino.toString() };
+}
+
+function matchesStoredFileIdentity(identity: FileIdentity, expected: StoredFileIdentity): boolean {
+  return identity.dev.toString() === expected?.dev && identity.ino.toString() === expected.ino;
+}
+
 function sameIdentity(path: string, identity: FileIdentity): boolean {
   const current = entryAt(path, true);
   return current?.isDirectory() === true && !current.isSymbolicLink() && current.dev === identity.dev && current.ino === identity.ino;
@@ -458,25 +477,30 @@ async function quarantineCreatedRowsNow(context: WatchedSweepContext, holder: sy
     }
     let found = false;
     try {
-      const parent = withLocalityDecision(() => {
+      const preflight = withLocalityDecision(() => {
         const changed = changedAnchor(row);
         if (changed !== undefined) throw new Error(`the folder ${JSON.stringify(changed)} changed identity`);
-        if (entryAt(original) === undefined) return undefined;
+        const windows = process.platform === "win32";
+        const source = windows ? entryAt(original, true) : undefined;
+        if (windows ? source === undefined : entryAt(original) === undefined) return undefined;
         found = true;
         if (quarantine === undefined) throw new Error(failures[0]);
         admitWatchedEntry(quarantine.slot);
-        const parent = lstatSync(dirname(original));
+        const parent = source === undefined ? lstatSync(dirname(original)) : lstatSync(dirname(original), { bigint: true });
         if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error("Sandbox quarantine parent is not a plain directory");
-        return parent;
+        const restoreIdentity = source !== undefined
+          ? { source: storeFileIdentity(source), parent: storeFileIdentity(parent) } : undefined;
+        return { parent: { dev: Number(parent.dev), ino: Number(parent.ino) }, restoreIdentity };
       });
-      if (parent === undefined || quarantine === undefined) continue;
+      if (preflight === undefined || quarantine === undefined) continue;
       const before = quarantine.moved.length;
-      quarantine.move(original, parent);
+      quarantine.move(original, preflight.parent);
       const landed = quarantine.moved[before];
       if (landed !== undefined) {
         row.restored = false;
         moved.push({ original, quarantined: landed.quarantined, row: row.path, time: new Date().toISOString(), commandId: context.commandId,
-          ...(context.sessionId ? { sessionId: context.sessionId } : {}), ...(context.command ? { command: context.command } : {}) });
+          ...(context.sessionId ? { sessionId: context.sessionId } : {}), ...(context.command ? { command: context.command } : {}),
+          ...(preflight.restoreIdentity === undefined ? {} : { restoreIdentity: preflight.restoreIdentity }) });
       }
     } catch (error) {
       const messageKey = found ? "sandboxPolicy.watchedQuarantineFailed" : "sandboxPolicy.watchedQuarantineUnverified";
@@ -537,21 +561,65 @@ export function listWatchedQuarantine(): WatchedQuarantineEntry[] {
     let entries: ManifestEntry[];
     try { entries = readManifest(slot); }
     catch { return []; }
-    return entries.map((entry, index) => ({ ...entry, slot, index }));
+    return entries.map(({ restoreIdentity: _, ...entry }, index) => ({ ...entry, slot, index }));
   });
 }
 
 /** User action: move a quarantined entry back. The restored path is excepted from watching for this session, unless a live launch
  * still claims it: that claim and its fence on host consumers stay until the launch's release, which checks the name again. */
 export async function restoreWatchedQuarantine(slot: string, index: number): Promise<{ readonly restored: string }> {
-  const entries = readManifest(slot);
-  const entry = entries[index];
-  if (entry === undefined || !Number.isInteger(index)) throw new Error("Unknown quarantine entry");
-  if (entry.restored !== undefined) throw new Error("Entry was already restored");
-  if (basename(dirname(entry.quarantined)) !== slot) throw new Error("Quarantine entry is outside its slot");
-  if (entryAt(entry.original) !== undefined) throw new Error(`${entry.original} exists; move it aside before restoring`);
-  if (!entryAt(dirname(entry.original))?.isDirectory()) throw new Error(`The folder of ${entry.original} no longer exists`);
-  await renameFileOnce(entry.quarantined, entry.original);
+  const prepare = () => {
+    const windows = process.platform === "win32";
+    const manifest = manifestPath(slot);
+    const slotPath = dirname(manifest);
+    const slotEntry = windows ? entryAt(slotPath, true) : undefined;
+    const physicalSlot = windows ? admitLocalRoute(slotPath).physical : undefined;
+    const manifestEntry = windows ? entryAt(manifest, true) : undefined;
+    if (windows && (slotEntry?.isDirectory() !== true || physicalSlot === undefined || manifestEntry?.isFile() !== true)) {
+      throw new Error("Quarantine slot or manifest is unavailable");
+    }
+    const entries = readManifest(slot);
+    const entry = entries[index];
+    if (entry === undefined || !Number.isInteger(index)) throw new Error("Unknown quarantine entry");
+    if (entry.restored !== undefined) throw new Error("Entry was already restored");
+    const source = entry.quarantined;
+    const destination = entry.original;
+    const parent = dirname(destination);
+    if (windows) {
+      admitLocalPath(source);
+      admitLocalPath(destination);
+    }
+    if (basename(dirname(source)) !== slot || (physicalSlot !== undefined && key(dirname(source)) !== key(physicalSlot))) {
+      throw new Error("Quarantine entry is outside its slot");
+    }
+    if (entryAt(destination) !== undefined) throw new Error(`${destination} exists; move it aside before restoring`);
+    if (slotEntry !== undefined && manifestEntry !== undefined) {
+      const sourceEntry = entryAt(source, true);
+      if (sourceEntry === undefined || (entry.restoreIdentity !== undefined && !matchesStoredFileIdentity(sourceEntry, entry.restoreIdentity.source))) {
+        throw new Error("Quarantined entry changed identity");
+      }
+      const parentEntry = entryAt(parent, true);
+      const row = watched.get(key(entry.row));
+      if (parentEntry?.isDirectory() !== true || (row !== undefined && !anchorsIntact(row))
+        || (entry.restoreIdentity !== undefined && !matchesStoredFileIdentity(parentEntry, entry.restoreIdentity.parent))) {
+        throw new Error("Quarantine restore destination folder changed identity");
+      }
+      const currentManifest = entryAt(manifest, true);
+      const currentSource = entryAt(source, true);
+      if (!sameIdentity(slotPath, slotEntry) || currentManifest?.dev !== manifestEntry.dev || currentManifest.ino !== manifestEntry.ino
+        || currentSource?.dev !== sourceEntry.dev || currentSource.ino !== sourceEntry.ino) {
+        throw new Error("Quarantine source changed identity");
+      }
+      if (entryAt(destination) !== undefined || !sameIdentity(parent, parentEntry)) {
+        throw new Error("Quarantine restore destination folder changed identity");
+      }
+    } else if (!entryAt(parent)?.isDirectory()) {
+      throw new Error(`The folder of ${destination} no longer exists`);
+    }
+    return { entries, entry, rename: renameFileOnce(source, destination) };
+  };
+  const { entries, entry, rename } = process.platform === "win32" ? withLocalityDecision(prepare) : prepare();
+  await rename;
   const row = watched.get(key(entry.row));
   if (row?.exact && row.roots.size > 0) {
     // The ACL grant can still write to this name, so the next sweep must check it.

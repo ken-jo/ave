@@ -1,12 +1,16 @@
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { getLocale, loadLocaleMessages, setLocale, t, type Locale } from "../../i18n/index.js";
+import * as restoreRename from "../../lib/transient-fs-lock-retry.js";
+import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { rankAdmittedMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 import { isHostWorkspaceConsumable } from "../../shared/host-workspace-gate.js";
+
+vi.unmock("../../shared/windows-drive-locality.js");
 
 // The identity helper: the real one on request, else the same folder identity read through the file system.
 const pin = vi.hoisted(() => ({ real: false, fail: undefined as ((path: string) => Error | undefined) | undefined }));
@@ -71,6 +75,7 @@ describe("watched protected rows", () => {
   let tasks: string;
 
   beforeEach(() => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     previousLocale = getLocale();
     container = mkdtempSync(join(tmpdir(), "watched-rows-"));
     workspace = join(container, "workspace");
@@ -125,6 +130,54 @@ describe("watched protected rows", () => {
     watchAbsentProtectedRow(tasks, [workspace]);
     expect(watchedProtectedRows()).not.toContain(tasks);
     await expect(restoreWatchedQuarantine(entry.slot, entry.index)).rejects.toThrow(/already restored/);
+  });
+
+  it.runIf(process.platform === "win32")("stops restore at a failed source-drive query before probing the destination", async () => {
+    watchAbsentProtectedRow(tasks, [workspace]);
+    mkdirSync(join(workspace, ".vscode"));
+    writeFileSync(tasks, "planted");
+    await sweepWatchedRows({ commandId: "source-drive" });
+    const [entry] = listWatchedQuarantine();
+    if (entry === undefined) throw new Error("No quarantine entry");
+    const failedDrive = workspace.startsWith("Z:") ? "Y:" : "Z:";
+    const manifest = join(dirname(entry.quarantined), "watched-manifest.json");
+    const record = JSON.parse(readFileSync(manifest, "utf8"));
+    record.entries[0].quarantined = join(failedDrive + "\\", entry.slot, basename(entry.quarantined));
+    writeFileSync(manifest, JSON.stringify(record));
+    const failure = new Error("Quarantine source drive query failed");
+    const rename = vi.spyOn(restoreRename, "renameFileOnce").mockRejectedValue(new Error("Unexpected restore rename"));
+    const query = vi.fn((drive: string) => {
+      if (drive === failedDrive) throw failure;
+      return "\\Device\\HarddiskVolume1";
+    });
+    setWindowsDriveQueryForTest(query);
+    try {
+      await expect(restoreWatchedQuarantine(entry.slot, entry.index)).rejects.toThrow(failure);
+      expect(query.mock.calls.map(([drive]) => drive)).toEqual([entry.quarantined.slice(0, 2).toUpperCase(), failedDrive]);
+      expect(rename).not.toHaveBeenCalled();
+      expect(readFileSync(join(entry.quarantined, "tasks.json"), "utf8")).toBe("planted");
+      expect(listWatchedQuarantine()[0]?.restored).toBeUndefined();
+    } finally {
+      setWindowsDriveQueryForTest();
+      rename.mockRestore();
+    }
+  });
+
+  it.runIf(process.platform === "win32")("refuses to restore into a replaced destination parent", async () => {
+    watchAbsentProtectedRow(tasks, [workspace]);
+    mkdirSync(join(workspace, ".vscode"));
+    writeFileSync(tasks, "planted");
+    await sweepWatchedRows({ commandId: "destination-parent" });
+    const [entry] = listWatchedQuarantine();
+    if (entry === undefined) throw new Error("No quarantine entry");
+    // A persisted receipt must still enforce its recorded parent after the watches are gone.
+    resetWatchedRows();
+    renameSync(workspace, join(container, "previous-workspace"));
+    mkdirSync(workspace);
+    await expect(restoreWatchedQuarantine(entry.slot, entry.index)).rejects.toThrow("Quarantine restore destination folder changed identity");
+    expect(lstatSync(entry.original, { throwIfNoEntry: false })).toBeUndefined();
+    expect(readFileSync(join(entry.quarantined, "tasks.json"), "utf8")).toBe("planted");
+    expect(listWatchedQuarantine()[0]?.restored).toBeUndefined();
   });
 
   it("quarantines the protected children of a newly created carrier and preserves siblings", async () => {
