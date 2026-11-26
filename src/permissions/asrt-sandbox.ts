@@ -3363,7 +3363,7 @@ export async function wrapToolCommand(
     const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
     commitWindowsWrapDenies(session, grantRevision, filesystem);
     return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare ?? watchedRowsCleanup(options.commandId, command),
-      () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined, lateWatchedRowsSweep(options.commandId, command));
+      () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined, invocation === undefined ? undefined : lateWatchedRowsSweep(options.commandId, command));
   }));
 }
 
@@ -3562,7 +3562,7 @@ async function wrapLongLivedCommand(
     const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
     commitWindowsWrapDenies(session, grantRevision, filesystem);
     return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare ?? watchedRowsCleanup(options.commandId, command),
-      () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined, lateWatchedRowsSweep(options.commandId, command));
+      () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined, invocation === undefined ? undefined : lateWatchedRowsSweep(options.commandId, command));
   }));
 }
 
@@ -4244,6 +4244,7 @@ async function resetSandboxRuntime(): Promise<void> {
     }
   } finally {
     // The runtime release ended every grant; what a writer left at a watched name is moved before the watches are dropped.
+    lateWatchedSweeps.clear();
     await sweepWatchedRowsForNextResult({ commandId: "sandbox-reset" });
     resetWatchedRows();
     // Drop every wrapped-worker marker (MCP servers AND host-spawned plugin workers) so a torn-down sandbox cannot leave a stale `asrt` signal the reviewer would honour. Lazy import keeps the module-load edge one-way (sandbox-capability is renderer-safe and never imports back into this main-only module).
