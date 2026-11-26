@@ -6,6 +6,7 @@ import { createBootHostFixture, createDesktopHostFixture } from "../../../__test
 import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
 /** Drive the captured boot HostApi factory so config precedence and capability lifetimes are tested at their producer. */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
 import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1418,7 +1419,7 @@ describe("HostApi incarnation authority", () => {
     };
     let approve: ((decision: { choice: "allow-once" }) => void) | undefined;
     const approvalGate = {
-      requestAndWait: vi.fn(() => new Promise((resolve) => { approve = resolve as typeof approve; })),
+      requestAndWait: answeringRequestAndWait(() => new Promise<{ choice: "allow-once" }>((resolve) => { approve = resolve; })),
     };
     const transport = vi.fn(async () => new Response("sent")) as unknown as typeof fetch;
     const managerRoot = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-effect-policy-")));
@@ -1455,7 +1456,7 @@ describe("HostApi incarnation authority", () => {
     const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-wire-")));
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
     permissionManager.setMode("allow");
-    const requestAndWait = vi.fn(async () => ({ choice: "allow-once" }));
+    const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }));
     const approvals = new PluginBackgroundEffectApprovals();
     const createHostApi = await initAndGetFactory(settings, { log: vi.fn() }, transport, { requestAndWait }, {
       permissionManager, backgroundEffectApprovals: approvals,
@@ -1624,7 +1625,7 @@ describe("HostApi incarnation authority", () => {
     const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-kinds-")));
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
     permissionManager.setMode(mode);
-    const requestAndWait = vi.fn(async () => ({ choice: "allow-once" }));
+    const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }));
     const approvals = new PluginBackgroundEffectApprovals();
     const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, transport, { requestAndWait }, {
       permissionManager, backgroundEffectApprovals: approvals,
@@ -1675,7 +1676,7 @@ describe("HostApi incarnation authority", () => {
     const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-own-storage-")));
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
     permissionManager.setMode(mode);
-    const requestAndWait = vi.fn(async () => ({ choice: "allow-once" }));
+    const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }));
     const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, undefined, { requestAndWait }, {
       permissionManager, backgroundEffectApprovals: new PluginBackgroundEffectApprovals(),
     });
@@ -1732,7 +1733,7 @@ describe("HostApi incarnation authority", () => {
     const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-llm-")));
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
     permissionManager.setMode(mode);
-    const requestAndWait = vi.fn(async () => ({ choice: "allow-once" }));
+    const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }));
     const approvals = new PluginBackgroundEffectApprovals();
     const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, undefined, { requestAndWait }, {
       permissionManager, backgroundEffectApprovals: approvals,
@@ -1808,7 +1809,7 @@ describe("host fetch binds approved request bodies to transport", () => {
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
     permissionManager.setMode("strict");
     let approve!: (decision: { choice: "allow-once" }) => void;
-    const approvalGate = { requestAndWait: vi.fn(() => new Promise((resolve) => { approve = resolve as typeof approve; })) };
+    const approvalGate = { requestAndWait: answeringRequestAndWait(() => new Promise<{ choice: "allow-once" }>((resolve) => { approve = resolve; })) };
     const sent: unknown[] = [];
     const transport = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const body = init?.body as FormData;

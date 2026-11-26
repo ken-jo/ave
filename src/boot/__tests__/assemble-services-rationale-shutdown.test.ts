@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BootContext } from "../context.js";
+import { registerRunningTurn } from "../../engine/turn/turn-journal.js";
 import { assembleAppServices } from "../assemble-services.js";
 
 vi.mock("../../main/auth-window-service.js", () => ({
@@ -8,9 +9,18 @@ vi.mock("../../main/auth-window-service.js", () => ({
   getTrackedPluginAuthPartitions: vi.fn(),
 }));
 
+const { ledgerOrder } = vi.hoisted(() => ({ ledgerOrder: [] as string[] }));
+vi.mock("../../tools/invocation-ledger.js", () => ({
+  sealToolInvocations: () => ledgerOrder.push("invocations-seal"),
+  closeToolInvocationAudit: async (close: () => Promise<void>) => {
+    ledgerOrder.push("invocations-join");
+    await close();
+  },
+}));
+
 describe("assembleAppServices rationale shutdown", () => {
   it("aborts interactive loops (every pane chat's too) and drains teardown after a rationale shutdown failure", async () => {
-    const order: string[] = [];
+    const order = ledgerOrder;
     const mark = (name: string) => () => {
       order.push(name);
     };
@@ -18,6 +28,8 @@ describe("assembleAppServices rationale shutdown", () => {
       disposeRefreshActiveLlmWildcard: mark("active-llm-wildcard"),
       preferenceRefreshService: { stop: mark("preference") },
       memoryMaintenanceCoordinator: { stop: mark("memory-maintenance") },
+      memoryCaptureService: { stop: mark("memory-capture") },
+      alertsService: { stop: mark("alerts") },
       idleScheduler: { stop: mark("idle") },
       routinesScheduler: { stop: mark("routines") },
       stopWorkBoardDueSoon: undefined,
@@ -55,24 +67,31 @@ describe("assembleAppServices rationale shutdown", () => {
     } as unknown as BootContext;
 
     const services = assembleAppServices(ctx);
+    const runningTurn = registerRunningTurn(mark("running-turn-abort"));
     const shutdown = services.shutdown();
+    runningTurn.settle();
 
     await expect(shutdown).rejects.toThrow("application service shutdown failed");
     expect(order).toEqual([
       "active-llm-wildcard",
       "memory-maintenance",
+      "memory-capture",
       "preference",
       "idle",
       "routines",
+      "alerts",
       "main-abort",
       "side-abort",
       "pane-abort-1",
       "pane-abort-2",
       "rationale",
+      "invocations-seal",
+      "running-turn-abort",
       "approval",
       "ask",
       "mcp-policy",
       "mcp",
+      "invocations-join",
       "audit-writer",
       "audit",
       "tracing",

@@ -1,11 +1,16 @@
 import { hasRationaleUserQuote } from "../../shared/rationale-user-quote.js";
 import {
+  answeredApprovalProvenance,
   isHostApprovalRejectedDecision,
   isHostApprovalTimeoutDecision,
+  RULE_PROVENANCE,
   type ApprovalDecision,
+  type DecisionProvenance,
   type ApprovalGate,
 } from "../../permissions/approval-gate.js";
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
+import { createLogger } from "../../lib/logger.js";
+import { errorMessage } from "../../shared/error-message.js";
 import type {
   RationaleScopeReviewer,
 } from "../../permissions/reviewer/rationale-scope-reviewer.js";
@@ -89,6 +94,9 @@ export interface ConservativeRationaleActionSummary {
   readonly affectedResources: readonly string[];
   readonly requiredAuthority: string;
 }
+
+const log = createLogger("rationale-host-coordinator");
+const RATIONALE_CARD_STOPPED = "The permission request was stopped; the action was not executed.";
 
 const CATEGORY_SUMMARIES = Object.freeze({
   read: Object.freeze({
@@ -261,7 +269,8 @@ export interface CreateRationaleSealedResumeInput {
 }
 
 interface ApprovalMetadata {
-  readonly recordTerminalDenial?: (reason: string) => Promise<void>;
+  readonly recordTerminalDenial?: (reason: string, stopped?: boolean) => Promise<void>;
+  readonly hasSettledHumanDenial?: () => boolean;
   readonly requestHumanApproval?: (input: { requestId: string; abortSignal?: AbortSignal }) => Promise<ApprovalDecision>;
   readonly sandboxCapability: SandboxCapability;
 }
@@ -331,6 +340,8 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
   readonly #now: () => number;
   readonly #isCurrent: () => boolean;
   readonly #contexts = new Map<string, TicketContext>();
+  // Who authorized each minted receipt, copied at mint and read only through the receipt.
+  readonly #receiptProvenance = new WeakMap<HostConsumedAllowOnceReceipt, DecisionProvenance>();
   readonly #retiringContexts = new Map<string, TicketContext>();
 
   constructor(options: RationaleHostCoordinatorOptions) {
@@ -562,6 +573,11 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       : null;
   };
 
+  readonly loadHostResumeProvenance = (request: SealedRationaleResumeRequest): DecisionProvenance | null => {
+    const receipt = this.loadHostConsumedAllowOnceReceipt(request);
+    return receipt === null ? null : this.#receiptProvenance.get(receipt) ?? null;
+  };
+
   readonly isAuthenticConsumedAllowOnceReceipt = (
     receipt: HostConsumedAllowOnceReceipt,
     now: number,
@@ -651,6 +667,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       approval: {
         requestHumanApproval: candidate.requestHumanApproval,
         recordTerminalDenial: candidate.recordTerminalDenial,
+        hasSettledHumanDenial: candidate.hasSettledHumanDenial,
         sandboxCapability: candidate.sandboxCapability,
       },
       snapshot: requested,
@@ -886,6 +903,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       context.snapshot = resolved;
       context.response = autoResponse;
       context.reevaluation = reevaluation;
+      this.#receiptProvenance.set(receipt, RULE_PROVENANCE);
       context.receipt = receipt;
       context.reviewerAuthorized = true;
       context.terminalTicket = receipt.ticket;
@@ -1099,6 +1117,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       (decision.choice === "allow-once" || decision.choice === "allow-session" || decision.choice === "allow-always") &&
       !isHostApprovalRejectedDecision(decision)
     ) {
+      const provenance = answeredApprovalProvenance(decision);
       const afterPolicy = this.#getRationalePolicySnapshot?.();
       if (beforePolicy && afterPolicy && beforePolicy.epoch !== afterPolicy.epoch) {
         const transition = issueRationaleApprovalPolicyTransition({
@@ -1106,7 +1125,21 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
           actionDigest: context.control.action.actionDigest, requestId: ticketId,
           approvalGate: this.#approvalGate,
         });
-        if (!transition) return null;
+        if (!transition) {
+          // Another change than this card's own save voids the allow; end it like any policy deny.
+          const reason = "Permission policy changed while approval was pending";
+          const denied = this.#ticketStore.denyByPolicy(expectation, decidedAt);
+          if (!denied) return null;
+          context.snapshot = denied;
+          context.terminalTicket = denied.ticket;
+          const projection = createRationaleUiAuditProjection({ control: context.control,
+            response: context.response, reevaluation: context.reevaluation, ticket: denied.ticket, now: decidedAt });
+          this.#commitProjectionAudit(context.sessionId, projection, decidedAt);
+          context.projection = projection;
+          await this.#recordTerminalDenial(context, reason);
+          this.#deleteContext(ticketId);
+          return { outcome: "denied", reason, ticket: denied.ticket, projection };
+        }
         context.policyTransition = transition;
         context.approvedDecision = decision;
       }
@@ -1128,6 +1161,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
         now: decidedAt,
       });
       this.#commitProjectionAudit(context.sessionId, projection, decidedAt);
+      this.#receiptProvenance.set(receipt, provenance);
       context.receipt = receipt;
       context.terminalTicket = receipt.ticket;
       context.projection = projection;
@@ -1158,9 +1192,12 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       now: decidedAt,
     });
     this.#commitProjectionAudit(context.sessionId, projection, decidedAt);
-    if (denied || timedOut) await this.#recordTerminalDenial(context,
+    await this.#recordTerminalDenial(context,
       context.control.eligibilityContext.headless || (timedOut && decision?.rememberPattern === NO_APPROVER_MESSAGE)
-        ? NO_APPROVER_MESSAGE : timedOut ? "Permission approval timed out; the action was not executed." : "The user denied this permission request.");
+        ? NO_APPROVER_MESSAGE
+        : timedOut ? "Permission approval timed out; the action was not executed."
+          : denied ? "The user denied this permission request." : RATIONALE_CARD_STOPPED,
+      !denied && !timedOut);
     this.#deleteContext(ticketId);
     return {
       outcome: timedOut ? "timed-out" : denied ? "denied" : "cancelled",
@@ -1234,15 +1271,25 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       return null;
     }
   }
-  #recordTerminalDenial(context: TicketContext, reason: string): Promise<void> {
+  #recordTerminalDenial(context: TicketContext, reason: string, stopped = false): Promise<void> {
     if (context.terminalDenialRecording === null) {
       try {
-        context.terminalDenialRecording = Promise.resolve(context.approval.recordTerminalDenial?.(reason));
+        context.terminalDenialRecording = Promise.resolve(stopped
+          ? context.approval.recordTerminalDenial?.(reason, true)
+          : context.approval.recordTerminalDenial?.(reason));
       } catch (error) {
         context.terminalDenialRecording = Promise.reject(error);
       }
     }
     return context.terminalDenialRecording;
+  }
+
+  /** A card retired before its sealed resume was handed out ends the attempt it holds with a stop row. */
+  #endUnstarted(context: TicketContext): void {
+    if (context.issuedResumeRequest !== null || context.approval.hasSettledHumanDenial?.()) return;
+    void this.#recordTerminalDenial(context, RATIONALE_CARD_STOPPED, true).catch((error: unknown) => {
+      log.error("rationale card terminal row failed: %s", errorMessage(error));
+    });
   }
 
   #resolveReviewerChoice(context: TicketContext, decision: "allow" | "deny"): void {
@@ -1262,6 +1309,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       context = this.#retiringContexts.get(ticketId);
     }
     if (!context) return null;
+    this.#endUnstarted(context);
     const errors: unknown[] = [];
     try {
       this.#approvalGate.cancelPendingRequest(ticketId, context.sessionId, "caller-abort");
@@ -1321,6 +1369,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
         retiring.push([ticketId, context]);
       }
     }
+    for (const [, context] of retiring) this.#endUnstarted(context);
     const errors: unknown[] = [];
     const cancelledAtGate = new Set<string>();
     for (const [ticketId] of retiring) {
@@ -1355,6 +1404,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
 
   #deleteContext(ticketId: string): boolean {
     const context = this.#contexts.get(ticketId);
+    if (context) this.#endUnstarted(context);
     if (context?.humanWaitLease) retireRationaleHumanWait(context.control, context.humanWaitLease);
     if (context?.receipt) {
       this.#ticketStore.releaseConsumedReceipt(context.receipt);

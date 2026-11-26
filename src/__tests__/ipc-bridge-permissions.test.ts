@@ -1,5 +1,6 @@
 /** Invoke captured IPC handlers with mocked services. */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { answeringRequestAndWait } from "./support/answering-approval-gate.js";
 import { fakeLlmSettings } from "../shared/__tests__/fake-llm-settings.js";
 import { t } from "../i18n/runtime.js";
 import { invokeRegisteredHandler, invokeRegisteredHandlerWithEvent } from "./test-helpers.js";
@@ -58,10 +59,7 @@ function makeMockLoop(pm: ReturnType<typeof makeMockPM>) {
 function makeMockGate() {
   return {
     resolve: vi.fn(),
-    requestAndWait: vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "allow-once",
-    })),
+    requestAndWait: answeringRequestAndWait(() => ({ choice: "allow-once" })),
     setPolicy: vi.fn(),
   };
 }

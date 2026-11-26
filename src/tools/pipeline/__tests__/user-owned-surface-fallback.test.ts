@@ -1,12 +1,19 @@
 /** The review fallback card of a user-owned surface, answered while the policy moves (pending-answer-policy.ts): a sibling stage's
  * "Allow for this run" leaves the answer standing; any other change, and a call the policy now denies or forces, refuses it. */
 import { describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../../permissions/approval-gate.js";
+import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import type { PermissionCheckResult, PermissionManager } from "../../../permissions/permission-manager.js";
 import { resolveUserOwnedSurfaceApproval, userOwnedSurfaceCardFacts } from "../user-owned-surface.js";
 
 type Change = "none" | "memory rule" | "other";
-const ask: PermissionCheckResult = { decision: "ask", reason: "review could not decide", reviewer: { route: "foreground-auto" } };
+const ask: PermissionCheckResult = { decision: "ask", reason: "review could not decide", reviewer: { route: "foreground-auto" }, provenance: RULE_PROVENANCE };
+const policyRefusal = {
+  decision: { choice: "deny-once" },
+  humanApproved: false,
+  permission: { decision: "deny", reason: "Permission policy changed while approval was pending.", provenance: RULE_PROVENANCE },
+};
 
 it("includes review fallback facts only for the ordinary surface card when the request carries a floor", () => {
   const permission: PermissionCheckResult = {
@@ -41,12 +48,12 @@ async function answerFallback(change: Change, rechecked: Partial<PermissionCheck
   const gate = {
     consumeUserOwnedSurfaceChoice: () => "auto",
     allowsPolicyTransition: () => false,
-    requestAndWait: async (request: ApprovalRequestInput): Promise<ApprovalDecision> => {
+    requestAndWait: answeringRequestAndWait((request: ApprovalRequestInput) => {
       cards.push(request);
       if (change !== "none") state.generation += 1;
       if (change === "memory rule") state.memoryRules += 1;
-      return { requestId: request.id, choice: fallbackChoice };
-    },
+      return { choice: fallbackChoice };
+    }),
   } as unknown as ApprovalGate;
   const request = {
     id: "surface-card", sessionId: "stage-session", category: "tool", kind: "tool", toolName: "browser_click", toolCategory: "write",
@@ -76,7 +83,7 @@ describe("a user-owned surface's review fallback card", () => {
 
   it("any other policy change still refuses the answer, without a re-check", async () => {
     const { resolving, rechecks } = await answerFallback("other");
-    await expect(resolving).rejects.toThrow("Permission policy changed while approval was pending.");
+    expect(await resolving).toMatchObject(policyRefusal);
     expect(rechecks.filter(options => options?.acrossMemoryRuleChanges === true)).toEqual([]);
   });
 
@@ -85,7 +92,7 @@ describe("a user-owned surface's review fallback card", () => {
     ["asks under a forced card the person was not shown", { forceModal: true }],
   ])("across a sibling's run rule an answer is refused when the policy now %s", async (_name, rechecked) => {
     const { resolving } = await answerFallback("memory rule", rechecked);
-    await expect(resolving).rejects.toThrow("Permission policy changed while approval was pending.");
+    expect(await resolving).toMatchObject(policyRefusal);
   });
 
   it("the person's Deny on the fallback card stands across a sibling's run rule", async () => {
@@ -94,7 +101,7 @@ describe("a user-owned surface's review fallback card", () => {
   });
 
   it("a person's Deny is a deny permission whatever the caller's re-check said, on a card of any kind", async () => {
-    const allowed: PermissionCheckResult = { decision: "allow", reason: "a run rule now allows this" };
+    const allowed: PermissionCheckResult = { decision: "allow", reason: "a run rule now allows this", provenance: RULE_PROVENANCE };
     const manager = { recheckPermission: vi.fn() } as unknown as PermissionManager;
     const request = { id: "plain-card", sessionId: "stage-session", category: "tool", kind: "tool", toolName: "write_probe", toolCategory: "write", args: {}, reason: "paused", createdAt: 0 } as ApprovalRequestInput;
     const resolved = await resolveUserOwnedSurfaceApproval({

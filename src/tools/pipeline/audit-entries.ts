@@ -3,11 +3,13 @@ import { randomUUID } from "node:crypto";
 import type { Tool } from "../base.js";
 import type { ToolSource, ToolCategory } from "../types.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
-import type { PermissionAuditEntryInput, HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
+import { answeredRecordForAction, HOST_PROVENANCE, provenanceTrustOrigin } from "../../permissions/approval-gate.js";
+import type { AuditToolCategory, PermissionAuditEntryInput, HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
 import { hookInvocationFailureReason, type HookTrustOrigin, type ScriptHookType } from "../../hooks/script-hook-types.js";
 import type { HookDispatchResult } from "../../hooks/script-hook-manager.js";
 import type { ToolPermissionContext } from "../executor.js";
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
+import { redactFsPath } from "../../audit/dlp-filter.js";
 
 // Redact nonempty answers[].freeText before audit while retaining choices and dismissal.
 // Non-JSON error responses pass through unchanged.
@@ -40,12 +42,12 @@ export function auditTrustOrigin(context?: ToolPermissionContext): HookTrustOrig
 function auditDirectoryForInput(
   tool: Tool | undefined,
   input: Record<string, unknown>,
-  cwd: string,
+  cwd: string | undefined,
   canonicalTargetFilePath?: string,
 ): string | undefined {
   if (tool) {
     if (canonicalTargetFilePath) return canonicalTargetFilePath;
-    if (tool.category === "shell" && typeof input.cwd === "string" && input.cwd.length > 0) {
+    if (cwd !== undefined && tool.category === "shell" && typeof input.cwd === "string" && input.cwd.length > 0) {
       return resolveToolPathForPermission(input.cwd, cwd);
     }
   }
@@ -56,17 +58,18 @@ function permissionAuditBase(args: {
   toolName: string;
   tool?: Tool;
   source: ToolSource;
-  category: ToolCategory;
+  category: AuditToolCategory;
   trustOrigin: HookTrustOrigin;
   audit?: ToolExecutionAuditMetadata;
 }): Pick<
   Extract<PermissionAuditEntryInput, { decision: "allow" }>,
-  "ts" | "auditId" | "toolUseId" | "executionPlan" | "executionRoute" | "workloadBrokerCorrelation" | "trustOrigin" | "tool" | "source" | "category"
+  "ts" | "auditId" | "toolUseId" | "attempt" | "executionPlan" | "executionRoute" | "workloadBrokerCorrelation" | "trustOrigin" | "tool" | "source" | "category"
 > {
   return {
     ts: new Date().toISOString(),
     auditId: randomUUID(),
     ...(args.audit?.toolUseId !== undefined ? { toolUseId: args.audit.toolUseId } : {}),
+    ...(args.audit?.attempt !== undefined ? { attempt: args.audit.attempt } : {}),
     ...(args.audit?.executionPlan !== undefined ? { executionPlan: args.audit.executionPlan } : {}),
     ...(args.audit?.executionRoute !== undefined ? { executionRoute: args.audit.executionRoute } : {}),
     ...(args.audit?.workloadBrokerCorrelation !== undefined
@@ -121,28 +124,39 @@ export function permissionAuditEntryFromToolCall(args: {
   toolName: string;
   tool?: Tool;
   source: ToolSource;
-  category: ToolCategory;
+  category: AuditToolCategory;
   input: Record<string, unknown>;
-  permission: PermissionCheckResult | undefined;
+  permission: PermissionCheckResult;
   rateLimitRemaining: number;
   trustOrigin: HookTrustOrigin;
-  cwd: string;
+  cwd: string | undefined;
   auditDirectory?: string;
   hookChain?: HookResult[];
   audit?: ToolExecutionAuditMetadata;
 }): PermissionAuditEntryInput {
-  const base = permissionAuditBase(args);
-  if (args.permission?.decision === "deny") {
-    const denyReasons = args.permission.denyReasons?.length
-      ? args.permission.denyReasons
+  // An ask nobody settled is never an allow: it ends as the host's refusal.
+  const permission: PermissionCheckResult = args.permission.decision === "ask"
+    ? { decision: "deny", reason: args.permission.reason, provenance: HOST_PROVENANCE }
+    : args.permission;
+  // An answer is recorded only for the action and the decision it settled; any other is a broken binding, and throws.
+  if (permission.provenance?.kind === "answered") answeredRecordForAction(permission.provenance, permission.decision === "deny" ? "deny" : "allow", args.toolName, args.audit?.toolUseId);
+  if (permission.decision === "deny" && permission.answer) answeredRecordForAction(permission.answer, "allow", args.toolName, args.audit?.toolUseId);
+  // The row records who decided, from the decision's provenance.
+  const trustOrigin = provenanceTrustOrigin(permission.provenance, permission.decision, args.trustOrigin);
+  const base = permissionAuditBase({ ...args, trustOrigin });
+  if (permission.decision === "deny") {
+    const denyReasons = permission.denyReasons?.length
+      ? permission.denyReasons
       : [{
-        reason: args.permission.reason,
+        reason: permission.reason,
         source: "tool-executor",
       }];
     return {
       ...base,
       decision: "deny",
       denyReasons,
+      cwd: args.cwd === undefined ? "unknown" : redactFsPath(args.cwd),
+      ...(permission.answer ? { answerTrustOrigin: provenanceTrustOrigin(permission.answer, "allow", args.trustOrigin) } : {}),
       ...(args.hookChain ? { hookChain: args.hookChain } : {}),
     };
   }
@@ -151,8 +165,8 @@ export function permissionAuditEntryFromToolCall(args: {
     ...base,
     decision: "allow",
     };
-  if (args.permission?.reviewer?.verdict) {
-    allowEntry.reviewer = args.permission.reviewer.verdict;
+  if (permission.reviewer?.verdict) {
+    allowEntry.reviewer = permission.reviewer.verdict;
   }
   if (auditDirectory) {
     allowEntry.directory = auditDirectory;

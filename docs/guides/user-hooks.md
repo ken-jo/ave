@@ -98,7 +98,7 @@ Existing camelCase fields remain available alongside the public fields. All inpu
 | `PermissionRequest` | `tool_name: string`, `tool_input: object` | Refuses the pending permission request |
 | `UserPromptSubmit` | `prompt: string`; legacy optional `inputOrigin`, `route`, `classification` | Refuses the turn |
 | `PostToolUseFailure` | Optional `tool_name: string`, `error: string`, `duration_ms: number` | Observe only |
-| `PermissionDenied` | Optional `tool_name: string`, `deny_reason: {source: string, reason?: string}` | Observe only |
+| `PermissionDenied` | Optional `tool_name: string`, `deny_reason: {source: string, reason?: string}` | Observe only. Fires for a recorded permission denial on a non-governed call. Cancellations such as Stop, quit, and the shutdown deadline skip it. A refusal committed after abort counts as a cancellation except for a settled human Deny and the host's replacement integrity refusal. |
 | `SessionStart` | Optional `source: "startup" \| "resume" \| "clear"`, `session_meta: object` | Observe only; before the first turn after session creation or loading |
 | `SessionEnd` | Optional `reason: string`, `session_meta: object`, `stop_reason: string` | Observe only; session switch or reset, not a crash/shutdown guarantee |
 | `Notification` | Optional `message: string`, `notification_type: string` (`agent_completed`) | Observe only; turn-end notification |
@@ -107,6 +107,11 @@ Existing camelCase fields remain available alongside the public fields. All inpu
 | `PostCompact` | Optional `trigger: "manual" \| "auto"`, `messages_before: number`, `messages_after: number`, `tokens_before: number`, `tokens_after: number` | Observe only |
 | `SubagentStart` | Optional `agent_id: string`, `agent_type: string` | Observe only |
 | `SubagentStop` | Optional `agent_id: string`, `agent_type: string`, `stop_reason: string`, `stop_hook_active: boolean` | A block at a clean end continues the sub-agent run; see below |
+
+The host's replacement integrity refusal covers a terminal writer that fails before
+enqueuing the invocation's row, including a deny with a missing or invalid kind.
+An ordinary invocation failure after abort follows the cancellation rule.
+See [Security And Audit](../architecture/architecture.md#security-and-audit).
 
 Fields depend on the dispatch site; an unavailable optional field is omitted. Prompt text, top-level tool input strings and string-array items, tool output, error text, denial text, and notification text are DLP-redacted before dispatch. Nested tool objects and session metadata retain the existing caller-owned redaction responsibility. No transcript path or permission-mode field is promised by this contract.
 

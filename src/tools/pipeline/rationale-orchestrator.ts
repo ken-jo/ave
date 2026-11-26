@@ -51,7 +51,8 @@ export interface RationaleControlCandidate {
   readonly invocationTrustOrigin: ToolTrustOrigin;
   readonly canonicalTargets: readonly string[];
   readonly approvalCacheKey?: string;
-  readonly recordTerminalDenial?: (reason: string) => Promise<void>;
+  readonly recordTerminalDenial?: (reason: string, stopped?: boolean) => Promise<void>;
+  readonly hasSettledHumanDenial?: () => boolean;
   readonly requestHumanApproval?: (input: { requestId: string; abortSignal?: AbortSignal }) => Promise<ApprovalDecision>;
   readonly sandboxCapability: Readonly<SandboxCapability>;
   readonly sandboxExecutionPlan: Readonly<Record<string, unknown>>;
@@ -93,7 +94,8 @@ export interface RationaleControlProbe {
   readonly invocationTrustOrigin: ToolTrustOrigin;
   readonly canonicalTargets: readonly string[];
   readonly approvalCacheKey?: string;
-  readonly recordTerminalDenial?: (reason: string) => Promise<void>;
+  readonly recordTerminalDenial?: (reason: string, stopped?: boolean) => Promise<void>;
+  readonly hasSettledHumanDenial?: () => boolean;
   readonly requestHumanApproval?: (input: { requestId: string; abortSignal?: AbortSignal }) => Promise<ApprovalDecision>;
   readonly sandboxCapability: Readonly<SandboxCapability>;
   readonly sandboxExecutionPlan: Readonly<Record<string, unknown>>;
@@ -203,6 +205,7 @@ export async function maybeMaterializeRationaleControl(
       : { approvalCacheKey: probe.approvalCacheKey }),
     ...(probe.requestHumanApproval === undefined ? {} : { requestHumanApproval: probe.requestHumanApproval }),
     ...(probe.recordTerminalDenial === undefined ? {} : { recordTerminalDenial: probe.recordTerminalDenial }),
+    ...(probe.hasSettledHumanDenial === undefined ? {} : { hasSettledHumanDenial: probe.hasSettledHumanDenial }),
     sandboxCapability: probe.sandboxCapability,
     sandboxExecutionPlan: probe.sandboxExecutionPlan,
     permission: eligibility.permission,

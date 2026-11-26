@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
-import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { ApprovalGate, answeredApprovalProvenance, answeredRecordForAction, type ApprovalDecision, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { registerRunSession, __resetRunGrantsForTest } from "../../permissions/run-grants.js";
@@ -746,6 +746,28 @@ describe("browser tools", () => {
     expect(cards.filter((card) => card.browserSite !== undefined)).toHaveLength(1);
     expect(cards.find(card => card.browserSite !== undefined)).toMatchObject({ browserSite: browserOrigin("https://evil.com"), exactRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"] });
     if (action === "ask") expect(cards.some(card => card.browserSite === undefined && card.exactRecordAllowed === false)).toBe(true);
+  });
+
+  it("binds the browser action and site answers to their invocation, so another invocation cannot settle with them", async () => {
+    const { run, cards, agentTab, manager, gate } = harness({ mode: "default" });
+    const tab = await agentTab("https://example.com/");
+    await manager.addRulePersist({ pattern: "WebFetch(domain:evil.com)", action: "ask" }, { kind: "user" });
+    const answered: ApprovalDecision[] = [];
+    const requestAndWait = gate.requestAndWait.bind(gate);
+    vi.spyOn(gate, "requestAndWait").mockImplementation(async (request) => {
+      const decision = await requestAndWait(request);
+      answered.push(decision);
+      return decision;
+    });
+    expect((await run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://evil.com/x" })).isError).toBe(false);
+    expect(answered.length).toBe(cards.length);
+    expect(cards.some((card) => card.browserSite !== undefined)).toBe(true);
+    expect(cards.some((card) => card.browserSite === undefined && card.reason === "A destination rule requires approval for this navigation.")).toBe(true);
+    for (const decision of answered) {
+      const provenance = answeredApprovalProvenance(decision);
+      expect(answeredRecordForAction(provenance, "allow", BROWSER_TOOL.navigate, "call-1").toolUseId).toBe("call-1");
+      expect(() => answeredRecordForAction(provenance, "allow", BROWSER_TOOL.navigate, "other-invocation")).toThrow("does not settle this allow");
+    }
   });
 
   // The site card is answered while the policy moves (pending-answer-policy.ts): a sibling stage's "Allow for this run" leaves the

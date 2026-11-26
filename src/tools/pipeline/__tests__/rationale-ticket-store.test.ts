@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { describe, expect, it } from "vitest";
 import type { PermissionCheckResult } from "../../../permissions/permission-manager.js";
 import {
@@ -22,7 +23,7 @@ import {
 
 const NOW = 1_900_000_000_000;
 const permission = {
-  decision: "ask",
+  decision: "ask", provenance: RULE_PROVENANCE,
   reason: "Automatic review requires human approval.",
   reasonCode: "reviewer-human-required",
   reviewer: {

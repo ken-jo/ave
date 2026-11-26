@@ -21,6 +21,7 @@ import { buildPluginToolsForTest } from "../../plugins/__tests__/plugin-tool-tes
 import type { PluginManifest } from "../../plugins/types.js";
 import type { PluginRuntime } from "../../plugins/runtime.js";
 import { PermissionTestResources } from "./test-resources.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { configureHostResources } from "../../main/host-resources.js";
 
 const BOARD_PATH = resolve(process.cwd(), "docs/design/permission-review-scenario-board-v2.html");
@@ -89,10 +90,7 @@ function makeTool(args: {
 
 function makeGate(choice: "allow-once" | "deny-once" = "allow-once") {
   return {
-    requestAndWait: vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice,
-    })),
+    requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice })),
   };
 }
 

@@ -16,6 +16,7 @@ import { canonicalizePathForMatch } from "../../permissions/sensitive-paths.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
 import { currentAgentObservationIdentity, runWithAgentObservationTurn } from "../agent-observation-context.js";
 import { AuditWriter } from "../pipeline/audit-writer.js";
+import { pendingToolInvocationCount } from "../invocation-ledger.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { createTerminalRunTool } from "../terminal-run.js";
@@ -174,6 +175,7 @@ async function run(command: string, options: {
   /** Runs inside the PTY layer before its first pre-write effect check. */
   duringTyping?: () => void | Promise<void>;
   afterEffectCheck?: () => void | Promise<void>;
+  onToolResult?: (result: ToolResult) => void;
   logicalReview?: () => Promise<{ consistent: boolean; reason: string }>;
   useHostPty?: boolean;
   beforeWriteFence?: (bytes: readonly string[]) => void;
@@ -273,7 +275,7 @@ async function run(command: string, options: {
   } };
   const gate = options.approvalGate ?? new ApprovalGate(owner as never);
   const requestAndWait = vi.spyOn(gate, "requestAndWait");
-  const onToolResult = vi.fn<(result: ToolResult) => void>();
+  const onToolResult = vi.fn<(result: ToolResult) => void>(options.onToolResult);
   const writeCountsAtEnd: number[] = [];
   const callbacks = {
     onToolStart: vi.fn<NonNullable<ToolExecutorCallbacks["onToolStart"]>>(),
@@ -587,7 +589,10 @@ describe("terminal_run without Windows shell containment", () => {
           pauseAutoApproval(permissionManager);
         }
       };
+      const pendingAtCard: number[] = [];
+      const pendingAtResult: number[] = [];
       const duringApproval = vi.fn((session: TerminalSessionInfo) => {
+        pendingAtCard.push(pendingToolInvocationCount());
         expect(hostTerminalControlState(session, WINDOW)).toMatchObject({ mode: "available", generation: 2 });
         if (change === "terminal control changed") expect(controlTerminal(session, WINDOW, "take-over")).toMatchObject({ ok: true });
         if (change === "policy changed") permissionManager.setMode("strict");
@@ -598,6 +603,7 @@ describe("terminal_run without Windows shell containment", () => {
       const result = await run(command, {
         permissionManager, rules: [exactRule], surfaceChoice: "auto", logicalReview: lowReview,
         choice: "allow-once", useHostPty: true, beforeWriteFence, duringApproval,
+        onToolResult: () => { pendingAtResult.push(pendingToolInvocationCount()); },
       });
       const resultAudits = auditResult.mock.calls.map(call => ({ id: call[16]?.toolUseId, error: call[6], content: call[5] }));
       const askIds = auditAsk.mock.calls.map(call => call[8]?.toolUseId);
@@ -618,6 +624,8 @@ describe("terminal_run without Windows shell containment", () => {
       const firstEndOrder = result.callbacks.onToolEnd.mock.invocationCallOrder[0];
       if (approvalOrder === undefined || firstEndOrder === undefined) throw new Error("Approval and refusal events are required");
       expect(result.onToolResult.mock.calls).toEqual([[result.result]]);
+      expect(pendingAtResult).toEqual([0]);
+      expect(pendingAtCard).toEqual([1]);
       const firstResultOrder = result.onToolResult.mock.invocationCallOrder[0];
       expect(firstAuditOrder).toBeLessThan(firstEndOrder);
       expect(firstEndOrder).toBeLessThan(firstResultOrder);

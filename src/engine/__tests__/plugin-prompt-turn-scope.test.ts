@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent, StreamTurnParams } from "../llm/types.js";
@@ -11,6 +11,7 @@ import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { formatAgentPluginTemplatePrompt } from "../../shared/agent-plugin-prompt.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 class ScriptedProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -113,7 +114,7 @@ function toolResults(loop: ConversationLoop): Array<{ toolName?: string; content
 
 function allowOnceGate() {
   return {
-    requestAndWait: vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "allow-once" as const })),
+    requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const })),
   };
 }
 

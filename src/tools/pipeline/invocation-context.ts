@@ -1,3 +1,4 @@
+import { isHostExitAbort } from "../../shared/host-exit-abort.js";
 // Keep complementary containment relaxation and read-approval blocks together in invocation-authorization.
 // A denied write must never become allowed; read relaxation must retain exactly the same conditions.
 import {
@@ -21,6 +22,8 @@ import type {
   ToolUseBlock,
 } from "../executor.js";
 import type { AuditWriter } from "./audit-writer.js";
+import { commitTerminalRow, type InvocationTerminal, type TerminalRowWriter } from "../invocation-ledger.js";
+import { hostShutdownDenial, userAbortRefusal } from "./approval-outcome.js";
 import { emitToolStart } from "./display-mask.js";
 
 // Record per-invocation state while stage-local permission, category, and scope mutations remain coordinated at authorization boundaries.
@@ -93,10 +96,13 @@ export interface UserAbortDeps {
   executionCwd: string;
   startTime: number;
   auditWriter: AuditWriter;
+  abortSignal?: AbortSignal;
   audit?: ToolExecutionAuditMetadata;
+  /** The attempt's terminal ledger; its claim refuses a row the host already wrote. */
+  terminal: InvocationTerminal;
 }
 
-// Emit cancellation result and fixed denial audit without participating in containment relaxation.
+// Emit cancellation result and its fixed cancellation row without participating in containment relaxation.
 export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> {
   const {
     input,
@@ -111,17 +117,19 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
     executionCwd,
     startTime,
     auditWriter,
+    abortSignal,
     audit,
   } = deps;
   const msg = t("be_executor.toolExecutionCancelled");
   const durationMs = Date.now() - startTime;
-  const abortedPermission: PermissionCheckResult = {
-    decision: "deny",
-    reason: "user aborted turn",
-    };
+  const hostShutdown = isHostExitAbort(abortSignal?.reason);
+  const abortedPermission: PermissionCheckResult = hostShutdown
+    ? hostShutdownDenial()
+    : userAbortRefusal();
   emitToolStart(callbacks, toolUse.name, input, meta);
   callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-  await auditWriter.auditToolCall(
+  // A user abort and the host's quit are cancellations: no permission refused the call.
+  const write = (row: TerminalRowWriter) => auditWriter.auditToolCall(
     sessionId,
     toolUse.name,
     source,
@@ -136,9 +144,11 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
     invocationCategory,
     executionCwd,
     undefined,
-    "user-abort",
+    hostShutdown ? "host-shutdown" : "user-abort",
     undefined,
     audit,
+    { row, kind: "cancelled" },
   );
+  await commitTerminalRow(deps.terminal, write);
   return { tool_use_id: toolUse.id, content: msg, is_error: true, durationMs };
 }

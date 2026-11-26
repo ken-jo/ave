@@ -461,7 +461,7 @@ export function redactHomePathsInText(value: string): string {
 
 /** Only listed top-level path fields are redacted; nested objects are not traversed. */
 const AUDIT_PATH_KEYS = new Set([
-  "entryUrl", "entryFsPath", "rawInstallRoot", "realEntry", "realRoot", "frameUrl",
+  "entryUrl", "entryFsPath", "rawInstallRoot", "realEntry", "realRoot", "frameUrl", "cwd",
 ]);
 
 /** Leave non-path fields and non-object payloads unchanged. */

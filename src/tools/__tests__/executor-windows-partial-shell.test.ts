@@ -3,6 +3,8 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 vi.mock("../../permissions/sandbox-process-home.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedSandboxProcessHome(await original()));
 
+import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
@@ -55,7 +57,7 @@ import {
   setShellSandboxRequestedAtBoot,
   setWindowsSandboxSubstrate,
 } from "../../permissions/sandbox-capability.js";
-import { windowsSubstrateFor } from "../../boot/steps/windows-sandbox-plan.js";
+import { mxcShellCapability, windowsSubstrateFor } from "../../boot/steps/windows-sandbox-plan.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
@@ -69,6 +71,7 @@ import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host
 import { userPermissionContext as permissionContext } from "./tool-context-fixture.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { makeSubAgentApprovalAdapter } from "../../engine/subagent-runner.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const ORIGINAL_PLATFORM = process.platform;
 let testRoot: string;
@@ -262,11 +265,66 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     } finally { base.disposeAll(); }
   });
 
+  // The other conversation's memory-only allow leaves the first card's answer standing.
+  it.each([false, true])("writes one terminal row per card that saves its own session rule (competing card: %s)", async (competing) => {
+    partialWindowsAsrt();
+    setWindowsSandboxSubstrate(windowsSubstrateFor({ shellRequested: true, workerRequested: false,
+      mxc: { state: "available" }, windowsBuild: null, srtWinReady: true }, "srt-win"), mxcShellCapability());
+    const pm = new PermissionManager(join(testRoot, "card-rule-transition.json"));
+    pm.setMode("strict");
+    const execute = vi.fn();
+    const audit = recordingAuditLogger();
+    const saves: Array<Awaited<ReturnType<typeof saveApprovalCardRule>>> = [];
+    let firstSaved!: () => void;
+    const firstSave = new Promise<void>((resolve) => { firstSaved = resolve; });
+    let competingSaved!: () => void;
+    const competingSave = new Promise<void>((resolve) => { competingSaved = resolve; });
+    let gate!: ApprovalGate;
+    const webContents = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
+      if (channel !== "ave:approval:request") return;
+      void (async () => {
+        const snapshot = gate.getRequestSnapshot(request.id);
+        if (snapshot === null) throw new Error("Approval request snapshot is missing");
+        const token = gate.beginApprovalRuleSave(request.id, pm.getPolicyEpoch());
+        const saved = await saveApprovalCardRule(snapshot, { action: "allow", scope: "session" },
+          { decision: "allow", scope: "session", displayedVerdictAtApproval: snapshot.verdictAtApproval }, pm);
+        gate.completeApprovalRuleSave(token, pm.getPolicyEpoch(), saved.ok ? saved.scope : undefined);
+        saves.push(saved);
+        if (JSON.stringify(request.args).includes("consent-output")) {
+          firstSaved();
+          if (competing) await competingSave;
+        } else competingSaved();
+        gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, webContents as never);
+      })();
+    } };
+    gate = new ApprovalGate(webContents as never);
+    const run = (id: string, command: string) => runWithToolExecutionCwd(testRoot, () =>
+      new ToolExecutor(shellProbeRegistry(execute), undefined, pm, undefined, gate, undefined, audit.auditLogger).executeAll(
+        [{ id, name: "bash", input: { command } }],
+        { sessionId: `session-${id}`, permissionContext: permissionContext({ trustOrigin: "llm-tool-arg" }) }));
+    const first = run("card-rule", "mkdir consent-output");
+    await firstSave;
+    const second = competing ? await run("competing-card-rule", "mkdir competing-output") : [];
+    const [result] = await first;
+    expect(saves).toEqual([
+      expect.objectContaining({ ok: true, scope: "session", pattern: "Bash(mkdir consent-output)" }),
+      ...(competing ? [expect.objectContaining({ ok: true, scope: "session", pattern: "Bash(mkdir competing-output)" })] : []),
+    ]);
+    expect(result?.is_error).toBeUndefined();
+    expect(second.map((entry) => entry.is_error)).toEqual(competing ? [undefined] : []);
+    expect(execute).toHaveBeenCalledTimes(competing ? 2 : 1);
+    const rows = (id: string) => audit.permissionEntries.filter((entry) => entry.toolUseId === id && entry.decision !== "ask");
+    expect(rows("card-rule")).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);
+    if (competing) {
+      expect(rows("competing-card-rule")).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);
+    }
+  });
+
   it.each(["active", "off"])("binds native consent for explicit host with sandbox %s", async (sandbox) => {
     vi.stubEnv("AVE_PRIVATE_TEST_MARKER", "fixture-not-forwarded");
     if (sandbox === "active") fullDarwinAsrt();
     else explicitlySandboxOff("darwin");
-    const pm = pmReturning({ decision: "ask", reason: "plain shell requires consent", });
+    const pm = pmReturning({ decision: "ask", provenance: RULE_PROVENANCE, reason: "plain shell requires consent", });
     const checkDetailed = vi.spyOn(pm, "checkDetailed");
     let environmentMatched = false;
     let pwdMatched = false;
@@ -314,7 +372,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const executed = vi.fn();
     const registry = shellProbeRegistry(executed);
     const { gate, send } = gateResolving("allow-once");
-    const executor = new ToolExecutor(registry, undefined, pmReturning({ decision: "deny", reason: "hard policy denial", }), undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, pmReturning({ decision: "deny", provenance: RULE_PROVENANCE, reason: "hard policy denial", }), undefined, gate);
     const result = await executor.executeAll([{ id: "explicit-host-deny", name: "bash", input: { command: "echo host", executionMode: "host", justification: "Use the host execution environment" } }], { sessionId: "executor-windows-partial-shell-session", permissionContext: permissionContext() });
     expect(result[0].is_error).toBe(true);
     expect(executed).not.toHaveBeenCalled();
@@ -326,7 +384,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const executed = vi.fn();
     const registry = shellProbeRegistry(executed);
     const { gate, send } = gateResolving("allow-once");
-    const executor = new ToolExecutor(registry, undefined, pmReturning({ decision: "allow", reason: "ordinary allow", }), undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, pmReturning({ decision: "allow", provenance: RULE_PROVENANCE, reason: "ordinary allow", }), undefined, gate);
     const context = origin === "headless" ? { headless: true } : { remoteControllerAuthority: { kind: "tailnet-controller" as const, actorId: "tailnet:fixture" as const } };
     const result = await executor.executeAll([{ id: "unavailable-host", name: "bash", input: { command: "echo host", cwd: "/outside-host-request", executionMode: "host", justification: "Use the host environment" } }], { sessionId: "executor-windows-partial-shell-session", permissionContext: permissionContext(context) });
     expect(result[0].is_error).toBe(true);
@@ -631,7 +689,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const executor = new ToolExecutor(
       registry,
       undefined,
-      pmReturning({ decision: "ask", reason: "plain shell requires consent", }),
+      pmReturning({ decision: "ask", provenance: RULE_PROVENANCE, reason: "plain shell requires consent", }),
       undefined,
       gate,
       undefined,
@@ -720,7 +778,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const executor = new ToolExecutor(
       registry,
       undefined,
-      pmReturning({ decision: "ask", reason: "plain shell requires consent", }),
+      pmReturning({ decision: "ask", provenance: RULE_PROVENANCE, reason: "plain shell requires consent", }),
       undefined,
       gate,
       undefined,
@@ -773,7 +831,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const registry = shellProbeRegistry(execute);
     let request: ApprovalRequest | undefined;
     // This imitates an untrusted/stale gate response: it says allow-once but carries no host-issued receipt bound to the private action description.
-    const requestAndWait = vi.fn(async (pending: ApprovalRequest) => {
+    const requestAndWait = answeringRequestAndWait(async (pending: ApprovalRequest) => {
       request = pending;
       return { requestId: pending.id, choice: "allow-once" as const };
     });
@@ -781,7 +839,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const result = await new ToolExecutor(
       registry,
       undefined,
-      pmReturning({ decision: "ask", reason: "plain shell requires consent", }),
+      pmReturning({ decision: "ask", provenance: RULE_PROVENANCE, reason: "plain shell requires consent", }),
       undefined,
       { requestAndWait } as never,
     ).executeAll(
@@ -832,7 +890,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const executor = new ToolExecutor(
       registry,
       undefined,
-      pmReturning({ decision: "allow", reason: "ordinary dynamic tool", }),
+      pmReturning({ decision: "allow", provenance: RULE_PROVENANCE, reason: "ordinary dynamic tool", }),
     );
 
     const result = await executor.executeAll(
@@ -889,7 +947,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, recentlyDenied: makeRecentlyDeniedStore(join(testRoot, "recently-denied.json")) });
       pm.dispatchReviewer = vi.fn(async () => ({ verdict: { level: "low" as const, reason: "Bounded effect" }, cacheReason: "miss-not-found" as const,
         outcome: "fresh" as const, judge: reviewerJudgeOutcomeForTest("allow", "Bounded effect") })) as never;
-      const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" as const }));
+      const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
       const executor = new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never);
       const run = (id: string) => executor.executeAll(
         [{ id, name: "bash", input: { command: "echo reviewed" } }],
@@ -931,7 +989,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       const result = await new ToolExecutor(
         registry,
         undefined,
-        pmReturning({ decision: "allow", reason: "exact allow rule", }),
+        pmReturning({ decision: "allow", provenance: RULE_PROVENANCE, reason: "exact allow rule", }),
         undefined,
         gate,
       ).executeAll(
@@ -957,7 +1015,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       const registry = new ToolRegistry();
       registry.register(shellProbe(execute));
       const requestAndWait = vi.fn();
-      const pm = pmReturning({ decision: "allow", reason: "ordinary explicit-off path", });
+      const pm = pmReturning({ decision: "allow", provenance: RULE_PROVENANCE, reason: "ordinary explicit-off path", });
       const checkDetailed = vi.spyOn(pm, "checkDetailed");
       const result = await new ToolExecutor(
         registry,
