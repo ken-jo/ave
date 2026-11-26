@@ -21,7 +21,6 @@ const state = vi.hoisted(() => ({
   root: '',
   account: false,
   operational: true,
-  capability: { confidence: 'verified' },
   plan: undefined as Partial<SandboxWindowsExtensionPlan> | undefined,
   substrate: null as Partial<SandboxWindowsSubstrateInfo> | null,
   handle: undefined as ((event: IpcMainInvokeEvent) => Promise<unknown>) | undefined,
@@ -43,14 +42,7 @@ vi.mock('../../permissions/sandbox-capability.js', async importOriginal => ({
   ...await importOriginal<typeof import('../../permissions/sandbox-capability.js')>(),
   getWindowsExtensionBackendPlan: () => state.plan,
   getWindowsSandboxSubstrate: () => state.substrate,
-  detectMxcShellCapability: () => state.account ? undefined : state.capability,
   isSandboxGateUndecidedAtBoot: () => false,
-}));
-vi.mock('../../permissions/mxc-windows.js', async importOriginal => ({
-  ...await importOriginal<typeof import('../../permissions/mxc-windows.js')>(),
-  getHostWxcExecIdentity: () => 'container-launcher',
-  resolveHostWxcExecPath: async () => 'container-launcher',
-  probeHostMxcPowerShellStart: async () => ({ state: state.operational ? 'available' : 'unavailable' }),
 }));
 vi.mock('../../shared/ave-home.js', async importOriginal => ({
   ...await importOriginal<typeof import('../../shared/ave-home.js')>(),
@@ -96,7 +88,11 @@ afterEach(async () => {
 describe.each(['account', 'container'] as const)('%s admission', backend => {
   describe.each([backend, 'sandbox home'] as const)('%s proof', proof => it.each(['before projection', 'during projection', 'before atomic commit'] as const)(
     `refuses a cached IPC build on ${proof} proof loss %s`, async boundary => {
-      const loseProof = () => { if (proof === 'sandbox home') markSandboxHomesUnavailable(); else state.operational = false; };
+      const loseProof = () => {
+        if (proof === 'sandbox home') markSandboxHomesUnavailable();
+        else if (proof === 'container') unregister?.();
+        else state.operational = false;
+      };
       state.root = roots.track(await mkdtemp(join(tmpdir(), 'memory-map-admission-')));
       setProcessPlatform('win32');
       state.account = backend === 'account';
