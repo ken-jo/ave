@@ -226,17 +226,25 @@ function matchesCompiler(compiler, toolchain, host) {
   return lines.includes(`release: ${toolchain}`) && lines.includes(`host: ${host}`);
 }
 
-export function windowsPathKindCompilerCommand(identity, targetDir, metadata, fixture = false) {
+const PATH_KIND_TARGETS = new Map([
+  ["ave-path-kind", "main.rs"],
+  ["ave-path-pin-test", "fixture.rs"],
+  ["ave-path-kind-hold-fixture", "hold-fixture.rs"],
+]);
+
+export function windowsPathKindCompilerCommand(identity, targetDir, metadata, name = "ave-path-kind") {
+  const source = PATH_KIND_TARGETS.get(name);
+  if (!source) throw new Error("Unexpected Windows path helper build target");
   const { target, profile, rustc, rustflags, profileSettings } = identity;
   const deps = win32.join(targetDir, target, profile, "deps");
   const args = [
-    rustc, "--crate-name", fixture ? "ave_path_pin_test" : "ave_path_kind",
-    "--edition=2024", fixture ? "src\\fixture.rs" : "src\\main.rs",
+    rustc, "--crate-name", name.replaceAll("-", "_"),
+    "--edition=2024", `src\\${source}`,
     "--error-format=json", "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
     "--crate-type", "bin", "--emit=dep-info,link",
     "-C", `opt-level=${profileSettings["opt-level"]}`, "-C", "embed-bitcode=no",
     "-C", `codegen-units=${profileSettings["codegen-units"]}`,
-    ...(fixture ? ["--cfg", 'feature="fixture"'] : []),
+    ...(name !== "ave-path-kind" ? ["--cfg", 'feature="fixture"'] : []),
     "--check-cfg", "cfg(docsrs,test)", "--check-cfg", 'cfg(feature, values("fixture"))',
     "-C", `metadata=${metadata}`, "--out-dir", deps, "--target", target,
     "-C", `strip=${profileSettings.strip}`,
@@ -247,10 +255,10 @@ export function windowsPathKindCompilerCommand(identity, targetDir, metadata, fi
   return args.map(arg => /[\s"]/u.test(arg) ? `"${arg.replaceAll('"', '\\"')}"` : arg).join(" ");
 }
 
-export function assertWindowsPathKindInvocation({ identity, invocation, targetDir }, fixture = false) {
+export function assertWindowsPathKindInvocation({ identity, invocation, targetDir }, name) {
   const metadata = typeof invocation === "string" && / -C metadata=([a-f0-9]{16}) /u.exec(invocation)?.[1];
   if (!metadata || !isFullyQualifiedWindowsPath(targetDir)
-    || invocation !== windowsPathKindCompilerCommand(identity, targetDir, metadata, fixture)) {
+    || invocation !== windowsPathKindCompilerCommand(identity, targetDir, metadata, name)) {
     throw new Error("Unexpected Windows path helper compiler invocation");
   }
 }
@@ -290,6 +298,10 @@ export function assertWindowsPathKindInputDigests({ tools, rustLibraries, librar
 
 export function windowsPathKindPath(arch) {
   return join("resources", "windows-path-kind", arch, "ave-path-kind.exe");
+}
+
+export function windowsPathKindHoldFixturePath(arch) {
+  return join(dirname(windowsPathKindPath(arch)), "ave-path-kind-hold-fixture.exe");
 }
 
 export function windowsPathKindReceiptPath(arch) {
@@ -388,8 +400,12 @@ export function windowsPathKindReceipt(root, arch, build, binary) {
   return { identity, invocation, targetDir, sourceSha256: windowsPathKindSourceDigest(root), binarySha256: sha256(binary) };
 }
 
-export function assertWindowsPathKindArtifactDigests(root, arch, { binarySha256, receiptSha256 }) {
-  for (const [file, expected] of [[windowsPathKindPath(arch), binarySha256], [windowsPathKindReceiptPath(arch), receiptSha256]]) {
+export function assertWindowsPathKindArtifactDigests(root, arch, { binarySha256, receiptSha256, holdFixtureSha256 }) {
+  for (const [file, expected] of [
+    [windowsPathKindPath(arch), binarySha256],
+    [windowsPathKindReceiptPath(arch), receiptSha256],
+    [windowsPathKindHoldFixturePath(arch), holdFixtureSha256],
+  ]) {
     if (!/^[0-9a-f]{64}$/u.test(expected ?? "")) throw new Error(`Missing the producing build's digest for ${file}`);
     if (sha256(readFileSync(join(root, file))) !== expected) throw new Error(`${file} is not the output of the producing build`);
   }

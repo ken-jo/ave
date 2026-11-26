@@ -1645,8 +1645,8 @@ interface ShellWriteTargetProof {
   simpleDataCommand: boolean;
 }
 
-function evidenceBudgetExceeded(error: ShellExecutionError): boolean {
-  const reason = error.message.replace(/^(?:nested command cannot be analyzed: )+/u, "");
+export function isShellExecutionAnalysisLimit(message: string): boolean {
+  const reason = message.replace(/^(?:nested command cannot be analyzed: )+/u, "");
   return shellFloorParserBudgetExceeded(reason)
     || ["execution-state limit exceeded", "execution-step limit exceeded", "execution analysis depth exceeded", "loop expansion limit exceeded", "loop authority state does not converge within the execution-state limit"].includes(reason);
 }
@@ -1713,7 +1713,10 @@ function findShellPathPolicyViolationInDecision(
     const cwdError = validateShellWorkingDirectory(cwd, sandboxRoot, extraAllowedDirectories, canonicalize);
     if (cwdError) return { kind: cwdError.startsWith("Sensitive") ? "sensitive-path" : "sandbox-boundary", reason: cwdError, path: cwd };
   }
+  // Operands of a command on a host fault path continued past its starting directory: only writes are checked.
+  let commandWritesOnly = false;
   const checkPath = (path: string, label: string, cwd: string | null, effect: PathEffect, deleting = false, role?: "directory"): void => {
+    if (commandWritesOnly && (effect !== "write" || role === "directory")) return;
     if (evidence && role === "directory") effect = "read";
     // Public standard-stream operands identify child descriptors; host resolution would inspect different resources.
     if (SHELL_DEVICE_PATHS.has(path)) return;
@@ -1815,18 +1818,18 @@ function findShellPathPolicyViolationInDecision(
       firstAnalysis = false;
       literalBudget.tokens.count += count;
       if (literalBudget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) throw new ShellExecutionError("Shell analysis total token limit exceeded");
-    }, path: (path, raw, at, effect, role) => checkPath(path, raw, at, effect, false, role),
+    }, path: (path, raw, at, effect, role) => { commandWritesOnly = false; checkPath(path, raw, at, effect, false, role); },
       observeDirectory,
       word(word) {
         if (word.parts.some((part) => part.kind !== "literal")) targetProof?.dynamicWords.add(word);
       },
       unresolvedState(error) {
-        if (!evidence || evidenceBudgetExceeded(error)) return;
+        if (!evidence || isShellExecutionAnalysisLimit(error.message)) return;
         unresolvedEvidence ??= { kind: "dynamic-path", reason: "Shell path policy: " + error.message, ...(error.operand ? { candidate: error.operand } : {}) };
         return true;
       },
       unresolvedWord(word, error) {
-        if (!evidence || evidenceBudgetExceeded(error)) return;
+        if (!evidence || isShellExecutionAnalysisLimit(error.message)) return;
         unresolvedEvidence ??= { kind: "dynamic-path", reason: "Shell path policy: unresolved command operand", candidate: word.source.raw };
         return true;
       },
@@ -1836,7 +1839,7 @@ function findShellPathPolicyViolationInDecision(
         else onUnknownWrite?.(`The write target lacks a deterministic host environment binding: ${target.source.raw}`);
       },
       unresolvedPath(raw, _cwd, effect, error, role) {
-        if (error && evidenceBudgetExceeded(error)) return;
+        if (error && isShellExecutionAnalysisLimit(error.message)) return;
         if (evidence && role === "directory") effect = "read";
         if (effect === "write") onUnknownWrite?.(`The write target may be protected: ${raw}`);
         if (evidence) {
@@ -1844,6 +1847,7 @@ function findShellPathPolicyViolationInDecision(
           return true;
         }
       }, command(event) {
+      commandWritesOnly = event.faultWritesOnly === true;
       const {node, effective} = event;
       if (evidence && !argumentView?.literalBodiesAlreadyInspected) for (const body of literalShellBodies(event.argv, event.dialect, effective.words.map(word => word.source.raw))) {
         if (body.dialect !== "powershell") continue;
@@ -2001,7 +2005,7 @@ function findShellPathPolicyViolationInDecision(
     const earlier = firstPendingViolation();
     if(earlier)return earlier;
     if(error instanceof PathPolicyError)return error.violation;
-    if(error instanceof ShellExecutionError)return {kind:evidenceBudgetExceeded(error) ? "analysis-limit" : "dynamic-path",reason:"Shell path policy: "+error.message,...(error.operand?{candidate:error.operand}:{})};
+    if(error instanceof ShellExecutionError)return {kind:isShellExecutionAnalysisLimit(error.message) ? "analysis-limit" : "dynamic-path",reason:"Shell path policy: "+error.message,...(error.operand?{candidate:error.operand}:{})};
     throw error;
   }
 }

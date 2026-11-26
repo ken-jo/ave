@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+import { A2AJsonRpcMethod } from "../../shared/a2a-wire.js";
 import type { SettingsService } from "../../data/settings-store.js";
 import { buildSingleFlightAgentActionApprover } from "../../permissions/agent-action-approver.js";
 import {
@@ -17,6 +18,7 @@ function settings(features: Record<string, boolean>, secrets: Record<string, str
 const encryption = { getSelectedStorageBackend: () => "gnome_libsecret" as const, isAsyncEncryptionAvailable: async () => true, encryptStringAsync: async (value: string) => Buffer.from(value), decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString() }) };
 const namespace = { readJson: async <T>(_name: string, fallback: T) => fallback, writeJson: async () => undefined };
 const agentActionApprover = vi.fn(async () => ({
+  approved: true as const,
   decisionId: "test-approval",
   decidedAt: "2026-07-16T00:00:00.000Z",
 }));
@@ -46,10 +48,45 @@ describe("A2A remote boot runtime", () => {
     runtime?.dispose();
   });
 
+  it.each(["denied", "rejected", "expired", "unavailable", "cancelled"] as const)(
+    "retains an outbound approval refusal (%s) before looking up data credentials",
+    async (outcome) => {
+      const value = settings({ a2aRemoteRouting: true }, { "a2a.remote.route-control-auth": "control-secret" });
+      const approve = vi.fn(async () => ({ approved: false as const, outcome }));
+      const audit = vi.fn();
+      const writeJson = vi.fn(async () => undefined);
+      const runtime = await createA2ARemoteRuntime({
+        settings: value.value, agentActionApprover: approve, projectRoot: "/project", encryption,
+        namespace: { ...namespace, writeJson }, audit,
+      });
+      if (!runtime) throw new Error("fixture did not enable outbound routing");
+      const interfaceUrl = "https://agent.example.test/a2a";
+      try {
+        await expect(runtime.execute({
+          operationId: "outbound-approval", attemptId: "outbound-attempt", operation: "initial-send", targetLabel: "Agent one",
+          authorization: { ownerId: "owner", projectRoot: "/project", profileId: "profile", origin: "user", depth: 0, targetAgentId: 1, interfaceUrl },
+          lineage: {
+            targetAgentId: 1, interfaceUrl, agentCardDigestSha256: digest, trustKeyId: 2, credentialBindingId: 3,
+            callerGenerationId: "outbound-generation-1", routePolicyVersion: 4, routePolicyDigestSha256: digest, extensionSpecDigestSha256: digest,
+          },
+          intendedCredentialRevisionId: 5,
+          request: { id: 1, method: A2AJsonRpcMethod.SEND_MESSAGE, params: { message: { messageId: "outbound-message", role: "ROLE_USER", parts: [{ text: "hello" }] } } },
+          messageId: "outbound-message",
+        })).resolves.toEqual({ ok: false, outcome: "not-sent", approvalOutcome: outcome });
+        expect(approve).toHaveBeenCalledOnce();
+        expect(audit).toHaveBeenCalledWith(`initial-send:approval-denied:foreground-approval-${outcome}`);
+        expect(value.getEncryptedSecret.mock.calls).toEqual([["a2a.remote.route-control-auth"]]);
+        expect(writeJson).not.toHaveBeenCalled();
+      } finally {
+        runtime.dispose();
+      }
+    },
+  );
+
   it("shares one boot-owned single-flight approver across concurrent remote directions", async () => {
     let release!: () => void;
-    const decision = new Promise<{ requestId: string; choice: "allow-once" }>((resolve) => {
-      release = () => resolve({ requestId: "shared-approval", choice: "allow-once" });
+    const decision = new Promise<{ choice: "allow-once" }>((resolve) => {
+      release = () => resolve({ choice: "allow-once" });
     });
     const requestAndWait = answeringRequestAndWait(() => decision);
     const shared = buildSingleFlightAgentActionApprover({ requestAndWait } as never)!;
@@ -78,11 +115,11 @@ describe("A2A remote boot runtime", () => {
       args: { target: "inbound" },
       reason: "Approve inbound remote mutation?",
       trustOrigin: "a2a-remote-wire",
-    })).resolves.toBeNull();
+    })).resolves.toEqual({ approved: false, outcome: "concurrent" });
     expect(requestAndWait).toHaveBeenCalledOnce();
 
     release();
-    await expect(outbound).resolves.toMatchObject({ decisionId: "shared-approval" });
+    await expect(outbound).resolves.toMatchObject({ approved: true, decisionId: requestAndWait.mock.calls[0]?.[0].id });
     await runtime.ready();
     runtime.dispose();
   });

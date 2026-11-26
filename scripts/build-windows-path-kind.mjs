@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 import {
   assertWindowsPathKindInputDigests, assertWindowsPathKindInvocation, assertWindowsPathKindLinkInputs,
   assertWindowsPathKindMachine, windowsPathKindCompiler,
-  windowsPathKindCrateFiles, windowsPathKindPath,
+  windowsPathKindCrateFiles, windowsPathKindHoldFixturePath, windowsPathKindPath,
   windowsPathKindReceipt, windowsPathKindReceiptPath, windowsPathKindSourceDigest, windowsPathKindSystemEnvironment,
 } from "./lib/windows-path-kind-build.mjs";
 import { windowsPeImageDigest } from "./lib/windows-path-kind-image-digest.mjs";
@@ -27,9 +27,8 @@ function assertNoCargoConfig(directory) {
 }
 
 /**
- * Builds the helper and returns the digests its consumers compare against. With `outDir` the helper and fixture go
- * only to that private directory; otherwise the helper and its receipt replace the checkout copies and the fixture
- * is checked and discarded.
+ * Builds the helper and returns its digests. With `outDir` the helper and pin fixture go to that private directory.
+ * Otherwise the helper and receipt replace the checkout copies. Fixture builds also publish the hold fixture there.
  */
 export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture = false, outDir } = {}) {
   if (process.platform !== "win32") throw new Error("The Windows path helper requires a Windows build");
@@ -74,7 +73,7 @@ export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture
       const match = /^\s*Running `(.+)`$/u.exec(commands[0] ?? "");
       if (commands.length !== 1 || !match) throw new Error("Expected one Windows path helper compiler invocation");
       const build = { identity, targetDir, invocation: match[1] };
-      assertWindowsPathKindInvocation(build, name === "ave-path-pin-test");
+      assertWindowsPathKindInvocation(build, name);
       assertWindowsPathKindLinkInputs(result.stdout, identity, buildDir,
         join(targetDir, identity.target, identity.profile, "deps", `${name.replaceAll("-", "_")}.exe`));
       return build;
@@ -83,10 +82,16 @@ export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture
     const binary = readFileSync(output("ave-path-kind"));
     const receipt = windowsPathKindReceipt(root, arch, build, binary);
     let fixtureBytes;
+    let holdFixtureBytes;
     if (fixture) {
       cargo("ave-path-pin-test", ["--features", "fixture"]);
       fixtureBytes = readFileSync(output("ave-path-pin-test"));
       assertWindowsPathKindMachine(fixtureBytes, arch);
+      if (!outDir) {
+        cargo("ave-path-kind-hold-fixture", ["--features", "fixture"]);
+        holdFixtureBytes = readFileSync(output("ave-path-kind-hold-fixture"));
+        assertWindowsPathKindMachine(holdFixtureBytes, arch);
+      }
     }
     if (receipt.sourceSha256 !== source) throw new Error("Windows path helper sources changed during build");
     assertWindowsPathKindInputDigests(identity.inputs);
@@ -107,17 +112,20 @@ export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture
     }
     const exe = join(root, windowsPathKindPath(arch));
     const manifest = join(root, windowsPathKindReceiptPath(arch));
+    const holdFixture = join(root, windowsPathKindHoldFixturePath(arch));
     mkdirSync(dirname(exe), { recursive: true });
-    const staged = [`${exe}.${process.pid}.tmp`, `${manifest}.${process.pid}.tmp`];
+    const outputs = [[exe, binary], [manifest, receiptText]];
+    if (holdFixtureBytes) outputs.push([holdFixture, holdFixtureBytes]);
+    const staged = outputs.map(([file, bytes]) => ({ file, bytes, temp: `${file}.${process.pid}.tmp` }));
     try {
-      writeFileSync(staged[0], binary, { flag: "wx" });
-      writeFileSync(staged[1], receiptText, { flag: "wx" });
-      renameSync(staged[0], exe);
-      renameSync(staged[1], manifest);
+      for (const { temp, bytes } of staged) writeFileSync(temp, bytes, { flag: "wx" });
+      for (const { temp, file } of staged) renameSync(temp, file);
     } finally {
-      for (const file of staged) rmSync(file, { force: true });
+      for (const { temp } of staged) rmSync(temp, { force: true });
     }
-    return { ...evidence, helper: exe };
+    if (!holdFixtureBytes) return { ...evidence, helper: exe };
+    const holdFixtureSha256 = createHash("sha256").update(holdFixtureBytes).digest("hex");
+    return { ...evidence, helper: exe, holdFixtureSha256 };
   } finally {
     rmSync(buildDir, { recursive: true, force: true });
   }
@@ -125,7 +133,10 @@ export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({ options: { arch: { type: "string" }, fixture: { type: "boolean" } } });
-  const { binarySha256, receiptSha256 } = buildWindowsPathKind(values);
+  const { binarySha256, receiptSha256, holdFixtureSha256 } = buildWindowsPathKind(values);
   // CI passes these through job outputs to the jobs that restore the uploaded helper.
-  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `binary_sha256=${binarySha256}\nreceipt_sha256=${receiptSha256}\n`);
+  if (process.env.GITHUB_OUTPUT) {
+    const fixtureOutput = holdFixtureSha256 ? `hold_fixture_sha256=${holdFixtureSha256}\n` : "";
+    appendFileSync(process.env.GITHUB_OUTPUT, `binary_sha256=${binarySha256}\nreceipt_sha256=${receiptSha256}\n${fixtureOutput}`);
+  }
 }

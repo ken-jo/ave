@@ -46,7 +46,7 @@ const RECORDED = {
   relayListener: { both: "HTTP/1.1 403 sandbox proxy listener" },
   upstreamAuth: { both: "HTTP/1.1 403 upstream proxy requires authentication" },
   promptFailed: { both: "HTTP/1.1 403 permission prompt failed" },
-  notABoolean: { both: "HTTP/1.1 403 user denied" },
+  notABoolean: { today: "HTTP/1.1 403 user denied", new: "HTTP/1.1 403 permission prompt refused" },
   // P21: the same reserved address in every spelling. Today asks about each one, then dials.
   reservedLiteral: { today: "asked", new: "HTTP/1.1 403 destination is a reserved address" },
   // P24, per-invocation route: the ports are freed at close and are ordinary loopback ports again.

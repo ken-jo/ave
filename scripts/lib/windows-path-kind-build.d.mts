@@ -53,9 +53,11 @@ export function windowsPathKindRustflags(linker: string, inputs: WindowsPathKind
 export function windowsPathKindToolchain(root: string): string;
 export function windowsPathKindTarget(arch: string): string;
 export function windowsPathKindCompiler(root: string, arch: string): WindowsPathKindCompiler;
-export function windowsPathKindCompilerCommand(identity: WindowsPathKindCompiler, targetDir: string, metadata: string, fixture?: boolean): string;
-export function assertWindowsPathKindInvocation(build: WindowsPathKindBuild, fixture?: boolean): void;
+type WindowsPathKindTarget = "ave-path-kind" | "ave-path-pin-test" | "ave-path-kind-hold-fixture";
+export function windowsPathKindCompilerCommand(identity: WindowsPathKindCompiler, targetDir: string, metadata: string, name?: WindowsPathKindTarget): string;
+export function assertWindowsPathKindInvocation(build: WindowsPathKindBuild, name?: WindowsPathKindTarget): void;
 export function windowsPathKindPath(arch: string): string;
+export function windowsPathKindHoldFixturePath(arch: string): string;
 export function windowsPathKindReceiptPath(arch: string): string;
 export function windowsPathKindCrateFiles(root: string): string[];
 export function assertWindowsPathKindLinkInputs(stdout: string, identity: WindowsPathKindCompiler, buildDir: string, exe: string): void;
@@ -69,5 +71,6 @@ export function windowsPathKindReceipt(root: string, arch: string, build: Window
 export function assertWindowsPathKindArtifactDigests(root: string, arch: string, digests: {
   binarySha256?: string;
   receiptSha256?: string;
+  holdFixtureSha256?: string;
 }): void;
 export function verifyWindowsPathKindReceipt(root: string, arch: string): void;

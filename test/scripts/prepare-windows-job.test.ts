@@ -28,6 +28,7 @@ const OLD = new Date("2026-01-01T00:00:00Z");
 const NEW = new Date("2026-02-01T00:00:00Z");
 const LAUNCHER = windowsJobLauncherPath("x64");
 const PATH_KIND = join("resources", "windows-path-kind", "x64", "ave-path-kind.exe");
+const HOLD_FIXTURE = join("resources", "windows-path-kind", "x64", "ave-path-kind-hold-fixture.exe");
 const RECEIPT = windowsPathKindReceiptPath("x64");
 const PIN = 'channel = "1.92.0"\n';
 const RUST_INPUTS = ["native/windows-path-kind/src/main.rs", "native/windows-path-kind/Cargo.toml",
@@ -83,6 +84,7 @@ function stagePathKind(root: string, machine = 0x8664): void {
   mkdirSync(dirname(join(root, PATH_KIND)), { recursive: true });
   writeFileSync(join(root, PATH_KIND), binary);
   writeFileSync(join(root, RECEIPT), JSON.stringify(receipt));
+  writeFileSync(join(root, HOLD_FIXTURE), "hold fixture");
 }
 
 function write(root: string, relative: string, time: Date): void {
@@ -222,7 +224,7 @@ describe("prepareWindowsJob", () => {
     expect(lines).toEqual([`[windows-job] up to date: ${LAUNCHER}`, `[windows-path-kind] building ${PATH_KIND} (fresh build)`]);
   });
 
-  it.each(["valid", "missing digest", "substituted binary", "substituted receipt", "changed source"] as const)("prepares a shard with a %s path helper input", (input) => {
+  it.each(["valid", "missing digest", "substituted binary", "substituted receipt", "missing fixture digest", "substituted fixture", "changed source"] as const)("prepares a shard with a %s path helper input", (input) => {
     const root = fixtureRoot({ launcher: NEW });
     const binary = readFileSync(join(root, PATH_KIND));
     const receipt = readFileSync(join(root, RECEIPT));
@@ -230,9 +232,11 @@ describe("prepareWindowsJob", () => {
       AVE_WINDOWS_TEST_PLAN: "windows-plan.json",
       AVE_WINDOWS_PATH_KIND_SHA256: input === "missing digest" ? undefined : sha256(binary),
       AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: sha256(receipt),
+      AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256: input === "missing fixture digest" ? undefined : sha256(readFileSync(join(root, HOLD_FIXTURE))),
     };
     if (input === "substituted binary") writeFileSync(join(root, PATH_KIND), Buffer.concat([binary, Buffer.from("changed")]));
     if (input === "substituted receipt") writeFileSync(join(root, RECEIPT), Buffer.concat([receipt, Buffer.from("\n")]));
+    if (input === "substituted fixture") writeFileSync(join(root, HOLD_FIXTURE), "changed");
     if (input === "changed source") write(root, "native/windows-path-kind/src/extra.rs", OLD);
     const builds: object[] = [];
     const prepare = () => prepareWindowsJob({
@@ -243,6 +247,8 @@ describe("prepareWindowsJob", () => {
       "missing digest": /Missing the producing build's digest/u,
       "substituted binary": /is not the output of the producing build/u,
       "substituted receipt": /is not the output of the producing build/u,
+      "missing fixture digest": /Missing the producing build's digest.*ave-path-kind-hold-fixture/u,
+      "substituted fixture": /ave-path-kind-hold-fixture.*is not the output of the producing build/u,
       "changed source": /build inputs or binary changed/u,
     };
     if (input === "valid") expect(prepare().state).toBe("fresh");
@@ -258,9 +264,10 @@ describe("prepareWindowsJob", () => {
     expect([calls, lines]).toEqual([[], []]);
   });
 
-  it.each(["missing", "old executable", "source", "script", "lockfile", "toolchain", "wrong machine"])("prepares a path classifier with %s changes independently of the job launcher", (change) => {
+  it.each(["missing", "missing hold fixture", "old executable", "source", "script", "lockfile", "toolchain", "wrong machine"])("prepares a path classifier with %s changes independently of the job launcher", (change) => {
     const root = fixtureRoot({ launcher: new Date("2026-04-01T00:00:00Z") });
     if (change === "missing") rmSync(join(root, PATH_KIND));
+    if (change === "missing hold fixture") rmSync(join(root, HOLD_FIXTURE));
     if (change === "old executable") rmSync(join(root, RECEIPT));
     if (change === "source") write(root, "native/windows-path-kind/src/extra.rs", OLD);
     if (change === "script") writeFileSync(join(root, "scripts/build-windows-path-kind.mjs"), "changed");
@@ -482,18 +489,23 @@ describe("Windows path helper packaging", () => {
 });
 
 describe("Windows CI path helper restore", () => {
+  const digestNames = ["AVE_WINDOWS_PATH_KIND_SHA256", "AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256",
+    "AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256"] as const;
+  const queryFailure = join(dirname(LAUNCHER), "ave-job-query-failure.exe");
+
   function restoreFixture() {
     const root = fixtureRoot();
     const inputs = join(root, ".windows-native-inputs");
     const helper = readFileSync(join(root, PATH_KIND));
     const receipt = readFileSync(join(root, RECEIPT));
+    const holdFixture = readFileSync(join(root, HOLD_FIXTURE));
     const { TARGETS } = createRequire(import.meta.url)("../../scripts/lib/srt-win-integrity.cjs") as { TARGETS: Record<string, unknown> };
     const vendor = "node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win";
-    for (const file of [LAUNCHER, ...Object.keys(TARGETS).flatMap(arch => ["upstream-srt-win.exe", "srt-win.exe", "build-receipt.json"]
+    for (const file of [LAUNCHER, queryFailure, ...Object.keys(TARGETS).flatMap(arch => ["upstream-srt-win.exe", "srt-win.exe", "build-receipt.json"]
       .map(name => join(vendor, arch, name))), ...["js", "json"].map(extension => `src/permissions/generated/srt-win-build-receipts.${extension}`)]) {
       write(inputs, file, OLD);
     }
-    for (const [file, bytes] of [[PATH_KIND, helper], [RECEIPT, receipt]] as const) {
+    for (const [file, bytes] of [[PATH_KIND, helper], [RECEIPT, receipt], [HOLD_FIXTURE, holdFixture]] as const) {
       rmSync(join(root, file));
       mkdirSync(dirname(join(inputs, file)), { recursive: true });
       writeFileSync(join(inputs, file), bytes);
@@ -502,12 +514,13 @@ describe("Windows CI path helper restore", () => {
     mkdirSync(join(runnerTemp, "python-release-mirror"), { recursive: true });
     writeFileSync(join(runnerTemp, "python-release-mirror", "python.tar.gz"), "archive");
     writeFileSync(join(runnerTemp, "env"), "");
-    const restore = (digests: { AVE_WINDOWS_PATH_KIND_SHA256?: string; AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256?: string }) => {
+    const restore = (digests: Partial<Record<(typeof digestNames)[number], string>>) => {
       const env: NodeJS.ProcessEnv = { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_ENV: join(runnerTemp, "env"), ELECTRON_RUN_AS_NODE: "1", ...digests };
-      for (const name of ["AVE_WINDOWS_PATH_KIND_SHA256", "AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256"] as const) if (!(name in digests)) delete env[name];
+      for (const name of digestNames) if (!(name in digests)) delete env[name];
       return spawnSync(process.execPath, [resolve(".github/scripts/restore-windows-ci-inputs.mjs")], { cwd: root, encoding: "utf8", windowsHide: true, env });
     };
-    return { root, inputs, restore, produced: { AVE_WINDOWS_PATH_KIND_SHA256: sha256(helper), AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: sha256(receipt) } };
+    return { root, inputs, restore, produced: { AVE_WINDOWS_PATH_KIND_SHA256: sha256(helper),
+      AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: sha256(receipt), AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256: sha256(holdFixture) } };
   }
 
   it.skipIf(process.arch !== "x64")("rejects an independently substituted helper and matching receipt before promoting them", () => {
@@ -525,10 +538,19 @@ describe("Windows CI path helper restore", () => {
 
   it.skipIf(process.arch !== "x64")("refuses a restore without the producing build's digests", () => {
     const { root, restore, produced } = restoreFixture();
-    for (const digests of [{}, { ...produced, AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: "" }, { ...produced, AVE_WINDOWS_PATH_KIND_SHA256: "A".repeat(64) }]) {
-      const result = restore(digests);
+    for (const name of digestNames) {
+      const result = restore({ ...produced, [name]: "" });
       expect(result.stderr).toContain("Missing the producing build's digest");
     }
+    expect(existsSync(join(root, PATH_KIND))).toBe(false);
+  });
+
+  it.skipIf(process.arch !== "x64")("rejects a substituted hold fixture before promoting the helper", () => {
+    const { root, inputs, restore, produced } = restoreFixture();
+    writeFileSync(join(inputs, HOLD_FIXTURE), "substituted fixture");
+    const result = restore(produced);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/ave-path-kind-hold-fixture.*is not the output of the producing build/u);
     expect(existsSync(join(root, PATH_KIND))).toBe(false);
   });
 
@@ -537,6 +559,8 @@ describe("Windows CI path helper restore", () => {
     const result = restore(produced);
     expect(result.status, result.stderr).toBe(0);
     expect(sha256(readFileSync(join(root, PATH_KIND)))).toBe(produced.AVE_WINDOWS_PATH_KIND_SHA256);
+    expect(sha256(readFileSync(join(root, HOLD_FIXTURE)))).toBe(produced.AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256);
+    expect(existsSync(join(root, queryFailure))).toBe(true);
     verifyWindowsPathKindReceipt(root, "x64");
   });
 
@@ -544,14 +568,17 @@ describe("Windows CI path helper restore", () => {
     const workflow = readFileSync(resolve(".github/workflows/ci.yml"), "utf8");
     expect(workflow).toContain(`      path_kind_sha256: \${{ steps.windows-path-kind-build.outputs.binary_sha256 }}`);
     expect(workflow).toContain(`      path_kind_receipt_sha256: \${{ steps.windows-path-kind-build.outputs.receipt_sha256 }}`);
+    expect(workflow).toContain(`      path_kind_hold_fixture_sha256: \${{ steps.windows-path-kind-build.outputs.hold_fixture_sha256 }}`);
     expect(workflow).toContain("      - name: Build Windows path helper and fixture\n        id: windows-path-kind-build\n");
     const restore = "        env:\n"
       + `          AVE_WINDOWS_PATH_KIND_SHA256: \${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}\n`
       + `          AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: \${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}\n`
+      + `          AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256: \${{ needs.windows-native-preparation.outputs.path_kind_hold_fixture_sha256 }}\n`
       + "        run: node .github/scripts/restore-windows-ci-inputs.mjs\n";
     expect(workflow.split(restore)).toHaveLength(3);
-    expect(readFileSync(resolve("scripts/build-windows-path-kind.mjs"), "utf8"))
-      .toContain(`binary_sha256=\${binarySha256}\\nreceipt_sha256=\${receiptSha256}\\n`);
+    const builder = readFileSync(resolve("scripts/build-windows-path-kind.mjs"), "utf8");
+    expect(builder).toContain(`binary_sha256=\${binarySha256}\\nreceipt_sha256=\${receiptSha256}\\n`);
+    expect(builder).toContain(`hold_fixture_sha256=\${holdFixtureSha256}\\n`);
   });
 });
 

@@ -827,6 +827,7 @@ jobs:
     outputs:
       path_kind_sha256: ${{ steps.windows-path-kind-build.outputs.binary_sha256 }}
       path_kind_receipt_sha256: ${{ steps.windows-path-kind-build.outputs.receipt_sha256 }}
+      path_kind_hold_fixture_sha256: ${{ steps.windows-path-kind-build.outputs.hold_fixture_sha256 }}
     env: &windows-validation-env
       # Keep bun's package cache and Electron's download cache in the
       # workspace, under the cache keys below.
@@ -1054,8 +1055,10 @@ jobs:
           name: windows-native-helpers
           path: |
             ave/resources/windows-job/x64/ave-job.exe
+            ave/resources/windows-job/x64/ave-job-query-failure.exe
             ave/resources/windows-path-kind/x64/ave-path-kind.exe
             ave/resources/windows-path-kind/x64/ave-path-kind.exe.build.json
+            ave/resources/windows-path-kind/x64/ave-path-kind-hold-fixture.exe
             ave/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/*/*.exe
             ave/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/*/build-receipt.json
             ave/src/permissions/generated/srt-win-build-receipts.*
@@ -1193,6 +1196,7 @@ jobs:
         env:
           AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
           AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
+          AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_hold_fixture_sha256 }}
         run: node .github/scripts/restore-windows-ci-inputs.mjs
       # The sandbox account and permissions are local to each runner.
       - *windows-provision
@@ -1216,6 +1220,7 @@ jobs:
           AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
           AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
           AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
+          AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_hold_fixture_sha256 }}
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1290,6 +1295,7 @@ jobs:
         env:
           AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
           AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
+          AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_hold_fixture_sha256 }}
         run: node .github/scripts/restore-windows-ci-inputs.mjs
       # The sandbox account and permissions are local to each runner.
       - *windows-provision
@@ -1310,6 +1316,7 @@ jobs:
           AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
           AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
           AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
+          AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_hold_fixture_sha256 }}
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave

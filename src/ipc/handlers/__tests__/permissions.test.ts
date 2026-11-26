@@ -164,7 +164,7 @@ describe("handleSetPermissionMode — rejected bypass does not short-circuit app
     // A rejected bypass must still enter the normal approval path and leave denied mutations unapplied.
     expect(approvalGate.requestAndWait).toHaveBeenCalledTimes(1);
     expect(permissionManager.setModePersist).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ ok: false, error: "durable-mode-denied" });
+    expect(result).toMatchObject({ ok: false, error: "approval-rejected" });
   });
 
   it("the in-app settings surface still gets a DURABLE change (unchanged local-UI trust context)", async () => {

@@ -6,7 +6,7 @@ use std::io::Read;
 
 const MAX_FRAME: usize = 1024 * 1024;
 const MAX_PATHS: usize = 2048;
-const MAX_REPLY: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_REPLY: usize = 8 * 1024 * 1024;
 const MAX_CONTENT: i64 = 1024 * 1024;
 
 fn parse_frame(input: &mut impl Read) -> Option<Vec<Vec<u16>>> {
@@ -201,6 +201,35 @@ fn framed_row_fits(output_size: usize, row_size: usize, first: bool) -> bool {
     output_size + row_size + punctuation + STDOUT_LINE_ENDING.len() <= MAX_REPLY
 }
 
+// The caller adds any extra fields and closes the object.
+fn path_row(facts: &[Facts], fits: impl Fn(usize) -> bool) -> Option<String> {
+    let (leaf, ancestors) = facts.split_last()?;
+    let mut row = facts_json(leaf);
+    row.pop();
+    row.push_str(",\"ancestors\":[");
+    for (position, ancestor) in ancestors.iter().enumerate() {
+        if position != 0 {
+            row.push(',');
+        }
+        row.push_str(&facts_json(ancestor));
+        if !fits(row.len()) {
+            return None;
+        }
+    }
+    row.push(']');
+    Some(row)
+}
+
+pub(crate) fn held_reply(facts: &[Facts], limit: usize) -> Option<String> {
+    let mut row = path_row(facts, |len| len + "[]}]\n".len() <= limit)?;
+    if row.len() + "[}]\n".len() > limit {
+        return None;
+    }
+    row.insert(0, '[');
+    row.push_str("}]\n");
+    Some(row)
+}
+
 fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
     let (mut parent, mut content, mut framed) = (false, false, false);
     let mut operands = args;
@@ -245,19 +274,10 @@ fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
             4_u8
         })?;
         let facts = pinned.facts.last().ok_or(4_u8)?;
-        let mut row = facts_json(facts);
-        row.pop();
-        row.push_str(",\"ancestors\":[");
-        for (position, ancestor) in pinned.facts[..pinned.facts.len() - 1].iter().enumerate() {
-            if position != 0 {
-                row.push(',');
-            }
-            row.push_str(&facts_json(ancestor));
-            if framed && !framed_row_fits(output.len(), row.len(), first) {
-                return Err(4);
-            }
-        }
-        row.push(']');
+        let mut row = path_row(&pinned.facts, |len| {
+            !framed || framed_row_fits(output.len(), len, first)
+        })
+        .ok_or(4_u8)?;
         if dacl {
             row.push_str(&context);
             let mut bytes = "null".into();
@@ -440,6 +460,38 @@ mod tests {
     fn framed_reply_rejects_the_first_byte_over_the_wire_budget() {
         assert!(!framed_row_fits(1, MAX_REPLY - 3, true));
         assert!(!framed_row_fits(128, MAX_REPLY - 131, false));
+    }
+
+    #[test]
+    fn held_reply_uses_pin_fields_and_counts_the_single_lf() {
+        let row = |path: &str| Facts {
+            exists: Some(true),
+            canonical: ascii(path),
+            tag: Tag {
+                attributes: DIRECTORY,
+                reparse: 0,
+            },
+            ..Facts::default()
+        };
+        let root = row(r"C:\");
+        let parent = row(r"C:\parent");
+        let leaf = row(r"C:\parent\leaf");
+        let expected = format!(
+            "[{},\"ancestors\":[{},{}]}}]\n",
+            facts_json(&leaf).trim_end_matches('}'),
+            facts_json(&root),
+            facts_json(&parent)
+        );
+        let rows = [root, parent, leaf];
+        assert_eq!(
+            held_reply(&rows, expected.len()).as_deref(),
+            Some(expected.as_str())
+        );
+        assert!(held_reply(&rows, expected.len() - 1).is_none());
+
+        let root_only = held_reply(&rows[..1], MAX_REPLY).unwrap();
+        assert!(root_only.ends_with(",\"ancestors\":[]}]\n"));
+        assert!(held_reply(&rows[..1], root_only.len() - 1).is_none());
     }
 
     #[test]

@@ -751,11 +751,42 @@ over-limit input before expensive result serialization. The cap is global;
 there is no separate per-command word allowance. Separators and operators are
 bounded by the character cap. General structural parsing retains its existing
 safety limits. The independent path-evidence pass uses the same complete-input
-400-record budget, including executed nested literal code. Exhausting a parser
-or evidence safety limit is an admission denial (`shell-analysis-limit`), not an
-approvable card. The 2,000-character reusable-rule limit alone does not stop
-path evidence collection or create a forced floor. Ordinary runtime opacity
-within the safety budget continues through the mode stage.
+400-record budget, including executed nested literal code. With a saved
+PowerShell deny rule, an over-limit or unreadable PowerShell command is refused
+at admission in every mode. The fallback reason is `shell-analysis-limit` when
+no conclusive deny or earlier admission check has supplied the result. The
+refusal produces no ask-rule evidence and offers no review or approval. Without
+a saved PowerShell deny, an over-limit command reaches the analysis-limit floor
+when other admission and deny checks pass. Unreadable syntax within the limit
+continues through the ordinary decision pipeline.
+
+When a shell command reaches the analysis-limit floor, both contained and host
+routes require one-time human approval in every mode. The floor offers no
+session grant, and headless requests are denied. The card displays the full
+command and states that the portion past the limit was unchecked. One approval
+covers the whole command. The shell tool's own re-check accepts that verdict. The
+2,000-character reusable-rule limit alone does not stop path evidence
+collection or create a forced floor. Ordinary runtime opacity within the safety
+budget continues through the mode stage.
+
+On an unsandboxed host shell a `cd` may fail when the command runs: its
+directory can be missing, removed or replaced by a link by then. The path check
+therefore follows both outcomes of each such `cd`, the shell staying where it
+was and the shell having moved, and checks every later relative operand against
+each. In the Windows host POSIX shell a removed working directory keeps
+resolving relative operands lexically
+from its old path, and a later `cd` from there may land anywhere, so every
+`cd` that is not to an ancestor of the current directory is followed both
+ways, inside a failed branch too. A branch that `|| exit`, `set -e` or
+`exit` ends is not followed. When the command leaves its starting directory
+through a failed branch, the branch ends there if an ask comes before every
+command on that route anyway; with the sandbox off, and for a command the
+agent sends to the user's own host terminal, nothing asks first, so the branch goes on
+and checks its writes. Exhausting the branch budget leaves the command unproven, and the mode answers
+it as for other runtime opacity; when the path-evidence pass also runs out of
+budget, the analysis-limit rule above applies instead. A
+session's working directory moves to the directory a run reports only when
+that run exits 0; any other run leaves it where it was.
 
 Quoted literal data is retained as an original source slice. The lexer scans
 it only to locate its terminator lines; it does not turn body contents into
@@ -1634,10 +1665,65 @@ before the user command, then waits for the host's final policy grant on a
 private pipe. The prelude reports guard failure through that pipe and closes it
 before user code runs. The host maps guard failure to the revocation error;
 ordinary command output and exit status, including 197, remain intact. Native
-Windows shell routes use the physical spawn path but lack a child-side identity
-check; directory rename/replacement after the host check remains a limitation
-on that platform. Their final policy validation and native spawn share the same
-serial queue.
+Windows children reopen their cwd by path and get no child-side check. Instead,
+a permit-bearing Windows Bash or PowerShell launch, on every route (plain host,
+background, Windows sandbox and container wrappers), holds the approved
+directory and every ancestor open without delete sharing, from before the final
+check until the run's verdict. A helper process owns those handles and the only
+handle to a kill-on-close job. The job launcher is always the host's direct
+child. The binding rests on a private channel the host relays between the two
+processes it started. The host checks that the first request names its
+launcher's PID. The helper admits that process to its job after the process
+signals an event duplicated into it. The launcher then runs the command in its own
+nested job. A helper that is gone refuses the launch before the command runs,
+and a helper that exits stops the whole tree through the OS. Neither job
+allows breakaway, so a wrapper (sandbox runner or container) and its payload
+stay in the job. The verdict comes only from the launcher, which runs inside
+the hold job and so sees both a lost pin and the reap. When the root exits or
+the host asks it to stop, it terminates its job, proves it empty, asks the
+helper to recheck the held chain (the leaf reopened without following links
+must keep its file id and not be a reparse point), writes one record on a
+private handle and exits: `ok` with the command's exit code, `lost` (exit 125)
+when the hold was refused or the directory changed, or `unconfirmed` (exit
+125). The launcher bounds its own admission and teardown at 10 seconds each.
+The host publishes a held run's result only after the launcher has exited and
+reports exactly that record when it matches the exit code. Everything else
+(a spawn error, a route error, a missing or garbled record, a launcher that
+went with the job or never exits) is the single fail-closed result
+`cwd-pin-unconfirmed`; it is never reported as reaped and never as the
+command's code. Cancellation, timeout, background stop and session teardown ask
+the launcher to stop by closing its input. Application quit does so for every
+held launcher. Foreground and background launchers are registered when bound
+and remain owned until exit is observed or the process is known to have never
+started. A 15-second deadline starts at the stop request.
+When it expires, the host closes the helper, the OS stops the tree, and the
+result is `cwd-pin-unconfirmed`. Conversation deletion waits at most 15 seconds
+for shell cleanup and returns `shell-cleanup-unproven` while launcher exit is
+unproven. The conversation is kept and deletion can be retried after exit.
+If app shutdown cuts the wait short, it records
+pending runs as unconfirmed before the generic child kill. A lost
+or unconfirmed verdict fails the run with a trusted `cwd-pin-lost` or
+`cwd-pin-unconfirmed` reason carried outside the output (even after exit code
+0; it is not cut by output truncation, and an interrupted call keeps it after
+its own detail cut), and a command's own exit 125 stays its own. A background
+run keeps its verdict until a read or stop has delivered it. A refused pinned
+start fails the run and is never retried unpinned.
+Descendants still running when the root exits are stopped, and the result says
+so. Terminal tabs and launches without a permit are not held, and their
+processes in a held directory keep running. The host also refuses before
+spawn when the hold cannot be taken, no longer matches the approved identity,
+or has been observed lost. While held, rename, delete and share-checked opens
+that omit read sharing can be refused on the leaf and its ancestors. The plain
+route has a same-user handle duplication residual in the pins-only class. A
+same-user command can duplicate the event or verdict handle out of the launcher.
+Container payloads are denied access to the launcher process. With pins only
+and no child-side proof, a held leaf whose contents can be
+removed can still become a junction in place and be restored before the reap
+check; processes started through a system service (for example a scheduled
+task or WMI) are outside the job. On the plain
+host routes, final policy validation and native spawn share the same serial
+queue. The sandbox and container routes run their own synchronous identity and
+hold checks immediately before spawn.
 
 A sandbox requested but unavailable carries `fallbackReason: "requested-sandbox-unavailable"`
 and `sandboxed: false` in its host execution plan. The card, model environment

@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync, readdirSync, renameSync, statSync, utimesSyn
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { assertWindowsPathKindArtifactDigests, verifyWindowsPathKindReceipt, windowsPathKindPath, windowsPathKindReceiptPath } from "../../scripts/lib/windows-path-kind-build.mjs";
+import { assertWindowsPathKindArtifactDigests, verifyWindowsPathKindReceipt, windowsPathKindHoldFixturePath, windowsPathKindPath, windowsPathKindReceiptPath } from "../../scripts/lib/windows-path-kind-build.mjs";
 import { windowsJobLauncherPath } from "../../scripts/prepare-windows-job.mjs";
 
 const { RUNNER_TEMP: temp, GITHUB_ENV: env } = process.env;
@@ -16,8 +16,10 @@ const vendor = "node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win";
 const launcher = windowsJobLauncherPath();
 const helpers = [
   launcher,
+  join(dirname(launcher), "ave-job-query-failure.exe"),
   windowsPathKindPath(process.arch),
   windowsPathKindReceiptPath(process.arch),
+  windowsPathKindHoldFixturePath(process.arch),
   ...Object.keys(TARGETS).flatMap(arch => ["upstream-srt-win.exe", "srt-win.exe", "build-receipt.json"]
     .map(file => join(vendor, arch, file))),
   ...["js", "json"].map(extension => `src/permissions/generated/srt-win-build-receipts.${extension}`),
@@ -25,6 +27,7 @@ const helpers = [
 assertWindowsPathKindArtifactDigests(".windows-native-inputs", process.arch, {
   binarySha256: process.env.AVE_WINDOWS_PATH_KIND_SHA256,
   receiptSha256: process.env.AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256,
+  holdFixtureSha256: process.env.AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256,
 });
 for (const file of helpers) {
   const source = join(".windows-native-inputs", file);

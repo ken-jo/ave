@@ -124,6 +124,46 @@ function reviewer() {
 }
 
 describe("native invocation permission evidence", () => {
+  it.each(["scope", "scope-before-stop", "stop-before-scope"] as const)("cancels a directory card with the first settlement (%s)", async (order) => {
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    manager.setMode("default");
+    const turn = new AbortController();
+    const grant = vi.fn();
+    const execute = vi.spyOn(writeTool, "execute");
+    const cardSeen = vi.fn();
+    const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel: string, card: ApprovalRequest) => {
+      if (channel !== IPC_APPROVAL_REQUEST) return;
+      cardSeen(card.kind);
+      queueMicrotask(() => {
+        const cancelScope = () => gate.cancelPendingRequest(card.id, sessionId, "project-scope-changed");
+        if (order === "stop-before-scope") turn.abort();
+        expect(cancelScope()).toBe(order !== "stop-before-scope");
+        if (order === "scope-before-stop") turn.abort();
+      });
+    } } as never);
+    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
+    const path = join(root, "cancelled-folder.txt");
+    const rows = vi.spyOn(audit, "log");
+    const [result] = await subject.executeAll([
+      { id: "cancelled-folder", name: "write_file", input: { path, content: "do not write" } },
+    ], { sessionId, executionCwd: project, abortSignal: turn.signal,
+      permissionContext: { trustOrigin: "user-keyboard", additionalDirectories: [], onTurnDirectoryGrant: grant } });
+    expect(cardSeen).toHaveBeenCalledExactlyOnceWith("out-of-allowed-dir");
+    expect(turn.signal.aborted).toBe(order !== "scope");
+    const reason = order === "stop-before-scope" ? /user aborted turn/i : /project-scope-changed/;
+    expect.soft(result.is_error).toBe(true);
+    if (order === "stop-before-scope") expect.soft(result.content).not.toContain("project-scope-changed");
+    else expect.soft(result.content).toContain("project-scope-changed");
+    const terminal = (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map(line => JSON.parse(line)).at(-1);
+    expect.soft(terminal).toMatchObject({ toolUseId: "cancelled-folder", decision: "deny", terminalKind: "cancelled",
+      trustOrigin: order === "stop-before-scope" ? "user-keyboard" : "unknown",
+      denyReasons: [expect.objectContaining({ reason: expect.stringMatching(reason) })] });
+    expect(rows).toHaveBeenCalledWith(expect.objectContaining({ type: "tool_call",
+      toolCalls: [expect.objectContaining({ permissionDecision: "cancelled", permissionReason: expect.stringMatching(reason) })] }));
+    expect(grant).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("offers a session folder grant that covers siblings only in that session", async () => {
     await audit.setupPermissionAuditChain("aa".repeat(32));
     manager.setMode("default");
@@ -999,6 +1039,7 @@ describe("native invocation permission evidence", () => {
     ["stop-while-open", "cancelled"],
     ["deny-then-coordinator-stop", "denied"],
     ["deny-then-turn-stop", "denied"],
+    ["scope-then-turn-stop", "cancelled"],
   ] as const)("records one %s rationale decision as %s", async (source, kind) => {
     await audit.setupPermissionAuditChain("aa".repeat(32));
     manager.setMode("auto");
@@ -1044,7 +1085,8 @@ describe("native invocation permission evidence", () => {
       if (source === "headless") {
         await expect(coordinator.promptForApproval(ticketId)).resolves.toMatchObject({ outcome: "denied" });
       } else {
-        const stop = source === "deny-then-turn-stop" ? turn : coordinatorStop;
+        const scopeFirst = source === "scope-then-turn-stop";
+        const stop = source === "deny-then-turn-stop" || scopeFirst ? turn : coordinatorStop;
         const pending = coordinator.promptForApproval(ticketId, { abortSignal: stop.signal });
         await vi.waitFor(() => expect(cards).toHaveLength(1));
         const [card] = cards;
@@ -1055,9 +1097,17 @@ describe("native invocation permission evidence", () => {
           }, contents as never)).toMatchObject({ choice: "deny-once" });
           settledDenialReason = card.reason;
         }
+        if (scopeFirst) expect(gate.cancelPendingRequest(card.id, sessionId, "project-scope-changed")).toBe(true);
         stop.abort();
-        expect(turn.signal.aborted).toBe(source === "deny-then-turn-stop");
-        await expect(pending).resolves.toBeNull();
+        expect(turn.signal.aborted).toBe(source === "deny-then-turn-stop" || scopeFirst);
+        if (scopeFirst) {
+          await expect.soft(pending).resolves.toMatchObject({ outcome: "cancelled", approvalOutcome: "cancelled", reason: expect.stringContaining("project-scope-changed") });
+          expect(gate.pendingCount).toBe(0);
+        } else if (kind === "denied") {
+          await expect(pending).resolves.toMatchObject({ outcome: "denied", approvalOutcome: "denied" });
+        } else {
+          await expect(pending).resolves.toBeNull();
+        }
       }
     }
     const readRows = async () => (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n")
@@ -1072,7 +1122,8 @@ describe("native invocation permission evidence", () => {
       ...(settledDenialReason !== undefined ? { trustOrigin: "user-keyboard" } : {}),
       denyReasons: [expect.objectContaining({ reason: settledDenialReason ?? (source === "headless"
         ? "Nobody can approve this request; do not retry."
-        : "The permission request was stopped; the action was not executed.") })],
+        : source === "scope-then-turn-stop" ? "approval cancelled: project-scope-changed"
+          : "The permission request was stopped; the action was not executed.") })],
     })]);
     const [row] = rows;
     if (row === undefined) throw new Error("Expected a terminal audit row");

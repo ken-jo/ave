@@ -624,8 +624,8 @@ for (const plan of [undefined, "config/alternate.json"]) {
 }
 
 for (const job of ["windows-permission-tests", "windows-tier-tests"]) {
-  it(`${job} requires both path helper digests from the producing job`, () => {
-    for (const variable of ["AVE_WINDOWS_PATH_KIND_SHA256", "AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256"]) {
+  it(`${job} requires the path helper and hold fixture digests from the producing job`, () => {
+    for (const variable of ["AVE_WINDOWS_PATH_KIND_SHA256", "AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256", "AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256"]) {
       const changed = changedWorkflow((_steps, get) => {
         get("Run Windows regressions").env[variable] = "independent digest required";
       }, job);

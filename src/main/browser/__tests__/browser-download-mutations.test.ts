@@ -72,7 +72,11 @@ function nativeViolations(path: string, text: string): string[] {
     }
   }
   for (const [rule, pattern] of NATIVE_RULES) {
-    for (const match of bare.matchAll(pattern)) violations.push(`${path}: ${rule}: ${lineOf(bare, match.index)}`);
+    for (const match of bare.matchAll(pattern)) {
+      // The job limit configures process lifetime and takes no file handle.
+      if (path === "native/windows-path-kind/src/hold.rs" && match[0] === "SetInformationJobObject") continue;
+      violations.push(`${path}: ${rule}: ${lineOf(bare, match.index)}`);
+    }
   }
   return violations;
 }

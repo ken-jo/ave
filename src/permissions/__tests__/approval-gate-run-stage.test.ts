@@ -3,6 +3,10 @@ import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from ".
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";
 import { endRun, registerRunSession, setRunSessionParentResolver, __resetRunGrantsForTest } from "../run-grants.js";
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
+import { requestBoundShellCard } from "../../__tests__/support/host-shell-approval.js";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
+
+withSourceHostResources();
 
 const RUN = "work-board:7#run-a";
 const PROJECT = process.platform === "win32" ? "C:\\workspace\\project" : "/workspace/project";
@@ -77,7 +81,7 @@ describe("per-stage approval lanes (one lane per stage session, nothing batched)
     registerRunSession("work-board:9#run-s", "scheduled-session", { stageId: "report", stageName: "Report", lane: "unattended" });
     const { gate, sent } = fixture();
     const offered = (request: ApprovalRequestInput) => {
-      void gate.requestAndWait(request);
+      void requestBoundShellCard(gate, request, process.cwd());
       return sent().at(-1)?.runStage?.runAllowOffered;
     };
     expect(offered(card("ordinary", "plan-session"))).toBe(true);

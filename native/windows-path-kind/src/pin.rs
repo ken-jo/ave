@@ -234,6 +234,39 @@ pub fn redirects(tag: Tag) -> bool {
 
 pub fn pin(input: &[u16], content: bool) -> Option<PinnedPath> {
     let components = components(input)?;
+    pin_components(&components, content, false)
+}
+
+pub fn hold(input: &[u16]) -> Option<(PinnedPath, Vec<u16>)> {
+    let mut components = components(input)?;
+    let pinned = pin_components(&components, false, true)?;
+    let leaf = pinned.facts.last()?;
+    if pinned.handles.len() != components.len() || leaf.tag.attributes & DIRECTORY == 0 {
+        return None;
+    }
+    Some((pinned, components.pop()?))
+}
+
+pub fn leaf_still_pinned(pinned: &PinnedPath, leaf: &[u16]) -> bool {
+    verify(pinned)
+        && open_root(leaf, READ_ATTRIBUTES, SHARE_ALL)
+            .and_then(|handle| read_facts(handle.raw()))
+            .is_ok_and(|current| {
+                pinned
+                    .facts
+                    .last()
+                    .is_some_and(|issued| current.id == issued.id)
+                    && current.tag.attributes & REPARSE == 0
+            })
+}
+
+fn pin_components(components: &[Vec<u16>], content: bool, hold: bool) -> Option<PinnedPath> {
+    // Hold permits writes and traversal while denying delete sharing on every component.
+    let (access, share) = if hold {
+        (TRAVERSE, SHARE_READ | SHARE_WRITE)
+    } else {
+        (0, SHARE_READ)
+    };
     let mut pinned = PinnedPath {
         handles: vec![],
         facts: vec![],
@@ -249,15 +282,16 @@ pub fn pin(input: &[u16], content: bool) -> Option<PinnedPath> {
             continue;
         }
         let last = index + 1 == components.len();
-        let access = READ_ATTRIBUTES | READ_CONTROL | if content && last { READ_DATA } else { 0 };
+        let access =
+            access | READ_ATTRIBUTES | READ_CONTROL | if content && last { READ_DATA } else { 0 };
         let opened = if index == 0 {
-            open_root(component, access, SHARE_READ)
+            open_root(component, access, share)
         } else {
             open_relative(
                 pinned.handles.last()?.raw(),
                 child_name(&components[index - 1], component),
                 access,
-                SHARE_READ,
+                share,
                 OPEN,
                 OPEN_REPARSE | BACKUP,
                 null_mut(),
@@ -295,6 +329,23 @@ pub fn pin(input: &[u16], content: bool) -> Option<PinnedPath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::windows::ffi::OsStrExt;
+
+    #[test]
+    fn hold_refuses_missing_paths_and_files_and_rechecks_the_issued_directory() {
+        let current = std::env::current_dir().unwrap();
+        let wide = |path: &std::path::Path| path.as_os_str().encode_wide().collect::<Vec<_>>();
+        let (held, leaf) = hold(&wide(&current)).unwrap();
+        assert!(leaf_still_pinned(&held, &leaf));
+        assert!(hold(&wide(&current.join("Cargo.toml"))).is_none());
+        assert!(!leaf_still_pinned(
+            &held,
+            &wide(&current.join("Cargo.toml"))
+        ));
+        assert!(hold(&wide(&current.join("missing").join("directory"))).is_none());
+        assert!(open_root(&leaf, DELETE, SHARE_ALL).is_err());
+        assert!(open_root(&leaf, WRITE_DATA, SHARE_ALL).is_ok());
+    }
 
     #[test]
     fn unc_root_preserves_the_separator_after_the_share() {

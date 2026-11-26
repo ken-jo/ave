@@ -1,11 +1,13 @@
 import type { UserOwnedSurfaceChoice } from "../../shared/permissions-events.js";
-import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
+import { NO_APPROVER_MESSAGE, SHELL_ANALYSIS_LIMIT_REASON } from "../../permissions/decision-pipeline.js";
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFileSync, realpathSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
+import { answeredApprovalDecision } from "../../__tests__/support/answering-approval-gate.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
@@ -13,6 +15,7 @@ import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/ter
 import { TerminalBlockTracker, registerTerminalBlockTracker, __resetTerminalBlocksForTest } from "../../main/terminal/terminal-blocks.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import * as terminalWriteAuthority from "../../permissions/host-terminal-write-authority.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { formatRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { ToolExecutor } from "../executor.js";
@@ -41,10 +44,11 @@ afterEach(async () => {
   await resources.cleanup();
 });
 
-async function fixture(options: { outside?: boolean; mode?: "default" | "strict"; exactRule?: boolean; holdFinalizer?: boolean; surfaceChoice?: UserOwnedSurfaceChoice; logicalReview?: () => Promise<{ consistent: boolean; reason: string }>; headless?: boolean; turnGrant?: boolean } = {}) {
+async function fixture(options: { outside?: boolean; mode?: "default" | "strict"; exactRule?: boolean; holdFinalizer?: boolean; surfaceChoice?: UserOwnedSurfaceChoice; logicalReview?: () => Promise<{ consistent: boolean; reason: string }>; headless?: boolean; command?: string; turnGrant?: boolean } = {}) {
   const root = realpathSync(resources.makeTmpDir("ave-late-terminal-"));
   const outside = realpathSync(resources.makeTmpDir("ave-terminal-outside-"));
-  const command = options.outside ? `printf ready > ${shellQuote(join(outside, "output.txt"))}` : COMMAND;
+  mkdirSync(join(root, "sub"));
+  const command = options.command ?? (options.outside ? `printf ready > ${shellQuote(join(outside, "output.txt"))}` : COMMAND);
   const manager = new PermissionManager(join(root, "permissions.json"));
   manager.setMode(options.mode ?? "auto");
   if (options.holdFinalizer !== false) manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "allow");
@@ -135,6 +139,47 @@ async function fixture(options: { outside?: boolean; mode?: "default" | "strict"
 beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("host terminal late native approval", () => {
+  it.each(["deny", "allow"] as const)("rechecks a tainted late answer across a synthetic same-card transition: %s", async current => {
+    const f = await fixture();
+    const denial = "Current permission refuses the terminal command.";
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "late-waiver-turn" }, async () => {
+      const pending = f.run();
+      await f.reached;
+      noteToolResultsReturnedToModel();
+      f.release();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1), CARD_WAIT);
+      const card = f.cards[0];
+      if (!card) throw new Error("No tainted late card");
+      expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
+      expect(card.shellRule).toBeUndefined();
+      // This card offers no waiver. Inject the transition to isolate the answer recheck.
+      const token = f.gate.beginApprovalRuleSave(card.id, f.manager.getPolicyEpoch());
+      f.manager.addFloorSessionGrant(SESSION_ID, { code: "sandbox-unavailable" });
+      f.gate.completeApprovalRuleSave(token, f.manager.getPolicyEpoch(), "session");
+      const transition = vi.spyOn(f.gate, "allowsPolicyTransition");
+      const issueWriteAuthority = vi.spyOn(terminalWriteAuthority, "issueHostTerminalWriteAuthority");
+      const check = f.manager.checkDetailed.bind(f.manager);
+      if (current === "deny") {
+        vi.spyOn(f.manager, "checkDetailed").mockImplementation((name, source, category, origin, context) =>
+          check(name, source, category, origin, {
+            ...context, admissionDenial: { code: "policy-changed", reason: denial },
+          }));
+      }
+      f.approve(card, true);
+      const [result] = await pending;
+      expect(transition).toHaveReturnedWith(true);
+      if (current === "deny") {
+        expect(result).toMatchObject({ is_error: true, content: denial });
+        expect(f.typed).toEqual([]);
+        expect(issueWriteAuthority).not.toHaveBeenCalled();
+      } else {
+        expect(result.is_error, result.content).toBeFalsy();
+        expect(f.typed).toEqual([COMMAND]);
+      }
+      expect(f.cards).toEqual([card]);
+    });
+  });
+
   it.each(["native", "non-native", "tainted"] as const)("rechecks a changed surface choice or taint before late native authority: %s", async kind => {
     const f = await fixture();
     await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "initial-turn" }, async () => {
@@ -296,6 +341,43 @@ describe("host terminal late native approval", () => {
       expect(result.is_error, result.content).toBeFalsy();
       expect(f.typed).toEqual([f.command]);
       expect(f.cards).toHaveLength(1);
+    });
+  });
+
+  it("checks a relative write against the directory a failed cd leaves the user's shell in", async () => {
+    const f = await fixture({ command: "cd sub; printf ready > ../output.txt", mode: "strict", exactRule: false, holdFinalizer: false });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "cd-fault-turn" }, async () => {
+      const pending = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1), CARD_WAIT);
+      expect(f.cards[0]?.kind).toBe("out-of-allowed-dir");
+      expect(f.typed).toEqual([]);
+      f.deny(f.cards[0]);
+      await pending;
+      expect(f.typed).toEqual([]);
+    });
+  });
+
+  it.each([false, true])("asks a human once for exhausted path analysis, with a pending mode change of %s", async (changeMode) => {
+    const command = Array.from({ length: 7 }, (_, index) => `if test -f q${index}; then v${index}=1; fi`).join("; ");
+    const f = await fixture({ command, mode: "default", exactRule: false, holdFinalizer: false });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "analysis-limit-turn" }, async () => {
+      const pending = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1), CARD_WAIT);
+      expect(f.cards[0]?.reason).toContain(SHELL_ANALYSIS_LIMIT_REASON);
+      expect(f.cards[0]?.reasonCode).toBe("shell-analysis-limit");
+      expect(f.cards[0]?.allowedChoices).toEqual(["allow-once", "deny-once"]);
+      expect(f.typed).toEqual([]);
+      if (changeMode) f.manager.setMode("allow");
+      f.approve(f.cards[0], true);
+      const [result] = await pending;
+      if (changeMode) {
+        expect(result.is_error).toBe(true);
+        expect(result.content).toContain("Permission policy changed while approval was pending");
+      } else {
+        expect(result.is_error, result.content).toBeFalsy();
+      }
+      expect(f.cards).toHaveLength(1);
+      expect(f.typed).toEqual(changeMode ? [] : [command]);
     });
   });
 
@@ -540,6 +622,29 @@ describe("one terminal row per surface invocation", () => {
     });
   });
 
+  it.each([false, true])("records a late host refusal or cancellation (cancelled=%s)", async (cancelled) => {
+    const f = await fixture({ surfaceChoice: "auto" });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "late-host-refusal-turn" }, async () => {
+      const pending = f.run();
+      await f.reached;
+      await f.pause();
+      f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "ask");
+      if (!cancelled) f.request.mockImplementationOnce(async request => ({ requestId: request.id, choice: "deny-once" }));
+      f.release();
+      if (cancelled) {
+        await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+        f.gate.disposeAll();
+      }
+      const [result] = await pending;
+      expect(result).toMatchObject({ is_error: true, content: cancelled ? t("be_executor.toolExecutionCancelled")
+        : t("be_executor.approvalRejectedByHost", { name: "terminal_run", reason: t("be_executor.approvalHostRejectedReason") }) });
+      expect(f.typed).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({
+        decision: "deny", trustOrigin: "unknown", terminalKind: cancelled ? "cancelled" : "denied",
+      })]);
+    });
+  });
+
   it("records a late deny on the review fallback card as the desk's", async () => {
     const logical = vi.fn(async () => ({ consistent: true, reason: "The command follows the current task." }));
     const f = await fixture({ logicalReview: logical, surfaceChoice: "auto" });
@@ -609,6 +714,43 @@ describe("one terminal row per surface invocation", () => {
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
       expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
+    });
+  });
+
+  // The gate's own record for this very call, of an answer to a card it never raised for it.
+  const foreignAnswer = (choice: "allow-once" | "deny-once") => () => answeredApprovalDecision({ choice }, "desk", "terminal_run", "late-terminal-command");
+  const hostIntegrityRow = [expect.objectContaining({ decision: "deny", trustOrigin: "unknown",
+    denyReasons: [expect.objectContaining({ reason: expect.stringContaining("Approval answer does not match the pending request") })] })];
+
+  it.each(["allow-once", "deny-once"] as const)("refuses a review fallback %s the gate settled for another card as the host's", async choice => {
+    const f = await fixture({ exactRule: false, holdFinalizer: false, surfaceChoice: "auto", logicalReview: inconsistent });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "fallback-foreign-turn" }, async () => {
+      const pending = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      f.request.mockImplementationOnce(foreignAnswer(choice));
+      f.approve(f.cards[0], true);
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(f.cards).toHaveLength(1);
+      expect(terminalRows(f.audit)).toEqual(hostIntegrityRow);
+    });
+  });
+
+  it.each(["allow-once", "deny-once"] as const)("refuses a late %s the gate settled for another card as the host's", async choice => {
+    const f = await fixture({ surfaceChoice: "auto" });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "late-foreign-turn" }, async () => {
+      const pending = f.run();
+      await f.reached;
+      await f.pause();
+      f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "ask");
+      f.request.mockImplementationOnce(foreignAnswer(choice));
+      f.release();
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(f.cards).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual(hostIntegrityRow);
     });
   });
 

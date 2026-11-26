@@ -1,32 +1,47 @@
+import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
+import { openPendingAnswerCard, type PendingAnswerCard, personAnswerStands, saveStandingAnswerRule } from "../../../permissions/pending-answer-policy.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
-import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
-import { configureHostResources } from "../../../main/host-resources.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../../__tests__/support/source-host-resources.js";
 import { AuditLogger } from "../../../audit/audit-logger.js";
+import { t } from "../../../i18n/runtime.js";
+import { makeSubAgentApprovalAdapter } from "../../../engine/subagent-runner.js";
+import { terminalSessionFixture } from "../../../__tests__/support/terminal-session-fixtures.js";
+import { TERMINAL_TEST_NONCE, terminalMarker } from "../../../__tests__/support/terminal-markers.js";
 import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
+import { __resetTerminalBlocksForTest, registerTerminalBlockTracker, TerminalBlockTracker } from "../../../main/terminal/terminal-blocks.js";
 import { PermissionTestResources } from "../../../permissions/__tests__/test-resources.js";
-import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput, IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
+import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput, IPC_APPROVAL_REQUEST, IPC_APPROVAL_SETTLED } from "../../../permissions/approval-gate.js";
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
+import { createApprovalGateEgressRequester } from "../../../permissions/egress-approval.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../../../permissions/judge/judge-settings.js";
-import { PermissionManager } from "../../../permissions/permission-manager.js";
+import * as terminalWriteAuthority from "../../../permissions/host-terminal-write-authority.js";
+import { PermissionManager, type PermissionCheckResult } from "../../../permissions/permission-manager.js";
+import { matchesProjectRuleRootBinding, projectRulesLocation } from "../../../permissions/rules/project-rule-files.js";
+import { captureShellWorkingDirectoryIdentity } from "../../../permissions/shell-working-directory-identity.js";
 import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
 import { LlmRiskClassifier, type LlmReviewerProvider, type RiskVerdict } from "../../../permissions/reviewer/risk-classifier.js";
 import { LlmApprovalSentenceSelector } from "../../../permissions/reviewer/approval-sentence-selector.js";
 import * as approvals from "../../../permissions/user-approval-store.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { _resetAveHomePrivacyForTest, setAveHomeConfigurationRefusedAtBoot } from "../../../shared/ave-home.js";
+import * as homeTrust from "../../../shared/ave-home-trust.js";
 import { HOME_FOLDER_REFUSED } from "../../../shared/permissions-events.js";
 import { consumeHostShellExecutionPermitForSpawn, canonicalizeHostShellAllowedDirectories, resolveHostShellWorkingDirectory } from "../../../permissions/host-shell-execution-permit.js";
 import { parseHostShellExecutionInput } from "../../../permissions/host-shell-execution-plan.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot, setWindowsSandboxSubstrate } from "../../../permissions/sandbox-capability.js";
 import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../../boot/steps/windows-sandbox-plan.js";
 import { ToolExecutor } from "../../../tools/executor.js";
+import { noteOtherPrincipalGuidance, runWithHostTerminalTurn } from "../../../tools/host-terminal-turn.js";
+import * as invocationExecution from "../../../tools/invocation-execution.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { BashTool } from "../../../tools/shell-tools.js";
+import { createTerminalRunTool } from "../../../tools/terminal-run.js";
 import { makeWriteProbeTool } from "../../../tools/__tests__/approval-memory-test-fixtures.js";
 import { userPermissionContext } from "../../../tools/__tests__/tool-context-fixture.js";
 import { UNAUTHORIZED_FRAME } from "../../gated.js";
@@ -47,9 +62,9 @@ async function closeFixtures() {
   for (const close of cleanup.splice(0)) await close();
 }
 
-beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 afterEach(async () => {
   await closeFixtures();
+  __resetTerminalBlocksForTest();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
   __resetWindowsSandboxSubstrateForTest();
@@ -188,7 +203,7 @@ async function subject(mode: "auto" | "default" = "auto") {
     });
     return { reached: reached.promise, release: held.resolve };
   };
-  const queueCard = (overrides: Partial<ApprovalRequestInput> = {}) => {
+  const queueCard = (overrides: Partial<ApprovalRequestInput> = {}, card?: PendingAnswerCard, requestGate = gate) => {
     const request: ApprovalRequestInput = {
       id: randomUUID(), sessionId: SESSION_ID, category: "tool", kind: "tool", toolName: "write_probe", toolCategory: "write",
       source: "builtin", trustOrigin: "user-keyboard", args: { path: join(root, "remembered.txt") }, reason: "manual review", createdAt: Date.now(),
@@ -199,12 +214,299 @@ async function subject(mode: "auto" | "default" = "auto") {
       }),
       ...overrides,
     };
-    return { request, result: track(gate.requestAndWait(request)) };
+    return { request, result: track(requestBoundShellCard(requestGate, request, root, card)) };
   };
   return { root, audit, auditLog, windowA, windowB, gate, manager, registry, executeAll, execute, complete, selectComplete, pause, start, cards, waitForCard, hold, holdNextPreToolUse, queueCard, setOwner: (next: AppWindow | undefined) => { owner = next; } };
 }
 
 describe("live native approval ownership", () => {
+  async function terminalFloorSubject() {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    setShellSandboxRequestedAtBoot(true);
+    f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "allow");
+    const cwd = join(f.root, "workspace", "work");
+    mkdirSync(cwd, { recursive: true });
+    const windowId = 101;
+    const terminal = terminalSessionFixture("terminal:0000c0de-1", "manual");
+    const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
+    tracker.recordOutput(`${terminalMarker("D;0")}${terminalMarker(`P;Cwd=${cwd};Keys=emacs;Paste=1`)}${terminalMarker("A")}% ${terminalMarker("B")}`);
+    registerTerminalBlockTracker(terminal, tracker, windowId);
+    const write = vi.fn();
+    f.registry.register(createTerminalRunTool({
+      windowIdForHostedSession: sessionId => sessionId === SESSION_ID ? windowId : null,
+      liveOriginSessionId: () => undefined,
+      boundSurface: () => ({ kind: "terminal", tabId: terminal.tabId }),
+      ensureConversationTerminal: async () => { throw new Error("Unexpected isolated terminal"); },
+      typeCommand: async () => { throw new Error("Unexpected isolated terminal write"); },
+      verifyShell: async () => { throw new Error("Unexpected isolated terminal verification"); },
+      auditMismatch: () => {},
+      host: {
+        session: () => terminal,
+        placement: () => "workspace",
+        shellName: () => "zsh",
+        control: () => ({ mode: "available", generation: 1, agentInput: "supported" }),
+        verifyShell: async (_ref, _window, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
+        typeCommand: async (_ref, _window, request) => {
+          const effect = await request.effectCheck();
+          if (!effect.ok) return { ok: false, reason: "effect-refused", message: effect.message };
+          const refusal = request.writeFence?.();
+          if (refusal !== undefined) return { ok: false, reason: "effect-refused", message: refusal };
+          write(request.line);
+          return { ok: true, firstBlockId: 1 };
+        },
+        waitDisclosure: async (_ref, _window, sessionId, turnId) => ({
+          requestingSessionId: sessionId, turnId, command: String(write.mock.lastCall?.[0]), cwd, blockId: 1,
+          state: "done", exitCode: 0, output: "ready", outputChars: 5, truncated: false,
+        }),
+      },
+    }));
+    const runTerminal = (turnId: string, command: string) =>
+      f.executeAll([{ id: turnId, name: "terminal_run", input: { command, waitSeconds: 0 } }], {
+        sessionId: SESSION_ID, executionCwd: cwd,
+        permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", additionalDirectories: [cwd] }),
+      });
+    const recordTerminalWaiver = (card: ApprovalRequest) => Promise.resolve(invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "session",
+      verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
+      rule: { action: "allow", scope: "session" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
+    }));
+    return { ...f, cwd, write, runTerminal, recordTerminalWaiver };
+  }
+
+  it.each(["deny", "allow", "changed forced question", "changed forced question, denied"] as const)("rechecks the original terminal command after saving its late floor waiver: %s", async current => {
+    const f = await terminalFloorSubject();
+    const frame = frameEvent(f.windowA);
+    const warmup = runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "initial-waiver" }, () =>
+      f.runTerminal("initial-waiver", "printf initial"));
+    const first = await f.waitForCard();
+    expect(await f.recordTerminalWaiver(first)).toEqual({ ok: true });
+    await invoke(PERMISSIONS.approvalRespond, frame, allowOnceCardAnswer(first));
+    expect((await warmup)[0]?.is_error).toBeFalsy();
+    expect(f.write.mock.calls).toEqual([["printf initial"]]);
+    f.write.mockClear();
+    const changed = current.startsWith("changed");
+    const command = changed ? "printf ready > output/result.txt" : "printf ready";
+    const outputDir = join(f.cwd, "output");
+    const protectedDir = join(f.cwd, ".vscode");
+    if (changed) {
+      mkdirSync(outputDir);
+      mkdirSync(protectedDir);
+    }
+
+    const reached = deferred<void>();
+    const held = f.hold();
+    const execute = invocationExecution.executeAuthorizedToolInvocation;
+    const admission = vi.spyOn(invocationExecution, "executeAuthorizedToolInvocation").mockImplementationOnce(context => execute({
+      ...context,
+      finalizeExecutionRouteGrant: async () => {
+        reached.resolve();
+        await held.promise;
+        return context.finalizeExecutionRouteGrant?.();
+      },
+    }));
+    const lateCard = deferred<ApprovalRequest>();
+    const freshCard = deferred<ApprovalRequest>();
+    f.windowA.webContents.send.mockImplementation((channel: string, card: ApprovalRequest) => {
+      if (channel !== IPC_APPROVAL_REQUEST) return;
+      if (f.cards(f.windowA).length === 2) lateCard.resolve(card);
+      else freshCard.resolve(card);
+    });
+    const transition = vi.spyOn(f.gate, "allowsPolicyTransition");
+    const issueWriteAuthority = vi.spyOn(terminalWriteAuthority, "issueHostTerminalWriteAuthority");
+    const turnId = "late-waiver";
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId }, async () => {
+      const pending = f.runTerminal(turnId, command);
+      const settledEarly = pending.then(result => { throw new Error(`Terminal command settled early: ${result[0]?.content}`); });
+      await Promise.race([reached.promise, lateCard.promise.then(() => { throw new Error("Approval card arrived before handler admission"); }), settledEarly]);
+      expect(admission.mock.calls[0]?.[0].permissionResult).toMatchObject({ decision: "allow", reasonCode: "floor-session-allow" });
+      expect(f.cards(f.windowA)).toEqual([first]);
+      // The existing waiver covers the floor only while the ordinary decision allows the command.
+      f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "ask");
+      held.resolve();
+
+      const card = await Promise.race([lateCard.promise, settledEarly]);
+      expect(card).toMatchObject({
+        args: { command },
+        allowedChoices: ["allow-once", "deny-once"],
+        shellRule: { floorSessionOnly: true, sessionAllowed: true },
+      });
+      expect(issueWriteAuthority).not.toHaveBeenCalled();
+      expect(f.write).not.toHaveBeenCalled();
+      const openedEpoch = f.manager.getPolicyEpoch();
+      expect(await f.recordTerminalWaiver(card)).toEqual({ ok: true });
+      // The waiver is held until the owner judges the answer.
+      expect(f.manager.getPolicyEpoch()).toBe(openedEpoch);
+      if (current === "deny") noteOtherPrincipalGuidance();
+      if (changed) {
+        renameSync(outputDir, join(f.cwd, "former-output"));
+        symlinkSync(protectedDir, outputDir, "junction");
+      }
+      if (current === "changed forced question, denied") {
+        await invoke(PERMISSIONS.approvalRespond, frame, { ...allowOnceCardAnswer(card), choice: "deny-once" });
+        const [result] = await pending;
+        expect(transition).not.toHaveBeenCalled();
+        expect(result?.is_error).toBe(true);
+        expect(f.cards(f.windowA)).toEqual([first, card]);
+        expect(f.auditLog.mock.calls.some(([entry]) => entry.output?.startsWith("[approval:answer-stale]"))).toBe(false);
+        expect(issueWriteAuthority).not.toHaveBeenCalled();
+        expect(f.write).not.toHaveBeenCalled();
+        return;
+      }
+      await invoke(PERMISSIONS.approvalRespond, frame, allowOnceCardAnswer(card));
+
+      if (current === "changed forced question") {
+        const fresh = await Promise.race([freshCard.promise, pending.then(() => undefined)]);
+        expect(transition).not.toHaveBeenCalled();
+        expect.soft(issueWriteAuthority).not.toHaveBeenCalled();
+        expect.soft(f.write).not.toHaveBeenCalled();
+        expect(fresh).toBeDefined();
+        if (!fresh) return;
+        expect(fresh.id).not.toBe(card.id);
+        expect(fresh).toMatchObject({ args: { command }, reason: card.reason, allowedChoices: ["allow-once", "deny-once"] });
+        expect(fresh.shellRule?.sessionAllowed).not.toBe(true);
+        const stale = f.auditLog.mock.calls.map(([entry]) => entry.output ?? "").filter(output => output.startsWith("[approval:answer-stale]"));
+        expect(stale).toEqual([expect.stringContaining(`[approval:answer-stale] ${card.id} `)]);
+        expect(stale[0]).toMatch(/ choice=allow-once outcome=stale-reasked authority=none question=\[.*,true,null,null,null\] -> \[.*,false,"protected-path: /);
+        const decided = f.auditLog.mock.calls.map(([entry]) => entry.output ?? "").filter(output => output.startsWith(`[approval:decided] ${card.id} `));
+        expect(decided).toEqual([expect.stringContaining(" choice=allow-once ")]);
+        expect(invoke(PERMISSIONS.approvalPending, frame)).toEqual([fresh]);
+        await invoke(PERMISSIONS.approvalRespond, frame, allowOnceCardAnswer(card));
+        expect(invoke(PERMISSIONS.approvalPending, frame)).toEqual([fresh]);
+        await invoke(PERMISSIONS.approvalRespond, frame, allowOnceCardAnswer(fresh));
+        const [result] = await pending;
+        expect(result?.is_error, result?.content).toBeFalsy();
+        expect(issueWriteAuthority).toHaveBeenCalled();
+        expect(f.write.mock.calls).toEqual([[command]]);
+        return;
+      }
+
+      const [result] = await pending;
+      expect(transition).not.toHaveBeenCalled();
+      expect(f.cards(f.windowA)).toEqual([first, card]);
+      if (current === "deny") {
+        expect.soft(issueWriteAuthority.mock.calls.length).toBe(0);
+        expect(f.write).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+          is_error: true,
+          content: "Host terminal typing is available only to the user's own turn in its pane chat",
+        });
+      } else {
+        expect(result?.is_error, result?.content).toBeFalsy();
+        expect(result?.tool_use_id).toBe(turnId);
+        expect(f.write.mock.calls).toEqual([[command]]);
+      }
+    });
+  });
+
+  it.each(["allow-once", "deny-once"] as const)("refuses the terminal floor card's %s when its save left another forced question", async choice => {
+    const f = await terminalFloorSubject();
+    const command = "printf ready > output/result.txt";
+    const outputDir = join(f.cwd, "output");
+    const protectedDir = join(f.cwd, ".vscode");
+    mkdirSync(outputDir);
+    mkdirSync(protectedDir);
+    const transition = vi.spyOn(f.gate, "allowsPolicyTransition");
+    const grant = vi.spyOn(f.manager, "addFloorSessionGrant");
+    const issueWriteAuthority = vi.spyOn(terminalWriteAuthority, "issueHostTerminalWriteAuthority");
+    const pending = runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "changed-initial" }, () => f.runTerminal("changed-initial", command));
+    const card = await f.waitForCard();
+    expect(card).toMatchObject({ args: { command }, shellRule: { floorSessionOnly: true, sessionAllowed: true } });
+    expect(await f.recordTerminalWaiver(card)).toEqual({ ok: true });
+    renameSync(outputDir, join(f.cwd, "former-output"));
+    symlinkSync(protectedDir, outputDir, "junction");
+    await invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { ...allowOnceCardAnswer(card), choice });
+    const [result] = await pending;
+    expect(transition).not.toHaveBeenCalled();
+    const stale = f.auditLog.mock.calls.map(([entry]) => entry.output ?? "").filter(output => output.startsWith("[approval:answer-stale]"));
+    if (choice === "allow-once") {
+      expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(t("be_executor.answerQuestionChanged")) });
+      expect(stale).toEqual([expect.stringContaining(`[approval:answer-stale] ${card.id} `)]);
+      expect(stale[0]).toMatch(/ choice=allow-once outcome=stale-refused authority=none question=\[.*,true,null,null,null\] -> \[.*,false,"protected-path: /);
+      const decided = f.auditLog.mock.calls.map(([entry]) => entry.output ?? "").filter(output => output.startsWith(`[approval:decided] ${card.id} `));
+      expect(decided).toEqual([expect.stringContaining(" choice=allow-once ")]);
+    } else {
+      expect(result).toMatchObject({ is_error: true, content: t("be_executor.approvalDeniedByUser", { name: "terminal_run" }) });
+      expect(stale).toEqual([]);
+    }
+    expect(issueWriteAuthority).not.toHaveBeenCalled();
+    expect(f.write).not.toHaveBeenCalled();
+    // Neither answer stood, so the session waiver the card offered is not saved.
+    expect(grant).not.toHaveBeenCalled();
+  });
+
+  it.each(["before save", "during audit", "unchanged"] as const)("checks the terminal floor card's directory when it is %s", async scenario => {
+    const f = await terminalFloorSubject();
+    const { cwd, write } = f;
+    const originalCwd = captureShellWorkingDirectoryIdentity(cwd);
+    expect(originalCwd).toBeDefined();
+    const run = (turnId: string, command: string) => runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId }, () =>
+      f.runTerminal(turnId, command));
+    const original = run("original-terminal-command", "printf ready");
+    const card = await f.waitForCard();
+    expect(card.shellRule).toMatchObject({ floorSessionOnly: true, sessionAllowed: true });
+    const replaceCwd = () => {
+      renameSync(cwd, join(f.root, "former-work"));
+      mkdirSync(cwd);
+      expect(captureShellWorkingDirectoryIdentity(cwd)?.ino).not.toBe(originalCwd?.ino);
+    };
+    const auditReached = deferred<void>();
+    const auditRelease = f.hold();
+    const append = f.audit.append.bind(f.audit);
+    const audit = vi.spyOn(f.audit, "append").mockImplementation(async entry => {
+      if (entry.output?.startsWith("[approval:remembered]")) {
+        auditReached.resolve();
+        if (scenario === "during audit") await auditRelease.promise;
+      }
+      await append(entry);
+    });
+    if (scenario === "before save") replaceCwd();
+    const grant = vi.spyOn(f.manager, "addFloorSessionGrant");
+    const saved = await f.recordTerminalWaiver(card);
+    if (scenario === "unchanged") {
+      expect(saved).toEqual({ ok: true });
+      await invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+      expect((await original)[0]?.is_error).toBeFalsy();
+      expect((await run("later-terminal-command", "printf later"))[0]?.is_error).toBeFalsy();
+      expect(write.mock.calls).toEqual([["printf ready"], ["printf later"]]);
+      expect(f.cards(f.windowA)).toEqual([card]);
+      return;
+    }
+    if (scenario === "during audit") {
+      // The waiver is written once the answer stands: a directory replaced during that write's audit refuses the call.
+      expect(saved).toEqual({ ok: true });
+      const answered = invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+      await auditReached.promise;
+      replaceCwd();
+      auditRelease.resolve();
+      await answered;
+    } else {
+      expect.soft(saved).toEqual({ ok: false, error: "project-scope-changed" });
+      expect.soft(audit.mock.calls.some(([entry]) => entry.output?.startsWith("[approval:remembered]"))).toBe(false);
+      expect.soft(f.windowA.webContents.send).toHaveBeenCalledWith(IPC_APPROVAL_SETTLED, { requestId: card.id });
+      expect.soft(f.gate.getRequestSnapshot(card.id)).toBeNull();
+      // An authenticated late answer cannot revive the settled card.
+      await invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+    }
+    const [result] = await original;
+    expect.soft(result?.is_error).toBe(true);
+    expect.soft(result?.content).toContain("project-scope-changed");
+    expect.soft(write).not.toHaveBeenCalled();
+    expect.soft(grant).not.toHaveBeenCalled();
+
+    const nextCard = deferred<ApprovalRequest>();
+    f.windowA.webContents.send.mockImplementation((channel: string, request: ApprovalRequest) => {
+      if (channel === IPC_APPROVAL_REQUEST) nextCard.resolve(request);
+    });
+    const later = run("later-terminal-command", "printf later");
+    const fresh = await Promise.race([nextCard.promise, later.then(() => { throw new Error("Terminal command settled without a fresh card"); })]);
+    expect(fresh.shellRule).toMatchObject({ floorSessionOnly: true, sessionAllowed: true });
+    expect(fresh.id).not.toBe(card.id);
+    await invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { ...allowOnceCardAnswer(fresh), choice: "deny-once" });
+    expect((await later)[0]?.is_error).toBe(true);
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it.each(["project allow", "project allow with raw Windows cwd", "user deny", "user deny with allow answer", "user deny-always"] as const)("applies a card's saved %s to its pending host request", async (scenario) => {
     const f = await subject("default");
     vi.stubEnv("AVE_HOME", f.root);
@@ -301,6 +603,188 @@ describe("live native approval ownership", () => {
     const answer = await result;
     expect(f.gate.allowsPolicyTransition(answer, before, f.manager.getPolicyEpoch())).toBe(true);
     expect(f.gate.allowsPolicyTransition(answer, before, f.manager.getPolicyEpoch())).toBe(false);
+  });
+
+  it("refuses This project when an ordinary Bash card's directory was replaced", async () => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    setShellSandboxRequestedAtBoot(false);
+    const project = join(f.root, "project");
+    const original = join(f.root, "original");
+    mkdirSync(project);
+    const bash = new BashTool();
+    const execute = vi.spyOn(bash, "execute").mockResolvedValue({ output: "mock launch", isError: false });
+    f.registry.register(bash);
+    const running = f.executeAll([{ id: "project-rule-cwd", name: "bash", input: { command: "printf ready" } }], {
+      sessionId: SESSION_ID, executionCwd: project,
+      permissionContext: userPermissionContext({ additionalDirectories: [project] }),
+    });
+    const card = await f.waitForCard();
+    expect(card.allowedChoices).toBeUndefined();
+    expect(card.shellRule?.persistentAllowed).toBe(true);
+    const issued = captureShellWorkingDirectoryIdentity(project);
+    expect(issued).toBeDefined();
+    renameSync(project, original);
+    mkdirSync(project);
+    const replacement = projectRulesLocation(f.root, project);
+    expect(captureShellWorkingDirectoryIdentity(project)?.ino).not.toBe(issued?.ino);
+
+    const response = await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "persistent",
+      verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
+      rule: { action: "allow", scope: "project" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
+    });
+    expect.soft(response).toMatchObject({ ok: false });
+    expect.soft(existsSync(replacement.filePath)).toBe(false);
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+    expect((await running)[0]?.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["project", "moves its marker before saving"],
+    ["project", "moves its marker while saving"],
+    ["project", "loses its marker without changing its root path"],
+    ["project", "is replaced at the same path"],
+    ["project", "is replaced with a fresh working directory below it"],
+    ["project", "is replaced as the working directory"],
+    ["project", "keeps its root but replaces the working directory before saving"],
+    ["project", "keeps its root but replaces the working directory while saving"],
+    ["session", "keeps its root but replaces the working directory before saving"],
+    ["session", "keeps its root but replaces the working directory while saving"],
+    ["always", "keeps its root but replaces the working directory before saving"],
+    ["always", "keeps its root but replaces the working directory while saving"],
+  ] as const)("refuses the %s choice when the issued repository %s", async (scope, scenario) => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    setShellSandboxRequestedAtBoot(false);
+    const outer = join(f.root, "outer");
+    const inner = join(outer, "inner");
+    const sameRootWithoutMarker = scenario === "loses its marker without changing its root path";
+    const replacesOnlyCwd = scenario === "keeps its root but replaces the working directory before saving" ||
+      scenario === "keeps its root but replaces the working directory while saving";
+    const duringSave = scenario === "moves its marker while saving" || scenario === "keeps its root but replaces the working directory while saving";
+    const replacesCwd = replacesOnlyCwd || scenario === "is replaced with a fresh working directory below it" || scenario === "is replaced as the working directory";
+    const cwd = sameRootWithoutMarker || scenario === "is replaced as the working directory" ? inner : join(inner, "work");
+    mkdirSync(cwd, { recursive: true });
+    for (const root of sameRootWithoutMarker ? [inner] : [outer, inner]) {
+      const marker = join(root, ".git");
+      mkdirSync(join(marker, "objects"), { recursive: true });
+      mkdirSync(join(marker, "refs"));
+      writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+    }
+    const userStore = join(f.root, "permissions.json");
+    const innerStore = projectRulesLocation(f.root, cwd);
+    const outerStore = projectRulesLocation(f.root, outer);
+    const issuedCwd = captureShellWorkingDirectoryIdentity(cwd);
+    expect(issuedCwd).toBeDefined();
+    expect(innerStore.filePath).not.toBe(outerStore.filePath);
+
+    const bash = new BashTool();
+    const execute = vi.spyOn(bash, "execute").mockResolvedValue({ output: "mock launch", isError: false });
+    f.registry.register(bash);
+    const invokeShell = (id: string) => f.executeAll([{ id, name: "bash", input: { command: "printf ready" } }], {
+      sessionId: SESSION_ID, executionCwd: cwd,
+      permissionContext: userPermissionContext({ additionalDirectories: [cwd] }),
+    });
+    const running = invokeShell("nested-project-rule");
+    const card = await f.waitForCard();
+    expect(card.shellRule).toMatchObject({ exactRule: "Bash(printf ready)", sessionAllowed: true, persistentAllowed: true, projectRoot: innerStore.projectRoot });
+    const snapshot = f.gate.getRequestSnapshot(card.id);
+    const replaced = replacesCwd || scenario === "is replaced at the same path";
+    const currentStore = replaced || sameRootWithoutMarker ? innerStore : outerStore;
+    const moveMarker = () => {
+      renameSync(join(inner, ".git"), join(inner, "former-marker"));
+      expect(captureShellWorkingDirectoryIdentity(cwd)).toEqual(issuedCwd);
+      expect(projectRulesLocation(f.root, cwd)).toEqual(currentStore);
+    };
+    const replaceOnlyCwd = () => {
+      renameSync(cwd, join(inner, "former-work"));
+      mkdirSync(cwd);
+      expect(captureShellWorkingDirectoryIdentity(cwd)?.ino).not.toBe(issuedCwd?.ino);
+      const projectRoot = snapshot?.shellRuleProjectRoot;
+      expect(projectRoot && matchesProjectRuleRootBinding(cwd, projectRoot)).toBe(true);
+      // A held save runs after the card is answered, when the gate no longer holds the request.
+      if (!duringSave) expect(f.gate.capturePendingRequestAuthority(card.id)?.isWorkingDirectoryCurrent()).toBe(false);
+    };
+    const changeScope = replacesOnlyCwd ? replaceOnlyCwd : moveMarker;
+    if (replaced && !replacesOnlyCwd) {
+      const former = join(outer, "former-inner");
+      renameSync(inner, former);
+      mkdirSync(inner);
+      renameSync(join(former, ".git"), join(inner, ".git"));
+      if (replacesCwd) {
+        if (cwd !== inner) mkdirSync(cwd);
+        expect(captureShellWorkingDirectoryIdentity(cwd)?.ino).not.toBe(issuedCwd?.ino);
+      } else {
+        renameSync(join(former, "work"), cwd);
+        expect(captureShellWorkingDirectoryIdentity(cwd)).toEqual(issuedCwd);
+      }
+      expect(projectRulesLocation(f.root, cwd)).toEqual(innerStore);
+    } else if (!duringSave) {
+      changeScope();
+    } else if (scope === "session") {
+      const append = f.audit.append.bind(f.audit);
+      vi.spyOn(f.audit, "append").mockImplementationOnce(async (...args) => {
+        await append(...args);
+        changeScope();
+      });
+    } else {
+      const read = homeTrust.readAveHomeInput;
+      const saveFile = scope === "always" ? userStore : innerStore.filePath;
+      const spy = vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async (...args) => {
+        const input = await read(...args);
+        if (args[0] === saveFile) {
+          spy.mockRestore();
+          expect.soft(existsSync(saveFile)).toBe(false);
+          changeScope();
+        }
+        return input;
+      });
+    }
+
+    const record = {
+      requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: scope === "session" ? "session" : "persistent",
+      verdictAtApproval: snapshot?.verdictAtApproval,
+      rule: { action: "allow", scope }, intent: { inputOrigin: "user-keyboard", userActivation: true },
+    };
+    if (replacesCwd) {
+      expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowB), record)).toEqual(UNAUTHORIZED_FRAME);
+      expect(f.gate.getRequestSnapshot(card.id)).not.toBeNull();
+    }
+    const response = await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), record);
+    if (duringSave) {
+      // The rule is written once the answer stands: a scope that changes during that write refuses the call and saves nothing.
+      expect.soft(response).toEqual({ ok: true });
+      invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+      expect((await running)[0]).toMatchObject({ is_error: true, content: expect.stringContaining("project-scope-changed") });
+    } else {
+      expect.soft(response).toMatchObject({ ok: false, error: "project-scope-changed" });
+      expect.soft(f.windowA.webContents.send).toHaveBeenCalledWith(IPC_APPROVAL_SETTLED, { requestId: card.id });
+    }
+    expect.soft(existsSync(innerStore.filePath)).toBe(false);
+    expect.soft(existsSync(outerStore.filePath)).toBe(false);
+    expect.soft(existsSync(userStore)).toBe(false);
+    expect.soft(f.manager.listSessionRules(SESSION_ID)).toEqual([]);
+    expect(projectRulesLocation(f.root, cwd)).toEqual(currentStore);
+    expect(f.gate.getRequestSnapshot(card.id)).toBeNull();
+    expect((await running)[0]?.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+
+    const nextCard = deferred<ApprovalRequest>();
+    f.windowA.webContents.send.mockImplementation((channel: string, request: ApprovalRequest) => {
+      if (channel === IPC_APPROVAL_REQUEST) nextCard.resolve(request);
+    });
+    const retried = invokeShell("fresh-project-rule");
+    const fresh = await Promise.race([
+      nextCard.promise,
+      retried.then(() => { throw new Error("Shell retry settled without a fresh card"); }),
+    ]);
+    expect(fresh.id).not.toBe(card.id);
+    expect(fresh.shellRule?.projectRoot).toBe(currentStore.projectRoot);
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { ...allowOnceCardAnswer(fresh), choice: "deny-once" });
+    expect((await retried)[0]?.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("burns a policy receipt on a mismatched consumption attempt", async () => {
@@ -407,19 +891,20 @@ describe("live native approval ownership", () => {
     const card = await f.waitForCard();
     expect(execute).not.toHaveBeenCalled();
     expect(card.shellRule?.persistentAllowed).toBe(true);
-    const epochBefore = f.manager.getPolicyEpoch();
     if (scenario === "unrelated before") f.manager.setRules([]);
     if (scenario === "unrelated during") {
       const add = f.manager.addRulePersist.bind(f.manager);
       vi.spyOn(f.manager, "addRulePersist").mockImplementation(async (...args) => { await add(...args); f.manager.setRules([]); });
     }
+    const epochAtSave = f.manager.getPolicyEpoch();
     expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
       requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "persistent",
       verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
       rule: { action: "allow", scope: "always", pattern: "Bash(printf *)" },
       intent: { inputOrigin: "user-keyboard", userActivation: true },
     })).toMatchObject({ ok: true });
-    expect(f.manager.getPolicyEpoch()).not.toBe(epochBefore);
+    // The rule is held until the owner judges the answer.
+    expect(f.manager.getPolicyEpoch()).toBe(epochAtSave);
     if (scenario === "unrelated after") f.manager.setRules([]);
     invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
     const [result] = await running;
@@ -432,6 +917,192 @@ describe("live native approval ownership", () => {
       expect(result.content).toContain("Permission policy changed");
       expect(execute).not.toHaveBeenCalled();
     }
+  });
+
+  it.each(["session allow, refused", "always allow, refused", "always allow, stands", "always deny, refused"] as const)("saves a card's rule only for the answer the owner judged: %s", async (scenario) => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    const bash = new BashTool();
+    const execute = vi.spyOn(bash, "execute");
+    f.registry.register(bash);
+    const running = f.executeAll([{
+      id: "judged-rule-save", name: "bash",
+      input: { command: "printf prefix-proof", executionMode: "host", justification: "Print one local value", timeoutSeconds: 1 },
+    }], { sessionId: SESSION_ID, executionCwd: f.root, permissionContext: userPermissionContext({ additionalDirectories: [f.root] }) });
+    const card = await f.waitForCard();
+    const action = scenario.startsWith("always deny") ? "deny" : "allow";
+    const scope = scenario.startsWith("session") ? "session" : "always";
+    const persist = vi.spyOn(f.manager, "addRulePersist");
+    const append = vi.spyOn(f.audit, "append");
+    const rows = () => append.mock.calls.filter(([entry]) => entry.output?.startsWith("[approval:remembered]"));
+    expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: card.id, args: JSON.stringify(card.args), decision: action, scope: scope === "session" ? "session" : "persistent",
+      verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
+      rule: { action, scope, pattern: "Bash(printf *)" },
+      intent: { inputOrigin: "user-keyboard", userActivation: true },
+    })).toMatchObject({ ok: true });
+    // An allow waits for the owner's judgement; a deny is saved as the person's deny whatever follows.
+    expect(persist).toHaveBeenCalledTimes(action === "deny" ? 1 : 0);
+    expect(f.manager.listSessionRules(SESSION_ID)).toEqual([]);
+    expect(rows()).toHaveLength(action === "deny" ? 1 : 0);
+    if (scenario.endsWith("refused")) await f.manager.addRulePersist({ pattern: "Bash(unrelated *)", action: "deny" }, { kind: "user" });
+    persist.mockClear();
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { ...allowOnceCardAnswer(card), choice: action === "deny" ? "deny-always" : "allow-once" });
+    const [result] = await running;
+    if (scenario === "always allow, stands") {
+      expect(result.is_error, JSON.stringify(result)).toBeUndefined();
+      expect(execute).toHaveBeenCalledOnce();
+      expect(persist.mock.calls.map(([rule]) => rule)).toEqual([{ pattern: "Bash(printf *)", action: "allow" }]);
+      expect(rows()).toHaveLength(1);
+      return;
+    }
+    expect(result.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(persist).not.toHaveBeenCalled();
+    expect(f.manager.listSessionRules(SESSION_ID)).toEqual([]);
+    expect(rows()).toHaveLength(action === "deny" ? 1 : 0);
+    if (action === "allow") expect(result.content).toContain("Permission policy changed");
+  });
+
+  it.each(["stands", "policy changed", "destination refused", "declined"] as const)("holds the edited network allow when consent %s", async (outcome) => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    const request = createApprovalGateEgressRequester(f.gate, f.manager)({
+      origin: "shell", sessionId: SESSION_ID, toolName: "bash", toolUseId: "network-call",
+      destination: { host: "downloads.example.com", port: 443 }, network: "public",
+      scopes: ["once", "session", "always"], workspaceRoot: f.root, abortSignal: undefined,
+    });
+    const card = await f.waitForCard();
+    expect(card.egressHost?.scopes).toContain("always");
+    const pattern = "Network(*.example.com)";
+    const persist = vi.spyOn(f.manager, "addRulePersist");
+    const currentCheck = f.manager.checkLoadedNetworkPermission.bind(f.manager);
+    const check = vi.spyOn(f.manager, "checkLoadedNetworkPermission");
+    expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "persistent",
+      verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
+      rule: { action: "allow", scope: "always", pattern },
+      intent: { inputOrigin: "user-keyboard", userActivation: true },
+    })).toMatchObject({ ok: true });
+    expect.soft(persist).not.toHaveBeenCalled();
+    if (outcome === "policy changed") f.manager.setMode("strict");
+    if (outcome === "destination refused") {
+      check.mockImplementationOnce((...args) => {
+        const current = currentCheck(...args);
+        return { ...current, permission: { decision: "deny", reason: "Destination refused.", provenance: RULE_PROVENANCE } };
+      });
+    }
+    const answer = allowOnceCardAnswer(card);
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), outcome === "declined"
+      ? { ...answer, choice: "deny-once" }
+      : { ...answer, egressScope: "once" });
+    expect(await request).toMatchObject({ allow: outcome === "stands" });
+    if (outcome === "stands") {
+      expect(check).toHaveBeenCalledBefore(persist);
+      expect(persist.mock.calls.map(([rule]) => rule)).toEqual([{ pattern, action: "allow" }]);
+    } else {
+      expect(persist).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(["stands", "stale", "denied", "declined"] as const)("holds a child card's remembered allow when the answer %s", async (outcome) => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    const childGate = makeSubAgentApprovalAdapter(f.gate, "child task", null);
+    const id = randomUUID();
+    const asked: PermissionCheckResult = { decision: "ask", reason: "manual review", provenance: RULE_PROVENANCE };
+    let current = asked;
+    const opened = openPendingAnswerCard(f.manager, asked, () => current, "stale-refused", {
+      gate: childGate, requestId: id, action: "tool-use:child", uses: ["rule-save"],
+    });
+    const { result } = f.queueCard({ id }, opened, childGate);
+    const card = await f.waitForCard();
+    expect(card.reason).toContain("child task");
+    expect(card.persistentAllowAllowed).toBe(true);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "persistent",
+      verdictAtApproval: "low", intent: { inputOrigin: "user-keyboard", userActivation: true },
+    })).toEqual({ ok: true });
+    expect.soft(await approvals.listApprovals()).toEqual([]);
+
+    if (outcome === "stale") current = { ...asked, forceModal: true };
+    if (outcome === "denied") current = { decision: "deny", reason: "The current policy denies this action.", provenance: RULE_PROVENANCE };
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), {
+      ...allowOnceCardAnswer(card), choice: outcome === "declined" ? "deny-once" : "allow-always",
+    });
+    const answer = await result;
+    expect(personAnswerStands(opened, answer)).toBe(outcome === "stands");
+    expect(opened.verdict?.kind).toBe(outcome);
+    expect(await saveStandingAnswerRule(opened, answer)).toEqual({ saved: outcome === "stands" });
+    expect(await approvals.listApprovals()).toEqual(outcome === "stands"
+      ? [expect.objectContaining({ decision: "allow", scope: "persistent", toolName: "write_probe" })]
+      : []);
+  });
+
+  it("leaves a later request unaffected when a card was opened but never asked", async () => {
+    const f = await subject("default");
+    const id = randomUUID();
+    const asked = { decision: "ask" as const, reason: "manual review", provenance: RULE_PROVENANCE };
+    openPendingAnswerCard(f.manager, asked, () => asked, "stale-refused", {
+      gate: f.gate, requestId: id, action: "tool-use:abandoned", uses: ["rule-save"],
+    });
+    const { result } = f.queueCard({ id });
+    const card = await f.waitForCard();
+    expect(f.gate.defersAllowSaves(id)).toBe(false);
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { ...allowOnceCardAnswer(card), choice: "deny-once" });
+    expect((await result).choice).toBe("deny-once");
+  });
+
+  it("holds only one save on a card", async () => {
+    const f = await subject("default");
+    const id = randomUUID();
+    const asked = { decision: "ask" as const, reason: "manual review", provenance: RULE_PROVENANCE };
+    const opened = openPendingAnswerCard(f.manager, asked, () => asked, "stale-refused", {
+      gate: f.gate, requestId: id, action: "tool-use:save", uses: ["rule-save"],
+    });
+    const { result } = f.queueCard({ id }, opened);
+    const card = await f.waitForCard();
+    const first = vi.fn(async () => {
+      const from = f.manager.getPolicyEpoch();
+      f.manager.addSessionRule(SESSION_ID, "Bash(printf ready)");
+      return { ok: true, store: "rules", from, to: f.manager.getPolicyEpoch(), scope: "session" } as const;
+    });
+    const second = vi.fn(async () => ({ ok: false, error: "rule-save-failed" }) as const);
+    expect(f.gate.stageAllowSave(id, first)).toBe(true);
+    expect.soft(f.gate.stageAllowSave(id, second)).toBe(false);
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+    const answer = await result;
+    expect(personAnswerStands(opened, answer)).toBe(true);
+    expect(first).not.toHaveBeenCalled();
+    expect(await saveStandingAnswerRule(opened, answer)).toEqual({ saved: true });
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).not.toHaveBeenCalled();
+    expect(await saveStandingAnswerRule(opened, answer)).toEqual({ saved: false });
+  });
+
+  it("writes a held allow only against a standing answer that names the rule-save use", async () => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    const id = randomUUID();
+    const asked = { decision: "ask" as const, reason: "manual review", provenance: RULE_PROVENANCE };
+    const opened = openPendingAnswerCard(f.manager, asked, () => asked, "stale-refused", { gate: f.gate, requestId: id, action: "tool-use:held", uses: ["shell-permit"] });
+    const savingCard = openPendingAnswerCard(f.manager, asked, () => asked, "stale-refused", { gate: f.gate, requestId: id, action: "tool-use:held", uses: ["rule-save"] });
+    const { request, result } = f.queueCard({ id, toolName: "bash", toolCategory: "shell", args: { command: "printf ready" } }, savingCard);
+    const card = await f.waitForCard();
+    const persist = vi.spyOn(f.manager, "addRulePersist");
+    expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: request.id, args: JSON.stringify(request.args), decision: "allow", scope: "persistent", verdictAtApproval: "low",
+      rule: { action: "allow", scope: "always" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
+    })).toMatchObject({ ok: true });
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+    const answer = await result;
+    expect(personAnswerStands(opened, answer)).toBe(true);
+    if (opened.verdict?.kind !== "stands") throw new Error("The answer did not stand");
+    const proof = opened.verdict.proof;
+    expect(await f.gate.commitStagedAllowSaves(answer, proof, "tool-use:held")).toEqual({ saved: false, refusal: "Permission policy changed while approval was pending" });
+    // The held save went with the refused attempt.
+    expect(await f.gate.commitStagedAllowSaves(answer, proof, "tool-use:held")).toEqual({ saved: false });
+    expect(persist).not.toHaveBeenCalled();
   });
 
   it("lets only the current owner record a durable exact approval from a pending card", async () => {
@@ -718,3 +1389,6 @@ describe("live native approval ownership", () => {
     ]);
   });
 });
+import { requestBoundShellCard } from "../../../__tests__/support/host-shell-approval.js";
+
+withSourceHostResources();

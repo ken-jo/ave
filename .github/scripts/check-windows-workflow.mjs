@@ -100,7 +100,7 @@ const UNCONTAINED_COMMANDS = new Map([
   ["node scripts/fetch-uv.mjs", "fetches a pinned tool"],
   ["node .github/scripts/python-archive-cache.mjs", "computes a cache key"],
   [X64_RUST_INSTALL, "installs the pinned compiler and target"],
-  [X64_PATH_KIND_BUILD, "builds the classifier and its fixture"],
+  [X64_PATH_KIND_BUILD, "builds the classifier and its fixtures"],
   ...["", " -FailureFixture", " -QueryFailureFixture"].map(option => [
     `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1${option}`,
     "builds the containment launcher and its native helpers",
@@ -409,7 +409,7 @@ function checkFirstPreparationLaunch(steps) {
 
 // Restored or cached native binaries: the containment launcher (every
 // run-in-job line), its fixtures, the path classifier and the sandbox helper.
-const HELPER_EXECUTABLE_RE = /(?:^|[^\w-])(?:upstream-)?(?:srt-win|ave-job(?:-failure|-query-failure)?|ave-path-kind|ave-path-pin-test)\.exe(?![\w.-])/u;
+const HELPER_EXECUTABLE_RE = /(?:^|[^\w-])(?:upstream-)?(?:srt-win|ave-job(?:-failure|-query-failure)?|ave-path-kind(?:-hold-fixture)?|ave-path-pin-test)\.exe(?![\w.-])/u;
 const SRT_WIN_EXECUTABLE_RE = /(?:^|[^\w-])srt-win\.exe(?![\w.-])/u;
 const EXIT_ON_FAILURE = "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }";
 const SRT_WIN_INTEGRITY = "node scripts/check-srt-win-integrity.cjs";
@@ -621,7 +621,8 @@ export function checkWindowsWorkflow(workflow, inspect) {
       throw new Error(`${step.name}: Windows regression steps must use the matrix plan artifact`);
     }
     if (step.env.AVE_WINDOWS_PATH_KIND_SHA256 !== "${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}"
-      || step.env.AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256 !== "${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}") {
+      || step.env.AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256 !== "${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}"
+      || step.env.AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256 !== "${{ needs.windows-native-preparation.outputs.path_kind_hold_fixture_sha256 }}") {
       throw new Error(`${step.name}: Windows regression steps must use the producing build's path helper digests`);
     }
   }

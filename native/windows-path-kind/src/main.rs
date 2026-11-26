@@ -4,6 +4,7 @@ mod directory;
 mod facts;
 #[cfg(feature = "fixture")]
 mod faults;
+mod hold;
 mod pin;
 mod policy;
 mod security;
@@ -143,6 +144,7 @@ fn dispatch(args: &[Vec<u16>]) -> u8 {
         Ok("--documents-directory") if rest.is_empty() => print_documents(),
         Ok("--pin") => facts::run(rest, false),
         Ok("--dacl") => facts::run(rest, true),
+        Ok("--hold") => hold::run(rest, hold::Options::default()),
         Ok("--deny-acls") => facts::deny(rest),
         Ok(mode) if mode.starts_with("--dir-") => directory::run(mode, rest),
         _ if verb.starts_with(&[45, 45, 100, 105, 114, 45]) => directory::run("", rest),

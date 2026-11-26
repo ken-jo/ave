@@ -1,4 +1,4 @@
-// Prepare the native helpers tests load, without the job failure fixtures.
+// Prepare the native helpers and hold fixture for tests.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
@@ -8,7 +8,7 @@ import { assertWindowsPathKindArtifactDigests, verifyWindowsPathKindReceipt, win
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BUILD_COMMAND = "bun run build:windows-job";
-const PATH_KIND_BUILD_COMMAND = "bun run build:windows-path-kind";
+const PATH_KIND_BUILD_COMMAND = "bun run build:windows-path-kind --fixture";
 const MSVC_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64";
 
 export function windowsJobLauncherPath(arch = process.arch) {
@@ -92,6 +92,7 @@ export function prepareWindowsJob({
     assertWindowsPathKindArtifactDigests(root, arch, {
       binarySha256: env.AVE_WINDOWS_PATH_KIND_SHA256,
       receiptSha256: env.AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256,
+      holdFixtureSha256: env.AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256,
     });
     verifyWindowsPathKindReceipt(root, arch);
     log(`[windows-path-kind] verified producing build: ${launcher}`);

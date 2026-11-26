@@ -16,3 +16,8 @@ path = "src/main.rs"
 name = "ave-path-pin-test"
 path = "src/fixture.rs"
 required-features = ["fixture"]
+
+[[bin]]
+name = "ave-path-kind-hold-fixture"
+path = "src/hold-fixture.rs"
+required-features = ["fixture"]

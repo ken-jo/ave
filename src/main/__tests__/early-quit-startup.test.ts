@@ -35,7 +35,7 @@ vi.mock("../managed-child-processes.js", () => ({
 vi.mock("../terminal/pty-manager.js", () => ({ forceKillAllTerminalsForShutdown: async () => {} }));
 vi.mock("../../permissions/mxc-holder-lifetime.js", () => ({ sealMxcHolderLifetimeAdmission: vi.fn(), drainMxcHolderLifetimes: async () => {} }));
 vi.mock("../../tools/shell-tools.js", () => ({
-  backgroundShellManager: { disposeAllBrokerShells: vi.fn(), waitForAllBrokerCleanup: async () => [] },
+  backgroundShellManager: { disposeAllBrokerShells: vi.fn(), waitForAllBrokerCleanup: async () => [], stopAllHeldShells: async () => {} },
 }));
 vi.mock("../../permissions/asrt-sandbox.js", () => ({ releaseAsrtSandboxForExit: () => releaseSandbox() }));
 vi.mock("../host-instance-lock.js", () => ({ acquireHostInstanceLock: () => acquireHostInstanceLock() }));

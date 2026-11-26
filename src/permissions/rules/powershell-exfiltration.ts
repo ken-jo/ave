@@ -148,22 +148,33 @@ function normalizeDashes(text: string): string {
 
 const CONTROL_ESCAPES: Readonly<Record<string, string>> = { n: "\n", r: "\r", t: "\t" };
 
+const ALTERNATE_QUOTE = /[\u2018-\u201e]/;
+
 class Lexer {
   private index = 0;
   private depth = 0;
   private grammarRecords = 0;
   // Complete command tokens remain usable for positive effects after refusal.
   readonly readable: PsCommand[] = [];
+  private quoteScanStart = 0;
+  private quoteDelimiterUnproven = false;
   private rootPartial: PsToken[] = [];
   constructor(private readonly source: string, private readonly analysis: PowerShellAnalysisContext) {}
 
   parseProgram(): PsPipeline[] {
-    // Alternate quote delimiters are outside this lexer's supported grammar.
-    if (/[\u2018-\u201e]/.test(this.source)) this.analysis.facts.set("unproven-quote-delimiter", true);
     const body = this.parseBody(undefined);
+    if (this.quoteDelimiterUnproven) this.analysis.facts.set("unproven-quote-delimiter", true);
     if (body.some((pipeline) => pipeline.key !== undefined)) throw new PsUnreadable("unsupported assignment target");
     if (this.index < this.source.length) throw new PsUnreadable("unbalanced group");
     return body;
+  }
+
+  // Scan consumed source for unsupported delimiters between line comments.
+  private scanQuoteDelimiters(): void {
+    if (!this.quoteDelimiterUnproven && ALTERNATE_QUOTE.test(this.source.slice(this.quoteScanStart, this.index))) {
+      this.quoteDelimiterUnproven = true;
+    }
+    this.quoteScanStart = this.index;
   }
 
   // Statements up to `closer` (consumed) or the end of input.
@@ -189,8 +200,11 @@ class Lexer {
       if (this.depth === 1) this.rootPartial = [];
     };
     const endPipeline = (): void => {
+      if (this.depth === 1) this.scanQuoteDelimiters();
       endCommand();
-      if (stages.length > 0) pipelines.push(toPipeline(stages, this.analysis));
+      if (stages.length > 0) {
+        pipelines.push(toPipeline(stages, this.analysis));
+      }
       stages = [];
     };
     const src = this.source;
@@ -201,7 +215,11 @@ class Lexer {
       if (char === " " || char === "\t") { this.index += 1; continue; }
       if (char === ",") { pushToken(word(",", ",", false, [])); this.index += 1; continue; }
       if (char === "`" && (next === "\n" || next === "\r")) { this.index += next === "\r" && src[this.index + 2] === "\n" ? 3 : 2; continue; }
-      if (char === "\n" || char === "\r" || char === ";") { endPipeline(); this.index += 1; continue; }
+      if (char === "\n" || char === "\r" || char === ";") {
+        endPipeline();
+        this.index += 1;
+        continue;
+      }
       if (char === "<" && next === "#") {
         this.analysis.facts.set("unproven-comment", true);
         const end = src.indexOf("#>", this.index + 2);
@@ -210,8 +228,10 @@ class Lexer {
         continue;
       }
       if (char === "#") {
+        this.scanQuoteDelimiters();
         this.analysis.facts.set("unproven-comment", true);
         while (this.index < src.length && src[this.index] !== "\n" && src[this.index] !== "\r") { this.index += 1; }
+        this.quoteScanStart = this.index;
         continue;
       }
       if (char === ">") {
@@ -955,7 +975,6 @@ function lex(command: string, context: PowerShellAnalysisContext): LexedPowerShe
     return { pipelines };
   }
   catch (error) {
-    if (error instanceof PowerShellStructuralLimitError) throw error;
     if (error instanceof PsUnreadable) {
       const partial = lexer.partialCommand();
       return { pipelines: null, reason: error.message, readable: partial === undefined ? lexer.readable : [...lexer.readable, partial] };
@@ -1483,22 +1502,10 @@ export function powerShellSensitivePathSignal(input: ShellCommandInput, cwd?: st
 export function powerShellExfiltrationSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectPowerShellCommand(input, cwd).exfiltration; }
 
 export function _inspectPowerShellForTest(input: ShellCommandInput, cwd?: string) {
-  const command = typeof input === "string" ? input : input.command;
-  const context = new SharedPowerShellContext();
-  retainVisibleUpload(command, context);
-  let syntax: LexedPowerShell, limited = false;
-  try {
-    context.enter(command);
-    syntax = lex(command, context);
-    if (syntax.pipelines !== null) context.facts.set("static-program", staticProgram(syntax.pipelines, context));
-  } catch (error) {
-    if (!(error instanceof PowerShellStructuralLimitError)) throw error;
-    syntax = { pipelines: null, reason: error.message };
-    limited = true;
-  } finally { if (context.currentFrameDepth() > 0) context.leave(); }
-  const parsed: ParsedPowerShellCommand = { command, syntax, analysisLimited: limited || context.limited, facts: context.facts, context };
+  const parsed = parsePowerShellCommand(typeof input === "string" ? input : input.command);
+  const { context } = parsed;
   const result = applyStartupPolicy(inspectParsed(parsed, cwd, { tokens: { count: 0 }, depth: 0 }));
-  return { ...result, limited: parsed.analysisLimited, visits: context.visits, shellVisits: context.floor.visits, limits: POWERSHELL_ANALYSIS_LIMITS };
+  return { ...result, limited: parsed.analysisLimited, visits: context.visits, shellVisits: sharedWork(context).visits, limits: POWERSHELL_ANALYSIS_LIMITS };
 }
 
 // Recursive traversal

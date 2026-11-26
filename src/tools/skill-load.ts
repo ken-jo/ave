@@ -8,7 +8,7 @@ import { SKILL_SELECTOR_ALLOWLIST } from "../main/skill-store.js";
 import { parsePluginSkillSelector } from "../shared/plugin-skill-selector.js";
 import { renderSkillReadResult, type SkillOverlay } from "../main/skill-overlay.js";
 import type { SkillApprovalsStore } from "../main/skill-approvals-store.js";
-import { isHostApprovalRejectedDecision, type ApprovalGate } from "../permissions/approval-gate.js";
+import { admitApprovalAnswer, hostApprovalDenialReason, type AnsweredRecord, type ApprovalGate } from "../permissions/approval-gate.js";
 import { ApprovalPersistenceError } from "../permissions/approval-persistence-guard.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
 import { turnExtensionPolicyContext, unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
@@ -170,8 +170,9 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       );
       if (!alreadyApproved) {
         if (!invocationCurrent()) return interrupted();
+        const requestId = randomUUID();
         const decision = await deps.approvalGate.requestAndWait({
-          id: randomUUID(),
+          id: requestId,
           category: "tool",
           toolName: "skill_load",
           // Remote activation is an explicit code-execution opt-in; local loads keep their existing choices.
@@ -187,16 +188,18 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           source: "builtin",
           createdAt: Date.now(),
         });
-        if (!invocationCurrent()) return interrupted();
-        const rejected = Boolean(isHostApprovalRejectedDecision(decision));
-        if (rejected || decision.choice.startsWith("deny") || (skill.mcpOwner && decision.choice !== "allow-once")) {
-          return {
-            output: JSON.stringify({
-              error: `user denied skill load: ${skill.name}`,
-            }),
-            isError: true,
-          };
+        let admitted: AnsweredRecord | undefined;
+        try {
+          admitted = admitApprovalAnswer(decision, { requestId, toolName: "skill_load", toolUseId: undefined });
+        } catch (error) {
+          return { output: JSON.stringify({ error: errorMessage(error) }), isError: true };
         }
+        if (admitted?.decision !== "allow" || (skill.mcpOwner && admitted.choice !== "allow-once")) {
+          const reason = hostApprovalDenialReason(decision)
+            ?? (admitted?.decision === "deny" ? "user denied skill load" : "approval rejected by host");
+          return { output: JSON.stringify({ error: `${reason}: ${skill.name}` }), isError: true };
+        }
+        if (!invocationCurrent()) return interrupted();
       }
 
       // Refuse missing session identity; a shared synthetic bucket would leak skill attribution across calls.

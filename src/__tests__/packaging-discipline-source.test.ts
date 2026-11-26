@@ -2530,13 +2530,18 @@ describe("installer smoke and packaging discipline", () => {
 
 it("builds the native path classifier before the Windows permission boundaries", () => {
   const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
-    jobs: Record<string, { steps: { name?: string; run?: string }[] }>;
+    jobs: Record<string, { steps: { name?: string; run?: string; with?: { path?: string } }[] }>;
   };
   const steps = workflow.jobs["windows-permission-tests"]?.steps;
   if (steps === undefined) throw new Error("Windows permission path job is missing");
   const preparation = workflow.jobs["windows-native-preparation"]?.steps;
   expect(preparation?.some(step => step.run?.includes("node scripts/build-windows-path-kind.mjs --arch x64 --fixture"))).toBe(true);
-  expect(preparation?.some(step => step.name === "Upload the checked Windows native helpers")).toBe(true);
+  const artifact = preparation?.find(step => step.name === "Upload the checked Windows native helpers");
+  expect(artifact?.with?.path?.split("\n")).toEqual(expect.arrayContaining([
+    "ave/resources/windows-job/x64/ave-job-query-failure.exe",
+    "ave/resources/windows-path-kind/x64/ave-path-kind.exe.build.json",
+    "ave/resources/windows-path-kind/x64/ave-path-kind-hold-fixture.exe",
+  ]));
   const classifier = steps.findIndex(step => step.name === "Verify and configure the shared test inputs");
   const regressions = steps.findIndex(step => step.name === "Run Windows regressions");
   expect(classifier).toBeGreaterThan(-1);

@@ -158,7 +158,7 @@ describe("setupWorkflowStores — tool and idle-scheduler wiring", () => {
     const ctx = {
       host: createBootHostFixture(),
       getMainWindow: () => null,
-      approvalGate: { setConversationTitleResolver: vi.fn(), requestAndWait: async () => ({ choice: "deny-once" }) },
+      approvalGate: { setConversationTitleResolver: vi.fn(), requestAndWait: answeringRequestAndWait(() => ({ choice: "deny-once" })) },
       toolRegistry: registry,
       settingsService: { get: () => undefined, getAll: () => ({}) },
     } as unknown as BootContext;

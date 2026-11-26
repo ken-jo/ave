@@ -21,7 +21,8 @@ import type {
   ApprovalRequestInput,
   ApprovalSignatureFields,
 } from "../approval-gate.js";
-import type { HostShellExecutionPermitBinding } from "../host-shell-execution-permit.js";
+import { createShellApprovalDirectory, type HostShellExecutionPermitBinding } from "../host-shell-execution-permit.js";
+import { captureShellWorkingDirectoryIdentity } from "../shell-working-directory-identity.js";
 import {
   buildHostShellExecutionPlan,
   getHostShellExecutionPlanAuditProjection,
@@ -40,6 +41,9 @@ import {
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { setLocale } from "../../i18n/runtime.js";
 import { loadLocaleMessages } from "../../i18n/messages/index.js";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
+
+withSourceHostResources();
 
 // Mock WebContents
 
@@ -324,15 +328,17 @@ describe("ApprovalGate", () => {
       toolName: "bash",
       toolUseId: "receipt-tool-use",
       command: "echo receipt",
-      requestedCwd: "subdir",
-      executionCwd: "C:/repo",
-      resolvedCwd: "C:/repo/subdir",
+      requestedCwd: undefined,
+      executionCwd: process.cwd(),
+      resolvedCwd: process.cwd(),
+      cwdIdentity: captureShellWorkingDirectoryIdentity(process.cwd()),
       timeoutSeconds: 30,
       executionMode: "default",
       justification: undefined,
       runInBackground: false,
       allowedDirectories: Object.freeze(["c:/repo/extra"]),
     });
+    const directory = createShellApprovalDirectory(binding);
     const req = makeRequest({
       id: "req-host-shell-receipt",
       toolName: "bash",
@@ -344,6 +350,7 @@ describe("ApprovalGate", () => {
       },
       ...(forced ? { allowedChoices: ["allow-once", "deny-once"] as const, forceExplicit: true as const } : {}),
       hostShellExecutionPermitBinding: binding,
+      processCwd: { directory },
     });
 
     const promise = gate.requestAndWait(req);
@@ -365,7 +372,7 @@ describe("ApprovalGate", () => {
       nonce: sent.nonce,
       hmac: sent.hmac,
     });
-    const decision = await promise;
+    const decision = await promise.finally(() => directory.dispose());
     const auditText = JSON.stringify(auditLogger.log.mock.calls);
     expect(auditText).toContain(`executionPlan.identity=${plan.identity}`);
     expect(auditText).toContain("executionPlan.requestedSandbox=true");
