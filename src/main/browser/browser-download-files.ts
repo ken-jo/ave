@@ -7,7 +7,7 @@ import { createLogger } from "../../lib/logger.js";
 import { getSystemErrorName } from "node:util";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../managed-child-processes.js";
-import { resolveWindowsPathKindHelper, windowsPathKindHelperIn } from "../windows-path-kind-launcher.js";
+import { isWindowsPathKindHelperUnavailable, windowsPathKindHelperIn, withWindowsPathKindHelper } from "../windows-path-kind-launcher.js";
 
 const log = createLogger("browser-download-files");
 
@@ -248,18 +248,19 @@ export function heldFileOperations(resourcePath: string, platform: NodeJS.Platfo
   if (platform === "linux") return descriptorFileOperations();
   if (platform !== "darwin" && platform !== "win32") throw new Error(`held directory file operations are not available on ${platform}`);
   if (platform === "win32") {
-    const resolveHelper = () => {
+    const withHelper = <T>(launch: (helper: string) => T): T => {
       try {
-        return resolveWindowsPathKindHelper(resourcePath);
+        return withWindowsPathKindHelper(launch, resourcePath);
       } catch (error) {
+        if (!isWindowsPathKindHelperUnavailable(error)) throw error;
         throw new HeldFileHelperUnavailableError(windowsPathKindHelperIn(resourcePath), error instanceof Error ? error.message : String(error));
       }
     };
-    return helperFileOperations(resolveHelper, true);
+    return helperFileOperations(withHelper, true);
   }
   const helper = join(resourcePath, "macos-dir-ops", process.arch, "ave-dir-ops");
   if (!existsSync(helper)) throw new HeldFileHelperUnavailableError(helper);
-  return helperFileOperations(() => helper, false);
+  return helperFileOperations(launch => launch(helper), false);
 }
 
 // The answers a directory check can get when the directory is missing, unreadable, not a directory, or a link: it cannot be verified.
@@ -1391,15 +1392,15 @@ function oneOf<T extends string>(helper: string, outcome: string, allowed: reado
  * (scripts/build-macos-dir-ops.mjs) and stand-ins for a helper that hangs.
  */
 export function _helperFileOperationsForTest(helper: string, bounds?: HelperBounds, windowsFileIds = false): HeldFileOperations {
-  return helperFileOperations(() => helper, windowsFileIds, bounds);
+  return helperFileOperations(launch => launch(helper), windowsFileIds, bounds);
 }
 
-function helperFileOperations(resolveHelper: () => string, windowsFileIds: boolean, bounds: HelperBounds = POLICY_BOUNDS): HeldFileOperations {
-  const helper = resolveHelper();
+function helperFileOperations(withHelper: <T>(launch: (helper: string) => T) => T, windowsFileIds: boolean, bounds: HelperBounds = POLICY_BOUNDS): HeldFileOperations {
+  const helper = withHelper(path => path);
   const parseInode = windowsFileIds ? parseWindowsInode : parseUnsigned;
   const run = async (args: readonly string[], proceed: Proceed, stop: AbortSignal, onWriting?: (file: FileIdentity) => void,
     journal?: DownloadTargetJournal): Promise<string> =>
-    runHelper(resolveHelper(), args, proceed, stop, bounds, parseInode, onWriting, journal);
+    withHelper(path => runHelper(path, args, proceed, stop, bounds, parseInode, onWriting, journal));
   const go = (): boolean => true;
   const recover: HeldFileOperations["recover"] = async (folder, name, original, identity) => {
     const left: OwnFileResult = { outcome: "left", at: { name, identity } };
@@ -1514,11 +1515,11 @@ function helperFileOperations(resolveHelper: () => string, windowsFileIds: boole
     readRecord: async (directory, name, max, sweep) => {
       if (sweep !== undefined) {
         let bytes: Buffer | null = null;
-        const answer = await runHelper(resolveHelper(), ["--dir-sweep-record", ...directoryArguments(directory), name, String(max)],
+        const answer = await withHelper(path => runHelper(path, ["--dir-sweep-record", ...directoryArguments(directory), name, String(max)],
           go, UNSTOPPED, bounds, parseInode, undefined, undefined, (body, file) => {
             bytes = body;
             return sweep.reject(body, recordStamp(file, body));
-          });
+          }));
         if (answer === "removed") sweep.removed();
         return bytes;
       }

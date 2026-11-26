@@ -2,10 +2,13 @@ import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
 
-const mocks = vi.hoisted(() => ({ execFile: vi.fn(), execFileSync: vi.fn(), existsSync: vi.fn(), access: vi.fn(), readFile: vi.fn(), readFileSync: vi.fn() }));
+const mocks = vi.hoisted(() => ({ execFile: vi.fn(), execFileSync: vi.fn(), existsSync: vi.fn(), access: vi.fn(), readFileSync: vi.fn() }));
 vi.mock("node:child_process", () => ({ execFile: mocks.execFile, execFileSync: mocks.execFileSync }));
 vi.mock("node:fs", () => ({ existsSync: mocks.existsSync, readFileSync: mocks.readFileSync }));
-vi.mock("node:fs/promises", () => ({ access: mocks.access, readFile: mocks.readFile }));
+vi.mock("node:fs/promises", () => ({ access: mocks.access }));
+vi.mock("../../../scripts/lib/windows-locked-executable.mjs", () => ({
+  lockWindowsExecutable: (path: string) => ({ path, bytes: mocks.readFileSync(path), close: vi.fn() }),
+}));
 vi.mock("../../shared/tool-timeout-policy.js", async original => {
   const actual = await original<typeof import("../../shared/tool-timeout-policy.js")>();
   return { ...actual, TOOL_TIMEOUT_POLICY: { ...actual.TOOL_TIMEOUT_POLICY, windowsPathKindQueryMs: 300 } };
@@ -85,7 +88,6 @@ describe("Windows folder classifier launcher", () => {
 
     const changed = helperImage("independently supplied bytes");
     mocks.readFileSync.mockReturnValue(changed);
-    mocks.readFile.mockResolvedValue(changed);
     await expect(queryDosDevice("C:")).rejects.toSatisfy(isWindowsPathKindHelperUnavailable);
     await expect(queryWindowsDocumentsDirectory()).rejects.toSatisfy(isWindowsPathKindHelperUnavailable);
     await expect(queryWindowsSystemDirectory()).rejects.toSatisfy(isWindowsPathKindHelperUnavailable);
@@ -99,7 +101,6 @@ describe("Windows folder classifier launcher", () => {
     vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", windowsPeImageDigest(built));
     const changed = helperImage("independently supplied bytes");
     mocks.readFileSync.mockReturnValue(changed);
-    mocks.readFile.mockResolvedValue(changed);
     expect(() => resolveWindowsPathKindHelper()).toThrow("does not match this build");
     await expect(queryDosDevice("C:")).rejects.toSatisfy(isWindowsPathKindHelperUnavailable);
     await expect(queryWindowsDocumentsDirectory()).rejects.toSatisfy(isWindowsPathKindHelperUnavailable);

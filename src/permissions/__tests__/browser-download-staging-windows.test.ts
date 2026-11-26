@@ -393,8 +393,8 @@ vi.mock("node:child_process", async (original) => {
 });
 vi.mock("../../main/windows-path-kind-launcher.js", async (original) => {
   const actual = await original<typeof import("../../main/windows-path-kind-launcher.js")>();
-  return { ...actual, resolveWindowsPathKindHelper: () => hostPlatform === "win32"
-    ? actual.resolveWindowsPathKindHelper() : `${programRoot}\\app\\resources\\windows-path-kind\\ave-path-kind.exe` };
+  return { ...actual, withWindowsPathKindHelper: <T>(launch: (path: string) => T) => hostPlatform === "win32"
+    ? actual.withWindowsPathKindHelper(launch) : launch(`${programRoot}\\app\\resources\\windows-path-kind\\ave-path-kind.exe`) };
 });
 vi.mock("../../main/managed-child-processes.js", async (original) => {
   const actual = await original<typeof import("../../main/managed-child-processes.js")>();

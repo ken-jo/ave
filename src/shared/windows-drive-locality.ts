@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { isWindowsPathKindHelperTimeout, isWindowsPathKindHelperUnavailable, resolveWindowsPathKindHelper, windowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
+import { isWindowsPathKindHelperTimeout, isWindowsPathKindHelperUnavailable, windowsPathKindHelperUnavailable, withWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { decodeWindowsNativeReply, runWindowsNative } from "./windows-native-host.js";
 
@@ -10,9 +10,9 @@ const EXIT_NO_MAPPING = 1;
 type DriveQuery = (drive: string, resourcePath?: string) => string | null;
 
 function queryWithHelper(drive: string, resourcePath?: string): string | null {
-  const result = runWindowsNative(() => spawnSync(resolveWindowsPathKindHelper(resourcePath), [drive], {
+  const result = runWindowsNative(() => withWindowsPathKindHelper(helper => spawnSync(helper, [drive], {
     windowsHide: true, shell: false, timeout: TOOL_TIMEOUT_POLICY.windowsDriveLocalityMs, encoding: "buffer",
-  }));
+  }), resourcePath));
   if (result.error) {
     // A launch failure or a timeout is no answer; the spawn error names the install path, so only its code is kept.
     const { code } = result.error as NodeJS.ErrnoException;

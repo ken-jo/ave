@@ -1,7 +1,8 @@
 import { execFile, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { access, readFile } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { dirname, join, win32 } from "node:path";
+import { lockWindowsExecutable } from "../../scripts/lib/windows-locked-executable.mjs";
 import { windowsPeImageDigest } from "../../scripts/lib/windows-path-kind-image-digest.mjs";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
@@ -30,6 +31,23 @@ export function resolveWindowsPathKindHelper(resourcePath = getHostResources().r
   }
   verifyWindowsPathKindHelper(resourcePath);
   return binary;
+}
+
+/** Dispatch synchronously while the file and its parents are held. An async child is opened before spawn returns. */
+export function withWindowsPathKindHelper<T>(launch: (helper: string) => T, resourcePath = getHostResources().resourcePath): T {
+  if (!pinned()) return launch(resolveWindowsPathKindHelper(resourcePath));
+  let executable: ReturnType<typeof lockWindowsExecutable>;
+  try {
+    executable = lockWindowsExecutable(windowsPathKindHelperIn(resourcePath));
+  } catch {
+    throw missingWindowsPathKindHelper();
+  }
+  try {
+    assertBuiltHelper(executable.bytes);
+    return launch(executable.path);
+  } finally {
+    executable.close();
+  }
 }
 
 // Unbundled source modules under unit tests carry no pin.
@@ -95,8 +113,7 @@ function helperTimeout(what: string, ms: number): NodeJS.ErrnoException {
 
 export async function queryWindowsDocumentsDirectory(signal?: AbortSignal): Promise<string> {
   signal?.throwIfAborted();
-  const helper = resolveWindowsPathKindHelper();
-  return new Promise((resolve, reject) => {
+  return withWindowsPathKindHelper(helper => new Promise((resolve, reject) => {
     execFile(helper, ["--documents-directory"], {
       windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs, encoding: "buffer", maxBuffer: 128 * 1024, signal,
     }, (error, stdout) => {
@@ -109,21 +126,15 @@ export async function queryWindowsDocumentsDirectory(signal?: AbortSignal): Prom
         reject(cause);
       }
     });
-  });
+  }));
 }
 
 // QueryDosDeviceW opens nothing on the drive; no-mapping is a classification, while helper failure is a broken-install error.
 // See multi-source-git-marketplace.md §18.4.1 for the path contract.
-export function queryDosDevice(drive: string): Promise<string | null> {
-  if (process.platform !== "win32") return Promise.reject(new Error("the folder classifier requires Windows"));
-  if (!/^[A-Za-z]:$/u.test(drive)) return Promise.reject(new Error(`not a drive letter: ${drive}`));
-  let helper: string;
-  try {
-    helper = resolveWindowsPathKindHelper();
-  } catch (error) {
-    return Promise.reject(error);
-  }
-  return new Promise((resolve, reject) => {
+export async function queryDosDevice(drive: string): Promise<string | null> {
+  if (process.platform !== "win32") throw new Error("the folder classifier requires Windows");
+  if (!/^[A-Za-z]:$/u.test(drive)) throw new Error(`not a drive letter: ${drive}`);
+  return withWindowsPathKindHelper(helper => new Promise((resolve, reject) => {
     execFile(helper, [drive], { windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs, encoding: "buffer" }, (error, stdout, stderr) => {
       try {
         // A slow start is no broken install: a restart, not a reinstall, recovers it. Partial output is not read.
@@ -158,23 +169,14 @@ export function queryDosDevice(drive: string): Promise<string | null> {
         reject(cause);
       }
     });
-  });
+  }));
 }
 
 // The helper asks the OS directly; environment variables cannot choose a system verifier.
 export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT_POLICY.globalCeilingMs, deadline?: number): Promise<string> {
   if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
   const { resourcePath } = getHostResources();
-  const helper = windowsPathKindHelperIn(resourcePath);
-  let bytes: Buffer | undefined;
-  try {
-    if (pinned()) bytes = await readFile(helper);
-    else await access(helper);
-  } catch {
-    throw missingWindowsPathKindHelper();
-  }
-  if (bytes) assertBuiltHelper(bytes);
-  return new Promise((resolve, reject) => {
+  const launch = (helper: string) => new Promise<string>((resolve, reject) => {
     const options = windowsSystemDirectorySpawnOptions(helper);
     const remaining = deadline === undefined ? timeout : Math.min(timeout, deadline - performance.now());
     if (deadline !== undefined && remaining <= 0) {
@@ -199,18 +201,27 @@ export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT
       }
     });
   });
+  if (pinned()) return withWindowsPathKindHelper(launch, resourcePath);
+  const helper = windowsPathKindHelperIn(resourcePath);
+  try {
+    await access(helper);
+  } catch {
+    throw missingWindowsPathKindHelper();
+  }
+  return launch(helper);
 }
 
 export function queryWindowsSystemDirectorySync(): string {
   if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
-  const helper = resolveWindowsPathKindHelper();
-  const options = windowsSystemDirectorySpawnOptions(helper);
-  const result = spawnSync(helper, ["--system-directory"], options);
-  if (isWindowsPathKindHelperTimeout(result.error)) throw helperTimeout("The Windows system directory query", options.timeout);
-  if (result.error || result.status !== 0 || result.stderr.length > 0) {
-    throw new Error(`Windows system directory query failed. ${REPAIR}`, { cause: result.error });
-  }
-  return parseWindowsSystemDirectory(result.stdout);
+  return withWindowsPathKindHelper(helper => {
+    const options = windowsSystemDirectorySpawnOptions(helper);
+    const result = spawnSync(helper, ["--system-directory"], options);
+    if (isWindowsPathKindHelperTimeout(result.error)) throw helperTimeout("The Windows system directory query", options.timeout);
+    if (result.error || result.status !== 0 || result.stderr.length > 0) {
+      throw new Error(`Windows system directory query failed. ${REPAIR}`, { cause: result.error });
+    }
+    return parseWindowsSystemDirectory(result.stdout);
+  });
 }
 
 export function windowsSystemDirectorySpawnOptions(helper: string) {
