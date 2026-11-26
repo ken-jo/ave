@@ -23,9 +23,11 @@ import { normalizeSettingsTab } from "../shared/settings-tabs.js";
 import { LOG_RETENTION_DAYS } from "../shared/log-retention.js";
 import { DEFAULT_UPSTREAM_PROXY } from "../shared/upstream-proxy.js";
 import { DEFAULT_SUBSCRIPTION_REASONING_SPEED } from "../shared/subscription-runtime.js";
+import { DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX } from "../shared/memory-embedding-config.js";
 import type { AppSettings } from "./settings-store.js";
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  memoryEmbedding: { localInferenceWithoutSandbox: DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX },
   llm: {
     compactionModelSelection: null,
     compactionModel: "",

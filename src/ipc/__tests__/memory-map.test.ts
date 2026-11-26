@@ -11,14 +11,22 @@ const state = vi.hoisted(() => ({
   handles: new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>>(),
   get: vi.fn(async (_readCatalog: ReadMemoryMapCatalog) => null), build: vi.fn(async () => ({ snapshotId: 'snapshot' })), cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
   status: vi.fn(async () => ({ status: 'unconfigured' })), download: vi.fn(async () => ({ status: 'ready' })), modelCancel: vi.fn(), adoptExistingFolder: vi.fn(async () => ({ status: 'ready' })),
-  dialog: vi.fn(async () => ({ canceled: true, filePaths: [] as string[] })), audit: vi.fn(), localConfined: true,
+  dialog: vi.fn(async () => ({ canceled: true, filePaths: [] as string[] })), audit: vi.fn(), localConfined: true, releaseGateOpen: false,
 }));
 vi.mock('electron', () => ({ ipcMain: { handle: (channel: string, handler: never) => state.handles.set(channel, handler) }, dialog: { showOpenDialog: state.dialog } }));
 vi.mock('../../main/memory-map/host.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/host.js')>(), MemoryMapHost: class { get = state.get; build = state.build; cancel = state.cancel; invalidate = state.invalidate; retrieve = state.retrieve; } }));
 vi.mock('../../main/memory-map/model-manager.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/model-manager.js')>(), LocalModelManager: class { status = state.status; download = state.download; cancel = state.modelCancel; adoptExistingFolder = state.adoptExistingFolder; } }));
 vi.mock('../../main/memory-map/local-runtime.js', async () => {
   const { MemoryMapHostError } = await import('../../main/memory-map/errors.js');
-  return { assertLocalEmbeddingRuntime: () => { if (!state.localConfined) throw new MemoryMapHostError('local-runtime-unavailable'); } };
+  return {
+    isLocalInferenceSwitchAvailable: () => state.releaseGateOpen,
+    assertLocalEmbeddingRuntime: (enabled: boolean) => {
+      if (state.localConfined) return 'offline-sandbox';
+      if (!state.releaseGateOpen) throw new MemoryMapHostError('local-runtime-unavailable');
+      if (!enabled) throw new MemoryMapHostError('local-inference-disabled');
+      return 'unconfined';
+    },
+  };
 });
 import { registerMemoryMapHandlers } from '../domains/memory-map.js';
 const hostEvent = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
@@ -37,13 +45,44 @@ const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 if (!originalPlatform) throw new Error('Missing platform descriptor');
 beforeEach(() => {
   Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' });
-  vi.clearAllMocks(); state.handles.clear(); state.localConfined = true;
+  vi.clearAllMocks(); state.handles.clear(); state.localConfined = true; state.releaseGateOpen = false;
   state.status.mockReset().mockResolvedValue({ status: 'unconfigured' });
   registerMemoryMapHandlers({ auditLogger: { log: state.audit }, settingsService: { get: () => undefined, set: vi.fn(), hasStoredSecret: vi.fn(async () => false) } } as unknown as IpcDeps,
     raw => (raw as { projectRoot?: string } | undefined)?.projectRoot === '/denied' ? { ok: false, error: 'project-not-allowed' } : { ok: true, options: {} });
 });
 afterEach(() => { Object.defineProperty(process, 'platform', originalPlatform); });
 describe('memory map host boundary', () => {
+  it('exposes and persists the preference only with release readiness, and refuses local operations while off', async () => {
+    const localModelPath = '/example/model';
+    let config: MemoryEmbeddingConfig = { source: 'local', localModelPath };
+    const set = vi.fn(async (_key: string, value: MemoryEmbeddingConfig) => { config = value; });
+    registerMemoryMapHandlers({
+      auditLogger: { log: state.audit },
+      settingsService: { get: (key: string) => key === 'memoryEmbedding' ? config : undefined, hasStoredSecret: async () => false, set },
+    } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
+    state.localConfined = false;
+    const preference = { localInferenceWithoutSandbox: false };
+    const change = () => invoke('settingsSet', preference);
+    const unreleased = await invoke('settingsGet') as Awaited<ReturnType<MemoryMapApi['settingsGet']>>;
+    expect(unreleased.ok).toBe(true);
+    if (unreleased.ok) expect(unreleased.value).not.toHaveProperty('localInferenceWithoutSandbox');
+    await expect(change()).resolves.toEqual({ ok: false, error: 'local-runtime-unavailable' });
+    expect(set).not.toHaveBeenCalled();
+
+    state.releaseGateOpen = true;
+    await expect(invoke('settingsSet', { localInferenceWithoutSandbox: 'false' })).resolves.toEqual({ ok: false, error: 'invalid-input' });
+    await expect(invoke('settingsGet')).resolves.toMatchObject({ ok: true, value: { localInferenceWithoutSandbox: true } });
+    await expect(invoke('build')).resolves.toMatchObject({ ok: true });
+    await expect(change()).resolves.toMatchObject({ ok: true, value: preference });
+    expect(set).toHaveBeenCalledWith('memoryEmbedding', { source: 'local', localModelPath, ...preference });
+    expect(state.cancel).toHaveBeenCalledOnce();
+    await expect(invoke('modelStatus')).resolves.toEqual({ ok: false, error: 'local-inference-disabled' });
+    await expect(invoke('build')).resolves.toEqual({ ok: false, error: 'local-inference-disabled' });
+    await expect(invoke('settingsSet', { source: 'local' })).resolves.toMatchObject({ ok: true, value: preference });
+    await expect(invoke('settingsSet', { localInferenceWithoutSandbox: true })).resolves.toMatchObject({ ok: true, value: { localInferenceWithoutSandbox: true } });
+    await expect(invoke('modelStatus')).resolves.toMatchObject({ ok: true });
+  });
+
   it('returns a distinct error for an oversized local build', async () => {
     state.build.mockRejectedValueOnce(new MemoryMapHostError('catalog-too-large'));
     await expect(invoke('build')).resolves.toEqual({ ok: false, error: 'catalog-too-large' });

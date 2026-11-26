@@ -1,11 +1,18 @@
 import type { MemoryMapError } from './memory-map.js';
 import type { MessageCatalogKey } from '../i18n/messages/en.js';
+
+export type LocalInferenceRefusal = 'local-runtime-unavailable' | 'local-inference-disabled';
+export function isLocalInferenceRefusal(error: MemoryMapError): error is LocalInferenceRefusal {
+  return error === 'local-runtime-unavailable' || error === 'local-inference-disabled';
+}
+
 export const MEMORY_MAP_ERROR_KEYS = {
   'invalid-input': 'memoryMap.error.invalid-input',
   'catalog-too-large': 'memoryMap.error.catalog-too-large',
   'project-not-allowed': 'memoryMap.error.project-not-allowed',
   'model-unconfigured': 'memoryMap.error.model-unconfigured',
   'local-runtime-unavailable': 'memoryMap.error.local-runtime-unavailable',
+  'local-inference-disabled': 'memoryMap.error.local-inference-disabled',
   'sandbox-home-unavailable': 'memoryMap.error.sandbox-home-unavailable',
   'model-integrity-failed': 'memoryMap.error.model-integrity-failed',
   'graph-unavailable': 'memoryMap.error.graph-unavailable',

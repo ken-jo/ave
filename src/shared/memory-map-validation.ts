@@ -4,7 +4,10 @@ const MemoryMapFiltersSchema = z.object({ sources: z.array(z.enum(['user','assis
 export const MemoryRetrievalSchema = z.object({ scope: MemoryMapScopeSchema.optional(), question: z.string().trim().min(1).max(2000), filters: MemoryMapFiltersSchema, snapshotId: z.string().min(1).max(128), queryId: z.string().min(1).max(128) }).strict();
 // biome-ignore lint/suspicious/noControlCharactersInRegex: Model IDs must reject ASCII control characters.
 const MODEL_ID_PATTERN = /^[^\u0000-\u001f\u007f]+$/;
-export const MemoryEmbeddingSettingsSchema = z.discriminatedUnion('source', [z.object({ source: z.literal('local') }).strict(), z.object({ source: z.literal('provider'), providerId: z.string().min(1).max(128), modelId: z.string().trim().min(1).max(256).regex(MODEL_ID_PATTERN), endpointId: z.string().regex(/^[a-f0-9]{64}$/), consent: z.boolean() }).strict()]);
+export const MemoryEmbeddingSettingsSchema = z.union([
+  z.discriminatedUnion('source', [z.object({ source: z.literal('local') }).strict(), z.object({ source: z.literal('provider'), providerId: z.string().min(1).max(128), modelId: z.string().trim().min(1).max(256).regex(MODEL_ID_PATTERN), endpointId: z.string().regex(/^[a-f0-9]{64}$/), consent: z.boolean() }).strict()]),
+  z.object({ localInferenceWithoutSandbox: z.boolean() }).strict(),
+]);
 export const MemoryMapProgressSchema = z.object({ jobId: z.string().max(128), phase: z.enum(['embedding','neighbours','projection']), completed: z.number().int().nonnegative(), total: z.number().int().nonnegative(), memoryId: z.string().max(128).optional() }).strict();
 export const MemoryModelStatusSchema = z.object({ status: z.enum(['unconfigured','downloading','ready','failed']), error: z.enum(['model-download-failed','model-integrity-failed','model-folder-invalid','model-cancelled']).optional(), receivedBytes: z.number().int().nonnegative(), totalBytes: z.number().int().nonnegative(), completedFiles: z.number().int().nonnegative(), totalFiles: z.number().int().nonnegative() }).strict();
 

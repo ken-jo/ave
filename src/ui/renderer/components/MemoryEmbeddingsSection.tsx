@@ -1,15 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { useTranslation } from "../../../i18n/react.js";
 import type { MemoryMapApi, MemoryMapError, MemoryEmbeddingSettings, MemoryEmbeddingSelection } from "../../../shared/memory-map.js";
-import { MEMORY_EMBEDDING_CONSENT_VERSION } from '../../../shared/memory-embedding-config.js';
+import { DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX, MEMORY_EMBEDDING_CONSENT_VERSION } from '../../../shared/memory-embedding-config.js';
+import { isLocalInferenceRefusal, type LocalInferenceRefusal, MEMORY_MAP_ERROR_KEYS } from "../../../shared/memory-map-errors.js";
 import type { MemoryModelStatus } from "../../../shared/memory-model.js";
-import { SettingsControlActions, useSettingsControl } from "../context/SettingsEditorContext.js";
+import { SettingsControlActions, useSettingsControl, useSettingsControls } from "../context/SettingsEditorContext.js";
+
+const LOCAL_INFERENCE_SETTING = 'memoryEmbedding.localInferenceWithoutSandbox';
 
 export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<MemoryModelStatus | null>(null);
-  const [localRuntimeUnavailable, setLocalRuntimeUnavailable] = useState(false);
+  const [localRuntimeRefusal, setLocalRuntimeRefusal] = useState<LocalInferenceRefusal | null>(null);
   const [revision, setRevision] = useState("");
   const [error, setError] = useState<MemoryMapError | null>(null);
   const [busy, setBusy] = useState(false);
@@ -19,18 +22,20 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
   const [modelId, setModelId] = useState('');
   const [acknowledgedEndpointId, setAcknowledgedEndpointId] = useState<string>();
   const generation = useRef(0);
+  const inferenceDescriptionId = useId();
+  const applyModelStatus = useCallback((result: Awaited<ReturnType<MemoryMapApi['modelStatus']>>) => {
+    const refusal = !result.ok && isLocalInferenceRefusal(result.error) ? result.error : null;
+    setLocalRuntimeRefusal(refusal);
+    if (refusal !== null) { setStatus(null); setError(null); return; }
+    if (result.ok) { setStatus(result.value); setError(result.value.error ?? null); } else setError(result.error);
+  }, []);
   useEffect(() => {
     let active = true;
     const stop = api.onModelProgress(value => { if (active) { generation.current++; setStatus(value); setError(value.error ?? null); } });
     const current = generation.current;
     void api.modelStatus().then(result => {
       if (!active || current !== generation.current) return;
-      if (!result.ok && result.error === 'local-runtime-unavailable') {
-        setLocalRuntimeUnavailable(true);
-        return;
-      }
-      setLocalRuntimeUnavailable(false);
-      if (result.ok) { setStatus(result.value); setError(result.value.error ?? null); } else setError(result.error);
+      applyModelStatus(result);
     }).catch(() => { if (active) setError("model-download-failed"); });
     void api.settingsGet().then(result => { if (active && result.ok) {
       setSettings(result.value); setRevision(result.value.namespace.modelRevision); setSource(result.value.source);
@@ -43,20 +48,29 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
         && savedConsent.endpointId === route?.endpointId ? savedConsent.endpointId : undefined);
     } }).catch(() => {});
     return () => { active = false; generation.current++; stop(); };
-  }, [api]);
+  }, [api, applyModelStatus]);
   const handleAction = async (action: "download" | "existing" | "cancel") => {
-    if (localRuntimeUnavailable) return;
+    if (localRuntimeRefusal) return;
     setBusy(true); setError(null);
     try {
       const initial = await (action === "download" ? api.modelDownload() : action === "existing" ? api.modelUseExisting() : api.modelCancel());
       const result = initial.ok && action === "cancel" ? await api.modelStatus() : initial;
-      if (!result.ok) {
-        if (result.error === 'local-runtime-unavailable') setLocalRuntimeUnavailable(true);
-        else setError(result.error);
-      } else if (result.value) {
-        setStatus(result.value); setError(result.value.error ?? null);
-      }
+      if (!result.ok) applyModelStatus(result);
+      else if (result.value) applyModelStatus({ ok: true, value: result.value });
     } catch { setError(action === "existing" ? "model-folder-invalid" : "model-download-failed"); }
+    finally { setBusy(false); }
+  };
+  const saveLocalInferencePreference = async (enabled: boolean) => {
+    setBusy(true); setError(null);
+    try {
+      const result = await api.settingsSet({ localInferenceWithoutSandbox: enabled });
+      if (!result.ok) { setError(result.error); return false; }
+      setSettings(result.value);
+      const current = ++generation.current;
+      const modelStatus = await api.modelStatus();
+      if (current === generation.current) applyModelStatus(modelStatus);
+      return true;
+    } catch { setError('local-runtime-unavailable'); return false; }
     finally { setBusy(false); }
   };
   const selectedProvider = settings?.providers.find(value => value.id === providerId);
@@ -112,7 +126,19 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
       if (!result?.ok) throw new Error("Memory embedding source reset failed");
     },
   });
-  const downloading = !localRuntimeUnavailable && status?.status === "downloading";
+  const localInferenceWithoutSandbox = settings?.localInferenceWithoutSandbox;
+  const inferenceLabel = t("memoryEmbeddings.localInferenceWithoutSandbox");
+  useSettingsControls(localInferenceWithoutSandbox === undefined ? [] : [{
+    id: LOCAL_INFERENCE_SETTING,
+    section: "memory-embeddings",
+    label: inferenceLabel,
+    modified: localInferenceWithoutSandbox !== DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX,
+    disabledReason: busy ? t("settingsContent.saving") : undefined,
+    reset: async () => {
+      if (!await saveLocalInferencePreference(DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX)) throw new Error("Local inference preference reset failed");
+    },
+  }]);
+  const downloading = !localRuntimeRefusal && status?.status === "downloading";
   return <section data-settings-section="memory-embeddings" tabIndex={-1} aria-labelledby="memory-embeddings-heading" className="space-y-3 rounded-lg border p-4">
     <h2 id="memory-embeddings-heading" className="text-sm font-semibold">{t("memoryEmbeddings.title")}</h2>
     <p className="text-xs text-muted-foreground">{t("memoryEmbeddings.localDefault")}</p>
@@ -138,16 +164,24 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
         <p>{t('memoryEmbeddings.rebuildNotice')}</p>
       </>}
     </fieldset>
-    <p role="status" className="text-xs">{localRuntimeUnavailable
-      ? t("memoryMap.error.local-runtime-unavailable")
+    {localInferenceWithoutSandbox !== undefined && <div data-setting-id={LOCAL_INFERENCE_SETTING} className="space-y-1 text-xs">
+      <label className="flex items-center gap-2">
+        <input type="checkbox" checked={localInferenceWithoutSandbox} disabled={busy}
+          aria-describedby={inferenceDescriptionId} onChange={event => void saveLocalInferencePreference(event.target.checked)} />
+        {inferenceLabel}
+      </label>
+      <p id={inferenceDescriptionId} className="text-muted-foreground">{t("memoryEmbeddings.localInferenceWithoutSandboxDescription")}</p>
+    </div>}
+    <p role="status" className="text-xs">{localRuntimeRefusal
+      ? t(MEMORY_MAP_ERROR_KEYS[localRuntimeRefusal])
       : <>{t(status ? `memoryEmbeddings.${status.status}` : "memoryEmbeddings.loading")}{status?.status === "ready" && revision ? ` · ${revision}` : ""}</>}</p>
     {downloading && <div className="space-y-1 text-xs"><progress aria-label={t("memoryEmbeddings.downloading")} value={status.receivedBytes} max={Math.max(1, status.totalBytes)} className="w-full"/><p>{t("memoryEmbeddings.bytes", { received: status.receivedBytes.toLocaleString(), total: status.totalBytes.toLocaleString() })}</p></div>}
     {error && <p role="alert" className="text-xs text-destructive">{t(`memoryMap.error.${error}`)}</p>}
-    {!localRuntimeUnavailable && <p className="text-xs text-muted-foreground">{t("memoryEmbeddings.downloadNotice")}</p>}
+    {!localRuntimeRefusal && <p className="text-xs text-muted-foreground">{t("memoryEmbeddings.downloadNotice")}</p>}
     <div className="flex flex-wrap gap-2">
       {downloading ? <Button variant="outline" size="sm" onClick={() => void handleAction("cancel")}>{t("memoryEmbeddings.cancel")}</Button> : <>
-        <Button size="sm" disabled={busy || localRuntimeUnavailable || !status} onClick={() => void handleAction("download")}>{t(status?.status === "failed" ? "memoryEmbeddings.retry" : "memoryEmbeddings.download")}</Button>
-        <Button variant="outline" size="sm" disabled={busy || localRuntimeUnavailable || !status} onClick={() => void handleAction("existing")}>{t("memoryEmbeddings.existing")}</Button>
+        <Button size="sm" disabled={busy || Boolean(localRuntimeRefusal) || !status} onClick={() => void handleAction("download")}>{t(status?.status === "failed" ? "memoryEmbeddings.retry" : "memoryEmbeddings.download")}</Button>
+        <Button variant="outline" size="sm" disabled={busy || Boolean(localRuntimeRefusal) || !status} onClick={() => void handleAction("existing")}>{t("memoryEmbeddings.existing")}</Button>
       </>}
     </div>
     <SettingsControlActions section="memory-embeddings" />

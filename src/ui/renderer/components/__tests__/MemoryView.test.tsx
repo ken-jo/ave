@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryMapApi } from '../../../../__tests__/support/memory-map-api.js';
+import { ko } from '../../../../i18n/messages/ko.js';
 import { makeMockAveApi } from '../../../../../test/renderer/mock-ave-api.js';
 import type { GraphSnapshot } from '../../../../shared/memory-map.js';
 import type { AveApi } from '../../types.js';
@@ -40,6 +41,16 @@ function selectTab(name: string) { fireEvent.mouseDown(screen.getByRole('tab', {
 async function ready() { await screen.findByText('메모리 3 · 연결 2'); }
 
 describe('memory map view', () => {
+  it('shows the off notice and keeps local rebuild disabled with a cached snapshot', async () => {
+    const { map, props } = setup();
+    map.modelStatus.mockResolvedValue({ ok: false, error: 'local-inference-disabled' });
+    render(<MemoryView {...props} />);
+    expect(await screen.findByText(ko['memoryMap.error.local-inference-disabled'])).toBeVisible();
+    expect(screen.getByRole('button', { name: '지도 다시 만들기' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '메모리 임베딩 설정' })).toBeEnabled();
+    expect(map.build).not.toHaveBeenCalled();
+  });
+
   it.each([null, SNAPSHOT])('disables local build on first open with an unsupported local runtime and snapshot %#', async snapshot => {
     const { map, props } = setup();
     map.get.mockResolvedValue({ ok: true, value: snapshot });

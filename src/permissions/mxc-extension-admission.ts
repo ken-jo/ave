@@ -35,6 +35,10 @@ export function registerMxcReleaseGateEvidence(evidence: MxcExtensionReleaseGate
   };
 }
 
+export function hasMxcReleaseGateEvidence(): boolean {
+  return releaseGateEvidence !== undefined && classifyMxcReleaseGate(releaseGateEvidence).state === "available";
+}
+
 export function assertMxcReleaseGateEvidence(): void {
   if (releaseGateEvidence === undefined) {
     throw new MxcCapabilityUnavailableError("No release-gate evidence is registered for this installation; native readiness has not been established");

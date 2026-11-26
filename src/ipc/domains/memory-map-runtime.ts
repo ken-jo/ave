@@ -8,12 +8,14 @@ import type { IpcDeps } from '../types.js';
 import type { MemoryMapScope, MemoryEmbeddingSettings } from '../../shared/memory-map.js';
 import type { z } from 'zod';
 import type { MemoryEmbeddingSettingsSchema, MemoryRetrievalSchema } from '../../shared/memory-map-validation.js';
-import { assertLocalEmbeddingRuntime } from '../../main/memory-map/local-runtime.js';
+import { assertLocalEmbeddingRuntime, isLocalInferenceSwitchAvailable } from '../../main/memory-map/local-runtime.js';
+import { runMemoryWorker } from '../../main/memory-map/worker-client.js';
 import { LocalModelManager, MemoryModelError } from '../../main/memory-map/model-manager.js';
 import { MemoryMapHost, MemoryMapHostError } from '../../main/memory-map/host.js';
 import { readGraphCatalog, memoryFacets, graphMemoryRevision, isGraphMemory, matchesGraphRecord, memoryMapScopeId, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
 import { ProviderEmbeddings } from '../../main/memory-map/provider-embeddings.js';
 import { createMemoryProviderEgress } from '../../main/memory-map/provider-egress.js';
+import { DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX } from '../../shared/memory-embedding-config.js';
 import { getLlmVendorSettings, LLM_VENDORS } from '../../shared/llm-vendor-defaults.js';
 import { defaultWorkspaceProject } from '../../main/project-root-authorization.js';
 import { sendToWebContents } from '../safe-send.js';
@@ -59,6 +61,9 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     });
   });
   const provider = new ProviderEmbeddings(deps.settingsService, send);
+  const localInferencePreference = () => deps.settingsService.get('memoryEmbedding')?.localInferenceWithoutSandbox
+    ?? DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX;
+  const localRuntime = () => assertLocalEmbeddingRuntime(localInferencePreference());
   let settingsGeneration = 0;
   let settingsWrite: Promise<unknown> = Promise.resolve();
   let buildEvent: IpcMainInvokeEvent | undefined; let modelEvent: IpcMainInvokeEvent | undefined;
@@ -86,8 +91,9 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   const host = new MemoryMapHost({
     provider,
     watchAuthority,
+    runWorker: (folder, task, signal, onProgress) => runMemoryWorker(folder, task, signal, onProgress, localInferencePreference()),
     validatedModelPath: () => {
-      assertLocalEmbeddingRuntime();
+      localRuntime();
       if (!deps.settingsService.get('memoryEmbedding')?.localModelPath) throw new MemoryMapHostError('model-unconfigured');
       return model.validatedPath();
     },
@@ -120,12 +126,16 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     const providers = await provider.providers();
     const namespace = provider.namespace();
     const consent = provider.currentConsent();
-    return { source: namespace.source, namespace, providers, providerAvailable: providers.some(value => value.models.length > 0), ...(consent ? { consent } : {}) };
+    return {
+      source: namespace.source, namespace, providers, providerAvailable: providers.some(value => value.models.length > 0),
+      ...(consent ? { consent } : {}),
+      ...(isLocalInferenceSwitchAvailable() ? { localInferenceWithoutSandbox: localInferencePreference() } : {}),
+    };
   };
   return {
     get: scope => host.get(catalog(scope)),
     build: (scope, event) => {
-      if (deps.settingsService.get('memoryEmbedding')?.source !== 'provider') assertLocalEmbeddingRuntime();
+      if (deps.settingsService.get('memoryEmbedding')?.source !== 'provider') localRuntime();
       buildEvent = event;
       return host.build(catalog(scope));
     },
@@ -133,23 +143,44 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     facets: async scope => { await host.get(catalog(scope)); return memoryFacets(catalog(scope)().records); },
     retrieve: request => host.retrieve(catalog(request.scope), request),
     modelStatus: () => {
-      assertLocalEmbeddingRuntime();
+      localRuntime();
       return model.status();
     },
     modelDownload: event => {
-      assertLocalEmbeddingRuntime();
+      localRuntime();
       host.cancel(); modelEvent = event;
       return model.download();
     },
     modelCancel: () => { model.cancel(); return null; },
     modelUseExisting: async event => {
-      assertLocalEmbeddingRuntime();
+      localRuntime();
       const selection = await dialog.showOpenDialog({ properties: ['openDirectory'] });
       if (selection.canceled || !selection.filePaths[0]) return null;
       host.cancel(); modelEvent = event; return model.adoptExistingFolder(selection.filePaths[0]);
     },
     settingsGet: settings,
     settingsSet: async input => {
+      if ('localInferenceWithoutSandbox' in input) {
+        if (!isLocalInferenceSwitchAvailable()) throw new MemoryMapHostError('local-runtime-unavailable');
+        const pending = settingsWrite.catch(() => {}).then(async () => {
+          const previous = deps.settingsService.get('memoryEmbedding');
+          const enabled = input.localInferenceWithoutSandbox;
+          if (!enabled && previous?.localInferenceWithoutSandbox !== false) {
+            let usingHostChild = false;
+            try { usingHostChild = localRuntime() === 'unconfined'; } catch (error) {
+              if (!(error instanceof MemoryMapHostError)) throw error;
+            }
+            if (usingHostChild) {
+              if (previous?.source !== 'provider') host.cancel();
+              model.cancel();
+            }
+          }
+          await deps.settingsService.set('memoryEmbedding', { ...previous, localInferenceWithoutSandbox: enabled });
+          return settings();
+        });
+        settingsWrite = pending;
+        return pending;
+      }
       if (input.source === 'provider') {
         if (!input.consent) throw new MemoryMapHostError('provider-consent-required');
         provider.assertCurrentEndpoint(input.providerId, input.endpointId);
@@ -164,6 +195,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
         const previous = deps.settingsService.get('memoryEmbedding');
         await deps.settingsService.set('memoryEmbedding', {
           ...(previous?.localModelPath ? { localModelPath: previous.localModelPath } : {}),
+          ...(previous?.localInferenceWithoutSandbox !== undefined ? { localInferenceWithoutSandbox: previous.localInferenceWithoutSandbox } : {}),
           ...input.source === 'local' ? { source: 'local' as const } : {
             source: 'provider' as const, providerId: input.providerId, modelId: input.modelId,
             consent,

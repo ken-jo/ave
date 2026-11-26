@@ -26,6 +26,30 @@ beforeAll(async () => { await import('../../../../ipc/domains/memory-map-runtime
 afterEach(() => { setLocale(previousLocale); });
 
 describe('memory embeddings settings', () => {
+  it.each([['en', en], ['ko', ko]] as const)('shows the released switch and its disabled notice (%s)', async (locale, messages) => {
+    setLocale(locale);
+    const api = createMemoryMapApi();
+    const initial = await api.settingsGet();
+    if (!initial.ok) throw new Error('Missing settings');
+    api.settingsGet.mockResolvedValue({ ...initial, value: { ...initial.value, localInferenceWithoutSandbox: true } });
+    api.settingsSet.mockResolvedValue({ ...initial, value: { ...initial.value, localInferenceWithoutSandbox: false } });
+    api.modelStatus.mockResolvedValueOnce({ ok: false, error: 'local-runtime-unavailable' });
+    api.modelStatus.mockResolvedValue({ ok: false, error: 'local-inference-disabled' });
+    const { api: settingsApi } = makeMockAveApi();
+    const view = render(<SettingsEditorProvider api={settingsApi as never} modifiedOnly={false}>
+      <MemoryEmbeddingsSection api={api} />
+    </SettingsEditorProvider>);
+    const control = await screen.findByRole('checkbox', { name: messages['memoryEmbeddings.localInferenceWithoutSandbox'] });
+    expect(control).toBeChecked();
+    expect(control).toHaveAccessibleDescription(messages['memoryEmbeddings.localInferenceWithoutSandboxDescription']);
+    fireEvent.click(control);
+    await waitFor(() => expect(control).not.toBeChecked());
+    expect(await screen.findByText(messages['memoryMap.error.local-inference-disabled'])).toBeVisible();
+    expect(screen.getByRole('button', { name: messages['memoryEmbeddings.existing'] })).toBeDisabled();
+    expect(api.settingsSet).toHaveBeenCalledWith({ localInferenceWithoutSandbox: false });
+    expect(_unregisteredSettingsControlsForTest(view.container)).toEqual([]);
+  });
+
   it.each([['en', en], ['ko', ko]] as const)('registers the localized embedding source and resets it through the memory map API (%s)', async (locale, messages) => {
     setLocale(locale);
     const api = createMemoryMapApi();
@@ -128,7 +152,7 @@ describe('memory embeddings settings', () => {
     fireEvent.click(acknowledgement);
     fireEvent.click(save);
     await waitFor(() => expect(set).toHaveBeenCalledTimes(when === 'before Save' ? 1 : 2));
-    const [first, second] = api.settingsSet.mock.calls.map(([selection]) => selection.source === 'provider' ? selection.endpointId : undefined);
+    const [first, second] = api.settingsSet.mock.calls.map(([selection]) => 'source' in selection && selection.source === 'provider' ? selection.endpointId : undefined);
     expect(first).toBeDefined();
     expect(second).not.toBe(first);
     expect(config?.consent).toMatchObject({ modelId: 'embed-a', endpointId: second });
@@ -157,7 +181,10 @@ describe('memory embeddings settings', () => {
     if (!initial?.ok) throw new Error('Missing settings');
     api.settingsGet.mockClear();
     api.settingsGet.mockResolvedValue({ ok: true, value: { ...initial.value, providers: [{ id: 'configured', models: ['embed-a', 'embed-b'], route: ROUTE }, { id: 'no-embedding', models: [], reason: 'provider-no-embedding-model' }] } });
-    api.settingsSet.mockImplementation(async selection => ({ ok: true, value: { ...initial.value, source: selection.source, namespace: { ...initial.value.namespace, source: selection.source } } }));
+    api.settingsSet.mockImplementation(async selection => {
+      if (!('source' in selection)) return initial;
+      return { ok: true, value: { ...initial.value, source: selection.source, namespace: { ...initial.value.namespace, source: selection.source } } };
+    });
     render(<MemoryEmbeddingsSection api={api} />);
     await waitFor(() => expect(screen.getByRole('radio', { name: '제공자' })).toBeEnabled());
     fireEvent.click(screen.getByRole('radio', { name: '제공자' }));

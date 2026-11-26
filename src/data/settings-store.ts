@@ -1795,7 +1795,7 @@ export class SettingsService {
         migrationWriteBack = true;
       }
       const result: AppSettings = {
-        memoryEmbedding: normalizeMemoryEmbeddingConfig(parsed.memoryEmbedding),
+        memoryEmbedding: normalizeMemoryEmbeddingConfig(parsed.memoryEmbedding) ?? structuredClone(DEFAULT_SETTINGS.memoryEmbedding),
         llm,
         chat: normalizeChat(parsed.chat),
         a2aRemote: normalizeA2ARemote(parsed.a2aRemote),

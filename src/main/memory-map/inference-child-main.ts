@@ -3,7 +3,7 @@ import { errorMessage } from '../../shared/error-message.js';
 import { createLocalEmbedder } from './embedding.js';
 import { serveInferenceChild } from './inference-child-serve.js';
 
-// The confined inference child: the only process that loads the local model.
+// Only the inference child loads the local model.
 serveInferenceChild(async (task, files, onProgress) => {
   const embedder = await createLocalEmbedder(files);
   try {

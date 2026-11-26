@@ -7,10 +7,10 @@ import type { GraphBuildInput } from './graph.js';
 export type MemoryInferenceTask = { kind: 'embed-batch'; texts: string[]; jobId: string } | { kind: 'embed'; text: string };
 export type MemoryWorkerTask = MemoryInferenceTask | { kind: 'project'; input: GraphBuildInput };
 export type MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void) => Promise<T>;
-export const runMemoryWorker: MemoryWorkerRunner = async <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void): Promise<T> => {
+export const runMemoryWorker = async <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void, localInferenceWithoutSandbox?: boolean): Promise<T> => {
   signal.throwIfAborted();
-  // The local model loads only in the network-confined child; this thread projects cached vectors.
-  if (task.kind !== 'project') return runInferenceChild<T>(folder, task, signal, onProgress);
+  // The local model loads only in the inference child. This thread projects cached vectors.
+  if (task.kind !== 'project') return runInferenceChild<T>(folder, task, signal, onProgress, localInferenceWithoutSandbox);
   const entry = join(mainDir, 'memory-map-worker.js');
   const worker = new Worker(entry, { workerData: { task } });
   return new Promise<T>((resolve, reject) => {

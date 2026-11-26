@@ -45,8 +45,9 @@ export interface MemoryEmbeddingProvider {
   reason?: 'provider-no-embedding-model' | 'provider-route-ineligible';
 }
 export type MemoryEmbeddingSelection = { source: 'local' } | { source: 'provider'; providerId: string; modelId: string; endpointId: string; consent: boolean };
-export interface MemoryEmbeddingSettings { source: 'local' | 'provider'; namespace: EmbeddingNamespace; providerAvailable: boolean; providers: MemoryEmbeddingProvider[]; consent?: MemoryEmbeddingConsent }
-export type MemoryMapError = 'unauthorized-frame' | 'invalid-input' | 'catalog-too-large' | 'project-not-allowed' | 'model-unconfigured' | 'model-integrity-failed' | 'local-runtime-unavailable' | 'sandbox-home-unavailable' | 'graph-unavailable' | 'graph-stale' | 'graph-build-failed' | 'request-stale' | 'provider-unavailable' | 'provider-no-embedding-model' | 'provider-route-ineligible' | 'provider-consent-required' | 'provider-embedding-failed' | 'provider-dimension-mismatch' | 'model-download-failed' | 'model-folder-invalid' | 'model-cancelled';
+type MemoryEmbeddingSettingsUpdate = MemoryEmbeddingSelection | { localInferenceWithoutSandbox: boolean };
+export interface MemoryEmbeddingSettings { source: 'local' | 'provider'; namespace: EmbeddingNamespace; providerAvailable: boolean; providers: MemoryEmbeddingProvider[]; consent?: MemoryEmbeddingConsent; localInferenceWithoutSandbox?: boolean }
+export type MemoryMapError = 'unauthorized-frame' | 'invalid-input' | 'catalog-too-large' | 'project-not-allowed' | 'model-unconfigured' | 'model-integrity-failed' | 'local-runtime-unavailable' | 'local-inference-disabled' | 'sandbox-home-unavailable' | 'graph-unavailable' | 'graph-stale' | 'graph-build-failed' | 'request-stale' | 'provider-unavailable' | 'provider-no-embedding-model' | 'provider-route-ineligible' | 'provider-consent-required' | 'provider-embedding-failed' | 'provider-dimension-mismatch' | 'model-download-failed' | 'model-folder-invalid' | 'model-cancelled';
 type MemoryMapResult<T> = { ok: true; value: T } | { ok: false; error: MemoryMapError };
 export interface MemoryMapScope { projectRoot?: string; projectName?: string; includeUnscoped?: boolean }
 export interface MemoryMapApi {
@@ -60,7 +61,7 @@ export interface MemoryMapApi {
   modelCancel: () => Promise<MemoryMapResult<null>>;
   modelUseExisting: () => Promise<MemoryMapResult<MemoryModelStatus | null>>;
   settingsGet: () => Promise<MemoryMapResult<MemoryEmbeddingSettings>>;
-  settingsSet: (settings: MemoryEmbeddingSelection) => Promise<MemoryMapResult<MemoryEmbeddingSettings>>;
+  settingsSet: (settings: MemoryEmbeddingSettingsUpdate) => Promise<MemoryMapResult<MemoryEmbeddingSettings>>;
   onProgress: (callback: (progress: MemoryMapProgress) => void) => () => void;
   onModelProgress: (callback: (progress: MemoryModelStatus) => void) => () => void;
 }

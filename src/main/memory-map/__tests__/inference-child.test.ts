@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { appendFileSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
 import { duplexPair, PassThrough, Writable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setProcessPlatform } from '../../../__tests__/support/process-platform.js';
@@ -13,9 +13,12 @@ import { runInferenceChild } from '../inference-child.js';
 import { MAX_INFERENCE_TASK_BYTES } from '../inference-request.js';
 import { MODEL_FILES } from '../model-manifest.js';
 
-const { spawn, grant, createHome, connectLoopback } = vi.hoisted(() => ({
+const { spawn, spawnMxc, spawnHost, route, grant, createHome, connectLoopback } = vi.hoisted(() => ({
   spawn: vi.fn<(spec: ConfinedChildSpec) => unknown>(), grant: vi.fn(), createHome: vi.fn(), connectLoopback: vi.fn(),
+  spawnMxc: vi.fn(), spawnHost: vi.fn(), route: vi.fn(() => 'offline-sandbox'),
 }));
+vi.mock('../../managed-child-processes.js', () => ({ spawnManaged: spawnHost }));
+vi.mock('../../../sandbox/wrap-bundled-command.js', () => ({ spawnMxcBundledHolder: spawnMxc }));
 vi.mock('../../../permissions/confined-child.js', () => ({
   spawnConfinedChild: spawn, NODE_PRESERVE_SYMLINK_FLAGS: [], srtWinTargetEnv: (_base: unknown, extra: unknown) => extra,
 }));
@@ -29,7 +32,7 @@ vi.mock('../../../permissions/sandbox-process-home.js', () => ({
   isSandboxHomeUnavailable: (error: unknown) => (error as { code?: unknown } | undefined)?.code === 'sandbox-home-unavailable',
 }));
 vi.mock('../../../permissions/asrt-sandbox.js', () => ({ cleanupAsrtSandboxAfterCommand: vi.fn() }));
-vi.mock('../local-runtime.js', () => ({ assertLocalEmbeddingRuntime: vi.fn() }));
+vi.mock('../local-runtime.js', () => ({ assertLocalEmbeddingRuntime: route }));
 vi.mock('../model-manifest.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../model-manifest.js')>();
   return { ...actual, MODEL_FILES: actual.MODEL_FILES.map(file => ({
@@ -38,6 +41,7 @@ vi.mock('../model-manifest.js', async importOriginal => {
 });
 
 const HOST_PLATFORM = process.platform;
+const FIXTURE_SYSTEM_ROOT = win32.join('C:\\', 'example', 'Windows');
 let folder: string;
 const TASK = { kind: 'embed', text: 'fixture' } as const;
 const TASK_BYTES = Buffer.from(JSON.stringify(TASK));
@@ -49,6 +53,9 @@ const REQUEST_FRAME = Buffer.concat([REQUEST_PREFIX, TASK_BYTES, ...MODEL_BYTES]
 beforeEach(async () => {
   setProcessPlatform('linux');
   spawn.mockReset();
+  spawnMxc.mockReset();
+  spawnHost.mockReset();
+  route.mockReset();
   connectLoopback.mockReset();
   folder = await mkdtemp(join(tmpdir(), 'inference-stream-'));
   for (const file of MODEL_FILES) writeFileSync(join(folder, file.name), Buffer.alloc(file.bytes));
@@ -204,4 +211,53 @@ it('uses the Windows system directory as cwd without a profile ACL grant', async
     cwd: 'C:\\Windows\\System32', grantMode: 'deny-only', extraEnv: expect.objectContaining(home.env),
   }));
   expect(home.cleanup).toHaveBeenCalledOnce();
+});
+
+it('streams verified bytes through the container holder and releases it', async () => {
+  setProcessPlatform('win32');
+  vi.stubEnv('SystemRoot', FIXTURE_SYSTEM_ROOT);
+  route.mockReturnValue('mxc');
+  const { child, completed } = serveReply();
+  const release = vi.fn(async () => {});
+  spawnMxc.mockResolvedValue({ process: child, release });
+  const signal = new AbortController().signal;
+  await expect(runInferenceChild(folder, TASK, signal)).resolves.toBe('embedded');
+  expect(spawnMxc).toHaveBeenCalledWith(expect.objectContaining({
+    workerTransport: 'stdio-control-v1', signal, cwd: win32.join(FIXTURE_SYSTEM_ROOT, 'System32'), allowWrite: [],
+    egressOwner: expect.objectContaining({ network: 'offline' }),
+    holderEnv: expect.objectContaining({ ORT_DISABLE_TELEMETRY: '1' }),
+  }));
+  expect(spawnMxc.mock.calls[0]?.[0].allowRead).not.toContain(folder);
+  expect(completed).toHaveBeenCalledOnce();
+  expect(release).toHaveBeenCalledOnce();
+  expect(spawn).not.toHaveBeenCalled();
+  expect(spawnHost).not.toHaveBeenCalled();
+});
+
+it('keeps a container start refusal instead of starting a host child', async () => {
+  setProcessPlatform('win32');
+  vi.stubEnv('SystemRoot', FIXTURE_SYSTEM_ROOT);
+  route.mockReturnValue('mxc');
+  spawnMxc.mockRejectedValue(new Error('Container refused'));
+  await expect(runInferenceChild(folder, TASK, new AbortController().signal)).rejects.toThrow('Container refused');
+  expect(spawnHost).not.toHaveBeenCalled();
+  expect(spawn).not.toHaveBeenCalled();
+});
+
+it('streams verified bytes to a managed host child only for the unconfined route', async () => {
+  setProcessPlatform('win32');
+  vi.stubEnv('SystemRoot', FIXTURE_SYSTEM_ROOT);
+  route.mockReturnValue('unconfined');
+  createHome.mockReturnValue({ env: {}, cleanup: vi.fn() });
+  const { child, completed } = serveReply();
+  spawnHost.mockReturnValue(child);
+  await expect(runInferenceChild(folder, TASK, new AbortController().signal)).resolves.toBe('embedded');
+  expect(spawnHost).toHaveBeenCalledWith(process.execPath, expect.any(Array), expect.objectContaining({
+    cwd: win32.join(FIXTURE_SYSTEM_ROOT, 'System32'), stdio: ['pipe', 'pipe', 'pipe'],
+    env: expect.objectContaining({ ELECTRON_RUN_AS_NODE: '1', ORT_DISABLE_TELEMETRY: '1' }),
+  }), { label: 'memory-map-inference' });
+  expect(completed).toHaveBeenCalledOnce();
+  expect(child.kill).toHaveBeenCalledOnce();
+  expect(spawn).not.toHaveBeenCalled();
+  expect(spawnMxc).not.toHaveBeenCalled();
 });

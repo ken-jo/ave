@@ -74,6 +74,29 @@ function currentSettingsJson(settings: Record<string, unknown>): string {
   return JSON.stringify({ ...settings, appliedMigrations: currentMigrations });
 }
 
+describe("local memory inference preference", () => {
+  it.each(["new", "existing"] as const)("defaults on and persists an explicit off choice for a %s installation", async (installation) => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "local-inference-settings-"));
+    const load = () => new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    try {
+      const existingModel = { source: "local", localModelPath: join(userDataPath, "model") } as const;
+      if (installation === "existing") {
+        writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ memoryEmbedding: existingModel }));
+      }
+      const service = load();
+      const config = service.get("memoryEmbedding");
+      expect(config).toMatchObject({ localInferenceWithoutSandbox: true });
+      if (installation === "existing") expect(config).toMatchObject(existingModel);
+      await service.set("memoryEmbedding", { ...config, localInferenceWithoutSandbox: false });
+      const reloaded = load().get("memoryEmbedding");
+      expect(reloaded).toMatchObject({ localInferenceWithoutSandbox: false });
+      if (installation === "existing") expect(reloaded).toMatchObject(existingModel);
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+});
+
 describe("bundled provider settings", () => {
   it("reports malformed legacy installation state", () => {
     expect(() => normalizeMarketplace({ installedProviderIds: "groq" })).toThrow(/installedProviderIds/);
