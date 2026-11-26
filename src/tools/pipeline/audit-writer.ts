@@ -1,5 +1,6 @@
 import { appendDirectoryGrantRecord, appendToolInvocationAudit, recordToolInvocationAuditFailure, type DirectoryGrantRecord, type KindedTerminalRowWriter, type TerminalDenial, type TerminalDenyKind, type TerminalLifecycleEvent } from "../invocation-ledger.js";
 import type { ToolAuditTerminationReason } from "../../audit/audit-logger.js";
+import { approvalCancellationMessage } from "./approval-outcome.js";
 // Tool terminal rows go through auditToolCall with a row writer only the ledger hands out and the kind its writer named;
 // the ledger fires one PermissionDenied per permission-denial row, except for a governed tool, and none for a cancellation.
 import { randomUUID } from "node:crypto";
@@ -25,7 +26,6 @@ import {
   permissionAuditEntryFromToolCall,
 } from "./audit-entries.js";
 import { errorMessage } from "../../shared/error-message.js";
-import { t } from "../../i18n/index.js";
 
 const log = createLogger("executor");
 
@@ -246,7 +246,9 @@ export class AuditWriter {
         sessionId: sessionId ?? "unknown",
         type: "tool_call",
         input: auditInput.slice(0, 500),
-        output: cancelled ? t("be_executor.toolExecutionCancelled") : auditSafeOutput.slice(0, 1024),
+        output: cancelled
+          ? approvalCancellationMessage(permission?.reasonCode === "approval-cancelled" ? permission.reason : undefined)
+          : auditSafeOutput.slice(0, 1024),
         toolCalls: [{
           name: toolName,
           isError,

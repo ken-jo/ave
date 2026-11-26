@@ -1158,6 +1158,7 @@ export async function executeAuthorizedToolInvocation(
   };
 
   let lateApprovalDecision: ApprovalDecision | undefined;
+  let approvalCancellationContent: string | undefined;
   const requestLateApproval = async (request: ApprovalRequestInput): Promise<void> => {
     lateApprovalDecision = undefined;
     abortSignal?.throwIfAborted();
@@ -1201,6 +1202,7 @@ export async function executeAuthorizedToolInvocation(
     // A settled refusal is terminal before the refreshed policy is consulted.
     if (isSettledRefusal(decision)) {
       const failure = approvalFailureOutcome(decision, toolUse.name);
+      if (isHostApprovalCancelledDecision(decision)) approvalCancellationContent = failure?.content;
       permissionResult = failure?.permission ?? refusal(request.reason, answeredApprovalProvenance(decision));
       throw new Error(failure?.content ?? request.reason);
     }
@@ -1499,7 +1501,7 @@ export async function executeAuthorizedToolInvocation(
             seconds: String(Math.round(effectiveCeilingMs / 1000)),
           })
         : outcome.reason === "user-abort"
-          ? t("be_executor.toolExecutionCancelled")
+          ? approvalCancellationContent ?? t("be_executor.toolExecutionCancelled")
           : outcome.error.message || t("be_executor.toolExecutionUnknownError");
     if (cancellationSettlement) {
       // Only the settled output/error is diagnostic text. In particular, a

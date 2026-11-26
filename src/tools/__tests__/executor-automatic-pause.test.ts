@@ -1,6 +1,7 @@
 import { registerRunSession, __resetRunGrantsForTest } from "../../permissions/run-grants.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { t } from "../../i18n/index.js";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
@@ -301,7 +302,7 @@ describe("executor automated approval pause", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it.each(["caller", "quit"] as const)("cancels a pending late native card without entering the handler (%s)", async (by) => {
+  it.each(["caller", "quit", "project-scope-changed"] as const)("cancels a pending late native card without entering the handler (%s)", async (by) => {
     const f = await subject();
     const controller = new AbortController();
     const execute = vi.fn(async () => "wrote");
@@ -310,6 +311,7 @@ describe("executor automated approval pause", () => {
     const { hooks, reached, release } = heldPreToolUse();
     const { gate, cards, approve } = manualGate();
     const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const auditLog = vi.spyOn(f.audit, "log");
     const pending = executor.executeAll([{ id: "cancel-late-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root, abortSignal: controller.signal,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
@@ -319,7 +321,12 @@ describe("executor automated approval pause", () => {
     release();
     await vi.waitFor(() => expect(cards).toHaveLength(1));
     expect(gate.pendingCount).toBe(1);
-    controller.abort(by === "quit" ? new HostExitAbortError() : new Error("caller cancelled pending late card"));
+    if (by === "project-scope-changed") {
+      expect(gate.cancelPendingRequest(cards[0].id, SESSION_ID, by)).toBe(true);
+      expect(controller.signal.aborted).toBe(false);
+    } else {
+      controller.abort(by === "quit" ? new HostExitAbortError() : new Error("caller cancelled pending late card"));
+    }
     let settled = false;
     void pending.then(() => { settled = true; });
     await vi.waitFor(() => expect(settled).toBe(true), { timeout: 1_000 });
@@ -329,9 +336,18 @@ describe("executor automated approval pause", () => {
     expect(gate.pendingCount).toBe(0);
     expect(approve(cards[0])).toBeNull();
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
+    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
     if (by === "quit") {
-      const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
       expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "cancel-late-card", denyReasons: [{ reason: "host-shutdown" }], trustOrigin: "unknown" });
+    } else if (by === "project-scope-changed") {
+      expect.soft(result.content).toContain(by);
+      expect.soft(rows.at(-1)).toMatchObject({ decision: "deny", terminalKind: "cancelled", toolUseId: "cancel-late-card",
+        denyReasons: [expect.objectContaining({ reason: expect.stringContaining(by) })], trustOrigin: "unknown" });
+      expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({ type: "tool_call", output: expect.stringContaining(by),
+        toolCalls: [expect.objectContaining({ permissionDecision: "cancelled", permissionReason: expect.stringContaining(by) })] }));
+    } else {
+      expect(result.content).toBe(t("be_executor.toolExecutionCancelled"));
+      expect(rows.at(-1)).toMatchObject({ decision: "deny", terminalKind: "cancelled", toolUseId: "cancel-late-card" });
     }
   });
 

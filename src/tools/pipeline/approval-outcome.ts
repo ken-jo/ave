@@ -59,7 +59,12 @@ export function abortSupersedesApprovalDecision(
   return decision === undefined || !isAnsweredApprovalDenial(decision);
 }
 
-/** Preserve host-owned failures in both tool and directory approval results. */
+export function approvalCancellationMessage(detail?: string): string {
+  const cancellation = t("be_executor.toolExecutionCancelled");
+  return detail ? `${cancellation} (${detail})` : cancellation;
+}
+
+/** Preserve host-owned failures in tool approval results. */
 export function approvalFailureOutcome(
   decision: ApprovalDecision,
   toolName: string,
@@ -72,16 +77,17 @@ export function approvalFailureOutcome(
   const detail = decision.rememberPattern
     ? maskSensitiveData(decision.rememberPattern).masked
     : t("be_executor.approvalHostRejectedReason");
-  const cancellation = t("be_executor.toolExecutionCancelled");
-  const cancellationContent = decision.rememberPattern ? `${cancellation} (${detail})` : cancellation;
+  const cancellationDetail = cancelled && decision.rememberPattern ? detail : undefined;
+  const auditReason = cancellationDetail ?? reason;
   return {
-    content: cancelled ? cancellationContent : autoSkipped ? NO_APPROVER_MESSAGE : expired ? t("be_executor.approvalExpired", { name: toolName })
+    content: cancelled ? approvalCancellationMessage(cancellationDetail) : autoSkipped ? NO_APPROVER_MESSAGE : expired ? t("be_executor.approvalExpired", { name: toolName })
       : t("be_executor.approvalRejectedByHost", { name: toolName, reason: detail }),
     permission: {
       decision: "deny",
-      reason,
+      reason: auditReason,
+      ...(cancellationDetail === undefined ? {} : { reasonCode: "approval-cancelled" }),
       // Denial audit must record why approval ended, not merely why it was requested.
-      denyReasons: [{ source: "approval-gate", reason }],
+      denyReasons: [{ source: "approval-gate", reason: auditReason }],
       // The host ended the approval; no person's origin belongs on its row.
       provenance: HOST_PROVENANCE,
     },
