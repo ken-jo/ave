@@ -175,6 +175,8 @@ export interface MxcConfinedChildSpec extends Pick<ConfinedChildSpec,
   readonly temp: string;
   /** Captured by the host from the owning incarnation, independently of requested grants. */
   readonly filesystemOwnership: MxcExtensionFilesystemOwnership;
+  /** The holder's host-minted staging root, the one write grant inside the container's own state. */
+  readonly stagingRoot?: string;
   readonly holder: object;
   readonly parent?: MxcConfinedChildSpawn;
   /** The adapter's own check of the exact request, on a snapshot, before the receipt is minted. A throw refuses the start. */
@@ -334,7 +336,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     allowRead: [...(spec.allowRead ?? [])], allowWrite: [...(spec.allowWrite ?? [])],
     denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyEntries(),
     floorPierces: spec.floorPierces, denyPluginsRoot: true, pinWriteRoots: true,
-  }, spec.filesystemOwnership)));
+  }, spec.filesystemOwnership, spec.stagingRoot)));
   const grants = rankMxcFilesystem(admitted.model, existsSync);
   assertWritesInsideEnvelope(grants, spec.filesystemOwnership);
   assertMxcHolderPrivateDirectories({ home: spec.home, temp: spec.temp, ownership: spec.filesystemOwnership,

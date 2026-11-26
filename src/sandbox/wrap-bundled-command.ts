@@ -757,6 +757,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
       cwd,
       home: staging.home,
       temp: staging.temp,
+      stagingRoot: staging.root,
       filesystemOwnership: { readRoots: [...input.ownedReadRoots], writeRoots: allowWrite, hostStorageRoots: [] },
       holder: Object.freeze({ label: input.label }),
       ...(input.floorPierces !== undefined ? { floorPierces: [...input.floorPierces] } : {}),

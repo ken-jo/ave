@@ -60,20 +60,24 @@ function resolvedStatePaths(statePaths: readonly ConfinementStatePath[] | undefi
  * The shared step every grant route runs: no write grant may equal, sit inside or contain a path a backend declares as
  * its own state. Each grant is compared as spelled and as the identity it resolves to, which an alias or a link on its
  * path would otherwise hide. A declaration that is missing or does not resolve refuses every write; a grant that does
- * not resolve is refused.
+ * not resolve is refused. `stagingRoot` is the one host-minted holder root inside a backend's state the route grants
+ * itself; only a grant resolving to exactly it is passed.
  */
 export function assertWriteGrantsOutsideConfinementState(
   write: readonly string[],
   statePaths: readonly ConfinementStatePath[] | undefined,
+  stagingRoot?: string,
 ): void {
   if (write.length === 0) return;
   const states = resolvedStatePaths(statePaths);
   if (states === undefined) throw new ConfinementStateWriteGrantError(undefined);
   // Nothing declared (no backend that grants on this host): there is nothing to resolve a grant against.
   if (states.length === 0) return;
+  const staging = stagingRoot === undefined ? undefined : strictlyResolved(stagingRoot);
   for (const grant of write) {
     const real = strictlyResolved(grant);
     if (real === undefined) throw new ConfinementStateWriteGrantError(grant, "grant-unresolved");
+    if (staging !== undefined && isWindowsPathAtOrUnder(real, staging) && isWindowsPathAtOrUnder(staging, real)) continue;
     const hit = states.find(state => [grant, real].some(spelling =>
       isWindowsPathAtOrUnder(spelling, state.path) || isWindowsPathAtOrUnder(state.path, spelling)));
     if (hit !== undefined) throw new ConfinementStateWriteGrantError(grant, hit.stateClass);

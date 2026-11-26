@@ -820,7 +820,8 @@ export function admitMxcExtensionFilesystem(
   return inAveHomeBoundarySnapshot(undefined, () => admitMxcExtensionFilesystemInSnapshot(...args));
 }
 
-function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem, ownership?: MxcExtensionFilesystemOwnership): {
+function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem, ownership?: MxcExtensionFilesystemOwnership,
+  stagingRoot?: string): {
   /** The holder's admitted policy as rows, every path literal. */
   readonly model: PolicyModel;
   readonly assertStillValid: () => void;
@@ -914,6 +915,8 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
     }
     assertMxcExtensionFilesystemOwnership({ allowRead: admitted.allowRead, allowWrite: admitted.allowWrite,
       pluginNamespaceRoots: namespaceRoots, ownership: pinnedOwnership });
+    // The callers checked their spellings; these are the identities the container is granted.
+    assertWriteGrantsOutsideConfinementState(windowsPinnedPaths(pinned.allowWrite ?? []), declaredConfinementStatePaths(), stagingRoot);
   };
   assertStillValid();
   return { model, assertStillValid };

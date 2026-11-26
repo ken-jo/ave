@@ -402,6 +402,24 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
   });
 
+  it("re-checks a container holder's pinned writes at admission, except its own staging root", async () => {
+    const local = join(fixture, "alice", "AppData", "Local");
+    const state = join(local, "sandbox-runtime");
+    const staging = join(String(mxcConfinementStatePaths()[0]), "staging", "0123456789abcdef0123456789abcdef");
+    for (const directory of [state, staging]) mkdirSync(directory, { recursive: true });
+    vi.stubEnv("LOCALAPPDATA", local);
+    await initializeAsrtSandbox({});
+    // A caller's spelling that resolves into the state only by the time admission pins it.
+    const link = join(fixture, "link");
+    symlinkSync(state, link, "junction");
+    const admit = (allowWrite: string[], stagingRoot?: string) => admitMxcExtensionFilesystem({ allowRead: [], allowWrite },
+      { readRoots: [], writeRoots: allowWrite, hostStorageRoots: [] }, stagingRoot);
+    expect(() => admit([link])).toThrow(expect.objectContaining({ code: "confinement-state-write-grant", reason: "helper-ledger" }));
+    expect(() => admit([target, staging])).toThrow(expect.objectContaining({ code: "confinement-state-write-grant", reason: "container-runtime" }));
+    expect(() => admit([dirname(staging)], staging)).toThrow(expect.objectContaining({ code: "confinement-state-write-grant", reason: "container-runtime" }));
+    expect(mxcPolicyRows(admit([target, staging], staging).model).writeGrants).toEqual(expect.arrayContaining([target, staging]));
+  });
+
   it("refuses every write grant, and no read grant, when the helper's state cannot be located", async () => {
     vi.stubEnv("LOCALAPPDATA", "");
     await initializeAsrtSandbox({});

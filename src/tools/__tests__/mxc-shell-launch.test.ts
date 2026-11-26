@@ -1,4 +1,6 @@
+import { mkdirSync, mkdtempSync, rmdirSync, rmSync, symlinkSync } from "node:fs";
 import net from "node:net";
+import { tmpdir } from "node:os";
 import { win32 as winPath } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
@@ -171,6 +173,30 @@ describe("prepareMxcShellLaunch", () => {
         expect(h.openRelay).not.toHaveBeenCalled();
       } finally {
         expect(await lifecycle.dispose()).toEqual([]);
+      }
+    });
+
+    it("checks the write roots again after the listener opens, so a folder swapped into a backend's state then is refused", async () => {
+      const fixture = mkdtempSync(winPath.join(tmpdir(), "shell-state-swap-"));
+      const state = String(srtWinConfinementStatePaths()?.[0]);
+      const swapped = winPath.join(fixture, "out");
+      mkdirSync(swapped);
+      mkdirSync(state, { recursive: true });
+      relay();
+      const open = h.openRelay.getMockImplementation();
+      h.openRelay.mockImplementationOnce(async (...args: unknown[]) => {
+        rmdirSync(swapped);
+        symlinkSync(state, swapped, "junction");
+        return open?.(...args);
+      });
+      const lifecycle = createContainedShellLifecycle();
+      try {
+        await expect(prepareMxcShellLaunch({ ...INPUT, filesystem: { ...INPUT.filesystem, allowWrite: [WS, swapped] } }, lifecycle))
+          .rejects.toMatchObject({ code: "confinement-state-write-grant", path: swapped, reason: "helper-ledger" });
+      } finally {
+        expect(await lifecycle.dispose()).toEqual([]);
+        rmdirSync(swapped);
+        rmSync(fixture, { recursive: true, force: true });
       }
     });
 

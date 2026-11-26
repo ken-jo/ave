@@ -173,6 +173,8 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   });
   assertAdmission();
   relay.registerPort(listener.port);
+  // Again on what the request grants, after the waits above: no pin holds a shell root, so this is the last check.
+  assertWriteGrantsOutsideConfinementState(grants.readwrite, declaredConfinementStatePaths());
   const systemRoot = windowsSystemRoot();
   const env: Record<string, string> = { ...input.env };
   if (!Object.keys(env).some((key) => key.toUpperCase() === "SYSTEMROOT")) env["SYSTEMROOT"] = systemRoot;
