@@ -150,6 +150,28 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
     expect(notices("session-b")).toEqual(named);
   });
 
+  it.each(platforms)("on %s, names a user's deny inside the pierce only once a wrap is admitted", async (platform) => {
+    await initializeWith([corp()]);
+    const notices = (): string[] => {
+      setProcessPlatform(platform);
+      const seen: string[] = [];
+      createAveHomeBoundarySnapshot("session-a").run(() => buildPerCommandSandboxCustomConfig({
+        allowRead: [certs(), corp()], denyRead: getDefaultSensitiveReadDenyPaths(), floorPierces: [certs()],
+      }, notice => seen.push(notice)));
+      return seen;
+    };
+    // The wrap fails after its read grants are composed, the last step before it is admitted.
+    const model = vi.mocked(buildPolicyModel);
+    const actual = model.getMockImplementation()!;
+    model.mockImplementation(input => {
+      if (input.launchGrants.some(row => row.access === "ro")) throw new Error("wrap refused late");
+      return actual(input);
+    });
+    try { expect(notices).toThrow("wrap refused late"); }
+    finally { model.mockImplementation(actual); }
+    expect(notices()).toEqual([`Your read deny ${corp()} applies inside ${certs()}, which this launch reads; the launch keeps the rest of it and cannot read what the deny matches.`]);
+  });
+
   it.each(platforms)("on %s, names no deny beside the pierce", async (platform) => {
     await initializeWith([join(dirname(aveHome()), "unrelated-dir", "secret")]);
     setProcessPlatform(platform);

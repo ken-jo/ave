@@ -937,7 +937,6 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
   const protectedFloor = [...new Set([...literalDenies(floor), ...explicitReadFloor])];
   // The user's denies are stated as their own rows below; the container rank refuses a pierce they cover and withholds what they deny.
   const allowRead = readGrantsOutsideReadDenies(admitted.allowRead, protectedFloor, pierces, []);
-  for (const notice of userDenyInsidePierceNotices(pierces)) log.warn(notice);
   const readDenies = literalDenies([
     ...getDefaultSensitiveReadDenyPaths(), ...admitted.denyRead,
     ...namespaceRoots, ...(pinnedOwnership?.hostStorageRoots ?? []),
@@ -969,6 +968,8 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
       pluginNamespaceRoots: namespaceRoots, ownership: pinnedOwnership });
   };
   assertStillValid();
+  // Named only once the holder is admitted, so a refused admission records no notice.
+  for (const notice of userDenyInsidePierceNotices(pierces)) log.warn(notice);
   return { model, assertStillValid };
 }
 
@@ -1025,6 +1026,7 @@ export function buildPerCommandSandboxCustomConfig(
     }
     const grants = admitFilesystemPolicy(configured);
     const fs: Partial<FilesystemConfig> = {};
+    let noticePierces: readonly string[] = [];
     // The wrap's policy as rows. Each package list is read off the rows as soon as its own are stated, so every later check and
     // notice keeps its place in the composition.
     const floors: PolicyFloorRow[] = [];
@@ -1133,10 +1135,7 @@ export function buildPerCommandSandboxCustomConfig(
         // Restated shared grants keep the shared config's pierces (none, as in buildSandboxConfig); a wrap's own pierces cover only its own grants.
         filesystem.allowRead !== undefined ? (filesystem.floorPierces ?? []) : [],
       ).map((path) => policyGrantRow(path, "ro", "launch-grant", false)));
-      for (const notice of userDenyInsidePierceNotices(filesystem.allowRead !== undefined ? (filesystem.floorPierces ?? []) : [])) {
-        onNotice?.(notice);
-        log.warn(notice);
-      }
+      noticePierces = filesystem.allowRead !== undefined ? (filesystem.floorPierces ?? []) : [];
       fs.allowRead = lists().allowRead;
     }
     if (Object.keys(fs).length === 0) return undefined;
@@ -1153,8 +1152,14 @@ export function buildPerCommandSandboxCustomConfig(
       );
       onGitControlSnapshot?.(snapshot);
     }
+    const finished = Object.freeze(finishFilesystemPolicy(fs, grants, grants.denyWrite, hasOverrides, "per-exec")) as FilesystemConfig;
+    // Named only once the wrap is admitted, so a refused wrap records no notice.
+    for (const notice of userDenyInsidePierceNotices(noticePierces)) {
+      onNotice?.(notice);
+      log.warn(notice);
+    }
     return {
-      filesystem: Object.freeze(finishFilesystemPolicy(fs, grants, grants.denyWrite, hasOverrides, "per-exec")) as FilesystemConfig,
+      filesystem: finished,
       ...(windowsObligationsApply() ? { windows: { admittedEntriesOnly: true } } : {}),
     };
   });

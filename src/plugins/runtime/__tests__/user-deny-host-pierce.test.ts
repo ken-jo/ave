@@ -96,6 +96,9 @@ function ownedChild() {
     diagnostics: { nodeVersion: "", nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "" } };
 }
 
+// While set, every native child admission is refused.
+const admission = { refused: false };
+
 /** Route every lifecycle factory through the native arm, after the runtime's own admission checks. */
 function routeNative(runtime: PluginRuntime): void {
   const routing = runtime as unknown as {
@@ -112,6 +115,7 @@ function routeNative(runtime: PluginRuntime): void {
       registerSandboxEnvelope: (paths, pluginRoot, pluginDataDir) => routing.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
       // The production launch's ownership: the envelope's writes beside the synthetic staging root.
       prepareMxcChild: async (intent) => {
+        if (admission.refused) throw new Error("native child admission refused");
         const launch = nativePluginLaunch({}, stagingParent());
         for (const directory of [launch.home, launch.temp]) mkdirSync(directory, { recursive: true });
         return { ...launch, filesystemOwnership: { ...launch.filesystemOwnership, readRoots: [intent.cwd],
@@ -220,5 +224,28 @@ describe.runIf(hostPlatform === "win32")("a user's read deny over a plugin's cer
     // Named once in the session, and once against each affected plugin; the second launch names nothing again.
     expect(warnings.filter((line) => line.includes(corp)).sort()).toEqual([notice, `[${CERTS_PLUGIN}] ${notice}`, `[${SECOND_CERTS_PLUGIN}] ${notice}`].sort());
     expect(runtimeErrors).toEqual([]);
+  });
+
+  it("names a deny inside the certs pierce against a plugin only once its child is admitted", async () => {
+    const corp = join(certs(), "corp");
+    mkdirSync(corp, { recursive: true });
+    const certsRead: PluginManifest["sandbox"] = { read: [{ kind: "hostDirectory", segments: ["certs"], why: "Read trust anchors" }] };
+    await writeFile(registryPath, JSON.stringify({ version: 1, plugins: [await installPlugin(CERTS_PLUGIN, "certs_reader_ping", certsRead)] }), "utf-8");
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true, denyRead: [corp], windows: { externalConfinement: true } });
+    spawnNativeChild.mockReset().mockImplementation(async () => ownedChild());
+    const tagged = `[${CERTS_PLUGIN}] Your read deny ${corp} applies inside ${certs()}, which this launch reads; the launch keeps the rest of it and cannot read what the deny matches.`;
+    for (const refused of [true, false]) {
+      admission.refused = refused;
+      const runtime = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: installedDir });
+      routeNative(runtime);
+      try {
+        await runtime.startAll();
+        expect(runtime.listPluginIds().includes(CERTS_PLUGIN)).toBe(!refused);
+        expect(warnings.filter((line) => line === tagged)).toEqual(refused ? [] : [tagged]);
+      } finally {
+        admission.refused = false;
+        await runtime.stopAll();
+      }
+    }
   });
 });

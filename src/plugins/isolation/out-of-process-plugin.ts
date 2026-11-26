@@ -851,8 +851,9 @@ export function createOutOfProcessPluginFactory(
         const intent = { pluginId, command: process.execPath, args: [childEntryPath], cwd: context.pluginRoot,
           baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }) };
         const floorPierces = declaredHostDirectoryFloorPierces(spec.manifest.sandbox);
-        logUserDeniesInsidePierces(pluginId, floorPierces);
         const launch = await spec.prepareMxcChild({ ...intent, pluginDataDir: context.pluginDataDir, envelope });
+        // Named only once admission succeeded, so a refused child records no notice.
+        logUserDeniesInsidePierces(pluginId, floorPierces);
         // The incumbent may have begun terminating, or been quarantined, while admission was awaited:
         // recheck synchronously right before spawn (and again after it) through the registration.
         const native = await spawnMxcPluginChild({
