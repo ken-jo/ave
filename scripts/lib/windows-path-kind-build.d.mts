@@ -17,6 +17,7 @@ interface WindowsPathKindFileIdentity {
 }
 
 interface WindowsPathKindInputs {
+  systemRoot: string;
   sysroot: string;
   sdkImports: string;
   staticCrt: string[];
@@ -46,7 +47,7 @@ export interface WindowsPathKindBuild {
 export const WINDOWS_PATH_KIND_PROFILE: string;
 export const WINDOWS_PATH_KIND_PROFILE_SETTINGS: WindowsPathKindProfileSettings;
 export function windowsPathKindToolPaths(rustupRoot: string, toolchain: string, host: string): WindowsPathKindToolPaths;
-export function windowsPathKindSystemEnvironment(): NodeJS.ProcessEnv;
+export function windowsPathKindSystemEnvironment(systemRoot: string): NodeJS.ProcessEnv;
 export function windowsPathKindRustflags(linker: string, inputs: WindowsPathKindInputs): string[];
 export function windowsPathKindToolchain(root: string): string;
 export function windowsPathKindTarget(arch: string): string;

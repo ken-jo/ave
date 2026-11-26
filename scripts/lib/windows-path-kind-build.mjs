@@ -11,6 +11,12 @@ const SYSTEM_IMPORT_LIBRARIES = [
   "advapi32.lib", "bcrypt.lib", "dbghelp.lib", "kernel32.lib", "ntdll.lib", "ole32.lib",
   "shell32.lib", "userenv.lib", "ws2_32.lib",
 ];
+const RUST_SYSROOT_CRATES = [
+  "alloc", "cfg_if", "compiler_builtins", "core", "getopts", "hashbrown", "panic_abort", "panic_unwind",
+  "proc_macro", "profiler_builtins", "rustc_demangle", "rustc_literal_escaper", "rustc_std_workspace_alloc",
+  "rustc_std_workspace_core", "rustc_std_workspace_std", "std", "std_detect", "sysroot", "test", "unwind", "windows_targets",
+];
+const RUST_NATVIS_FILES = ["intrinsic.natvis", "liballoc.natvis", "libcore.natvis", "libstd.natvis"];
 const LINK_OPTIONS = [
   "/NOLOGO", "/defaultlib:libcmt", "/NXCOMPAT", "/OPT:REF,ICF", "/DEBUG", "/PDBALTPATH:%_PDB%",
   "/nodefaultlib", "/lldignoreenv", "/Brepro", "/debug:none",
@@ -51,14 +57,25 @@ function isFullyQualifiedWindowsPath(value) {
   return typeof value === "string" && win32.isAbsolute(value) && win32.parse(value).root.length > 1;
 }
 
-export function windowsPathKindSystemEnvironment() {
-  const { SystemRoot } = process.env;
-  if (!isFullyQualifiedWindowsPath(SystemRoot)) throw new Error("Missing Windows system directory");
+function windowsSystemRoot() {
+  const previous = process.report.excludeEnv;
+  let ntdll;
+  try {
+    process.report.excludeEnv = true;
+    ntdll = process.report.getReport().sharedObjects.find((path) => /^[a-z]:\\.*\\System32\\ntdll\.dll$/iu.test(path));
+  } finally {
+    process.report.excludeEnv = previous;
+  }
+  if (!ntdll) throw new Error("Missing Windows system directory");
+  return realpathSync(dirname(dirname(ntdll)));
+}
+
+export function windowsPathKindSystemEnvironment(systemRoot) {
   return {
-    SystemRoot,
-    SystemDrive: win32.parse(SystemRoot).root.slice(0, -1),
-    WINDIR: SystemRoot,
-    PATH: win32.join(SystemRoot, "System32"),
+    SystemRoot: systemRoot,
+    SystemDrive: win32.parse(systemRoot).root.slice(0, -1),
+    WINDIR: systemRoot,
+    PATH: "",
     // Empty values suppress the process launcher's automatic environment inheritance.
     HOMEDRIVE: "", HOMEPATH: "", LOGONSERVER: "", USERDOMAIN: "", USERNAME: "", USERPROFILE: "", TEMP: "",
   };
@@ -73,19 +90,25 @@ export function windowsPathKindRustflags(linker, inputs) {
   ];
 }
 
-function resolveWindowsLibraries(arch, env) {
-  const programs = win32.join(win32.parse(env.SystemRoot).root, "Program Files (x86)");
-  const vswhere = win32.join(programs, "Microsoft Visual Studio", "Installer", "vswhere.exe");
-  const installation = execFileSync(vswhere, [
+function programFilesX86(systemRoot) {
+  return win32.join(win32.parse(systemRoot).root, "Program Files (x86)");
+}
+
+function windowsLibraryDiscovery(systemRoot) {
+  return win32.join(programFilesX86(systemRoot), "Microsoft Visual Studio", "Installer", "vswhere.exe");
+}
+
+function resolveWindowsLibraries(arch, discovery, env) {
+  const installation = execFileSync(discovery.path, [
     "-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
     "-property", "installationPath", "-utf8",
-  ], { cwd: dirname(vswhere), env, encoding: "utf8", windowsHide: true }).trim();
+  ], { cwd: dirname(discovery.path), env, encoding: "utf8", windowsHide: true }).trim();
   if (!isFullyQualifiedWindowsPath(installation)) throw new Error("Missing Windows path helper C++ toolchain");
   const vc = join(installation, "VC");
   const msvcVersion = readFileSync(join(vc, "Auxiliary/Build/Microsoft.VCToolsVersion.default.txt"), "utf8").trim();
   if (!/^\d+\.\d+\.\d+$/u.test(msvcVersion)) throw new Error("Invalid Windows path helper C++ toolchain version");
   const msvc = join(vc, "Tools", "MSVC", msvcVersion, "lib", arch);
-  const sdk = join(programs, "Windows Kits", "10", "Lib");
+  const sdk = join(programFilesX86(env.SystemRoot), "Windows Kits", "10", "Lib");
   const versions = readdirSync(sdk).filter((version) => /^10\.\d+\.\d+\.\d+$/u.test(version));
   const sdkVersion = versions.sort((a, b) => b.localeCompare(a, "en", { numeric: true })).find(
     (version) => existsSync(join(sdk, version, "um", arch, "kernel32.lib"))
@@ -112,17 +135,17 @@ function fileIdentities(paths) {
 }
 
 function windowsPathKindInputs(arch, tools, target, env) {
-  const { sdkImports, staticCrt } = resolveWindowsLibraries(arch, env);
+  const systemRoot = env.SystemRoot;
+  const discovery = fileIdentities([windowsLibraryDiscovery(systemRoot)])[0];
   const sysroot = dirname(dirname(tools.rustc));
   const rustlib = join(sysroot, "lib", "rustlib");
   const targetLib = join(rustlib, target, "lib");
   const rustLibraries = filesWithExtensions(targetLib, [".rlib", ".lib", ".dll", ".obj"]);
-  if (!rustLibraries.some((path) => win32.basename(path).startsWith("libstd-"))) {
-    throw new Error("Missing Windows path helper Rust target libraries");
-  }
+  const toolFiles = fileIdentities([...Object.values(tools), ...filesWithExtensions(dirname(tools.rustc), [".dll"])]);
+  const { sdkImports, staticCrt } = resolveWindowsLibraries(arch, discovery, env);
   return {
-    sysroot, sdkImports, staticCrt,
-    tools: fileIdentities([...Object.values(tools), ...filesWithExtensions(dirname(tools.rustc), [".dll"])]),
+    systemRoot, sysroot, sdkImports, staticCrt,
+    tools: [discovery, ...toolFiles],
     rustLibraries: fileIdentities([...rustLibraries, ...filesWithExtensions(join(rustlib, "etc"), [".natvis"])]),
     libraries: fileIdentities([...SYSTEM_IMPORT_LIBRARIES.map((name) => join(sdkImports, name)), ...staticCrt]),
   };
@@ -145,21 +168,52 @@ export function windowsPathKindCompiler(root, arch) {
   const host = windowsPathKindTarget(process.arch);
   const rustupRoot = realpathSync(join(userInfo().homedir, ".rustup"));
   const tools = windowsPathKindToolPaths(rustupRoot, toolchain, host);
-  for (const executable of Object.values(tools)) {
-    if (realpathSync(executable).toLowerCase() !== executable.toLowerCase()) {
-      throw new Error("Rust build tool is outside the pinned installation");
-    }
-  }
-  const env = windowsPathKindSystemEnvironment();
+  const env = windowsPathKindSystemEnvironment(windowsSystemRoot());
+  const inputs = windowsPathKindInputs(arch, tools, target, env);
+  assertInputInventory(inputs, tools, arch);
   const compiler = execFileSync(tools.rustc, ["-vV"], {
     cwd: dirname(tools.rustc), env, encoding: "utf8", windowsHide: true,
   }).trim();
   if (!matchesCompiler(compiler, toolchain, host)) throw new Error("Rust compiler does not match the pinned release and host");
-  const inputs = windowsPathKindInputs(arch, tools, target, env);
   return {
     toolchain, compiler, host, target, rustupRoot, ...tools, inputs, profile: WINDOWS_PATH_KIND_PROFILE,
     profileSettings: WINDOWS_PATH_KIND_PROFILE_SETTINGS, rustflags: windowsPathKindRustflags(tools.linker, inputs),
   };
+}
+
+function assertInputInventory(inputs, tools, arch) {
+  const invalid = () => new Error("Windows path helper toolchain identity changed");
+  const { systemRoot, sysroot, sdkImports, staticCrt } = inputs ?? {};
+  const isDrivePath = (path) => typeof path === "string" && /^[a-z]:\\/iu.test(path)
+    && !/[<>:"|?*]/u.test(path.slice(2)) && win32.normalize(path) === path;
+  if (!isDrivePath(systemRoot) || sysroot !== win32.dirname(win32.dirname(tools.rustc))
+    || !isDrivePath(sdkImports) || !Array.isArray(staticCrt) || staticCrt.length !== 3 || !staticCrt.every(isDrivePath)) throw invalid();
+
+  const sdk = win32.join(programFilesX86(systemRoot), "Windows Kits", "10", "Lib");
+  const sdkVersion = win32.relative(sdk, sdkImports).split("\\")[0];
+  const msvc = win32.dirname(staticCrt[0]);
+  if (!/^10\.\d+\.\d+\.\d+$/u.test(sdkVersion) || sdkImports !== win32.join(sdk, sdkVersion, "um", arch)
+    || !/\\VC\\Tools\\MSVC\\\d+\.\d+\.\d+\\lib$/iu.test(win32.dirname(msvc)) || win32.basename(msvc) !== arch
+    || !isDeepStrictEqual(staticCrt, [
+      win32.join(msvc, "libcmt.lib"), win32.join(msvc, "libvcruntime.lib"), win32.join(sdk, sdkVersion, "ucrt", arch, "libucrt.lib"),
+    ])) throw invalid();
+
+  const exactFiles = (files, expected, normalize = (path) => path) => {
+    if (!Array.isArray(files) || !files.every((file) => isDrivePath(file?.path) && /^[a-f0-9]{64}$/u.test(file.sha256))
+      || !isDeepStrictEqual(files.map(({ path }) => normalize(path.toLowerCase())).sort(), expected.map((path) => path.toLowerCase()).sort())) throw invalid();
+  };
+  const normalizeRust = (path) => win32.join(win32.dirname(path), win32.basename(path).replace(/-[a-f0-9]{16}(?=\.)/u, "-?"));
+  const bin = win32.dirname(tools.rustc);
+  const rustlib = win32.join(sysroot, "lib", "rustlib");
+  const targetLib = win32.join(rustlib, windowsPathKindTarget(arch), "lib");
+  exactFiles(inputs.tools, [windowsLibraryDiscovery(systemRoot), ...Object.values(tools),
+    win32.join(bin, "rustc_driver-?.dll"), win32.join(bin, "std-?.dll")], normalizeRust);
+  exactFiles(inputs.rustLibraries, [
+    ...RUST_SYSROOT_CRATES.map((name) => win32.join(targetLib, `lib${name}-?.rlib`)),
+    win32.join(targetLib, "std-?.dll"), win32.join(targetLib, "std-?.dll.lib"),
+    ...RUST_NATVIS_FILES.map((name) => win32.join(rustlib, "etc", name)),
+  ], normalizeRust);
+  exactFiles(inputs.libraries, [...SYSTEM_IMPORT_LIBRARIES.map((name) => win32.join(sdkImports, name)), ...staticCrt]);
 }
 
 function matchesCompiler(compiler, toolchain, host) {
@@ -345,17 +399,8 @@ export function verifyWindowsPathKindReceipt(root, arch) {
   }
   const tools = windowsPathKindToolPaths(identity.rustupRoot, pinned, identity.host);
   const inputs = identity.inputs;
-  const validFile = (file) => isFullyQualifiedWindowsPath(file?.path) && /^[a-f0-9]{64}$/u.test(file.sha256);
+  assertInputInventory(inputs, tools, arch);
   if (Object.entries(tools).some(([name, executable]) => identity[name] !== executable)
-    || inputs?.sysroot !== win32.dirname(win32.dirname(tools.rustc))
-    || !isFullyQualifiedWindowsPath(inputs.sdkImports)
-    || !Array.isArray(inputs.staticCrt) || inputs.staticCrt.length !== 3
-    || ![inputs.tools, inputs.rustLibraries, inputs.libraries].every(
-      (files) => Array.isArray(files) && files.length > 0 && files.every(validFile),
-    )
-    || !Object.values(tools).every((path) => inputs.tools.some((file) => file.path === path))
-    || ![...SYSTEM_IMPORT_LIBRARIES.map((name) => win32.join(inputs.sdkImports, name)), ...inputs.staticCrt]
-      .every((path) => inputs.libraries.some((file) => file.path === path))
     || !isDeepStrictEqual(identity.rustflags, windowsPathKindRustflags(tools.linker, inputs))) {
     throw new Error("Windows path helper toolchain identity changed");
   }

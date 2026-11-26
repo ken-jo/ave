@@ -42,7 +42,7 @@ export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture
     }
     if (windowsPathKindSourceDigest(root, buildDir) !== source) throw new Error("Windows path helper sources changed during staging");
     const env = {
-      ...windowsPathKindSystemEnvironment(),
+      ...windowsPathKindSystemEnvironment(identity.inputs.systemRoot),
       TEMP: buildDir,
       TMP: buildDir,
       TMPDIR: buildDir,

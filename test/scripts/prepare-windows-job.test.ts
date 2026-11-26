@@ -62,13 +62,30 @@ function stagePathKind(root: string, machine = 0x8664): void {
   const host = "x86_64-pc-windows-msvc";
   const tools = windowsPathKindToolPaths(rustupRoot, toolchain, host);
   const sysroot = win32.dirname(win32.dirname(tools.rustc));
-  const sdkImports = "C:\\example\\sdk\\um\\x64";
-  const staticCrt = ["libcmt.lib", "libvcruntime.lib", "libucrt.lib"].map((name) => win32.join("C:\\example\\static-crt", name));
+  const systemRoot = "C:\\Windows";
+  const programFiles = "C:\\Program Files (x86)";
+  const sdk = win32.join(programFiles, "Windows Kits", "10", "Lib", "10.0.12345.0");
+  const sdkImports = win32.join(sdk, "um", "x64");
+  const msvc = "C:\\example\\VC\\Tools\\MSVC\\14.0.12345\\lib\\x64";
+  const staticCrt = [win32.join(msvc, "libcmt.lib"), win32.join(msvc, "libvcruntime.lib"), win32.join(sdk, "ucrt", "x64", "libucrt.lib")];
+  const rustlib = win32.join(sysroot, "lib", "rustlib");
+  const targetLib = win32.join(rustlib, host, "lib");
+  const suffix = "0123456789abcdef";
   const files = (paths: string[]) => paths.map((path) => ({ path, sha256: "0".repeat(64) }));
   const inputs = {
-    sysroot, sdkImports, staticCrt,
-    tools: files(Object.values(tools)),
-    rustLibraries: files([win32.join(sysroot, "lib", "libstd.rlib")]),
+    systemRoot, sysroot, sdkImports, staticCrt,
+    tools: files([
+      win32.join(programFiles, "Microsoft Visual Studio", "Installer", "vswhere.exe"), ...Object.values(tools),
+      win32.join(sysroot, "bin", `rustc_driver-${suffix}.dll`), win32.join(sysroot, "bin", `std-${suffix}.dll`),
+    ]),
+    rustLibraries: files([
+      ...["alloc", "cfg_if", "compiler_builtins", "core", "getopts", "hashbrown", "panic_abort", "panic_unwind", "proc_macro",
+        "profiler_builtins", "rustc_demangle", "rustc_literal_escaper", "rustc_std_workspace_alloc", "rustc_std_workspace_core",
+        "rustc_std_workspace_std", "std", "std_detect", "sysroot", "test", "unwind", "windows_targets"]
+        .map((name) => win32.join(targetLib, `lib${name}-${suffix}.rlib`)),
+      win32.join(targetLib, `std-${suffix}.dll`), win32.join(targetLib, `std-${suffix}.dll.lib`),
+      ...["intrinsic", "liballoc", "libcore", "libstd"].map((name) => win32.join(rustlib, "etc", `${name}.natvis`)),
+    ]),
     libraries: files([
       ...["advapi32.lib", "bcrypt.lib", "dbghelp.lib", "kernel32.lib", "ntdll.lib", "ole32.lib", "shell32.lib", "userenv.lib", "ws2_32.lib"]
         .map((name) => win32.join(sdkImports, name)),
@@ -146,6 +163,45 @@ function pathKindBuildFixture() {
 }
 
 describe("Windows path helper build", () => {
+  it.skipIf(process.platform !== "win32")("pins discovery and records every build tool before using it", () => {
+    const { root, runBuild, receiptPath } = pathKindBuildFixture();
+    const clean = runBuild();
+    expect(clean.status, clean.stderr).toBe(0);
+    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+    const { tools } = receipt.identity.inputs;
+    const discovery = tools.find(({ path }: { path: string }) => win32.basename(path) === "vswhere.exe");
+    expect.soft(discovery).toBeDefined();
+    if (discovery) expect(discovery.sha256).toBe(createHash("sha256").update(readFileSync(discovery.path)).digest("hex"));
+
+    const hostile = runBuild({ SystemRoot: "Q:\\example", "ProgramFiles(x86)": root, PATH: root });
+    expect(hostile.status, hostile.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(receiptPath, "utf8")).identity).toEqual(receipt.identity);
+  }, 60_000);
+
+  it.skipIf(process.platform !== "win32")("rejects incomplete, duplicated or redirected build input inventories", () => {
+    const { root, runBuild, receiptPath } = pathKindBuildFixture();
+    const built = runBuild();
+    expect(built.status, built.stderr).toBe(0);
+    verifyWindowsPathKindReceipt(root, process.arch);
+    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+    const { inputs } = receipt.identity;
+    for (const list of ["tools", "rustLibraries", "libraries"] as const) {
+      for (let index = 0; index < inputs[list].length; index += 1) {
+        const files = inputs[list].filter((_: unknown, i: number) => i !== index);
+        writeFileSync(receiptPath, JSON.stringify({
+          ...receipt, identity: { ...receipt.identity, inputs: { ...inputs, [list]: files } },
+        }));
+        expect.soft(() => verifyWindowsPathKindReceipt(root, process.arch), inputs[list][index].path).toThrow(/toolchain identity/u);
+      }
+    }
+    for (const unexpected of [inputs.tools[0], { ...inputs.tools[0], path: "Q:\\example\\vswhere.exe" }]) {
+      writeFileSync(receiptPath, JSON.stringify({
+        ...receipt, identity: { ...receipt.identity, inputs: { ...inputs, tools: [...inputs.tools, unexpected] } },
+      }));
+      expect.soft(() => verifyWindowsPathKindReceipt(root, process.arch)).toThrow(/toolchain identity/u);
+    }
+  }, 60_000);
+
   it.skipIf(process.platform !== "win32")("seals a real offline Cargo build and verifies its executed compiler command", () => {
     const { root, crate, runBuild, receiptPath } = pathKindBuildFixture();
     const clean = runBuild();
