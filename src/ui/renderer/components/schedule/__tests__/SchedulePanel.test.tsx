@@ -487,3 +487,32 @@ it("shows recorded metrics on chips and the detail popover while older fires sta
   expect(within(recent).getAllByTestId("routine-run-metrics")).toHaveLength(1);
   expect(within(recent).getByTestId("routine-run-metrics").textContent).toBe("3분 12초 · 4.1k 토큰");
 });
+
+it("shows an unavailable tool as a skipped firing and opens a new local approval for reattach", async () => {
+  const api = makeApi({
+    routines: [routine({
+      execution: "template-run", attachmentId: "attached", lastTemplateSkip: {
+        code: "tool-effect-unknown", tool: { stageId: "first", collection: "mcpReadOnlyTools", name: "lookup" },
+      },
+    })],
+  });
+  const scope = { kind: "project", projectRoot: project.projectRoot } as const;
+  const template = { id: "report", name: "Report", scope, currentVersion: 2, createdAt: at(3, 9), updatedAt: at(4, 9) };
+  const pin = { templateId: template.id, version: 2, graphHash: "a".repeat(64) };
+  api.listWorkflowTemplates = vi.fn(async () => ({ ok: true as const, value: [template] }));
+  api.getWorkflowTemplate = vi.fn(async () => ({ ok: true as const, value: { template, versions: [pin] } })) as unknown as AveApi["getWorkflowTemplate"];
+  api.attachWorkflowTemplateSchedule = vi.fn(async () => ({ ok: false as const, error: "scope-changed" as const }));
+  const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+  expect((await view.findByRole("status")).textContent).toBe("건너뜀: lookup 사용 불가");
+  expect(view.queryByText("다시 연결 필요")).toBeNull();
+  fireEvent.click(view.getByRole("button", { name: "다시 연결" }));
+  const dialog = await view.findByRole("dialog");
+  await within(dialog).findByRole("option", { name: "Report" });
+  fireEvent.change(within(dialog).getByRole("combobox"), { target: { value: template.id } });
+  await within(dialog).findByText("버전 2");
+  expect(within(dialog).getByText(project.projectRoot)).toBeTruthy();
+  expect(api.attachWorkflowTemplateSchedule).not.toHaveBeenCalled();
+  fireEvent.click(within(dialog).getByRole("button", { name: "승인하고 연결" }));
+  await waitFor(() => expect(api.attachWorkflowTemplateSchedule).toHaveBeenCalledWith({ ...pin, scheduleId: "build", expectedScope: scope }));
+  expect((await within(dialog).findByRole("alert")).textContent).toContain("범위");
+});

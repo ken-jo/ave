@@ -35,7 +35,7 @@ import type {
   ToolUseBlock,
 } from "../../tools/executor.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../../tools/registry.js";
-import { collectActiveRuntimeRoundStream } from "./stream-collector.js";
+import { collectActiveRuntimeRoundStream, type ActiveRuntimeStreamGuard } from "./stream-collector.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import { vendorSupportsLengthContinuation } from "../llm/vendor-capabilities.js";
 import { rejectedToolNameFromError, withoutDroppedTools } from "../llm/rejected-tool-schema.js";
@@ -149,6 +149,10 @@ export async function queryLoop(
     // What history stores of an answer. A routine loop keeps its <summary> block out of the conversation; the turn's return keeps it.
     const storedText = (text: string, partial = false): string => (self.deps.stripRoutineSummary ? stripRoutineSummary(text, { partial }) : text);
     const llmSettings = self.deps.settingsService.get("llm");
+    const activeRuntime: ActiveRuntimeStreamGuard = {
+      getLlm: () => self.deps.settingsService.get("llm"),
+      onMismatch: () => self.abortCurrentTurn(new Error("active chat route became unavailable")),
+    };
     const storedBlock = getLlmVendorSettings(
       llmSettings.vendors,
       llmSettings.provider,
@@ -877,8 +881,7 @@ export async function queryLoop(
             },
           }),
         },
-        self.deps.settingsService.get("llm").activeChatRuntime,
-        () => self.abortCurrentTurn(new Error("active chat runtime changed")),
+        activeRuntime,
       );
       // Consume prefill once; the continuation branch re-arms it only if the chain extends.
       continuationPrefillText = undefined;
@@ -1293,11 +1296,21 @@ export async function queryLoop(
         });
       }
 
-      const toolUses: ToolUseBlock[] = pendingToolCallsCapped
+      const advertisedToolNames = turnExtensionPolicyContext.getStore()?.unattendedStage
+        ? new Set(toolSchemas.map(tool => tool.name))
+        : undefined;
+      const parsedToolUses: ToolUseBlock[] = pendingToolCallsCapped
         .filter((tc) => !tc.invalidInput)
         .map((tc) => ({
           id: tc.id, name: tc.name, input: tc.input,
         }));
+      // Send unadvertised calls straight to the executor's refusal, including intercepted meta names.
+      const unadvertisedToolUses = advertisedToolNames
+        ? parsedToolUses.filter(toolUse => !advertisedToolNames.has(toolUse.name))
+        : [];
+      const toolUses = advertisedToolNames
+        ? parsedToolUses.filter(toolUse => advertisedToolNames.has(toolUse.name))
+        : parsedToolUses;
 
       const availableRationaleCoordinatorFactory =
         typeof self.deps.rationaleCoordinatorFactory === "function"
@@ -1471,7 +1484,7 @@ export async function queryLoop(
       });
       toolSearches = searchOutcome.nextTurnSearches;
       self.sessionToolSearches = searchOutcome.nextSessionSearches;
-      toolUsesForExecutor = [...searchOutcome.remaining, ...deferredOrderedToolUses];
+      toolUsesForExecutor = [...searchOutcome.remaining, ...deferredOrderedToolUses, ...unadvertisedToolUses];
       searchPromotedThisRound = searchOutcome.promotedToolNames.length > 0;
       promotedToolNamesForTurn.push(...searchOutcome.promotedToolNames);
 
@@ -1580,6 +1593,7 @@ export async function queryLoop(
       };
       let pendingToolResult = Promise.resolve();
       const executeOptions = {
+          ...(advertisedToolNames ? { advertisedToolNames } : {}),
           onToolResult: async (result) => {
             pendingToolResult = pendingToolResult.then(() => appendToolResult(result));
             await pendingToolResult;
@@ -1656,6 +1670,7 @@ export async function queryLoop(
       const orderedMetaToolHandler: InterceptedMetaToolHandler | undefined =
         rationaleOrchestrationEnabled
           ? async (toolUse) => {
+              if (advertisedToolNames && !advertisedToolNames.has(toolUse.name)) return null;
               const gated = await gateCrossAgentInterceptedMetaTools(
                 self,
                 [toolUse],
@@ -1841,6 +1856,7 @@ export async function queryLoop(
             provider: turnProvider,
             model,
             llmSettings: roundLlmSettings,
+            activeRuntime,
             ...(abortSignal ? { abortSignal } : {}),
             requestAnchor: bounds.requestAnchor ?? null,
             rationaleProvenance: currentRationaleProvenance,

@@ -356,28 +356,30 @@ vi.mock("../../main/link-window-service.js", () => ({ openLinkWindow: vi.fn(),
 }));
 vi.mock("../../main/auth-partition-viewer-service.js", () => ({ openAuthPartitionViewer: vi.fn(),
 }));
-vi.mock("../../main/routines-store.js", () => ({
-  RoutinesStore: class {
-    constructor() {
-      h.rec("routinesStore");
-    }
-    load = vi.fn(async () => {});
-    update = vi.fn(async () => true);
-    list = vi.fn(() => []);
-    changed = { subscribe: vi.fn(() => () => {}) };
-  },
-}));
-vi.mock("../../main/routines-scheduler.js", () => ({
-  RoutinesScheduler: class {
-    constructor(_store: unknown, getInstalledPluginIds: () => Promise<readonly string[]>) {
-      h.captured["routineInstalledPluginIds"] = getInstalledPluginIds;
-    }
-    onLlmSession = vi.fn();
-    onNotification = vi.fn();
-    start = vi.fn();
-    stop = vi.fn();
-  },
-}));
+vi.mock("../../main/routines-store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../main/routines-store.js")>();
+  return {
+    ...actual,
+    RoutinesStore: class extends actual.RoutinesStore {
+      constructor() {
+        super(`${h.root}/routines.json`);
+        h.rec("routinesStore");
+      }
+    },
+  };
+});
+vi.mock("../../main/routines-scheduler.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../main/routines-scheduler.js")>();
+  return {
+    ...actual,
+    RoutinesScheduler: class extends actual.RoutinesScheduler {
+      constructor(...args: ConstructorParameters<typeof actual.RoutinesScheduler>) {
+        super(...args);
+        h.captured["routineInstalledPluginIds"] = args[1];
+      }
+    },
+  };
+});
 vi.mock("../../plugins/registry.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../plugins/registry.js")>(),
   readPluginRegistry: vi.fn(async () => ({ plugins: [
@@ -525,6 +527,18 @@ vi.mock("../../plugins/plugin-paths.js", () => ({
   })),
 }));
 
+vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => {
+  const unavailable = () => { throw new Error("Sandbox HOME root is unavailable in this fixture"); };
+  return {
+    ...await importOriginal<typeof import("../../permissions/mxc-runtime-root.js")>(),
+    establishMxcSandboxHomesParent: unavailable,
+    mxcSandboxHomesParent: unavailable,
+  };
+});
+vi.mock("../../permissions/sandbox-process-home.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../permissions/sandbox-process-home.js")>(),
+  warmSandboxHomeOwner: vi.fn(),
+}));
 vi.mock("../../permissions/sandbox-capability.js", () => ({
   detectSandboxCapability: vi.fn(() => ({
     kind: "none",
@@ -541,6 +555,7 @@ vi.mock("../../permissions/sandbox-capability.js", () => ({
   setPluginWorkerConfinementRequestedAtBoot: vi.fn(),
   setSandboxBootOutcome: vi.fn(() => h.rec("sandboxGateDecided")),
   markSandboxGatePendingAtBoot: vi.fn(() => h.rec("sandboxGatePending")),
+  markSandboxHomesUnavailable: vi.fn(),
   setWindowsSandboxSubstrate: vi.fn(),
   getWindowsSandboxSubstrate: vi.fn(() => null),
 }));
@@ -617,6 +632,7 @@ vi.mock("../../ipc/domains/permissions.js", () => ({
 
 import { existsSync } from "node:fs";
 import { bootstrap, type AppServices } from "../../boot.js";
+import { configureHostResources, getHostResources } from "../../main/host-resources.js";
 import { aveScratchDir, removeAveScratchDirIfEmpty } from "../../shared/ave-scratch.js";
 import { wireAnnouncementCheck } from "../steps/post-boot.js";
 import { wireModelCatalogRefresh } from "../steps/model-catalog-refresh.js";
@@ -673,6 +689,22 @@ function bootWithWindow(
 }
 
 describe("bootstrap desktop identity registration", () => {
+  it.each(["resourcePath", "isPackaged"] as const)("refuses a conflicting host resource %s", async (field) => {
+    const registered = createBootHostFixture();
+    configureHostResources(registered);
+    const resources = getHostResources();
+    const conflicting = createBootHostFixture(field === "resourcePath"
+      ? { resourcePath: `${h.root}/other-resources` }
+      : { isPackaged: !resources.isPackaged });
+    try {
+      await expect(bootstrap(`${h.root}/project`, null, () => null, "interactive", conflicting))
+        .rejects.toThrow("host-resources-mismatch");
+      expect(getHostResources()).toBe(resources);
+    } finally {
+      configureHostResources(registered);
+    }
+  });
+
   it("does not start another resource phase after cancellation during initialization", async () => {
     const controller = new AbortController();
     const inactiveTracing = await tracing.configureTracing({ kind: "off" }, "test");

@@ -168,6 +168,9 @@ function handshakeResponses(serverName: string): FakeChildProcess["responses"] {
 
 beforeEach(() => {
   setProcessPlatform("darwin");
+  // The faked win32 helper spawn reads the host's state location, which a POSIX host does not have.
+  vi.stubEnv("LOCALAPPDATA", "C:\\Users\\alice\\AppData\\Local");
+  vi.stubEnv("ProgramData", "C:\\ProgramData");
   spawnMock.mockReset();
   execFileSyncMock.mockReset();
   execFileSyncMock.mockImplementation((cmd, args) => {
@@ -190,6 +193,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setProcessPlatform(REAL_PLATFORM);
+  vi.unstubAllEnvs();
   __resetActiveSandboxCapabilityForTest();
   __resetWrappedMcpServersForTest();
 });

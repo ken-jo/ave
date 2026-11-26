@@ -97,6 +97,7 @@ export interface ExecuteRationaleAwareBatchInput {
   readonly provider: LLMProvider;
   readonly model: string;
   readonly llmSettings: RunRationaleOnlyRoundInput["llmSettings"];
+  readonly activeRuntime: RunRationaleOnlyRoundInput["activeRuntime"];
   readonly abortSignal?: AbortSignal;
   readonly requestAnchor: RequestAnchor | null;
   readonly rationaleProvenance: RationaleEligibilityProvenance;
@@ -286,6 +287,7 @@ export async function executeRationaleAwareConversationBatch(
       control,
       userRoleTexts: input.userRoleTexts,
       llmSettings: input.llmSettings,
+      activeRuntime: input.activeRuntime,
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     });
     rationaleUsage = roundResult.usage;

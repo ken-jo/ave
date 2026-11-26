@@ -72,6 +72,17 @@ export function approvalFailureOutcome(
 ): { content: string; permission: PermissionCheckResult } | null {
   const reason = hostApprovalDenialReason(decision);
   if (reason === undefined) return null;
+  if (decision.reasonCode === "unattended-approval-denied") {
+    const unattendedReason = t("reasonCodes.unattended-approval-denied");
+    return {
+      content: unattendedReason,
+      permission: {
+        ...refusal(unattendedReason, HOST_PROVENANCE),
+        reasonCode: decision.reasonCode,
+        denyReasons: [{ source: "approval-gate", reason: unattendedReason }],
+      },
+    };
+  }
   const expired = isHostApprovalTimeoutDecision(decision);
   const autoSkipped = reason === NO_APPROVER_MESSAGE;
   const detail = decision.rememberPattern

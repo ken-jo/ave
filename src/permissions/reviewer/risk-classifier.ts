@@ -1762,6 +1762,8 @@ async function abortableSleep(ms: number, signal?: AbortSignal): Promise<boolean
 function isTransientReviewerError(err: unknown): boolean {
   if (err instanceof Error) {
     if (err.name === "AbortError") return false;
+    // The wire refused a retired model; another attempt can only be refused again. Matched by name, as abort is.
+    if (err.name === "RetiredModelError") return false;
     const msg = err.message.toLowerCase();
     if (msg.includes("aborted")) return false;
     if (msg.includes("429") || msg.includes("rate limit") || msg.includes("rate-limit")) return true;

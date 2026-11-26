@@ -1,6 +1,6 @@
 import { CHATGPT_PLAN_ISSUER, CHATGPT_PLAN_USAGE_SCOPE } from "./endpoints.js";
 import { ChatGptPlanIdTokenError, type ChatGptPlanIdTokenVerifier } from "./id-token.js";
-import { fetchChatGptPlanModels, type ChatGptPlanModel } from "./models.js";
+import { fetchChatGptPlanCatalog, type ChatGptPlanCatalog } from "./models.js";
 import {
   buildAuthorizationUrl,
   ChatGptPlanOAuthError,
@@ -344,8 +344,8 @@ export class ChatGptPlanSession {
     await this.refresh();
   }
 
-  async listModels(): Promise<ChatGptPlanModel[]> {
-    return fetchChatGptPlanModels(this.options.fetch, await this.accessToken());
+  async readCatalog(): Promise<ChatGptPlanCatalog> {
+    return fetchChatGptPlanCatalog(this.options.fetch, await this.accessToken());
   }
 
   /**

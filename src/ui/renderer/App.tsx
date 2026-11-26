@@ -1350,6 +1350,7 @@ export function App() {
     llmReadyWithoutApiKey,
     retiredLlmProvider,
     deprecatedLlmModel,
+    dismissDeprecatedLlmModel,
     subscriptionRuntimePolicy,
     refresh: refreshLlmSettings,
     settingsLoaded,
@@ -2562,8 +2563,13 @@ export function App() {
                         onChooseProvider={() => onOpenSettings("llm")}
                       />
                       <DeprecatedModelNotice
-                        model={subscriptionRuntimeSelected ? null : deprecatedLlmModel}
+                        deprecation={subscriptionRuntimeSelected ? null : deprecatedLlmModel}
                         onChooseModel={() => onOpenSettings("llm")}
+                        onDismiss={() => {
+                          void dismissDeprecatedLlmModel().catch(() => {
+                            statusPushToast({ severity: "error", message: t("useSettingsOrchestration.saveFailed") });
+                          });
+                        }}
                       />
                       <MarketplaceAnnouncementBanner
                         announcements={marketplaceAnnouncements}

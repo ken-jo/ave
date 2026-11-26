@@ -26,6 +26,7 @@ import {
 import { endTurnScript } from "./conversation-loop-test-helpers.js";
 import { makeConversationPermissionDeps, ScriptedTurnProvider as FakeProvider } from "./support/conversation-loop-fixtures.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
+import { noRetirementEvidence } from "../llm/model-wire-gate.js";
 
 // Real filesystem I/O can schedule lock retries after fake time has advanced.
 const retrySleep = vi.hoisted(() => ({ skip: false }));
@@ -320,7 +321,7 @@ describe("ConversationLoop onTurnSummary", () => {
     }));
     const auditLogger = new AuditLogger();
     const logTurn = vi.spyOn(auditLogger, "logTurn");
-    const loop = createLoopWithRegistry(new VercelUnifiedProvider(vendor, "fixture-key", "https://provider.invalid/v1", fetchResponse), toolRegistry, {
+    const loop = createLoopWithRegistry(new VercelUnifiedProvider(vendor, "fixture-key", "https://provider.invalid/v1", fetchResponse, { getRetiredModelId: noRetirementEvidence }), toolRegistry, {
       settingsService: { get: () => settings, getSecret: () => "fixture-key" }, auditLogger,
     } as never);
     let summary: TurnSummary | undefined;
@@ -448,7 +449,7 @@ describe("ConversationLoop onTurnSummary", () => {
       jsonSchema: { type: "object", properties: {} }, isReadOnly: () => true,
       execute: async () => ({ output: "contents", isError: false }),
     }));
-    const loop = createLoopWithRegistry(new VercelUnifiedProvider("openai", "fixture-key", "https://provider.invalid/v1", fetchResponse), toolRegistry, {
+    const loop = createLoopWithRegistry(new VercelUnifiedProvider("openai", "fixture-key", "https://provider.invalid/v1", fetchResponse, { getRetiredModelId: noRetirementEvidence }), toolRegistry, {
       settingsService: { get: () => settings, getSecret: () => "test-key" },
     } as never);
     let summary: TurnSummary | undefined;

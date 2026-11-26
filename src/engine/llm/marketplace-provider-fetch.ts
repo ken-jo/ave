@@ -5,6 +5,7 @@ import {
   type LLMVendor,
 } from "../../shared/llm-vendor-defaults.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { declareDeferredSend } from "./model-wire-gate.js";
 
 // Network access axes are closed or narrowed to the configured origin.
 export type ModelProviderNetworkAccess = {
@@ -137,6 +138,9 @@ function createOriginLockedProviderFetch(
       allowInsecureCredentialedHttp,
     });
   }
+  // Address validation awaits before the send, so a model transport's retirement check belongs around the inner send.
+  declareDeferredSend(guardedFetch, (wrapSend) =>
+    createOriginLockedProviderFetch(baseUrl, networkAccess, allowInsecureCredentialedHttp, wrapSend(fetchImpl)));
   return guardedFetch;
 }
 

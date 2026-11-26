@@ -392,7 +392,7 @@ describe("plan-usage token refresh", () => {
     const h = await connected({
       models: () => json(200, { models: [{ slug: "gpt-6.1-sol", display_name: "GPT-6.1 Sol", visibility: "list" }] }),
     });
-    await expect(h.session.listModels()).resolves.toEqual([{ id: "gpt-6.1-sol", displayName: "GPT-6.1 Sol" }]);
+    await expect(h.session.readCatalog()).resolves.toMatchObject({ models: [{ id: "gpt-6.1-sol", displayName: "GPT-6.1 Sol" }] });
     expect(h.requests.find((request) => request.url === CHATGPT_PLAN_MODELS_URL)!.authorization).toBe("Bearer access-1");
   });
 });

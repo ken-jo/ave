@@ -85,7 +85,7 @@ function ownedChild(disposeAfterMs?: number) {
 function routeNative(runtime: PluginRuntime, release: () => void, admitted: () => Promise<void> = async () => {}): void {
   const routing = runtime as unknown as {
     importPluginFactoryForLifecycle(...args: unknown[]): Promise<{ createPlugin: unknown; arm: string }>;
-    registerSandboxEnvelope(pluginId: string, paths: readonly string[], pluginRoot: string, pluginDataDir: string): never;
+    registerSandboxEnvelope(pluginId: string, grants: readonly { path: string; access: "read" | "write" }[], pluginRoot: string, pluginDataDir: string): never;
     recordChildSpawnConfinement(createPlugin: unknown, confinement: string): () => void;
   };
   const original = routing.importPluginFactoryForLifecycle.bind(routing);

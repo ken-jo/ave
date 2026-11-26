@@ -2,7 +2,7 @@ import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getVendorOption } from "../constants.js";
 import { llmRouteModel } from "../../../shared/llm-vendor-defaults.js";
-import type { AppSettings, AveApi } from "../types.js";
+import { isIpcErrorResult, type AppSettings, type AveApi } from "../types.js";
 import {
   canUseLlmVendorWithoutApiKey,
   DEFAULT_LLM_VENDOR,
@@ -24,14 +24,12 @@ import {
 } from "../../../shared/subscription-runtime.js";
 import { selectSubscriptionRuntimeUiPolicy, type SubscriptionRuntimeUiPolicy } from "../utils/subscription-runtime-ui-policy.js";
 import {
-  llmRouteCatalogAddress,
   resolveContextWindowForRoute,
-  resolveModelRetirement,
   resolveRouteModelRetirement,
   type ResolvedOutputTokenLimit,
   type RouteInputModalities,
 } from "../../../shared/context-budget.js";
-import { llmModelListCacheKey, type LlmModelListCacheEntry } from "../../../shared/llm-model-list.js";
+import { modelDeprecationForRoute, modelDeprecationKey, type ModelDeprecation } from "../../../shared/model-deprecation.js";
 import type { ModelPricingRoute } from "../../../shared/model-pricing.js";
 import { syncPricingOverrides } from "./use-pricing-overrides.js";
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../../shared/model-host-policy.js";
@@ -132,9 +130,9 @@ export interface UseSettingsResult {
   /** The removed vendor the stored profile was moved off, or the retired model it names, until the user picks in Settings.
    * API-key chat is not ready while it is set. */
   retiredLlmProvider: LlmRouteRetirement | null;
-  /** The active API route's saved model when the catalog marks it deprecated and nothing retired the route (design
-   * `model-capability-catalog.md` §6.1). Chat keeps working on it; the window only says it is going away. */
-  deprecatedLlmModel: string | null;
+  /** The current, undismissed catalog deprecation for the saved API model. */
+  deprecatedLlmModel: ModelDeprecation | null;
+  dismissDeprecatedLlmModel: () => Promise<void>;
   /** Single source of truth for selected subscription chat and attachment UX. */
   subscriptionRuntimePolicy: SubscriptionRuntimeUiPolicy;
   /** Active subscription runtime after untrusted settings boundary validation. */
@@ -174,7 +172,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
   );
   const [llmReadyWithoutApiKey, setLlmReadyWithoutApiKey] = useState(false);
   const [retiredLlmProvider, setRetiredLlmProvider] = useState<LlmRouteRetirement | null>(null);
-  const [deprecatedLlmModel, setDeprecatedLlmModel] = useState<string | null>(null);
+  const [deprecatedLlmModel, setDeprecatedLlmModel] = useState<ModelDeprecation | null>(null);
   const [activeSubscriptionRuntime, setActiveSubscriptionRuntime] =
     useState<SubscriptionChatRuntimeSelection | null>(null);
   const [subscriptionRuntimeCapabilities, setSubscriptionRuntimeCapabilities] =
@@ -239,14 +237,15 @@ export function useSettings(api: AveApi): UseSettingsResult {
       setAutoCompactEnabled(settings.chat.autoCompact);
       const retiredRoute = isLlmRouteRetirement(settings.llm.retiredProvider) ? settings.llm.retiredProvider : null;
       setRetiredLlmProvider(retiredRoute);
-      // The deprecated tier is the catalog's word alone; a listing that lands mid-session is judged by the next load, which may
-      // block the route.
-      const deprecated = retiredRoute === null && routeModel !== ""
-        && resolveRouteModelRetirement(
-          { ...settings.llm, provider, modelListCache: undefined },
+      const deprecation = retiredRoute === null
+        ? modelDeprecationForRoute(
+          { ...settings.llm, provider },
           settings.marketplace?.installedProviderPresets,
-        ) === "catalog-deprecated";
-      setDeprecatedLlmModel(deprecated ? routeModel : null);
+        ) : undefined;
+      const key = deprecation && modelDeprecationKey(deprecation);
+      const nextNotice = deprecation && !settings.llm.dismissedModelDeprecations?.some((entry) => modelDeprecationKey(entry) === key)
+        ? deprecation : null;
+      setDeprecatedLlmModel((current) => current && nextNotice && modelDeprecationKey(current) === key ? current : nextNotice);
       const nextSubscriptionRuntime = activeSubscriptionRuntimeFromSettings(settings);
       const runtimeChanged = !sameSubscriptionRuntime(
         activeSubscriptionRuntimeRef.current,
@@ -276,6 +275,13 @@ export function useSettings(api: AveApi): UseSettingsResult {
       /* ignore */
     }
   }, [api, applySettingsSnapshot]);
+
+  const dismissDeprecatedLlmModel = useCallback(async () => {
+    if (!deprecatedLlmModel) return;
+    const result = await api.updateSettings({ llm: { dismissedModelDeprecations: [deprecatedLlmModel] } });
+    if (isIpcErrorResult(result)) throw new Error(result.error);
+    await refresh();
+  }, [api, deprecatedLlmModel, refresh]);
 
   // Subscribe before the initial read so a cross-window update cannot be missed between getSettings() and listener
   // registration. The revision guard prevents a slow initial read from overwriting a newer broadcast snapshot.
@@ -405,6 +411,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     llmReadyWithoutApiKey,
     retiredLlmProvider,
     deprecatedLlmModel,
+    dismissDeprecatedLlmModel,
     subscriptionRuntimePolicy,
     activeSubscriptionRuntime: subscriptionRuntimePolicy.activeSubscriptionRuntime,
     subscriptionChatReady: subscriptionRuntimePolicy.chatReady,
@@ -448,18 +455,18 @@ export type ModelCardChoice = ApiModelCardChoice | SubscriptionModelCardChoice;
 export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
   const pinned = llm.pinnedModels ?? [];
   const offered = new Map<string, Set<LLMVendor>>();
-  const activeAddress = llmRouteCatalogAddress(llm);
-  const activeListing = llm.modelListCache?.[
-    llmModelListCacheKey(activeAddress.vendor, activeAddress.baseUrl, activeAddress.credentialScope)
-  ];
-  // A retired model is not a choice (design `model-capability-catalog.md` §6.1). The load's retirement marker counts too: it
-  // names a model the route's own listing dropped, even while the catalog still lists that model.
+  const active = llm.provider;
   const marker = isRetiredLlmModelMarker(llm.retiredProvider) ? llm.retiredProvider : null;
-  const retired = (vendor: LLMVendor, modelId: string, baseUrl?: string, listing?: LlmModelListCacheEntry) =>
+  // A pin saves the vendor and model on its configured route, independently of which cached endpoint offered it.
+  const retired = (vendor: LLMVendor, modelId: string) =>
     (marker !== null && marker.vendor === vendor && marker.model === modelId) ||
-    resolveModelRetirement({ vendor, model: modelId, ...(baseUrl ? { baseUrl } : {}), ...(listing ? { listing } : {}) }) !== undefined;
-  const offer = (vendor: LLMVendor, modelId: string, baseUrl?: string, listing?: LlmModelListCacheEntry) => {
-    if (retired(vendor, modelId, baseUrl, listing)) return;
+    resolveRouteModelRetirement({ ...llm, provider: vendor }, undefined, modelId) !== undefined;
+  const activeBlock = llm.vendors[active];
+  const currentModel = activeBlock && llmRouteModel(
+    activeBlock,
+    active === "openai-compatible" ? llm.marketplaceProviderPresetId : undefined,
+  );
+  const offer = (vendor: LLMVendor, modelId: string) => {
     let models = offered.get(modelId);
     if (!models) {
       models = new Set();
@@ -467,7 +474,6 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
     }
     models.add(vendor);
   };
-  const active = llm.provider;
   // Synced catalogues first: a model a provider actually answered with belongs
   // to THAT provider, and `offered` keeps insertion order — offering the active
   // vendor's bundled line first made a pin resolve to whichever vendor happens
@@ -475,16 +481,11 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
   for (const entry of Object.values(llm.modelListCache ?? {})) {
     // The cache is persisted host data keyed by vendor string; only entries naming a known vendor can be offered as a pick.
     if (!isLLMVendor(entry.vendor)) continue;
-    for (const modelId of entry.models) offer(entry.vendor, modelId, entry.baseUrl, entry);
+    for (const modelId of entry.models) offer(entry.vendor, modelId);
   }
   for (const modelId of getVendorOption(active).modelOptions) {
-    offer(active, modelId, activeAddress.baseUrl, activeListing);
+    offer(active, modelId);
   }
-  const activeBlock = llm.vendors[active];
-  const currentModel = activeBlock && llmRouteModel(
-    activeBlock,
-    active === "openai-compatible" ? llm.marketplaceProviderPresetId : undefined,
-  );
   // `kind === "subscription"` alone decides the branch: an unrecognised
   // provider id must still keep the card off the API model it would
   // otherwise mismark as current. `isSubscriptionRuntimeId` below only
@@ -495,6 +496,7 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
   const choices: ModelCardChoice[] = [];
   for (const modelId of pinned) {
     for (const vendor of offered.get(modelId) ?? []) {
+      if (retired(vendor, modelId)) continue;
       choices.push({
         kind: "api",
         vendor,
@@ -507,10 +509,7 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
     }
   }
   // A retired vendor leaves its configured model as an unselected candidate; a retired model is not offered at all.
-  const currentRetired = currentModel !== undefined && currentModel !== ""
-    && (isRetiredLlmModelMarker(llm.retiredProvider)
-      || retired(active, currentModel, activeAddress.baseUrl, activeListing));
-  if (subscription === null && currentModel && !currentRetired && !choices.some((choice) =>
+  if (subscription === null && currentModel && !retired(active, currentModel) && !choices.some((choice) =>
     choice.kind === "api" && choice.vendor === active && choice.modelId === currentModel
   )) {
     choices.unshift({ kind: "api", vendor: active, vendorLabel: getVendorOption(active).label, modelId: currentModel, current: !llm.retiredProvider });
