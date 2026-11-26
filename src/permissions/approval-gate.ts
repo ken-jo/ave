@@ -651,7 +651,7 @@ function isExactSaveStep(before: string, after: string, scope: string): boolean 
 interface PendingEntry {
   /** The pending-answer owner judges this card: an allow its person asks to remember is held until that answer stands. */
   defersAllowSaves?: true;
-  stagedAllowSaves?: readonly StagedAllowSave[];
+  stagedAllowSave?: StagedAllowSave;
   /** Unattributed cards stay with their recipient until that window leaves. */
   unattributedOwner?: WebContents;
   exactSaveTransition?: ApprovalPolicyTransition & { scope: string };
@@ -902,8 +902,7 @@ export class ApprovalGate {
   private readonly approvedPolicyMutations = new WeakMap<ApprovalDecision, ApprovalPolicyMutation>();
   private readonly authenticatedDirectoryAnswers = new WeakSet<ApprovalDecision>();
   private readonly exactSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
-  // Cards the pending-answer owner opened and the gate has not been asked yet.
-  private readonly stagedAllowSaves = new WeakMap<ApprovalDecision, { saves: readonly StagedAllowSave[]; controller: ApprovalPersistenceGuard }>();
+  private readonly stagedAllowSaves = new WeakMap<ApprovalDecision, { save: StagedAllowSave; controller: ApprovalPersistenceGuard }>();
   private readonly approvedBrowserSites = new WeakMap<ApprovalDecision, { sessionId: string; origin: string; choice: BrowserSiteChoice }>();
 
   consumeBrowserSiteChoice(decision: ApprovalDecision, sessionId: string, origin: string): BrowserSiteChoice | undefined {
@@ -993,39 +992,32 @@ export class ApprovalGate {
     return this.pending.get(requestId)?.defersAllowSaves === true;
   }
 
-  /** Hold a validated allow save on its live card. False when the card is gone or does not defer; nothing is held then. */
+  /** Hold one validated allow save on its live card. A second save is refused. */
   stageAllowSave(requestId: string, save: StagedAllowSave): boolean {
     const entry = this.pending.get(requestId);
-    if (entry?.defersAllowSaves !== true) return false;
-    entry.stagedAllowSaves = [...(entry.stagedAllowSaves ?? []), save];
+    if (entry?.defersAllowSaves !== true || entry.stagedAllowSave !== undefined) return false;
+    entry.stagedAllowSave = save;
     return true;
   }
 
-  /** Run the allow saves held for the card `decision` answered. They take the standing answer to that card and spend its
-   * rule-save use; each must move its store by exactly its own step. The steps become this decision's same-card mutation evidence. */
+  /** Spend the standing answer's rule-save use to write the card's held allow and record its mutation. */
   async commitStagedAllowSaves(decision: ApprovalDecision, answer: StandingAnswer, action: string): Promise<{ readonly saved: boolean; readonly refusal?: string }> {
     const staged = this.stagedAllowSaves.get(decision);
     if (!staged) return { saved: false };
     this.stagedAllowSaves.delete(decision);
     if (spendStandingAnswer(answer, "rule-save", action)?.decision !== decision) return { saved: false, refusal: POLICY_CHANGED_WHILE_PENDING };
-    let permission: ApprovalPolicyMutation["permission"];
-    let approvals: ApprovalPolicyMutation["approvals"];
-    let saved = false;
-    for (const save of staged.saves) {
-      const result = await save(staged.controller);
-      if (!result.ok) return { saved, refusal: result.error };
-      saved = true;
-      if (result.store === "rules") {
-        if (!isRuleSaveStep(result.from, result.to, result.scope) || (permission !== undefined && permission.to !== result.from)) return { saved, refusal: POLICY_CHANGED_WHILE_PENDING };
-        permission = { from: permission?.from ?? result.from, to: result.to };
-      } else {
-        if (!isExactSaveStep(result.from, result.to, result.scope) || (approvals !== undefined && approvals.to !== result.from)) return { saved, refusal: POLICY_CHANGED_WHILE_PENDING };
-        approvals = { from: approvals?.from ?? result.from, to: result.to, scope: result.scope };
-      }
+    const result = await staged.save(staged.controller);
+    if (!result.ok) return { saved: false, refusal: result.error };
+    let mutation: ApprovalPolicyMutation;
+    if (result.store === "rules") {
+      if (!isRuleSaveStep(result.from, result.to, result.scope)) return { saved: true, refusal: POLICY_CHANGED_WHILE_PENDING };
+      mutation = { permission: { from: result.from, to: result.to } };
+    } else {
+      if (!isExactSaveStep(result.from, result.to, result.scope)) return { saved: true, refusal: POLICY_CHANGED_WHILE_PENDING };
+      mutation = { approvals: { from: result.from, to: result.to, scope: result.scope } };
     }
-    this.approvedPolicyMutations.set(decision, { ...this.approvedPolicyMutations.get(decision),
-      ...(permission ? { permission } : {}), ...(approvals ? { approvals } : {}) });
-    return { saved };
+    this.approvedPolicyMutations.set(decision, { ...this.approvedPolicyMutations.get(decision), ...mutation });
+    return { saved: true };
   }
 
   /** Audit the owner's verdict that a person's Allow answered a question the call no longer asks (pending-answer-policy.ts). No authority follows it. */
@@ -2248,8 +2240,8 @@ export class ApprovalGate {
     if (nativeRenderer && entry.browserSite !== undefined && entry.sessionId !== undefined && resolvedDecision.choice === "allow-once" && isBrowserSiteChoice(resolvedDecision.browserSiteChoice)) {
       this.approvedBrowserSites.set(resolvedDecision, { sessionId: entry.sessionId, origin: entry.browserSite, choice: resolvedDecision.browserSiteChoice });
     }
-    if (nativeRenderer && entry.stagedAllowSaves !== undefined && resolvedDecision.choice.startsWith("allow")) {
-      this.stagedAllowSaves.set(resolvedDecision, { saves: entry.stagedAllowSaves, controller: {
+    if (nativeRenderer && entry.stagedAllowSave !== undefined && resolvedDecision.choice.startsWith("allow")) {
+      this.stagedAllowSaves.set(resolvedDecision, { save: entry.stagedAllowSave, controller: {
         refresh: () => refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId),
         isCurrent: () => isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId),
       } });

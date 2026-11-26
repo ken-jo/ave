@@ -1,5 +1,5 @@
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
-import { openPendingAnswerCard, type PendingAnswerCard, personAnswerStands } from "../../../permissions/pending-answer-policy.js";
+import { openPendingAnswerCard, type PendingAnswerCard, personAnswerStands, saveStandingAnswerRule } from "../../../permissions/pending-answer-policy.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
@@ -1014,6 +1014,33 @@ describe("live native approval ownership", () => {
     expect(f.gate.defersAllowSaves(id)).toBe(false);
     invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { ...allowOnceCardAnswer(card), choice: "deny-once" });
     expect((await result).choice).toBe("deny-once");
+  });
+
+  it("holds only one save on a card", async () => {
+    const f = await subject("default");
+    const id = randomUUID();
+    const asked = { decision: "ask" as const, reason: "manual review" };
+    const opened = openPendingAnswerCard(f.manager, asked, () => asked, "stale-refused", {
+      gate: f.gate, requestId: id, action: "tool-use:save", uses: ["rule-save"],
+    });
+    const { result } = f.queueCard({ id }, opened);
+    const card = await f.waitForCard();
+    const first = vi.fn(async () => {
+      const from = f.manager.getPolicyEpoch();
+      f.manager.addSessionRule(SESSION_ID, "Bash(printf ready)");
+      return { ok: true, store: "rules", from, to: f.manager.getPolicyEpoch(), scope: "session" } as const;
+    });
+    const second = vi.fn(async () => ({ ok: false, error: "rule-save-failed" }) as const);
+    expect(f.gate.stageAllowSave(id, first)).toBe(true);
+    expect.soft(f.gate.stageAllowSave(id, second)).toBe(false);
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+    const answer = await result;
+    expect(personAnswerStands(opened, answer)).toBe(true);
+    expect(first).not.toHaveBeenCalled();
+    expect(await saveStandingAnswerRule(opened, answer)).toEqual({ saved: true });
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).not.toHaveBeenCalled();
+    expect(await saveStandingAnswerRule(opened, answer)).toEqual({ saved: false });
   });
 
   it("writes a held allow only against a standing answer that names the rule-save use", async () => {
