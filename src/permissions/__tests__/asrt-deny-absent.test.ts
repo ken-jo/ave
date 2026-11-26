@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { createRequire } from "node:module";
@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { afterQueuedCallbacks, deferred } from "../../__tests__/support/deferred.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+import { createWindowsProtectedWriteTargets } from "../../__tests__/support/windows-protected-write-fixture.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as evidence from "../../shared/windows-read-deny-evidence.js";
 import * as srtWinIntegrity from "../srt-win-integrity.js";
@@ -262,11 +263,78 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     ]);
   });
 
+  it.each([".agents", ".ave/commands", ".ave/hooks"])("refuses a worker write grant while %s is absent", async name => {
+    captureRuntime();
+    const workspace = join(root, "workspace");
+    const missing = join(workspace, name);
+    createWindowsProtectedWriteTargets(workspace, name);
+    await initializeAsrtSandbox({});
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [workspace] }))
+      .rejects.toThrow(missing);
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+    expect(windowsHelpers.stampWindowsAclAsync).not.toHaveBeenCalled();
+    expect(lstatSync(missing, { throwIfNoEntry: false })).toBeUndefined();
+  });
+
+  it("refuses to initialize an ACL write root without its protected entries", async () => {
+    captureRuntime();
+    const workspace = join(root, "workspace");
+    createWindowsProtectedWriteTargets(workspace, ".ave/hooks");
+    await expect(initializeAsrtSandbox({ allowWrite: [workspace] })).rejects.toThrow(join(workspace, ".ave", "hooks"));
+    expect(manager.initialize).not.toHaveBeenCalled();
+  });
+
+  it("admits a Windows file write grant without requiring child entries", async () => {
+    captureRuntime();
+    const file = present(join(root, "writable.txt"));
+    await initializeAsrtSandbox({});
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [file] });
+    try { expect(grant.allowWrite).toEqual([file]); }
+    finally { grant.release(); }
+  });
+
+  it("keeps both exact child watches when a live worker's carrier disappears", async () => {
+    captureRuntime();
+    const workspace = join(root, "workspace");
+    const carrier = join(workspace, ".ave");
+    createWindowsProtectedWriteTargets(workspace);
+    await initializeAsrtSandbox({});
+    const first = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [workspace] });
+    try {
+      renameSync(carrier, join(root, "original-carrier"));
+      await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowWrite: [workspace] }))
+        .rejects.toThrow(join(carrier, "commands"));
+      expect(runtime.grantWindowsAcl).toHaveBeenCalledOnce();
+      expect(watchedProtectedRows()).toEqual(expect.arrayContaining([join(carrier, "commands"), join(carrier, "hooks")]));
+      expect(watchedProtectedRows()).not.toContain(carrier);
+    } finally { first.release(); }
+  });
+
+  it("verifies write denies for all three Windows protected entries before granting access", async () => {
+    captureRuntime();
+    const workspace = join(root, "workspace");
+    const required = createWindowsProtectedWriteTargets(workspace);
+    await initializeAsrtSandbox({});
+    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementation(paths => paths.map(path => ({
+      denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK,
+      inheritableMask: denyAcl.WINDOWS_WRITE_DENY_MASK,
+      parentMask: 0x40,
+      directory: required.includes(path),
+    })));
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [workspace] });
+    try {
+      expect(stampedPaths()).toEqual(expect.arrayContaining(required));
+      expect(denyAcl.readWindowsDenyAcls).toHaveBeenLastCalledWith(expect.arrayContaining(required), expect.any(String));
+      expect(vi.mocked(denyAcl.readWindowsDenyAcls).mock.invocationCallOrder.at(-1))
+        .toBeLessThan(vi.mocked(runtime.grantWindowsAcl).mock.invocationCallOrder[0]!);
+    } finally { grant.release(); }
+  });
+
   it("preserves machine read protection when a parent receives a write grant", async () => {
     captureRuntime();
     const machine = join(root, "machine");
     const grant = join(machine, "Ave");
-    mkdirSync(grant, { recursive: true });
+    createWindowsProtectedWriteTargets(grant);
     vi.stubEnv("ProgramData", machine);
     const target = join(grant, "secret");
     writeFileSync(target, "secret");
@@ -282,7 +350,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("refuses a write envelope containing an initially unmatched deny glob", async () => {
     captureRuntime();
     const grant = join(root, "workspace");
-    mkdirSync(grant);
+    createWindowsProtectedWriteTargets(grant);
     const pattern = join(grant, "*.secret");
     await initializeAsrtSandbox({ denyRead: [pattern], denyWrite: [pattern] });
     writeFileSync(join(grant, "new.secret"), "secret");
@@ -295,7 +363,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     captureRuntime();
     const machine = join(root, "machine");
     const grant = join(machine, "Ave");
-    mkdirSync(grant, { recursive: true });
+    createWindowsProtectedWriteTargets(grant);
     vi.stubEnv("ProgramData", machine);
     const target = join(grant, "secret");
     writeFileSync(target, "secret");
@@ -310,7 +378,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("refuses a successful stamp that leaves a target unprotected", async () => {
     captureRuntime();
     const grant = join(root, "unverifiable");
-    mkdirSync(grant);
+    createWindowsProtectedWriteTargets(grant);
     const target = present(join(grant, "secret"));
     await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
     vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementation(paths => paths.map(() => ({
@@ -328,7 +396,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("unions native read protection with a write-only policy row", async () => {
     captureRuntime();
     const grant = join(root, "native-union");
-    mkdirSync(grant);
+    createWindowsProtectedWriteTargets(grant);
     const target = join(grant, "secret");
     writeFileSync(target, "secret");
     await initializeAsrtSandbox({ denyWrite: [target] });
@@ -344,7 +412,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("runs concurrent grants one read-stamp-verify turn at a time", async () => {
     captureRuntime();
     const grant = join(root, "concurrent");
-    mkdirSync(grant);
+    createWindowsProtectedWriteTargets(grant);
     const target = join(grant, "secret");
     writeFileSync(target, "secret");
     await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
@@ -367,7 +435,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("services an immediate during a delayed stamp and verifies before permitting spawn", async () => {
     captureRuntime();
     const workspace = join(root, "delayed-stamp");
-    mkdirSync(workspace);
+    createWindowsProtectedWriteTargets(workspace);
     await initializeAsrtSandbox({ denyRead: [present(join(workspace, "secret"))] });
     const entered = deferred<void>();
     const finishStamp = deferred<void>();
@@ -400,7 +468,8 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     captureRuntime();
     const directory = join(root, "directory-grant");
     const workspace = join(directory, "workspace");
-    mkdirSync(workspace, { recursive: true });
+    createWindowsProtectedWriteTargets(directory);
+    mkdirSync(workspace);
     await initializeAsrtSandbox({ denyRead: [present(join(directory, "denied"))] });
     const source = {
       directories: [] as string[],
@@ -436,6 +505,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     captureRuntime();
     const workspace = join(root, "reset-stamp");
     const firstParent = join(workspace, "first-parent");
+    const required = createWindowsProtectedWriteTargets(workspace);
     mkdirSync(firstParent, { recursive: true });
     const first = present(join(firstParent, "first"));
     const second = present(join(workspace, "second"));
@@ -444,6 +514,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     const initialAcls = new Map<string, denyAcl.WindowsDenyAcl>([
       [first, { denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: 0, parentMask: 0, directory: false }],
       [second, { denyMask: 0, inheritableMask: 0, parentMask: 0, directory: false }],
+      ...required.map((path): [string, denyAcl.WindowsDenyAcl] => [path, { denyMask: 0, inheritableMask: 0, parentMask: 0, directory: true }]),
     ]);
     const nativeAcls = new Map(initialAcls);
     const ledger = new Map<string, denyAcl.WindowsDenyAcl>();
@@ -464,7 +535,8 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
       for (const path of stampedPaths) {
         const original = readAcl(path);
         ledger.set(path, original);
-        nativeAcls.set(path, { ...original, denyMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40 });
+        nativeAcls.set(path, { ...original, denyMask: denyAcl.WINDOWS_READ_DENY_MASK,
+          inheritableMask: original.directory ? denyAcl.WINDOWS_READ_DENY_MASK : 0, parentMask: 0x40 });
       }
       if (exitCode === 2) throw new windowsHelpers.WindowsSandboxError("acl_stamp_failed", "Fixture stamp exited 2");
     });
@@ -488,7 +560,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
       await outcome;
       await resetting;
     }
-    expect(stampedPaths).toEqual(exitCode === 2 ? targets.slice(0, 1) : targets);
+    expect(stampedPaths).toEqual(exitCode === 2 ? targets.slice(0, 1) : [...targets, ...required]);
     expect(readAcl(first).parentMask).toBe(0);
     expect(nativeAcls).toEqual(initialAcls);
     expect(ledger.size).toBe(0);
@@ -506,7 +578,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   ])("refuses a worker grant when the %s changes during the stamp", async (changed, message) => {
     captureRuntime();
     const workspace = join(root, "invalidated-stamp");
-    mkdirSync(workspace);
+    createWindowsProtectedWriteTargets(workspace);
     await initializeAsrtSandbox({ denyRead: [present(join(workspace, "secret"))] });
     const existing = changed === "live grant"
       ? await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [workspace] })
@@ -538,7 +610,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it.each(["literal", "glob"])("refuses a %s obligation registered during readback", async kind => {
     captureRuntime();
     const workspace = join(root, "late-obligation");
-    mkdirSync(workspace);
+    createWindowsProtectedWriteTargets(workspace);
     const initial = join(workspace, "initial");
     const late = join(workspace, kind === "glob" ? "*.secret" : "late-secret");
     await initializeAsrtSandbox({ denyRead: [initial] });
@@ -563,7 +635,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("does not yield between obligation readback and the native grant", async () => {
     captureRuntime();
     const workspace = join(root, "atomic-turn");
-    mkdirSync(workspace);
+    createWindowsProtectedWriteTargets(workspace);
     await initializeAsrtSandbox({ denyRead: [present(join(workspace, "secret"))] });
     const read = vi.mocked(denyAcl.readWindowsDenyAcls).getMockImplementation()!;
     let yielded = false;
@@ -580,7 +652,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("refuses a reset during final readback without publishing old grants", async () => {
     captureRuntime();
     const workspace = join(root, "reset-readback");
-    mkdirSync(workspace);
+    createWindowsProtectedWriteTargets(workspace);
     await initializeAsrtSandbox({ denyRead: [present(join(workspace, "secret"))] });
     vi.mocked(manager.updateConfig).mockClear();
     const read = vi.mocked(denyAcl.readWindowsDenyAcls).getMockImplementation()!;
@@ -601,7 +673,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it.each([wrapToolCommand, wrapWorkerCommand])("refuses a waiting wrap when deny verification seals its session %#", async wrap => {
     const wrapped = captureRuntime();
     const workspace = join(root, "seal-evidence");
-    mkdirSync(workspace);
+    createWindowsProtectedWriteTargets(workspace);
     const target = join(workspace, "secret");
     writeFileSync(target, "secret");
     await initializeAsrtSandbox({ denyRead: [target] });
@@ -630,7 +702,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("verifies a partial stamp failure before refusing access without releasing the session", async () => {
     captureRuntime();
     const grant = join(root, "partial-union");
-    mkdirSync(grant);
+    createWindowsProtectedWriteTargets(grant);
     const target = present(join(grant, "secret"));
     await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
     vi.mocked(windowsHelpers.stampWindowsAclAsync).mockRejectedValueOnce(new Error("Fixture partial stamp"));
@@ -644,7 +716,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("refuses the session when a partial stamp loses native read protection", async () => {
     captureRuntime();
     const grant = join(root, "lost-read");
-    mkdirSync(grant);
+    createWindowsProtectedWriteTargets(grant);
     const target = join(grant, "secret");
     writeFileSync(target, "secret");
     await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
@@ -666,7 +738,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("keeps write-only protection readable when native state has no stronger deny", async () => {
     captureRuntime();
     const grant = join(root, "write-only");
-    mkdirSync(grant);
+    createWindowsProtectedWriteTargets(grant);
     const target = join(grant, "secret");
     writeFileSync(target, "secret");
     await initializeAsrtSandbox({ denyWrite: [target] });
@@ -687,7 +759,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   ])("refuses insufficient native deny evidence %#", async native => {
     captureRuntime();
     const grant = join(root, "insufficient");
-    mkdirSync(grant);
+    createWindowsProtectedWriteTargets(grant);
     const target = present(join(grant, "secret"));
     await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
     vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementation(paths => paths.map(() => native));
@@ -699,7 +771,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("watches a newly reachable absent deny instead of stamping it before granting a worker write", async () => {
     const wrap = captureRuntime();
     const grant = join(profile, "later-write");
-    mkdirSync(grant);
+    createWindowsProtectedWriteTargets(grant);
     const target = join(grant, "secret");
     await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
     await wrapToolCommand("echo before", { commandId: TEST_COMMAND_ID });
@@ -727,7 +799,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     captureRuntime();
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     const grant = join(profile, "failed-write");
-    mkdirSync(grant);
+    createWindowsProtectedWriteTargets(grant);
     const target = present(join(grant, "secret"));
     await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
     vi.mocked(windowsHelpers.stampWindowsAclAsync).mockRejectedValueOnce(new Error("Fixture stamp failure"));
@@ -742,7 +814,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("watches an absent deny supplied only by an earlier wrap once a later write grant reaches it", async () => {
     const wrap = captureRuntime();
     const grant = join(profile, "wrap-only");
-    mkdirSync(grant);
+    createWindowsProtectedWriteTargets(grant);
     const target = join(grant, "secret");
     await initializeAsrtSandbox({});
     await wrapToolCommand("echo before", { commandId: TEST_COMMAND_ID,
@@ -760,7 +832,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("protects a previously omitted target that appears before a later write grant", async () => {
     const wrap = captureRuntime();
     const grant = join(root, "later-created");
-    mkdirSync(grant);
+    createWindowsProtectedWriteTargets(grant);
     const target = join(grant, "secret");
     await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
     await wrapToolCommand("echo before", { commandId: TEST_COMMAND_ID });
@@ -936,7 +1008,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     const protectedTarget = join(shared, "secret");
     const absent = join(shared, "absent");
     mkdirSync(grant);
-    mkdirSync(shared);
+    createWindowsProtectedWriteTargets(shared);
     writeFileSync(unrelated, "private");
     writeFileSync(protectedTarget, "secret");
     await initializeAsrtSandbox({});
@@ -972,7 +1044,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("watches absent read and write denies reached by session and caller write grants", async () => {
     const wrap = captureRuntime();
     const workspace = join(root, "workspace");
-    mkdirSync(workspace);
+    createWindowsProtectedWriteTargets(workspace);
     const target = join(workspace, "credential");
     await initializeAsrtSandbox({ allowWrite: [workspace], denyRead: [target], denyWrite: [target] });
     expect(paths(config?.filesystem.denyRead)).not.toContain(target);
@@ -996,7 +1068,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     captureRuntime();
     const workspace = join(root, "session-root");
     const unrelated = join(root, "unrelated-grant");
-    for (const path of [workspace, unrelated]) mkdirSync(path);
+    for (const path of [workspace, unrelated]) createWindowsProtectedWriteTargets(path);
     const row = join(workspace, "credential");
     await initializeAsrtSandbox({ allowWrite: [workspace], denyRead: [row], denyWrite: [row] });
     await wrapToolCommand("echo running", { commandId: TEST_COMMAND_ID });
@@ -1020,7 +1092,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     const target = join(profile, "unrelated-absent-secret");
     for (const name of ["plain", "work[1]"]) {
       const grant = join(profile, name);
-      mkdirSync(grant);
+      createWindowsProtectedWriteTargets(grant);
       await initializeAsrtSandbox({ allowWrite: [grant], denyRead: [target], denyWrite: [target] });
       expect(paths(config?.filesystem.denyRead)).not.toContain(target);
       expect(paths(config?.filesystem.denyWrite)).not.toContain(target);
@@ -1048,7 +1120,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("watches an absent deny beneath a live write grant until its last writer releases", async () => {
     const wrap = captureRuntime();
     const grant = join(profile, "writable");
-    mkdirSync(grant);
+    createWindowsProtectedWriteTargets(grant);
     const target = join(grant, "absent-secret");
     const filesystem = { denyRead: [target], denyWrite: [target] };
     await initializeAsrtSandbox({});
@@ -1078,7 +1150,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("does not carry a live write grant across sandbox reset", async () => {
     const wrap = captureRuntime();
     const grant = join(profile, "previous-session");
-    mkdirSync(grant);
+    createWindowsProtectedWriteTargets(grant);
     const target = join(grant, "absent-secret");
     await initializeAsrtSandbox({});
     const held = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, allowWrite: [grant] });
@@ -1198,7 +1270,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it("watches the absent protective git leaf beneath a writable workspace instead of handing it off", async () => {
     const wrap = captureRuntime();
     const workspace = join(root, "workspace");
-    mkdirSync(workspace);
+    createWindowsProtectedWriteTargets(workspace);
     const target = join(workspace, ".git");
     await initializeAsrtSandbox({ allowWrite: [workspace] });
     expect(paths(config?.filesystem.denyWrite)).not.toContain(target);

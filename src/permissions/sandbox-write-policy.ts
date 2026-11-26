@@ -1000,21 +1000,26 @@ export function buildMandatorySandboxWritePolicy(
     // A marked literal already carries the admitted identity; discovery must retain that canonical path.
     return { original, physical: typeof entry === "string" ? resolvePolicyPath(original, process.cwd()) : original };
   });
-  const rootEntries = process.platform === "linux" || process.platform === "win32"
+  const rootEntries = process.platform === "linux"
     ? [...SANDBOX_PROTECTED_ROOT_ENTRIES, ...SANDBOX_NAMED_ENTRIES]
     : SANDBOX_PROTECTED_ROOT_ENTRIES;
   const rootSpellings = [...new Set(rootSnapshots.flatMap(({ original, physical }) => [original, physical]))];
   const windowsNamedEntries = new Map<string, string>();
-  const windowsProtectedBoundaries: string[] = [];
+  const windowsProtectedBoundaries = [...rootSpellings];
   if (process.platform === "win32") {
-    for (const root of rootSpellings) {
-      const carrier = join(root, ".ave");
-      windowsProtectedBoundaries.push(root, carrier, resolvePolicyDenyPath(carrier));
-      for (const entry of SANDBOX_NAMED_ENTRIES) windowsNamedEntries.set(join(root, entry), entry);
+    for (const { original, physical } of rootSnapshots) {
+      // A grant on a file has no writable children.
+      if (gitEntryIdentity(physical)?.kind === "file") continue;
+      for (const root of new Set([original, physical])) {
+        const carrier = join(root, ".ave");
+        windowsProtectedBoundaries.push(carrier, resolvePolicyDenyPath(carrier));
+        for (const entry of SANDBOX_NAMED_ENTRIES) windowsNamedEntries.set(join(root, entry), entry);
+      }
     }
   }
   const paths = new Set([
     ...rootSpellings.flatMap((root) => rootEntries.map((entry) => join(root, entry))),
+    ...windowsNamedEntries.keys(),
     // The configuration directory is a control boundary, including future files.
     join(aveHome(), AVE_HOME_CONFIGURATION_DIRECTORY),
     permissionSettingsPath(),

@@ -37,6 +37,10 @@ vi.mock("@anthropic-ai/sandbox-runtime", async original => ({
   grantWindowsAcl: vi.fn(), revokeWindowsAcl: vi.fn(),
   getWindowsSandboxUserStatus: vi.fn(() => ({ provisioned: true, credPresent: true, sid: "S-1-5-21-100-200-300-1001" })),
 }));
+vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", async original => ({
+  ...await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>(),
+  stampWindowsAclAsync: vi.fn().mockResolvedValue(undefined),
+}));
 
 useVerifiedAveHomePrivacy();
 const scratch = useTempDirs("filesystem-boundary-");
@@ -100,6 +104,14 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
   it.each(["allowWrite", "allowRead"] as const)("pins the resolved identity through a reparse ancestor in %s", async list => {
     const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
     const target = scratch(); mkdirSync(join(target, "leaf"));
+    if (list === "allowWrite") {
+      const { createWindowsProtectedWriteTargets } = await import("../../__tests__/support/windows-protected-write-fixture.js");
+      createWindowsProtectedWriteTargets(join(target, "leaf"));
+      const denyAcl = await import("../windows-deny-acl.js");
+      vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => paths.map(() => ({
+        denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: denyAcl.WINDOWS_WRITE_DENY_MASK, parentMask: 0x40, directory: true,
+      })));
+    }
     const alias = link(target, join(scratch(), "alias"));
     const identity = observeWindowsGrantIdentity(join(target, "leaf"));
     const pinned = pinWindowsFilesystemConfig({ [list]: [join(alias, "leaf")] });

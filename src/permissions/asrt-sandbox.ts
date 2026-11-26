@@ -1881,6 +1881,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
   writeGrants: readonly FilesystemPathEntry[],
   kind: "read" | "write",
   readDenyEvidence?: WindowsReadDenySnapshot,
+  requiredWriteDenies?: ReadonlySet<string>,
 ): (T | string)[] {
   if (process.platform !== "win32") return [...entries];
   // Reuse identities only within this deny decision; the next rebuild observes filesystem changes again.
@@ -1906,6 +1907,9 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
   const profile = windowsProfileHome();
   const expandedGrants = expandedWindowsDenyGrants(grants, profile);
   const expandedWriteGrants = expandedWindowsDenyGrants(writeGrants, profile, kind === "write");
+  const keepTarget = (entry: T | string, expanded: string): boolean => keepWindowsDenyTarget(
+    entry, expanded, expandedWriteGrants, grantWithin, requiredWriteDenies?.has(windowsReadDenyKey(expanded)) ?? false,
+  );
   const retainedMachineRows = new Set<T>();
   const expandedPaths = new Map<T, string>();
   entries = entries.filter((entry) => {
@@ -1932,7 +1936,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
     }
   });
   const literals = entries.filter((entry) => typeof entry !== "string")
-    .filter(entry => (retainedMachineRows.has(entry) && !expandedPaths.has(entry)) || keepWindowsDenyTarget(entry, expandedPaths.get(entry)!, expandedWriteGrants, grantWithin));
+    .filter(entry => (retainedMachineRows.has(entry) && !expandedPaths.has(entry)) || keepTarget(entry, expandedPaths.get(entry)!));
   const paths = entries.filter((entry): entry is T & string => typeof entry === "string");
   const homes = sensitiveDenyHomes();
   const aveHomes = [aveHome(), ...homes.map((home) => join(home, ".ave"))];
@@ -1969,7 +1973,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
         return true;
       }
     })
-    .filter(path => (retainedMachineRows.has(path) && !expandedPaths.has(path)) || keepWindowsDenyTarget(path, expandedPaths.get(path)!, expandedWriteGrants, grantWithin))
+    .filter(path => (retainedMachineRows.has(path) && !expandedPaths.has(path)) || keepTarget(path, expandedPaths.get(path)!))
     .map((path): T | string => (!/[\\/]$/.test(path) && directories.has(caseFoldForMatch(path.replaceAll("\\", "/"))) ? `${path}\\` : path))
     .concat(literals);
 }
@@ -1979,6 +1983,7 @@ function keepWindowsDenyTarget(
   expanded: string,
   expandedGrants: readonly string[],
   grantWithin: (root: string, path: string) => boolean,
+  required: boolean,
 ): boolean {
   const path = typeof entry === "string" ? entry : entry.path;
   if (isUncPath(expanded) || ((typeof entry === "string" || !entry.literal) && containsGlobCharsWin(expanded))) return true;
@@ -2008,7 +2013,8 @@ function keepWindowsDenyTarget(
   if (!present) {
     // Never hand an absent row to the native stamp: it would create it. A reachable row is watched instead.
     if (reachingGrants.length > 0) {
-      watchAbsentProtectedRow(target, reachingGrants);
+      // Required rows are checked at admission. Only an already live writer warrants a watch for one of them.
+      if (!required) watchAbsentProtectedRow(target, reachingGrants);
       return false;
     }
     const key = windowsReadDenyKey(target);
@@ -2286,6 +2292,8 @@ export function buildSandboxConfig(
   );
   const mandatory = writeRootFloor(writeFloor.bounded ? requestedWrite : []);
   const grantFloor = liveGrants.allowWrite?.length ? writeRootFloor(liveGrants.allowWrite) : undefined;
+  const requiredWriteDenies = [...new Set([...mandatory.windowsRequiredWriteDenies, ...(grantFloor?.windowsRequiredWriteDenies ?? [])])];
+  const requiredWriteKeys = requiredWriteDenies.length > 0 ? new Set(requiredWriteDenies.map(windowsReadDenyKey)) : undefined;
   if (grantFloor !== undefined && grantFloor.narrowedWriteRoots.length > 0) {
     throw new Error(`Windows worker grant floor could not cover every write root: ${grantFloor.narrowedWriteRoots.map(entry => entry.root).join(", ")}`);
   }
@@ -2327,9 +2335,10 @@ export function buildSandboxConfig(
       windowsWriteGrants,
       "read",
       readDenyEvidence,
+      requiredWriteKeys,
     ),
     allowWrite: lists.allowWrite,
-    denyWrite: windowsDenyTargets(lists.denyWrite, trustedSettings.userDataDir, windowsGrants, windowsWriteGrants, "write"),
+    denyWrite: windowsDenyTargets(lists.denyWrite, trustedSettings.userDataDir, windowsGrants, windowsWriteGrants, "write", undefined, requiredWriteKeys),
     // An absent read list keeps the package's own default; an empty one grants nothing.
     ...(allowRead !== undefined ? { allowRead: lists.allowRead } : {}),
   };
@@ -2352,7 +2361,7 @@ export function buildSandboxConfig(
   // Linux-only: pin the helper bwrap execs to the one path each wrap is granted (see getVendoredApplySeccompPath); ASRT's own search would find an `app.asar` virtual path in a packaged build.
   const applySeccompPath = getVendoredApplySeccompPath();
 
-  return {
+  const config: SandboxRuntimeConfig = {
     network,
     filesystem: finishFilesystemPolicy(filesystem, trustedSettings, trustedSettings.denyWrite ?? [], hasConfiguredDenies(trustedSettings)) as FilesystemConfig,
     ...(windows !== undefined ? { windows } : {}),
@@ -2372,6 +2381,29 @@ export function buildSandboxConfig(
         }
       : {}),
   };
+  if (requiredWriteDenies.length > 0) requiredWindowsWriteDenies.set(config, requiredWriteDenies);
+  return config;
+}
+
+const requiredWindowsWriteDenies = new WeakMap<SandboxRuntimeConfig, readonly string[]>();
+
+function assertRequiredWindowsWriteDenies(config: SandboxRuntimeConfig, additionalRoots: readonly string[] = []): readonly string[] {
+  const required = requiredWindowsWriteDenies.get(config);
+  if (required === undefined) return [];
+  const roots = [...windowsPinnedPaths(config.filesystem.allowWrite), ...additionalRoots];
+  const reached = required.filter(path => roots.some(root => lexicalWindowsOverlap(root, path)));
+  const projected = new Set(spelledPathEntries(config.filesystem.denyWrite, "denyWrite").map(windowsReadDenyKey));
+  const liveRoots = active ? watchedRootsInUse(sandboxSession) : [];
+  let unenforced: string | undefined;
+  for (const path of reached) {
+    if (!windowsDenyTargetPresent(path)) {
+      const reaching = liveRoots.filter(root => lexicalWindowsOverlap(root, path));
+      if (reaching.length > 0) watchAbsentProtectedRow(path, reaching, true);
+    } else if (projected.has(windowsReadDenyKey(path))) continue;
+    unenforced ??= path;
+  }
+  if (unenforced !== undefined) throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: unenforced }));
+  return reached;
 }
 
 // A fixed, no-I/O workload used only to prove that Linux can actually start the configured ASRT/bwrap wrapper. ASRT 0.0.80's dependency check verifies binaries, but cannot detect hosts that prohibit the wrapper's user namespace / seccomp setup until a wrapped process starts. This command has no arguments, performs no writes, and makes no network request. It is passed through the SAME initialized ASRT config that tools use (no custom config), so a successful probe proves the real wrapper path rather than merely the presence of `bwrap` on PATH.
@@ -2791,6 +2823,7 @@ async function initializeSandboxRuntime(
     // A host that claimed its signals (asrt-signal-ownership.ts) drains confined children before it resets the runtime; the runtime's own signal
     // handler would reset it, and revoke its ACEs, while they still run (carried patch part 12).
     if (readAsrtSignalReleaseClaim()) SandboxManager.setSignalCleanupOwnedByHost(true);
+    assertRequiredWindowsWriteDenies(config);
     checkWindowsSandboxStampTargets(config.filesystem);
     if (process.platform === "win32") warnWindowsPlaceholderLeftovers(config.filesystem);
     // From here the runtime may stamp ACEs that only its reset, spawning the private helper copy, releases.
@@ -3400,12 +3433,18 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
       allowWrite: [...(liveGrants.allowWrite ?? []), ...allowWrite.map(path => ({ path, literal: true as const }))],
     });
   });
+  const additionalWriteRoots = [...allowWrite, ...liveWindowsWriteRoots(session)];
+  const requiredRows = timeStep("preflightMs", () => new Set(
+    allowWrite.length === 0 ? [] : assertRequiredWindowsWriteDenies(pending, additionalWriteRoots).map(windowsReadDenyKey),
+  ));
   const rows = timeStep("preflightMs", () => {
     const distinct = new Map<string, { path: string; read: boolean }>();
     for (const kind of ["denyRead", "denyWrite"] as const) {
       // Raw rows include omitted targets and unmatched patterns from initialization and every earlier wrap.
       for (const entry of [...(settings[kind] ?? []), ...pending.filesystem[kind]]) {
-        const overlap = overlappingWindowsDeny(entry, allowWrite, kind === "denyWrite");
+        const raw = typeof entry === "string" ? entry : entry.path;
+        const overlap = overlappingWindowsDeny(entry, allowWrite, kind === "denyWrite")
+          ?? (requiredRows.has(windowsReadDenyKey(raw)) ? { expanded: raw, path: raw, glob: false } : undefined);
         if (overlap === undefined) continue;
         const { expanded, path, glob } = overlap;
         if (glob) throw new Error("Windows filesystem write grant overlaps a deny glob");
@@ -3417,6 +3456,9 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     // An absent row is watched, never stamped: the native stamp would create it.
     return [...distinct.values()].filter(row => {
       if (windowsDenyTargetPresent(row.path)) return true;
+      if (requiredRows.has(windowsReadDenyKey(row.path))) {
+        throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: row.path }));
+      }
       watchAbsentProtectedRow(row.path, allowWrite.filter(root => lexicalWindowsOverlap(root, row.path)));
       return false;
     });
@@ -3471,6 +3513,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome));
   timeStep("preflightMs", () => assertStillValid?.());
   if (stampFailure !== undefined) throw stampFailure;
+  if (requiredRows.size > 0) timeStep("preflightMs", () => assertRequiredWindowsWriteDenies(pending, additionalWriteRoots));
   // Resolved after every refusal above, so a refused turn starts no holder.
   const holderPid = timeStep("preflightMs", () => typeof requestedHolderPid === "number" ? requestedHolderPid : requestedHolderPid());
   if (allowRead.length > 0 || allowWrite.length > 0) {

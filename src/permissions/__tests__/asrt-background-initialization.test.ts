@@ -55,7 +55,7 @@ import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBoo
 import * as facts from "../../shared/windows-path-facts.js";
 import * as denyAcl from "../windows-deny-acl.js";
 import * as stampTargets from "../windows-stamp-targets.js";
-import { windowsDenyOperandKey } from "../sandbox-write-policy.js";
+import { SANDBOX_NAMED_ENTRIES, windowsDenyOperandKey } from "../sandbox-write-policy.js";
 import { assertExtensionStartAllowed, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, probeExtensionStart, isAsrtSandboxActive, isOfflineProcessConfinementActive, isPluginWorkerConfinementActive, resetAsrtSandbox, wrapToolCommand, wrapWorkerCommand } from "../asrt-sandbox.js";
 
 const manager = vi.hoisted(() => ({
@@ -109,7 +109,7 @@ function present(paths: readonly string[]): void {
   for (const path of paths) presentTargets.add(win32.resolve(path).replace(/\\$/u, "").toLowerCase());
 }
 
-function pinWorkerRoot(root: string): void {
+function pinWorkerRoot(root: string): string[] {
   const pin = facts.pinWindowsPaths;
   vi.spyOn(facts, "pinWindowsPaths").mockImplementation(requests => requests.map(path => {
     if (path === root) return { exists: true, canonical: root, volumeSerial: "volume", fileId: "worker-root",
@@ -120,6 +120,9 @@ function pinWorkerRoot(root: string): void {
     return response;
   }));
   vi.spyOn(stampTargets, "pinWindowsFilesystemConfig").mockImplementation(config => config);
+  const required = SANDBOX_NAMED_ENTRIES.map(entry => win32.join(root, entry));
+  present(required);
+  return required;
 }
 
 beforeEach(() => {
@@ -173,14 +176,15 @@ describe("background session isolation", () => {
     expect(denies.every(path => win32.isAbsolute(path) === (kind === "absolute"))).toBe(true);
     present(paths);
     await initializeAsrtSandbox({ denyRead: denies });
-    pinWorkerRoot(root);
+    const required = pinWorkerRoot(root);
     const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => requests.map(() => ({
       denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40, directory: false,
     })));
     const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [root] });
     try {
-      expect(read.mock.calls.map(([targets]) => targets)).toEqual([paths, paths]);
-      expect(stampWindowsAclAsync).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ denyRead: paths, denyWrite: paths }));
+      const expected = [...paths, ...required];
+      expect(read.mock.calls.map(([targets]) => targets)).toEqual([expected, expected]);
+      expect(stampWindowsAclAsync).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ denyRead: expected, denyWrite: expected }));
       expect(nativeWorker.grantWindowsAcl).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ write: [root] }));
     } finally { grant.release(); }
   });
@@ -191,14 +195,15 @@ describe("background session isolation", () => {
     paths.push(win32.join(root, "Case"), win32.join(root, "case"), `${win32.join(root, "absent-dir")}\\`);
     present(paths);
     await initializeAsrtSandbox({ denyWrite: paths });
-    pinWorkerRoot(root);
+    const required = pinWorkerRoot(root);
     const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => requests.map(() => ({
       denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: denyAcl.WINDOWS_WRITE_DENY_MASK, parentMask: 0x40, directory: false,
     })));
     const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [root] });
     try {
-      expect(read.mock.calls.map(([targets]) => targets)).toEqual([paths, paths]);
-      expect(stampWindowsAclAsync).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ denyWrite: paths, denyRead: [] }));
+      const expected = [...paths, ...required];
+      expect(read.mock.calls.map(([targets]) => targets)).toEqual([expected, expected]);
+      expect(stampWindowsAclAsync).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ denyWrite: expected, denyRead: [] }));
       expect(nativeWorker.grantWindowsAcl).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ write: [root] }));
     } finally { grant.release(); }
   });
@@ -241,7 +246,7 @@ describe("background session isolation", () => {
     const protectedPath = win32.join(root, "protected");
     present([protectedPath]);
     await initializeAsrtSandbox({ denyWrite: [protectedPath] });
-    pinWorkerRoot(root);
+    const required = pinWorkerRoot(root);
     let refused: Promise<void> | undefined;
     const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => {
       refused ??= expect(wrapWriteDenies(wrapToolCommand, denyPatterns("oversized", 1023)))
@@ -253,7 +258,7 @@ describe("background session isolation", () => {
     let grant: Awaited<ReturnType<typeof grantWindowsWorkerFilesystemAccess>> | undefined;
     try {
       grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [root] });
-      expect(read.mock.calls.map(([targets]) => targets)).toEqual([[protectedPath], [protectedPath]]);
+      expect(read.mock.calls.map(([targets]) => targets)).toEqual([[protectedPath, ...required], [protectedPath, ...required]]);
       expect(nativeWorker.grantWindowsAcl).toHaveBeenCalledOnce();
     } finally {
       await refused;
@@ -270,7 +275,7 @@ describe("background session isolation", () => {
     const late = win32.join(root, kind === "glob" ? "*.secret" : "late-secret");
     present([initial, late]);
     await initializeAsrtSandbox({ denyRead: [initial] });
-    pinWorkerRoot(root);
+    const required = pinWorkerRoot(root);
     let reads = 0;
     let wrapping: Promise<void> | undefined;
     const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => {
@@ -286,7 +291,7 @@ describe("background session isolation", () => {
       const grant = grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [root] })
         .then(held => { held.release(); return held; });
       await expect(grant).rejects.toThrow(/obligation|glob|changed/i);
-      expect(read.mock.calls.map(([targets]) => targets)).toEqual(Array.from({ length: readback }, () => [initial]));
+      expect(read.mock.calls.map(([targets]) => targets)).toEqual(Array.from({ length: readback }, () => [initial, ...required]));
       expect(nativeWorker.grantWindowsAcl).not.toHaveBeenCalled();
       expect(wrapping).toBeDefined();
     } finally {
@@ -294,11 +299,11 @@ describe("background session isolation", () => {
     }
   });
 
-  it.each(WIN32_WRAPPERS)("refuses a worker grant when a %s wrap adds a glob deny while every reached row is watched", async (_name, wrap) => {
+  it.each(WIN32_WRAPPERS)("refuses a worker grant when a %s wrap adds a glob deny while a configured deny is watched", async (_name, wrap) => {
     const root = win32.join(fixtureRoot, "worker");
     const initial = win32.join(root, "initial");
     await initializeAsrtSandbox({ denyRead: [initial] });
-    pinWorkerRoot(root);
+    const required = pinWorkerRoot(root);
     let wrapping: Promise<void> | undefined;
     const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => {
       wrapping ??= expect(wrap("echo late", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [win32.join(root, "*.secret")] } }))
@@ -311,7 +316,7 @@ describe("background session isolation", () => {
       const grant = grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [root] })
         .then(held => { held.release(); return held; });
       await expect(grant).rejects.toThrow(/obligation|glob|changed/i);
-      expect(read.mock.calls.map(([targets]) => targets)).toEqual([[]]);
+      expect(read.mock.calls.map(([targets]) => targets)).toEqual([required]);
       expect(nativeWorker.grantWindowsAcl).not.toHaveBeenCalled();
       expect(stampWindowsAclAsync).not.toHaveBeenCalled();
     } finally {

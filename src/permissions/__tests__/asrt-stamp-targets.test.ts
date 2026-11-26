@@ -11,6 +11,7 @@ import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-priv
 import { withProvidedContext } from "../../__tests__/support/provided-context.js";
 import { configuredTestTmpRoot } from "../../__tests__/support/test-tmp-root.js";
 import { observeWindowsGrantIdentity } from "../../__tests__/support/windows-grant-identity.js";
+import { createWindowsProtectedWriteTargets } from "../../__tests__/support/windows-protected-write-fixture.js";
 import { useScratchLinks, useTempDirs } from "../../__tests__/test-helpers.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { TEST_COMMAND_ID, TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
@@ -216,7 +217,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
     // A present control file reaches the native list under the expanded home; an absent one stays out of it.
     const grantRoot = join(process.env.HOME!, ".stamp-fixture");
-    mkdirSync(grantRoot, { recursive: true });
+    createWindowsProtectedWriteTargets(grantRoot);
     writeFileSync(join(grantRoot, ".bashrc"), "");
     try {
       await expect(initializeAsrtSandbox({
@@ -493,6 +494,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const target = scratch();
+    createWindowsProtectedWriteTargets(target);
     const alias = link(target, join(scratch(), "alias"));
     const identity = observeWindowsGrantIdentity(target);
     const initialize = vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
@@ -555,7 +557,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
 
   it("refuses a replaced ancestor when the runtime consumes a pinned tool list", async () => {
     const target = join(scratch(), "target");
-    mkdirSync(target);
+    createWindowsProtectedWriteTargets(target);
     const { SandboxManager, sandbox, sharedConfig } = await initializeFixtureSandbox({ allowWrite: [target] });
     vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
       renameSync(target, target + "-original");
@@ -609,7 +611,9 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
   });
 
   it("pins rebuilt session configs on worker registration and release", async () => {
-    const { SandboxManager, sandbox } = await initializeFixtureSandbox({ allowWrite: [scratch()] });
+    const target = scratch();
+    createWindowsProtectedWriteTargets(target);
+    const { SandboxManager, sandbox } = await initializeFixtureSandbox({ allowWrite: [target] });
     const updates: SandboxRuntimeConfig[] = [];
     vi.spyOn(SandboxManager, "updateConfig").mockImplementation(config => { updates.push(config); });
     const holder = {};
@@ -634,7 +638,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const missingDeny = join(writable, "missing-deny");
     const presentDeny = join(writable, "present-deny");
     writeFileSync(readable, "");
-    mkdirSync(writable);
+    createWindowsProtectedWriteTargets(writable);
     mkdirSync(presentDeny);
     let initialized = false;
     vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
