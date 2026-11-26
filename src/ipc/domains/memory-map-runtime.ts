@@ -113,7 +113,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     watchAuthority,
     refreshLocalAdmission,
     runWorker: (folder, task, signal, onProgress, onAdmission) => runMemoryWorker(folder, task, signal, onProgress, onAdmission, localInferencePreference),
-    validatedModelPath: async (signal) => {
+    validatedModelPath: async (signal, onAdmission) => {
       const admission = await refreshLocalInferenceAdmission();
       signal.throwIfAborted();
       const { assertStillValid } = bindLocalEmbeddingRuntime(() => localRuntime(admission));
@@ -121,6 +121,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
       const folder = await model.validatedPath();
       signal.throwIfAborted();
       assertStillValid();
+      onAdmission?.(assertStillValid);
       return folder;
     },
     onProgress: progress => {

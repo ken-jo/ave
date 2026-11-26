@@ -5,6 +5,7 @@ import { lstat, mkdtemp, mkdir, writeFile, open, readFile, readdir, realpath, rm
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { deferred } from '../../../__tests__/support/deferred.js';
 import { LocalModelManager, verifyModelFolder } from '../model-manager.js';
 import { MemoryMapHostError } from '../errors.js';
 import { LOCAL_MODEL_REVISION } from '../model-manifest.js';
@@ -71,6 +72,45 @@ describe('local model lifecycle', () => {
     expect(childDir).not.toHaveBeenCalled();
     expect(downloadFile).not.toHaveBeenCalled();
   });
+  it('withholds byte progress when download admission expires during a staged write', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'memory-model-'));
+    roots.push(root);
+    const writing = deferred<void>();
+    const resume = deferred<void>();
+    const onProgress = vi.fn();
+    const savePath = vi.fn();
+    let current = true;
+    const manager = new LocalModelManager({
+      namespace: {
+        dir: root,
+        readJson: async (_, fallback) => fallback,
+        writeJson: async () => {},
+        childDir: async name => { const path = join(root, name); await mkdir(path, { recursive: true }); return path; },
+        createFile: async name => {
+          const handle = await open(join(root, name), 'wx');
+          const write = handle.writeFile.bind(handle);
+          vi.spyOn(handle, 'writeFile').mockImplementationOnce(async (...args) => {
+            await write(...args);
+            writing.resolve();
+            await resume.promise;
+          });
+          return handle;
+        },
+      },
+      files: [{ name: 'weights.bin', bytes: 5, sha256: createHash('sha256').update('model').digest('hex') }],
+      downloadFile: async () => new Response('model'),
+      refreshAdmission: async () => () => { if (!current) throw new MemoryMapHostError('local-runtime-unavailable'); },
+      readPath: () => undefined, savePath, onProgress,
+    });
+    const download = manager.download();
+    await writing.promise;
+    current = false;
+    resume.resolve();
+    await expect(download).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
+    expect(onProgress.mock.calls.map(([status]) => status.receivedBytes)).toEqual([0]);
+    expect(savePath).not.toHaveBeenCalled();
+  });
+
   it('reuses a verified recovery slot when the Ave home has a linked ancestor', async () => {
     const f = await linkedFixture();
     try {

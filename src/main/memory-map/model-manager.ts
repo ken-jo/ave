@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { lstat, readdir, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { commitUnderAdmission } from '../../shared/admission-commit.js';
 import { renameDirectoryOnce } from '../../lib/transient-fs-lock-retry.js';
 import { openFeatureNamespace, type FeatureNamespaceHandle } from '../storage/feature-namespace.js';
 import { MemoryMapHostError } from './errors.js';
@@ -211,7 +212,9 @@ export class LocalModelManager {
               if (received > file.bytes) throw new MemoryModelError('model-integrity-failed');
               hash.update(chunk.value);
               await handle.writeFile(chunk.value);
-              this.publish({ ...this.state, receivedBytes: this.state.receivedBytes + chunk.value.byteLength });
+              commitUnderAdmission(assertStillValid, () => {
+                this.publish({ ...this.state, receivedBytes: this.state.receivedBytes + chunk.value.byteLength });
+              });
             }
             if (received !== file.bytes || hash.digest('hex') !== file.sha256) throw new MemoryModelError('model-integrity-failed');
             assertStillValid();

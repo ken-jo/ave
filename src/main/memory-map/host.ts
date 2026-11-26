@@ -17,7 +17,7 @@ import type { ProviderEmbeddings } from './provider-embeddings.js';
 const sameNamespace = (a: EmbeddingNamespace, b: EmbeddingNamespace) => a.source === b.source && a.providerId === b.providerId && a.modelId === b.modelId && a.modelRevision === b.modelRevision && a.preprocessingRevision === b.preprocessingRevision && (!b.dimensions || a.dimensions === b.dimensions);
 interface HostOptions {
   provider?: ProviderEmbeddings;
-  validatedModelPath: (signal: AbortSignal) => Promise<string>;
+  validatedModelPath: (signal: AbortSignal, onAdmission?: (assertStillValid: () => void) => void) => Promise<string>;
   refreshLocalAdmission: () => Promise<() => void>;
   namespace?: FeatureNamespaceHandle;
   runWorker?: MemoryWorkerRunner;
@@ -99,7 +99,7 @@ export class MemoryMapHost {
     if (this.snapshot) this.validateSnapshot(this.snapshot, catalog);
     return this.pending ?? this.snapshot;
   }
-  private async embedLocal(catalog: MemoryMapCatalog, folder: string, savedCache: VectorCache, signal: AbortSignal, jobId: string, report: (progress: MemoryMapProgress) => void, assertCurrent: () => void): Promise<VectorCache> {
+  private async embedLocal(catalog: MemoryMapCatalog, folder: string, savedCache: VectorCache, signal: AbortSignal, jobId: string, report: (progress: MemoryMapProgress) => void, assertCurrent: () => void, assertModelAdmission: () => void): Promise<VectorCache> {
     const total = catalog.records.length;
     const cache: VectorCache = {};
     const missing: { record: MemoryMapRecord; key: string }[] = [];
@@ -110,7 +110,10 @@ export class MemoryMapHost {
       else missing.push({ record, key });
     }
     const cached = total - missing.length;
-    if (cached) report({ jobId, phase: 'embedding', completed: cached, total });
+    if (cached) {
+      assertCurrent();
+      commitUnderAdmission(assertModelAdmission, () => report({ jobId, phase: 'embedding', completed: cached, total }));
+    }
     for (let offset = 0; offset < missing.length;) {
       const start = offset;
       const texts: string[] = [];
@@ -173,8 +176,9 @@ export class MemoryMapHost {
     };
     try {
       let folder = '';
+      let assertModelAdmission: (() => void) | undefined;
       if (selected.source === 'local') {
-        folder = await this.options.validatedModelPath(controller.signal);
+        folder = await this.options.validatedModelPath(controller.signal, (assertStillValid) => { assertModelAdmission = assertStillValid; });
         releaseModel = registerModelBuild(folder);
       }
       assertCurrent();
@@ -191,8 +195,9 @@ export class MemoryMapHost {
         stopWatching = this.options.watchAuthority?.(() => { if (active()) this.cancel(); });
         result = await (this.options.provider as ProviderEmbeddings).build(catalog, selected, saved, controller.signal, report, assertAuthority);
       } else {
+        if (assertModelAdmission === undefined) throw new MemoryMapHostError('local-runtime-unavailable');
         const jobId = randomUUID();
-        const vectors = await this.embedLocal(catalog, folder, cache, controller.signal, jobId, report, assertCurrent);
+        const vectors = await this.embedLocal(catalog, folder, cache, controller.signal, jobId, report, assertCurrent, assertModelAdmission);
         assertCurrent();
         assertLocalAdmission = await this.options.refreshLocalAdmission();
         assertCurrent();
