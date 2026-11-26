@@ -1,4 +1,5 @@
-import { approvalPresentationDenial, pickNativeFiles } from "../permissions/approval-presentation.js";
+import { approvalPresentationDenial, installApprovalCardPresenters } from "../permissions/approval-presentation.js";
+import { desktopApprovalCardPresenters, pickNativeFiles } from "../main/desktop-approval-presentation.js";
 import { closeMainWindowDocuments } from "../main/main-window-host.js";
 import { app, BaseWindow, nativeImage, Notification, powerMonitor, session, shell } from "electron";
 import { createDeviceCodePresentation } from "../main/device-code-dialog.js";
@@ -112,6 +113,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
   };
   const releaseSettingsPath = protectRuntimeSettingsPath(settingsFilePath(host.userDataPath));
   const releaseOAuthOpener = installOAuthLoginOpener(openLogin);
-  host.close = async () => { releaseOAuthOpener(); releaseSettingsPath(); };
+  const releaseApprovalCardPresenters = installApprovalCardPresenters(desktopApprovalCardPresenters);
+  host.close = async () => { releaseApprovalCardPresenters(); releaseOAuthOpener(); releaseSettingsPath(); };
   return host;
 }

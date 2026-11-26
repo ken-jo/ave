@@ -1,4 +1,4 @@
-import { pickNativeFiles } from "../../permissions/approval-presentation.js";
+import { pickNativeFiles } from "../../main/desktop-approval-presentation.js";
 import { ipcMain, shell } from "electron";
 import { t } from "../../i18n/index.js";
 import { promises as fs, type Dirent } from "node:fs";

@@ -1,4 +1,5 @@
-import { approvalPresentationDenial, showNativeMessage } from "../../permissions/approval-presentation.js";
+import { approvalPresentationDenial } from "../../permissions/approval-presentation.js";
+import { showNativeMessage } from "../desktop-approval-presentation.js";
 import { shortcutPlatformOf } from "../../shared/shortcuts.js";
 import { isBackgroundE2eRuntime, whenFocusEmulated } from "../e2e-window-presentation.js";
 import { clipboard, Menu, session, shell, type BrowserWindow, type MenuItemConstructorOptions, type WebContents } from "electron";

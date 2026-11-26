@@ -5,11 +5,12 @@ import { parseSourceTexts } from "../../../scripts/lib/ts7-ast.mjs";
 import { expect, it } from "vitest";
 
 const SRC = new URL("../../", import.meta.url);
-const PRESENTATION = "permissions/approval-presentation.ts";
+const PRESENTATION_CORE = "permissions/approval-presentation.ts";
+const DESKTOP_PRESENTATION = "main/desktop-approval-presentation.ts";
 const NATIVE_DIALOG_MEMBER = /^show(?:(?:MessageBox|SaveDialog|OpenDialog)(?:Sync)?|ErrorBox)$/;
 const APPROVAL_CHANNEL = /^ave:(?:approval|ask-user-question):request$/;
 const ELECTRON_MODULE = /^electron(?:\/(?:main|common|renderer))?$/;
-const APPROVAL_CHANNEL_ALIAS = /^IPC_(?:APPROVAL|ASK_USER_QUESTION)_REQUEST$/;
+const APPROVAL_CHANNEL_ALIAS = /^(?:IPC_(?:APPROVAL|ASK_USER_QUESTION)_REQUEST|APPROVAL_REQUEST_CHANNEL)$/;
 const APPROVAL_CHANNEL_GROUP = /^(?:approval|askUserQuestion)$/;
 
 function literalText(node: ts.Node): string | undefined {
@@ -78,8 +79,17 @@ function isElectronLoad(node: ts.Node): boolean {
 }
 
 function isChannelDefinitionOrListener(path: string, node: ts.Node): boolean {
-  if (path === "contract/app-contract.ts" && ts.isPropertyAssignment(node.parent) && node.parent.initializer === node) return true;
   const parent = node.parent;
+  if (path === "contract/app-contract.ts") {
+    if (ts.isPropertyAssignment(parent) && parent.initializer === node) return true;
+    if (ts.isVariableDeclaration(parent) && parent.name === node && ts.isIdentifier(node) && node.text === "APPROVAL_REQUEST_CHANNEL") return true;
+  }
+  if (path === "permissions/approval-gate.ts" && ts.isExportSpecifier(parent)
+    && parent.propertyName?.text === "APPROVAL_REQUEST_CHANNEL" && parent.name.text === "IPC_APPROVAL_REQUEST") {
+    const declaration = parent.parent.parent;
+    return ts.isExportDeclaration(declaration) && declaration.moduleSpecifier !== undefined
+      && literalText(declaration.moduleSpecifier) === "../contract/app-contract.js";
+  }
   return path.startsWith("preload/") && ts.isCallExpression(parent) && parent.arguments[0] === node
     && ts.isPropertyAccessExpression(parent.expression) && ts.isIdentifier(parent.expression.expression)
     && parent.expression.expression.text === "ipcRenderer"
@@ -88,7 +98,7 @@ function isChannelDefinitionOrListener(path: string, node: ts.Node): boolean {
 
 function violations(sources: Map<string, string>): string[] {
   const candidates = new Map([...sources].filter(([path, source]) =>
-    path !== PRESENTATION && /electron|show(?:MessageBox|SaveDialog|OpenDialog|ErrorBox)|IPC_(?:APPROVAL|ASK_USER_QUESTION)_REQUEST|approval|askUserQuestion|ask-user-question|sendDecisionCard|\bCHANNELS\b/i.test(source)));
+    path !== DESKTOP_PRESENTATION && /electron|show(?:MessageBox|SaveDialog|OpenDialog|ErrorBox)|IPC_(?:APPROVAL|ASK_USER_QUESTION)_REQUEST|approval|askUserQuestion|ask-user-question|sendDecisionCard|\bCHANNELS\b/i.test(source)));
   const parsed = parseSourceTexts(candidates) as Map<string, ts.SourceFile>;
   const found: string[] = [];
   for (const path of candidates.keys()) {
@@ -123,6 +133,7 @@ function violations(sources: Map<string, string>): string[] {
       if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
         const from = node.moduleSpecifier;
         if (from && ts.isStringLiteral(from) && ELECTRON_MODULE.test(from.text)) {
+          if (path === PRESENTATION_CORE) record(from, "desktop dependency in shared presentation");
           const clause = ts.isImportDeclaration(node) ? node.importClause?.namedBindings : node.exportClause;
           if (clause && (ts.isNamedImports(clause) || ts.isNamedExports(clause))) {
             for (const entry of clause.elements) {
@@ -131,13 +142,11 @@ function violations(sources: Map<string, string>): string[] {
           }
         }
       }
+      if (path === PRESENTATION_CORE && isElectronLoad(node)) record(node, "desktop dependency in shared presentation");
       if (ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
         if (NATIVE_DIALOG_MEMBER.test(node.text)) record(node, "native dialog");
         if ((APPROVAL_CHANNEL.test(node.text) || APPROVAL_CHANNEL_ALIAS.test(node.text)) && !isChannelDefinitionOrListener(path, node)) {
-          const declaration = ts.isExportSpecifier(node.parent) ? node.parent.parent.parent : undefined;
-          const from = declaration && ts.isExportDeclaration(declaration) ? declaration.moduleSpecifier : undefined;
-          const exportFromGate = from && ts.isStringLiteral(from) && from.text.endsWith("approval-presentation.js");
-          if (!exportFromGate) record(node, "approval request channel");
+          record(node, "approval request channel");
         }
       }
       const property = propertyOf(node);
@@ -166,7 +175,7 @@ function violations(sources: Map<string, string>): string[] {
           if (name && (ts.isIdentifier(name) || ts.isStringLiteral(name)) && name.text === "dialog") record(entry, "electron dialog import");
         }
       }
-      if (property?.name === "sendDecisionCard" && !ts.isTypeOfExpression(node.parent)) record(node, "remote approval card");
+      if (path !== PRESENTATION_CORE && property?.name === "sendDecisionCard" && !ts.isTypeOfExpression(node.parent)) record(node, "remote approval card");
       node.forEachChild(inspect);
     }
     inspect(file);
@@ -219,8 +228,27 @@ it.each([
   expect(violations(new Map([[path, source]]))).toEqual([`${path}:${line} approval channel group`]);
 });
 
-it.each(["contract/channel-consumer.ts", "preload/channel-consumer.ts", PRESENTATION])("allows approval channel groups in %s", (path) => {
+it.each(["contract/channel-consumer.ts", "preload/channel-consumer.ts", DESKTOP_PRESENTATION])("allows approval channel groups in %s", (path) => {
   expect(violations(new Map([[path, "const { approval } = CHANNELS; win.send(approval.request, card)"]]))).toEqual([]);
+});
+
+it("rejects desktop imports and aliased renderer channels in the shared presentation module", () => {
+  expect(violations(new Map([[PRESENTATION_CORE, `import type { WebContents } from "electron";
+async function added(win: WebContents) {
+  await import("electron");
+  const wire = CHANNELS;
+  win.send(wire.approval.request, {});
+}`]]))).toEqual([
+    `${PRESENTATION_CORE}:1 desktop dependency in shared presentation`,
+    `${PRESENTATION_CORE}:3 desktop dependency in shared presentation`,
+    `${PRESENTATION_CORE}:5 approval channel group`,
+  ]);
+});
+
+it("rejects an alias of the exported approval request channel outside desktop presentation", () => {
+  const path = "main/new-approval.ts";
+  expect(violations(new Map([[path, `import { APPROVAL_REQUEST_CHANNEL as requestChannel } from "../contract/app-contract.js";
+win.send(requestChannel, card);`]]))).toEqual([`${path}:1 approval request channel`]);
 });
 
 it("allows aliases that access unrelated properties on the channel table", () => {

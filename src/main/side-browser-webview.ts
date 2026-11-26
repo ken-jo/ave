@@ -1,4 +1,4 @@
-import { pickNativeSavePath } from "../permissions/approval-presentation.js";
+import { pickNativeSavePath } from "./desktop-approval-presentation.js";
 import type { MainWindow } from "./main-window-host.js";
 import { isBackgroundE2eRuntime } from "./e2e-window-presentation.js";
 import { handleAgentBrowserPopup } from "./browser/browser-popup-navigation.js";

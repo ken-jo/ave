@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { CHANNELS } from "../contract/app-contract.js";
 import { createRequire } from "node:module";
 import { app, shell } from "electron";
-import { showNativeMessage } from "../permissions/approval-presentation.js";
+import { showNativeMessage } from "./desktop-approval-presentation.js";
 import type { BaseWindow, IpcMain, IpcMainInvokeEvent } from "electron";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { auditUnauthorized, validateHostRendererSender } from "../ipc/gated.js";

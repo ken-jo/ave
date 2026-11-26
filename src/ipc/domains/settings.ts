@@ -1,4 +1,4 @@
-import { showNativeMessage, pickNativeFiles } from "../../permissions/approval-presentation.js";
+import { showNativeMessage, pickNativeFiles } from "../../main/desktop-approval-presentation.js";
 import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { hasUserKeyboardIntent, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
 import { isSubAgentMaxRounds } from "../../shared/subagent-policy.js";

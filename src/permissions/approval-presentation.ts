@@ -1,8 +1,3 @@
-import type {
-  BaseWindow, MessageBoxOptions, MessageBoxReturnValue, OpenDialogOptions,
-  OpenDialogReturnValue, SaveDialogOptions, SaveDialogReturnValue, WebContents,
-} from "electron";
-import { CHANNELS } from "../contract/app-contract.js";
 import type { AskUserQuestionRequest } from "../main/ask-user-question-gate.js";
 import type { TelegramBotApiClient } from "../main/telegram-bot-api-client.js";
 import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
@@ -14,9 +9,6 @@ export function presentApproval<T>(present: () => T): T | undefined {
   if (unattendedApprovalDenial()) return undefined;
   return present();
 }
-
-export const IPC_APPROVAL_REQUEST = CHANNELS.approval.request;
-const IPC_ASK_USER_QUESTION_REQUEST = CHANNELS.askUserQuestion.request;
 
 export class UnattendedApprovalPresentationError extends Error {
   constructor(readonly reasonCode: NonNullable<ReturnType<typeof unattendedApprovalDenial>>) {
@@ -31,12 +23,25 @@ export function presentRequiredApproval<T>(present: () => T): T {
   return present();
 }
 
-export function presentApprovalCard(target: WebContents, card: ApprovalRequest): void {
-  presentRequiredApproval(() => target.send(IPC_APPROVAL_REQUEST, card));
+type ApprovalCardTarget = { send(channel: string, card: unknown): void };
+
+export interface ApprovalCardPresenters {
+  presentApprovalCard(target: ApprovalCardTarget, card: ApprovalRequest): void;
+  presentQuestionCard(target: ApprovalCardTarget, card: AskUserQuestionRequest): void;
 }
 
-export function presentQuestionCard(target: WebContents, card: AskUserQuestionRequest): void {
-  presentRequiredApproval(() => target.send(IPC_ASK_USER_QUESTION_REQUEST, card));
+let cardPresentation: { presenters: ApprovalCardPresenters } | undefined;
+
+/** Desktop boot owns renderer delivery. A windowless host has no renderer presenter. */
+export function installApprovalCardPresenters(presenters: ApprovalCardPresenters): () => void {
+  const registration = { presenters };
+  cardPresentation = registration;
+  return () => { if (cardPresentation === registration) cardPresentation = undefined; };
+}
+
+export function requireApprovalCardPresenters(): ApprovalCardPresenters {
+  if (!cardPresentation) throw new Error("Approval cards require a desktop host");
+  return cardPresentation.presenters;
 }
 
 export function presentRemoteApprovalCard(
@@ -44,35 +49,4 @@ export function presentRemoteApprovalCard(
   ...args: Parameters<TelegramBotApiClient["sendDecisionCard"]>
 ): ReturnType<TelegramBotApiClient["sendDecisionCard"]> | undefined {
   return presentApproval(() => client.sendDecisionCard(...args));
-}
-
-type DialogArgs<Options> = [options: Options] | [parent: BaseWindow, options: Options];
-
-// Load the desktop API only on an allowed presentation. The same gate runs in windowless hosts.
-export async function pickNativeFiles(...args: DialogArgs<OpenDialogOptions>): Promise<OpenDialogReturnValue> {
-  return presentApproval(async () => {
-    const { dialog } = await import("electron");
-    return args.length === 1 ? dialog.showOpenDialog(args[0]) : dialog.showOpenDialog(args[0], args[1]);
-  }) ?? { canceled: true, filePaths: [] };
-}
-
-export async function pickNativeSavePath(...args: DialogArgs<SaveDialogOptions>): Promise<SaveDialogReturnValue> {
-  return presentApproval(async () => {
-    const { dialog } = await import("electron");
-    return args.length === 1 ? dialog.showSaveDialog(args[0]) : dialog.showSaveDialog(args[0], args[1]);
-  }) ?? { canceled: true, filePath: "" };
-}
-
-export async function showNativeMessage(...args: DialogArgs<MessageBoxOptions>): Promise<MessageBoxReturnValue | undefined> {
-  return presentApproval(async () => {
-    const { dialog } = await import("electron");
-    return args.length === 1 ? dialog.showMessageBox(args[0]) : dialog.showMessageBox(args[0], args[1]);
-  });
-}
-
-export async function showNativeError(title: string, detail: string): Promise<void> {
-  await presentApproval(async () => {
-    const { dialog } = await import("electron");
-    dialog.showErrorBox(title, detail);
-  });
 }

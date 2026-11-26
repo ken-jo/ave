@@ -1,4 +1,5 @@
-import { approvalPresentationDenial, presentRequiredApproval, showNativeMessage } from "../permissions/approval-presentation.js";
+import { approvalPresentationDenial, presentRequiredApproval } from "../permissions/approval-presentation.js";
+import { showNativeMessage } from "./desktop-approval-presentation.js";
 import { isBackgroundE2eRuntime } from "./e2e-window-presentation.js";
 import { rememberPluginAuthPartition } from "./plugin-auth-partition-tracker.js";
 export { wirePluginAuthPartitionPersistence, seedPluginAuthPartitions, rememberPluginAuthPartition, getTrackedPluginAuthPartitions, forgetTrackedPluginAuthPartitions } from "./plugin-auth-partition-tracker.js";

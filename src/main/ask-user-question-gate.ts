@@ -1,5 +1,5 @@
 // FIFO questions appear in the composer dock; this broker does not enforce permission policy.
-import { approvalPresentationDenial, presentQuestionCard, UnattendedApprovalPresentationError } from "../permissions/approval-presentation.js";
+import { approvalPresentationDenial, requireApprovalCardPresenters, UnattendedApprovalPresentationError } from "../permissions/approval-presentation.js";
 import { randomUUID } from "node:crypto";
 import { ASK_USER_QUESTION_RESPOND_CHANNEL, ASK_USER_QUESTION_TIMEOUT_CHANNEL } from "../contract/app-contract.js";
 import type { WebContents } from "electron";
@@ -320,7 +320,7 @@ export class AskUserQuestionGate {
       }
       this.pending.set(req.id, { request: req, deliveredTo, resolve, cleanup });
       try {
-        presentQuestionCard(wc, req);
+        requireApprovalCardPresenters().presentQuestionCard(wc, req);
       } catch (err) {
         cleanup();
         log.warn(

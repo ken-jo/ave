@@ -1,4 +1,4 @@
-import { pickNativeFiles } from "../../permissions/approval-presentation.js";
+import { pickNativeFiles } from "../../main/desktop-approval-presentation.js";
 import type { IpcMainInvokeEvent } from 'electron';
 import { watch } from 'node:fs';
 import { basename, dirname } from 'node:path';

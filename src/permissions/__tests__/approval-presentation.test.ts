@@ -1,7 +1,8 @@
 import { expect, it, vi } from "vitest";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
-import { pickNativeFiles, pickNativeSavePath, presentQuestionCard, showNativeError, showNativeMessage } from "../approval-presentation.js";
+import { desktopApprovalCardPresenters, pickNativeFiles, pickNativeSavePath, showNativeError, showNativeMessage } from "../../main/desktop-approval-presentation.js";
+import { presentRequiredApproval, UnattendedApprovalPresentationError } from "../approval-presentation.js";
 
 const native = vi.hoisted(() => ({
   showOpenDialog: vi.fn(async () => ({ canceled: false, filePaths: ["/fixture/input"] })),
@@ -11,10 +12,19 @@ const native = vi.hoisted(() => ({
 }));
 vi.mock("electron", () => ({ dialog: native }));
 
+it("throws a typed refusal before invoking required presentation in the shared core", () => {
+  const present = vi.fn(() => "presented");
+  expect(() => turnExtensionPolicyContext.run({ unattendedStage: true, allowExternalHooks: false }, () =>
+    presentRequiredApproval(present),
+  )).toThrow(new UnattendedApprovalPresentationError("unattended-approval-denied"));
+  expect(present).not.toHaveBeenCalled();
+  expect(presentRequiredApproval(present)).toBe("presented");
+});
+
 it("throws before sending a required question card in an unattended turn", () => {
   const surface = makeMockWebContents();
   expect(() => turnExtensionPolicyContext.run({ unattendedStage: true, allowExternalHooks: false }, () => {
-    presentQuestionCard(surface as never, {
+    desktopApprovalCardPresenters.presentQuestionCard(surface, {
       id: "question", sessionId: "stage", questions: [{ question: "Continue?", choices: ["Yes", "No"] }], createdAt: Date.now(),
     });
   })).toThrow("unattended-approval-denied");

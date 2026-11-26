@@ -1,4 +1,4 @@
-import { approvalPresentationDenial, presentApproval, presentApprovalCard, UnattendedApprovalPresentationError } from "./approval-presentation.js";
+import { approvalPresentationDenial, presentApproval, requireApprovalCardPresenters, UnattendedApprovalPresentationError } from "./approval-presentation.js";
 import { HostExitAbortError, isHostExitAbort } from "../shared/host-exit-abort.js";
 import { browserOrigin } from "../shared/browser-tools.js";
 import { extensionStartApprovalRows, isBrowserSiteChoice, isExtensionStartChoices, type BrowserSiteChoice, type ExtensionStartChoice } from "../shared/permissions-events.js";
@@ -393,7 +393,7 @@ export interface ApprovalDecision {
   hmac?: string;
 }
 
-export { IPC_APPROVAL_REQUEST } from "./approval-presentation.js";
+export { APPROVAL_REQUEST_CHANNEL as IPC_APPROVAL_REQUEST } from "../contract/app-contract.js";
 // main→renderer: one parked request is no longer answerable. A renderer takes its card down when the turn that asked ends, and that covers the case where the surface holding the turn is still on screen. It is not the only way a request ends: the host retires a parked ask when the tile that asked closes, when a navigation lets go of the tile, on timeout, on abort, on shutdown. In those the surface that would have dropped the card has already unmounted, and without this announcement the card outlives its request — answerable on screen, answering nothing.
 export const IPC_APPROVAL_SETTLED = APPROVAL_SETTLED_CHANNEL;
 
@@ -1858,7 +1858,7 @@ export class ApprovalGate {
               bindOwner(next);
               this.announceSettledToRenderer(fullReq.id, [previous]);
               sentTo = next;
-              presentApprovalCard(next, maskedSignedReq);
+              requireApprovalCardPresenters().presentApprovalCard(next, maskedSignedReq);
             } catch (error) { denySendFailure(error, true); }
           };
           const bindOwner = (owner: WebContents): void => {
@@ -1873,7 +1873,7 @@ export class ApprovalGate {
           detachOwnerRelease = this.resolveSurface?.observeOwnerReleased?.(handoff);
         }
         sentTo = surface;
-        presentApprovalCard(surface, maskedSignedReq);
+        requireApprovalCardPresenters().presentApprovalCard(surface, maskedSignedReq);
       } catch (sendErr) {
         denySendFailure(sendErr, surfaceUnavailable);
       }
@@ -1984,7 +1984,7 @@ export class ApprovalGate {
     entry.rendererRequest = { ...entry.rendererRequest, extensionStartAnswered: Object.fromEntries(answered) };
     try {
       const surface = this.liveSurfaceFor(entry.sessionId);
-      if (surface && !surface.isDestroyed()) presentApprovalCard(surface, entry.rendererRequest);
+      if (surface && !surface.isDestroyed()) requireApprovalCardPresenters().presentApprovalCard(surface, entry.rendererRequest);
     } catch (error) {
       if (error instanceof UnattendedApprovalPresentationError && this.pending.get(requestId) === entry) {
         clearTimeout(entry.timer);

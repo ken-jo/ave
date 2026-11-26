@@ -1,4 +1,4 @@
-import { pickNativeSavePath } from "../../permissions/approval-presentation.js";
+import { pickNativeSavePath } from "../../main/desktop-approval-presentation.js";
 // Diagnostics are internal and host-renderer-only; exported logs and bundle content pass through DLP.
 import { ipcMain } from "electron";
 import { t } from "../../i18n/runtime.js";

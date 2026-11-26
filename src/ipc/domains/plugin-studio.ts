@@ -1,4 +1,4 @@
-import { pickNativeFiles, pickNativeSavePath } from "../../permissions/approval-presentation.js";
+import { pickNativeFiles, pickNativeSavePath } from "../../main/desktop-approval-presentation.js";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";

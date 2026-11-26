@@ -1,4 +1,4 @@
-import { showNativeMessage, pickNativeFiles, pickNativeSavePath } from "../../permissions/approval-presentation.js";
+import { showNativeMessage, pickNativeFiles, pickNativeSavePath } from "../../main/desktop-approval-presentation.js";
 import { registerMemoryMapHandlers } from './memory-map.js';
 import { readMemoryDetail, readMemorySummaries } from "../../memory/memory-detail.js";
 import { decideTurnChange, getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";

@@ -1,4 +1,4 @@
-import { showNativeError } from "../permissions/approval-presentation.js";
+import { showNativeError } from "./desktop-approval-presentation.js";
 import { settingsFilePath } from "../data/settings-store.js";
 import { normalizeLocale, tryLoadLocaleMessages } from "../i18n/index.js";
 import { translate } from "../i18n/translate.js";

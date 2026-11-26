@@ -1,4 +1,4 @@
-import { pickNativeFiles, pickNativeSavePath } from "../../permissions/approval-presentation.js";
+import { pickNativeFiles, pickNativeSavePath } from "../../main/desktop-approval-presentation.js";
 import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
 import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { isBackgroundE2eRuntime, showWindowForRuntime } from "../../main/e2e-window-presentation.js";

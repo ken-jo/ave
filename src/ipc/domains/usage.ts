@@ -1,4 +1,4 @@
-import { pickNativeSavePath } from "../../permissions/approval-presentation.js";
+import { pickNativeSavePath } from "../../main/desktop-approval-presentation.js";
 import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";

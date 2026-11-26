@@ -1,4 +1,4 @@
-import { pickNativeFiles } from "../../permissions/approval-presentation.js";
+import { pickNativeFiles } from "../../main/desktop-approval-presentation.js";
 import { mainWindowForContents } from "../../main/app-state.js";
 // Compose the marketplace lazily behind host-renderer-only IPC; no network work starts before a request.
 import { app, BrowserWindow, ipcMain, powerMonitor, session, shell, type IpcMainInvokeEvent } from "electron";

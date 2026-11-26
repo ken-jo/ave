@@ -1,4 +1,4 @@
-import { showNativeError } from "../permissions/approval-presentation.js";
+import { showNativeError } from "./desktop-approval-presentation.js";
 import { t } from "../i18n/index.js";
 import { AveHomeConfigurationUntrustedError } from "../shared/ave-home.js";
 
