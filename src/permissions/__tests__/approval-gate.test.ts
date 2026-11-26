@@ -41,6 +41,9 @@ import {
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { setLocale } from "../../i18n/runtime.js";
 import { loadLocaleMessages } from "../../i18n/messages/index.js";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
+
+withSourceHostResources();
 
 // Mock WebContents
 

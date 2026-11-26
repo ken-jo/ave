@@ -4,6 +4,9 @@ import { buildPermissionEvaluationContext } from "../evaluation-context.js";
 import { endRun, registerRunSession, setRunSessionParentResolver, __resetRunGrantsForTest } from "../run-grants.js";
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { requestBoundShellCard } from "../../__tests__/support/host-shell-approval.js";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
+
+withSourceHostResources();
 
 const RUN = "work-board:7#run-a";
 const PROJECT = process.platform === "win32" ? "C:\\workspace\\project" : "/workspace/project";
