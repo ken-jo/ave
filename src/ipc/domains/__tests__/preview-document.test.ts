@@ -3,7 +3,8 @@ import { localFs } from "../../../shared/local-path-io.js";
 import { configureHostResources } from "../../../main/host-resources.js";
 import { mkdtempSync, mkdirSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, parse, resolve } from "node:path";
+import { setWindowsDriveQueryForTest } from "../../../shared/windows-drive-locality.js";
 import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import AdmZip from "adm-zip";
@@ -23,9 +24,11 @@ import { allowKeyMaterialInspectionUnder, canonicalizePathForMatch } from "../..
 import { observeAgentDocumentMutation, runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../../tools/agent-observation-context.js";
 import type { DocumentObservationEvent } from "../../../shared/agent-observation.js";
 
+vi.unmock("../../../shared/windows-drive-locality.js");
+
 const { handlers, additionalDirectories, childRuntime, defaultSession, messageBox, openPath } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
-  additionalDirectories: { value: [] as string[] },
+  additionalDirectories: { paths: [] as string[], get value() { return this.paths; }, set value(value: string[]) { this.paths = value; } },
   childRuntime: { mainDir: "" },
   defaultSession: {},
   messageBox: vi.fn(),
@@ -456,6 +459,43 @@ describe("read-only observation sender boundary", () => {
     for (const window of state.getMainWindows()) state.unregisterMainWindow(window);
     setSessionContentsLookup(null);
   });
+
+  it.runIf(process.platform === "win32").each(["text", "table"] as const)(
+    "keeps the previous %s view and receipt when the final receipt query fails",
+    async (kind) => {
+      const event = documentEvent(OK_FRAME);
+      await registerSessionOwner(event);
+      const read = () => kind === "text"
+        ? handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"), { sessionId: "session-one" }) as Promise<PreviewReadFileResult>
+        : readFromSender(event, join(root, "data", "people.csv"), 0, "session-one");
+      try {
+        const previous = await read();
+        expect(previous.ok && previous.observation).toBeTruthy();
+        if (!previous.ok || !previous.observation) throw new Error("Expected an existing view");
+        const liveListeners = event.sender.listeners("destroyed");
+        const drive = parse(root).root.toUpperCase().startsWith("Z:") ? "Y:" : "Z:";
+        const query = vi.fn((letter: string) => {
+          if (letter === drive) throw new Error("Late receipt drive query failed");
+          return "\\Device\\HarddiskVolume1";
+        });
+        let reads = 0;
+        auditLog.mockImplementationOnce(() => {
+          setWindowsDriveQueryForTest(query);
+          vi.spyOn(additionalDirectories, "value", "get").mockImplementation(() =>
+            ++reads >= (kind === "text" ? 2 : 3) ? [root, drive + "\\example"] : [root]);
+        });
+        const refused = await read();
+        expect(refused).toMatchObject({ ok: false, error: "read-failed", message: "Late receipt drive query failed" });
+        expect(query.mock.calls.filter(([letter]) => letter === drive)).toHaveLength(1);
+        vi.restoreAllMocks();
+        expect(event.sender.listeners("destroyed")).toEqual(liveListeners);
+        expect(await ack(event, previous.observation.targetId)).toEqual({ ok: true });
+      } finally {
+        setWindowsDriveQueryForTest();
+        event.sender.emit("destroyed");
+      }
+    },
+  );
 
   it("binds a full text preview to exactly its displayed bytes, frame and session", async () => {
     const event = documentEvent(OK_FRAME);

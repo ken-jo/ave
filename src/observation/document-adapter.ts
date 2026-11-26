@@ -107,7 +107,7 @@ export class DocumentObservationAdapter {
     this.daemon.registerAdapter(this);
   }
 
-  registerView(registration: DocumentViewRegistration): void {
+  registerView(registration: DocumentViewRegistration, knownTurns?: readonly string[]): void {
     if (this.disposed || this.views.has(registration.id)) throw new Error("Observation view already registered.");
     if (!/^[a-f0-9]{64}$/.test(registration.hash)) throw new Error("Invalid observation baseline hash.");
     this.daemon.registerTarget({ id: registration.id, path: registration.path }, registration.sessionId,
@@ -116,7 +116,8 @@ export class DocumentObservationAdapter {
       registration: { ...registration, path: resolve(registration.path) },
       renderedDocument: structuredClone(registration.document), renderedHash: registration.hash,
       headHash: registration.hash, rendered: false, observed: false, blocked: false, dirty: false,
-      version: 0, snapshots: new Map(), activeInvocations: new Set(), knownTurns: new Set(),
+      version: 0, snapshots: new Map(), activeInvocations: new Set(),
+      knownTurns: new Set(knownTurns?.map(turnId => JSON.stringify([registration.sessionId, turnId]))),
     };
     this.views.set(registration.id, view);
   }

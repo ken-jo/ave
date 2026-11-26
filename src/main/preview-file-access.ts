@@ -127,6 +127,14 @@ function ownerFor(event: IpcMainInvokeEvent, deps: WindowRegistry): PreviewFileO
 
 /** Successful preview reads grant only this frame's bounded default-app action. */
 export function recordPreviewFileAccess(event: IpcMainInvokeEvent, deps: WindowRegistry, path: string, sessionId?: unknown): void {
+  const publish = process.platform === "win32"
+    ? withLocalityDecision(() => preparePreviewFileAccess(event, deps, path, sessionId))
+    : preparePreviewFileAccess(event, deps, path, sessionId);
+  publish?.();
+}
+
+export function preparePreviewFileAccess(event: IpcMainInvokeEvent, deps: WindowRegistry, path: string,
+  sessionId?: unknown): (() => void) | undefined {
   if (!validateAppWindowMainFrameSender(event, deps) || !Number.isSafeInteger(event.sender.id)
     || !Number.isSafeInteger(event.senderFrame?.processId) || !Number.isSafeInteger(event.senderFrame?.routingId)
     || !previewSupportsExternalOpen(path)
@@ -134,11 +142,13 @@ export function recordPreviewFileAccess(event: IpcMainInvokeEvent, deps: WindowR
   const session = typeof sessionId === "string" ? sessionId : undefined;
   if (!principalIsCurrent(event, deps, path, session)) return;
   const key = keyOf(event, path);
-  revoke(key);
-  const owner = ownerFor(event, deps);
-  owner.keys.add(key);
-  receipts.set(key, { owner, path, ...(session === undefined ? {} : { sessionId: session }) });
-  while (receipts.size > OBSERVATION_LIMITS.maxViews) revoke(receipts.keys().next().value!);
+  return () => {
+    revoke(key);
+    const owner = ownerFor(event, deps);
+    owner.keys.add(key);
+    receipts.set(key, { owner, path, ...(session === undefined ? {} : { sessionId: session }) });
+    while (receipts.size > OBSERVATION_LIMITS.maxViews) revoke(receipts.keys().next().value!);
+  };
 }
 
 export function previewFileReadAuthorizes(event: IpcMainInvokeEvent, deps: WindowRegistry, path: string): boolean {

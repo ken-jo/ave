@@ -187,12 +187,42 @@ export class DocumentObservationRuntime {
 
   registerView(event: IpcMainInvokeEvent, sessionId: unknown, path: string, bytes: Buffer,
     document: ObservedDocument): ObservationBinding | undefined {
+    if (process.platform === "win32") {
+      let publish: (() => ObservationBinding) | undefined;
+      judgeOrRefuse(() => {
+        publish = this.prepareView(event, sessionId, path, bytes, document);
+        return publish !== undefined;
+      });
+      return publish?.();
+    }
     if (typeof sessionId !== "string" || sessionId.length === 0 || sessionId.length > 256) return undefined;
     const prospective = { event, sessionId, path };
     if (!this.isCurrent(prospective)) return undefined;
     this.prune();
     for (const view of this.views.values()) if (view.event.sender === event.sender && view.event.senderFrame === event.senderFrame
       && view.sessionId === sessionId && view.path === path) this.release(view.id);
+    return this.publishView(prospective, bytes, document);
+  }
+
+  prepareView(event: IpcMainInvokeEvent, sessionId: unknown, path: string, bytes: Buffer,
+    document: ObservedDocument): (() => ObservationBinding) | undefined {
+    if (typeof sessionId !== "string" || sessionId.length === 0 || sessionId.length > 256) return undefined;
+    const prospective = { event, sessionId, path };
+    if (!this.isCurrent(prospective)) return undefined;
+    const superseded = [...this.views.values()].filter((view) => !this.isCurrent(view)
+      || (view.event.sender === event.sender && view.event.senderFrame === event.senderFrame
+        && view.sessionId === sessionId && view.path === path));
+    const knownTurns = [...this.knownTargets.values()].flatMap((target) =>
+      target.identity.sessionId === sessionId && target.path === path ? [target.identity.turnId] : []);
+    return () => {
+      for (const view of superseded) this.release(view.id);
+      return this.publishView(prospective, bytes, document, knownTurns);
+    };
+  }
+
+  private publishView(prospective: Pick<ViewOwner, "event" | "sessionId" | "path">, bytes: Buffer, document: ObservedDocument,
+    knownTurns?: readonly string[]): ObservationBinding {
+    const { event, sessionId, path } = prospective;
     // The daemon's limit is shared with terminal and browser targets, so its capacity, not the document view count, decides.
     if (this.views.size >= OBSERVATION_LIMITS.maxViews || !this.daemon.hasCapacity()) throw new TableDocumentError("busy", "Document observation limit exceeded");
     const id = randomUUID();
@@ -219,15 +249,17 @@ export class DocumentObservationRuntime {
           if (!this.isCurrent(view)) { this.release(id); return; }
           event.sender.send(CHANNELS.preview.observationEvents, events);
         },
-      });
+      }, knownTurns);
     } catch (error) {
       // Leave no view owner, listener or timer behind.
       this.release(id);
       if (error instanceof ObservationCapacityError) throw new TableDocumentError("busy", "Document observation limit exceeded");
       throw error;
     }
-    for (const target of this.knownTargets.values()) if (target.identity.sessionId === sessionId && target.path === path) {
-      this.adapter.admitKnownTarget(sessionId, target.identity.turnId, path);
+    if (knownTurns === undefined) {
+      for (const target of this.knownTargets.values()) if (target.identity.sessionId === sessionId && target.path === path) {
+        this.adapter.admitKnownTarget(sessionId, target.identity.turnId, path);
+      }
     }
     return { targetId: id, sessionId, seq: 0 };
   }
