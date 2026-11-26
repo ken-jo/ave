@@ -79,6 +79,17 @@ export function answerSurvivesRecheck(now: Rechecked, cardForced: boolean): bool
   return now.decision !== "deny" && !(now.decision === "ask" && now.forceModal === true && !cardForced);
 }
 
+/** The one rule for a question against what the call asks now: an allow or an ordinary ask asks no more than the card did, and a
+ * forced ask only when it is the card's own forced question. */
+function asksNoMoreThan(question: PermissionQuestion, forced: boolean, now: Questioned): boolean {
+  return !(now.decision === "ask" && now.forceModal === true && !(forced && samePermissionQuestion(question, permissionQuestionOf(now))));
+}
+
+/** A card not yet asked: `now` still asks, and asks no more than `pending`, the question about to be put. No answer is judged. */
+export function pendingQuestionStillAsked(pending: Questioned, now: Questioned): boolean {
+  return now.decision === "ask" && asksNoMoreThan(permissionQuestionOf(pending), pending.forceModal === true, now);
+}
+
 /** What a stale Allow leads to: a new card (`stale-reasked`) or a refusal of this call (`stale-refused`). */
 export type StaleAnswerOutcome = "stale-reasked" | "stale-refused";
 
@@ -194,11 +205,7 @@ function judgeCard(card: PendingAnswerCard, bound: BoundCard, decision: Approval
   }
   if (fresh.decision === "deny") return { kind: "denied", fresh };
   if (!allows) return { kind: "declined" };
-  const asked = permissionQuestionOf(fresh);
-  // An allow, or an ordinary ask, asks no more than the card did. A forced ask stands only on the card's own forced question.
-  if (fresh.decision === "ask" && fresh.forceModal === true && (!card.forced || !samePermissionQuestion(card.question, asked))) {
-    return { kind: "stale", fresh, from: card.question, to: asked };
-  }
+  if (!asksNoMoreThan(card.question, card.forced, fresh)) return { kind: "stale", fresh, from: card.question, to: permissionQuestionOf(fresh) };
   return { kind: "stands", fresh,
     proof: issueStandingAnswer({ requestId: bound.requestId, decision, action: bound.action, question: card.question, forced: card.forced, fresh }) };
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionCheckResult } from "../permission-manager.js";
-import { answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince, openPendingAnswerCard, permissionQuestionOf, personAnswerStands, samePermissionQuestion, spendStandingAnswer, standingAnswerFor, type PendingAnswerBinding, type StandingAnswer } from "../pending-answer-policy.js";
+import { answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingQuestionStillAsked, permissionQuestionOf, personAnswerStands, samePermissionQuestion, spendStandingAnswer, standingAnswerFor, type PendingAnswerBinding, type StandingAnswer } from "../pending-answer-policy.js";
 
 /** A manager's two epochs, moved by hand. */
 function policy() {
@@ -153,6 +153,18 @@ describe("a person's answer across a policy change", () => {
     const card = openPendingAnswerCard(manager, floorAsk(true), () => result({ decision: "deny", reason: "Saved deny rule" }), "stale-refused", bound(value.gate));
     expect(personAnswerStands(card, value.decision)).toBe(false);
     expect(card.verdict).toMatchObject({ kind: "denied", fresh: { reason: "Saved deny rule" } });
+  });
+
+  it.each([
+    ["the same forced question", floorAsk(true), floorAsk(true), true],
+    ["an ordinary ask", floorAsk(true), result(ask), true],
+    ["the floor lost its session eligibility", floorAsk(true), floorAsk(false), false],
+    ["another floor", floorAsk(true), floorAsk(true, { code: "protected-path", reason: "Protected." }), false],
+    ["a forced ask behind an ordinary card", result(ask), floorAsk(true), false],
+    ["an allow", floorAsk(true), result(allow), false],
+    ["a deny", floorAsk(true), result(deny), false],
+  ] as const)("a card not yet asked keeps its question only while the call still asks it: %s", (_name, pending, now, stillAsked) => {
+    expect(pendingQuestionStillAsked(pending, now)).toBe(stillAsked);
   });
 
   const allowOnce = (requestId = "card") => ({ requestId, choice: "allow-once" as const });

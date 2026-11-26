@@ -1,4 +1,4 @@
-import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, openPendingAnswerCard, personAnswerStands, standingAnswerFor, toolUseAction, type StandingAnswer } from "../permissions/pending-answer-policy.js";
+import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingQuestionStillAsked, personAnswerStands, standingAnswerFor, toolUseAction, type StandingAnswer } from "../permissions/pending-answer-policy.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
@@ -1012,7 +1012,7 @@ export async function executeAuthorizedToolInvocation(
 
   let lateApprovalPolicyEpoch: string | undefined;
   let lateApprovalAnswerEpochs: AnswerEpochs | undefined;
-  /** Before the late card is asked, its question stands across memory-only allow-rule steps while it is still asked
+  /** Before the late card is asked, its question stands across memory-only allow-rule steps while the call still asks it
    * (pending-answer-policy.ts). The answered card is judged by its `PendingAnswerCard`. */
   const lateApprovalStands = (): boolean => {
     const manager = services.permissionManager;
@@ -1024,7 +1024,7 @@ export async function executeAuthorizedToolInvocation(
       permissionResult = manager.recheckPermission(pending, { acrossMemoryRuleChanges: true });
       return permissionResult;
     };
-    if (!personAnswerStands(manager, lateApprovalAnswerEpochs, forced, recheck) || permissionResult?.decision !== "ask") return false;
+    if (!personAnswerStands(manager, lateApprovalAnswerEpochs, forced, recheck) || !permissionResult || !pendingQuestionStillAsked(pending, permissionResult)) return false;
     lateApprovalAnswerEpochs = answerEpochsOf(manager);
     lateApprovalPolicyEpoch = lateApprovalAnswerEpochs.epoch;
     return true;

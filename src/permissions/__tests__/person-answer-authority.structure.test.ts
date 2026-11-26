@@ -222,4 +222,18 @@ describe("authority from a person's answer", () => {
       "tools/invocation-execution.ts#lateApprovalStands",
     ]);
   });
+
+  // The late card's pre-ask check takes its question from the owner and returns a plain yes or no: it neither holds nor makes a
+  // standing answer.
+  it("keeps the late pre-ask check to the owner's question and a boolean", () => {
+    const late = nodesMentioning("lateApprovalStands")
+      .filter(({ node }) => ts.isVariableDeclaration(node) && node.name.getText() === "lateApprovalStands").map(({ node }) => node.getText());
+    expect(late).toHaveLength(1);
+    expect(late[0]).toMatch(/^lateApprovalStands = \(\): boolean =>/);
+    expect(late[0]).toContain("pendingQuestionStillAsked(");
+    expect(late[0]).not.toMatch(/StandingAnswer|standingAnswerFor|spendStandingAnswer|openPendingAnswerCard|permissionQuestionOf|samePermissionQuestion/);
+    const asked = nodesMentioning("pendingQuestionStillAsked(")
+      .filter(({ node }) => ts.isCallExpression(node) && node.expression.getText() === "pendingQuestionStillAsked").map(({ where }) => where);
+    expect(asked).toEqual(["tools/invocation-execution.ts#lateApprovalStands"]);
+  });
 });
