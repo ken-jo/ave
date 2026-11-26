@@ -29,15 +29,31 @@ const h = vi.hoisted(() => ({
   startRoot: vi.fn((): string => "C:\\Users\\alice\\AppData\\Local\\ai.agent-connector.ave\\mxc-runtime"),
   // Stands for the issued-HOME identity check (its own suite runs it on real directories): the invocation's HOME itself.
   issuedHome: vi.fn((cwd: string, home: string | undefined): boolean => cwd === home),
+  // Notified as each launch pass checks the HOME and the declared state; the test reads which decision each ran in.
+  observe: undefined as undefined | ((check: string) => void),
 }));
 vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/mxc-runtime-root.js")>(),
   requireMxcContainerStartRoot: () => h.startRoot(),
 }));
-vi.mock("../../permissions/sandbox-home-registry.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../permissions/sandbox-home-registry.js")>(),
-  isIssuedContainerHome: (cwd: string, home: string | undefined) => h.issuedHome(cwd, home),
-}));
+vi.mock("../../permissions/sandbox-home-registry.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../permissions/sandbox-home-registry.js")>();
+  return {
+    ...actual,
+    isIssuedContainerHome: (cwd: string, home: string | undefined) => h.issuedHome(cwd, home),
+    assertIssuedContainerHomeInPlace: (home: string | undefined) => { h.observe?.("home"); actual.assertIssuedContainerHomeInPlace(home); },
+  };
+});
+vi.mock("../../permissions/confinement-state-paths.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../permissions/confinement-state-paths.js")>();
+  return {
+    ...actual,
+    declaredConfinementStatePaths: (...args: Parameters<typeof actual.declaredConfinementStatePaths>) => {
+      h.observe?.("declared");
+      return actual.declaredConfinementStatePaths(...args);
+    },
+  };
+});
 type DriveKind = "dir" | "file" | "link" | "placeholder" | "vanished";
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -167,6 +183,7 @@ import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation
 import * as policyPipe from "../../permissions/mxc-policy-pipe.js";
 import * as sandboxCapability from "../../permissions/sandbox-capability.js";
 import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../../permissions/sandbox-home-registry.js";
+import { decisionMemo } from "../../shared/local-path-io.js";
 
 // The container route goes away: no capability, announced as a status change.
 function endRoute(): () => void {
@@ -214,6 +231,23 @@ afterEach(() => {
 });
 
 describe("prepareMxcShellLaunch", () => {
+  it("checks the HOME and the declared state of each launch pass in one decision", async () => {
+    relay();
+    const owner = {};
+    const seen: Array<[string, unknown]> = [];
+    h.observe = (check) => { seen.push([check, decisionMemo(owner)]); };
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      await prepareMxcShellLaunch(INPUT, lifecycle);
+    } finally {
+      h.observe = undefined;
+      await lifecycle.dispose();
+    }
+    const final = seen.slice(-2);
+    expect(final.map(([check]) => check)).toEqual(["home", "declared"]);
+    expect(final[0]?.[1]).toBe(final[1]?.[1]);
+  });
+
   it("leaves what it allocated to its owner when the system root is missing", async () => {
     const roots = ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"];
     const previous = roots.map(key => process.env[key]);

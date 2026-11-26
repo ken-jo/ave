@@ -13,6 +13,7 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { drainMxcHolderLifetimes } from "../mxc-holder-lifetime.js";
 import { planWindowsExtensionHolder } from "../mxc-extension-readiness.js";
 import { mxcPolicyModel } from "../../__tests__/support/mxc-policy-rows.js";
+import { decisionMemo } from "../../shared/local-path-io.js";
 
 const state = vi.hoisted(() => ({
   plan: { selectedBackend: "mxc", readiness: "ready" },
@@ -197,6 +198,18 @@ afterEach(async () => {
 });
 
 describe("native confined holder admission", () => {
+  it("revalidates the caller's and the admitted filesystem in one decision per launch pass", async () => {
+    const owner = {};
+    const seen: Array<[string, unknown]> = [];
+    state.validate.mockImplementation(() => { seen.push(["admitted", decisionMemo(owner)]); });
+    const child = await spawnMxcConfinedChild({ ...spec(), assertStillValid: () => { seen.push(["caller", decisionMemo(owner)]); } });
+    await child.release();
+    // Admission, native creation and the native start's end are each one pass over the caller's and the admitted checks.
+    const passes = seen.slice(-6);
+    expect(passes.map(([check]) => check)).toEqual(["caller", "admitted", "caller", "admitted", "caller", "admitted"]);
+    for (let pass = 0; pass < 6; pass += 2) expect(passes[pass]?.[1]).toBe(passes[pass + 1]?.[1]);
+  });
+
   it("carries a reviewed plugin hostDirectory certs read through the admitted rank", async () => {
     const home = "C:\\ave";
     const homeSpy = vi.spyOn(aveHome, "aveHome").mockReturnValue(home);

@@ -440,15 +440,19 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   } catch (error) { egress.release(); throw error; }
   try {
     lease = await openMxcEgressLease(egress.token);
-    spec.assertStillValid?.();
-    admitted.assertStillValid();
-    if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before admission");
-    const request = buildMxcConfinedChildRequest({ ...spec, grants, proxyUrl: lease.url });
-    assertNesting();
-    const admissionInput = { request, holder: spec.holder, executableIdentity: measureExecutableIdentity(spec.command), bootPlan: plan };
-    // A separate snapshot, so the callback cannot mutate the production request.
-    spec.assertRequest?.(structuredClone(request));
-    const admission = createMxcExtensionAdmission(admissionInput);
+    const proxyUrl = lease.url;
+    // Each synchronous launch pass is one judgment: revalidation, nesting and the executable measured on the same observations.
+    const { request, admissionInput, admission } = withLocalityDecision(() => {
+      spec.assertStillValid?.();
+      admitted.assertStillValid();
+      if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before admission");
+      const request = buildMxcConfinedChildRequest({ ...spec, grants, proxyUrl });
+      assertNesting();
+      const admissionInput = { request, holder: spec.holder, executableIdentity: measureExecutableIdentity(spec.command), bootPlan: plan };
+      // A separate snapshot, so the callback cannot mutate the production request.
+      spec.assertRequest?.(structuredClone(request));
+      return { request, admissionInput, admission: createMxcExtensionAdmission(admissionInput) };
+    });
     let child!: OwnedMxcExtensionProcess;
     // Readiness is this holder's own start: admitted only once its ready frame carries the start evidence for this request.
     // A refusal here can follow native creation; the catch below disposes it through the lifetime owner.
@@ -457,26 +461,30 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
         signal: startSignal,
         onOwned: (owned) => { native = owned; },
         beforeSpawn: () => {
-          assertParent();
-          if (signal.aborted) throw new MxcProcessContractError("Extension start was cancelled");
-          spec.assertStillValid?.();
-          admitted.assertStillValid();
-          assertManagedChildProcessAdmissionOpen(spec.label);
-          if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before native creation");
-          assertNesting();
-          assertHomeOutsideState();
-          consumeMxcExtensionAdmission(admission, { ...admissionInput, executableIdentity: measureExecutableIdentity(spec.command) });
+          withLocalityDecision(() => {
+            assertParent();
+            if (signal.aborted) throw new MxcProcessContractError("Extension start was cancelled");
+            spec.assertStillValid?.();
+            admitted.assertStillValid();
+            assertManagedChildProcessAdmissionOpen(spec.label);
+            if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before native creation");
+            assertNesting();
+            assertHomeOutsideState();
+            consumeMxcExtensionAdmission(admission, { ...admissionInput, executableIdentity: measureExecutableIdentity(spec.command) });
+          });
         },
       });
       return child.startEvidence;
     })() });
     native = child;
-    spec.assertStillValid?.();
-    if (signal.aborted) throw new MxcProcessContractError("Extension start was cancelled");
-    assertParent();
-    admitted.assertStillValid();
-    assertManagedChildProcessAdmissionOpen(spec.label);
-    if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed during native start");
+    withLocalityDecision(() => {
+      spec.assertStillValid?.();
+      if (signal.aborted) throw new MxcProcessContractError("Extension start was cancelled");
+      assertParent();
+      admitted.assertStillValid();
+      assertManagedChildProcessAdmissionOpen(spec.label);
+      if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed during native start");
+    });
     binding = { plan, active: true, children: new Set(), footprint: ownRoots };
     const result: MxcConfinedChildSpawn = Object.freeze({ process: child, confinement: "windows-mxc", release: lifetime.release });
     nativeHolderBindings.set(result, binding);
