@@ -1606,7 +1606,8 @@ describe("installer smoke and packaging discipline", () => {
     const command = workflow.jobs["build-and-test"].steps[0].run as string;
     const result = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
       ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: build, VITEST_RESULT: vitest, DOCS_ONLY: docs,
-      PLATFORM_CHECKS: selected, WINDOWS_PREPARATION_RESULT: native, WINDOWS_RESULT: native, MACOS_RESULT: native, LINUX_RESULT: native,
+      PLATFORM_CHECKS: selected, WINDOWS_PREPARATION_RESULT: native,
+      WINDOWS_PACKAGING_RESULT: native, WINDOWS_SCRIPTS_RESULT: native, WINDOWS_DEV_BOOT_RESULT: native, WINDOWS_RESULT: native, MACOS_RESULT: native, LINUX_RESULT: native,
       WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
       VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: "false", WINDOWS_TIER_RESULT: "skipped",
     } });
@@ -1626,6 +1627,7 @@ describe("installer smoke and packaging discipline", () => {
     const result = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
       ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success", VITEST_RESULT: "success",
       DOCS_ONLY: "false", PLATFORM_CHECKS: "true", WINDOWS_PREPARATION_RESULT: preparation,
+      WINDOWS_PACKAGING_RESULT: "success", WINDOWS_SCRIPTS_RESULT: "success", WINDOWS_DEV_BOOT_RESULT: "success",
       WINDOWS_RESULT: shards, MACOS_RESULT: "success", LINUX_RESULT: "success",
       WINDOWS_ARM64_PATH_KIND: "true", WINDOWS_ARM64_PATH_KIND_RESULT: "success",
       VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: "false", WINDOWS_TIER_RESULT: "skipped",
@@ -1712,7 +1714,7 @@ describe("installer smoke and packaging discipline", () => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
       jobs: Record<string, { "runs-on": string; env: Record<string, string>; steps: Record<string, unknown>[] }>;
     };
-    const job = workflow.jobs["windows-native-preparation"]!;
+    const job = workflow.jobs["windows-payload-packaging"]!;
     expect(job["runs-on"]).toBe("windows-2025");
     const step = job.steps.find((entry) => entry.name === "Verify both Windows native payload packages")!;
     expect(step).toBeDefined();
@@ -1722,8 +1724,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(step["working-directory"]).toBe("ave");
     const contained = "node .github/scripts/run-in-job.mjs bun run";
     expect(step.run).toBe(`${contained} check:mxc-pins\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n${contained} check:mxc-packaging\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n`);
-    // The containment launcher is built before the checks that run inside it.
-    const launcher = job.steps.findIndex((entry) => typeof entry.run === "string" && entry.run.startsWith("powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1\n"));
+    const launcher = job.steps.findIndex((entry) => entry.run === "node .github/scripts/restore-windows-ci-inputs.mjs");
     expect(launcher).toBeGreaterThanOrEqual(0);
     expect(launcher).toBeLessThan(job.steps.indexOf(step));
     const cache = job.steps.find((entry) => entry.name === "Cache Windows packaging runtime archives")!;
@@ -1748,7 +1749,7 @@ describe("installer smoke and packaging discipline", () => {
     // a cancellation cannot skip either, fails unless both succeeded.
     // Independent gates must report success through the required aggregate.
     const body = verification as string;
-    expect(body).toMatch(/^ {4}needs: \[build, vitest, vitest-tiers, windows-native-preparation, windows-permission-tests, windows-tier-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins\]$/mu);
+    expect(body).toMatch(/^ {4}needs: \[build, vitest, vitest-tiers, windows-native-preparation, windows-payload-packaging, windows-script-tests, windows-dev-boot, windows-permission-tests, windows-tier-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins\]$/mu);
     expect(body).toMatch(/^ {4}if: always\(\)$/mu);
     expect(body).not.toContain("cancelled()");
     expect(body).toContain("      - name: Require the build and every Vitest shard\n        if: always()\n");
