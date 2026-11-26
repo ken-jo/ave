@@ -1638,24 +1638,38 @@ Windows children reopen their cwd by path and get no child-side check. Instead,
 a permit-bearing Windows Bash or PowerShell launch, on every route (plain host,
 background, Windows sandbox and container wrappers), holds the approved
 directory and every ancestor open without delete sharing, from before the final
-check until the child closes. A helper process owns those handles and the only
-handle to a kill-on-close job. The command starts suspended through the job
-launcher and runs only after the helper has put it in that job. A helper that
-is gone refuses the launch before the command runs, and a helper that exits
-stops the whole tree through the OS. The helper admits only the launcher the
-host started after it, and only that launcher's own suspended child, as one
-framed message; every pipe step has a deadline, and neither job allows
-breakaway, so a wrapper (sandbox runner or container) and its payload stay in
-the job. After the root or the launcher exits the helper stops the job, proves
-it empty and rechecks the held chain (the leaf reopened without following links
-must keep its file id and not be a reparse point); the launcher then proves its
-own job empty. The host reads the outcome from the helper, not from the exit
-code, and waits for it on every completion, including cancellation, timeout and
-a stopped background run: a lost or unconfirmed hold (or no outcome within the
-query deadline) fails the run with a trusted `cwd-pin-lost` or
+check until the run's verdict. A helper process owns those handles and the only
+handle to a kill-on-close job. The job launcher is always the host's direct
+child. It reaches the helper only over a private channel the host relays
+between the two processes it started, joins the helper's job before it starts
+the command (the helper admits the process the launcher names only after that
+process signals an event duplicated into it), and runs the command in its own
+nested job. A helper that is gone refuses the launch before the command runs,
+and a helper that exits stops the whole tree through the OS. Neither job
+allows breakaway, so a wrapper (sandbox runner or container) and its payload
+stay in the job. The verdict comes only from the launcher, which runs inside
+the hold job and so sees both a lost pin and the reap. When the root exits or
+the host asks it to stop, it terminates its job, proves it empty, asks the
+helper to recheck the held chain (the leaf reopened without following links
+must keep its file id and not be a reparse point), writes one record on a
+private handle and exits: `ok` with the command's exit code, `lost` (exit 125)
+when the hold was refused or the directory changed, or `unconfirmed` (exit
+125). The launcher bounds its own admission and teardown at 10 seconds each.
+The host publishes a held run's result only after the launcher has exited and
+reports exactly that record when it matches the exit code. Everything else
+(a spawn error, a route error, a missing or garbled record, a launcher that
+went with the job or never exits) is the single fail-closed result
+`cwd-pin-unconfirmed`; it is never reported as reaped and never as the
+command's code. Cancellation, timeout and a stopped background run all ask the
+launcher to stop by closing its input and wait for its verdict. One deadline of
+15 seconds starts at that stop request: when it passes, the host closes the
+helper, the OS stops the tree, and the result is `cwd-pin-unconfirmed`. A lost
+or unconfirmed verdict fails the run with a trusted `cwd-pin-lost` or
 `cwd-pin-unconfirmed` reason carried outside the output (even after exit code
-0, and never cut by output truncation), and a command's own exit 125 stays its
-own. A refused pinned start fails the run and is never retried unpinned.
+0; it is not cut by output truncation, and an interrupted call keeps it after
+its own detail cut), and a command's own exit 125 stays its own. A background
+run keeps its verdict until a read or stop has delivered it. A refused pinned
+start fails the run and is never retried unpinned.
 Descendants still running when the root exits are stopped, and the result says
 so. Terminal tabs and launches without a permit are not held, and their
 processes in a held directory keep running. The host also refuses before

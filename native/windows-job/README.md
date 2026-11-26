@@ -21,19 +21,30 @@ command exits or the owner closes stdin, it terminates the job and waits up to
 `0`. A job query failure or survivor exits 125 with no verdict appended, and
 job-root cleanup refuses the root.
 
-`--hold-pipe <pipe> <helper pid>` ties the command to a working-directory hold
-helper (`ave-path-kind.exe --hold`). The command is created suspended. The
-launcher refuses the pipe unless its server is that live helper process, sends
-one 8-byte frame (`AVH1` and the command's process id), and resumes the command
-only after the helper has placed it in the helper's kill-on-close job. After
-the root exits, it waits for the helper to report that job empty and the
-directory unchanged. Every started command then ends with the launcher's own
-job terminated and proven empty (the hold job is nested in it), and the launcher
-answers the helper `K` only when both held. Each pipe step has a deadline, and
-a step the system does not cancel ends the launcher, closing its job. Any
-failure stops the command, prints a `cwd-pin-lost` diagnostic and exits 125.
-Exit 125 alone is not the signal: the host reads the helper's own report. In
-this mode a NUL stdin is not watched as an owner. Neither job allows breakaway.
+`--hold` ties the command to a working-directory hold helper
+(`ave-path-kind.exe --hold`). The launcher's fourth standard handle is the
+channel to that helper and its fifth takes the verdict; without both it exits
+125 and starts nothing. It names itself to the helper (`AVH2` and its process
+id), signals the event the helper duplicated into it, and starts the command
+only after the helper has placed the launcher in the helper's kill-on-close
+job, so the command and everything it starts are born inside it. The command
+gets a NUL stdin; the launcher's own stdin is the owner's stop request. When
+the root exits or the owner closes stdin, the launcher terminates its own job
+(nested in the hold job), proves it empty and asks the helper to recheck the
+held directory (`AVHQ`). It then writes exactly one record on the verdict
+handle and exits:
+
+| Record | Exit | Meaning |
+| --- | --- | --- |
+| `AVJ1 ok <code> <0\|1>` | the command's code (130 after a stop request) | job proven empty and directory confirmed; the flag says whether processes other than console hosts were stopped |
+| `AVJ1 lost` | 125 | the hold was refused, or the directory no longer stands |
+| `AVJ1 unconfirmed` | 125 | the job was not proven empty, or the recheck got no answer |
+
+Admission and teardown each have a 10-second deadline, which ends the run with
+`lost` and `unconfirmed` respectively whatever is stalled. The exit code alone
+is not the signal: the host accepts only the exact record with its matching
+exit code and treats everything else as unconfirmed. Neither job allows
+breakaway.
 
 Call `spawnWindowsJobProcess` with an absolute executable path already selected
 by the shell resolver. Keep its stdin open until disposal; never expose that pipe
