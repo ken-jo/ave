@@ -341,9 +341,12 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   }, spec.filesystemOwnership)));
   const grants = rankMxcFilesystem(admitted.model);
   assertWritesInsideEnvelope(grants, spec.filesystemOwnership);
-  boundary.run(() => {
-    for (const notice of userDenyInsidePierceNotices(spec.floorPierces ?? [])) log.warn(notice);
-  });
+  // The plugin runtime emits this notice once its child has started.
+  if (spec.egressOwner.role !== "plugin-child") {
+    boundary.run(() => {
+      for (const notice of userDenyInsidePierceNotices(spec.floorPierces ?? [])) log.warn(notice);
+    });
+  }
   assertMxcHolderPrivateDirectories({ home: spec.home, temp: spec.temp, ownership: spec.filesystemOwnership,
     sharedPrivateRoots: [appOwnedSandboxHomeRoot(), appOwnedSandboxTempRoot(), appOwnedTerminalHandoffRoot()] });
   const footprintPaths = admitWindowsLookupPaths([
