@@ -1,12 +1,13 @@
 // Sandbox runtime package types stay here on purpose: this module builds or feeds a package config. They go when the package dependency goes.
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
-import { containsGlobCharsWin, expandTilde, expandWindowsEnvRefs, globPatternBaseDir, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { expandTilde } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { admittedWindowsEntry, expandWindowsFsPaths, type AdmittedWindowsEntry } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { win32 } from "node:path";
 import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { assertWindowsGrantGrammar, pinWindowsGrantTargets } from "./windows-grant-targets.js";
 import { isPlainWindowsStampPath } from "../shared/windows-path-spelling.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets } from "../shared/ave-home-test-guard.js";
+import { containsGlobCharsWin, expandWindowsEnvRefs, globPatternBaseDir, stripExtendedPathPrefix, toForwardSlashes } from "./sandbox-path-spelling.js";
 
 const missingWindowsGrants = new WeakSet<object>();
 const admittedWindowsGrants = new WeakMap<object, AdmittedWindowsEntry>();
@@ -93,11 +94,12 @@ function assertPlainWindowsStampPath(path: string): void {
 // Check the spelling before runtime expansion can replace a link path with its final target.
 function checkWindowsCanonicalIntermediates(path: string): void {
   if (process.platform !== "win32") return;
-  const homeExpanded = expandWindowsEnvRefs(path) !== path || expandTilde(path) !== path;
+  const envExpanded = expandWindowsEnvRefs(path);
+  const homeExpanded = envExpanded !== path || expandTilde(path) !== path;
   if (homeExpanded && containsGlobCharsWin(expandWindowsEnvRefs("%USERPROFILE%"))) {
     throw new Error(`filesystem-expansion-glob: expanded path cannot be represented literally: ${JSON.stringify(path)}`);
   }
-  let expanded = expandTilde(expandWindowsEnvRefs(path)).replace(/\//g, "\\");
+  let expanded = expandTilde(envExpanded).replace(/\//g, "\\");
   expanded = expanded.replace(/^[a-z]:/, drive => drive.toUpperCase());
   if (!/^[A-Z]:\\/.test(expanded)) assertWindowsGrantGrammar(expanded);
   const prefix = containsGlobCharsWin(expanded)
@@ -130,7 +132,10 @@ export function pinWindowsFilesystemConfig<T extends Partial<FilesystemConfig> |
   const prefixLiterals = guardedStampLiterals(prefixPaths, prefixPins);
   // Retain match spellings during expansion so every possible grant identity is checked.
   const lists = [filesystem.allowRead, filesystem.allowWrite]
-    .map(entries => (entries ?? []).flatMap(entry => expandWindowsFsPaths([entry], { mode: "deny" }))
+    .map(entries => (entries ?? []).flatMap(entry => {
+      const expanded = typeof entry === "string" ? expandWindowsEnvRefs(entry) : { ...entry, path: expandWindowsEnvRefs(entry.path) };
+      return expandWindowsFsPaths([expanded], { mode: "deny" });
+    })
       .map(path => path.replace(/\//g, "\\")));
   for (const entry of prefixLiterals) if (typeof entry !== "string") void entry.path;
   const snapshots = pinWindowsGrantTargets(lists.flat(), { allowMissing: true, validatePath: assertPlainWindowsStampPath });

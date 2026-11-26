@@ -316,6 +316,38 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     }
   });
 
+  describe.each(["a$&b", "$1$$data"])("literal Windows home component %s", component => {
+    const homeRefs = ["%USERPROFILE%", "%HOMEDRIVE%%HOMEPATH%"];
+    let profile: string;
+
+    beforeEach(() => {
+      profile = join(scratch(), "alice", component);
+      mkdirSync(profile, { recursive: true });
+      vi.stubEnv("USERPROFILE", profile);
+      vi.stubEnv("HOME", profile);
+    });
+
+    it.each(homeRefs)("checks and pins the home spelled as %s", async homeRef => {
+      const facts = await import("../../shared/windows-path-facts.js");
+      const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
+      const check = vi.spyOn(facts, "pinWindowsPaths");
+      const pinned = pinWindowsFilesystemConfig({ allowRead: [homeRef] });
+
+      expect(check).toHaveBeenNthCalledWith(1, [profile]);
+      expect(pinned.allowRead).toEqual([{ path: profile, literal: true }]);
+    });
+
+    it.each(homeRefs)("checks the requested write breadth under %s", async homeRef => {
+      const { buildSandboxConfig } = await import("../asrt-sandbox.js");
+      const machineRoot = join(profile, "machine-root");
+      vi.stubEnv("ProgramData", machineRoot);
+      const grant = `${homeRef}\\*`;
+
+      expect(() => buildSandboxConfig({ allowWrite: [grant] }))
+        .toThrow(`Windows write grant ${grant} contains machine root ${machineRoot}`);
+    });
+  });
+
   it.each(["session", "per-command", "worker", "plugin-holder", "grant-holder", "bundled-holder"])("refuses machine-root writes at the %s policy entry", async producer => {
     const { sandbox } = await initializeFixtureSandbox();
     const runtime = await import("@anthropic-ai/sandbox-runtime");

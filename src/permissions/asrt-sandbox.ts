@@ -1978,9 +1978,10 @@ function assertWindowsMachineRootWriteGrants(grants: readonly string[]): void {
   if (process.platform !== "win32") return;
   for (const grant of grants) {
     // Preserve requested pattern breadth as well as pinned literal identity. A `**` tail also matches its base.
-    const normalized = normalizePathForSandbox(grant);
+    const expanded = expandWindowsEnvRefs(grant);
+    const normalized = normalizePathForSandbox(expanded);
     const pattern = containsGlobCharsWin(normalized);
-    const base = pattern ? globPatternBaseDir(toForwardSlashes(normalized)).replace(/^([A-Za-z]:)?$/, "$1/").replace(/\//g, "\\") : grant;
+    const base = pattern ? globPatternBaseDir(toForwardSlashes(normalized)).replace(/^([A-Za-z]:)?$/, "$1/").replace(/\//g, "\\") : expanded;
     for (const root of windowsMachineRoots()) {
       if (!isGrantPathWithin(base, root)) continue;
       if (!pattern || !isGrantPathWithin(root, base) || normalized.includes("**")) {
