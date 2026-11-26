@@ -126,7 +126,5 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const { values } = parseArgs({ options: { arch: { type: "string" }, fixture: { type: "boolean" } } });
   const { binarySha256, receiptSha256 } = buildWindowsPathKind(values);
   // CI passes these through job outputs to the jobs that restore the uploaded helper.
-  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `binary_sha256=${binarySha256}
-receipt_sha256=${receiptSha256}
-`);
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `binary_sha256=${binarySha256}\nreceipt_sha256=${receiptSha256}\n`);
 }

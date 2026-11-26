@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
-const DATA_DIRECTORIES = { 0x10b: 96, 0x20b: 112 };
+// Data directory offsets in the PE32 and PE32+ optional headers.
+const DATA_DIRECTORIES = new Map([[0x10b, 96], [0x20b, 112]]);
 const SECURITY_DIRECTORY = 4;
 
 /**
@@ -17,7 +18,7 @@ export function windowsPeImageDigest(bytes) {
   const optionalSize = bytes.readUInt16LE(pe + 20);
   const sections = optional + optionalSize;
   const sectionCount = bytes.readUInt16LE(pe + 6);
-  const directories = DATA_DIRECTORIES[optional + 2 <= bytes.length ? bytes.readUInt16LE(optional) : 0];
+  const directories = DATA_DIRECTORIES.get(optional + 2 <= bytes.length ? bytes.readUInt16LE(optional) : 0);
   if (!directories || sections + 40 * sectionCount > bytes.length) throw invalid();
   const security = optional + directories + 8 * SECURITY_DIRECTORY;
   if (security + 8 > sections || bytes.readUInt32LE(optional + directories - 4) <= SECURITY_DIRECTORY) throw invalid();

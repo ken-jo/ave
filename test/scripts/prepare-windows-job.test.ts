@@ -560,7 +560,7 @@ describe("Windows path helper packaging", () => {
     "const context = { electronPlatformName: 'win32', arch: 1, appOutDir, packager: { appInfo: { productFilename: 'Ave' } } };",
     "if (step === 'pack') packaging.assertPackagedWindowsPathKind(appOutDir, 'x64');",
     "else if (step === 'sign') packaging.assertSignedWindowsPathKind(appOutDir, 'x64');",
-    "else await createRequire(hooks)(`./electron-${step}.cjs`)(context);",
+    "else await createRequire(hooks)('./electron-' + step + '.cjs')(context);",
   ].join("\n");
 
   function signed(image: Buffer): Buffer {
@@ -699,16 +699,16 @@ describe("Windows CI path helper restore", () => {
 
   it("passes the designated build's digests from the preparation job to both restore steps", () => {
     const workflow = readFileSync(resolve(".github/workflows/ci.yml"), "utf8");
-    expect(workflow).toContain("      path_kind_sha256: ${{ steps.windows-path-kind-build.outputs.binary_sha256 }}");
-    expect(workflow).toContain("      path_kind_receipt_sha256: ${{ steps.windows-path-kind-build.outputs.receipt_sha256 }}");
+    expect(workflow).toContain(`      path_kind_sha256: \${{ steps.windows-path-kind-build.outputs.binary_sha256 }}`);
+    expect(workflow).toContain(`      path_kind_receipt_sha256: \${{ steps.windows-path-kind-build.outputs.receipt_sha256 }}`);
     expect(workflow).toContain("      - name: Build Windows path helper and fixture\n        id: windows-path-kind-build\n");
     const restore = "        env:\n"
-      + "          AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}\n"
-      + "          AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}\n"
+      + `          AVE_WINDOWS_PATH_KIND_SHA256: \${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}\n`
+      + `          AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: \${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}\n`
       + "        run: node .github/scripts/restore-windows-ci-inputs.mjs\n";
     expect(workflow.split(restore)).toHaveLength(3);
     expect(readFileSync(resolve("scripts/build-windows-path-kind.mjs"), "utf8"))
-      .toContain("binary_sha256=${binarySha256}\nreceipt_sha256=${receiptSha256}\n");
+      .toContain(`binary_sha256=\${binarySha256}\\nreceipt_sha256=\${receiptSha256}\\n`);
   });
 });
 
