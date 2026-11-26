@@ -25,13 +25,14 @@ function pathKindBuildFixture(t) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
     cpSync(resolve(file), join(root, file), { recursive: true });
   }
+  // Keep the real SystemRoot for runtime startup, then spoof it for the build.
   const runScript = (script, code, overrides = {}, args = []) => spawnSync(process.execPath, [
-    "--input-type=module", "--eval", code, pathToFileURL(resolve(script)).href, root, ...args,
+    "--input-type=module", "--eval", `Object.assign(process.env, ${JSON.stringify(overrides)});\n${code}`,
+    pathToFileURL(resolve(script)).href, root, ...args,
   ], {
     encoding: "utf8", windowsHide: true,
     env: {
       ...process.env, TMP: buildTemp, TEMP: buildTemp, TMPDIR: buildTemp, AVE_TEST_TMP_ROOT: buildTemp,
-      ...overrides,
     },
   });
   const runBuild = (overrides) => runScript("scripts/build-windows-path-kind.mjs",
