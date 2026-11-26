@@ -244,7 +244,7 @@ export async function probeMxcPowerShellStart(deps: DetectMxcSupportDeps): Promi
   if (wxcExec === undefined) return unavailable("unsupported-arch", `arch ${deps.arch}`);
   // A dry run proves the request is accepted, not that the shell starts. Start the real thing once: System32 Windows PowerShell 5.1 in a container of the shape every command gets (caller-owned reduced environment, proxy mode).
   const startRequest = buildMxcShellRequest({
-    commandLine: powerShellMxcCommandLine(deps.systemRoot, "exit 0"),
+    commandLine: powerShellMxcCommandLine(deps.systemRoot, "exit 0", deps.probeDirectory),
     cwd: deps.probeDirectory,
     grants: { readwrite: [deps.probeDirectory], readonly: [], denied: [] },
     env: {
@@ -1159,9 +1159,31 @@ export async function openMxcRequestTransport(request: MxcContainerRequest, laun
   }
 }
 
-// The container command line for one PowerShell command. `-EncodedCommand` carries the command as UTF-16LE base64, so no quoting of the command's own text can change how the line splits.
-export function powerShellMxcCommandLine(systemRoot: string, command: string): string {
-  const encoded = Buffer.from(command, "utf16le").toString("base64");
+// The file-system provider can start at the system drive root even when Windows starts the process in the requested directory.
+export function powerShellMxcCommandLine(systemRoot: string, command: string, cwd: string): string {
+  const directory = Buffer.from(winPath.normalize(cwd), "utf16le").toString("base64");
+  const establishDirectory = [
+    "try { & {",
+    `$directory = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String('${directory}'));`,
+    "function Test-RequestedLocation([string] $location) {",
+    "[string]::Equals($location.TrimEnd('\\'), $directory.TrimEnd('\\'), [System.StringComparison]::OrdinalIgnoreCase)",
+    "};",
+    "$entries = [System.IO.Directory]::EnumerateFileSystemEntries($directory).GetEnumerator();",
+    "try { [void] $entries.MoveNext() } finally { $entries.Dispose() };",
+    "if (-not (Test-RequestedLocation ([System.Environment]::CurrentDirectory))) { [System.IO.Directory]::SetCurrentDirectory($directory) };",
+    // Set the verified leaf on its drive without the provider walking the masked ancestors.
+    "if (-not (Test-RequestedLocation $ExecutionContext.SessionState.Path.CurrentLocation.Path)) {",
+    "$root = [System.IO.Path]::GetPathRoot($directory);",
+    "[void] $ExecutionContext.SessionState.Path.SetLocation($root);",
+    "$ExecutionContext.SessionState.Drive.Current.CurrentLocation = $directory.Substring($root.Length);",
+    "Microsoft.PowerShell.Core\\Import-Module -Name ([System.IO.Path]::Combine($PSHOME, 'Modules', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop;",
+    "Microsoft.PowerShell.Utility\\Set-Variable -Scope Global -Name PWD -Value $ExecutionContext.SessionState.Path.CurrentLocation -Force -ErrorAction Stop;",
+    "if (-not (Test-RequestedLocation $PWD.Path)) { throw 'Location mismatch' }",
+    "}",
+    "} } catch { [System.Console]::Error.WriteLine('Shell working directory could not be established'); exit 1 };\n",
+  ].join(" ");
+  // Encode the entire script so its text cannot change how the command line splits.
+  const encoded = Buffer.from(establishDirectory + command, "utf16le").toString("base64");
   return `"${win32SystemBinary("WindowsPowerShell/v1.0/powershell", { SystemRoot: systemRoot })}" ${WIN32_POWERSHELL_STARTUP_ARGS.join(" ")} -EncodedCommand ${encoded}`;
 }
 

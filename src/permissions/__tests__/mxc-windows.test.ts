@@ -444,10 +444,14 @@ describe("buildMxcShellRequest", () => {
 
 describe("powerShellMxcCommandLine", () => {
   it("runs System32 Windows PowerShell with the command UTF-16LE encoded", () => {
-    const line = powerShellMxcCommandLine("C:\\Windows", "Write-Output \"a b\"; echo 'x'");
+    const cwd = "C:\\example\\alice's [work]";
+    const command = "Write-Output \"a b\"; echo 'x'";
+    const line = powerShellMxcCommandLine("C:\\Windows", command, cwd);
     expect(line.startsWith('"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -EncodedCommand ')).toBe(true);
     const encoded = line.split(" ").at(-1)!;
-    expect(Buffer.from(encoded, "base64").toString("utf16le")).toBe("Write-Output \"a b\"; echo 'x'");
+    const script = Buffer.from(encoded, "base64").toString("utf16le");
+    expect(script).toContain(Buffer.from(cwd, "utf16le").toString("base64"));
+    expect(script.endsWith(`\n${command}`)).toBe(true);
     expect(line).not.toContain("pwsh");
   });
 });

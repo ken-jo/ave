@@ -34,7 +34,7 @@ function waitScript(name: string): string {
 function launch(launcher: string, cwd: string, grants: MxcFilesystemGrants, script: string): Promise<{ code: number; stdout: string; stderr: string }> {
   const systemRoot = process.env.SystemRoot;
   if (systemRoot === undefined) throw new Error("SystemRoot is not set");
-  const request = buildMxcShellRequest({ commandLine: powerShellMxcCommandLine(systemRoot, script), cwd, grants,
+  const request = buildMxcShellRequest({ commandLine: powerShellMxcCommandLine(systemRoot, script, cwd), cwd, grants,
     env: { SYSTEMROOT: systemRoot, LOCALAPPDATA: cwd }, proxyUrl: "http://127.0.0.1:9", timeoutMs: TOOL_TIMEOUT_POLICY.shellDefaultMs });
   return new Promise((resolveResult, reject) => {
     execFile(launcher, mxcRequestArgs(request, launcher), { cwd: win32.dirname(launcher), windowsHide: true,

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
+import { quotePowerShell } from "../../__tests__/support/powershell-literal.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
 import { admitMxcLists, rankAdmittedMxcLists, rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 import type { MxcShellPolicyLists } from "../../tools/mxc-shell-launch.js";
@@ -13,10 +14,11 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { localFs } from "../../shared/local-path-io.js";
 import * as policyHome from "../../shared/policy-home.js";
 import * as facts from "../../shared/windows-path-facts.js";
+import { windowsSystemRoot } from "../../shared/windows-system-path.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { admitMxcExtensionFilesystem, getBuiltinShellReadPolicy, getDefaultSensitiveWriteDenyPaths, getProtectedReadDenyFloor } from "../asrt-sandbox.js";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
-import { assertMxcDenyOutcomes, buildMxcShellRequest, isWindowsPathAtOrUnder, mxcRequestArgs, powerShellMxcCommandLine, rankMxcFilesystem, resolveHostWxcExecPath, type MxcDenyException, type MxcDirectoryEntry, type MxcFilesystemGrants, type MxcWatchedRow } from "../mxc-windows.js";
+import { assertMxcDenyOutcomes, buildMxcShellRequest, isWindowsPathAtOrUnder, mxcRequestArgs, openMxcRequestTransport, powerShellMxcCommandLine, rankMxcFilesystem, resolveHostWxcExecPath, type MxcDenyException, type MxcDirectoryEntry, type MxcFilesystemGrants, type MxcWatchedRow } from "../mxc-windows.js";
 import { SENSITIVE_PATH_PATTERNS } from "../sensitive-paths.js";
 import { consumeObligations } from "../admitted-obligation.js";
 import { claimMxcWatchedRows, listWatchedQuarantine, WATCHED_ROW_VIOLATION } from "../windows-watched-rows.js";
@@ -615,14 +617,129 @@ describe.skipIf(process.platform !== "win32")("composed container floors", () =>
         { readRoots: [], writeRoots: [root], hostStorageRoots: [] });
       return rankMxcFilesystem(model);
     }
-    const read = getBuiltinShellReadPolicy([root], profile, undefined, undefined, "mxc");
+    return rankShell([root], profile, "mxc", options);
+  }
+
+  function rankShell(roots: readonly string[], profile: string, backend: "mxc" | undefined, { denyRead = [], denyWrite = [] }: { denyRead?: string[]; denyWrite?: string[] } = {}): MxcFilesystemGrants {
+    const read = getBuiltinShellReadPolicy(roots, profile, undefined, undefined, backend);
     const sensitive = getDefaultSensitiveWriteDenyPaths();
-    const mandatory = buildMandatorySandboxWritePolicy([root], undefined, sensitive);
+    const mandatory = buildMandatorySandboxWritePolicy(roots, undefined, sensitive);
     return rankAdmittedMxcLists({ allowWrite: mandatory.allowWrite, allowRead: read.allowRead,
       denyRead: [...read.denyRead, ...denyRead], denyWrite: mandatory.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path),
       independentWriteDenies: [...sensitive, ...denyWrite], protectedFloor: getProtectedReadDenyFloor(),
       requiredWriteDenies: mandatory.windowsRequiredWriteDenies });
   }
+
+  async function runNativeShell(launcher: string, scratch: string, cwd: string, grants: MxcFilesystemGrants, command: string) {
+    const systemRoot = windowsSystemRoot();
+    const request = buildMxcShellRequest({ commandLine: powerShellMxcCommandLine(systemRoot, command, cwd), cwd, grants,
+      env: { SYSTEMROOT: systemRoot, LOCALAPPDATA: scratch }, proxyUrl: "http://127.0.0.1:9", timeoutMs: TOOL_TIMEOUT_POLICY.shellDefaultMs });
+    const transport = await openMxcRequestTransport(request, launcher);
+    try {
+      return await new Promise<{ code: number; stdout: string; stderr: string }>((resolveResult, reject) => {
+        const child = execFile(launcher, [...transport.args], { cwd: win32.dirname(launcher), windowsHide: true,
+          timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs }, (error, stdout, stderr) => {
+          if (error && typeof error.code !== "number") { reject(error); return; }
+          resolveResult({ code: error?.code as number | undefined ?? 0, stdout, stderr });
+        });
+        transport.bindChild(child);
+      });
+    } finally {
+      await transport.release();
+    }
+  }
+
+  it.for([
+    { label: "former policy", profileFirst: false, includeProfile: true, backend: undefined, masked: false },
+    { label: "workspace grant alone", profileFirst: false, includeProfile: false, backend: "mxc", masked: false },
+    { label: "production grant order", profileFirst: false, includeProfile: true, backend: "mxc", masked: true },
+    { label: "reverse grant order", profileFirst: true, includeProfile: true, backend: "mxc", masked: true },
+  ] as const)("starts the native shell in the requested workspace with $label", async ({ profileFirst, includeProfile, backend, masked }, context) => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    await requireMxcCapability(context.skip);
+    const launcher = await resolveHostWxcExecPath();
+    const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-workspace-cwd-")));
+    const profile = join(scratch, "alice");
+    const home = join(profile, ".ave");
+    const workspace = join(home, "workspace");
+    const sibling = join(home, "private");
+    const fixture = join(sibling, "example.txt");
+    try {
+      for (const directory of [workspace, sibling, join(home, "certs")]) mkdirSync(directory, { recursive: true });
+      writeFileSync(fixture, "protected");
+      vi.stubEnv("USERPROFILE", profile);
+      vi.stubEnv("AVE_HOME", home);
+      vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
+      const roots = includeProfile ? (profileFirst ? [profile, workspace] : [workspace, profile]) : [workspace];
+      const grants = rankShell(roots, profile, backend);
+      expect(grants.denied.includes(home)).toBe(masked);
+      expect(grants.readwrite).toContain(workspace);
+      const command = [
+        "$ErrorActionPreference = 'Stop'",
+        "(Get-Location).Path",
+        "$PWD.Path",
+        "[System.Environment]::CurrentDirectory",
+        `Set-Content -LiteralPath ${quotePowerShell(join(workspace, "absolute.txt"))} -Value ok`,
+        "Set-Content -LiteralPath 'relative.txt' -Value ok",
+        ...(masked ? [`try { [void] [System.IO.File]::ReadAllText(${quotePowerShell(fixture)}) } catch { exit 0 }; exit 2`] : []),
+      ].join("; ");
+      const result = await runNativeShell(launcher, scratch, workspace, grants, command);
+      expect({ locations: result.stdout.trim().split(/\r?\n/), absoluteWrite: existsSync(join(workspace, "absolute.txt")),
+        relativeWrite: existsSync(join(workspace, "relative.txt")), code: result.code }, result.stderr).toEqual({
+        locations: [workspace, workspace, workspace], absoluteWrite: true, relativeWrite: true, code: 0,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }, TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);
+
+  it("refuses the native shell before the command when it cannot establish the requested working directory", async (context) => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    await requireMxcCapability(context.skip);
+    const launcher = await resolveHostWxcExecPath();
+    const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-refuse-cwd-")));
+    try {
+      const denied = join(scratch, "denied");
+      mkdirSync(denied);
+      const grants = rankAdmittedMxcLists({ allowWrite: [scratch], allowRead: [], denyRead: [denied], denyWrite: [], protectedFloor: [] });
+      expect(grants.denied).toContain(denied);
+      const result = await runNativeShell(launcher, scratch, denied, grants, "Write-Output 'command ran'; exit 0");
+      expect(result).toMatchObject({ code: 1, stdout: "", stderr: expect.stringContaining("Shell working directory could not be established") });
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }, TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);
+
+  it("keeps the absent legacy Ave home uncreated in a native shell with a profile grant", async (context) => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    await requireMxcCapability(context.skip);
+    const launcher = await resolveHostWxcExecPath();
+    const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-legacy-home-")));
+    const profile = join(scratch, "alice");
+    const home = join(scratch, "ave-data");
+    const legacy = join(profile, ".ave");
+    try {
+      mkdirSync(profile);
+      mkdirSync(home);
+      vi.stubEnv("USERPROFILE", profile);
+      vi.stubEnv("AVE_HOME", home);
+      vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
+      const grants = rankShell([profile], profile, "mxc");
+      expect(grants.denied).toContain(legacy);
+      const result = await runNativeShell(launcher, scratch, profile, grants, [
+        "$ErrorActionPreference = 'Stop'",
+        "Set-Content -LiteralPath 'regular.txt' -Value ok",
+        "try { [void] [System.IO.Directory]::CreateDirectory('.ave') } catch { exit 0 }; exit 2",
+      ].join("; "));
+      expect(result.code, result.stderr).toBe(0);
+      expect(existsSync(join(profile, "regular.txt"))).toBe(true);
+      expect(existsSync(legacy)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }, TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);
 
   it.each(["shell", "holder"] as const)("admits the synthetic profile with the %s default floor and relocated Ave home", kind => {
     withProfile(profile => {
@@ -704,7 +821,7 @@ describe.skipIf(process.platform !== "win32")("native missing deny parents", () 
           : label === "exact children"
           ? '$ErrorActionPreference="Stop"; Set-Content .ave/ordinary.txt kept; foreach ($child in @(".agents", ".ave/commands", ".ave/hooks")) { try { New-Item -ItemType Directory $child | Out-Null } catch { continue }; exit 2 }; exit 0'
           : "exit 0";
-        const request = buildMxcShellRequest({ commandLine: powerShellMxcCommandLine(process.env.SystemRoot!, command), cwd: directory, grants,
+        const request = buildMxcShellRequest({ commandLine: powerShellMxcCommandLine(process.env.SystemRoot!, command, directory), cwd: directory, grants,
           env: { SYSTEMROOT: process.env.SystemRoot!, LOCALAPPDATA: directory }, proxyUrl: "http://127.0.0.1:9", timeoutMs: TOOL_TIMEOUT_POLICY.shellDefaultMs });
         let notice: string | undefined;
         const result = await new Promise<{ code: number; stdout: string; stderr: string }>((resolveResult, reject) => {

@@ -4220,7 +4220,7 @@ async function spawnPowerShellInMxc(
     const mandatory = buildMandatorySandboxWritePolicy(sandboxWritePaths, undefined, sensitiveDenyWrite);
     launch = await boundarySnapshot.run(() => prepareMxcShellLaunch({
       egressToken: token,
-      commandLine: powerShellMxcCommandLine(systemRoot, powerShellLaunch.args.at(-1)!),
+      commandLine: powerShellMxcCommandLine(systemRoot, powerShellLaunch.args.at(-1)!, cwd),
       cwd,
       filesystem: {
         allowWrite: mandatory.allowWrite,

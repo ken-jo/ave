@@ -340,12 +340,13 @@ describe("builtin shell — Windows MXC containers", () => {
     const [parserLaunch] = mxcLaunchMock.prepare.mock.calls[0] as [{ commandLine: string }];
     expect(isParserLaunch(parserLaunch)).toBe(true);
     const [launch] = mxcLaunchMock.prepare.mock.calls[1] as [Record<string, unknown>];
-    for (const [prepared] of mxcLaunchMock.prepare.mock.calls as [{ commandLine: string; env: Record<string, string> }][]) {
+    for (const [prepared] of mxcLaunchMock.prepare.mock.calls as [{ commandLine: string; cwd: string; env: Record<string, string> }][]) {
       const script = Buffer.from(prepared.commandLine.split(" ").at(-1)!, "base64").toString("utf16le");
       expect(prepared.commandLine).toContain("-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -EncodedCommand");
       expect(script).toContain("$PSModuleAutoLoadingPreference = 'None'");
       expect(script).toContain("[System.IO.Path]::Combine($PSHOME, 'Modules')");
       expect(script).toContain("Microsoft.PowerShell.Core\\Import-Module -Name");
+      expect(script).toContain(Buffer.from(prepared.cwd, "utf16le").toString("base64"));
       expect(prepared.env.PSModulePath).toBe("");
       expect(script).toContain(POWERSHELL_EGRESS_PROXY_PRELUDE);
     }
@@ -1037,7 +1038,7 @@ describe("builtin shell — Windows MXC containers", () => {
       });
       const result = await executePowerShell({ ...context("mixed-watched-quarantine"), cwd: movableRoot });
       expect(result, result.output).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true, sandboxed: true } });
-      const failure = t("sandboxPolicy.watchedQuarantineFailed", {
+      const failure = t("sandboxPolicy.watchedQuarantineUnverified", {
         path: JSON.stringify(blocked),
         reason: `the folder ${JSON.stringify(blockedRoot)} changed identity`,
       });

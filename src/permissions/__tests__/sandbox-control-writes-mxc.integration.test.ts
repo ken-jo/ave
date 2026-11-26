@@ -61,7 +61,7 @@ describe.runIf(process.platform === "win32")("container control-file write bound
         let launch: Awaited<ReturnType<typeof prepareOwnedMxcShellLaunch>> | undefined;
         try {
           launch = await prepareOwnedMxcShellLaunch({
-          egressToken: invocation.token, commandLine: powerShellMxcCommandLine(windowsSystemRoot(), command), cwd: project,
+          egressToken: invocation.token, commandLine: powerShellMxcCommandLine(windowsSystemRoot(), command, project), cwd: project,
           filesystem: { allowRead: [windowsSystemRoot(), gitRoot, project, configuration], allowWrite: policy.allowWrite,
              denyRead: [], denyWrite: policy.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path),
              requiredWriteDenies: policy.windowsRequiredWriteDenies },
