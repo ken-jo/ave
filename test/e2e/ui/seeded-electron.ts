@@ -387,7 +387,7 @@ export async function teardownSeededElectron(
   await removeSeededElectronDirectories(ctx.userDataDir, ctx.tempHome);
 }
 
-async function removeSeededElectronDirectories(userDataDir: string, tempHome: string): Promise<void> {
+export async function removeSeededElectronDirectories(userDataDir: string, tempHome: string): Promise<void> {
   const results = await Promise.allSettled([
     cleanupTmpDir(userDataDir),
     Promise.resolve().then(() => {

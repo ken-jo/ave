@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { setWindowSize, buildE2eBaseSettings, buildLlmSettings, builtMainExists, launchSeededElectron, REPO_ROOT, teardownSeededElectron } from "./seeded-electron.js";
+import { setWindowSize, buildE2eBaseSettings, buildLlmSettings, builtMainExists, launchSeededElectron, removeSeededElectronDirectories, REPO_ROOT, teardownSeededElectron } from "./seeded-electron.js";
 import * as XLSX from "xlsx";
 import { offsetWorkbook } from "../../../src/__tests__/support/table-document-fixtures.js";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
@@ -164,7 +164,7 @@ contextBridge.exposeInMainWorld("workbookIpcProbe", {
 });
 
 test("approved agent edits stream into the read-only workbook panel", async () => {
-  // Cleanup keeps its own budget beyond the body's, including bounded diagnostics.
+  // Adds the bounded diagnostic and settle deadlines to the budget; a body that stalls itself is not bounded here.
   test.setTimeout(180_000 + FIXTURE_CLEANUP_MS + 3 * FIXTURE_DEADLINES.diagnosticMs);
   expect(builtMainExists()).toBe(true);
   mkdirSync(join(process.cwd(), ".cache"), { recursive: true });
@@ -237,7 +237,8 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     barrier = publicationBarrier;
     ctx = await publicationBarrier.launch(() => launchSeededElectron({ sessionTitle: "Agent document observation", settings,
       historyRows: [], mainEntry: publicationBarrier.mainEntry,
-      onSeeded: ({ userDataDir, tempHome }) => publicationBarrier.seeded(userDataDir, tempHome),
+      onSeeded: ({ userDataDir, tempHome }) => publicationBarrier.seeded([userDataDir, tempHome],
+        () => removeSeededElectronDirectories(userDataDir, tempHome)),
       onLaunched: (app) => publicationBarrier.own(app) }));
     writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [directory],
       reviewer: { interactive: { autoApprove: "off" } } } }));

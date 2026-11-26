@@ -153,14 +153,16 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
     io.remove(root);
     disposed = true;
   };
-  const seededPaths: string[] = [];
+  const seededSets: { paths: readonly string[]; remove: () => void | Promise<void> }[] = [];
   let launch: { settled: Promise<void>; pending: boolean } | undefined;
   let owned: OwnedLifetime | undefined;
   let settling = false;
   const lateArrivals: Promise<unknown[]>[] = [];
-  const retainedPaths = () => [root, ...seededPaths];
+  const retainedPaths = () => [root, ...seededSets.flatMap((set) => set.paths), workspace].join(", ");
+  const reportLate = (failure: Error): void => { console.error(failure.message); };
   return {
     root,
+    workspace,
     mainEntry: join(root, "dist", "src", "main", "main.js"),
     scriptPath,
     argv(runtime: string, workbookPath: string, requestPath: string): string[] {
@@ -185,15 +187,20 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
       launch = state;
       return withinDeadline(started, startupMs, "Workbook app startup");
     },
-    /** Record the seeded profile and home as soon as they exist; they are removed with the copy. */
-    seeded(...paths: string[]): void {
-      seededPaths.push(...paths);
-      if (settling) lateArrivals.push(Promise.resolve([new Error(`Workbook app seeded after its fixture was settled: ${paths.join(", ")}`)]));
+    /** Record the seeded profile and home as soon as they exist, with their remover; they go with the copy. */
+    seeded(paths: readonly string[], remove: () => void | Promise<void> = () => { for (const path of paths) io.remove(path); }): void {
+      seededSets.push({ paths, remove });
+      if (settling) {
+        const failure = new Error(`Workbook app seeded after its fixture was settled: ${paths.join(", ")}`);
+        reportLate(failure);
+        lateArrivals.push(Promise.resolve([failure]));
+      }
     },
     /** Register the handles launch supplies. An arrival after settle is closed through them and reported. */
     own(app: OwnedApp): void {
       if (settling) {
-        const failure = new Error(`Workbook app arrived after its fixture was settled; paths: ${retainedPaths().join(", ")}`);
+        const failure = new Error(`Workbook app arrived after its fixture was settled; paths: ${retainedPaths()}`);
+        reportLate(failure);
         lateArrivals.push(Promise.resolve().then(async () => [failure, ...await closeOwned(ownLifetime(app))]));
         throw failure;
       }
@@ -220,11 +227,12 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
         : launch && !owned ? "the launch supplied no owned app"
           : owned && !owned.isClosed() ? "the owned app did not close" : undefined;
       if (reason) {
-        failures.push(new Error(`Workbook fixture paths retained because ${reason}: ${retainedPaths().join(", ")}`));
+        failures.push(new Error(`Workbook fixture paths retained because ${reason}: ${retainedPaths()}`));
         return { closed: false, failures };
       }
-      for (const path of seededPaths) {
-        try { io.remove(path); } catch (error) { failures.push(new Error(`Workbook fixture path left at ${path}`, { cause: error })); }
+      for (const set of seededSets) {
+        try { await set.remove(); }
+        catch (error) { failures.push(new Error(`Workbook fixture path left at ${set.paths.join(", ")}`, { cause: error })); }
       }
       try { dispose(); } catch (error) { failures.push(new Error(`Workbook fixture path left at ${root}`, { cause: error })); }
       return { closed: true, failures };
