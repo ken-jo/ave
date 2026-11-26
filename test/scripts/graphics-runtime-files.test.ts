@@ -19,6 +19,9 @@ const BUNDLED_RENDERER_NOTICES = require("../../scripts/lib/bundled-renderer-not
 const { readUpstreamSrtWinInput } = require("../../scripts/lib/srt-win-integrity.cjs") as {
   readUpstreamSrtWinInput: (path: string, arch: string) => Buffer;
 };
+const PATH_KIND_HELPER = "fixture helper";
+const PATH_KIND_SHA256 = createHash("sha256").update(PATH_KIND_HELPER).digest("hex");
+const PATH_KIND_BUNDLE = `const __aveWindowsPathKindPin = "${PATH_KIND_SHA256}";\n`;
 const packageHook = require("../../scripts/electron-after-pack.cjs") as (
   context: Awaited<ReturnType<typeof createPackage>>["context"],
 ) => Promise<void>;
@@ -28,6 +31,7 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
   // the fixture's architecture-dependent pins are substituted, never checks.
   const script = `
     import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+    import { createHash } from 'node:crypto';
     import { dirname, join } from 'node:path';
     import { registerHooks, createRequire } from 'node:module';
     const context = JSON.parse(process.argv[1]);
@@ -46,8 +50,14 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
       // The before-pack record of the fixture's helper, as the packager process holds it for after-pack.
       const arch = { 1: 'x64', 3: 'arm64' }[context.arch];
       const build = { binarySha256: process.argv[6], imageSha256: process.argv[6] };
+      const bundleDir = join(context.appOutDir, 'fixture-bundle');
+      const bundle = process.argv[8];
+      mkdirSync(bundleDir);
+      writeFileSync(join(bundleDir, 'main.js'), bundle);
+      const bundleSha256 = { 'main.js': createHash('sha256').update(bundle).digest('hex') };
       (await import(process.argv[5])).recordWindowsPathKindPackageBuild({
-        appOutDir: context.appOutDir, arch, manifest: { windowsPathKind: { arch, imageSha256: build.imageSha256 } }, build,
+        appOutDir: context.appOutDir, arch, bundleDir, build,
+        manifest: { windowsPathKind: { arch, imageSha256: build.imageSha256, bundleSha256 } },
       });
       const copy = JSON.parse(process.argv[7]);
       if (copy) {
@@ -80,7 +90,7 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, JSON.stringify(context),
     join(context.appOutDir, "resources", "fixture-sdk-pins.json"), require.resolve("../../scripts/electron-after-pack.cjs"),
     require.resolve("../../scripts/lib/srt-win-integrity.cjs"),
-    pathToFileURL(require.resolve("../../scripts/lib/windows-path-kind-package.mjs")).href, pathKindHelper(context), JSON.stringify(copy ?? null)], {
+    pathToFileURL(require.resolve("../../scripts/lib/windows-path-kind-package.mjs")).href, pathKindHelper(context), JSON.stringify(copy ?? null), PATH_KIND_BUNDLE], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", AVE_TEST_SRT_RECEIPTS: JSON.stringify(SRT_WIN_BUILD_RECEIPTS) }, encoding: "utf8",
   });
   if (result.error) throw result.error;
@@ -89,8 +99,8 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
 }
 function pathKindHelper(context: Awaited<ReturnType<typeof createPackage>>["context"]): string {
   const helper = join(context.appOutDir, "resources", "windows-path-kind", context.arch === 3 ? "arm64" : "x64", "ave-path-kind.exe");
-  putFile(helper, "fixture helper");
-  return createHash("sha256").update(readFileSync(helper)).digest("hex");
+  putFile(helper, PATH_KIND_HELPER);
+  return PATH_KIND_SHA256;
 }
 const { assertGraphicsRuntimeFiles } = require("../../scripts/lib/graphics-runtime-files.cjs") as {
   assertGraphicsRuntimeFiles(directory: string, platform: string): void;
@@ -155,7 +165,7 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
   putFile(join(modules, "better-sqlite3", "prebuilds", `${platform}-x64.node`));
   writeImageRuntimePackage(modules, platform);
   writeCanvasRuntimePackage(modules, platform);
-  writePageRuntimeResources(resources);
+  writePageRuntimeResources(resources, platform === "win32" ? { "dist/src/main/main.js": PATH_KIND_BUNDLE } : {});
   const ripgrep = join(modules, "@vscode", `ripgrep-${platform}-x64`);
   putFile(join(ripgrep, "package.json"), JSON.stringify({ name: `@vscode/ripgrep-${platform}-x64` }));
   putFile(join(ripgrep, "bin", platform === "win32" ? "rg.exe" : "rg"));

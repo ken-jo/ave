@@ -100,7 +100,7 @@ describe("Windows helper integrity", () => {
   it("excludes the pinned helper from signing while preserving application signing", () => {
     const { build } = require("../../../package.json");
     expect(build.win.signExts).toEqual([
-      "!srt-win.exe", "!wxc-exec.exe", "!mxc_ffi.dll", "!wslcsdk.dll", "!koffi.node",
+      "!ave-path-kind.exe", "!srt-win.exe", "!wxc-exec.exe", "!mxc_ffi.dll", "!wslcsdk.dll", "!koffi.node",
       "!OpenConsole.exe", "!winpty-agent.exe", "!conpty.dll", "!winpty.dll",
     ]);
     expect(build.win.signExecutable).not.toBe(false);
