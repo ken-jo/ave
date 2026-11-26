@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inspectShellCommand } from "../../permissions/rules/literal-shell-inspection.js";
 import { inspectPowerShellCommand, parsePowerShellCommand } from "../../permissions/rules/powershell-exfiltration.js";
 import { buildShellRuleApproval } from "../../permissions/rules/shell-rule-approval.js";
+import { analyzeShellForRules } from "../../permissions/rules/shell-rule-matcher.js";
 import { parseShellCommand } from "../../permissions/rules/shell-prefix-policy.js";
 import { setWindowsDriveQueryForTest } from "../windows-drive-locality.js";
 
@@ -69,6 +70,19 @@ describe.runIf(process.platform === "win32")("shell locality decisions", () => {
     expect(inspect().sensitive).toBeNull();
     expect(queries).toContain(aliasDrive);
   });
+  it("refreshes the ordinary ask on a reused Bash rule shape after a drive remap", () => {
+    mkdirSync(join(root, "ordinary"));
+    const parsed = parseShellCommand("cat ./ordinary/../file.txt");
+    remappedDrive = drive;
+
+    expect(analyzeShellForRules(parsed, root)).toMatchObject({ ok: true, ordinaryAsk: "Shell path namespace is unresolved" });
+    remappedDrive = undefined;
+    queries.length = 0;
+
+    expect(analyzeShellForRules(parsed, root)).not.toHaveProperty("ordinaryAsk");
+    expect(queries).toEqual([drive]);
+  });
+
   it.each(["bash", "powershell"] as const)("queries each drive once in a cold %s approval", dialect => {
     const command = dialect === "bash" ? "cat ./first.txt ./second.txt ./third.txt"
       : "Get-Content -LiteralPath './first.txt','./second.txt','./third.txt'";
