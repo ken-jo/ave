@@ -5,6 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { createConversationSurfaceRuntime } from "../../../engine/conversation-surface-runtime.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
+import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { deferred } from "../../../__tests__/support/deferred.js";
+import type { WindowsHoldVerdict } from "../../../shared/windows-path-facts.js";
+import { backgroundShellManager } from "../../../tools/shell-tools.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("electron", () => ({
@@ -44,8 +49,23 @@ describe("ave:chat:sessionDelete and connected schedules", () => {
       auditLogger: { log: vi.fn() },
       getMainWindow: vi.fn(() => null),
     } as unknown as Parameters<typeof registerChatHandlers>[0]);
-    const result = await invokeNativeChatHandler<Promise<unknown>>(handlers, CHANNELS.chat.sessionDelete, { sessionId: DELETED });
-    expect(result).toEqual({ ok: true, wasLoaded: false });
+    const verdict = deferred<WindowsHoldVerdict>();
+    const stopping = deferred<void>();
+    const stop = vi.fn(() => { stopping.resolve(); return verdict.promise; });
+    const child = new EventEmitter() as ChildProcess;
+    backgroundShellManager.register({ child, sessionId: DELETED, command: "work", startedAt: "t", held: { stop, verdict: verdict.promise } });
+    const deletion = invokeNativeChatHandler<Promise<unknown>>(handlers, CHANNELS.chat.sessionDelete, { sessionId: DELETED });
+    try {
+      await Promise.race([deletion, stopping.promise]);
+      expect(stop).toHaveBeenCalledOnce();
+      expect(deleteSession).not.toHaveBeenCalled();
+    } finally {
+      verdict.resolve({ kind: "ok", stopped: false });
+      child.emit("close", 130, null);
+      await deletion;
+      backgroundShellManager._resetForTest();
+    }
+    await expect(deletion).resolves.toEqual({ ok: true, wasLoaded: false });
     expect(deleteSession).toHaveBeenCalledWith(DELETED);
     expect(markOrphaned).toHaveBeenCalledWith(DELETED);
   });

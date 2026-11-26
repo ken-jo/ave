@@ -11,6 +11,7 @@ import { stopTelegramBridgeServer } from "./telegram-bridge-server.js";
 import { stopRemoteA2AReceiverServer } from "./a2a-remote-receiver-server.js";
 import { stopSubscriptionRuntimes } from "./subscription-runtime-service.js";
 import { stopHostDocumentEngineSessions } from "../observation/document-engine-host.js";
+import { backgroundShellManager } from "../tools/shell-tools.js";
 import {
   forceKillAndDrainManagedChildProcesses,
   forceKillManagedChildProcesses,
@@ -204,12 +205,15 @@ export async function runIncompleteBootShutdown(host: BootHost | undefined = shu
   setAppShutdownStarted(true);
   sealMxcHolderLifetimeAdmission(reason);
   sealManagedChildProcessAdmission(reason);
+  const heldStop = new AbortController();
+  const heldCleanup = backgroundShellManager.stopAllHeldShells(heldStop.signal);
   runShutdownHooks();
-  const result = await runCleanupWithHardTimeout((signal) => cleanupIncompleteBoot(host, signal), resolveShutdownCleanupTimeoutMs(undefined));
+  const result = await runCleanupWithHardTimeout((signal) => cleanupIncompleteBoot(host, signal, heldCleanup), resolveShutdownCleanupTimeoutMs(undefined));
+  if (result.status !== "completed") heldStop.abort();
   return finishIncompleteBootShutdown(result);
 }
 
-async function cleanupIncompleteBoot(host: BootHost | undefined, signal: AbortSignal): Promise<void> {
+async function cleanupIncompleteBoot(host: BootHost | undefined, signal: AbortSignal, heldCleanup: Promise<void>): Promise<void> {
   const reason = INCOMPLETE_BOOT_SHUTDOWN_REASON;
   const failures: unknown[] = [];
   const stages = [
@@ -223,6 +227,7 @@ async function cleanupIncompleteBoot(host: BootHost | undefined, signal: AbortSi
     () => disposeBrowserUploads(),
     () => forceKillAllTerminalsForShutdown(),
     () => drainMxcHolderLifetimes(),
+    () => heldCleanup,
     () => forceKillAndDrainManagedChildProcesses(reason),
     () => releaseOsSandboxForExit(),
     () => host?.close(),
@@ -264,6 +269,8 @@ export async function runAppShutdownCleanup(options: {
   const cleanupTimeoutMs = resolveShutdownCleanupTimeoutMs(
     svc?.settingsService.get("system")?.shutdownCleanupTimeoutMs,
   );
+  const heldStop = new AbortController();
+  const heldCleanup = backgroundShellManager.stopAllHeldShells(heldStop.signal);
   appShutdownCleanupPromise = (async () => {
     const result = await runCleanupWithHardTimeout(async (signal) => {
       if (options.resourceStartup) {
@@ -274,7 +281,7 @@ export async function runAppShutdownCleanup(options: {
         svc = getServices();
       }
       if (!svc) {
-        await cleanupIncompleteBoot(shutdownHost, signal);
+        await cleanupIncompleteBoot(shutdownHost, signal, heldCleanup);
         return;
       }
       // Keep runtime children through normal plugin teardown, but stop them on earlier failure or timeout without masking the original error.
@@ -341,7 +348,6 @@ export async function runAppShutdownCleanup(options: {
       if (signal.aborted) return;
       // After service shutdown, admit no broker shells and await terminal ownership evidence for every remote handle.
       // Local child drain cannot prove remote termination; transport failure is explicit and external workload release remains the backstop.
-      const { backgroundShellManager } = await import("../tools/shell-tools.js");
       backgroundShellManager.disposeAllBrokerShells(signal);
       const brokerCleanupReports = await backgroundShellManager.waitForAllBrokerCleanup();
       const unprovenBrokerCleanup = brokerCleanupReports.filter((report) =>
@@ -362,6 +368,8 @@ export async function runAppShutdownCleanup(options: {
       if (signal.aborted) return;
       holderDrainAttempted = true;
       await drainMxcHolderLifetimes();
+      await heldCleanup;
+      if (signal.aborted) return;
       // Runtime stop hooks can return after scheduling TERM→KILL. Keep the app alive for a bounded definitive-exit drain so ASRT/HOME finalizers run before
       // Electron completes an otherwise clean shutdown.
       await forceKillAndDrainManagedChildProcesses(`${options.reason} graceful shutdown`);
@@ -390,6 +398,7 @@ export async function runAppShutdownCleanup(options: {
       }
     }, cleanupTimeoutMs);
 
+    if (result.status !== "completed") heldStop.abort();
     if (!svc) return finishIncompleteBootShutdown(result);
 
     if (result.status === "timed-out") {

@@ -2,7 +2,7 @@ import { registerMemoryMapHandlers } from './memory-map.js';
 import { readMemoryDetail, readMemorySummaries } from "../../memory/memory-detail.js";
 import { decideTurnChange, getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { parseTurnReviewDecision, type TurnReviewError, type TurnReviewResult } from "../../shared/turn-change-review.js";
-import { controlShellTask, listShellTasks } from "../../tools/shell-tools.js";
+import { controlShellTask, endShellSession, listShellTasks } from "../../tools/shell-tools.js";
 import { isRewindMode } from "../../shared/code-rewind.js";
 import {
   BRANCH_CONTINUATION_REFUSED, hasUserKeyboardIntent, mintUserKeyboardIntent, USER_KEYBOARD_REQUIRED, type VerifiedUserKeyboardIntent,
@@ -1672,6 +1672,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
     // Guard deletion only against the loop holding that conversation; unrelated sessions need no turn lease.
     const deleteConversation = async (): Promise<void> => {
+      await endShellSession(sessionId);
       await memoryManager.sessions.deleteSession(sessionId);
       // Schedules connected to it become 대화 없음: they never run until the user relinks, unlinks or deletes them. The chat is already
       // deleted, so a failure here is not a delete failure; a fire still finds the chat gone and marks the item then.

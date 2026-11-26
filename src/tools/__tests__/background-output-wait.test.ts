@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __resetManagedChildProcessesForTest, forceKillAndDrainManagedChildProcesses, getManagedChildProcessCount } from "../../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { ToolExecutionContext } from "../base.js";
-import { backgroundShellManager as manager, createBashKillTool, createBashOutputTool, listShellTasks, MAX_OUTPUT_CHARS } from "../shell-tools.js";
+import { backgroundShellManager as manager, createBashKillTool, createBashOutputTool, endShellSession, listShellTasks, MAX_OUTPUT_CHARS } from "../shell-tools.js";
 import { t } from "../../i18n/index.js";
 import type { WindowsHoldVerdict } from "../../shared/windows-path-facts.js";
 
@@ -24,6 +24,50 @@ function read(shellId: string, waitMs?: unknown, signal?: AbortSignal, sessionId
 
 beforeEach(() => { vi.useFakeTimers(); manager._resetForTest(); __resetManagedChildProcessesForTest(); });
 afterEach(() => { manager._resetForTest(); __resetManagedChildProcessesForTest(); vi.useRealTimers(); vi.restoreAllMocks(); });
+
+describe("held background shell cleanup", () => {
+  function registerHeld(sessionId: string) {
+    const child = new EventEmitter() as ChildProcess;
+    let settle!: (pin: WindowsHoldVerdict) => void;
+    const verdict = new Promise<WindowsHoldVerdict>((resolve) => { settle = resolve; });
+    const stop = vi.fn(() => {
+      setTimeout(() => settle({ kind: "unconfirmed" }), TOOL_TIMEOUT_POLICY.windowsHoldStopMs);
+      return verdict;
+    });
+    manager.register({ child, sessionId, command: "work", startedAt: "t", held: { stop, verdict } });
+    return { stop, verdict };
+  }
+
+  it("reports an unresponsive launcher by the session end deadline", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const first = registerHeld("owner");
+    const second = registerHeld("owner");
+    const unrelated = registerHeld("other");
+    const ended = vi.fn();
+    const cleanup = endShellSession("owner").then(ended);
+    expect(first.stop).toHaveBeenCalledOnce();
+    expect(second.stop).toHaveBeenCalledOnce();
+    expect(unrelated.stop).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsHoldStopMs - 1);
+    expect(ended).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await cleanup;
+    expect(warn.mock.calls.filter(([message]) => String(message).includes("cwd-pin-unconfirmed"))).toHaveLength(2);
+    manager.disposeSession("other");
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsHoldStopMs);
+  });
+
+  it("stops held launchers across sessions before resetting the executor fixture", async () => {
+    const first = registerHeld("owner");
+    const second = registerHeld("other");
+    manager._resetForTest();
+    expect(first.stop).toHaveBeenCalledOnce();
+    expect(second.stop).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsHoldStopMs);
+    await expect(first.verdict).resolves.toEqual({ kind: "unconfirmed" });
+    await expect(second.verdict).resolves.toEqual({ kind: "unconfirmed" });
+  });
+});
 
 describe("background output bounded waiting", () => {
   it.each([undefined, 0])("keeps %s wait immediate", async (waitMs) => {

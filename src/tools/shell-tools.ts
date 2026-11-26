@@ -602,6 +602,7 @@ interface BackgroundShellEntry {
   /** A held run stays running until its launcher's verdict, which is kept here, outside the output. */
   held?: HeldWindowsRun;
   stopRequested: boolean;
+  pinUnconfirmedReported?: boolean;
   pin?: WindowsHoldVerdict;
   /** Resolves when the entry leaves "running". */
   settled: Promise<void>;
@@ -727,6 +728,8 @@ export interface BackgroundShellManager {
   waitForLocalCleanup(sessionId: string): Promise<void>;
   /** Kill + drop every shell owned by a session (call on session end). */
   disposeSession(sessionId: string): number;
+  /** Stop held launchers before shutdown reaches the generic child drain. */
+  stopAllHeldShells(signal: AbortSignal): Promise<void>;
   /** Begin cleanup for every still-live broker shell during process shutdown. */
   disposeAllBrokerShells(signal?: AbortSignal): number;
   /** Observe cleanup without treating fire-and-forget transport as success. */
@@ -906,12 +909,19 @@ function withBrokerTransportMetadata(result: ToolExecutionResult): ToolExecution
 
 function createManager(): BackgroundShellManager {
   const shells = new Map<string, BackgroundShellEntry>();
+  const heldShells = new Set<BackgroundShellEntry>();
   const localCleanup = new Map<string, Set<Promise<void>>>();
   const brokerShells = new Map<string, BrokerBackgroundShellEntry>();
   const brokerCleanup = new Map<string, MutableBrokerSessionCleanup>();
   let brokerRuntimeImport: Promise<typeof import("../workload/runtime.js")> | undefined;
   const loadBrokerRuntime = () =>
     brokerRuntimeImport ??= import("../workload/runtime.js");
+
+  const reportUnconfirmed = (entry: BackgroundShellEntry): void => {
+    if (entry.pinUnconfirmedReported) return;
+    entry.pinUnconfirmedReported = true;
+    shellTaskLog.warn({ shellId: entry.shellId }, "cwd-pin-unconfirmed");
+  };
 
   const cleanupReport = (
     cleanup: MutableBrokerSessionCleanup,
@@ -1121,8 +1131,7 @@ function createManager(): BackgroundShellManager {
   const stopOwned = (sessionId: string, shellId: string): BackgroundShellEntry | undefined => {
     const entry = owned(sessionId, shellId);
     if (!entry) return undefined;
-    if (entry.held !== undefined) entry.stopRequested ||= entry.status === "running";
-    else if (entry.status === "running") entry.status = "killed";
+    if (entry.held === undefined && entry.status === "running") entry.status = "killed";
     entry.terminate();
     notify(entry);
     return entry;
@@ -1180,6 +1189,7 @@ function createManager(): BackgroundShellManager {
         if (terminationRequested) return;
         terminationRequested = true;
         // A held run is asked to stop and answers with its verdict; a kill would end its launcher unheard.
+        if (held !== undefined) entry.stopRequested = entry.status === "running";
         const termination = held === undefined ? forceKillManagedChildProcess(child, "background-shell-ended") : held.stop().then(() => {});
         if (termination) {
           const pending = localCleanup.get(sessionId) ?? new Set<Promise<void>>();
@@ -1224,7 +1234,8 @@ function createManager(): BackgroundShellManager {
       // A descendant may retain the output pipes after its parent exits, so
       // close is too late to own cleanup. End the owned group at root exit.
       child.once("exit", () => {
-        if (killProcessGroup && held === undefined) terminate();
+        if (held !== undefined) return;
+        if (killProcessGroup) terminate();
         else terminationRequested = true;
       });
       const settle = (code: number | null, signal: NodeJS.Signals | null, pin?: WindowsHoldVerdict): void => {
@@ -1240,7 +1251,12 @@ function createManager(): BackgroundShellManager {
       };
       // A held run has one end, its verdict: close, a started child's error and a stop all wait for it.
       if (held !== undefined) {
-        void held.verdict.then((pin) => settle(child.exitCode, child.signalCode, pin));
+        heldShells.add(entry);
+        void held.verdict.then((pin) => {
+          heldShells.delete(entry);
+          if (pin.kind === "unconfirmed") reportUnconfirmed(entry);
+          settle(child.exitCode, child.signalCode, pin);
+        });
         return shellId;
       }
       child.on("close", (code, signal: NodeJS.Signals | null = null) => settle(code, signal));
@@ -1453,6 +1469,23 @@ function createManager(): BackgroundShellManager {
       return disposed + disposeBrokerSession(sessionId, "session-disposal");
     },
 
+    async stopAllHeldShells(signal): Promise<void> {
+      const pending = [...heldShells];
+      for (const entry of pending) entry.terminate();
+      const reportPending = (): void => {
+        for (const entry of pending) {
+          if (heldShells.has(entry)) reportUnconfirmed(entry);
+        }
+      };
+      signal.addEventListener("abort", reportPending, { once: true });
+      if (signal.aborted) reportPending();
+      try {
+        await Promise.all(pending.map((entry) => entry.settled));
+      } finally {
+        signal.removeEventListener("abort", reportPending);
+      }
+    },
+
     disposeAllBrokerShells(signal?: AbortSignal): number {
       const sessionIds = new Set(
         [...brokerShells.values()].map((entry) => entry.sessionId),
@@ -1510,6 +1543,8 @@ function createManager(): BackgroundShellManager {
     },
 
     _resetForTest(): void {
+      for (const entry of heldShells) entry.terminate();
+      heldShells.clear();
       for (const entry of [...shells.values()]) {
         entry.stopTracking();
         entry.observation?.revoke();

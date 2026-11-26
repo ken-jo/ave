@@ -13,7 +13,7 @@ import { __resetTerminalsForTest, hostTerminalSession, killTerminal, setManualSh
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { HeldWindowsRun } from "../../shared/windows-path-facts.js";
 import type { ToolExecutionContext } from "../../tools/base.js";
-import { backgroundShellManager, createBashKillTool } from "../../tools/shell-tools.js";
+import { backgroundShellManager, createBashKillTool, endShellSession } from "../../tools/shell-tools.js";
 
 const helpers = vi.hoisted(() => ({
   spawned: [] as import("node:child_process").ChildProcess[], binary: undefined as string | undefined, env: undefined as Record<string, string> | undefined,
@@ -413,6 +413,19 @@ describe.runIf(process.platform === "win32")("host shell spawn directory hold", 
       expect(JSON.parse(result.output)).toMatchObject({ status: "killed", exitCode: 130 });
       await expect(run.verdict).resolves.toEqual({ kind: "ok", stopped: false });
     } finally { backgroundShellManager._resetForTest(); }
+  });
+
+  it("reaps the held launcher and its descendant when the session ends", async () => {
+    const held = await holdLeaf();
+    const { child, run, descendant } = await runningTree(held);
+    const sessionId = "hold-session-end";
+    backgroundShellManager.register({ child, sessionId, command: "tree", startedAt: "t", held: run });
+    const started = performance.now();
+    await endShellSession(sessionId);
+    expect(performance.now() - started).toBeLessThan(TOOL_TIMEOUT_POLICY.windowsHoldStopMs);
+    await expect(run.verdict).resolves.toEqual({ kind: "ok", stopped: false });
+    expect(child.exitCode).toBe(130);
+    expect(alive(descendant)).toBe(false);
   });
 
   it("leaves a host terminal and its background process in the held directory running when a pinned command is reaped", async () => {
