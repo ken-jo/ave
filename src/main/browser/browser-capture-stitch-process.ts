@@ -63,6 +63,8 @@ export function startCaptureStitcher(
   let termination: void | Promise<void>;
   let child: ChildProcess | undefined;
   let input: Writable | undefined;
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
   const failure = (): Error => new BrowserActionError("screenshot-failed", "the capture decoder stopped");
   const stop = (): void => {
     if (stopped || exited || !child) return;
@@ -70,9 +72,11 @@ export function startCaptureStitcher(
     termination = forceKillManagedChildProcess(child, "browser-capture-stitch");
   };
   const settleExit = (): void => {
+    if (exited) return;
     exited = true;
     for (const job of jobs.values()) job.reject(failure());
     jobs.clear();
+    resolveClosed();
   };
   try {
     // Resolve from the runtime asset root: this module may live in a split chunk.
@@ -86,17 +90,18 @@ export function startCaptureStitcher(
       windowsHide: true,
     }, { label: "browser-capture-stitch" });
     child = spawned;
+    spawned.once("close", async () => {
+      // Settle only once a pending tree kill has finished with the child.
+      if (termination) await termination;
+      settleExit();
+    });
+    spawned.once("error", () => {
+      if (spawned.pid) stop();
+      else settleExit();
+    });
     const { stdin, stdout } = spawned;
     if (!stdin || !stdout) throw new Error("the capture decoder has no pipes");
     input = stdin;
-    const closed = new Promise<void>((resolve) => {
-      spawned.once("close", async () => {
-        // Settle only once a pending tree kill has finished with the child.
-        if (termination) await termination;
-        settleExit();
-        resolve();
-      });
-    });
     const readFrames = captureStitchFrames((message, payload) => {
       if (!isRecord(message) || !hasOnlyKeys(message, ["id", "error"]) || typeof message.id !== "number") {
         throw new Error("invalid capture decoder reply");
@@ -129,13 +134,9 @@ export function startCaptureStitcher(
       }
     });
     stdin.on("error", stop);
-    spawned.once("error", () => {
-      if (spawned.pid) stop();
-      else settleExit();
-    });
   } catch {
-    stop();
-    if (!child) exited = true;
+    if (child) stop();
+    else settleExit();
   }
   const request = (png?: Buffer, tile?: CaptureTilePlacement): Promise<Buffer> => new Promise((resolve, reject) => {
     if (exited || stopped || !input) {

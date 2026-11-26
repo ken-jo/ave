@@ -71,6 +71,20 @@ function mockStitchChild(pid?: number): ChildProcess {
   return child;
 }
 
+function observeStitcherCompletion(pid?: number) {
+  const child = mockStitchChild(pid);
+  const onFault = vi.fn<(error: Error, closed: Promise<void>) => void>();
+  const stitcher = startCaptureStitcher(WIDTH, CONTENT_HEIGHT, onFault);
+  const events: string[] = [];
+  const job = stitcher.encode().catch((error: unknown) => { events.push("job"); return error; });
+  // A protocol fault is the public boundary that exposes the close promise.
+  child.stdout?.emit("data", replyFrame({ id: 99 }));
+  const closed = onFault.mock.calls[0]?.[1];
+  if (!closed) throw new Error("the protocol fault did not report completion");
+  void closed.then(() => { events.push("closed"); });
+  return { child, events, job, closed };
+}
+
 function replyFrame(message: unknown, payload = Buffer.alloc(0)): Buffer {
   const json = Buffer.from(JSON.stringify(message));
   const header = Buffer.alloc(8);
@@ -386,6 +400,43 @@ describe("browser capture stitch process", () => {
       expect(pending).toBe(false);
     },
   );
+
+  it("completes the stitcher lifecycle on a no-PID spawn error before close", async () => {
+    const { child, events, job } = observeStitcherCompletion();
+    try {
+      child.emit("error", new Error("spawn failed"));
+      await expect(job).resolves.toMatchObject({ code: "screenshot-failed" });
+      expect(events).toEqual(["job", "closed"]);
+    } finally {
+      child.emit("close", 1, null);
+    }
+  });
+
+  it.each([true, false])("completes a live stitcher lifecycle after close and tree kill (close first: %s)", async (closeFirst) => {
+    const kill = deferred<void>();
+    const hold = vi.fn(() => kill.promise);
+    termination.hold = hold;
+    try {
+      const { child, events, job, closed } = observeStitcherCompletion(42);
+      child.emit("error", new Error("child error"));
+      expect(hold).toHaveBeenCalledExactlyOnceWith(child);
+      const close = () => { child.emit("close", 1, null); };
+      const first = closeFirst ? close : kill.resolve;
+      const second = closeFirst ? kill.resolve : close;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(events).toEqual([]);
+      first();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(events).toEqual([]);
+      second();
+      await expect(job).resolves.toMatchObject({ code: "screenshot-failed" });
+      await closed;
+      expect(events).toEqual(["job", "closed"]);
+    } finally {
+      termination.hold = undefined;
+      kill.resolve();
+    }
+  });
 
   it.each([
     { name: "exits before answering", program: "process.exit(3);\n" },
