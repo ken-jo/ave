@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterQueuedCallbacks, deferred } from "../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
   createSandboxBootHarness,
@@ -74,7 +75,8 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     appOwnedSandboxTempRoot: () => join(roots, "tmp"),
     isAsrtSandboxActive: h.runtimeActive,
     isOfflineProcessConfinementActive: h.offlineConfinement,
-    isWindowsAccountConfinementOperational: h.accountOperational,
+    isWindowsAccountConfinementOperational: async () => h.accountOperational(),
+    getWindowsConfinementRoute: () => [h.runtimeActive(), h.offlineConfinement()],
     appOwnedSandboxHomeRoot: () => join(roots, "home"),
     sandboxTempPrincipalDirsInUse: () => new Set<string>(),
     ensureSandboxPrivateRoot: (root: string) => {
@@ -103,7 +105,8 @@ import { SessionRepository } from "../../memory/session-repository.js";
 import { SessionSearchIndex } from "../../memory/session-search-index.js";
 import { registerMxcReleaseGateEvidence } from "../../permissions/mxc-extension-admission.js";
 import { detectMxcPrerequisites, pinnedWxcExecSha256 } from "../../permissions/mxc-windows.js";
-import { areWindowsBackgroundSwitchesAvailable, sessionSearchIndexPolicy } from "../../permissions/windows-background-features.js";
+import { refreshWindowsBackgroundAdmission, sessionSearchIndexPolicySource } from "../../permissions/windows-background-features.js";
+import { invalidateWindowsBackendEvidence } from "../../permissions/windows-confinement-evidence.js";
 import { decidePermission } from "../../permissions/decision-pipeline.js";
 import { requiresUnsandboxedShellAsk } from "../../permissions/host-shell-execution-plan.js";
 import { ObligationRefusedError, setWindowsDenyUnenforceableAtBoot, windowsDenyUnenforceableAtBoot } from "../../permissions/admitted-obligation.js";
@@ -226,7 +229,7 @@ it.each([
   const isolatedDir = join(dir, "isolated");
   const mainIndex = join(mainDir, "search", "index.db");
   const isolatedIndex = join(isolatedDir, "search", "index.db");
-  const getSearchIndexPolicy = () => sessionSearchIndexPolicy(false);
+  const searchIndexPolicy = sessionSearchIndexPolicySource(() => false);
   const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
   const root = "C:/example/workspace";
   try {
@@ -234,8 +237,8 @@ it.each([
     const isolatedSeed = new SessionRepository({ aveDir: isolatedDir });
     await isolatedSeed.saveSession(sessionId, [{ role: "user", content: "detachment evidence" }]);
     await isolatedSeed.saveSessionMetadata(sessionId, { sessionKind: "main", projectRoot: root, title: "Session" });
-    const main = new SessionRepository({ aveDir: mainDir, getSearchIndexPolicy });
-    const isolated = new SessionRepository({ aveDir: isolatedDir, getSearchIndexPolicy });
+    const main = new SessionRepository({ aveDir: mainDir, ...searchIndexPolicy });
+    const isolated = new SessionRepository({ aveDir: isolatedDir, ...searchIndexPolicy });
     const originalMainIndex = readFileSync(mainIndex);
     const originalIsolatedIndex = readFileSync(isolatedIndex);
     const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
@@ -281,7 +284,7 @@ it.each([
       expect(existsSync(isolatedIndex)).toBe(!absent);
       if (inactive) {
         await main.saveSession(sessionId, [{ role: "user", content: "deferred indexing update" }]);
-        expect.soft(getSearchIndexPolicy()).toBe("inactive");
+        expect.soft((await refreshWindowsBackgroundAdmission()).searchIndexPolicy(false)).toBe("inactive");
         expect.soft(readFileSync(mainIndex).equals(originalMainIndex)).toBe(true);
         expect.soft(readFileSync(isolatedIndex).equals(originalIsolatedIndex)).toBe(true);
         expect.soft(rebuildIndex).not.toHaveBeenCalled();
@@ -289,13 +292,13 @@ it.each([
         expect.soft(discardIndex).not.toHaveBeenCalled();
       }
       if (absent || inactive) {
-        expect.soft(main.searchSessions("boot evidence")).toHaveLength(0);
-        expect.soft(isolated.searchSessions("detachment evidence")).toHaveLength(0);
+        expect.soft(await main.searchSessionsWithCurrentPolicy("boot evidence")).toHaveLength(0);
+        expect.soft(await isolated.searchSessionsWithCurrentPolicy("detachment evidence")).toHaveLength(0);
         expect(openIndex).not.toHaveBeenCalled();
       } else {
-        expect(main.searchSessions("boot evidence")).toHaveLength(1);
-        expect(isolated.searchSessions("detachment evidence", { projectRoot: root })).toHaveLength(0);
-        expect(isolated.searchSessions("detachment evidence")).toHaveLength(1);
+        expect(await main.searchSessionsWithCurrentPolicy("boot evidence")).toHaveLength(1);
+        expect(await isolated.searchSessionsWithCurrentPolicy("detachment evidence", { projectRoot: root })).toHaveLength(0);
+        expect(await isolated.searchSessionsWithCurrentPolicy("detachment evidence")).toHaveLength(1);
       }
       expect(isolated.loadSessionMetadata(sessionId)?.projectRoot).toBeUndefined();
     } finally {
@@ -319,13 +322,20 @@ it.each([
   { label: "stopped proxy runtime", revoke: () => h.runtimeActive.mockReturnValue(false) },
   { label: "container launcher loss", preservesRoute: true, revoke: () => h.requireLauncher.mockImplementation(() => { throw new Error("launcher missing"); }) },
   { label: "account readiness loss", preservesRoute: true, account: true, revoke: () => h.accountOperational.mockReturnValue(false) },
+  { label: "account egress or identity proof that cannot be gathered", preservesRoute: true, account: true,
+    revoke: () => h.accountOperational.mockImplementation(() => { throw new Error("egress proof failed"); }) },
+  { label: "container native startup loss", preservesRoute: true,
+    revoke: () => h.startProbe.mockResolvedValue({ state: "unavailable", reason: "powershell-start-failed", windowsBuild: "10.0.26300.9711" }) },
+  { label: "container start that cannot be attempted", preservesRoute: true, revoke: () => h.startProbe.mockRejectedValue(new Error("start failed")) },
+  { label: "loss signal before final admission", preservesRoute: true,
+    revoke: () => h.startProbe.mockImplementation(async () => { invalidateWindowsBackendEvidence(); return MXC_OK; }) },
 ])("preserves the host index after live confinement loses health: $label", async ({ revoke, account, preservesRoute }) => {
   const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
   const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
   const indexPath = join(dir, "search", "index.db");
   const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
   const projectRoot = "C:/example/workspace";
-  const repository = new SessionRepository({ aveDir: dir, getSearchIndexPolicy: () => sessionSearchIndexPolicy(false) });
+  const repository = new SessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => false) });
   try {
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
     h.checkDeps.mockResolvedValue(account ? ACCOUNT_DEPS_READY : SRT_WIN_MISSING);
@@ -342,7 +352,7 @@ it.each([
     const publishedSubstrate = getWindowsSandboxSubstrate();
     await repository.saveSession(sessionId, [{ role: "user", content: "indexed before refusal" }]);
     await repository.saveSessionMetadata(sessionId, { projectRoot });
-    expect(repository.searchSessions("indexed before refusal", { projectRoot })).toHaveLength(1);
+    expect(await repository.searchSessionsWithCurrentPolicy("indexed before refusal", { projectRoot })).toHaveLength(1);
     const originalIndex = readFileSync(indexPath);
 
     revoke();
@@ -353,12 +363,12 @@ it.each([
     const discardIndex = vi.spyOn(SessionSearchIndex.prototype, "discard");
     try {
       await repository.verifyOrRebuildSearchIndex();
-      expect.soft(repository.searchSessions("indexed before refusal")).toEqual([]);
+      expect.soft(await repository.searchSessionsWithCurrentPolicy("indexed before refusal")).toEqual([]);
       await repository.saveSession(sessionId, [{ role: "user", content: "changed after refusal" }]);
       await repository.saveSessionMetadata(sessionId, { projectRoot, title: "Changed title" });
       await expect(repository.detachSessionsFromProject(projectRoot)).resolves.toBe(1);
       await repository.deleteSession(sessionId);
-      expect.soft(sessionSearchIndexPolicy(false)).toBe("inactive");
+      expect.soft((await refreshWindowsBackgroundAdmission()).searchIndexPolicy(false)).toBe("inactive");
       expect.soft(openIndex).toHaveBeenCalledTimes(0);
       expect.soft(rebuildIndex).toHaveBeenCalledTimes(0);
       expect.soft(updateIndex).toHaveBeenCalledTimes(0);
@@ -386,20 +396,126 @@ it.each([
   }
 });
 
+it.each(["failed", "refused"] as const)("keeps progress and other reads responsive while a native answer is delayed, and indexes nothing once it has %s", async (outcome) => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const indexPath = join(dir, "search", "index.db");
+  const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const repository = new SessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => undefined) });
+  try {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    await initSandboxGate(harness.context(true, false));
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()?.shells).toBe("mxc"));
+    await repository.saveSession(sessionId, [{ role: "user", content: "indexed before the delay" }]);
+    expect(await repository.searchSessionsWithCurrentPolicy("indexed before the delay")).toHaveLength(1);
+    const originalIndex = readFileSync(indexPath);
+
+    const answer = deferred<object>();
+    h.startProbe.mockClear().mockReturnValue(answer.promise);
+    const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
+    const updateIndex = vi.spyOn(SessionSearchIndex.prototype, "upsertSession");
+    const discardIndex = vi.spyOn(SessionSearchIndex.prototype, "discard");
+    try {
+      const verify = repository.verifyOrRebuildSearchIndex();
+      const save = repository.saveSession(sessionId, [{ role: "user", content: "changed during the delay" }]);
+      const search = repository.searchSessionsWithCurrentPolicy("indexed before the delay");
+      await expect(repository.appendSessionProgress(sessionId, [
+        { role: "user", content: "changed during the delay" }, { role: "assistant", content: "progress during the delay" },
+      ])).resolves.toEqual(expect.any(String));
+      await afterQueuedCallbacks();
+      expect(repository.loadSession(sessionId)).toHaveLength(2);
+      expect(repository.listSessions()).toHaveLength(1);
+      expect(repository.searchSessions("indexed before the delay")).toEqual([]);
+      expect(h.startProbe).toHaveBeenCalledOnce();
+      expect(openIndex).toHaveBeenCalledTimes(0);
+
+      answer.resolve(outcome === "failed" ? Promise.reject(new Error("native answer failed"))
+        : { state: "unavailable", reason: "powershell-start-failed", windowsBuild: "10.0.26300.9711" });
+      await Promise.all([verify, save]);
+      expect(await search).toEqual([]);
+      expect(openIndex).toHaveBeenCalledTimes(0);
+      expect(updateIndex).toHaveBeenCalledTimes(0);
+      expect(discardIndex).toHaveBeenCalledTimes(0);
+      expect(readFileSync(indexPath).equals(originalIndex)).toBe(true);
+    } finally {
+      openIndex.mockRestore();
+      updateIndex.mockRestore();
+      discardIndex.mockRestore();
+    }
+  } finally {
+    repository.closeSearchIndex();
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  ["a present account backend", () => h.checkDeps.mockResolvedValue(ACCOUNT_DEPS_READY)],
+  ["an account backend that cannot be queried", () => h.checkDeps.mockRejectedValue(new Error("inventory failed"))],
+  ["a present container backend", () => h.detectMxc.mockResolvedValue(MXC_OK)],
+  ["a container backend that cannot be queried", () => h.detectMxc.mockRejectedValue(new Error("probe failed"))],
+] as const)("stops unconfined indexing and both switches once published absence meets %s", async (_label, change) => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const indexPath = join(dir, "search", "index.db");
+  const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const repository = new SessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => true) });
+  try {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(NO_ACCOUNT_BACKEND);
+    h.detectMxc.mockResolvedValue(NO_CONTAINER);
+    await initSandboxGate(harness.context(false, false));
+    const publishedSubstrate = getWindowsSandboxSubstrate();
+    expect((await refreshWindowsBackgroundAdmission("switches")).areSwitchesAvailable()).toBe(true);
+    expect(assertLocalEmbeddingRuntime(true, await refreshWindowsBackgroundAdmission())).toBe("unconfined");
+    await repository.saveSession(sessionId, [{ role: "user", content: "indexed without a backend" }]);
+    expect(await repository.searchSessionsWithCurrentPolicy("indexed without a backend")).toHaveLength(1);
+    const originalIndex = readFileSync(indexPath);
+
+    change();
+    const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
+    const updateIndex = vi.spyOn(SessionSearchIndex.prototype, "upsertSession");
+    const discardIndex = vi.spyOn(SessionSearchIndex.prototype, "discard");
+    try {
+      await repository.verifyOrRebuildSearchIndex();
+      await repository.saveSession(sessionId, [{ role: "user", content: "changed after the backend appeared" }]);
+      expect.soft(await repository.searchSessionsWithCurrentPolicy("indexed without a backend")).toEqual([]);
+      expect.soft((await refreshWindowsBackgroundAdmission("switches")).areSwitchesAvailable()).toBe(false);
+      const admission = await refreshWindowsBackgroundAdmission();
+      expect.soft(() => assertLocalEmbeddingRuntime(true, admission)).toThrow(expect.objectContaining({ code: "local-runtime-unavailable" }));
+      expect.soft(openIndex).toHaveBeenCalledTimes(0);
+      expect.soft(updateIndex).toHaveBeenCalledTimes(0);
+      expect.soft(discardIndex).toHaveBeenCalledTimes(0);
+      expect.soft(getWindowsSandboxSubstrate()).toBe(publishedSubstrate);
+      expect(readFileSync(indexPath).equals(originalIndex)).toBe(true);
+    } finally {
+      openIndex.mockRestore();
+      updateIndex.mockRestore();
+      discardIndex.mockRestore();
+    }
+  } finally {
+    repository.closeSearchIndex();
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 it.each([undefined, false])("retains indexes and recovers skipped writes across boots with preference %s", async (preference) => {
   const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
   const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
   const emptyDir = join(dir, "empty");
   const index = join(dir, "search", "index.db");
   const emptyIndex = join(emptyDir, "search", "index.db");
-  const getSearchIndexPolicy = () => sessionSearchIndexPolicy(preference);
+  const searchIndexPolicy = sessionSearchIndexPolicySource(() => preference);
   const beforeId = "aaaaaaaa-1111-2222-3333-444444444444";
   const duringId = "bbbbbbbb-1111-2222-3333-444444444444";
   try {
     await new SessionRepository({ aveDir: dir }).saveSession(beforeId, [{ role: "user", content: "retained evidence" }]);
     const originalIndex = readFileSync(index);
-    const main = new SessionRepository({ aveDir: dir, getSearchIndexPolicy });
-    const empty = new SessionRepository({ aveDir: emptyDir, getSearchIndexPolicy });
+    const main = new SessionRepository({ aveDir: dir, ...searchIndexPolicy });
+    const empty = new SessionRepository({ aveDir: emptyDir, ...searchIndexPolicy });
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
     h.checkDeps.mockResolvedValue(NO_ACCOUNT_BACKEND);
     h.detectMxc.mockResolvedValue(MXC_OLD);
@@ -410,7 +526,7 @@ it.each([undefined, false])("retains indexes and recovers skipped writes across 
       await empty.verifyOrRebuildSearchIndex();
       await main.saveSession(duringId, [{ role: "user", content: "new transcript evidence" }]);
       await empty.saveSession(duringId, [{ role: "user", content: "new transcript evidence" }]);
-      expect.soft(main.searchSessions("retained evidence")).toEqual([]);
+      expect.soft(await main.searchSessionsWithCurrentPolicy("retained evidence")).toEqual([]);
       expect.soft(readFileSync(index).equals(originalIndex)).toBe(true);
       expect.soft(existsSync(emptyIndex)).toBe(false);
       expect.soft(openIndex).not.toHaveBeenCalled();
@@ -425,13 +541,13 @@ it.each([undefined, false])("retains indexes and recovers skipped writes across 
       h.offlineConfinement.mockReturnValue(true);
     });
     await initSandboxGate(harness.context(true, false));
-    const restarted = new SessionRepository({ aveDir: dir, getSearchIndexPolicy });
-    const restartedEmpty = new SessionRepository({ aveDir: emptyDir, getSearchIndexPolicy });
+    const restarted = new SessionRepository({ aveDir: dir, ...searchIndexPolicy });
+    const restartedEmpty = new SessionRepository({ aveDir: emptyDir, ...searchIndexPolicy });
     await restarted.verifyOrRebuildSearchIndex();
     await restartedEmpty.verifyOrRebuildSearchIndex();
-    expect(restarted.searchSessions("retained evidence")).toHaveLength(1);
-    expect(restarted.searchSessions("new transcript evidence")).toHaveLength(1);
-    expect(restartedEmpty.searchSessions("new transcript evidence")).toHaveLength(1);
+    expect(await restarted.searchSessionsWithCurrentPolicy("retained evidence")).toHaveLength(1);
+    expect(await restarted.searchSessionsWithCurrentPolicy("new transcript evidence")).toHaveLength(1);
+    expect(await restartedEmpty.searchSessionsWithCurrentPolicy("new transcript evidence")).toHaveLength(1);
   } finally {
     unregister();
     rmSync(dir, { recursive: true, force: true });
@@ -505,7 +621,7 @@ it.each([false, true])("checks background feature availability with both tool sc
     h.detectMxc.mockResolvedValue(NO_CONTAINER);
     await initSandboxGate(harness.context(false, false));
     expect(h.detectMxc).toHaveBeenCalledTimes(released ? 1 : 0);
-    expect(areWindowsBackgroundSwitchesAvailable()).toBe(released);
+    expect((await refreshWindowsBackgroundAdmission()).areSwitchesAvailable()).toBe(released);
     expect(h.startProbe).not.toHaveBeenCalled();
     expect(h.initialize).not.toHaveBeenCalled();
     expect(getSandboxBootOutcome()).toMatchObject({ action: "skip", reason: "gate-off" });
@@ -526,8 +642,8 @@ it.each([
   const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
   const indexPath = join(dir, "search", "index.db");
   const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
-  const getSearchIndexPolicy = () => sessionSearchIndexPolicy(preference);
-  const repository = new SessionRepository({ aveDir: dir, getSearchIndexPolicy });
+  const searchIndexPolicy = sessionSearchIndexPolicySource(() => preference);
+  const repository = new SessionRepository({ aveDir: dir, ...searchIndexPolicy });
   const warning = "host capability query could not complete";
   try {
     await new SessionRepository({ aveDir: dir }).saveSession(sessionId, [{ role: "user", content: "retained evidence" }]);
@@ -552,8 +668,8 @@ it.each([
     try {
       await repository.verifyOrRebuildSearchIndex();
       await repository.saveSession(sessionId, [{ role: "user", content: "changed evidence" }]);
-      expect.soft(getSearchIndexPolicy()).toBe("inactive");
-      expect.soft(areWindowsBackgroundSwitchesAvailable()).toBe(false);
+      expect.soft((await refreshWindowsBackgroundAdmission()).searchIndexPolicy(preference)).toBe("inactive");
+      expect.soft((await refreshWindowsBackgroundAdmission()).areSwitchesAvailable()).toBe(false);
       expect.soft(openIndex).toHaveBeenCalledTimes(0);
       expect.soft(discardIndex).toHaveBeenCalledTimes(0);
       expect(existsSync(indexPath) && readFileSync(indexPath).equals(originalIndex)).toBe(true);
@@ -627,7 +743,7 @@ it.each([
     const embeddingSettings = await memoryMap.settingsGet();
     expect.soft(Object.hasOwn(generalSettings.features ?? {}, "sessionIndexingWithoutContainment")).toBe(Boolean(available));
     expect.soft(Object.hasOwn(embeddingSettings, "localInferenceWithoutSandbox")).toBe(Boolean(available));
-    if (available) expect(assertLocalEmbeddingRuntime()).toBe("unconfined");
+    if (available) expect(assertLocalEmbeddingRuntime(undefined, await refreshWindowsBackgroundAdmission())).toBe("unconfined");
     else await expect((async () => memoryMap.build(undefined, {} as Parameters<typeof memoryMap.build>[1]))())
       .rejects.toMatchObject({ code: "local-runtime-unavailable" });
     expect(resolveScope).not.toHaveBeenCalled();

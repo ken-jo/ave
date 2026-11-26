@@ -1,27 +1,37 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { deferred } from '../../../__tests__/support/deferred.js';
 import { setProcessPlatform } from '../../../__tests__/support/process-platform.js';
 import { registerMxcReleaseGateEvidence } from '../../../permissions/mxc-extension-admission.js';
-import { sessionSearchIndexPolicy } from '../../../permissions/windows-background-features.js';
+import { refreshWindowsBackgroundAdmission, settledWindowsBackgroundAdmission } from '../../../permissions/windows-background-features.js';
+import { invalidateWindowsBackendEvidence } from '../../../permissions/windows-confinement-evidence.js';
 import type { SandboxWindowsExtensionPlan, SandboxWindowsSubstrateInfo } from '../../../shared/sandbox-capability-info.js';
-import { assertLocalEmbeddingRuntime, isLocalInferenceSwitchAvailable } from '../local-runtime.js';
+import { assertLocalEmbeddingRuntime } from '../local-runtime.js';
 
+const NO_ACCOUNT = { errors: [] as string[], warnings: [] as string[], accountBackendAbsent: true as const };
+const NO_CONTAINER = { state: 'unavailable', reason: 'container-unavailable', windowsBuild: null, detail: '', baseContainerApiPresent: false, containerBackendAbsent: true };
 const state = vi.hoisted(() => ({
-  confined: false, homeVerified: true,
+  confined: false, homeVerified: true, verifiedShell: { confidence: 'verified' },
+  accountOperational: vi.fn(async () => true), accountInventory: vi.fn(async (): Promise<object> => ({})),
+  containerInventory: vi.fn(async (): Promise<object> => ({})), containerStart: vi.fn(async (): Promise<object> => ({})),
   plan: undefined as Pick<SandboxWindowsExtensionPlan, 'selectedBackend' | 'readiness' | 'reason'> | undefined,
   substrate: undefined as Pick<SandboxWindowsSubstrateInfo, 'mxc' | 'srtWinReady' | 'accountBackendAbsent' | 'shells'> | undefined,
 }));
 vi.mock('../../../permissions/asrt-sandbox.js', () => ({
   isAsrtSandboxActive: () => state.confined || state.substrate?.shells === 'mxc',
   isOfflineProcessConfinementActive: () => state.confined,
-  isWindowsAccountConfinementOperational: () => state.confined,
+  isWindowsAccountConfinementOperational: async () => state.confined && await state.accountOperational(),
+  checkAsrtDependencies: state.accountInventory,
+  getWindowsConfinementRoute: () => [state.confined],
 }));
 vi.mock('../../../permissions/mxc-windows.js', async importOriginal => ({
   ...await importOriginal<typeof import('../../../permissions/mxc-windows.js')>(),
   requireHostWxcExecFile: () => 'C:/example/resources/wxc-exec.exe',
+  detectHostMxcPrerequisites: state.containerInventory,
+  probeHostMxcPowerShellStart: state.containerStart,
 }));
 vi.mock('../../../permissions/mxc-runtime-root.js', () => ({ mxcSandboxHomesParent: () => 'C:/example/ave-runtime/homes' }));
 vi.mock('../../../permissions/sandbox-capability.js', () => ({
-  detectMxcShellCapability: () => state.substrate?.shells === 'mxc' ? { confidence: 'verified' } : undefined,
+  detectMxcShellCapability: () => state.substrate?.shells === 'mxc' ? state.verifiedShell : undefined,
   getSandboxHomesUnavailable: () => false,
   getWindowsExtensionBackendPlan: () => state.plan,
   getWindowsSandboxSubstrate: () => state.substrate,
@@ -38,11 +48,21 @@ const EVIDENCE = {
   forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true,
 };
 let unregister: (() => void) | undefined;
+const policy = async (preference: boolean | undefined) => (await refreshWindowsBackgroundAdmission()).searchIndexPolicy(preference);
+const switches = async () => (await refreshWindowsBackgroundAdmission()).areSwitchesAvailable();
+const runtime = async (preference?: boolean) => assertLocalEmbeddingRuntime(preference, await refreshWindowsBackgroundAdmission());
+const ACCOUNT_ROUTE = { mxc: { state: 'unavailable', reason: 'container-unavailable' }, srtWinReady: true, shells: 'approved-host' } as const;
+const CONTAINER_ROUTE = { mxc: { state: 'available' }, srtWinReady: false, shells: 'mxc' } as const;
 
 beforeEach(() => {
   setProcessPlatform('win32');
   state.confined = false;
   state.homeVerified = true;
+  state.accountOperational.mockReset().mockResolvedValue(true);
+  state.accountInventory.mockReset().mockResolvedValue(NO_ACCOUNT);
+  state.containerInventory.mockReset().mockResolvedValue(NO_CONTAINER);
+  state.containerStart.mockReset().mockResolvedValue({ state: 'available', windowsBuild: null });
+  invalidateWindowsBackendEvidence();
   state.plan = { selectedBackend: 'none', readiness: 'unavailable', reason: 'container-unavailable' };
   state.substrate = { mxc: { state: 'unavailable', reason: 'container-unavailable', containerBackendAbsent: true },
     srtWinReady: false, accountBackendAbsent: true, shells: 'none' };
@@ -54,68 +74,68 @@ afterEach(() => {
 });
 
 describe('Windows local inference release gate', () => {
-  it('preserves refusal without complete packaged evidence', () => {
-    expect(() => assertLocalEmbeddingRuntime()).toThrow(expect.objectContaining({ code: 'local-runtime-unavailable' }));
+  it('preserves refusal without complete packaged evidence', async () => {
+    await expect(runtime()).rejects.toEqual(expect.objectContaining({ code: 'local-runtime-unavailable' }));
     unregister = registerMxcReleaseGateEvidence({ ...EVIDENCE, noWorkerPort: false });
-    expect(() => assertLocalEmbeddingRuntime()).toThrow(expect.objectContaining({ code: 'local-runtime-unavailable' }));
+    await expect(runtime()).rejects.toEqual(expect.objectContaining({ code: 'local-runtime-unavailable' }));
   });
 
-  it('selects the available container regardless of the no-backend preference', () => {
+  it('selects the available container regardless of the no-backend preference', async () => {
     unregister = registerMxcReleaseGateEvidence(EVIDENCE);
     state.plan = { selectedBackend: 'mxc', readiness: 'ready', reason: 'ready' };
-    expect(assertLocalEmbeddingRuntime(false)).toBe('mxc');
-    expect(isLocalInferenceSwitchAvailable()).toBe(false);
+    expect(await runtime(false)).toBe('mxc');
+    expect(await switches()).toBe(false);
   });
 
-  it('defaults to the host child with confirmed backend absence and honours explicit false', () => {
+  it('defaults to the host child with confirmed backend absence and honours explicit false', async () => {
     unregister = registerMxcReleaseGateEvidence(EVIDENCE);
-    expect(assertLocalEmbeddingRuntime()).toBe('unconfined');
-    expect(assertLocalEmbeddingRuntime(true)).toBe('unconfined');
-    expect(() => assertLocalEmbeddingRuntime(false)).toThrow(expect.objectContaining({ code: 'local-inference-disabled' }));
+    expect(await runtime()).toBe('unconfined');
+    expect(await runtime(true)).toBe('unconfined');
+    await expect(runtime(false)).rejects.toEqual(expect.objectContaining({ code: 'local-inference-disabled' }));
     state.plan = { selectedBackend: 'none', readiness: 'off', reason: 'not-requested' };
-    expect(assertLocalEmbeddingRuntime()).toBe('unconfined');
+    expect(await runtime()).toBe('unconfined');
   });
 
-  it('preserves the active offline sandbox independently of the preference', () => {
+  it('preserves the active offline sandbox independently of the preference', async () => {
     unregister = registerMxcReleaseGateEvidence(EVIDENCE);
     state.confined = true;
-    expect(assertLocalEmbeddingRuntime(false)).toBe('offline-sandbox');
-    expect(isLocalInferenceSwitchAvailable()).toBe(false);
+    expect(await runtime(false)).toBe('offline-sandbox');
+    expect(await switches()).toBe(false);
   });
 
-  it('keeps session indexing unchanged until complete packaged evidence is registered', () => {
-    expect(sessionSearchIndexPolicy(false)).toBe('enabled');
+  it('keeps session indexing unchanged until complete packaged evidence is registered', async () => {
+    expect(await policy(false)).toBe('enabled');
     unregister = registerMxcReleaseGateEvidence({ ...EVIDENCE, noWorkerPort: false });
-    expect(sessionSearchIndexPolicy(false)).toBe('enabled');
+    expect(await policy(false)).toBe('enabled');
   });
 
-  it('defaults session indexing on and stops it independently of inference on a released PC without a backend', () => {
+  it('defaults session indexing on and stops it independently of inference on a released PC without a backend', async () => {
     unregister = registerMxcReleaseGateEvidence(EVIDENCE);
-    expect(sessionSearchIndexPolicy(undefined)).toBe('enabled-with-recovery');
-    expect(sessionSearchIndexPolicy(true)).toBe('enabled-with-recovery');
-    expect(sessionSearchIndexPolicy(false)).toBe('paused');
-    expect(assertLocalEmbeddingRuntime()).toBe('unconfined');
-    state.substrate = { mxc: { state: 'available' }, srtWinReady: false, shells: 'none' };
-    expect.soft(sessionSearchIndexPolicy(false)).toBe('inactive');
+    expect(await policy(undefined)).toBe('enabled-with-recovery');
+    expect(await policy(true)).toBe('enabled-with-recovery');
+    expect(await policy(false)).toBe('paused');
+    expect(await runtime()).toBe('unconfined');
+    state.substrate = { ...CONTAINER_ROUTE, shells: 'none' };
+    expect.soft(await policy(false)).toBe('inactive');
     state.substrate = { ...state.substrate, shells: 'mxc' };
-    expect(sessionSearchIndexPolicy(false)).toBe('enabled-with-recovery');
+    expect(await policy(false)).toBe('enabled-with-recovery');
     setProcessPlatform('linux');
-    expect(sessionSearchIndexPolicy(false)).toBe('enabled');
+    expect(await policy(false)).toBe('enabled');
   });
 
-  it('accepts definitive boot absence even while the extension release pin is in place', () => {
+  it('accepts definitive boot absence even while the extension release pin is in place', async () => {
     unregister = registerMxcReleaseGateEvidence(EVIDENCE);
     state.plan = { selectedBackend: 'none', readiness: 'unavailable', reason: 'native-validation-required' };
-    expect(isLocalInferenceSwitchAvailable()).toBe(true);
-    expect(assertLocalEmbeddingRuntime()).toBe('unconfined');
+    expect(await switches()).toBe(true);
+    expect(await runtime()).toBe('unconfined');
   });
 
-  it('treats a live account runtime contradicting the absence record as inactive', () => {
+  it('treats a live account runtime contradicting the absence record as inactive', async () => {
     unregister = registerMxcReleaseGateEvidence(EVIDENCE);
     state.confined = true;
-    expect(isLocalInferenceSwitchAvailable()).toBe(false);
-    expect(sessionSearchIndexPolicy(false)).toBe('inactive');
-    expect(sessionSearchIndexPolicy(true)).toBe('inactive');
+    expect(await switches()).toBe(false);
+    expect(await policy(false)).toBe('inactive');
+    expect(await policy(true)).toBe('inactive');
   });
 
   it.each([
@@ -127,9 +147,79 @@ describe('Windows local inference release gate', () => {
     ['unproved runtime root', () => { state.substrate = { mxc: { state: 'unavailable', reason: 'runtime-root-unproved' }, srtWinReady: false, shells: 'none' }; }],
     ['installed account backend', () => { state.substrate = { mxc: { state: 'unavailable', reason: 'container-unavailable' }, srtWinReady: true, shells: 'none' }; }],
     ['inconclusive container probe', () => { state.substrate = { mxc: { state: 'unavailable', reason: 'probe-failed' }, srtWinReady: false, shells: 'none' }; }],
-  ] as const)('refuses the host route with %s', (_name, configure) => {
+  ] as const)('refuses the host route with %s', async (_name, configure) => {
     unregister = registerMxcReleaseGateEvidence(EVIDENCE);
     configure();
-    expect(() => assertLocalEmbeddingRuntime()).toThrow(expect.objectContaining({ code: 'local-runtime-unavailable' }));
+    await expect(runtime()).rejects.toEqual(expect.objectContaining({ code: 'local-runtime-unavailable' }));
+  });
+
+  it.each([
+    ['account egress or identity proof', ACCOUNT_ROUTE, () => { state.confined = true; }, () => state.accountOperational.mockResolvedValue(false)],
+    ['account proof that cannot be gathered', ACCOUNT_ROUTE, () => { state.confined = true; }, () => state.accountOperational.mockRejectedValue(new Error('helper failed'))],
+    ['native container startup', CONTAINER_ROUTE, () => {}, () => state.containerStart.mockResolvedValue({ state: 'unavailable', reason: 'powershell-start-failed' })],
+    ['a container start that cannot be attempted', CONTAINER_ROUTE, () => {}, () => state.containerStart.mockRejectedValue(new Error('launcher failed'))],
+  ] as const)('stops indexing when a published route loses %s with every boot record intact', async (_name, substrate, start, lose) => {
+    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    state.substrate = substrate;
+    start();
+    expect(await policy(false)).toBe('enabled-with-recovery');
+    lose();
+    expect(await policy(false)).toBe('inactive');
+    expect(await policy(undefined)).toBe('inactive');
+    expect(state.substrate).toBe(substrate);
+  });
+
+  it.each([
+    ['an account backend that is now present', () => state.accountInventory.mockResolvedValue({ errors: [], warnings: [] })],
+    ['an account backend that is now degraded', () => state.accountInventory.mockResolvedValue({ ...NO_ACCOUNT, warnings: ['inventory incomplete'] })],
+    ['an account backend that cannot be queried', () => state.accountInventory.mockRejectedValue(new Error('inventory failed'))],
+    ['a container backend that is now present', () => state.containerInventory.mockResolvedValue({ state: 'available', windowsBuild: null })],
+    ['a container backend that is now degraded', () => state.containerInventory.mockResolvedValue({ ...NO_CONTAINER, baseContainerApiPresent: true })],
+    ['a container backend that cannot be queried', () => state.containerInventory.mockRejectedValue(new Error('probe failed'))],
+  ] as const)('withdraws the switches, the host route and unconfined indexing after published absence meets %s', async (_name, change) => {
+    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    const { plan, substrate } = state;
+    expect(await switches()).toBe(true);
+    expect(await policy(false)).toBe('paused');
+    change();
+    expect(await switches()).toBe(false);
+    await expect(runtime()).rejects.toEqual(expect.objectContaining({ code: 'local-runtime-unavailable' }));
+    expect(await policy(false)).toBe('inactive');
+    expect(await policy(undefined)).toBe('inactive');
+    expect(state.plan).toBe(plan);
+    expect(state.substrate).toBe(substrate);
+  });
+
+  it('refuses an admission whose evidence was replaced or invalidated before the decision', async () => {
+    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    const earlier = await refreshWindowsBackgroundAdmission();
+    expect(earlier.areSwitchesAvailable()).toBe(true);
+    await refreshWindowsBackgroundAdmission();
+    expect(earlier.areSwitchesAvailable()).toBe(false);
+    expect(earlier.searchIndexPolicy(false)).toBe('inactive');
+
+    const current = await refreshWindowsBackgroundAdmission();
+    invalidateWindowsBackendEvidence();
+    expect(current.areSwitchesAvailable()).toBe(false);
+    expect(current.searchIndexPolicy(undefined)).toBe('inactive');
+    expect(() => assertLocalEmbeddingRuntime(true, current)).toThrow(expect.objectContaining({ code: 'local-runtime-unavailable' }));
+    expect(settledWindowsBackgroundAdmission.areSwitchesAvailable()).toBe(false);
+  });
+
+  it('shares one probe between concurrent operations and admits nothing while it is pending or after a loss signal voids it', async () => {
+    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    state.substrate = CONTAINER_ROUTE;
+    const start = deferred<object>();
+    state.containerStart.mockReturnValue(start.promise);
+    const first = refreshWindowsBackgroundAdmission();
+    const second = refreshWindowsBackgroundAdmission();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(state.containerStart).toHaveBeenCalledOnce();
+    expect(settledWindowsBackgroundAdmission.searchIndexPolicy(undefined)).toBe('inactive');
+    invalidateWindowsBackendEvidence();
+    start.resolve({ state: 'available', windowsBuild: null });
+    expect((await first).searchIndexPolicy(undefined)).toBe('inactive');
+    expect((await second).searchIndexPolicy(undefined)).toBe('inactive');
+    expect(await policy(undefined)).toBe('enabled-with-recovery');
   });
 });

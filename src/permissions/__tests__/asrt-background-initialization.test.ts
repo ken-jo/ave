@@ -78,6 +78,8 @@ const nativeWorker = vi.hoisted(() => ({
   revokeWindowsAcl: vi.fn(() => []),
   resolveSrtWin: vi.fn(({ path }: { path: string }) => ({ exe: path, prependArgs: [] })),
   getWindowsSandboxUserStatus: vi.fn(() => ({ provisioned: true, credPresent: true, sid: "S-1-5-21-123" })),
+  getWindowsSandboxUserStatusAsync: vi.fn(async () => ({ provisioned: true, credPresent: true, sid: "S-1-5-21-123" })),
+  verifyWindowsWfpEgress: vi.fn(async () => ({ target: "127.0.0.1:9", stderr: "" })),
 }));
 const stampWindowsAclAsync = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("@anthropic-ai/sandbox-runtime", async original => ({
@@ -186,20 +188,26 @@ afterEach(async () => {
 });
 
 describe("background session isolation", () => {
-  it("requires current account provisioning, credentials and identity even while the runtime stays active", async () => {
+  it("requires current account provisioning, credentials, identity and egress enforcement even while the runtime stays active", async () => {
     await initializeAsrtSandbox({});
-    expect(isWindowsAccountConfinementOperational()).toBe(true);
-    const ready = nativeWorker.getWindowsSandboxUserStatus();
-    nativeWorker.getWindowsSandboxUserStatus
-      .mockReturnValueOnce({ ...ready, provisioned: false })
-      .mockReturnValueOnce({ ...ready, credPresent: false })
-      .mockReturnValueOnce({ ...ready, sid: "" })
-      .mockImplementationOnce(() => { throw new Error("account status unavailable"); });
+    nativeWorker.getWindowsSandboxUserStatus.mockClear();
+    await expect(isWindowsAccountConfinementOperational()).resolves.toBe(true);
+    const ready = await nativeWorker.getWindowsSandboxUserStatusAsync();
+    nativeWorker.getWindowsSandboxUserStatusAsync
+      .mockResolvedValueOnce({ ...ready, provisioned: false })
+      .mockResolvedValueOnce({ ...ready, credPresent: false })
+      .mockResolvedValueOnce({ ...ready, sid: "" })
+      .mockRejectedValueOnce(new Error("account status unavailable"));
     for (let i = 0; i < 4; i++) {
       expect(isOfflineProcessConfinementActive()).toBe(true);
-      expect(isWindowsAccountConfinementOperational()).toBe(false);
+      await expect(isWindowsAccountConfinementOperational()).resolves.toBe(false);
     }
-    expect(isWindowsAccountConfinementOperational()).toBe(true);
+    nativeWorker.verifyWindowsWfpEgress.mockRejectedValueOnce(new Error("egress filter is not active"));
+    expect(isOfflineProcessConfinementActive()).toBe(true);
+    await expect(isWindowsAccountConfinementOperational()).resolves.toBe(false);
+    await expect(isWindowsAccountConfinementOperational()).resolves.toBe(true);
+    // The blocking status query never runs for this check.
+    expect(nativeWorker.getWindowsSandboxUserStatus).not.toHaveBeenCalled();
   });
 
   it("keeps UNC names and directory hints exact after removing the extended prefix", () => {

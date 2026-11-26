@@ -32,7 +32,7 @@ vi.mock('../../../permissions/sandbox-process-home.js', () => ({
   isSandboxHomeUnavailable: (error: unknown) => (error as { code?: unknown } | undefined)?.code === 'sandbox-home-unavailable',
 }));
 vi.mock('../../../permissions/asrt-sandbox.js', () => ({ cleanupAsrtSandboxAfterCommand: vi.fn() }));
-vi.mock('../local-runtime.js', () => ({ assertLocalEmbeddingRuntime: route }));
+vi.mock('../local-runtime.js', () => ({ assertLocalEmbeddingRuntime: route, refreshLocalInferenceAdmission: async () => undefined }));
 vi.mock('../model-manifest.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../model-manifest.js')>();
   return { ...actual, MODEL_FILES: actual.MODEL_FILES.map(file => ({

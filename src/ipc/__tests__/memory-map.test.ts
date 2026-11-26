@@ -20,7 +20,7 @@ vi.mock('../../main/memory-map/model-manager.js', async importOriginal => ({ ...
 vi.mock('../../main/memory-map/local-runtime.js', async () => {
   const { MemoryMapHostError } = await import('../../main/memory-map/errors.js');
   return {
-    isLocalInferenceSwitchAvailable: () => state.releaseGateOpen,
+    refreshLocalInferenceAdmission: async () => ({ areSwitchesAvailable: () => state.releaseGateOpen }),
     assertLocalEmbeddingRuntime: (enabled: boolean) => {
       if (state.localConfined) return 'offline-sandbox';
       if (!state.releaseGateOpen) throw new MemoryMapHostError('local-runtime-unavailable');

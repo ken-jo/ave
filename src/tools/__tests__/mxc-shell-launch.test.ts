@@ -153,8 +153,10 @@ vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../permissions/mxc-windows.js")>()),
   resolveHostWxcExecPath: h.wxcExec,
 }));
+vi.mock("../../permissions/windows-confinement-evidence.js", () => ({ invalidateWindowsBackendEvidence: vi.fn() }));
 
 import { prepareMxcShellLaunch, type PrepareMxcShellLaunchInput } from "../mxc-shell-launch.js";
+import { invalidateWindowsBackendEvidence } from "../../permissions/windows-confinement-evidence.js";
 import { createContainedShellLifecycle } from "../contained-shell-lifecycle.js";
 import { MXC_REQUEST_CHARACTER_LIMIT } from "../../permissions/mxc-windows.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "../../permissions/egress-invocations.js";
@@ -452,6 +454,7 @@ describe("prepareMxcShellLaunch", () => {
     // Fixed words: the launcher's absolute path is not part of the failure.
     await expect(prepareMxcShellLaunch({ ...INPUT, exists: (p) => !p.endsWith("wxc-exec.exe") }, lifecycle))
       .rejects.toThrow(/^Contained shell launcher is missing from this installation$/u);
+    expect(invalidateWindowsBackendEvidence).toHaveBeenCalledOnce();
     expect(await lifecycle.dispose()).toEqual([]);
     expect(h.openRelay).not.toHaveBeenCalled();
   });
@@ -464,6 +467,7 @@ describe("prepareMxcShellLaunch", () => {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe("Contained shell launcher could not be verified on this installation");
     expect((error as Error).cause).toBeUndefined();
+    expect(invalidateWindowsBackendEvidence).toHaveBeenCalledOnce();
     expect(await lifecycle.dispose()).toEqual([]);
     expect(h.openRelay).not.toHaveBeenCalled();
   });

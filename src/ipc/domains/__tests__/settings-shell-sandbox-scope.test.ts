@@ -23,7 +23,26 @@ vi.mock("electron", () => ({
   ipcMain: { handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => handlers.set(channel, handler)) },
 }));
 
-const backgroundState = vi.hoisted(() => ({ release: false, noBackend: false, homeLost: false }));
+const NO_ACCOUNT = { errors: [] as string[], warnings: [] as string[], accountBackendAbsent: true as const };
+const NO_CONTAINER = { state: "unavailable", reason: "container-unavailable", windowsBuild: null, detail: "", baseContainerApiPresent: false, containerBackendAbsent: true };
+const backgroundState = vi.hoisted(() => ({
+  release: false, noBackend: false, homeLost: false,
+  accountInventory: vi.fn(async (): Promise<object> => ({})),
+  containerInventory: vi.fn(async (): Promise<object> => ({})),
+  substrate: { shells: "none", srtWinReady: false, accountBackendAbsent: true,
+    mxc: { state: "unavailable", reason: "container-unavailable", containerBackendAbsent: true } },
+  plan: { selectedBackend: "none", readiness: "unavailable", reason: "container-unavailable" },
+}));
+// The backend inventories are native queries; this file answers them itself.
+vi.mock("../../../permissions/asrt-sandbox.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/asrt-sandbox.js")>(),
+  checkAsrtDependencies: backgroundState.accountInventory,
+  isWindowsAccountConfinementOperational: async () => false,
+}));
+vi.mock("../../../permissions/mxc-windows.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/mxc-windows.js")>(),
+  detectHostMxcPrerequisites: backgroundState.containerInventory,
+}));
 vi.mock("../../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../permissions/mxc-runtime-root.js")>(),
   mxcSandboxHomesParent: () => {
@@ -37,11 +56,8 @@ vi.mock("../../../permissions/mxc-extension-admission.js", async (importOriginal
 }));
 vi.mock("../../../permissions/sandbox-capability.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../permissions/sandbox-capability.js")>(),
-  getWindowsSandboxSubstrate: () => backgroundState.noBackend
-    ? { shells: "none", srtWinReady: false, accountBackendAbsent: true,
-      mxc: { state: "unavailable", reason: "container-unavailable", containerBackendAbsent: true } } : null,
-  getWindowsExtensionBackendPlan: () => backgroundState.noBackend
-    ? { selectedBackend: "none", readiness: "unavailable", reason: "container-unavailable" } : undefined,
+  getWindowsSandboxSubstrate: () => backgroundState.noBackend ? backgroundState.substrate : null,
+  getWindowsExtensionBackendPlan: () => backgroundState.noBackend ? backgroundState.plan : undefined,
 }));
 vi.mock("../../../shared/ave-home.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../shared/ave-home.js")>(),
@@ -53,6 +69,8 @@ let stopSettingsListener: (() => void) | undefined;
 const USER_INTENT = { inputOrigin: "user-keyboard", userActivation: true };
 
 async function setup() {
+  backgroundState.accountInventory.mockReset().mockResolvedValue(NO_ACCOUNT);
+  backgroundState.containerInventory.mockReset().mockResolvedValue(NO_CONTAINER);
   userDataPath = mkdtempSync(join(tmpdir(), "shell-sandbox-scope-ipc-"));
   const settingsService = new SettingsService({ userDataPath, encryption: unavailableSecretEncryption });
   const frame = { url: "file:///application/dist/index.html" };
@@ -114,6 +132,41 @@ describe("session search indexing settings", () => {
     } finally {
       if (original) Object.defineProperty(process, "platform", original);
       backgroundState.release = backgroundState.noBackend = backgroundState.homeLost = false;
+    }
+  });
+
+  it.each([
+    ["projection", "present account", () => backgroundState.accountInventory.mockResolvedValue({ errors: [], warnings: [] })],
+    ["write", "present account", () => backgroundState.accountInventory.mockResolvedValue({ errors: [], warnings: [] })],
+    ["projection", "degraded account", () => backgroundState.accountInventory.mockResolvedValue({ ...NO_ACCOUNT, warnings: ["inventory incomplete"] })],
+    ["write", "degraded account", () => backgroundState.accountInventory.mockResolvedValue({ ...NO_ACCOUNT, warnings: ["inventory incomplete"] })],
+    ["projection", "unreadable account", () => backgroundState.accountInventory.mockRejectedValue(new Error("inventory failed"))],
+    ["write", "unreadable account", () => backgroundState.accountInventory.mockRejectedValue(new Error("inventory failed"))],
+    ["projection", "present container", () => backgroundState.containerInventory.mockResolvedValue({ state: "available", windowsBuild: null })],
+    ["write", "present container", () => backgroundState.containerInventory.mockResolvedValue({ state: "available", windowsBuild: null })],
+    ["projection", "degraded container", () => backgroundState.containerInventory.mockResolvedValue({ ...NO_CONTAINER, baseContainerApiPresent: true })],
+    ["write", "degraded container", () => backgroundState.containerInventory.mockResolvedValue({ ...NO_CONTAINER, baseContainerApiPresent: true })],
+    ["projection", "unreadable container", () => backgroundState.containerInventory.mockRejectedValue(new Error("probe failed"))],
+    ["write", "unreadable container", () => backgroundState.containerInventory.mockRejectedValue(new Error("probe failed"))],
+  ] as const)("rechecks backend absence before the first settings %s after a %s backend replaces published absence", async (operation, _backend, change) => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform");
+    const f = await setup();
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    backgroundState.noBackend = backgroundState.release = true;
+    try {
+      await expect(f.invoke(CHANNELS.settings.get, undefined)).resolves.toHaveProperty("features.sessionIndexingWithoutContainment", true);
+      change();
+      if (operation === "projection") {
+        await expect(f.invoke(CHANNELS.settings.get, undefined)).resolves.not.toHaveProperty("features.sessionIndexingWithoutContainment");
+      } else {
+        await expect(f.invoke(CHANNELS.settings.update, { features: { sessionIndexingWithoutContainment: false } }))
+          .resolves.toEqual({ ok: false, error: "invalid-input" });
+        expect(f.settingsService.get("features")?.sessionIndexingWithoutContainment).toBe(true);
+      }
+      expect(getSandboxHomesUnavailable()).toBe(false);
+    } finally {
+      if (original) Object.defineProperty(process, "platform", original);
+      backgroundState.release = backgroundState.noBackend = false;
     }
   });
 
