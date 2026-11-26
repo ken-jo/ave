@@ -410,6 +410,16 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     expect(descriptor(os.tmpdir())).not.toContain(sid);
   }, 60_000);
 
+  it("refuses to stamp a deny target that does not exist and leaves it absent", () => {
+    const { sid, srtWin } = helper();
+    const target = join(container, "vanished", "hooks");
+    mkdirSync(dirname(target));
+    try {
+      expect(() => stampWindowsAcl({ sandboxUserSid: sid, srtWin, denyRead: [], denyWrite: [target] })).toThrow(/does not exist/);
+      expect(lstatSync(target, { throwIfNoEntry: false })).toBeUndefined();
+    } finally { restoreWindowsAcl({ sandboxUserSid: sid, srtWin }); }
+  }, 60_000);
+
   it("diagnoses a legacy temp-root ACE without changing that ACL", () => {
     const { sid, srtWin } = helper();
     const legacy = join(container, "ave-srt-win-legacy");

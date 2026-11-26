@@ -5082,7 +5082,7 @@ index 65b8eefe5..3116fa929 100644
 \ No newline at end of file
 +//# sourceMappingURL=windows-sandbox-utils.d.ts.map
 diff --git a/dist/sandbox/windows-sandbox-utils.js b/dist/sandbox/windows-sandbox-utils.js
-index 3e8876a37..5f88d4dd3 100644
+index 3e8876a37..11aa65fc6 100644
 --- a/dist/sandbox/windows-sandbox-utils.js
 +++ b/dist/sandbox/windows-sandbox-utils.js
 @@ -312,6 +312,18 @@ function runSrtWinJsonAllowFail(args, opts) {
@@ -5256,7 +5256,7 @@ index 3e8876a37..5f88d4dd3 100644
   * PROTECTED rewrite, no SD snapshot. Idempotent and refcounted via
   * srt-win's `working_aces` table.
   *
-@@ -1176,12 +1239,85 @@ export function parseWindowsSandboxError(stderr) {
+@@ -1176,12 +1239,86 @@ export function parseWindowsSandboxError(stderr) {
   *   2, so on throw the caller should call {@link restoreWindowsAcl}
   *   to release whatever WAS stamped.
   */
@@ -5332,7 +5332,8 @@ index 3e8876a37..5f88d4dd3 100644
 +}
 +function windowsAclStampInput(opts) {
 +    assertWindowsAclPolicyBudget(opts.denyRead, opts.denyWrite);
-+    return JSON.stringify({ denyRead: opts.denyRead, denyWrite: opts.denyWrite });
++    // Ave patch (existing deny targets): a missing target is refused, never created.
++    return JSON.stringify({ denyRead: opts.denyRead, denyWrite: opts.denyWrite, existingOnly: true });
 +}
  export function stampWindowsAcl(opts) {
 +    const stdin = windowsAclStampInput(opts);
@@ -5346,7 +5347,7 @@ index 3e8876a37..5f88d4dd3 100644
      const r = runSrtWin([
          'acl',
          'stamp',
-@@ -1190,13 +1326,70 @@ export function stampWindowsAcl(opts) {
+@@ -1190,13 +1327,70 @@ export function stampWindowsAcl(opts) {
          '--sandbox-user-sid',
          opts.sandboxUserSid,
      ], { timeoutMs: 60000, stdin, srtWin: opts.srtWin });
@@ -5418,7 +5419,7 @@ index 3e8876a37..5f88d4dd3 100644
  /**
   * Release this holder's deny ACEs and remove the sandbox-user ACE
   * on any path whose refcount falls to zero. Best-effort (does not
-@@ -1221,6 +1414,47 @@ export function restoreWindowsAcl(opts) {
+@@ -1221,6 +1415,47 @@ export function restoreWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });
@@ -5466,7 +5467,7 @@ index 3e8876a37..5f88d4dd3 100644
          if (!r.ok) {
              logForDebugging(`[Sandbox Windows] acl restore exited non-zero (per-path ` +
                  `outcomes preserved): ${r.stderr}`, { level: 'error' });
-@@ -1266,6 +1500,22 @@ export function grantWindowsAcl(opts) {
+@@ -1266,6 +1501,22 @@ export function grantWindowsAcl(opts) {
          throw new WindowsSandboxError('acl_grant_failed', `srt-win acl grant exited ${r.status}: ${r.stderr || r.stdout}`);
      }
  }
@@ -5489,7 +5490,7 @@ index 3e8876a37..5f88d4dd3 100644
  /**
   * Release this holder's grants and remove the sandbox-user ACE on
   * any path whose refcount falls to zero. Best-effort (does not
-@@ -1283,6 +1533,34 @@ export function revokeWindowsAcl(opts) {
+@@ -1283,6 +1534,34 @@ export function revokeWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });
@@ -5524,7 +5525,7 @@ index 3e8876a37..5f88d4dd3 100644
          if (!r.ok) {
              logForDebugging(`[Sandbox Windows] acl revoke exited non-zero: ${r.stderr}`, { level: 'error' });
          }
-@@ -1298,6 +1576,25 @@ export function revokeWindowsAcl(opts) {
+@@ -1298,6 +1577,25 @@ export function revokeWindowsAcl(opts) {
  // ────────────────────────────────────────────────────────────────────
  // Wrap
  // ────────────────────────────────────────────────────────────────────
@@ -5550,7 +5551,16 @@ index 3e8876a37..5f88d4dd3 100644
  /**
   * Build the spawn descriptor for running `command` inside the Windows
   * sandbox: an `argv` array plus the `env` to spawn it with.
-@@ -1393,14 +1690,11 @@ export function wrapCommandWithSandboxWindows(p) {
+@@ -1365,6 +1663,8 @@ export function wrapCommandWithSandboxWindows(p) {
+         argv.push('--deny-read', d);
+     for (const d of p.denyWrite ?? [])
+         argv.push('--deny-write', d);
++    if ((p.denyRead ?? []).length > 0 || (p.denyWrite ?? []).length > 0)
++        argv.push('--deny-existing-only');
+     // The two-hop runner starts with the SANDBOX user's profile env
+     // (USERPROFILE/TEMP isolated) and overlays exactly what we pass as
+     // `--env`. The broker does NOT enumerate its own env — the overlay
+@@ -1393,14 +1693,11 @@ export function wrapCommandWithSandboxWindows(p) {
      // cmd /s) so the inner shell receives it intact. See launch.rs.
      const sh = p.binShell ?? parseWindowsBinShell(undefined);
      argv.push(sh.exe, ...sh.args, p.command);
@@ -5572,10 +5582,10 @@ index 3e8876a37..5f88d4dd3 100644
      // env (`lpEnvironment = NULL` + `LOGON_WITH_PROFILE`), so the
 diff --git a/vendor/srt-win/object-only-parent-guard.patch b/vendor/srt-win/object-only-parent-guard.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16c263bc57
+index 0000000000000000000000000000000000000000..b2df54cd2ab52d891b22778c23f18b5189cf080b
 --- /dev/null
 +++ b/vendor/srt-win/object-only-parent-guard.patch
-@@ -0,0 +1,3320 @@
+@@ -0,0 +1,3380 @@
 +diff --git a/vendor/srt-win-src/src/acl.rs b/vendor/srt-win-src/src/acl.rs
 +index 0efb5956f..0a8424ad5 100644
 +--- a/vendor/srt-win-src/src/acl.rs
@@ -6919,10 +6929,32 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +     fn aliveness_self_is_alive() {
 +         let ct = process_create_time(unsafe { GetCurrentProcess() }).unwrap();
 +diff --git a/vendor/srt-win-src/src/cli.rs b/vendor/srt-win-src/src/cli.rs
-+index 677f89568..61c5e3022 100644
++index 677f89568..5a58a0eb4 100644
 +--- a/vendor/srt-win-src/src/cli.rs
 ++++ b/vendor/srt-win-src/src/cli.rs
-+@@ -388,6 +388,8 @@ struct AceTargets {
++@@ -212,6 +212,10 @@ enum Cmd {
++         /// Per-exec write-deny — see `--deny-read`.
++         #[arg(long = "deny-write")]
++         deny_write: Vec<String>,
+++        /// Fail the exec when a per-exec deny path does not exist,
+++        /// instead of creating a placeholder for it.
+++        #[arg(long = "deny-existing-only")]
+++        deny_existing_only: bool,
++         /// `KEY=VALUE` pair overlaid on the sandbox-user runner's
++         /// profile environment when building the child's env block.
++         /// Repeatable. The broker forwards exactly these — it does
++@@ -364,6 +368,10 @@ struct AclStampInput {
++     deny_read: Vec<String>,
++     #[serde(default)]
++     deny_write: Vec<String>,
+++    /// Refuse a deny path that does not exist instead of creating a
+++    /// placeholder for it.
+++    #[serde(default)]
+++    existing_only: bool,
++ }
++
++ #[derive(serde::Deserialize, Default)]
++@@ -388,6 +396,8 @@ struct AceTargets {
 +     targets: Vec<(String, srt_win::acl::SbAce)>,
 +     /// Inputs that could not be canonicalized (soft-skip → exit 2).
 +     bad_inputs: Vec<(String, String)>,
@@ -6931,7 +6963,12 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 + }
 +
 + /// Canonicalize `(paths, ace)` pairs for `acl grant`/`acl stamp`
-+@@ -429,11 +431,13 @@ fn canonicalize_ace_targets(
++@@ -425,15 +435,18 @@ fn canonicalize_ace_targets(
++     db: &srt_win::state_db::Locked,
++     label: &str,
++     inputs: &[(&[String], srt_win::acl::SbAce)],
+++    existing_only: bool,
++ ) -> anyhow::Result<AceTargets> {
 +     use anyhow::anyhow;
 +     use srt_win::acl::SbAce;
 +     use srt_win::path_id::{
@@ -6946,7 +6983,7 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +     // Deepest-first so overlapping non-existent denies (`['y',
 +     // 'y\secret']`) materialize as `y/` DIR + `secret` FILE, not
 +     // `y` FILE (which would then fail `y\secret` with "ancestor is
-+@@ -455,64 +459,103 @@ fn canonicalize_ace_targets(
++@@ -455,64 +468,110 @@ fn canonicalize_ace_targets(
 +         )
 +     });
 +     for (p, ace) in flat {
@@ -7025,6 +7062,13 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 ++                        );
 ++                        continue;
 ++                    }
+++                    if existing_only {
+++                        bad_inputs.push((
+++                            p.clone(),
+++                            "deny target does not exist; refusing to create it".to_string(),
+++                        ));
+++                        continue;
+++                    }
 ++                    let leaf_is_dir = p.ends_with(['\\', '/']);
 ++                    match create_placeholder_chain(p, leaf_is_dir, |c| db.record_placeholder(c)) {
 ++                        Ok((leaf_canon, chain)) => {
@@ -7096,7 +7140,7 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +             }
 +         };
 +         targets.push((canon.clone(), ace));
-+@@ -526,6 +569,7 @@ fn canonicalize_ace_targets(
++@@ -526,6 +585,7 @@ fn canonicalize_ace_targets(
 +     Ok(AceTargets {
 +         targets: merge_ace_targets(targets),
 +         bad_inputs,
@@ -7104,7 +7148,12 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +     })
 + }
 +
-+@@ -1165,12 +1209,14 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++@@ -1161,16 +1221,19 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++                                 acl::SbAce::Deny(acl::DenyMask::WriteDeny),
++                             ),
++                         ],
+++                        input.existing_only,
++                     )?;
 +                     for (p, e) in &at.bad_inputs {
 +                         eprintln!("srt-win: skipped: '{p}': {e}");
 +                     }
@@ -7120,7 +7169,15 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +             } = at;
 +             let fresh = witnesses.iter().filter(|w| !w.already).count();
 +             eprintln!(
-+@@ -1241,6 +1287,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++@@ -1231,6 +1294,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++                             (&input.read, acl::SbAce::Grant(acl::GrantMask::ReadOnly)),
++                             (&input.write, acl::SbAce::Grant(acl::GrantMask::Modify)),
++                         ],
+++                        false,
++                     )?;
++                     for (p, e) in &at.bad_inputs {
++                         eprintln!("srt-win: skipped: '{p}': {e}");
++@@ -1241,6 +1305,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
 +             let AceTargets {
 +                 targets,
 +                 bad_inputs,
@@ -7128,7 +7185,20 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 +             } = at;
 +             let fresh = witnesses.iter().filter(|w| !w.already).count();
 +             eprintln!(
-+@@ -1483,7 +1530,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++@@ -1400,6 +1465,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++         Cmd::Exec {
++             deny_read,
++             deny_write,
+++            deny_existing_only,
++             env,
++             quiet,
++             target,
++@@ -1479,11 +1545,12 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++                             (&deny_read, acl::SbAce::Deny(acl::DenyMask::ReadDeny)),
++                             (&deny_write, acl::SbAce::Deny(acl::DenyMask::WriteDeny)),
++                         ],
+++                        deny_existing_only,
++                     )?;
 +                     if let Some((p, e)) = at.bad_inputs.first() {
 +                         return Err(anyhow!("per-exec --deny-*: '{p}': {e}"));
 +                     }
