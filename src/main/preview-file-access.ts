@@ -14,6 +14,7 @@ import { previewSupportsExternalOpen } from "../shared/preview-external-open.js"
 type WindowRegistry = Pick<IpcDeps, "getMainWindow" | "getAppWindows">;
 interface PreviewFileOwner {
   event: IpcMainInvokeEvent;
+  frame: WebFrameMain;
   deps: WindowRegistry;
   keys: Set<string>;
   stop: () => void;
@@ -61,7 +62,7 @@ function revoke(key: string): void {
   owner.keys.delete(key);
   if (owner.keys.size === 0) {
     owner.stop();
-    if (owner.event.senderFrame) owners.delete(owner.event.senderFrame);
+    owners.delete(owner.frame);
   }
 }
 
@@ -76,14 +77,19 @@ function ownerFor(event: IpcMainInvokeEvent, deps: WindowRegistry): PreviewFileO
     isMainFrame: boolean): void => { if (isMainFrame) release(); };
   let timer: ReturnType<typeof setTimeout>;
   const recheck = (): void => {
-    withLocalityDecision(() => {
-      let snapshot: ReadScope | undefined;
-      const scope = (): ReadScope => snapshot ??= currentReadScope();
-      for (const key of [...owner.keys]) {
-        const receipt = receipts.get(key);
-        if (receipt && !isCurrent(receipt, receipt.owner.deps, scope)) revoke(key);
-      }
-    });
+    try {
+      withLocalityDecision(() => {
+        let snapshot: ReadScope | undefined;
+        const scope = (): ReadScope => snapshot ??= currentReadScope();
+        for (const key of [...owner.keys]) {
+          const receipt = receipts.get(key);
+          if (receipt && !isCurrent(receipt, receipt.owner.deps, scope)) revoke(key);
+        }
+      });
+    } catch {
+      release();
+      return;
+    }
     // Leave time for IPC when checking the receipts takes longer than the polling delay.
     if (owner.keys.size > 0) scheduleRecheck();
   };
@@ -91,7 +97,7 @@ function ownerFor(event: IpcMainInvokeEvent, deps: WindowRegistry): PreviewFileO
     timer = setTimeout(recheck, PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs);
     timer.unref();
   };
-  const owner: PreviewFileOwner = { event, deps, keys: new Set(), stop: () => {
+  const owner: PreviewFileOwner = { event, frame, deps, keys: new Set(), stop: () => {
     clearTimeout(timer);
     event.sender.removeListener("destroyed", release);
     event.sender.removeListener("render-process-gone", release);

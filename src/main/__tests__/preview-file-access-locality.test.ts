@@ -69,6 +69,27 @@ describe.runIf(process.platform === "win32")("preview file access drive queries"
     expectOneQueryPerDrive();
   });
 
+  it("revokes the frame receipts and stops polling when a later drive query throws", () => {
+    const paths = ["first.txt", "second.txt"].map(receiptPath);
+    for (const path of paths) recordPreviewFileAccess(event, deps, path);
+
+    const interval = PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs;
+    vi.advanceTimersByTime(interval);
+    for (const path of paths) expect(previewFileReadAuthorizes(event, deps, path)).toBe(true);
+
+    query.mockImplementationOnce(() => { throw new Error("unexpected drive query failure"); });
+    expect(() => vi.advanceTimersByTime(interval)).not.toThrow();
+    for (const path of paths) expect(previewFileReadAuthorizes(event, deps, path)).toBe(false);
+    expect(sender.listenerCount("destroyed")).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+
+    recordPreviewFileAccess(event, deps, paths[0]!);
+    expect(previewFileReadAuthorizes(event, deps, paths[0]!)).toBe(true);
+    query.mockClear();
+    vi.advanceTimersByTime(interval);
+    expectOneQueryPerDrive();
+  });
+
   it("queries each drive once per tick for multiple receipts and rechecks a revoked scope", () => {
     const paths = ["first.txt", "second.txt", "third.txt"].map(receiptPath);
     for (const path of paths) {
