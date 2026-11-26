@@ -101,10 +101,11 @@ Promise<{ matches: WorkspaceFileMatch[]; truncated: boolean }> {
   const now = args.now ?? Date.now();
   const scored: Array<{ score: number; match: WorkspaceFileMatch }> = [];
   let truncated = false;
+  const isWindows = process.platform === "win32";
   const folder = args.folder;
   if (folder) {
-    const { root, path } = folder;
-    const listed = await collectFiles(path, MAX_FILES_PER_ROOT);
+    const root = isWindows ? folder.root : resolvePathForPolicy(folder.root);
+    const listed = await collectFiles(isWindows ? folder.path : resolvePathForPolicy(folder.path), MAX_FILES_PER_ROOT);
     if (listed.ok) {
       truncated = listed.value.truncated;
       for (const file of listed.value.files) {
@@ -114,9 +115,11 @@ Promise<{ matches: WorkspaceFileMatch[]; truncated: boolean }> {
       }
     }
   } else {
-    const roots = args.nativeRoots
-      ?? withLocalityDecision(() => new Set(args.roots.map((root) => resolvePathForPolicy(root))));
-    for (const root of roots) {
+    const roots = args.nativeRoots ?? (isWindows
+      ? withLocalityDecision(() => new Set(args.roots.map((root) => resolvePathForPolicy(root))))
+      : args.roots);
+    for (const inputRoot of roots) {
+      const root = isWindows ? inputRoot : resolvePathForPolicy(inputRoot);
       const listing = await listRoot(root, now);
       truncated ||= listing.truncated;
       for (const file of listing.files) {

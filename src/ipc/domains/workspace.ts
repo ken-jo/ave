@@ -349,6 +349,20 @@ function listedEntryType(ent: Dirent, full: string): WorkspaceDirEntry["type"] |
   }
 }
 
+async function listedPosixEntryType(ent: Dirent, full: string): Promise<WorkspaceDirEntry["type"] | null> {
+  if (ent.isSymbolicLink()) return "link";
+  if (ent.isFile()) return "file";
+  if (ent.isDirectory()) return "directory";
+  if (ent.isFIFO() || ent.isSocket() || ent.isCharacterDevice() || ent.isBlockDevice()) return null;
+  try {
+    const info = await fs.lstat(full);
+    return info.isSymbolicLink() ? "link" : info.isFile() ? "file" : info.isDirectory() ? "directory" : null;
+  } catch {
+    // Removed between readdir and lstat; it is no longer there to show.
+    return null;
+  }
+}
+
 function listDirFailure(err: unknown): "permission-denied" | "not-found" | "read-failed" {
   const code = err && typeof err === "object" && "code" in err ? (err as { code?: unknown }).code : undefined;
   if (code === "EACCES" || code === "EPERM") return "permission-denied";
@@ -1022,22 +1036,44 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         // Classify from the directory entries alone, sort, then cap: the cap keeps the first rows of the sorted listing
         // (folders first), and only the kept rows cost an lstat.
         const isSensitiveEntry = createSensitivePathCheck("write", "person");
-        const { candidates, hidden } = withLocalityDecision(() => {
+        let listing: { candidates: Array<{ name: string; type: WorkspaceDirEntry["type"] }>; hidden: number };
+        if (process.platform === "win32") {
+          listing = withLocalityDecision(() => {
+            const candidates: Array<{ name: string; type: WorkspaceDirEntry["type"] }> = [];
+            let hidden = 0;
+            for (const ent of dirents) {
+              const full = join(dir, ent.name);
+              // A link is judged at the name in the listed directory, before its target can affect the view.
+              const sensitivePath = ent.isSymbolicLink() ? join(realDir ?? dir, ent.name) : full;
+              if (isSensitiveEntry(sensitivePath)) {
+                hidden += 1;
+                continue;
+              }
+              const type = listedEntryType(ent, full);
+              if (type !== null) candidates.push({ name: ent.name, type });
+            }
+            return { candidates, hidden };
+          });
+        } else {
           const candidates: Array<{ name: string; type: WorkspaceDirEntry["type"] }> = [];
           let hidden = 0;
           for (const ent of dirents) {
             const full = join(dir, ent.name);
-            // A link is judged at the name in the listed directory, before its target can affect the view.
-            const sensitivePath = ent.isSymbolicLink() ? join(realDir ?? dir, ent.name) : full;
-            if (isSensitiveEntry(sensitivePath)) {
+            // A link's own entry is judged by its spelling in the folder: canonicalizing it would resolve through the link.
+            const link = ent.isSymbolicLink();
+            const sensitivePath = link ? join(realDir ?? dir, ent.name) : full;
+            // Filter sensitive entries using the file tools' policy. A key-extension file is hidden only when it holds a key:
+            // one whose content was not shown harmless stays listed for the person, and an agent read of it still asks.
+            if (withLocalityDecision(() => isSensitiveEntry(sensitivePath))) {
               hidden += 1;
               continue;
             }
-            const type = listedEntryType(ent, full);
+            const type = await listedPosixEntryType(ent, full);
             if (type !== null) candidates.push({ name: ent.name, type });
           }
-          return { candidates, hidden };
-        });
+          listing = { candidates, hidden };
+        }
+        const { candidates, hidden } = listing;
         candidates.sort((a, b) => {
           if ((a.type === "directory") !== (b.type === "directory")) return a.type === "directory" ? -1 : 1;
           return a.name.localeCompare(b.name);
@@ -1094,6 +1130,36 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       }
       if (typeof rawQuery !== "string" || rawQuery.length > WORKSPACE_FILE_QUERY_MAX_CHARS) {
         return { ok: false, error: "invalid-query" };
+      }
+      if (process.platform !== "win32") {
+        let scope: { cwd: string; extraAllowed: string[] };
+        let roots: WorkspaceRoot[];
+        try {
+          scope = currentScope();
+          roots = computeRoots();
+        } catch (error) {
+          if (error instanceof PermissionSettingsUnreadableError) {
+            return { ok: false, error: "settings-unreadable" };
+          }
+          throw error;
+        }
+        let folder: { path: string; root: string } | undefined;
+        if (rawOptions !== undefined) {
+          const rawFolder = typeof rawOptions === "object" && rawOptions !== null ? (rawOptions as { folder?: unknown }).folder : undefined;
+          if (typeof rawFolder !== "string" || !isAbsolutePath(rawFolder)) return { ok: false, error: "invalid-query" };
+          const verdict = assertReadableFilePath(rawFolder, scope.cwd, scope.extraAllowed);
+          const root = verdict.ok ? containingRoot(verdict.resolved) : null;
+          if (!verdict.ok || root === null) return { ok: false, error: "folder-not-allowed" };
+          folder = { path: verdict.resolved, root: root.path };
+        }
+        const result = await searchWorkspaceFiles({
+          query: rawQuery,
+          roots: roots.map((root) => root.path),
+          cwd: scope.cwd,
+          extraAllowed: scope.extraAllowed,
+          ...(folder ? { folder } : {}),
+        });
+        return { ok: true, ...result };
       }
       // The scope, the roots and the folder's readability and membership are one judgment before the walk.
       let judged: { scope: { cwd: string; extraAllowed: string[] }; nativeRoots: string[]; folder?: { path: string; root: string } } | "invalid-query" | "folder-not-allowed";

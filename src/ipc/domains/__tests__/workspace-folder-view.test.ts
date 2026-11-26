@@ -196,6 +196,24 @@ function changeWithinRow(dir: string, rows: number, bumped: string, watched: str
   };
 }
 
+it.skipIf(process.platform === "win32")("yields between POSIX folder row policy checks", async ({ onTestFinished }) => {
+  const dir = join(root, "row-policy-order");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "first.txt"), "first");
+  const second = join(dir, "second.pem");
+  writeFileSync(second, "ordinary text");
+  const stopInspecting = allowKeyMaterialInspectionUnder(() => [dir]);
+  onTestFinished(stopInspecting);
+  const changed = changeDuringListing(dir, 1, () => {
+    queueMicrotask(() => writeFileSync(second, "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----\n"));
+  }, onTestFinished);
+
+  const result = await listDir(dir);
+  expect(changed()).toBe(true);
+  expect(result).toMatchObject({ ok: true, hidden: 1 });
+  expect(listedNames(result)).toEqual(["first.txt"]);
+});
+
 beforeAll(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "ave-folder-view-")));
   outside = realpathSync(mkdtempSync(join(tmpdir(), "ave-folder-view-outside-")));
