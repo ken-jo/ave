@@ -62,6 +62,45 @@ describe("machine uninstaller removal", () => {
     expect(initialization).toContain('StrCmpS $R3 "_?=" ave_uninstall_arguments_done');
   });
 
+  it("documents the all-profile toast gap in the Windows release gate", () => {
+    const checklist = readRepoFile("docs/references/production-release-checklist.md");
+    const gate = checklist.split("### All-profile toast cleanup\n")[1]?.split("\n##")[0];
+    expect(gate).toBeDefined();
+    expect(gate).toMatch(/signed-in and signed-out profiles/);
+    expect(gate).toMatch(/both the per-user Start Menu\s+notification shortcut and the HKCU toast activator CLSID/);
+    expect(gate).toMatch(/Keep the all-profile cleanup gate open/);
+    expect(gate).toMatch(/updater uninstall preserves activation/);
+  });
+
+  it("keeps notification cleanup behind the update guards and in the invoking profile", () => {
+    const uninstall = hook.split("!macro customUnInstall\n")[1].split("!macroend")[0];
+    const updaterGuards = [
+      /\$\{if\} \$\{isUpdated\}\s+Goto ave_skip_genuine_uninstall/,
+      /\$\{GetOptions\} \$R0 "--updated" \$R2\s+\$\{ifNot\} \$\{Errors\}\s+Goto ave_skip_genuine_uninstall/,
+    ];
+    const cleanupDispatch = [
+      `\${if} \${UAC_IsInnerInstance}`,
+      `    !insertmacro UAC_AsUser_Call Function un.aveCleanupCurrentUserNotificationArtifacts \${UAC_SYNCREGISTERS}`,
+      `  \${else}`,
+      "    Call un.aveCleanupCurrentUserNotificationArtifacts",
+      `  \${endif}`,
+    ].join("\n");
+    expect(uninstall).toContain(cleanupDispatch);
+    const cleanupIndex = uninstall.indexOf(cleanupDispatch);
+    for (const guard of updaterGuards) {
+      const guardIndex = uninstall.search(guard);
+      expect(guardIndex).toBeGreaterThanOrEqual(0);
+      expect(guardIndex).toBeLessThan(cleanupIndex);
+    }
+
+    const cleanup = readRepoFile("build/uninstall-windows-notification-artifacts.ps1");
+    expect(cleanup).toContain("[Environment+SpecialFolder]::Programs");
+    const registryHives = [...cleanup.matchAll(/\[Microsoft\.Win32\.RegistryHive\]::(\w+)/g)];
+    expect(registryHives.length).toBeGreaterThan(0);
+    expect(new Set(registryHives.map((match) => match[1]))).toEqual(new Set(["CurrentUser"]));
+    expect(cleanup).not.toMatch(/ProfileList|HKEY_USERS|NTUSER\.DAT|UsrClass\.dat|RegLoad(?:App)?Key/i);
+  });
+
   it("retains data even when the legacy deletion flag is supplied", () => {
     const template = readTemplate("uninstaller.nsh");
     expect(template).not.toMatch(/RMDir\s+\/r\s+"\$(?:APPDATA|LOCALAPPDATA)\\/i);

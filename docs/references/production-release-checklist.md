@@ -191,6 +191,31 @@ MSIX/AppX is a separate packaging decision. Do not ship it alongside NSIS until
 the update mechanism, signing certificate/Partner Center path, and enterprise
 distribution requirements are decided.
 
+### All-profile toast cleanup
+
+Genuine uninstall verifies owned toast artifacts only for the invoking user.
+Other signed-in and signed-out profiles can retain both the per-user Start Menu
+notification shortcut and the HKCU toast activator CLSID after a per-machine
+uninstall. The uninstaller has no trusted record of which profiles created this
+pair. `ProfileList` entries identify profile directories, but provide no proof of
+artifact ownership. Using a loaded hive would still require resolving the owning
+user's Programs known folder. Mounting offline hives and using guessed folder
+paths falls outside the [toast lifecycle design](../architecture/all-profile-windows-toast-lifecycle-adr.md).
+
+Keep the all-profile cleanup gate open for signed candidates and unsigned
+exceptions. Record the limitation in the release evidence and withhold any claim
+of all-profile cleanup until the following checks pass on the release candidate:
+
+- [ ] On a clean per-machine install and a supported migration from an existing
+      install, verify the owned toast artifacts before uninstall as two distinct
+      users. From the initiating standard user's session, run genuine uninstall
+      and supply a distinct administrator's credentials. Verify both artifacts
+      are absent for each user before launching Ave again, and verify foreign
+      shortcuts and registry values remain unchanged. Repeat from a fresh
+      fixture with the second user signed in, then signed out.
+- [ ] On a separate run, verify updater uninstall preserves activation for both
+      users. Record the candidate identity, session states, and results.
+
 ## Smoke-Test Checklist
 
 Perform on each platform artifact before uploading:
