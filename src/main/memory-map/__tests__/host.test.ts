@@ -54,6 +54,30 @@ async function fixture() {
   return { root, namespace, catalog, runWorker };
 }
 describe('memory graph publication', () => {
+  it.each(['embed-batch', 'project'] as const)('drops %s progress when the catalog changes without a replacement build', async phase => {
+    const f = await fixture();
+    const reached = deferred<void>();
+    const resume = deferred<void>();
+    let catalog = f.catalog;
+    const onProgress = vi.fn();
+    const runWorker: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
+      const [, task, , progress] = args;
+      if (task.kind === phase) {
+        reached.resolve();
+        await resume.promise;
+        progress?.({ jobId: 'old', phase: phase === 'embed-batch' ? 'embedding' : 'projection', completed: 1, total: 1 });
+      }
+      return f.runWorker<T>(...args);
+    };
+    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker, onProgress });
+    const result = host.build(() => catalog);
+    await reached.promise;
+    catalog = { ...catalog, records: [] };
+    resume.resolve();
+    await expect(result).rejects.toMatchObject({ code: 'request-stale' });
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
   it('refuses saved graph hydration after the caller scope changes', async () => {
     const f = await fixture();
     const options = { namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath, runWorker: f.runWorker };

@@ -66,6 +66,33 @@ async function fixture(allowedDomains = ['127.0.0.1']) {
   }, pauseResponse: () => { let release!: () => void; responseWait = new Promise<void>(resolve => { release = resolve; }); return release; }, provider, host, settings, audit, namespace, catalog, requests, chokepoint, progress, key, consent, get config() { return config; }, set config(value) { config = value; }, set dimensions(value: number) { dimensions = value; }, set inconsistent(value: boolean) { inconsistent = value; }, set fail(value: boolean) { fail = value; } };
 }
 describe('provider memory embeddings', () => {
+  it('withholds provider batch progress when consent is withdrawn after embedding', async () => {
+    const f = await fixture();
+    f.consent();
+    const embed = f.provider.embed.bind(f.provider);
+    vi.spyOn(f.provider, 'embed').mockImplementation(async (...args) => {
+      const vectors = await embed(...args);
+      f.config.consent = undefined;
+      return vectors;
+    });
+    await expect(f.host.build(() => f.catalog)).rejects.toMatchObject({ code: 'provider-consent-required' });
+    expect(f.progress).toEqual([]);
+  });
+
+  it('checks the same provider consent again before delivering a completed answer', async () => {
+    const f = await fixture();
+    f.consent();
+    const snapshot = await f.host.build(() => f.catalog);
+    const embed = f.provider.embed.bind(f.provider);
+    vi.spyOn(f.provider, 'embed').mockImplementation(async (...args) => {
+      const vectors = await embed(...args);
+      if (f.config.consent) f.config.consent = { ...f.config.consent, timestamp: '2020-01-01T00:00:00.000Z' };
+      return vectors;
+    });
+    await expect(f.host.retrieve(() => f.catalog, { question: 'Question', filters: {}, snapshotId: snapshot.snapshotId, queryId: 'q' }))
+      .rejects.toMatchObject({ code: 'provider-consent-required' });
+  });
+
   it('denies a consented provider absent from the host allow-list before sending credentials or text', async () => {
     const f = await fixture([]);
     f.consent();

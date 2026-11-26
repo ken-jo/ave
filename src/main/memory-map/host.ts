@@ -155,7 +155,9 @@ export class MemoryMapHost {
         const completed = progress.completed;
         if (progress.phase === 'embedding' && texts[completed - 1] !== undefined) {
           const { record } = missing[start + completed - 1];
-          report({ jobId, phase: 'embedding', completed: cached + start + completed, total, memoryId: record.memoryId });
+          try {
+            report({ jobId, phase: 'embedding', completed: cached + start + completed, total, memoryId: record.memoryId });
+          } catch { /* Refused. */ }
         }
       });
       if (vectors.length !== texts.length) throw new Error('Memory and vector counts differ');
@@ -209,20 +211,25 @@ export class MemoryMapHost {
         if (!/^[a-f0-9]{64}$/.test(key) || !Array.isArray(vector) || vector.length !== saved.snapshot?.model.namespace.dimensions || vector.some(n => typeof n !== 'number' || !Number.isFinite(n))) throw new Error('Invalid stored vector cache');
         cache[key] = vector;
       }
-      const report = (progress: MemoryMapProgress) => { if (generation === this.generation) { if (this.pending && progress.phase === 'embedding') this.pending.coverage = { ...this.pending.coverage, embedded: progress.completed, pending: progress.total - progress.completed }; this.options.onProgress?.(progress); } };
-      let assertLocalAdmission: (() => void) | undefined;
+      const report = (progress: MemoryMapProgress) => commitUnderAdmission(assertCurrent, () => {
+        if (this.pending && progress.phase === 'embedding') this.pending.coverage = { ...this.pending.coverage, embedded: progress.completed, pending: progress.total - progress.completed };
+        this.options.onProgress?.(progress);
+      });
+      let assertBuildAdmission: (() => void) | undefined;
       let result: GraphBuildResult;
       if (selected.source === 'provider') {
         stopWatching = this.options.watchAuthority?.(() => { if (active()) this.cancel(); });
-        result = await (this.options.provider as ProviderEmbeddings).build(catalog, selected, saved, controller.signal, report, assertAuthority);
+        const provider = this.options.provider as ProviderEmbeddings;
+        assertBuildAdmission = provider.bindConsent(selected, controller.signal);
+        result = await provider.build(catalog, selected, saved, controller.signal, report, assertAuthority, assertCurrent);
       } else {
         if (assertModelAdmission === undefined) throw new MemoryMapHostError('local-runtime-unavailable');
         const jobId = randomUUID();
         const vectors = await this.embedLocal(catalog, folder, cache, controller.signal, jobId, report, assertCurrent, assertModelAdmission);
         assertCurrent();
-        assertLocalAdmission = await this.options.refreshLocalAdmission();
+        assertBuildAdmission = await this.options.refreshLocalAdmission();
         assertCurrent();
-        const assertProjection = assertLocalAdmission;
+        const assertProjection = assertBuildAdmission;
         let projecting!: Promise<GraphBuildResult>;
         commitUnderAdmission(assertProjection, () => { projecting = this.runWorker<GraphBuildResult>('', {
           kind: 'project', input: { ...catalog, cache: vectors, namespace: LOCAL_NAMESPACE, jobId },
@@ -233,12 +240,12 @@ export class MemoryMapHost {
         }); });
         result = await projecting;
         assertCurrent();
-        assertLocalAdmission();
-        assertLocalAdmission = await this.options.refreshLocalAdmission();
+        assertBuildAdmission();
+        assertBuildAdmission = await this.options.refreshLocalAdmission();
       }
       const assertCanPublish = () => {
         assertCurrent();
-        assertLocalAdmission?.();
+        assertBuildAdmission?.();
       };
       assertCanPublish();
       this.validateSnapshot(result.snapshot, catalog);
@@ -275,12 +282,14 @@ export class MemoryMapHost {
         ? readCatalog.recordsAreCurrent(catalog.authorizationScopeId, [])
         : catalog.authorizationScopeId === readCatalog().authorizationScopeId)) throw new MemoryMapHostError('request-stale');
     };
+    const provider = selected.source === 'provider' ? this.options.provider : undefined;
+    const assertConsent = provider?.bindConsent(selected, controller.signal);
     const stopWatching = selected.source === 'provider' ? this.options.watchAuthority?.(() => controller.abort()) : undefined;
     let vector: number[];
     let assertInference: (() => void) | undefined;
     try {
-      vector = selected.source === 'provider'
-        ? (await (this.options.provider as ProviderEmbeddings).embed(selected, [request.question], controller.signal, assertAuthority))[0]
+      vector = provider
+        ? (await provider.embed(selected, [request.question], controller.signal, () => { assertAuthority(); assertConsent?.(); }))[0]
         : await this.runWorker<number[]>(folder, { kind: 'embed', text: request.question }, controller.signal, undefined,
           (assertStillValid) => { assertInference = assertStillValid; });
     }
@@ -288,7 +297,7 @@ export class MemoryMapHost {
     finally { stopWatching?.(); }
     if (controller.signal.aborted || queryGeneration !== this.queryGeneration || snapshot !== this.snapshot || catalogRevision(catalog.records) !== catalogRevision(readCatalog().records) || catalog.authorizationScopeId !== readCatalog().authorizationScopeId) throw new MemoryMapHostError('request-stale');
     const answer = () => retrieveMatches(catalog.records, this.cache, vector, request.filters, { snapshotId: snapshot.snapshotId, catalogRevision: snapshot.catalogRevision, queryId: request.queryId }, selected);
-    if (selected.source === 'provider') return answer();
+    if (assertConsent) return commitUnderAdmission(assertConsent, answer);
     if (assertInference === undefined) throw new MemoryMapHostError('local-runtime-unavailable');
     return commitUnderAdmission(assertInference, answer);
   }

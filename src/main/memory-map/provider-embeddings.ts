@@ -15,6 +15,7 @@ import { runMemoryWorker, type MemoryWorkerRunner } from './worker-client.js';
 import { digest, LOCAL_NAMESPACE, vectorKey, type VectorCache } from './graph.js';
 import { MemoryMapHostError } from './errors.js';
 import type { ProviderEgress } from './provider-egress.js';
+import { commitUnderAdmission } from '../../shared/admission-commit.js';
 
 const EMBEDDING_BATCH_SIZE = 16;
 const SDK_EMBEDDING_MODELS: Record<string, string[]> = {
@@ -57,11 +58,16 @@ export class ProviderEmbeddings {
     }
     return { version: MEMORY_EMBEDDING_CONSENT_VERSION, providerId, modelId, endpointId, timestamp: new Date().toISOString() };
   }
-  private assertConsent(namespace: EmbeddingNamespace, signal: AbortSignal): void {
-    if (signal.aborted) throw new MemoryMapHostError('request-stale');
-    const consent = this.currentConsent();
-    if (!consent || consent.providerId !== namespace.providerId || consent.modelId !== namespace.modelId
-      || consent.endpointId !== namespace.modelRevision) throw new MemoryMapHostError('provider-consent-required');
+  bindConsent(namespace: EmbeddingNamespace, signal: AbortSignal): () => void {
+    const timestamp = this.currentConsent()?.timestamp;
+    const assertCurrent = () => {
+      if (signal.aborted) throw new MemoryMapHostError('request-stale');
+      const consent = this.currentConsent();
+      if (!consent || consent.timestamp !== timestamp || consent.providerId !== namespace.providerId || consent.modelId !== namespace.modelId
+        || consent.endpointId !== namespace.modelRevision) throw new MemoryMapHostError('provider-consent-required');
+    };
+    assertCurrent();
+    return assertCurrent;
   }
   private endpointId(providerId: string): string | undefined {
     try {
@@ -122,14 +128,14 @@ export class ProviderEmbeddings {
   }
   async embed(namespace: EmbeddingNamespace, values: string[], signal: AbortSignal, assertAuthority?: () => void): Promise<number[][]> {
     const providerId = namespace.providerId ?? ''; const modelId = namespace.modelId;
-    this.assertConsent(namespace, signal);
+    const assertConsent = this.bindConsent(namespace, signal);
     if (!values.length || values.length > EMBEDDING_BATCH_SIZE) throw new MemoryMapHostError('invalid-input');
     await this.validate(providerId, modelId);
     const route = this.route(providerId);
     const { baseUrl } = route;
     if (!baseUrl) throw new MemoryMapHostError('provider-unavailable');
     const assertCurrent = () => {
-      this.assertConsent(namespace, signal);
+      assertConsent();
       assertAuthority?.();
     };
     let egressError: MemoryMapHostError | undefined;
@@ -169,8 +175,8 @@ export class ProviderEmbeddings {
       throw new MemoryMapHostError(signal.aborted ? 'request-stale' : 'provider-embedding-failed');
     }
   }
-  async build(catalog: MemoryMapCatalog, namespace: EmbeddingNamespace, saved: { snapshot: { model: { namespace: EmbeddingNamespace } } | null; cache: VectorCache }, signal: AbortSignal, onProgress: (progress: MemoryMapProgress) => void, assertAuthority: (batch: readonly MemoryMapRecord[]) => void) {
-    this.assertConsent(namespace, signal);
+  async build(catalog: MemoryMapCatalog, namespace: EmbeddingNamespace, saved: { snapshot: { model: { namespace: EmbeddingNamespace } } | null; cache: VectorCache }, signal: AbortSignal, onProgress: (progress: MemoryMapProgress) => void, assertAuthority: (batch: readonly MemoryMapRecord[]) => void, assertCatalog: () => void) {
+    const assertConsent = this.bindConsent(namespace, signal);
     const records = [...catalog.records].sort((a, b) => a.memoryId.localeCompare(b.memoryId));
     let selected = { ...namespace };
     const stored = saved.snapshot?.model.namespace;
@@ -184,14 +190,25 @@ export class ProviderEmbeddings {
     });
     for (let offset = 0; offset < missing.length; offset += EMBEDDING_BATCH_SIZE) {
       const batch = missing.slice(offset, offset + EMBEDDING_BATCH_SIZE);
-      assertAuthority(batch);
-      const vectors = await this.embed(selected, batch.map(record => `${record.title}\n${record.text}`), signal, () => assertAuthority(batch));
+      const assertBatch = () => { assertAuthority(batch); assertConsent(); };
+      assertBatch();
+      const vectors = await this.embed(selected, batch.map(record => `${record.title}\n${record.text}`), signal, assertBatch);
       selected = { ...selected, dimensions: selected.dimensions || vectors[0].length };
       batch.forEach((record, index) => { cache[vectorKey(record, selected)] = vectors[index]; });
-      completed += batch.length; onProgress({ jobId, phase: 'embedding', completed, total: records.length });
+      completed += batch.length;
+      commitUnderAdmission(assertBatch, () => onProgress({ jobId, phase: 'embedding', completed, total: records.length }));
     }
     if (!selected.dimensions) throw new MemoryMapHostError('provider-embedding-failed');
-    this.assertConsent(selected, signal);
-    return this.runWorker<{ snapshot: GraphSnapshot; cache: VectorCache }>('', { kind: 'project', input: { ...catalog, namespace: selected, cache, jobId } }, signal, progress => { if (progress.phase !== 'embedding') onProgress(progress); });
+    const assertProjection = () => { assertCatalog(); assertConsent(); };
+    let projecting!: Promise<{ snapshot: GraphSnapshot; cache: VectorCache }>;
+    commitUnderAdmission(assertProjection, () => {
+      projecting = this.runWorker('', { kind: 'project', input: { ...catalog, namespace: selected, cache, jobId } }, signal, progress => {
+        if (progress.phase === 'embedding') return;
+        try { commitUnderAdmission(assertProjection, () => onProgress(progress)); } catch { /* Refused. */ }
+      });
+    });
+    const result = await projecting;
+    assertProjection();
+    return result;
   }
 }
