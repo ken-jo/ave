@@ -174,7 +174,9 @@ describe("checkpoint mutation locality", () => {
     expect(await readFile(second, "utf8")).toBe("second");
   });
 
-  it.skipIf(process.platform === "win32")("rewinds a published text write after attribution fails", async () => {
+  const windows = process.platform === "win32";
+  it(windows ? "rewinds a published text write after attribution fails"
+    : "does not publish a POSIX text write when attribution fails", async () => {
     const sessionId = randomUUID();
     const context = { cwd: root, extraAllowedDirectories: [], metadata: { sessionId } };
     const original = await readFile(first);
@@ -182,25 +184,39 @@ describe("checkpoint mutation locality", () => {
     expect(read.isError, read.output).toBe(false);
     const unavailable = Object.assign(new Error("Attribution path lookup failed"), { code: "EIO" });
     const failAttribution = vi.fn(() => { throw unavailable; });
-    afterRename.mockImplementation((destination) => {
-      if (destination !== first) return;
-      probe.mockImplementation((operand) => {
-        if (operand !== first) return;
-        probe.mockReset();
-        failAttribution();
-      });
-    });
+    copy.afterOpen = (path, handle) => {
+      if (typeof path !== "string" || !path.startsWith(`${first}.ave-tmp-`)) return;
+      const close = handle.close.bind(handle);
+      handle.close = async () => {
+        await close();
+        probe.mockImplementation((operand) => {
+          if (operand !== first) return;
+          probe.mockReset();
+          failAttribution();
+        });
+      };
+    };
 
     await withCodeCheckpoint({ sessionId, messageId: "mutation" }, async () => {
-      await expect(new WriteFileTool().execute({ path: first, content: "published edit" }, context))
+      await checkpointFileMutation([{ path: second, content: "prior edit" }], () => writeFile(second, "prior edit"));
+      await expect(new WriteFileTool().execute({ path: first, content: "attempted edit" }, context))
         .rejects.toBe(unavailable);
     });
 
     expect(failAttribution).toHaveBeenCalledOnce();
-    expect(await readFile(first, "utf8")).toBe("published edit");
-    afterRename.mockReset();
+    if (windows) {
+      expect(afterRename).toHaveBeenCalledWith(first);
+      expect(await readFile(first, "utf8")).toBe("attempted edit");
+    } else {
+      expect(afterRename).not.toHaveBeenCalledWith(first);
+      expect(await readFile(first)).toEqual(original);
+      expect(readdirSync(root).filter((name) => name.startsWith("first.txt.ave-tmp-"))).toEqual([]);
+      const ledger = join(root, "state", "code-checkpoints", "turns.json");
+      expect(await readFile(ledger, "utf8")).not.toContain("first.txt");
+    }
     expect(await restoreCodeCheckpoint(sessionId, "mutation", context)).toEqual({ ok: true });
     expect(await readFile(first)).toEqual(original);
+    expect(await readFile(second, "utf8")).toBe("second");
   });
 
   it.runIf(process.platform === "win32")("rewinds prior edits when a staged file never reaches publication", async () => {

@@ -2200,14 +2200,16 @@ async function writeTextAtomically(
   recordEffect: (path: string) => void,
   seal?: TargetSeal,
 ): Promise<WrittenFileIdentity | undefined> {
-  const temp = withLocalityDecision(() => {
+  const windows = process.platform === "win32";
+  const prepareTemp = () => {
     seal?.verify();
     const stableTarget = seal === undefined
       ? target
       : join(resolvePhysicalFilesystemPath(dirname(target), process.cwd(), 64), basename(target));
     return temporaryWritePath(stableTarget);
-  });
-  const windowsStage = process.platform === "win32" && seal !== undefined ? openWindowsStagedWrite(temp) : undefined;
+  };
+  const temp = windows ? withLocalityDecision(prepareTemp) : prepareTemp();
+  const windowsStage = windows && seal !== undefined ? openWindowsStagedWrite(temp) : undefined;
   const handle = windowsStage ? undefined : await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o666);
   let identity: WrittenFileIdentity | undefined;
   try {
@@ -2221,23 +2223,29 @@ async function writeTextAtomically(
         identity = writtenFileIdentity(await handle.stat({ bigint: true }));
       }
     } finally { await handle?.close(); }
+    if (!windows) noteOwnedWrite(target, identity);
     await renameWithTransientRetry(temp, target, seal);
     recordEffect(target);
   } catch (error) {
-    try {
-      if (windowsStage) windowsStage.discard();
-      else {
-        rethrowLocalityFailure(error);
-        await unlink(temp);
+    if (!windows) {
+      // Best effort cleanup: preserve the original write/rename failure.
+      await unlink(temp).catch(() => {});
+    } else {
+      try {
+        if (windowsStage) windowsStage.discard();
+        else {
+          rethrowLocalityFailure(error);
+          await unlink(temp);
+        }
+      } catch (cleanupError) {
+        if (cleanupError !== error) log.warn("Staged file cleanup failed: %s", errorMessage(cleanupError));
       }
-    } catch (cleanupError) {
-      if (cleanupError !== error) log.warn("Staged file cleanup failed: %s", errorMessage(cleanupError));
     }
     throw error;
   } finally {
-    await windowsStage?.close().catch((error: unknown) => log.warn("Staged file close failed: %s", errorMessage(error)));
+    if (windowsStage) await windowsStage.close().catch((error: unknown) => log.warn("Staged file close failed: %s", errorMessage(error)));
   }
-  noteOwnedWrite(target, identity);
+  if (windows) noteOwnedWrite(target, identity);
   return identity;
 }
 
