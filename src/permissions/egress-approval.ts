@@ -11,6 +11,7 @@ import { isIP } from "node:net";
 import { canonicalRuleSpecifier } from "./rules/rule-specifier.js";
 import {
   admitApprovalAnswer,
+  type AnsweredRecord,
   isHostApprovalTimeoutDecision,
   type ApprovalGate,
 } from "./approval-gate.js";
@@ -157,7 +158,7 @@ export function createApprovalGateEgressRequester(
       ...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
       ...(request.abortSignal === undefined ? {} : { abortSignal: request.abortSignal }),
     }, card));
-    let answer;
+    let answer: AnsweredRecord | undefined;
     try {
       answer = admitApprovalAnswer(decision, { requestId, toolName, toolUseId: undefined });
     } catch (error) {
