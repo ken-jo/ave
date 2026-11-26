@@ -97,6 +97,7 @@ export interface PrepareMxcShellLaunchInput {
   readonly timeoutMs: number;
   readonly exists: (path: string) => boolean;
   readonly assertCommand?: () => void;
+  readonly assertDelivery?: () => void;
 }
 
 function matchesRankedPath({ path, obligation }: MxcRankedPath, facts: WindowsPathFacts | undefined): boolean {
@@ -107,7 +108,10 @@ function matchesRankedPath({ path, obligation }: MxcRankedPath, facts: WindowsPa
   const anchor = existing.at(-1)?.canonical;
   return anchor != null && windowsPathKey(anchor) === windowsPathKey(obligation.anchorTarget)
     && existing.length === obligation.chain.length
-    && obligation.chain.every((identity, index) => windowsObjectKey(identity) === windowsObjectKey(existing[index]!));
+    && existing.every((component, index) => {
+      const identity = obligation.chain[index];
+      return identity !== undefined && windowsObjectKey(identity) === windowsObjectKey(component);
+    });
 }
 
 /** Margin MXC's own timeout keeps behind the host's lifetime watch. */
@@ -254,7 +258,13 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     proxyUrl: listener.url,
     timeoutMs: input.timeoutMs + MXC_TIMEOUT_MARGIN_MS,
   });
-  const transport = await openMxcRequestTransport(request, wxcExec, { root: runtimeRoot, signal: lifecycle.signal, assertStillValid: assertDispatch });
+  const transport = await openMxcRequestTransport(request, wxcExec, {
+    root: runtimeRoot, signal: lifecycle.signal,
+    assertStillValid: () => {
+      assertDispatch();
+      if (active) input.assertDelivery?.();
+    },
+  });
   lifecycle.defer(() => transport.release());
   assertAdmission();
   let watchedNotice: string | undefined;
@@ -290,6 +300,9 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
       active = true;
       return observation;
     },
-    bindChild: transport.bindChild,
+    bindChild: (child) => {
+      if (!active) throw new Error("Container shell launch must be active before binding a child");
+      transport.bindChild(child);
+    },
   };
 }

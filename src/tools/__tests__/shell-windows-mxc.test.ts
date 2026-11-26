@@ -1072,6 +1072,24 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
   });
 
+  it("retains the remote controller check for policy delivery after spawn", async () => {
+    bootMxcShells();
+    let current = true;
+    vi.spyOn(chatOrigin, "isRemoteControllerBoundToSession").mockImplementation(() => current);
+    let refusal: unknown;
+    let lifecycleRevoked: boolean | undefined;
+    const held = captureCommandLaunch(() => {
+      const prepared = mxcLaunchMock.prepare.mock.calls.at(-1)?.[0] as PrepareMxcShellLaunchInput;
+      current = false;
+      try { prepared.assertDelivery?.(); } catch (error) { refusal = error; }
+      lifecycleRevoked = held.revoked();
+    });
+    const result = await executePowerShell(context("ps-mxc-delivery-authority"));
+    expect(result.isError).toBe(false);
+    expect(lifecycleRevoked).toBe(false);
+    expect(refusal).toMatchObject({ message: "remote-controller-revoked" });
+  });
+
   it("settles and releases everything when the remote authority refresh rejects", async () => {
     bootMxcShells();
     const container = failCommandContainerRelease({});

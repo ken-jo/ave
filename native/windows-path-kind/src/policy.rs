@@ -5,7 +5,8 @@ use std::os::windows::io::AsRawHandle;
 use std::process::exit;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 const MAX_POLICY: u32 = 4 * 1024 * 1024;
@@ -23,8 +24,23 @@ struct Delivery {
     accepted: AtomicU32,
     completed: AtomicU32,
     failed: AtomicBool,
-    gate: Option<Vec<u16>>,
+    authorization: Option<Authorization>,
     policy: Vec<u8>,
+}
+
+struct Authorization {
+    gate: Vec<u16>,
+    permit: Mutex<Receiver<()>>,
+}
+
+impl Authorization {
+    fn request(&self, remaining: impl FnOnce() -> u32) -> bool {
+        let Ok(permit) = self.permit.lock() else {
+            return false;
+        };
+        write(unsafe { GetStdHandle(STDOUT) }, b"authorize\n") == Ok(10)
+            && permit.recv_timeout(std::time::Duration::from_millis(u64::from(remaining()))).is_ok()
+    }
 }
 
 impl Delivery {
@@ -50,7 +66,7 @@ fn read_u32() -> Result<u32, u32> {
     Ok(u32::from_le_bytes(bytes))
 }
 
-fn watch_owner(delivery: &Delivery) {
+fn watch_owner(delivery: &Delivery, authorization: Option<SyncSender<()>>) {
     let Ok(pid) = read_u32() else {
         return;
     };
@@ -67,7 +83,14 @@ fn watch_owner(delivery: &Delivery) {
         return;
     }
     delivery.signal(&delivery.bound);
-    let _ = read(input(), &mut [0]);
+    if let Some(authorization) = authorization {
+        let mut reply = [0];
+        while read_exact(input(), &mut reply).is_ok() && reply[0] == 1 {
+            if authorization.send(()).is_err() { break; }
+        }
+    } else {
+        let _ = read(input(), &mut [0]);
+    }
 }
 
 fn gate_allows_write(attributes: u32) -> bool {
@@ -75,9 +98,18 @@ fn gate_allows_write(attributes: u32) -> bool {
         && attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) == 0
 }
 
-fn send(pipe: Raw, delivery: &Delivery) -> bool {
-    if let Some(gate) = &delivery.gate {
-        if !gate_allows_write(unsafe { GetFileAttributesW(gate.as_ptr()) }) {
+fn delivery_is_authorized(request: impl FnOnce() -> bool, attributes: impl FnOnce() -> u32) -> bool {
+    request() && gate_allows_write(attributes())
+}
+
+fn send(pipe: Raw, delivery: &Delivery, client: &Handle) -> bool {
+    if let Some(authorization) = &delivery.authorization {
+        if !delivery_is_authorized(
+            || authorization.request(|| delivery.remaining()),
+            || unsafe { GetFileAttributesW(authorization.gate.as_ptr()) },
+        ) || delivery.remaining() == 0
+            || unsafe { WaitForSingleObject(client.raw(), 0) } != WAIT_TIMEOUT
+        {
             return false;
         }
     }
@@ -131,7 +163,7 @@ fn serve(pipe: Arc<Handle>, delivery: &Delivery) {
             }
             return;
         }
-        if !send(pipe, delivery) {
+        if !send(pipe, delivery, client) {
             return delivery.fail();
         }
         unsafe {
@@ -170,7 +202,9 @@ fn event() -> Handle {
 pub fn run(args: &[Vec<u16>]) -> u8 {
     let (name, milliseconds, gate) = match args {
         [name, milliseconds] => (name, milliseconds, None),
-        [name, milliseconds, gate] => (name, milliseconds, Some(c_wide(gate))),
+        [name, milliseconds, gate, authorize] if *authorize == ascii("--authorize") => {
+            (name, milliseconds, Some(c_wide(gate)))
+        }
         _ => return 2,
     };
     let prefix = ascii(PIPE_PREFIX);
@@ -229,6 +263,13 @@ pub fn run(args: &[Vec<u16>]) -> u8 {
         }
     }
     drop(descriptor);
+    let (authorization, permits) = match gate {
+        Some(gate) => {
+            let (send, receive) = sync_channel(0);
+            (Some(Authorization { gate, permit: Mutex::new(receive) }), Some(send))
+        }
+        None => (None, None),
+    };
     let delivery = Arc::new(Delivery {
         bound: event(),
         done: event(),
@@ -237,12 +278,12 @@ pub fn run(args: &[Vec<u16>]) -> u8 {
         accepted: AtomicU32::new(0),
         completed: AtomicU32::new(0),
         failed: AtomicBool::new(false),
-        gate,
+        authorization,
         policy,
     });
     let owner_delivery = Arc::clone(&delivery);
     let owner = thread::Builder::new()
-        .spawn(move || watch_owner(&owner_delivery))
+        .spawn(move || watch_owner(&owner_delivery, permits))
         .unwrap_or_else(|_| exit(1));
     let workers: Vec<_> = pipes
         .iter()
@@ -281,6 +322,20 @@ mod tests {
         assert!(!gate_allows_write(
             FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT
         ));
+    }
+
+    #[test]
+    fn a_write_requires_a_fresh_permit_and_a_live_gate_after_the_reply() {
+        assert!(!delivery_is_authorized(|| false, || 0x80));
+        let attrs = std::cell::Cell::new(0x80);
+        assert!(!delivery_is_authorized(
+            || {
+                attrs.set(INVALID_FILE_ATTRIBUTES);
+                true
+            },
+            || attrs.get(),
+        ));
+        assert!(delivery_is_authorized(|| true, || 0x80));
     }
 
     #[test]

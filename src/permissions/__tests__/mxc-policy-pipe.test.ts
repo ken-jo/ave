@@ -81,6 +81,52 @@ describe.skipIf(process.platform !== "win32")("native policy pipe EOF", () => {
       finally { if (root !== undefined) rmSync(root, { recursive: true, force: true }); }
     }
   });
+  for (const withdraw of ["lifecycle", "proof"] as const) it(`refuses a held native read after ${withdraw} withdrawal`, async (context) => {
+    vi.restoreAllMocks();
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    requireMxcPolicyPipeHelper(context.skip);
+    const root = mkdtempSync(join(tmpdir(), "mxc-policy-withdrawal-"));
+    const pipe = String.raw`\\.\pipe\ave-mxc-${randomBytes(16).toString("hex")}`;
+    const controller = new AbortController();
+    let proved = true;
+    const assertStillValid = vi.fn(() => { if (!proved) throw new Error("Launch proof withdrawn"); });
+    let transport: Awaited<ReturnType<typeof openMxcPolicyPipe>> | undefined;
+    let child: childProcess.ChildProcess | undefined;
+    try {
+      const owned = await openMxcPolicyPipe(Buffer.from("held-policy"), pipe, { root, signal: controller.signal, assertStillValid });
+      transport = owned;
+      const done = new Promise<string>((resolveResult) => {
+        child = childProcess.execFile(process.execPath, ["-e", `
+          process.stdin.once("data", () => {
+            const fs = require("node:fs");
+            const fd = fs.openSync(process.argv[1], "r");
+            try {
+              const bytes = Buffer.alloc(32);
+              const size = fs.readSync(fd, bytes, 0, bytes.length, null);
+              process.stdout.write(bytes.subarray(0, size));
+            } finally { fs.closeSync(fd); }
+          });
+        `, pipe], {
+          windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.mxcRequestTransportMs,
+          env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+        }, (_error, stdout) => resolveResult(stdout));
+        owned.bindChild(child);
+      });
+      const before = assertStillValid.mock.calls.length;
+      if (withdraw === "lifecycle") controller.abort();
+      else proved = false;
+      child?.stdin?.end("read");
+      expect(await done).toBe("");
+      if (withdraw === "proof") {
+        expect(controller.signal.aborted).toBe(false);
+        expect(assertStillValid.mock.calls.length).toBeGreaterThan(before);
+      }
+    } finally {
+      child?.kill();
+      try { await transport?.release().catch(() => {}); }
+      finally { rmSync(root, { recursive: true, force: true }); }
+    }
+  });
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 

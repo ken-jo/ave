@@ -4477,6 +4477,12 @@ async function spawnPowerShellInMxc(
   // failure is formatted only after disposal, from the raw errors.
   const lifecycle = createContainedShellLifecycle();
   const controllerRevoked = new Error("remote-controller-revoked");
+  const gate = currentEffectGateContext();
+  const assertController = () => {
+    if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) {
+      throw new Error("remote-controller-revoked");
+    }
+  };
   let failurePrefix = "could not create isolated HOME: ";
   let observation: AgentTerminalObservationLease | undefined;
   let collector: ReturnType<typeof createOutputCollector> | undefined;
@@ -4542,13 +4548,17 @@ async function spawnPowerShellInMxc(
           throw new Error("Verified shell command is no longer available for this invocation");
         }
       },
+      assertDelivery: () => {
+        assertController();
+        assertManagedChildProcessAdmissionOpen(MXC_SHELL_LABEL);
+        cwdHold.assertHeld();
+      },
     }, lifecycle));
     signal?.throwIfAborted();
-    const gate = currentEffectGateContext();
     if (!await refreshRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw controllerRevoked;
     observation = parserResponse === undefined ? startShellObservation(command, cwd,
       { mode: "isolated", detail: "filesystem/process confinement" }, token) : undefined;
-    if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
+    assertController();
     assertManagedChildProcessAdmissionOpen(MXC_SHELL_LABEL);
     if (detectMxcShellCapability() === undefined) throw new Error("Container shell route is no longer available");
     const [cmd, ...args] = launch.argv;

@@ -30,7 +30,7 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?:
   let server: childProcess.ChildProcessWithoutNullStreams;
   try {
     server = withWindowsPathKindHelper(helper => commitUnderAdmission(assertLive, () => childProcess.spawn(helper,
-      ["--mxc-policy", pipe, String(TOOL_TIMEOUT_POLICY.mxcRequestTransportMs), ...(gate ? [gate.path] : [])], {
+      ["--mxc-policy", pipe, String(TOOL_TIMEOUT_POLICY.mxcRequestTransportMs), ...(gate ? [gate.path, "--authorize"] : [])], {
         cwd: dirname(helper), windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"],
       })));
   } catch (error) { gate?.revoke(); throw error; }
@@ -40,6 +40,7 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?:
   let exited = false;
   let released = false;
   let ready = false;
+  let authorizations = 0;
   let failing = false;
   let failure: Error | undefined;
   let rejectReady: (error: Error) => void = () => {};
@@ -117,16 +118,29 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?:
           return;
         }
         response = Buffer.concat([response, chunk]);
-        if (!response.includes(0x0a)) return;
-        try {
-          if (decodeWindowsNativeReply(response) === "ready\n") { ready = true; resolve(); }
-          else void fail(new Error("Windows sandbox policy helper sent an invalid response"));
-        } catch (cause) {
-          void fail(new Error("Windows sandbox policy helper sent invalid UTF-8", { cause }));
+        for (let end = response.indexOf(0x0a); end >= 0; end = response.indexOf(0x0a)) {
+          let line: string;
+          try { line = decodeWindowsNativeReply(response.subarray(0, end + 1)); }
+          catch (cause) {
+            fail(new Error("Windows sandbox policy helper sent invalid UTF-8", { cause }));
+            return;
+          }
+          response = response.subarray(end + 1);
+          if (!ready && line === "ready\n") {
+            ready = true;
+            resolve();
+          } else if (ready && gate && bound && line === "authorize\n" && authorizations < 2) {
+            authorizations += 1;
+            try { commitUnderAdmission(assertLive, () => { server.stdin.write(Buffer.from([1])); }); }
+            catch (error) { fail(error); return; }
+          } else {
+            fail(new Error("Windows sandbox policy helper sent an invalid response"));
+            return;
+          }
         }
       });
       server.stdout.once("end", () => {
-        if (!ready) void fail(new Error("Windows sandbox policy helper sent an incomplete response"));
+        if (!released && (!ready || response.length > 0)) fail(new Error("Windows sandbox policy helper sent an incomplete response"));
       });
       try {
         stopTracking = trackManagedChildProcess(server, { killProcessGroup: false, label: "mxc:policy" });
