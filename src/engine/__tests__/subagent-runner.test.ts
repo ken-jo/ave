@@ -2663,7 +2663,7 @@ describe("SubAgentRunner workspace lifecycle", () => {
       childSessionId,
       title: childSessionId,
       background: true,
-      loop: { revokeWorkspaceRoot },
+      loop: { planWorkspaceRootRevocation: (...args: unknown[]) => () => revokeWorkspaceRoot(...args) },
     });
     activeChildren.set("child-one", child("child-one", first));
     activeChildren.set("child-failing", child("child-failing", failing));

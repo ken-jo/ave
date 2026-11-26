@@ -992,13 +992,12 @@ export class SubAgentRunner {
    * matching live wire child before returning so the workspace coordinator's later settings write cannot leave a removed project executing in between. */
   async detachSessionsFromProject(root: string): Promise<number> {
     const detached = await this.deps.subAgentMemoryManager.sessions.detachSessionsFromProject(root);
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = canonicalizePathForMatch(root);
-    } catch {
-      return detached;
-    }
-    this.cancelActiveWireChildrenForWorkspaceRoot(canonicalRoot);
+    const cancellations = withLocalityDecision(() => {
+      const canonicalRoot = canonicalizePathForMatch(root);
+      return [...this.activeChildren.values()].filter((child) => this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot));
+    });
+    const errors = this.cancelActiveWireChildren(cancellations);
+    if (errors.length > 0) throw new AggregateError(errors, "Sub-agent wire cancellation failed");
     return detached;
   }
 
@@ -1015,28 +1014,21 @@ export class SubAgentRunner {
    * removed project is cancelled, and any child loop is asked the test its revocation aborts by.
    */
   countTurnsAbortedByWorkspaceRootRemoval(root: string, options?: WorkspaceRootRevocationOptions): number {
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = canonicalizePathForMatch(root);
-    } catch {
-      return 0;
-    }
-    let count = 0;
-    for (const child of this.activeChildren.values()) {
-      // Cancelling a tracked run stops it; without one the cancel aborts the loop's turn, which stops something only if running.
-      const running = Boolean(this.inFlight.get(child.childSessionId)?.run ?? this.trackedRuns.get(child.childSessionId))
-        || child.loop.hasActiveTurn();
-      if ((running && this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot))
-        || child.loop.wouldWorkspaceRootRemovalAbortTurn(canonicalRoot, options)) count += 1;
-    }
-    return count;
+    return withLocalityDecision(() => {
+      const canonicalRoot = canonicalizePathForMatch(root);
+      let count = 0;
+      for (const child of this.activeChildren.values()) {
+        // Cancelling a tracked run stops it; otherwise only a running loop can be stopped.
+        const running = Boolean(this.inFlight.get(child.childSessionId)?.run ?? this.trackedRuns.get(child.childSessionId))
+          || child.loop.hasActiveTurn();
+        if ((running && this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot))
+          || child.loop.wouldWorkspaceRootRemovalAbortTurn(canonicalRoot, options)) count += 1;
+      }
+      return count;
+    });
   }
 
-  private cancelActiveWireChildForWorkspaceRoot(
-    child: ActiveSubAgentChild,
-    canonicalRoot: string,
-  ): void {
-    if (!this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot)) return;
+  private cancelActiveWireChild(child: ActiveSubAgentChild): void {
     const trackedRun = this.inFlight.get(child.childSessionId)?.run
       ?? this.trackedRuns.get(child.childSessionId);
     if (trackedRun?.abort) trackedRun.abort();
@@ -1050,11 +1042,11 @@ export class SubAgentRunner {
     });
   }
 
-  private cancelActiveWireChildrenForWorkspaceRoot(canonicalRoot: string): unknown[] {
+  private cancelActiveWireChildren(children: readonly ActiveSubAgentChild[]): unknown[] {
     const errors: unknown[] = [];
-    for (const child of [...this.activeChildren.values()]) {
+    for (const child of children) {
       try {
-        this.cancelActiveWireChildForWorkspaceRoot(child, canonicalRoot);
+        this.cancelActiveWireChild(child);
       } catch (error: unknown) {
         errors.push(error);
         log.warn(
@@ -1078,21 +1070,34 @@ export class SubAgentRunner {
     activeChildrenVisited: number;
     liveScopesRevoked: number;
   } {
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = withLocalityDecision(() => canonicalizePathForMatch(root));
-    } catch (error) {
-      rethrowLocalityFailure(error);
-      return { activeChildrenVisited: 0, liveScopesRevoked: 0 };
-    }
-
-    const errors = this.cancelActiveWireChildrenForWorkspaceRoot(canonicalRoot);
-    let activeChildrenVisited = 0;
-    let liveScopesRevoked = 0;
-    for (const child of [...this.activeChildren.values()]) {
-      activeChildrenVisited += 1;
+    const plan = withLocalityDecision(() => {
+      let canonicalRoot: string;
       try {
-        const result = child.loop.revokeWorkspaceRoot(canonicalRoot, options);
+        canonicalRoot = canonicalizePathForMatch(root);
+      } catch (error) {
+        rethrowLocalityFailure(error);
+        return undefined;
+      }
+      const children = [...this.activeChildren.values()];
+      const cancellations = children.filter((child) => this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot));
+      const errors: unknown[] = [];
+      const changes = children.flatMap((child) => {
+        try {
+          return [{ child, apply: child.loop.planWorkspaceRootRevocation(canonicalRoot, options) }];
+        } catch (error) {
+          rethrowLocalityFailure(error);
+          errors.push(error);
+          return [];
+        }
+      });
+      return { cancellations, changes, errors, activeChildrenVisited: children.length };
+    });
+    if (!plan) return { activeChildrenVisited: 0, liveScopesRevoked: 0 };
+    const errors = [...this.cancelActiveWireChildren(plan.cancellations), ...plan.errors];
+    let liveScopesRevoked = 0;
+    for (const { child, apply } of plan.changes) {
+      try {
+        const result = apply();
         liveScopesRevoked += result.sessionDirectoriesRemoved + result.turnDirectoriesRemoved;
       } catch (error: unknown) {
         errors.push(error);
@@ -1111,7 +1116,7 @@ export class SubAgentRunner {
         { code: "SUBAGENT_WORKSPACE_ROOT_REVOKE_FAILED" },
       );
     }
-    return { activeChildrenVisited, liveScopesRevoked };
+    return { activeChildrenVisited: plan.activeChildrenVisited, liveScopesRevoked };
   }
 
 
