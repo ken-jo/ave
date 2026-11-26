@@ -261,11 +261,11 @@ function registeredRoot(projectRoot: string): WorkspaceRoot | null {
 }
 
 /** The innermost registered root containing `dir`; links in a folder outside every root count as outside. */
-function containingRoot(dir: string): { key: string; path: string } | null {
+function containingRoot(dir: string, roots?: readonly WorkspaceRoot[]): { key: string; path: string } | null {
   return withLocalityDecision(() => {
     const dirKey = matchKey(dir);
     let best: { key: string; path: string } | null = null;
-    for (const root of computeRoots()) {
+    for (const root of roots ?? computeRoots()) {
       const key = matchKey(root.path);
       if (keyWithin(key, dirKey) && (best === null || key.length > best.key.length)) best = { key, path: root.path };
     }
@@ -1094,25 +1094,28 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       if (typeof rawQuery !== "string" || rawQuery.length > WORKSPACE_FILE_QUERY_MAX_CHARS) {
         return { ok: false, error: "invalid-query" };
       }
-      let scope: { cwd: string; extraAllowed: string[] };
-      let roots: WorkspaceRoot[];
+      // The scope, the roots and the folder's readability and membership are one judgment before the walk.
+      let judged: { scope: { cwd: string; extraAllowed: string[] }; roots: WorkspaceRoot[]; folder?: { path: string; root: string } } | "invalid-query" | "folder-not-allowed";
       try {
-        ({ scope, roots } = withLocalityDecision(() => ({ scope: currentScope(), roots: computeRoots() })));
+        judged = withLocalityDecision(() => {
+          const scope = currentScope();
+          const roots = computeRoots();
+          if (rawOptions === undefined) return { scope, roots };
+          const rawFolder = typeof rawOptions === "object" && rawOptions !== null ? (rawOptions as { folder?: unknown }).folder : undefined;
+          if (typeof rawFolder !== "string" || !isAbsolutePath(rawFolder)) return "invalid-query";
+          const verdict = assertReadableFilePath(rawFolder, scope.cwd, scope.extraAllowed);
+          const root = verdict.ok ? containingRoot(verdict.resolved, roots) : null;
+          if (!verdict.ok || root === null) return "folder-not-allowed";
+          return { scope, roots, folder: { path: verdict.resolved, root: root.path } };
+        });
       } catch (error) {
         if (error instanceof PermissionSettingsUnreadableError) {
           return { ok: false, error: "settings-unreadable" };
         }
         throw error;
       }
-      let folder: { path: string; root: string } | undefined;
-      if (rawOptions !== undefined) {
-        const rawFolder = typeof rawOptions === "object" && rawOptions !== null ? (rawOptions as { folder?: unknown }).folder : undefined;
-        if (typeof rawFolder !== "string" || !isAbsolutePath(rawFolder)) return { ok: false, error: "invalid-query" };
-        const verdict = assertReadableFilePath(rawFolder, scope.cwd, scope.extraAllowed);
-        const root = verdict.ok ? containingRoot(verdict.resolved) : null;
-        if (!verdict.ok || root === null) return { ok: false, error: "folder-not-allowed" };
-        folder = { path: verdict.resolved, root: root.path };
-      }
+      if (typeof judged === "string") return { ok: false, error: judged };
+      const { scope, roots, folder } = judged;
       const result = await searchWorkspaceFiles({
         query: rawQuery,
         roots: roots.map((root) => root.path),
