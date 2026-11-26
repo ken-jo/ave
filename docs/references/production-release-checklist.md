@@ -216,6 +216,11 @@ user's profile after normal alternate-credential UAC. An already-elevated launch
 uses the process account's profile. Other signed-in and signed-out profiles can
 retain both the per-user Start Menu notification shortcut and the HKCU toast
 activator CLSID after a per-machine uninstall.
+The verification is the cleanup's final read under its per-user lock. Ave exits
+at startup while the lock is held. A writer that does not honor the lock, or a
+launch after cleanup exits and before the executable is removed, can leave or
+recreate a value. Cleanup exit 2 reports a quarantine entry it could not
+attribute and left untouched; uninstall continues.
 See the [toast lifecycle design](../architecture/all-profile-windows-toast-lifecycle-adr.md)
 for the ownership boundary and migration and rollback outline.
 

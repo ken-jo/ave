@@ -43,7 +43,8 @@ under Program Files, while toast notification artifacts belong to each user:
      `HKCU\Software\Classes\CLSID\{clsid}\LocalServer32` with root default
      `Electron Notification Activator`, `CustomActivator` DWord = 1, and
      `LocalServer32` default pointing at the installed executable
-     (see `Test-ExactToastRegistration` and `Remove-ExactToastRegistration` in
+     (see `Read-ToastRegistrationSlots`, `Test-OwnedToastSlotValue` and
+     `Remove-OwnedToastRegistration` in
      `build/uninstall-windows-notification-artifacts.ps1`).
 
 **Release limit — per-profile toast registration.** An unpackaged NSIS build
@@ -75,19 +76,8 @@ Two points sharpen the picture beyond the issue text:
   `build/uninstall-windows-notification-artifacts.ps1` and the
   “preserves a real same-target partial-owned shortcut without aborting” case
   in `test/scripts/smoke-windows-nsis-installer.test.ts`.
-  `Remove-OwnedToastRegistration` can recover any exact typed slot at the pinned
-  product CLSID even when the shortcut is gone. A foreign occupant of one of
-  the three slots blocks that removal. Legacy CLSIDs require a verified shortcut
-  and a complete tuple. Cleanup takes a per-user mutex and fails if it finds a
-  shortcut left in quarantine by a prior invocation.
-  Cleanup verifies that the invoking user has no running Ave process before
-  mutation and again before final verification. It disposes of the quarantined
-  shortcut only after two consecutive scans of every candidate CLSID in every
-  registry view show identical slot state and no owned value. A read failure
-  or an observed change retains the shortcut evidence. The scans are
-  observational. An external writer can still recreate a slot after the last
-  scan. A write that leaves both observations identical can go undetected,
-  including one after the last read of its slot.
+  The sections below describe how cleanup coordinates with the product writer,
+  deletes, and recovers.
 - `customUnInstall` and `customRemoveFiles` in `build/installer.nsh` distinguish
   genuine uninstall from updater uninstall with the compile-time `${isUpdated}`
   check and an explicit `--updated` GetOptions probe. Notification cleanup runs
@@ -98,6 +88,70 @@ Two points sharpen the picture beyond the issue text:
   uninstalls, then checks the result in
   `assertRuntimeNotificationArtifactsRemoved`. Second-profile coverage requires
   the two-user acceptance gate.
+
+## Cleanup coordination model
+
+One per-user lock replaces repeated scans.
+
+- **Who can write.** The product runtime is the only Ave writer of the two
+  artifacts, and only while an Ave process of that user runs.
+- **Lock.** `build/uninstall-windows-notification-artifacts.ps1` holds the file
+  `.ave-notification-cleanup.lock` in the user's roaming application data folder
+  for its whole run, opened without sharing and deleted on close. A second
+  cleanup for the same user fails at once.
+- **Product side.** A packaged Windows start probes the lock in
+  `runEarlyBootEnv` (`isWindowsNotificationCleanupInProgress` in
+  `src/main/windows-notification-cleanup-lock.ts`) before the toast activator
+  CLSID is set, and exits while the lock is held. Only a missing file or a
+  successful open counts as free.
+- **Ordering.** Cleanup takes the lock and then runs `Assert-AveStopped` once.
+  An Ave process that already existed fails the cleanup before any mutation. An
+  Ave process started later probes after the lock was taken and exits before a
+  notification presenter can provision. Either way no product write lands
+  between the process check and the release of the lock.
+- **Deletion.** `Remove-OwnedToastRegistration` deletes values only and keeps
+  keys. `Test-ToastSlotStillOwned` rereads each slot's type and data
+  immediately before its delete. A slot that no longer matches
+  `Test-OwnedToastSlotValue` is preserved and cleanup fails. Any exact typed
+  slot at the pinned product CLSID is removable without a shortcut. A CLSID
+  named by an exact owned shortcut needs the complete tuple, unless that
+  shortcut was already in quarantine. A foreign occupant of one of the three
+  slots beside an owned slot fails the cleanup for as long as it stays.
+- **Final read.** `Confirm-ToastRegistrationsAbsent` reads every candidate
+  CLSID in every registry view once, under the lock, before any quarantined
+  shortcut is deleted.
+- **Quarantine.** The verified shortcut is renamed to
+  `.<name>.ave-uninstall-<id>.lnk` and deleted only after the final read. A
+  failure before any registry delete moves it back. A failure after a delete
+  leaves it in quarantine as the record of the started cleanup. The next
+  cleanup lists such entries with `Get-QuarantinedShortcuts` and re-verifies
+  each through `Get-OwnedShortcutClsid`. An exact owned entry is resumed in
+  place: its CLSID becomes a candidate, an incomplete tuple is accepted, and
+  the entry is deleted after the final read, also when the original path is
+  occupied again. Any other entry (not a regular file, unreadable, or not
+  exactly owned) is left untouched and reported as `foreign-preserved` /
+  `shortcut-quarantine`.
+- **Exit codes.** 0: everything attributable is verified removed. 2: the same,
+  and at least one unattributable quarantine entry was left untouched;
+  `customUnInstall` prints a notice and continues. 1: any failure;
+  `customUnInstall` aborts.
+
+Residual limits:
+
+- A writer that does not honor the lock is not excluded: another program, an
+  Ave build older than the probe, or an Ave process whose image name differs
+  from the installed executable's. The registry has no compare-and-delete, so a
+  value written between the reread in `Test-ToastSlotStillOwned` and the
+  delete is removed, and a value written after the final read of its slot is
+  not seen. `verified-absent` reports the final read under the lock, nothing
+  later.
+- The lock ends when cleanup exits. A launch after that and before the
+  installer removes the executable can provision again. The installer's
+  running-application check owns that window.
+- An unattributable quarantine entry can be an owned shortcut that could not
+  be read. The legacy CLSID values it names then stay.
+- Every packaged Windows start depends on the probe. An error other than a
+  missing lock file stops the start.
 
 ## Hard constraints
 
@@ -110,7 +164,7 @@ Any accepted design MUST satisfy all of the following:
 2. Never touch foreign (non-Ave) values or files. The exact-ownership contract
    requires a byte-exact match on shortcut target, working dir, empty args,
    description, AUMID, and valid toast CLSID, plus exact type/data on the CLSID keys
-   (`Get-ShortcutOwnershipMismatches` and `Get-OwnedToastRegistrationValueCount`
+   (`Get-ShortcutOwnershipMismatches` and `Test-OwnedToastSlotValue`
    in `build/uninstall-windows-notification-artifacts.ps1`).
 3. Must work for a standard-user uninstall performed with alternate admin
    credentials - the common enterprise case. The current design already handles
@@ -192,6 +246,7 @@ registration for both users and that foreign artifacts survive unchanged.
 - `build/installer.nsh` (`customUnInstall`, `un.aveCleanupCurrentUserNotificationArtifacts`, updater guards)
 - `build/uninstall-windows-notification-artifacts.ps1` (exact-ownership cleanup contract)
 - `src/main/early-boot-env.ts` (AUMID and pinned toast CLSID in `runEarlyBootEnv`)
+- `src/main/windows-notification-cleanup-lock.ts` (startup probe of the cleanup lock)
 - `scripts/smoke-windows-nsis-installer.mjs` (single-user smoke)
 - `test/scripts/smoke-windows-nsis-installer.test.ts` (smoke contract coverage)
 - [MSIX/AppX packaging decision](../references/production-release-checklist.md#msixappx-packaging-decision)
