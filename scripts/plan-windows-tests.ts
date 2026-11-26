@@ -10,18 +10,24 @@ const FALLBACK_MS = 1000;
 
 interface WindowsTestTimes {
   unit: "ms";
-  /** Per-file Windows durations from a hosted run. */
+  /** Per-file Windows durations with the default or native workload. */
   files: Record<string, number>;
+  /** Windows durations for the same census files with their full workload. */
+  census?: Record<string, number>;
   /** Mac full-run durations scaled to Windows, for suites with no Windows sample. */
   macEstimate: { scale: number; files: Record<string, number> };
 }
 
+type WindowsTestDuration = (file: string, fullCensus?: boolean) => number;
+
 /** Timings only weight the shards: a missing suite falls back and a stale entry is ignored. */
-export function windowsTestDurations(times: WindowsTestTimes): (file: string) => number {
+export function windowsTestDurations(times: WindowsTestTimes): WindowsTestDuration {
   if (times?.unit !== "ms" || typeof times.files !== "object" || typeof times.macEstimate?.files !== "object") {
     throw new Error(`${WINDOWS_TEST_TIMES} must hold Windows and Mac-estimated millisecond timings`);
   }
-  return file => (Object.hasOwn(times.files, file) ? times.files[file]
+  const census = times.census;
+  return (file, fullCensus) => (fullCensus && census && Object.hasOwn(census, file) ? census[file]
+    : Object.hasOwn(times.files, file) ? times.files[file]
     : Object.hasOwn(times.macEstimate.files, file) ? times.macEstimate.files[file] : undefined) ?? FALLBACK_MS;
 }
 
@@ -38,16 +44,17 @@ function assignShards(ids: readonly number[], files: readonly string[], weight: 
 }
 
 /** Assign every default suite to one fixed shard and every selected tier suite to one tier shard, heaviest first onto the lightest. */
-export function planWindowsTests(collected: readonly string[], duration: (file: string) => number = () => FALLBACK_MS, tiers: readonly WindowsPlanTier[] = []): WindowsTestPlan {
+export function planWindowsTests(collected: readonly string[], duration: WindowsTestDuration = () => FALLBACK_MS, tiers: readonly WindowsPlanTier[] = []): WindowsTestPlan {
   // Per-file reports exclude collection and startup. Keep a per-file
   // floor so a shard cannot accumulate an unlimited number of tiny suites.
-  const weight = (file: string) => FALLBACK_MS + duration(file);
+  const weight = (file: string, fullCensus?: boolean) => FALLBACK_MS + duration(file, fullCensus);
   const suites = defaultWindowsSuites(collected);
+  const fullCensus = tiers.includes("census");
   const plan = {
     suites: suites.length,
     shards: assignShards(WINDOWS_TEST_SHARDS, suites, weight),
     tiers: [...tiers],
-    tierShards: tiers.length === 0 ? [] : assignShards(WINDOWS_TIER_TEST_SHARDS, tierWindowsSuites(collected, tiers), weight),
+    tierShards: tiers.length === 0 ? [] : assignShards(WINDOWS_TIER_TEST_SHARDS, tierWindowsSuites(collected, tiers), file => weight(file, fullCensus)),
   };
   assertWindowsPlan(plan, collected);
   return plan;
