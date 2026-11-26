@@ -47,8 +47,19 @@ function canonicalPath(path: string, lookups: PosixPolicyLookups): string {
   return posix.normalize(canonical).replace(/\/+$/u, "") || "/";
 }
 
+function nearestEnclosing(path: string, candidates: readonly string[], foldsCase: boolean): string | undefined {
+  let nearest: string | undefined;
+  for (const candidate of candidates) {
+    if ((nearest === undefined || candidate.length > nearest.length) && atOrUnder(path, candidate, foldsCase)) {
+      nearest = candidate;
+    }
+  }
+  return nearest;
+}
+
 function assertDenyOutcomes(
   readDenies: readonly string[], writeFloor: readonly string[], result: MxcFilesystemGrants, foldsCase: boolean,
+  nestedRule: NestedGrantRule = "deny-wins",
 ): void {
   const readGrants = [...result.readwrite, ...result.readonly];
   for (const [rows, grants, stamps] of [
@@ -56,8 +67,10 @@ function assertDenyOutcomes(
     [writeFloor, result.readwrite, [...result.denied, ...result.readonly]],
   ]) {
     for (const row of rows) {
-      if (grants.some((grant) => atOrUnder(row, grant, foldsCase))
-          && !stamps.some((stamp) => atOrUnder(row, stamp, foldsCase))) {
+      const grant = nearestEnclosing(row, grants, foldsCase);
+      const stamp = nearestEnclosing(row, stamps, foldsCase);
+      if (grant !== undefined && (stamp === undefined
+        || (nestedRule === "most-specific" && stamp.length < grant.length))) {
         throw new PosixContainerPolicyError("deny-without-outcome", `Container deny has no outcome: ${row}`);
       }
     }
@@ -103,7 +116,17 @@ function rankRows(model: PolicyModel, nestedRule: NestedGrantRule, lookups: Posi
   ];
   const requestedGrants = [...readwrite, ...requestedReadonly];
   const reachedDenies = readDenies.filter((deny) => requestedGrants.some((grant) => strictlyCovers(grant, deny)));
-  const denied = reachedDenies.filter((deny) => !reachedDenies.some((parent) => strictlyCovers(parent, deny)));
+  const retainedDenies: string[] = [];
+  for (const deny of reachedDenies.toSorted((a, b) => a.length - b.length)) {
+    const parent = nearestEnclosing(deny, retainedDenies, lookups.foldsCase);
+    if (parent === undefined || (nestedRule === "most-specific" && requestedGrants.some(
+      (grant) => strictlyCovers(parent, grant) && strictlyCovers(grant, deny),
+    ))) {
+      retainedDenies.push(deny);
+    }
+  }
+  const retained = new Set(retainedDenies);
+  const denied = reachedDenies.filter((deny) => retained.has(deny));
 
   if (nestedRule === "deny-wins") {
     for (const grant of requestedGrants) {
@@ -121,7 +144,7 @@ function rankRows(model: PolicyModel, nestedRule: NestedGrantRule, lookups: Posi
   ]).filter((path) => !writableKeys.has(key(path)));
 
   const result = { readwrite, readonly, denied };
-  assertDenyOutcomes(readDenies, writeFloorRows, result, lookups.foldsCase);
+  assertDenyOutcomes(readDenies, writeFloorRows, result, lookups.foldsCase, nestedRule);
   return result;
 }
 

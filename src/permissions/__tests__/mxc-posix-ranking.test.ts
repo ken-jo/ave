@@ -131,6 +131,23 @@ describe("POSIX container filesystem ranking", () => {
     });
   });
 
+  it("keeps an inner deny when a nearer grant outranks its ancestor deny", () => {
+    const outer = "/work/private";
+    const inner = "/work/private/reopened/secret";
+    const policy = model([deny(inner), deny(outer), deny(`${inner}/nested`)],
+      read("/work"), read("/work/private/reopened"));
+    const ranked = _rankPosixContainerRowsForTest(policy, "most-specific", lookups);
+    expect(ranked.denied).toEqual([inner, outer]);
+  });
+
+  it("refuses an effective deny lost beneath a nearer grant", () => {
+    expect(() => _assertPosixDenyOutcomesForTest(["/work/private/reopened/secret"], [], {
+      readwrite: [], readonly: ["/work", "/work/private/reopened"], denied: ["/work/private"],
+    }, lookups.foldsCase, "most-specific")).toThrow(expect.objectContaining({
+      code: "deny-without-outcome", message: expect.stringContaining("/work/private/reopened/secret"),
+    }));
+  });
+
   it("refuses a deny that a grant reaches without a stamp", () => {
     expect(() => _assertPosixDenyOutcomesForTest(["/work/private"], [],
       { readwrite: [], readonly: ["/work"], denied: [] }, lookups.foldsCase))
