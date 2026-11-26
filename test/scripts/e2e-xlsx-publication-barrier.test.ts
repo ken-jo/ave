@@ -240,6 +240,42 @@ describe("workbook publication build", () => {
       expect(existsSync(fixture.root)).toBe(false);
     });
 
+    it("ignores a failed termination of an already ended tree when close follows", async () => {
+      const fixture = prepared();
+      const app = hangingApp();
+      fixture.own(app);
+      const settled = await fixture.settle({
+        shutdown: async () => { await terminateProcessTree(app.pid as number); },
+        terminate: async () => { throw new Error("process not found"); },
+      }, { ...quick, shutdownMs: 10_000 });
+      expect(settled).toEqual({ closed: true, failures: [] });
+      expect(existsSync(fixture.root)).toBe(false);
+    });
+
+    it("still runs shutdown when the owned app already closed", async () => {
+      const fixture = prepared();
+      const app = hangingApp();
+      fixture.own(app);
+      const closed = once(app, "close");
+      await terminateProcessTree(app.pid as number);
+      await closed;
+      const steps: string[] = [];
+      const settled = await fixture.settle({ shutdown: async () => { steps.push("shutdown"); },
+        terminate: async () => { steps.push("terminate"); } }, quick);
+      expect(steps).toEqual(["shutdown"]);
+      expect(settled).toEqual({ closed: true, failures: [] });
+      expect(existsSync(fixture.root)).toBe(false);
+    });
+
+    it("ends an app that launches after its fixture was settled", async () => {
+      const fixture = prepared();
+      expect(await fixture.settle({}, quick)).toEqual({ closed: true, failures: [] });
+      const late = hangingApp();
+      const closed = once(late, "close");
+      expect(() => fixture.own(late)).toThrow("launched after its fixture was settled");
+      await withinDeadline(closed, 10_000, "Late app close");
+    });
+
     it("keeps the copy and names it when closure is not confirmed", async () => {
       const fixture = prepared();
       const app = hangingApp();

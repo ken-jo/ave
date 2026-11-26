@@ -144,6 +144,11 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
     /** Register the owned application process as soon as launch supplies it. */
     own(child: ChildProcess): void {
       if (owned) throw new Error("The workbook fixture already owns a process");
+      if (disposed) {
+        // A launch that outlived its startup deadline; the copy is gone, so only its tree is left to end.
+        if (child.pid !== undefined) terminateProcessTree(child.pid).catch(() => {});
+        throw new Error("The workbook app launched after its fixture was settled");
+      }
       const closed = new Promise<void>((resolve) => child.once("close", () => { ownedClosed = true; resolve(); }));
       owned = { pid: child.pid, closed };
     },
@@ -154,23 +159,23 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
     async settle(steps: { shutdown?: () => Promise<void>; terminate?: (pid: number) => Promise<void> },
       deadlines: FixtureDeadlines = FIXTURE_DEADLINES): Promise<{ closed: boolean; failures: unknown[] }> {
       const failures: unknown[] = [];
+      if (steps.shutdown) {
+        try { await withinDeadline(steps.shutdown(), deadlines.shutdownMs, "Workbook app shutdown"); }
+        catch (error) { failures.push(error); }
+      }
       if (owned && !ownedClosed) {
-        if (steps.shutdown) {
-          try { await withinDeadline(steps.shutdown(), deadlines.shutdownMs, "Workbook app shutdown"); }
-          catch (error) { failures.push(error); }
-        }
+        // A tree that shutdown already ended can fail termination; that only matters if close never follows.
+        let terminationFailure: { error: unknown } | undefined;
         if (!ownedClosed && owned.pid !== undefined) {
           try { await withinDeadline((steps.terminate ?? terminateProcessTree)(owned.pid), deadlines.terminateMs, "Workbook app tree termination"); }
-          catch (error) {
-            await new Promise<void>((resolve) => setImmediate(resolve));
-            if (!ownedClosed) failures.push(error);
-          }
+          catch (error) { terminationFailure = { error }; }
         }
         if (!ownedClosed) {
           try { await withinDeadline(owned.closed, deadlines.closeMs, "Workbook app pipe closure"); }
           catch (error) { failures.push(error); }
         }
         if (!ownedClosed) {
+          if (terminationFailure) failures.push(terminationFailure.error);
           failures.push(new Error(`Workbook fixture build left at ${root}: the owned process did not close`));
           return { closed: false, failures };
         }
