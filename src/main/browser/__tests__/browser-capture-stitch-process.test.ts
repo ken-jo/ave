@@ -77,6 +77,27 @@ setInterval(() => {}, 1000);
 `;
 }
 
+function encodeReplyEntry(png: Buffer): string {
+  return `let pending = Buffer.alloc(0);
+process.stdin.on("data", (chunk) => {
+  pending = Buffer.concat([pending, chunk]);
+  while (pending.length >= 8) {
+    const jsonEnd = 8 + pending.readUInt32BE(0);
+    const end = jsonEnd + pending.readUInt32BE(4);
+    if (pending.length < end) return;
+    const { id, tile } = JSON.parse(pending.toString("utf8", 8, jsonEnd));
+    pending = pending.subarray(end);
+    const payload = tile ? Buffer.alloc(0) : Buffer.from("${png.toString("base64")}", "base64");
+    const json = Buffer.from(JSON.stringify({ id }));
+    const header = Buffer.alloc(8);
+    header.writeUInt32BE(json.length, 0);
+    header.writeUInt32BE(payload.length, 4);
+    process.stdout.write(Buffer.concat([header, json, payload]));
+  }
+});
+`;
+}
+
 async function builtEntryDir(): Promise<string> {
   if (builtDir) return builtDir;
   const outdir = entryDir();
@@ -280,6 +301,40 @@ describe("browser capture stitch process", () => {
       await expect.poll(getManagedChildProcessCount).toBe(0);
     }
   });
+
+  it.each(["missing IEND", "wrong dimensions", "bad IDAT CRC", "trailing bytes"])(
+    "drains an invalid encode PNG with %s before readmitting the tab", async (fault) => {
+      const healthyEntry = await builtEntryDir();
+      const width = fault === "wrong dimensions" ? WIDTH + 1 : WIDTH;
+      let png = await sharp({ create: { width, height: CONTENT_HEIGHT, channels: 3, background: "white" } }).png().toBuffer();
+      if (fault === "missing IEND") png = png.subarray(0, png.length - 12);
+      if (fault === "bad IDAT CRC") png[png.length - 13] ^= 1;
+      if (fault === "trailing bytes") png = Buffer.concat([png, Buffer.from([0])]);
+      runtime.mainDir = entryDir(encodeReplyEntry(png));
+      const session = tiledSession();
+      const release = deferred<void>();
+      termination.hold = () => release.promise;
+      try {
+        const result = await session.capture({ fullPage: true }, 2_000).then(
+          (image) => ({ image }), (error: unknown) => ({ error }),
+        );
+        expect(result).toEqual({ error: expect.objectContaining({ code: "screenshot-failed" }) });
+        expect(session.restore).toHaveBeenCalledOnce();
+        expect(session.position()).toBe(session.initial.y);
+        expect(getManagedChildProcessCount()).toBe(1);
+        await expect(session.capture({ fullPage: true })).rejects.toMatchObject({ code: "screenshot-busy" });
+      } finally {
+        termination.hold = undefined;
+        release.resolve();
+        await expect.poll(getManagedChildProcessCount).toBe(0);
+      }
+      await recovered(session);
+      expect(session.restore).toHaveBeenCalledOnce();
+      runtime.mainDir = healthyEntry;
+      await expect(session.capture({ fullPage: true })).resolves.toMatchObject({ height: CONTENT_HEIGHT });
+      await expect.poll(getManagedChildProcessCount).toBe(0);
+    },
+  );
 
   it.each([
     { name: "exits before answering", program: "process.exit(3);\n" },

@@ -2,6 +2,7 @@ import { statSync } from "node:fs";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import type { Writable } from "node:stream";
+import { crc32 } from "node:zlib";
 import { BROWSER_CAPTURE_LIMITS } from "../../shared/browser-capture.js";
 import { hasOnlyKeys, isRecord } from "../../shared/is-record.js";
 import { mainDir } from "../main-paths.js";
@@ -21,6 +22,32 @@ export interface CaptureStitcher {
 }
 
 interface StitchJob { expectsPayload: boolean; resolve(payload: Buffer): void; reject(error: Error): void }
+
+const PNG_SIGNATURE = Buffer.from("89504e470d0a1a0a", "hex");
+const PNG_CHUNK_OVERHEAD = 12;
+const PNG_IHDR_DATA_BYTES = 13;
+
+function isValidEncodedPng(png: Buffer, width: number, height: number): boolean {
+  const firstChunk = PNG_SIGNATURE.length;
+  if (png.length > BROWSER_CAPTURE_LIMITS.bytes || png.length < firstChunk + PNG_CHUNK_OVERHEAD + PNG_IHDR_DATA_BYTES
+    || !png.subarray(0, firstChunk).equals(PNG_SIGNATURE)
+    || png.readUInt32BE(firstChunk) !== PNG_IHDR_DATA_BYTES || png.toString("latin1", 12, 16) !== "IHDR"
+    || png.readUInt32BE(16) !== width || png.readUInt32BE(20) !== height) return false;
+
+  let hasImageData = false;
+  for (let offset = firstChunk; offset + PNG_CHUNK_OVERHEAD <= png.length;) {
+    const length = png.readUInt32BE(offset);
+    const end = offset + PNG_CHUNK_OVERHEAD + length;
+    const crcOffset = end - 4;
+    if (end > png.length || crc32(png.subarray(offset + 4, crcOffset)) !== png.readUInt32BE(crcOffset)) return false;
+    const type = png.toString("latin1", offset + 4, offset + 8);
+    if (type === "IHDR" && offset !== firstChunk) return false;
+    if (type === "IDAT") hasImageData ||= length > 0;
+    if (type === "IEND") return hasImageData && length === 0 && end === png.length;
+    offset = end;
+  }
+  return false;
+}
 
 /**
  * Composes one capture in a child process, so a decode that never returns is reclaimed
@@ -78,7 +105,7 @@ export function startCaptureStitcher(
       const job = jobs.get(id);
       if (!job) throw new Error("unexpected capture decoder reply");
       const expectsPayload = job.expectsPayload && error === undefined;
-      if (expectsPayload ? payload.length === 0 || payload.length > BROWSER_CAPTURE_LIMITS.bytes : payload.length !== 0) {
+      if (expectsPayload ? !isValidEncodedPng(payload, width, height) : payload.length !== 0) {
         throw new Error("invalid capture decoder reply payload");
       }
       let replyError: Error | undefined;
