@@ -1714,7 +1714,7 @@ describe("Windows NSIS installer smoke contracts", () => {
       'Write-CleanupEvent "foreign-preserved" "shortcut"',
     );
     const finalToastCheck = cleanup.indexOf(
-      "$remaining = @(Find-ExactToastRegistrations $installedExe $candidateClsids $verifiedClsid)",
+      "$remaining = @(Find-OwnedToastRegistrations $installedExe $candidateClsids)",
     );
     const finalShortcutCheck = cleanup.lastIndexOf(
       "$shortcutResidue = Get-ShortcutAttributes $shortcutPath",

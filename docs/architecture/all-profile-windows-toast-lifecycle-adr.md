@@ -75,8 +75,11 @@ Two points sharpen the picture beyond the issue text:
   `build/uninstall-windows-notification-artifacts.ps1` and the
   “preserves a real same-target partial-owned shortcut without aborting” case
   in `test/scripts/smoke-windows-nsis-installer.test.ts`.
-  `Remove-ExactToastRegistration` requires an exact type and data match for
-  all three registry values before deleting them.
+  `Remove-OwnedToastRegistration` can recover any exact typed slot at the pinned
+  product CLSID even when the shortcut is gone. A foreign occupant of one of
+  the three slots blocks that removal. Legacy CLSIDs require a verified shortcut
+  and a complete tuple. Cleanup takes a per-user mutex and fails if it finds a
+  shortcut left in quarantine by a prior invocation.
 - `customUnInstall` and `customRemoveFiles` in `build/installer.nsh` distinguish
   genuine uninstall from updater uninstall with the compile-time `${isUpdated}`
   check and an explicit `--updated` GetOptions probe. Notification cleanup runs

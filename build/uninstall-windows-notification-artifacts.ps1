@@ -308,14 +308,23 @@ public sealed class ToastRegistryKey : IDisposable
 '@
 }
 
-function Get-OwnedToastRegistrationValueCount {
+[Flags()]
+enum OwnedToastSlot {
+  None = 0
+  RootDefault = 1
+  CustomActivator = 2
+  ServerDefault = 4
+  All = 7
+}
+
+function Get-OwnedToastSlots {
   param(
     [Parameter(Mandatory = $true)]$RootKey,
     [AllowNull()]$ServerKey,
     [Parameter(Mandatory = $true)][string]$ExpectedExecutable
   )
 
-  $count = 0
+  $slots = [OwnedToastSlot]::None
   $rootDefault = $RootKey.ReadValue("", [Microsoft.Win32.RegistryValueKind]::String)
   if (
     [string]::Equals(
@@ -324,45 +333,21 @@ function Get-OwnedToastRegistrationValueCount {
       [System.StringComparison]::Ordinal
     )
   ) {
-    $count++
+    $slots = $slots -bor [OwnedToastSlot]::RootDefault
   }
   if ($RootKey.ReadValue("CustomActivator", [Microsoft.Win32.RegistryValueKind]::DWord) -eq 1) {
-    $count++
+    $slots = $slots -bor [OwnedToastSlot]::CustomActivator
   }
   if ($null -ne $ServerKey) {
     $serverDefault = $ServerKey.ReadValue("", [Microsoft.Win32.RegistryValueKind]::String)
-    if (Test-SamePath $serverDefault $ExpectedExecutable) { $count++ }
-  }
-  return $count
-}
-
-function Test-ExactToastRegistration {
-  param(
-    [Parameter(Mandatory = $true)]$View,
-    [Parameter(Mandatory = $true)][string]$Clsid,
-    [Parameter(Mandatory = $true)][string]$ExpectedExecutable,
-    [switch]$RejectIncomplete
-  )
-
-  $root = $null
-  $server = $null
-  try {
-    $root = [ToastRegistryKey]::OpenCurrentUser("Software\Classes\CLSID\$Clsid", $View, $false)
-    if ($null -eq $root) { return $false }
-    $server = $root.OpenSubKey("LocalServer32", $false)
-    $ownedValueCount = Get-OwnedToastRegistrationValueCount $root $server $ExpectedExecutable
-    if ($RejectIncomplete -and $ownedValueCount -gt 0 -and $ownedValueCount -lt 3) {
-      throw "incomplete Ave toast registration $Clsid ($View) for the owned shortcut"
+    if (Test-SamePath $serverDefault $ExpectedExecutable) {
+      $slots = $slots -bor [OwnedToastSlot]::ServerDefault
     }
-    return $ownedValueCount -eq 3
   }
-  finally {
-    if ($null -ne $server) { $server.Dispose() }
-    if ($null -ne $root) { $root.Dispose() }
-  }
+  return $slots
 }
 
-function Remove-ExactToastRegistration {
+function Get-ToastRegistrationOwnedSlots {
   param(
     [Parameter(Mandatory = $true)]$View,
     [Parameter(Mandatory = $true)][string]$Clsid,
@@ -372,22 +357,58 @@ function Remove-ExactToastRegistration {
   $root = $null
   $server = $null
   try {
+    $root = [ToastRegistryKey]::OpenCurrentUser("Software\Classes\CLSID\$Clsid", $View, $false)
+    if ($null -eq $root) { return [OwnedToastSlot]::None }
+    $server = $root.OpenSubKey("LocalServer32", $false)
+    return Get-OwnedToastSlots $root $server $ExpectedExecutable
+  }
+  finally {
+    if ($null -ne $server) { $server.Dispose() }
+    if ($null -ne $root) { $root.Dispose() }
+  }
+}
+
+function Remove-OwnedToastRegistration {
+  param(
+    [Parameter(Mandatory = $true)]$View,
+    [Parameter(Mandatory = $true)][string]$Clsid,
+    [Parameter(Mandatory = $true)][string]$ExpectedExecutable,
+    [Parameter(Mandatory = $true)][OwnedToastSlot]$ExpectedSlots,
+    [switch]$AllowPartial
+  )
+
+  if (-not $AllowPartial -and $ExpectedSlots -ne [OwnedToastSlot]::All) {
+    throw "incomplete Ave toast registration $Clsid ($View) for the owned shortcut"
+  }
+
+  $root = $null
+  $server = $null
+  try {
     $root = [ToastRegistryKey]::OpenCurrentUser("Software\Classes\CLSID\$Clsid", $View, $true)
-    if ($null -eq $root) { return $false }
+    if ($null -eq $root) { throw "Ave toast registration $Clsid ($View) disappeared before deletion" }
     $server = $root.OpenSubKey("LocalServer32", $true)
-    if ($null -eq $server) { return $false }
 
     # Recheck exact types and data on writable handles. Keep the keys so a
     # concurrent writer's values cannot be removed by key deletion.
-    if ((Get-OwnedToastRegistrationValueCount $root $server $ExpectedExecutable) -ne 3) {
-      return $false
+    $slots = Get-OwnedToastSlots $root $server $ExpectedExecutable
+    if (
+      ((-not ($slots -band [OwnedToastSlot]::ServerDefault)) -and $null -ne $server -and $server.HasValue("")) -or
+      ((-not ($slots -band [OwnedToastSlot]::CustomActivator)) -and $root.HasValue("CustomActivator")) -or
+      ((-not ($slots -band [OwnedToastSlot]::RootDefault)) -and $root.HasValue(""))
+    ) {
+      throw "Ave toast registration $Clsid ($View) contains a foreign value in a registration slot"
+    }
+    # Both registry views can expose the same key.
+    if ($slots -eq [OwnedToastSlot]::None) { return $false }
+    if ($slots -ne $ExpectedSlots) {
+      throw "Ave toast registration $Clsid ($View) changed before deletion"
     }
 
-    $server.DeleteValue("")
-    $root.DeleteValue("CustomActivator")
-    $root.DeleteValue("")
+    if ($slots -band [OwnedToastSlot]::ServerDefault) { $server.DeleteValue("") }
+    if ($slots -band [OwnedToastSlot]::CustomActivator) { $root.DeleteValue("CustomActivator") }
+    if ($slots -band [OwnedToastSlot]::RootDefault) { $root.DeleteValue("") }
     $remainingValues = @(
-      if ($server.HasValue("")) { "LocalServer32 (default)" }
+      if ($null -ne $server -and $server.HasValue("")) { "LocalServer32 (default)" }
       if ($root.HasValue("CustomActivator")) { "CustomActivator" }
       if ($root.HasValue("")) { "CLSID (default)" }
     )
@@ -402,24 +423,40 @@ function Remove-ExactToastRegistration {
   }
 }
 
-function Find-ExactToastRegistrations {
+function Find-OwnedToastRegistrations {
   param(
     [Parameter(Mandatory = $true)][string]$ExpectedExecutable,
-    [Parameter(Mandatory = $true)][string[]]$CandidateClsids,
-    [AllowNull()][string]$ShortcutClsid
+    [Parameter(Mandatory = $true)][string[]]$CandidateClsids
   )
 
   $matches = @()
   foreach ($view in (Get-RegistryViews)) {
     foreach ($clsid in $CandidateClsids) {
-      if (Test-ExactToastRegistration $view $clsid $ExpectedExecutable -RejectIncomplete:($clsid -eq $ShortcutClsid)) {
-        $matches += [PSCustomObject]@{ View = $view; Clsid = $clsid }
+      $slots = Get-ToastRegistrationOwnedSlots $view $clsid $ExpectedExecutable
+      if ($slots -ne [OwnedToastSlot]::None) {
+        $matches += [PSCustomObject]@{ View = $view; Clsid = $clsid; Slots = $slots }
       }
     }
   }
   return @($matches)
 }
 
+function Assert-NoQuarantinedShortcut {
+  param([string]$Programs, [string]$ShortcutName)
+
+  $pattern = '^\.' + [regex]::Escape($ShortcutName) + '\.ave-uninstall-[0-9a-f]{32}\.lnk$'
+  try {
+    foreach ($entry in [System.IO.Directory]::EnumerateFileSystemEntries($Programs)) {
+      if ([System.IO.Path]::GetFileName($entry) -match $pattern) {
+        throw "a prior Ave notification shortcut remains in quarantine"
+      }
+    }
+  }
+  catch [System.IO.DirectoryNotFoundException] {}
+}
+
+$cleanupMutex = $null
+$cleanupMutexHeld = $false
 $shortcutMoved = $false
 try {
   if (-not [System.IO.Path]::IsPathRooted($InstalledExecutable)) {
@@ -451,6 +488,18 @@ try {
   ) {
     throw "the exact zero-byte regular NSIS marker contract is unavailable: $expectedMarker"
   }
+  $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $cleanupMutex = [System.Threading.Mutex]::new($false, "Global\AveNotificationCleanup-$userSid")
+  try {
+    $cleanupMutexHeld = $cleanupMutex.WaitOne(0)
+  }
+  catch [System.Threading.AbandonedMutexException] {
+    $cleanupMutexHeld = $true
+  }
+  if (-not $cleanupMutexHeld) {
+    throw "another Ave notification cleanup is in progress for this user"
+  }
+
   Initialize-ToastRegistry
   $programs = [Environment]::GetFolderPath(
     [Environment+SpecialFolder]::Programs,
@@ -465,6 +514,7 @@ try {
   $candidateClsids = @($productClsid)
   $verifiedClsid = $null
 
+  Assert-NoQuarantinedShortcut $programs $ShortcutName
   $shortcutAttributes = Get-ShortcutAttributes $shortcutPath
   if ($null -eq $shortcutAttributes) {
     Write-CleanupEvent "verified-absent" "shortcut" (
@@ -531,22 +581,23 @@ try {
     }
   }
 
-  foreach ($registration in @(Find-ExactToastRegistrations $installedExe $candidateClsids $verifiedClsid)) {
-    if (Remove-ExactToastRegistration $registration.View $registration.Clsid $installedExe) {
+  foreach ($registration in @(Find-OwnedToastRegistrations $installedExe $candidateClsids)) {
+    if (Remove-OwnedToastRegistration $registration.View $registration.Clsid $installedExe $registration.Slots `
+        -AllowPartial:($registration.Clsid -eq $productClsid)) {
       Write-CleanupEvent "removed" "toast-registration" (
-        "Removed exact current-user Ave toast registration {0} ({1})." -f
+        "Removed owned current-user Ave toast registration values for {0} ({1})." -f
         $registration.Clsid,
         $registration.View
       )
     }
   }
 
-  $remaining = @(Find-ExactToastRegistrations $installedExe $candidateClsids $verifiedClsid)
+  $remaining = @(Find-OwnedToastRegistrations $installedExe $candidateClsids)
   if ($remaining.Count -ne 0) {
-    throw "one or more exact Ave toast registrations survived cleanup"
+    throw "one or more owned Ave toast registration values survived cleanup"
   }
   Write-CleanupEvent "verified-absent" "toast-registration" (
-    "no exact current-user Ave toast registrations or matching values for the owned shortcut remain"
+    "no owned current-user Ave toast registration values remain"
   )
 
   $shortcutResidue = Get-ShortcutAttributes $shortcutPath
@@ -618,4 +669,8 @@ catch {
     $failureMessage
   )
   exit 1
+}
+finally {
+  if ($cleanupMutexHeld) { $cleanupMutex.ReleaseMutex() }
+  if ($null -ne $cleanupMutex) { $cleanupMutex.Dispose() }
 }
