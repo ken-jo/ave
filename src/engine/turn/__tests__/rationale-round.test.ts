@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionCheckResult } from "../../../permissions/permission-manager.js";
 import { canonicalStringify } from "../../../shared/canonical-json.js";
@@ -42,7 +43,7 @@ const ELIGIBILITY_CONTEXT = {
 } as const;
 
 const PERMISSION = {
-  decision: "ask",
+  decision: "ask", provenance: RULE_PROVENANCE,
   reasonCode: "reviewer-human-required",
   reason: "Automatic review requires human approval.",
   reviewer: {

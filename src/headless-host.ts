@@ -15,6 +15,7 @@ import { sealManagedChildProcessAdmission } from "./main/managed-child-processes
 import { claimAsrtSignalRelease } from "./permissions/asrt-signal-ownership.js";
 import { setAppShutdownStarted } from "./main/app-state.js";
 import { errorMessage } from "./shared/error-message.js";
+import { HostExitAbortError } from "./shared/host-exit-abort.js";
 import { AveHomeConfigurationNotOwnerError } from "./shared/ave-home-configuration-access.js";
 import {
   EXEC_FAILURE_EXIT_CODE,
@@ -91,7 +92,7 @@ export async function main(): Promise<number> {
       sealManagedChildProcessAdmission("host bootstrap interrupted");
       interruptBootstrap?.(new Error("host-bootstrap-interrupted"));
     }
-    runtime?.services.conversationLoop.abortCurrentTurn();
+    runtime?.services.conversationLoop.abortCurrentTurn(new HostExitAbortError());
     releaseServe?.();
   };
   process.on("SIGINT", onSignal);

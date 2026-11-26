@@ -1,5 +1,6 @@
 import { canonicalJsonEqual } from "../../shared/canonical-json.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
+import type { DecisionProvenance } from "../../permissions/approval-gate.js";
 import type { SandboxCapability } from "../../permissions/sandbox-capability.js";
 import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../types.js";
 import {
@@ -65,6 +66,8 @@ export interface RationaleResumeHostRuntime {
     receipt: HostConsumedAllowOnceReceipt,
     now: number,
   ) => Promise<boolean> | boolean;
+  /** Who authorized the receipt, copied when it was minted. */
+  readonly loadHostResumeProvenance: (request: SealedRationaleResumeRequest) => DecisionProvenance | null;
   readonly hostInvocationStartCas?: HostInvocationStartCas;
   /** Required durable audit boundary; runtime validation still fails closed. */
   readonly onInvocationAudit: (
@@ -81,6 +84,7 @@ export interface PreparedRationaleResume {
 
 export interface AuthorizedRationaleResume extends PreparedRationaleResume {
   readonly receipt: HostConsumedAllowOnceReceipt;
+  readonly provenance: DecisionProvenance;
   readonly authorizedInvocationAudit: InvocationAuditRecord;
 }
 
@@ -229,6 +233,9 @@ export async function authorizeRationaleResume(
     if (!loadReceipt || !verifyReceipt) {
       return mismatch("rationale resume receipt authenticity boundary is unavailable");
     }
+    if (typeof prepared.runtime.loadHostResumeProvenance !== "function") {
+      return mismatch("rationale resume provenance loader is unavailable");
+    }
     const receipt = await loadReceipt(prepared.request);
     if (receipt === null || !(await verifyReceipt(receipt, now))) {
       return mismatch("rationale resume allow-once receipt is absent or inauthentic");
@@ -242,13 +249,15 @@ export async function authorizeRationaleResume(
     )) {
       return mismatch("sealed rationale resume request failed exact receipt/identity validation");
     }
+    const provenance = prepared.runtime.loadHostResumeProvenance(prepared.request);
+    if (provenance === null) return mismatch("rationale resume receipt provenance is unavailable");
     const authorizedInvocationAudit = createAuthorizedInvocationAudit({
       control: prepared.request.control,
       ticket: prepared.request.ticket,
       hostConsumedAllowOnceReceipt: receipt,
       now,
     });
-    return { ok: true, value: { ...prepared, receipt, authorizedInvocationAudit } };
+    return { ok: true, value: { ...prepared, receipt, provenance, authorizedInvocationAudit } };
   } catch (error) {
     return mismatch(
       "rationale resume authorization failed: " +

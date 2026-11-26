@@ -17,6 +17,7 @@ import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js"
 import { wrapChildReportForParentJudgment } from "../a2a-subagent-message-codec.js";
 import { resolveConversationTitle } from "../../shared/conversation-title.js";
 import { t } from "../../i18n/runtime.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 class FakeProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -341,10 +342,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
     );
     permissionManager.setMode("allow");
     const approvalGate = {
-      requestAndWait: vi.fn(async (request: { id: string }) => ({
-        requestId: request.id,
-        choice: "allow-once" as const,
-      })),
+      requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const })),
     };
     const loop = makeLoop(provider, {
       permissionManager,
@@ -398,7 +396,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       ],
     ]);
     const approvalGate = {
-      requestAndWait: vi.fn(async (request: { id: string }) => ({
+      requestAndWait: answeringRequestAndWait(async (request: { id: string }) => ({
         requestId: request.id,
         choice: "allow-once" as const,
       })),

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
   createLocalApi,
@@ -188,7 +189,7 @@ function makeMutationDeps(
   const setModePersist = vi.fn(async (next: string) => {
     mode = next;
   });
-  const gateRequestAndWait = vi.fn(async () => ({ requestId: "x", choice: "allow-once" as const }));
+  const gateRequestAndWait = answeringRequestAndWait(() => ({ requestId: "x", choice: "allow-once" }));
   const appendPermissionAuditEntry = vi.fn(async () => undefined);
   const ipc = {
     conversationLoop: {
@@ -316,7 +317,7 @@ function makeDurabilityDeps(fakeWin: ReturnType<typeof makeFakeWindow>) {
       permissionManager: { getMode: () => runtimeMode, setMode, setModePersist },
     },
     approvalGate: {
-      requestAndWait: vi.fn(async () => ({ requestId: "x", choice: "allow-once" as const })),
+      requestAndWait: answeringRequestAndWait(() => ({ requestId: "x", choice: "allow-once" })),
     },
     auditLogger: {
       isPermissionAuditChainReady: () => true,

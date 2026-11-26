@@ -1,3 +1,4 @@
+import type { InvocationTerminal } from "./invocation-ledger.js";
 import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 import { raceWithAbort } from "../shared/abortable-deadline.js";
 import { HookInputMutationRequest, recordHookContext } from "../hooks/hook-influence.js";
@@ -13,7 +14,7 @@ import type { HookDispatchResult, ScriptHookManager } from "../hooks/script-hook
 import type { HookTrustOrigin, ScriptHookType } from "../hooks/script-hook-types.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import type { BashAstValidator } from "../main/bash-ast-validator.js";
-import type { ToolPermissionContext } from "./executor-contract.js";
+import type { ExecuteOptions, ToolPermissionContext, ToolResult, ToolUseBlock } from "./executor-contract.js";
 import type { HookRunner } from "../hooks/hook-runner.js";
 import type { AuditWriter } from "./pipeline/audit-writer.js";
 import type { RateLimiter } from "./pipeline/rate-limiter.js";
@@ -32,6 +33,7 @@ export type PluginOperationIdentityProvider = (
 ) => PluginOperationInvocationContext | undefined;
 
 export interface InvocationRunnerServices {
+  readonly executeReplay: (tool: ToolUseBlock, opts: ExecuteOptions) => Promise<ToolResult>;
   readonly skillAdmissionCheck?: (sessionId: string | undefined, toolName: string, input: Record<string, unknown>) => string | undefined;
   readonly toolRegistry: ToolRegistry;
   readonly hookRunner: HookRunner;
@@ -49,6 +51,7 @@ export interface InvocationRunnerServices {
   readonly pluginOperationGrants: PluginOperationGrantCoordinator;
   readonly pluginGenerationAccessProvider: () => PluginRuntimeGenerationAccess | undefined;
   readonly pluginOperationIdentityProvider: PluginOperationIdentityProvider;
+  readonly invocationTerminal: InvocationTerminal;
 }
 
 export function resolveEnforcedCategory(

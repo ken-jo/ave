@@ -7,9 +7,10 @@ import { cleanupTmpDir } from "./support/tmp-dir-teardown.js";
 
 const startTailnetSurface = vi.fn<() => Promise<unknown>>();
 const startLocalApi = vi.fn(async () => ({ port: 47_001 }));
+const turn = vi.hoisted(() => ({ controller: new AbortController() }));
 
 vi.mock("../boot/node-host-runtime.js", () => ({ createNodeBootHost: vi.fn(async () => ({})) }));
-vi.mock("../boot/dev-flags.js", () => ({ getIsPackaged: () => false }));
+vi.mock("../boot/dev-flags.js", () => ({ getIsPackaged: () => false, isPackagedElectronProcess: () => false }));
 vi.mock("../main/main-paths.js", () => ({ projectRoot: "/project" }));
 vi.mock("../main/ensure-workspace-cwd.js", () => ({ ensureWorkspaceCwd: vi.fn() }));
 vi.mock("../main/project-root-authorization.js", () => ({ isAuthorizedWorkspaceProjectRoot: vi.fn(() => true) }));
@@ -28,7 +29,7 @@ vi.mock("../workload/runtime.js", () => ({
 }));
 vi.mock("../main/windowless-host.js", () => ({
   createWindowlessHost: vi.fn(async () => ({
-    services: { conversationLoop: { abortCurrentTurn: vi.fn() } },
+    services: { conversationLoop: { abortCurrentTurn: vi.fn((reason?: Error) => { turn.controller.abort(reason); }) } },
     conversationSurfaceRuntime: { sharedProjection: { stop: vi.fn() } },
     startLocalApi,
     startTailnetSurface,
@@ -55,6 +56,19 @@ afterEach(() => {
   process.exitCode = undefined;
   vi.restoreAllMocks();
   startTailnetSurface.mockReset();
+});
+
+it("aborts the current turn's tool invocations as host shutdown on a signal", async () => {
+  turn.controller = new AbortController();
+  const { admitToolInvocation } = await import("../tools/invocation-ledger.js");
+  const { isHostExitAbort } = await import("../shared/host-exit-abort.js");
+  const admission = admitToolInvocation("bash", turn.controller.signal);
+  try {
+    expect(await serveUntilReady()).toBe(0);
+    expect(isHostExitAbort(admission.signal.reason)).toBe(true);
+  } finally {
+    admission.settle();
+  }
 });
 
 async function serveUntilReady(): Promise<number> {

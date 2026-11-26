@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -54,7 +55,7 @@ const eligibilityContext = {
   headless: false, forceModal: false, approvalReasonPrefix: null,
 } as const;
 const permission = {
-  decision: "ask", reason: "Automatic review requires human approval.", reasonCode: "reviewer-human-required",
+  decision: "ask", provenance: RULE_PROVENANCE, reason: "Automatic review requires human approval.", reasonCode: "reviewer-human-required",
   reviewer: {
     route: "foreground-auto",
     verdict: { level: "high", reason: "bounded workspace deletion" },

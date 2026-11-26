@@ -3,7 +3,9 @@ import { useConfigurationOwner } from "../../../__tests__/support/configuration-
 useConfigurationOwner();
 
 import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
+import { answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { buildChainedEntries } from "../../../audit/hmac-chain.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { aveHome, ensureAveHomePrivate } from "../../../shared/ave-home.js";
@@ -169,10 +171,7 @@ function makeDeps(options: {
       addSessionAdditionalDirectory: vi.fn(),
     },
     approvalGate: {
-      requestAndWait: vi.fn(async (req: { id: string }) => ({
-        requestId: req.id,
-        choice: options.approvalChoice ?? "allow-once",
-      })),
+      requestAndWait: answeringRequestAndWait(() => ({ choice: options.approvalChoice ?? "allow-once" })),
       resolve: vi.fn((_requestId: string, decision: unknown) => decision),
       resolveFromDesktopRendererWithFreshIdentity: vi.fn((_requestId: string, decision: unknown) => decision),
       capturePendingRequestIdentityGuard: vi.fn(() => ({ refresh: vi.fn(async () => true), isCurrent: vi.fn(() => true) })),
@@ -243,6 +242,29 @@ async function setup(options: Parameters<typeof makeDeps>[0] = {}) {
   nativeApprovalEvent = { sender: appWindows[0].webContents, senderFrame: appWindows[0].webContents.mainFrame } as unknown as ReturnType<typeof hostFrameEvent>;
   return { deps, permissionManager, appWindows, workspaceRootLifecycle, askUserQuestionGate };
 }
+
+it("passes cancellation and terminal kind integrity errors to the audit panel", async () => {
+  const { deps } = await setup();
+  const dir = deps.auditLogger.getAuditDir();
+  onTestFinished(() => cleanupTmpDir(dir));
+  deps.auditLogger.getAuditDir.mockReturnValue(dir);
+  const row = {
+    decision: "deny", auditId: "legacy", denyReasons: [{ reason: "host-shutdown", source: "tool-executor" }],
+  };
+  const rows = buildChainedEntries(deps.auditLogger.getPermissionAuditSecret(), [
+    row,
+    { ...row, auditId: "invalid", terminalKind: "refused" },
+  ]);
+  writeFileSync(join(dir, "2026-05-09.permission-audit.jsonl"), `${rows.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+  expect(await invoke(PERMISSIONS.auditShow, { last: 10 })).toMatchObject({
+    ok: true, total: 1, invalidTerminalKinds: 1,
+    entries: [{ auditId: "legacy", decision: "deny", terminalKind: "cancelled" }],
+  });
+  expect(await invoke(PERMISSIONS.auditVerify)).toMatchObject({
+    ok: true, intact: false, totalEntries: 1, invalidTerminalKinds: 1,
+    perDay: [{ totalLines: 1, chainOk: true }],
+  });
+});
 
 /**
  * A durable mode change also writes the reviewer settings store. The file's shared home is not owned by the test account on

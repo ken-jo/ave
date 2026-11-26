@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { trace } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 // Round budgets stop incomplete work; frozen tool scope and depth guards constrain child authority.
@@ -320,7 +321,7 @@ describe("SubAgentRunner — authorization terminal propagation", () => {
       join(permissionDirectory, "permissions.json"),
     );
     permissionManager.checkDetailed = () => ({
-      decision: "ask",
+      decision: "ask", provenance: RULE_PROVENANCE,
       reason: "fixture requires local authorization",
       forceModal: true,
     });

@@ -10,6 +10,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { noteToolResultsReturnedToModel, runWithHostTerminalTurn } from "../../tools/host-terminal-turn.js";
 import type { HostTerminalCommandScope } from "../../tools/terminal-run.js";
+import { RULE_PROVENANCE } from "../decision-provenance.js";
 import { issueHostTerminalWriteAuthority } from "../host-terminal-write-authority.js";
 import { PermissionManager } from "../permission-manager.js";
 import { __resetRunGrantsForTest, registerRunSession } from "../run-grants.js";
@@ -64,7 +65,7 @@ async function withAuthority(source: Source, test: (refusal: () => string | unde
         hostShellExecutionPlan: plan, ruleSubject: { kind: "shell", dialect: "bash", command: COMMAND, cwd: directory },
         projectRulesCwd: directory, shellExecution: { runsSandboxed: false },
       })
-    : { decision: "deny" as const, reason: "Permission rules changed before typing." };
+    : { decision: "deny" as const, reason: "Permission rules changed before typing.", provenance: RULE_PROVENANCE };
   await runWithHostTerminalTurn({ sessionId: scope.sessionId, turnId: scope.turnId }, async () => {
     const fresh = check();
     const settled = reviewed ? manager.resolveReviewedPermission(fresh, {

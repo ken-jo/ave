@@ -1,3 +1,5 @@
+import type { ApprovalPersistenceGuard } from "../../permissions/approval-persistence-guard.js";
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
@@ -69,6 +71,7 @@ import {
 import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host-shell-execution-plan.js";
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { approvalCacheKeyFor } from "../pipeline/display-mask.js";
+import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 async function waitForApprovalPayload<T>(
   wc: ReturnType<typeof makeMockWebContents>,
@@ -485,10 +488,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       await permMgr.addAlwaysAllowedPersist(firstApprovalCacheKey);
 
       const approvalGate = {
-        requestAndWait: vi.fn(async (req: { id: string }) => ({
-          requestId: req.id,
-          choice: "deny-once" as const,
-        })),
+        requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const })),
       };
       const executor = new ToolExecutor(registry, undefined, permMgr, undefined, approvalGate as never);
       const run = (id: string, input: typeof firstInput) => executor.executeAll(
@@ -524,10 +524,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("default");
       const approvalGate = {
-        requestAndWait: vi.fn(async (req: { id: string }) => ({
-          requestId: req.id,
-          choice: "deny-once" as const,
-        })),
+        requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const })),
       };
       const executor = new ToolExecutor(registry, undefined, permMgr, undefined, approvalGate as never);
 
@@ -659,10 +656,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("allow");
       const approvalGate = {
-        requestAndWait: vi.fn(async (req: { id: string }) => ({
-          requestId: req.id,
-          choice: "deny-once" as const,
-        })),
+        requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const })),
       };
       const executor = new ToolExecutor(registry, undefined, permMgr, undefined, approvalGate as never);
 
@@ -703,7 +697,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     registry.register(tool);
     const manager = new PermissionManager(join(dir, "permissions.json"));
     manager.setMode("allow");
-    const requestAndWait = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "deny-once" as const }));
+    const requestAndWait = answeringRequestAndWait<ApprovalRequestInput>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never);
     try {
       const [result] = await executor.executeAll(
@@ -731,7 +725,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     }
   });
 
-  it("passes non-keyboard trustOrigin to ApprovalGate and permission audit entries", async () => {
+  it("passes non-keyboard trustOrigin to ApprovalGate and records the answered allow as the desk's", async () => {
     const executeSpy = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -751,14 +745,11 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
 
     const permMgr = fixtureManager();
     permMgr.checkDetailed = () => ({
-      decision: "ask",
+      decision: "ask", provenance: RULE_PROVENANCE,
       reason: "trust-origin boundary test",
       });
     const approvalGate = {
-      requestAndWait: vi.fn(async (req: { id: string }) => ({
-        requestId: req.id,
-        choice: "allow-once" as const,
-      })),
+      requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const })),
     };
     const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
       ...entry,
@@ -804,7 +795,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     expect(appendPermissionAuditEntry).toHaveBeenCalledWith(
       expect.objectContaining({
         decision: "allow",
-        trustOrigin: "plugin-emitted",
+        trustOrigin: "user-keyboard",
         tool: "write_probe",
       }),
     );
@@ -1039,10 +1030,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
         appendPermissionAuditEntry: vi.fn(async (entry: Record<string, unknown>) => ({ ...entry, prevHash: "h" })),
       };
       const gate = {
-        requestAndWait: vi.fn(async (req: { id: string }) => ({
-          requestId: req.id,
-          choice: "deny-once" as const,
-        })),
+        requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const })),
       };
       const executor = new ToolExecutor(
         registry,
@@ -1095,10 +1083,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
         reason: `reviewed ${String(ctx.finalInput.payload)}`,
       }));
       const permMgr = makePermissionManager(dir, classifySpy, "auto");
-      const requestAndWait = vi.fn(async (req: { id: string }) => ({
-        requestId: req.id,
-        choice: "deny-once" as const,
-      }));
+      const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
       const executor = new ToolExecutor(
         registry,
         undefined,
@@ -1184,7 +1169,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       }));
       const permMgr = makePermissionManager(dir, classifySpy);
       // Persist the exact tuple with the host-captured frozen directory before resolving allow-always.
-      const requestAndWait = vi.fn(async (req: ApprovalRequestInput) => {
+      const requestAndWait = answeringRequestAndWait(async (req: ApprovalRequestInput) => {
         const workingDirectory = req.approvalRuleBasis?.workingDirectory;
         expect(workingDirectory).toBeDefined();
         await recordApproval(
@@ -1295,10 +1280,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
         recentlyDenied: queue,
       });
-      const requestAndWait = vi.fn(async (req: { id: string }) => ({
-        requestId: req.id,
-        choice: "allow-once" as const,
-      }));
+      const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const }));
       const executor = new ToolExecutor(
         registry,
         undefined,
@@ -1594,7 +1576,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     permMgr.checkDetailed = (_toolName, _source, category) => {
       seenCategories.push(category);
       // Deny to isolate the category supplied to policy evaluation.
-      return { decision: "deny", reason: "test", };
+      return { decision: "deny", provenance: RULE_PROVENANCE, reason: "test", };
     };
 
     const wc = makeMockWebContents();
@@ -1634,7 +1616,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     }));
 
     const permMgr = fixtureManager();
-    permMgr.checkDetailed = () => ({ decision: "allow", reason: "would otherwise allow", });
+    permMgr.checkDetailed = () => ({ decision: "allow", provenance: RULE_PROVENANCE, reason: "would otherwise allow", });
     const executor = new ToolExecutor(
       registry,
       hooks,
@@ -1669,10 +1651,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     permMgr.setMode("allow");
     const checkDetailed = vi.spyOn(permMgr,"checkDetailed");
     const approvalGate = {
-      requestAndWait: vi.fn(async (req: { id: string }) => ({
-        requestId: req.id,
-        choice: "allow-once" as const,
-      })),
+      requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const })),
     };
     const auditLogger = {
       log: vi.fn(),
@@ -1730,10 +1709,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     permMgr.setMode("auto");
     const dispatchReviewer = vi.spyOn(permMgr,"dispatchReviewer");
     const approvalGate = {
-      requestAndWait: vi.fn(async (req: { id: string }) => ({
-        requestId: req.id,
-        choice: "allow-once" as const,
-      })),
+      requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const })),
     };
     const executor = new ToolExecutor(
       registry,
@@ -1776,10 +1752,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     permMgr.setMode("allow");
     const checkDetailed = vi.spyOn(permMgr,"checkDetailed");
     const approvalGate = {
-      requestAndWait: vi.fn(async (req: { id: string }) => ({
-        requestId: req.id,
-        choice: "allow-once" as const,
-      })),
+      requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const })),
     };
     const executor = new ToolExecutor(
       registry,
@@ -1837,10 +1810,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
     });
     const approvalGate = {
-      requestAndWait: vi.fn(async (req: { id: string }) => ({
-        requestId: req.id,
-        choice: "allow-once" as const,
-      })),
+      requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const })),
     };
     const executor = new ToolExecutor(
       registry,
@@ -1887,7 +1857,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
 
     const permMgr = fixtureManager();
     permMgr.checkDetailed = () => ({
-      decision: "deny",
+      decision: "deny", provenance: RULE_PROVENANCE,
       reason: "receiver deny",
       });
     const approvalGate = { requestAndWait: vi.fn() };
@@ -1926,10 +1896,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       execute: async () => ({ output: await executeSpy(), isError: false }),
     }));
     const approvalGate = {
-      requestAndWait: vi.fn(async (request: { id: string }) => ({
-        requestId: request.id,
-        choice: "allow-once" as const,
-      })),
+      requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const })),
     };
     const executor = new ToolExecutor(
       registry,
@@ -2036,7 +2003,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     registry.register(makeGenericTool("tool_b", spy2));
 
     const permMgr = fixtureManager();
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "ordered test", });
+    permMgr.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "ordered test", });
 
     const wc = makeMockWebContents();
     const sent = captureRequests(wc);
@@ -2085,7 +2052,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     registry.register(makeGenericTool("tool_d", spy2));
 
     const permMgr = fixtureManager();
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "ordered deny test", });
+    permMgr.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "ordered deny test", });
 
     const wc = makeMockWebContents();
     const sent = captureRequests(wc);
@@ -2171,7 +2138,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     registry.register(makeGenericTool("tool_f", spyDeny));
 
     const permMgr = fixtureManager();
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "selective test", });
+    permMgr.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "selective test", });
 
     const wc = makeMockWebContents();
     const sent = captureRequests(wc);
@@ -2267,15 +2234,17 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
 
     const permMgr = fixtureManager();
     permMgr.checkDetailed = () => ({
-      decision: "ask",
+      decision: "ask", provenance: RULE_PROVENANCE,
       reason: "stop-while-parked probe",
       });
 
     const turn = new AbortController();
     let signalGivenToGate: AbortSignal | undefined;
+    let abortedAtRequest: boolean | undefined;
     const approvalGate = {
       requestAndWait: vi.fn((req: { id: string; abortSignal?: AbortSignal }) => {
         signalGivenToGate = req.abortSignal;
+        abortedAtRequest = req.abortSignal?.aborted;
         queueMicrotask(() => turn.abort(new Error("user cancelled turn")));
         return new Promise<{ requestId: string; choice: "deny-once" }>((resolve) => {
           const denyOnce = () => resolve({ requestId: req.id, choice: "deny-once" });
@@ -2296,12 +2265,43 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
       },
     );
 
-    // The gate must observe turn cancellation to release the conversation lease immediately.
-    expect(signalGivenToGate).toBe(turn.signal);
+    // The gate gets the turn's stop through the invocation admission signal, which quit can also abort.
+    expect(abortedAtRequest).toBe(false);
+    expect(signalGivenToGate?.aborted).toBe(true);
+    expect(signalGivenToGate?.reason).toBe(turn.signal.reason);
     expect(executeSpy).not.toHaveBeenCalled();
     expect(results[0].is_error).toBe(true);
     // Stopping a turn must produce cancellation text rather than attributing a refusal to the user.
     expect(results[0].content).toContain("취소");
+  });
+
+  it("releases the invocation admission before the result callback waits on the turn journal", async () => {
+    const { pendingToolInvocationCount } = await import("../invocation-ledger.js");
+    const before = pendingToolInvocationCount();
+    const registry = new ToolRegistry();
+    registry.register(makeGenericTool("tool_result_probe", vi.fn(async () => "done")));
+    const permMgr = fixtureManager();
+    permMgr.checkDetailed = () => ({ decision: "allow", provenance: RULE_PROVENANCE, reason: "result callback probe" });
+    const executor = new ToolExecutor(registry, undefined, permMgr);
+    let delivered!: () => void;
+    const resultDelivered = new Promise<void>((resolve) => { delivered = resolve; });
+    let releaseJournal!: () => void;
+    const journal = new Promise<void>((resolve) => { releaseJournal = resolve; });
+    const running = executor.executeAll(
+      [{ id: "tu-result-probe", name: "tool_result_probe", input: { value: "a" } }],
+      {
+        sessionId: "sess-result-probe",
+        permissionContext: userPermissionContext(),
+        onToolResult: async () => { delivered(); await journal; },
+      },
+    );
+    await resultDelivered;
+    try {
+      expect(pendingToolInvocationCount()).toBe(before);
+    } finally {
+      releaseJournal();
+    }
+    expect((await running)[0].is_error).toBeFalsy();
   });
 });
 
@@ -2429,7 +2429,7 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
       const gate = new ApprovalGate(wc as never);
       const requestSpy = vi
         .spyOn(gate, "requestAndWait")
-        .mockResolvedValue({ requestId: "req-test", choice: "deny-once" } as never);
+        .mockImplementation((request) => answeredApprovalDecision({ requestId: "req-test", choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
 
       const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
 
@@ -2464,7 +2464,7 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
     const gate = new ApprovalGate(wc as never);
     const requestSpy = vi
       .spyOn(gate, "requestAndWait")
-      .mockResolvedValue({ requestId: "req-persist", choice: "deny-once" } as never);
+      .mockImplementation((request) => answeredApprovalDecision({ requestId: "req-persist", choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
 
     const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
 
@@ -2817,7 +2817,11 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     registry.register(makeWriteFileTool(executeSpy));
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const allowDirectory = vi.fn(async (root: string) => [root]);
+    const allowDirectory = vi.fn(async (root: string, _source: "permission-slash", authority?: ApprovalPersistenceGuard) => {
+      expect(await authority?.refresh()).toBe(true);
+      expect(authority?.isCurrent()).toBe(true);
+      return [root];
+    });
     let lifecycle:
       | import("../../permissions/permission-slash.js").PermissionDirectoryLifecycle
       | undefined;
@@ -2870,6 +2874,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     expect(allowDirectory).toHaveBeenCalledWith(
       expect.any(String),
       "permission-slash",
+      expect.anything(),
     );
   });
 
@@ -3734,10 +3739,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       });
       const checked = vi.spyOn(permMgr, "checkDetailed");
       const approvalGate = {
-        requestAndWait: vi.fn(async (req: { id: string }) => ({
-          requestId: req.id,
-          choice: "deny-once" as const,
-        })),
+        requestAndWait: answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const })),
       };
       const executor = new ToolExecutor(
         registry,
@@ -3909,7 +3911,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     const permMgr = fixtureManager();
     const checkSpy = vi.spyOn(permMgr, "checkDetailed").mockImplementation(
       (_toolName, source, category) => ({
-        decision: "deny",
+        decision: "deny", provenance: RULE_PROVENANCE,
         reason: `blocked by unified policy: ${source}/${category}`,
         }),
     );
@@ -3978,7 +3980,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     const permMgr = fixtureManager();
     const checkSpy = vi.spyOn(permMgr, "checkDetailed").mockImplementation(
       (_toolName, source, category) => ({
-        decision: "deny",
+        decision: "deny", provenance: RULE_PROVENANCE,
         reason: `blocked by unified policy: ${source}/${category}`,
         }),
     );
@@ -4151,12 +4153,9 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     setShellSandboxRequestedAtBoot(false);
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions-r2r4.json");
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "r2-r4 regression", });
+    permMgr.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "r2-r4 regression", });
 
-    const requestSpy = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "deny-once" as const,
-    }));
+    const requestSpy = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const approvalGate = { requestAndWait: requestSpy };
 
     const executor = new ToolExecutor(
@@ -4219,12 +4218,9 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       }));
 
       const permMgr = new PermissionManager("/tmp/nonexistent-permissions-worker-cap.json");
-      permMgr.checkDetailed = () => ({ decision: "ask", reason: "worker capability regression", });
+      permMgr.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "worker capability regression", });
 
-      const requestSpy = vi.fn(async (req: { id: string }) => ({
-        requestId: req.id,
-        choice: "deny-once" as const,
-      }));
+      const requestSpy = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
       const executor = new ToolExecutor(
         registry,
         undefined,
@@ -4260,12 +4256,9 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     registry.register(new BashTool());
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions-purpose.json");
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "purpose prefill regression", });
+    permMgr.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "purpose prefill regression", });
 
-    const requestSpy = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "deny-once" as const,
-    }));
+    const requestSpy = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -4313,12 +4306,9 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     }));
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions-tool-purpose.json");
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "purpose spoof regression", });
+    permMgr.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "purpose spoof regression", });
 
-    const requestSpy = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "deny-once" as const,
-    }));
+    const requestSpy = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -4381,10 +4371,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions-input-category.json");
     permMgr.setRules([{ pattern: "scoped_fetch_probe", action: "allow" }]);
-    const requestSpy = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "deny-once" as const,
-    }));
+    const requestSpy = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -4711,10 +4698,7 @@ describe("ToolExecutor — host-classifies-risk enforcement scope", () => {
     try {
       const classifySpy = vi.fn(() => ({ level: "medium" as const, reason: "review" }));
       const permMgr = makePermissionManager(dir, classifySpy, "auto");
-      const requestAndWait = vi.fn(async (req: { id: string }) => ({
-        requestId: req.id,
-        choice: "deny-once" as const,
-      }));
+      const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
       const executor = new ToolExecutor(
         registry,
         undefined,
@@ -4768,7 +4752,7 @@ describe("ToolExecutor remote controller session authority", () => {
     }));
     const permissions = new PermissionManager("/tmp/nonexistent-controller-executor-permissions.json");
     permissions.setMode(mode);
-    const requestAndWait = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-once" as const }));
+    const requestAndWait = answeringRequestAndWait<ApprovalRequestInput>(() => ({ choice: "allow-once" as const }));
     const executor = new ToolExecutor(registry, undefined, permissions, undefined, { requestAndWait } as never);
     return { executed, requestAndWait, executor, permissions };
   }
@@ -4923,7 +4907,7 @@ describe("ToolExecutor remote controller session authority", () => {
     let current = true;
     const sessionId = "controller-revoked-after-card";
     const context = remoteContext(sessionId, { pairedShare, pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => current } });
-    requestAndWait.mockImplementation(async request => { current = false; return { requestId: request.id, choice: "allow-once" }; });
+    requestAndWait.mockImplementation(async request => { current = false; return answeredApprovalDecision({ requestId: request.id, choice: "allow-once" }); });
     const result = await executor.executeAll([{ id: sessionId, name: "controller_probe", input: {} }], { sessionId, permissionContext: context });
     expect(requestAndWait).toHaveBeenCalledOnce();
     expect(executed).not.toHaveBeenCalled();
@@ -4957,7 +4941,7 @@ describe("privacy toggle governs tool-output masking", () => {
 
     const permMgr = fixtureManager();
     permMgr.checkDetailed = () => ({
-      decision: "allow",
+      decision: "allow", provenance: RULE_PROVENANCE,
       reason: "privacy toggle probe",
       });
     const auditLogger = {
