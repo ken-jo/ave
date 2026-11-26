@@ -79,4 +79,13 @@ describe.runIf(process.platform === "win32")("workspace folder search judged onc
     expect(fixture.atCollect.length).toBeGreaterThan(0);
     expect(fixture.atCollect).toEqual([...new Set(fixture.atCollect)]);
   });
+
+  it("carries every admitted native root to collection without another drive query", async () => {
+    query.mockClear();
+    const handler = fixture.handlers.get(CHANNELS.workspace.searchFiles);
+    expect(await handler?.({ sender: { id: 1 } }, "notes")).toEqual({ ok: true, truncated: false, matches: [] });
+    expect(fixture.atCollect.length).toBeGreaterThan(0);
+    expect(fixture.atCollect).toEqual(fixture.atWalk);
+    expect(fixture.atCollect).toEqual([...new Set(fixture.atCollect)]);
+  });
 });

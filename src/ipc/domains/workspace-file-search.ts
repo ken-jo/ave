@@ -86,7 +86,6 @@ function rank(query: string, relativePath: string): number | null {
 
 export async function searchWorkspaceFiles(args: {
   query: string;
-  roots: readonly string[];
   cwd: string;
   extraAllowed: readonly string[];
   /**
@@ -96,7 +95,8 @@ export async function searchWorkspaceFiles(args: {
    */
   folder?: { path: string; root: string };
   now?: number;
-}): Promise<{ matches: WorkspaceFileMatch[]; truncated: boolean }> {
+} & ({ roots: readonly string[]; nativeRoots?: never } | { nativeRoots: readonly string[]; roots?: never })):
+Promise<{ matches: WorkspaceFileMatch[]; truncated: boolean }> {
   const query = args.query.trim().toLowerCase();
   const now = args.now ?? Date.now();
   const scored: Array<{ score: number; match: WorkspaceFileMatch }> = [];
@@ -114,7 +114,8 @@ export async function searchWorkspaceFiles(args: {
       }
     }
   } else {
-    const roots = withLocalityDecision(() => new Set(args.roots.map((root) => resolvePathForPolicy(root))));
+    const roots = args.nativeRoots
+      ?? withLocalityDecision(() => new Set(args.roots.map((root) => resolvePathForPolicy(root))));
     for (const root of roots) {
       const listing = await listRoot(root, now);
       truncated ||= listing.truncated;

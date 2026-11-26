@@ -1100,13 +1100,14 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         judged = withLocalityDecision(() => {
           const scope = currentScope();
           const roots = computeRoots();
-          if (rawOptions === undefined) return { scope, roots };
+          const nativeRoots = [...new Set(roots.map((root) => root.path))];
+          if (rawOptions === undefined) return { scope, nativeRoots };
           const rawFolder = typeof rawOptions === "object" && rawOptions !== null ? (rawOptions as { folder?: unknown }).folder : undefined;
           if (typeof rawFolder !== "string" || !isAbsolutePath(rawFolder)) return "invalid-query";
           const verdict = assertReadableFilePath(rawFolder, scope.cwd, scope.extraAllowed);
           const root = verdict.ok ? containingRoot(verdict.resolved, roots) : null;
           if (!verdict.ok || root === null) return "folder-not-allowed";
-          return { scope, roots, folder: { path: verdict.resolved, root: root.path } };
+          return { scope, nativeRoots, folder: { path: verdict.resolved, root: root.path } };
         });
       } catch (error) {
         if (error instanceof PermissionSettingsUnreadableError) {
@@ -1115,10 +1116,10 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         throw error;
       }
       if (typeof judged === "string") return { ok: false, error: judged };
-      const { scope, roots, folder } = judged;
+      const { scope, nativeRoots, folder } = judged;
       const result = await searchWorkspaceFiles({
         query: rawQuery,
-        roots: roots.map((root) => root.path),
+        nativeRoots,
         cwd: scope.cwd,
         extraAllowed: scope.extraAllowed,
         ...(folder ? { folder } : {}),
