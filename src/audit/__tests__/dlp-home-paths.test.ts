@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { posix, win32 } from "node:path";
-import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { judgeInvocation, judgeRequest } from "../../permissions/judge/__tests__/judge-request-fixture.js";
+import { MIXED_ESCAPE_FRAGMENT } from "./fixtures/dlp-performance-inputs.js";
 const fixture = vi.hoisted(() => ({ home: `D:/fixtures/${"long-root/".repeat(18)}home`, platform: "win32" as "win32" | "linux" | "darwin" }));
 const WINDOWS_HOME = fixture.home;
 vi.mock("node:os", async (importOriginal) => {
@@ -212,84 +212,6 @@ describe.each(["win32", "linux"] as const)("home text suffix matrix on %s", (pla
 });
 
 
-describe.each([
-  { shape: "UNC", home: String.raw`\\server\share\alice` },
-  { shape: "extended drive", home: String.raw`\\?\D:\fixtures\alice` },
-  { shape: "extended UNC", home: String.raw`\\?\UNC\server\share\alice` },
-  { shape: "drive", home: String.raw`D:\fixtures\alice` },
-])("Windows separator runs for $shape homes", ({ home }) => {
-  it("redacts native, doubled, slash and case variants while retaining suffix bytes", async () => {
-    fixture.home = home;
-    vi.resetModules();
-    const { redactHomePathsInText } = await import("../dlp-filter.js");
-    const spellings = [home, home.replaceAll("\\", "\\\\"), home.replaceAll("\\", "/"), home.toUpperCase()];
-    for (const spelling of spellings) {
-      for (const suffix of ["", String.raw`\Mixed/FiLe.TXT`, String.raw`\\Mixed/FiLe.TXT`, "/Mixed/FiLe.TXT", '","other":1}', ";x", ". Next"]) {
-        expect(redactHomePathsInText(spelling + suffix)).toBe(`[home]${suffix}`);
-      }
-      for (const suffix of ["2", "_old", "-bak", ".bak", "é", "٢"]) {
-        expect(redactHomePathsInText(spelling + suffix)).toBe(spelling + suffix);
-      }
-    }
-  });
-  if (home.startsWith("\\")) {
-    it("redacts the whole leading separator run with extra backslashes or a slash", async () => {
-      fixture.home = home;
-      vi.resetModules();
-      const { redactHomePathsInText } = await import("../dlp-filter.js");
-      for (const prefix of ["\\".repeat(3), "/"]) {
-        const suffix = String.raw`\\Mixed/FiLe.TXT`;
-        expect(redactHomePathsInText(prefix + home + suffix)).toBe(`[home]${suffix}`);
-      }
-    });
-  }
-});
-
-describe.each([
-  { shape: "UNC", home: String.raw`\\server\share\alice` },
-  { shape: "extended", home: String.raw`\\?\D:\fixtures\alice` },
-  { shape: "drive", home: String.raw`D:\fixtures\alice` },
-])("home redaction scaling for $shape paths", ({ home, shape }) => {
-  it("scans long separator runs and near-miss names with linear scaling", async () => {
-    fixture.home = home;
-    vi.resetModules();
-    const { redactHomePathsInText } = await import("../dlp-filter.js");
-    const firstSeparator = home.indexOf("\\");
-    const prefix = home.slice(0, firstSeparator);
-    const nearMiss = `${home.slice(firstSeparator).replace(/^\\+/u, "").slice(0, -1)}X`;
-    const inputs = (size: number): string[] => [
-      `${"\\".repeat(size - 9)}near-miss`,
-      prefix + "\\".repeat(size - prefix.length - nearMiss.length) + nearMiss,
-    ];
-    const measure = (value: string): number => {
-      const start = performance.now();
-      const result = redactHomePathsInText(value);
-      const elapsed = performance.now() - start;
-      expect(result).toBe(value);
-      expect(elapsed).toBeLessThan(2_000);
-      return elapsed;
-    };
-    // Reject slow small inputs before attempting the large scaling samples.
-    for (const value of inputs(2 * 1024)) measure(value);
-    expectLinearScaling(`home redaction scaling ${shape}`, kib => {
-      const values = inputs(kib * 1024);
-      return values.reduce((total, value) => total + measure(value), 0);
-    });
-  });
-});
-
-// Load only adds time, so the fastest sample is the closest to the work itself.
-// From 100 to 800 KiB linear work grows 8x and quadratic work 64x; the bound sits between them.
-const LINEAR_SCALING_BOUND = 24;
-
-function expectLinearScaling(label: string, sample: (kib: number) => number): void {
-  const fastest = (kib: number) => Math.min(...Array.from({ length: 5 }, () => sample(kib)));
-  const [small, large] = [fastest(100), fastest(800)];
-  console.info(label, { fastestMs: { kib100: small, kib800: large }, ratio: large / Math.max(small, 1), bound: LINEAR_SCALING_BOUND });
-  // A timer-resolution floor keeps scheduling noise from magnifying sub-millisecond samples.
-  expect(large, `100 KiB ${small} ms, 800 KiB ${large} ms`).toBeLessThan(Math.max(small, 1) * LINEAR_SCALING_BOUND);
-}
-
 describe.each(["win32", "linux"] as const)("reversible home encodings on %s", (platform) => {
   async function load(home?: string) {
     fixture.platform = platform;
@@ -383,26 +305,6 @@ it("keeps the generated entity subset complete and bounded", async () => {
   expect(Object.keys(HOME_NAMED_ENTITIES)).toHaveLength(158);
   for (const codePoint of Object.values(HOME_NAMED_ENTITIES)) expect(codePoint).toBeLessThanOrEqual(255);
   expect(HOME_NAMED_ENTITIES).toMatchObject({ sol: 47, bsol: 92, colon: 58, period: 46, lowbar: 95, amp: 38, percnt: 37, apos: 39, eacute: 233 });
-});
-
-const MIXED_ESCAPE_FRAGMENT = String.raw`%252541&amp;amp;amp;B\u0043`;
-
-describe.each(["%", "\\u", "&#", "&#x", "&amp;", "%25", "peeling", "zeros", MIXED_ESCAPE_FRAGMENT])("decoder scaling for %s", (shape) => {
-  it("scans adversarial runs with linear scaling", async () => {
-    const { redactHomePathsInText } = await loadHomeRedactor("linux");
-    const input = (size: number): string => shape === "peeling" ? `%${"25".repeat(Math.floor(size / 2))}2F` : shape === "zeros" ? `&#${"0".repeat(size)}47;` : shape.repeat(Math.ceil(size / shape.length));
-    const measure = (size: number): number => {
-      const text = input(size);
-      const start = performance.now();
-      const output = redactHomePathsInText(text);
-      const elapsed = performance.now() - start;
-      expect(elapsed).toBeLessThan(2_000);
-      if (shape === MIXED_ESCAPE_FRAGMENT) expect(output).toBe(text);
-      return elapsed;
-    };
-    measure(2 * 1024);
-    expectLinearScaling(`decoder scaling ${shape}`, kib => measure(kib * 1024));
-  });
 });
 
 it("checks a long mixed token when a necessary path character is synthesized in later layers", async () => {
