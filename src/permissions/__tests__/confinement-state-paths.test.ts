@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -177,6 +177,24 @@ describe.runIf(process.platform === "win32")("write admission resolves the decla
     expect(() => assertWriteGrantsOutsideConfinementState([staging], state, staging)).not.toThrow();
     for (const grant of [join(staging, "home"), join(staging, "temp", "x")]) {
       expect(() => assertWriteGrantsOutsideConfinementState([grant], state, staging), grant)
+        .toThrow(expect.objectContaining({ path: grant, reason: "container-runtime" }));
+    }
+  });
+
+  it("passes the invocation's own HOME and what resolves inside it, and nothing else under the runtime root", () => {
+    const root = String(mxcConfinementStatePaths()[0]);
+    const homes = join(root, "homes");
+    const own = join(homes, "ave-sandbox-home-own");
+    const staging = join(root, "staging");
+    mkdirSync(join(own, "AppData"), { recursive: true });
+    mkdirSync(staging, { recursive: true });
+    const state = declaredConfinementStatePaths([], [root]);
+    expect(() => assertWriteGrantsOutsideConfinementState([own, join(own, "AppData")], state, undefined, own)).not.toThrow();
+    // A link inside the HOME is judged by where it leads.
+    const link = join(own, "link");
+    symlinkSync(staging, link, "junction");
+    for (const grant of [link, join(homes, "ave-sandbox-home-sibling"), `${own}-2`, homes, root, staging]) {
+      expect(() => assertWriteGrantsOutsideConfinementState([grant], state, undefined, own), grant)
         .toThrow(expect.objectContaining({ path: grant, reason: "container-runtime" }));
     }
   });

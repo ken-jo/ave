@@ -242,6 +242,30 @@ describe("prepareMxcShellLaunch", () => {
         expect(await lifecycle.dispose()).toEqual([]);
       }
     });
+
+    it("passes this invocation's own issued HOME under the runtime root and refuses another HOME there", async () => {
+      const own = winPath.join(runtimeRoot(), "homes", "ave-sandbox-home-own");
+      const sibling = winPath.join(runtimeRoot(), "homes", "ave-sandbox-home-sibling");
+      h.liveHomes.add(own);
+      relay();
+      try {
+        const launch = async (allowWrite: string[]) => {
+          const lifecycle = createContainedShellLifecycle();
+          try {
+            return decodeRequest((await prepareMxcShellLaunch({ ...INPUT, sandboxHome: own,
+              filesystem: { ...INPUT.filesystem, allowWrite } }, lifecycle)).argv).filesystem.readwritePaths;
+          } finally {
+            expect(await lifecycle.dispose()).toEqual([]);
+          }
+        };
+        expect(await launch([WS, own])).toEqual([WS, own]);
+        await expect(launch([WS, own, sibling])).rejects.toMatchObject({ code: "confinement-state-write-grant", path: sibling, reason: "container-runtime" });
+        h.issuedHome.mockReturnValueOnce(false);
+        await expect(launch([WS, own])).rejects.toMatchObject({ code: "confinement-state-write-grant", path: own, reason: "container-runtime" });
+      } finally {
+        h.liveHomes.delete(own);
+      }
+    });
   });
 
   describe("the container runtime root", () => {

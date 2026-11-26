@@ -4,7 +4,7 @@ import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProc
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { mxcRuntimeRootFloorPath } from "./mxc-runtime-root.js";
 import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "./confinement-state-paths.js";
-import { liveSandboxProcessHomes } from "./sandbox-home-registry.js";
+import { isIssuedContainerHome, liveSandboxProcessHomes } from "./sandbox-home-registry.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyFloorRow, type PolicyGrantRow, type PolicyModel } from "./policy-model.js";
 import { srtWriteFloorRow, toSrtConfig } from "./srt-policy-adapter.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
@@ -3631,7 +3631,10 @@ function assertWindowsGrantBoundaries(read: readonly string[], write: readonly s
       throw new Error(`Windows filesystem write grant is inside a protected sensitive target: ${path}`);
     }
   }
-  assertWriteGrantsOutsideConfinementState(write, declaredConfinementStatePaths());
+  // The caller's own HOME lies in the runtime root's state; it is passed only while live and issued, by identity.
+  const ownHome = sandboxHome !== undefined && insideOwnWindowsSandboxHome(sandboxHome, sandboxHome)
+    && isIssuedContainerHome(sandboxHome, sandboxHome) ? sandboxHome : undefined;
+  assertWriteGrantsOutsideConfinementState(write, declaredConfinementStatePaths(), undefined, ownHome);
 }
 
 function overlappingWindowsDeny(entry: FilesystemPathEntry, allowWrite: readonly string[], preserveLiteral = false) {

@@ -68,12 +68,14 @@ function resolvedStatePaths(statePaths: readonly ConfinementStatePath[] | undefi
  * its own state. Each grant is compared as spelled and as the identity it resolves to, which an alias or a link on its
  * path would otherwise hide. A declaration that is missing or does not resolve refuses every write; a grant that does
  * not resolve is refused. `stagingRoot` is the one host-minted holder root inside a backend's state the route grants
- * itself; only a grant resolving to exactly it is passed.
+ * itself; only a grant resolving to exactly it is passed. `ownHome` is the invocation's own sandbox HOME, which the
+ * caller has verified as issued and in place; a grant resolving at or under it is passed.
  */
 export function assertWriteGrantsOutsideConfinementState(
   write: readonly string[],
   statePaths: readonly ConfinementStatePath[] | undefined,
   stagingRoot?: string,
+  ownHome?: string,
 ): void {
   if (write.length === 0) return;
   const states = resolvedStatePaths(statePaths);
@@ -81,10 +83,12 @@ export function assertWriteGrantsOutsideConfinementState(
   // Nothing declared (no backend that grants on this host): there is nothing to resolve a grant against.
   if (states.length === 0) return;
   const staging = stagingRoot === undefined ? undefined : strictlyResolved(stagingRoot);
+  const home = ownHome === undefined ? undefined : strictlyResolved(ownHome);
   for (const grant of write) {
     const real = strictlyResolved(grant);
     if (real === undefined) throw new ConfinementStateWriteGrantError(grant, "grant-unresolved");
     if (staging !== undefined && isWindowsPathAtOrUnder(real, staging) && isWindowsPathAtOrUnder(staging, real)) continue;
+    if (home !== undefined && isWindowsPathAtOrUnder(real, home)) continue;
     const hit = states.find(state => [grant, real].some(spelling =>
       isWindowsPathAtOrUnder(spelling, state.path) || isWindowsPathAtOrUnder(state.path, spelling)));
     if (hit !== undefined) throw new ConfinementStateWriteGrantError(grant, hit.stateClass);

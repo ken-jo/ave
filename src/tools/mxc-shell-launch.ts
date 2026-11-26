@@ -158,8 +158,6 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   if (!input.exists(wxcExec)) {
     throw new Error("Contained shell launcher is missing from this installation");
   }
-  // Before ranking: the runtime root is only an ordinary read deny there, which an equal or enclosing write survives.
-  assertWriteGrantsOutsideConfinementState(input.filesystem.allowWrite, declaredConfinementStatePaths());
   // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.
   const insideBoundary = (path: string): boolean => aveHomeReadBoundaryCovering(path) !== undefined;
   // The container runtime root is closed to reads and writes alike: a grant inside it would outrank its deny. Only this invocation's own HOME is granted there, and the deny is restated so it holds beneath a granted ancestor.
@@ -170,6 +168,11 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   assertIssuedContainerHomeInPlace(input.sandboxHome);
   // No working directory inside the root except the invocation's own issued HOME itself, by identity.
   if (privateRootCovering(input.cwd) !== undefined && !isIssuedContainerHome(input.cwd, input.sandboxHome)) throw new Error("Container shell working directory is inside the sandbox runtime root");
+  // The invocation's own HOME lies in the runtime root's state; it is passed only while live and issued, by identity.
+  const ownHome = input.sandboxHome !== undefined && insideOwnWindowsSandboxHome(input.sandboxHome, input.sandboxHome)
+    && isIssuedContainerHome(input.sandboxHome, input.sandboxHome) ? input.sandboxHome : undefined;
+  // Before ranking: the runtime root is only an ordinary read deny there, which an equal or enclosing write survives.
+  assertWriteGrantsOutsideConfinementState(input.filesystem.allowWrite, declaredConfinementStatePaths(), undefined, ownHome);
   const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
   const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
   const denyRead = [...new Set([...input.filesystem.denyRead, ...privateRoots])];
@@ -189,7 +192,8 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   assertAdmission();
   relay.registerPort(listener.port);
   // Again on what the request grants, after the waits above: no pin holds a shell root, so this is the last check.
-  assertWriteGrantsOutsideConfinementState(grants.readwrite, declaredConfinementStatePaths());
+  assertIssuedContainerHomeInPlace(input.sandboxHome);
+  assertWriteGrantsOutsideConfinementState(grants.readwrite, declaredConfinementStatePaths(), undefined, ownHome);
   const systemRoot = windowsSystemRoot();
   const env: Record<string, string> = { ...input.env };
   if (!Object.keys(env).some((key) => key.toUpperCase() === "SYSTEMROOT")) env["SYSTEMROOT"] = systemRoot;
