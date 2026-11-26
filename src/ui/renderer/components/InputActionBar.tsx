@@ -524,6 +524,8 @@ const SANDBOX_CAUSE_KEYS: Record<ShellSandboxUnavailableCause, string> = {
   "windows-sandbox-missing": "inputActionBar.sandboxCauseWindowsSandboxMissing",
   "windows-sandbox-integrity-failed": "inputActionBar.sandboxCauseWindowsSandboxIntegrityFailed",
   "linux-runtime-probe-failed": "inputActionBar.sandboxCauseLinuxRuntimeProbeFailed",
+  "windows-deny-unenforceable": "inputActionBar.sandboxCauseWindowsDenyUnenforceable",
+  "windows-deny-path-unenforceable": "inputActionBar.sandboxCauseWindowsDenyPathUnenforceable",
   "init-failed": "inputActionBar.sandboxCauseInitFailed",
   "platform-unsupported": "inputActionBar.sandboxCausePlatformUnsupported",
   "windows-shell-not-contained": "inputActionBar.sandboxCauseWindowsShellNotContained",

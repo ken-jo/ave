@@ -11,12 +11,14 @@ import {
   setWindowsSandboxSubstrate,
 } from "../sandbox-capability.js";
 import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
-import { mxcPolicyRows, rankMxcFilesystem } from "../mxc-windows.js";
+import { mxcPolicyRows, rankMxcRowsBySpelling } from "../mxc-windows.js";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 
 // Admission projects the Ave home boundary, which pins a profile-child home natively.
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
+// A simulated win32 process denies its runtime root on the simulated drive, never under the run directory this kernel spells.
+vi.mock("../mxc-runtime-root.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedRuntimeRoot(await original()));
 const identity = vi.hoisted(() => ({ valid: true }));
 vi.mock("../windows-stamp-targets.js", async original => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();
@@ -81,7 +83,7 @@ describe("holder filesystem admission", () => {
     setProcessPlatform("win32");
     const admitted = admitMxcExtensionFilesystem({ allowRead: ["C:\\holder\\data"], allowWrite: ["C:\\holder\\data"], denyRead: [deny] }, HOLDER_OWNERSHIP);
     expect(mxcPolicyRows(admitted.model).protectedFloor).toContain(deny);
-    expect(rankMxcFilesystem(admitted.model, () => true)).toMatchObject({ readwrite: [], readonly: [] });
+    expect(rankMxcRowsBySpelling(admitted.model, () => true)).toMatchObject({ readwrite: [], readonly: [] });
   });
 
   it("refuses a holder write when the host state environment is missing", () => {

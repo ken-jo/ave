@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
+import { win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { declaredHostDirectoryFloorPierces } from "../../plugins/sandbox-authority.js";
+import * as aveHome from "../../shared/ave-home.js";
 import { liveEgressInvocationCount } from "../egress-invocations.js";
 import { MxcCapabilityUnavailableError, MxcNativeEntryRequiredError, MxcProcessCleanupError, WorkerTransportUnsupportedError } from "../mxc-extension-errors.js";
 import { registerMxcReleaseGateEvidence } from "../mxc-extension-admission.js";
@@ -14,6 +18,7 @@ const state = vi.hoisted(() => ({
   plan: { selectedBackend: "mxc", readiness: "ready" },
   realPlan: false,
   executableStamp: 1n,
+  executableMtime: 1n,
   // Synthetic junctions (lexical prefix -> target) and not-yet-created paths for canonical spelling.
   junctions: new Map<string, string>(),
   missing: new Set<string>(),
@@ -77,9 +82,39 @@ vi.mock("node:fs", async (original) => {
     return path;
   };
   const realpathSync = Object.assign(canonical, { native: canonical });
-  const statSync = (_path: string) => ({ isFile: () => true, dev: 7n, ino: 11n, size: 4096n,
-    mtimeNs: state.executableStamp, ctimeNs: state.executableStamp, birthtimeNs: 1n });
-  return { ...actual, existsSync: () => true, realpathSync, statSync };
+  const lstatSync = (path: string) => {
+    canonical(path);
+    const directory = !path.endsWith(".exe");
+    return { isDirectory: () => directory, isFile: () => !directory, isSymbolicLink: () => false,
+      size: 8n, mtimeNs: state.executableMtime, birthtimeNs: 1n };
+  };
+  return { ...actual, existsSync: () => true, realpathSync, lstatSync };
+});
+
+vi.mock("../../shared/windows-path-facts.js", async original => {
+  const actual = await original<typeof import("../../shared/windows-path-facts.js")>();
+  const facts = (path: string): ReturnType<typeof actual.pinWindowsPaths>[number] => {
+    const exists = ![...state.missing].some(parent => path.toLowerCase() === parent.toLowerCase()
+      || path.toLowerCase().startsWith(`${parent.toLowerCase()}\\`));
+    const volume = exists ? "0x0000000000000007" : null;
+    const fileIndex = exists ? `0x${createHash("md5").update(path.toLowerCase()).digest("hex")}` : null;
+    const directory = exists && !path.endsWith(".exe");
+    return {
+      exists, canonical: exists ? path : null, directory, attributes: directory ? 16 : 0,
+      volumeSerial: volume, volumeSerialNumber: volume, fileId: fileIndex, fileIndex,
+      changeTime: exists ? `0x${state.executableStamp.toString(16).padStart(16, "0")}` : null,
+      fileSystemName: null, reparseTag: 0, reparseTarget: null, ancestors: [],
+    };
+  };
+  const pinWindowsPaths: typeof actual.pinWindowsPaths = paths => paths.map(path => {
+    const ancestors = [];
+    for (let parent = win32.dirname(path); parent !== path; parent = win32.dirname(parent)) {
+      ancestors.unshift(facts(parent));
+      if (parent === win32.dirname(parent)) break;
+    }
+    return { ...facts(path), ancestors };
+  });
+  return { ...actual, pinWindowsPaths };
 });
 
 import { liveMxcHolderWritableRoots, spawnConfinedChild, spawnMxcConfinedChild, type MxcConfinedChildSpawn, type MxcConfinedChildSpec } from "../confined-child.js";
@@ -130,6 +165,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.realPlan = false;
   state.executableStamp = 1n;
+  state.executableMtime = 1n;
   state.junctions.clear();
   state.missing.clear();
   state.plan = planWindowsExtensionHolder({ requested: true, mxc: { state: "available" },
@@ -159,6 +195,34 @@ afterEach(async () => {
 });
 
 describe("native confined holder admission", () => {
+  it("carries a reviewed plugin hostDirectory certs read through the admitted rank", async () => {
+    const home = "C:\\ave";
+    const homeSpy = vi.spyOn(aveHome, "aveHome").mockReturnValue(home);
+    try {
+      const floorPierces = declaredHostDirectoryFloorPierces({
+        read: [{ kind: "hostDirectory", segments: ["certs"], why: "Read approved certificate roots" }],
+      });
+      const certs = win32.join(home, "certs");
+      const sessions = win32.join(home, "sessions");
+      const nestedDeny = win32.join(certs, "private");
+      const allowRead = [...spec().allowRead ?? [], ...floorPierces, sessions];
+      state.admit.mockImplementationOnce((input) => ({
+        model: mxcPolicyModel({ allowRead: input.allowRead, allowWrite: input.allowWrite, denyRead: [], denyWrite: [],
+          protectedFloor: [home, certs, sessions, nestedDeny], floorPierces: [...input.floorPierces, sessions] }),
+        assertStillValid: state.validate,
+      }));
+      const child = await spawnMxcConfinedChild({ ...spec(), allowRead, floorPierces });
+      expect(state.admit.mock.calls[0]?.[0].floorPierces).toEqual(floorPierces);
+      const filesystem = state.spawn.mock.calls[0]?.[0].filesystem;
+      expect(filesystem.readonlyPaths).toContain(certs);
+      expect(filesystem.readonlyPaths).not.toContain(sessions);
+      expect(filesystem.deniedPaths).toContain(nestedDeny);
+      await child.release();
+    } finally {
+      homeSpy.mockRestore();
+    }
+  });
+
   it("binds exactly one egress lease and releases only after owned termination", async () => {
     const before = liveEgressInvocationCount();
     const result = await spawnMxcConfinedChild(spec());
@@ -700,12 +764,13 @@ describe("co-holder nesting and executable identity", () => {
     await parent.release();
   });
 
-  it("re-measures the admitted executable synchronously before native creation", async () => {
+  it.each(["native change time", "mtime only"] as const)("refuses a same-path executable rewrite changing %s", async (changed) => {
     state.spawn.mockImplementationOnce(async (_request, options) => {
       const child = { id: 45, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
         completion: new Promise(() => {}), startEvidence: started(_request), dispose: vi.fn().mockResolvedValue(undefined) };
       options.onOwned(child);
-      state.executableStamp = 2n;
+      if (changed === "native change time") state.executableStamp = 2n;
+      else state.executableMtime = 2n;
       options.beforeSpawn();
       return child;
     });

@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmod, link, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncResource } from "node:async_hooks";
@@ -26,6 +27,8 @@ const turn = createCodeCheckpointTurn(() => sessionId);
 const edit = createCodeCheckpointEdit(() => file);
 const restoreCodeCheckpoint = (session: string, message: string, context = { cwd: root, extraAllowedDirectories: [] }) => restoreWithPolicy(session, message, context);
 const unavailable = { ok: false, error: "code-checkpoint-unavailable" };
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("checkpoint recovery and retention", () => {
   it("marks the dispatching parent even when a child task has no inherited async context", async () => {

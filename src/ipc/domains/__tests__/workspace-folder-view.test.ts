@@ -36,6 +36,14 @@ vi.mock("../../../permissions/permission-settings-store.js", () => ({
   completeWorkspaceRootRemovalPersist: vi.fn(),
 }));
 
+// Fixture host resources stand in for the script folders; the path-facts helper still runs from the source tree.
+vi.mock("../../../main/windows-path-kind-launcher.js", async (original) => {
+  const actual = await original<typeof import("../../../main/windows-path-kind-launcher.js")>();
+  const path = await vi.importActual<typeof import("node:path")>("node:path");
+  const helper = actual.windowsPathKindHelperIn(path.resolve("resources"));
+  return { ...actual, resolveWindowsPathKindHelper: () => helper };
+});
+
 import { registerWorkspaceHandlers } from "../workspace.js";
 import * as fileAccessPolicy from "../../../tools/file-access-policy.js";
 import { linkChainVerdict } from "../../../main/external-open-target.js";
@@ -893,13 +901,15 @@ describe("workspace.openPath", () => {
   });
 
   it("refuses an extensionless file and judges a double extension by the last one", async () => {
-    const cases: Array<[string, boolean]> = [["Makefile", false], ["report.pdf.exe", false], ["archive.exe.zip", true], ["notes.", false]];
-    for (const [name, allowed] of cases) {
+    // Win32 trims a trailing dot, so that spelling is refused as a path before its type is judged.
+    const trailingDot = process.platform === "win32" ? "path-not-allowed" : "type-not-allowed";
+    const cases: Array<[string, boolean, string?]> = [["Makefile", false], ["report.pdf.exe", false], ["archive.exe.zip", true], ["notes.", false, trailingDot]];
+    for (const [name, allowed, error = "type-not-allowed"] of cases) {
       const target = join(root, name);
       writeFileSync(target, "x", { mode: 0o644 });
       try {
-        expect(await openPath({ projectRoot: root, path: target, intent: GESTURE }))
-          .toEqual(allowed ? { ok: true } : { ok: false, error: "type-not-allowed" });
+        expect(await openPath({ projectRoot: root, path: target, intent: GESTURE }), name)
+          .toEqual(allowed ? { ok: true } : { ok: false, error });
       } finally {
         rmSync(target, { force: true });
       }

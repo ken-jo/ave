@@ -1,7 +1,8 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { createDynamicTool } from "../base.js";
@@ -41,6 +42,9 @@ function setup(event: "PreToolUse" | "PermissionRequest", mode = "mutate") {
     sessionId: "mutation-session", executionCwd: root, permissionContext: userPermissionContext(),
   }) };
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("hook replacement permission reentry", () => {
   it("resolves project hooks using the host session root throughout pre and permission stages", async () => {

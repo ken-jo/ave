@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 
 const identities = vi.hoisted(() => ({
   linked: new Map<string, bigint>(),
@@ -71,6 +72,20 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
+vi.mock("../../shared/windows-path-facts.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../shared/windows-path-facts.js")>();
+  return {
+    ...real,
+    pinWindowsPaths: (paths: readonly string[]) => real.pinWindowsPaths(paths).map((entry, index) => {
+      const path = paths[index];
+      const ino = path === undefined ? undefined : identities.linked.get(path);
+      return entry.exists !== true || ino === undefined ? entry : {
+        ...entry, volumeSerial: "0x0b", fileId: `0x${ino.toString(16)}`,
+      };
+    }),
+  };
+});
+
 import { capturePluginSandboxGrant, isPluginSandboxGrantCovered } from "../isolation/out-of-process-plugin.js";
 import { carryPluginSocketDirs, migratePluginHostStorage } from "../plugin-storage-layout.js";
 import { createRemovalTransaction, readRemovalTransactionJournal } from "../plugin-removal-transaction.js";
@@ -82,6 +97,7 @@ const LARGE_INO = 2n ** 60n;
 
 describe("plugin filesystem identity precision", () => {
   let root: string;
+  beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
   beforeEach(async () => {
     root = await realpath(await mkdtemp(join(tmpdir(), "plugin-identity-")));
     identities.linked.clear();

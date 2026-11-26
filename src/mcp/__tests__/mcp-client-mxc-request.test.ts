@@ -1,6 +1,7 @@
 /** The contained MCP route end to end on the host side: McpClient → the real holder adapter → the real container request
  * builder and validator. Only the native entry (`spawnMxcConfinedChild`) and a synthetic Windows drive are stand-ins, so
  * an environment or working directory the validator would refuse fails here, not first on a Windows host. */
+import { createHash } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { win32 as winPath } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,7 +15,8 @@ const state = vi.hoisted(() => ({
   nativeStarts: 0,
 }));
 
-const NODE = "C:\\Program Files\\nodejs\\node.exe";
+// Hoisted: the node:fs mock reads it while the imports above are still loading.
+const NODE = vi.hoisted(() => "C:\\Program Files\\nodejs\\node.exe");
 const SANDBOX = "C:\\ave\\mcp\\fs\\sandbox";
 const STAGING_HOME_PATTERN = new RegExp(String.raw`^${escapeRegExp(SYNTHETIC_MXC_STAGING_PARENT)}\\[0-9a-f]{32}\\home$`, "u");
 
@@ -93,17 +95,20 @@ vi.mock("../../permissions/mxc-runtime-root.js", async (original) => {
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
   const drive = (path: unknown): path is string => typeof path === "string" && /^[a-z]:\\/iu.test(path);
-  const dirs = new Set<string>();
   const key = (path: string): string => winPath.normalize(path).toLowerCase();
+  const dirs = new Set<string>();
+  for (let dir = winPath.dirname(NODE); winPath.dirname(dir) !== dir; dir = winPath.dirname(dir)) dirs.add(key(dir));
+  const present = (path: string): boolean => winPath.dirname(path) === path || key(path) === key(NODE) || dirs.has(key(path));
+  const missing = () => Object.assign(new Error("ENOENT"), { code: "ENOENT" });
   return {
     ...actual,
-    existsSync: (path: unknown) => drive(path) ? key(path) === key(NODE) || dirs.has(key(path)) : actual.existsSync(path as string),
+    existsSync: (path: unknown) => drive(path) ? present(path) : actual.existsSync(path as string),
     statSync: ((path: unknown, options?: unknown) => drive(path) ? { isFile: () => key(path) === key(NODE) }
       : actual.statSync(path as string, options as never)) as typeof actual.statSync,
     realpathSync: Object.assign((path: unknown) => drive(path) ? winPath.normalize(path) : actual.realpathSync(path as string), {
       native: (path: unknown) => {
         if (!drive(path)) return actual.realpathSync.native(path as string);
-        if (key(path) !== key(NODE) && !dirs.has(key(path))) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        if (!present(path)) throw missing();
         return winPath.normalize(path);
       },
     }),
@@ -112,8 +117,11 @@ vi.mock("node:fs", async (original) => {
       for (let dir = winPath.normalize(path); winPath.dirname(dir) !== dir; dir = winPath.dirname(dir)) dirs.add(key(dir));
       return undefined;
     }) as typeof actual.mkdirSync,
-    lstatSync: ((path: unknown, options?: unknown) => drive(path) ? { isSymbolicLink: () => false, isDirectory: () => true }
-      : actual.lstatSync(path as string, options as never)) as typeof actual.lstatSync,
+    lstatSync: ((path: unknown, options?: unknown) => {
+      if (!drive(path)) return actual.lstatSync(path as string, options as never);
+      if (!present(path)) throw missing();
+      return { isSymbolicLink: () => false, isDirectory: () => key(path) !== key(NODE), isFile: () => key(path) === key(NODE) };
+    }) as typeof actual.lstatSync,
     readdirSync: ((path: unknown, options?: unknown) => drive(path) ? [] : actual.readdirSync(path as string, options as never)) as typeof actual.readdirSync,
     renameSync: ((from: unknown, to: unknown) => drive(from) ? undefined : actual.renameSync(from as string, to as string)) as typeof actual.renameSync,
     rmdirSync: ((path: unknown) => drive(path) ? undefined : actual.rmdirSync(path as string)) as typeof actual.rmdirSync,
@@ -121,6 +129,29 @@ vi.mock("node:fs", async (original) => {
       : actual.writeFileSync(path as string, data as string, options as never)) as typeof actual.writeFileSync,
     unlinkSync: ((path: unknown) => drive(path) ? undefined : actual.unlinkSync(path as string)) as typeof actual.unlinkSync,
   };
+});
+
+// Executable and root lookups are admitted on native path facts; on the synthetic drive they come from the drive above.
+vi.mock("../../shared/windows-path-facts.js", async (original) => {
+  const actual = await original<typeof import("../../shared/windows-path-facts.js")>();
+  const fake = await import("node:fs");
+  const facts = (path: string): ReturnType<typeof actual.pinWindowsPaths>[number] => {
+    const exists = fake.existsSync(path);
+    const directory = exists && winPath.normalize(path).toLowerCase() !== NODE.toLowerCase();
+    const id = exists ? `0x${createHash("md5").update(winPath.normalize(path).toLowerCase()).digest("hex")}` : null;
+    return { exists, canonical: exists ? winPath.normalize(path) : null, directory, attributes: directory ? 16 : 0,
+      volumeSerial: exists ? "0x0000000000000007" : null, volumeSerialNumber: exists ? "0x0000000000000007" : null,
+      fileId: id, fileIndex: id, changeTime: exists ? "0x0000000000000001" : null,
+      fileSystemName: null, reparseTag: 0, reparseTarget: null, ancestors: [] };
+  };
+  return { ...actual, pinWindowsPaths: (paths: readonly string[]) => paths.map(path => {
+    const ancestors = [];
+    for (let parent = winPath.dirname(path); ; parent = winPath.dirname(parent)) {
+      ancestors.unshift(facts(parent));
+      if (parent === winPath.dirname(parent)) break;
+    }
+    return { ...facts(path), ancestors };
+  }) };
 });
 
 // `renameDirectory` renames through node:fs/promises; drive-letter paths go to the in-memory drive above.

@@ -14,9 +14,7 @@ import {
   releaseManagedResources, type ManagedResources, type RelayBestEffortExit,
 } from "../main/managed-child-processes.js";
 import { randomBytes } from "node:crypto";
-import {
-  chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync,
-} from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, win32 as winPath } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { t } from "../i18n/index.js";
@@ -31,10 +29,12 @@ import {
 } from "../permissions/confined-child.js";
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
 import { assertMxcReleaseGateEvidence } from "../permissions/mxc-extension-admission.js";
+import { admitWindowsLookupPaths } from "../permissions/admitted-obligation.js";
 import { MxcProcessCleanupError, MxcProcessContractError } from "../permissions/mxc-extension-errors.js";
 import type { OwnedMxcExtensionProcess } from "../permissions/mxc-extension-process.js";
 import { planWindowsExtensionHolder } from "../permissions/mxc-extension-readiness.js";
 import { isWindowsPathAtOrUnder } from "../permissions/mxc-windows.js";
+import { isFullyQualifiedWindowsPath } from "../shared/windows-path-spelling.js";
 import { getWindowsExtensionBackendPlan } from "../permissions/sandbox-capability.js";
 import { listAuthorizedWorkspaceRoots } from "../permissions/workspace-authorized-roots.js";
 import type { SandboxWindowsExtensionPlan } from "../shared/sandbox-capability-info.js";
@@ -371,19 +371,14 @@ export function assertMxcHolderNotBashForm(command: string, shellFlavor?: string
   }));
 }
 
-function stripExtendedPrefix(path: string): string {
-  return path.replace(/^\\\\\?\\/u, "");
-}
-
-/** Lexical and (when it exists) canonical spelling, so a junction-spelled root compares as its target. */
-function pathForms(path: string): string[] {
-  const lexical = winPath.normalize(path);
-  try {
-    const canonical = winPath.normalize(stripExtendedPrefix(realpathSync.native(lexical)));
-    return canonical.toLowerCase() === lexical.toLowerCase() ? [lexical] : [lexical, canonical];
-  } catch {
-    return [lexical];
-  }
+/** Lexical and admitted paths so a junction-spelled root compares as its target. */
+function pathForms(paths: readonly string[]): string[] {
+  const local = admitWindowsLookupPaths(paths, "mxc-launch");
+  return paths.flatMap(path => {
+    const lexical = winPath.normalize(path);
+    const target = local.get(path)?.target;
+    return target === undefined || target.toLowerCase() === lexical.toLowerCase() ? [lexical] : [lexical, target];
+  });
 }
 
 function overlaps(left: string, right: string): boolean {
@@ -391,32 +386,29 @@ function overlaps(left: string, right: string): boolean {
 }
 
 /** PATH resolution as the legacy spawn would find it, restricted to absolute directories and `.exe` programs: a relative
- * PATH entry resolves against the working directory, and a script shim needs an interpreter the container would run instead. */
+ * PATH entry needs a working directory or drive, and a script shim needs an interpreter the container would run instead. */
 function resolveHolderExecutable(command: string, env: NodeJS.ProcessEnv): string {
-  let candidate: string | undefined;
+  let canonical: string | undefined;
   if (winPath.isAbsolute(command)) {
-    candidate = command;
+    const entry = admitWindowsLookupPaths([command], "mxc-launch").get(command);
+    if (entry?.kind !== "file") {
+      throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableNotFound", { command }));
+    }
+    canonical = entry.target;
   } else if (/[\\/]/u.test(command)) {
     throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableRelative", { command }));
   } else {
-    const names = winPath.extname(command) === "" ? [`${command}.exe`] : [command];
+    const name = winPath.extname(command) === "" ? `${command}.exe` : command;
     const pathValue = env.PATH ?? env.Path ?? process.env.PATH ?? "";
-    for (const directory of pathValue.split(";")) {
-      if (!winPath.isAbsolute(directory)) continue;
-      const found = names.map((name) => winPath.join(directory, name)).find((file) => existsSync(file) && statSync(file).isFile());
-      if (found !== undefined) {
-        candidate = found;
-        break;
-      }
+    const directories = pathValue.split(";");
+    if (directories.some(directory => !isFullyQualifiedWindowsPath(directory) || directory.split(/[\\/]/u).includes(".."))) {
+      throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableNotFound", { command }));
     }
+    const candidates = directories.map(directory => winPath.join(directory, name));
+    const entries = admitWindowsLookupPaths(candidates, "mxc-launch");
+    canonical = [...entries.values()].find(entry => entry.kind === "file")?.target;
   }
-  if (candidate === undefined) throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableNotFound", { command }));
-  let canonical: string;
-  try {
-    canonical = winPath.normalize(stripExtendedPrefix(realpathSync.native(candidate)));
-  } catch (error) {
-    throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableUnresolvable", { path: candidate, reason: (error as Error).message }));
-  }
+  if (canonical === undefined) throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableNotFound", { command }));
   if (!/\.exe$/iu.test(canonical)) {
     throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableNotExe", { path: canonical }));
   }
@@ -426,8 +418,7 @@ function resolveHolderExecutable(command: string, env: NodeJS.ProcessEnv): strin
 /** Contract rule: never an executable from a workspace or any holder-writable root, this holder's own included. */
 function assertExecutableAdmissible(executable: string, ownWriteRoots: readonly string[], workspaceRoots: readonly string[]): void {
   const forbidden = [
-    ...[...listAuthorizedWorkspaceRoots(), ...workspaceRoots].flatMap(pathForms),
-    ...ownWriteRoots.flatMap(pathForms),
+    ...pathForms([...listAuthorizedWorkspaceRoots(), ...workspaceRoots, ...ownWriteRoots]),
     ...liveMxcHolderWritableRoots(),
   ];
   const hit = forbidden.find((root) => isWindowsPathAtOrUnder(executable, root));
@@ -436,14 +427,14 @@ function assertExecutableAdmissible(executable: string, ownWriteRoots: readonly 
 
 /** Two holders writing one workspace cannot both be live. Refuse only that concurrency, never queue it. */
 function assertNoLiveWorkspaceWriter(allowWrite: readonly string[], workspaceRoots: readonly string[]): void {
-  const workspaces = [...listAuthorizedWorkspaceRoots(), ...workspaceRoots].flatMap(pathForms);
-  const workspaceWrites = allowWrite.flatMap(pathForms).filter((write) => workspaces.some((root) => overlaps(write, root)));
+  const workspaces = pathForms([...listAuthorizedWorkspaceRoots(), ...workspaceRoots]);
+  const workspaceWrites = pathForms(allowWrite).filter((write) => workspaces.some((root) => overlaps(write, root)));
   if (workspaceWrites.length === 0) return;
   const busy = liveMxcHolderWritableRoots().filter((live) => workspaceWrites.some((write) => overlaps(write, live)));
   if (busy.length === 0) return;
   // The caller's workspace write contains another holder's private staging tree.
   let staging: string[] = [];
-  try { staging = pathForms(mxcStagingParent("win32")); } catch { /* no staging parent: the busy root is not under one */ }
+  try { staging = pathForms([mxcStagingParent("win32")]); } catch { /* no staging parent: the busy root is not under one */ }
   throw new MxcHolderWorkspaceBusyError(busy.some((live) => staging.some((root) => isWindowsPathAtOrUnder(live, root))));
 }
 

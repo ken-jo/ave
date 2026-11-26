@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { randomUUID } from "node:crypto";
 import { checkpointFileMutation, isCodeCheckpointAvailable, restoreCodeCheckpoint, trackCodeCheckpointChild, withCodeCheckpoint } from "../code-checkpoints.js";
 
@@ -20,6 +21,8 @@ const edit = (messageId: string, content: string) => withCodeCheckpoint({ sessio
   checkpointFileMutation([{ path: file, content }], () => writeFile(file, content)));
 const restore = (messageId: string) => restoreCodeCheckpoint(sessionId, messageId, { cwd: root, extraAllowedDirectories: [] });
 const unavailable = { ok: false, error: "code-checkpoint-unavailable" };
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("checkpoint origin child count", () => {
   it("does not release another live child when a release is repeated", async () => {

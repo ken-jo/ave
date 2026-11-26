@@ -1,9 +1,10 @@
 // The host-terminal turn capability is issued by the turn itself: only a turn the user typed, whose tool arguments are still the model's
 // own, carries it into its tool calls, and it ends with the turn. A tool cannot mint it from metadata.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
@@ -53,6 +54,7 @@ async function turnSeenByTool(inputOrigin: ChatInputOrigin, input = "run it in m
   return { loop, seen };
 }
 
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 describe("host-terminal turn capability", () => {
   it("is carried into the tool calls of a turn the user typed, for that conversation, and ends with the turn", async () => {
     const { loop, seen } = await turnSeenByTool("user-keyboard");

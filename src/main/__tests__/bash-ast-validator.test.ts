@@ -2,9 +2,10 @@ import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { describe, it } from "vitest";
+import { join, resolve } from "node:path";
+import { beforeAll, describe, it } from "vitest";
 import { BashAstValidator } from "../bash-ast-validator.js";
+import { configureHostResources } from "../host-resources.js";
 
 function makeInput(command: string): Record<string, unknown> {
   return { command };
@@ -280,6 +281,8 @@ describe("BashAstValidator — bash 도구 이름 매칭", () => {
 });
 
 describe("BashAstValidator — cd fallback", () => {
+  // Host routes observe a Windows cd through the shipped path-kind helper; boot configures its resources first.
+  beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
   it("walks that fallback on an unsandboxed host, where the cd can still fail", () => {
     const cwd = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-validator-cd-")));
     try {

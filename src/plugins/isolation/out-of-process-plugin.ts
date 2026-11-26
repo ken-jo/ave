@@ -8,6 +8,7 @@ import { ProcessEntryUnconfinedError, type ProcessLaunch } from "../process-entr
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { admitWindowsLookupPaths, windowsObligationsApply } from "../../permissions/admitted-obligation.js";
 import { capturePluginStderr } from "./plugin-stderr.js";
 import { sandboxTargetSetupFailed } from "../../permissions/launcher-environment.js";
 import {
@@ -33,6 +34,7 @@ import {
   protectedReadDenyCovering,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
+  userDenyInsidePierceNotices,
 } from "../../permissions/asrt-sandbox.js";
 import { extensionStartIdentity, pluginChildStartKey, type ExtensionStartAuthority } from "../../permissions/extension-start-consent.js";
 import { holdWindowsFilesystemGrant, type HeldWindowsGrant } from "../../permissions/windows-acl-grant-holder.js";
@@ -52,6 +54,7 @@ import { readPermissionSettings } from "../../permissions/permission-settings-st
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
+  foldCanonicalPathSeparators,
   isSensitivePath,
 } from "../../permissions/sensitive-paths.js";
 import { assertAveHomeRuntimeBoundary, AVE_HOME_RUNTIME_DIRECTORY, aveHome } from "../../shared/ave-home.js";
@@ -88,6 +91,11 @@ import { nativePluginChildFactoryBudgetMs, nativePluginChildStopBudgetMs, TOOL_T
 import { MxcProcessContractError } from "../../permissions/mxc-extension-errors.js";
 
 const log = createLogger("out-of-process-plugin");
+
+// Name, against a confined plugin, each user read deny that withholds part of one of its host pierces: once per plugin and session.
+function logUserDeniesInsidePierces(pluginId: string, pierces: readonly string[]): void {
+  for (const notice of userDenyInsidePierceNotices(pierces, `plugin:${pluginId}`)) log.warn(`[${pluginId}] ${notice}`);
+}
 
 /** Host-directory rows grant only literal host-selected reads; user-chosen keys may add read/write only within canonical approved ceilings.
  * Subtract each host row canonically so symlinks cannot turn read grants into write grants; link swaps after derivation remain a check/use residual. */
@@ -287,6 +295,17 @@ export function capturePluginSandboxGrant({ path, access }: ChosenSandboxGrant):
   canonicalPath: string;
   identity?: FileIdentity;
 } {
+  if (windowsObligationsApply()) {
+    const admitted = admitWindowsLookupPaths([path], "preview").get(path);
+    if (admitted === undefined) throw new Error("Plugin filesystem grant cannot be admitted");
+    const { identity } = admitted;
+    return {
+      path,
+      access,
+      canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(admitted.target)),
+      ...(identity === null ? {} : { identity: { dev: BigInt(identity.volumeSerial), ino: BigInt(identity.fileId) } }),
+    };
+  }
   const canonicalPath = caseFoldForMatch(canonicalizePathForMatch(path));
   const entry = statSync(path, { bigint: true, throwIfNoEntry: false });
   return {
@@ -304,10 +323,10 @@ export function isPluginSandboxGrantCovered(
   pluginDataDir: string,
 ): boolean {
   try {
-    if (caseFoldForMatch(canonicalizePathForMatch(grant.path)) !== grant.canonicalPath) return false;
-    const entry = statSync(grant.path, { bigint: true, throwIfNoEntry: false });
-    if (grant.identity && (!entry || !sameFileIdentity(entry, grant.identity))) return false;
-    if (!grant.identity && entry) grant.identity = { dev: entry.dev, ino: entry.ino };
+    const current = capturePluginSandboxGrant(grant);
+    if (current.canonicalPath !== grant.canonicalPath) return false;
+    if (grant.identity && (!current.identity || !sameFileIdentity(current.identity, grant.identity))) return false;
+    if (!grant.identity && current.identity) grant.identity = current.identity;
     return resolveUserChosenDirectory({
       pluginId: "sandbox-grant",
       pluginRoot,
@@ -541,6 +560,7 @@ export async function spawnConfinedPluginChild(
     const launchLine = windowsLoopback
       ? windowsLoopbackLaunchLine(args, baseEnv, extraEnv)
       : { args: referenceStdio ? [...args, CHILD_PRIVATE_STDIO_TRANSPORT_ARG] : args };
+    const floorPierces = spec.envelope.read.filter((path) => hostDirectoryFloorPierces().includes(path));
     const { child, confinement } = await spawnConfinedChild({
       command,
       ...launchLine,
@@ -559,7 +579,7 @@ export async function spawnConfinedPluginChild(
       // Every other plugin's code and data: the floor does not cover the plugins root, so this spawn does wherever a deny can re-allow.
       ...(process.platform === "win32" ? {} : { denyPluginsRoot: true }),
       // The envelope names a floor-piercing host directory only when the plugin's reviewed declaration asked for it.
-      floorPierces: spec.envelope.read.filter((path) => hostDirectoryFloorPierces().includes(path)),
+      floorPierces,
       // The data root above all: the host keeps resolving it, so a child that could swap it for a link would steer the next storage handle or spawn.
       pinWriteRoots: true,
       baseEnv,
@@ -568,6 +588,8 @@ export async function spawnConfinedPluginChild(
       stdio: referenceStdio ? ["ignore", "pipe", "pipe", "pipe"] : [windowsLoopback ? "ignore" : "pipe", "pipe", "pipe"],
       onWrapped: () => {
         wrapped = true;
+        // Only a wrapped child has the deny withheld; an unwrapped one reads nothing through the pierce rules.
+        logUserDeniesInsidePierces(spec.pluginId, floorPierces);
         // Reviewer signal (sandbox-capability registry): tools owned by this plugin now execute in a genuinely ASRT-confined child, so
         // resolveReviewerSandboxCapability may report the real capability for them. Set ONLY on the wrapped path; an unwrapped spawn never marks.
         markPluginChildConfined(spec.pluginId);
@@ -870,6 +892,8 @@ export function createOutOfProcessPluginFactory(
           registration?.terminating();
         });
         child = native;
+        // Named only once the child is admitted and running, so a refused launch records no notice.
+        logUserDeniesInsidePierces(pluginId, floorPierces);
         // Whoever starts termination (teardown, a transport fault, revocation or the child's own exit), the
         // registration learns at once, and an unverified result quarantines it without waiting for onClosed,
         // which a fault-driven termination never reaches.

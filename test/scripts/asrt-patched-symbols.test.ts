@@ -1851,3 +1851,52 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     expect(readInstalled("dist/sandbox/socks-proxy.js")).toMatch(/options\.openRoute\(conn\.socket, host, port, encodedCommand\)/u);
   });
 });
+
+it("takes an admitted Windows entry verbatim, even after a config clone", async () => {
+  const utils = await import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js");
+  const entry = structuredClone(utils.admittedWindowsEntry("C:\\alice\\absent\\", { kind: "missing" }));
+  expect(utils.isAdmittedWindowsEntry(entry)).toBe(true);
+  expect(utils.expandWindowsFsPaths([entry], { mode: "deny" })).toEqual(["C:\\alice\\absent\\"]);
+  expect(() => utils.admittedWindowsEntry("\\\\server.example\\share\\x", { kind: "file" })).toThrow(expect.objectContaining({ code: "unadmitted_fs_entry" }));
+  const present = structuredClone(utils.admittedWindowsEntry("C:\\alice\\Folder [1]", { kind: "dir" }));
+  const admitted = new Set<string>();
+  expect(utils.expandWindowsFsPaths([entry, present], { mode: "grant", admitted })).toEqual([present.path]);
+  expect([...admitted]).toEqual([present.path]);
+  const forged = { path: "\\\\server.example\\share\\x", literal: true, admitted: { kind: "file" } } as unknown as typeof entry;
+  expect(() => utils.expandWindowsFsPaths([forged], { mode: "deny" })).toThrow(expect.objectContaining({ code: "unadmitted_fs_entry" }));
+  expect(functionBody(readInstalled("dist/sandbox/windows-sandbox-utils.js"), /\nexport function rankWindowsFsAccess\(/u)).toMatch(/coveringWindowsPath\(lists\.credentialDeny, admitted\)/u);
+});
+
+it("rejects an admitted marker on a nonliteral entry or a path with dot components", async () => {
+  const utils = await import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js");
+  const entry = utils.admittedWindowsEntry("C:\\alice\\absent", { kind: "missing" });
+  const invalid = [
+    { ...entry, literal: false },
+    { ...entry, path: "C:\\alice\\..\\absent" },
+    { ...entry, path: "C:\\alice\\.\\absent" },
+  ] as unknown as (typeof entry)[];
+
+  for (const row of invalid) {
+    expect(utils.isAdmittedWindowsEntry(row)).toBe(false);
+    expect(() => utils.expandWindowsFsPaths([row], { mode: "deny" })).toThrow(expect.objectContaining({
+      code: "unadmitted_fs_entry",
+    }));
+  }
+  expect(() => utils.admittedWindowsEntry("C:\\alice\\..\\absent", { kind: "missing" })).toThrow(expect.objectContaining({
+    code: "unadmitted_fs_entry",
+  }));
+});
+
+it("refuses unadmitted filesystem and credential rows in strict Windows mode", async () => {
+  const utils = await import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js");
+  const path = "C:\\alice\\ordinary.txt";
+  const entry = utils.admittedWindowsEntry(path, { kind: "file" });
+  const masked = "C:\\alice\\runtime-opened.txt";
+  expect(utils.expandWindowsFsPaths([entry], { admittedEntriesOnly: true })).toEqual([path]);
+  expect(() => utils.expandWindowsFsPaths([path], { admittedEntriesOnly: true }))
+    .toThrow(expect.objectContaining({ code: "unadmitted_fs_entry" }));
+  expect(() => utils.expandWindowsAclDenyLists([], [], [path], [], true))
+    .toThrow(expect.objectContaining({ code: "unadmitted_fs_entry" }));
+  expect(utils.expandWindowsAclDenyLists([entry], [entry], [entry], [masked], true))
+    .toMatchObject({ denyRead: [path], denyWrite: [path], credentialDeny: [path, masked] });
+});

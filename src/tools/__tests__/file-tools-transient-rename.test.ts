@@ -1,11 +1,15 @@
 // Isolate module-wide filesystem and sleep mocks from the real-filesystem suite.
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { join, resolve } from "node:path";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { transientFsLockDelayMs } from "../../lib/transient-fs-lock-retry.js";
+import { configureHostResources } from "../../main/host-resources.js";
+
+// Windows file targets are admitted through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 const renameFailures: string[] = [];
 const sleeps: number[] = [];

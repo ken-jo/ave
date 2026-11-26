@@ -1,4 +1,4 @@
-import { lstatSync } from "node:fs";
+import { admitLocalRoute, localFs, routeLocality, withLocalityDecision } from "./local-path-io.js";
 import { resolve } from "node:path";
 import { errorMessage } from "./error-message.js";
 import { admitWindowsReparse, evaluateWindowsReadDacl, pinWindowsPaths, readWindowsDacls, type WindowsPathFacts, type WindowsReadDenyPrincipal } from "./windows-path-facts.js";
@@ -37,21 +37,28 @@ function readIsolatedWindowsRows<T>(paths: readonly string[], read: (paths: read
 /** Recheck one use boundary together; the returned verdicts must not be retained for later uses. */
 export function recheckWindowsReadDenyEvidence(paths: readonly string[], snapshot?: WindowsReadDenySnapshot): WindowsReadDenySnapshot {
   const targets = [...new Map(paths.map(path => [windowsReadDenyKey(path), path])).values()];
-  const candidates = targets.filter(path => {
-    const evidence = snapshot?.get(windowsReadDenyKey(path));
-    return evidence !== undefined && evidence.status !== "error" && evidence.status !== "missing";
+  return withLocalityDecision(() => {
+    const local = new Set(targets.filter(path => routeLocality(resolve(path)) === "local"));
+    const candidates = targets.filter(path => {
+      const evidence = snapshot?.get(windowsReadDenyKey(path));
+      return local.has(path) && evidence !== undefined && evidence.status !== "error" && evidence.status !== "missing";
+    });
+    const rows = readIsolatedWindowsRows(candidates.map(path => resolve(path)), pinWindowsPaths);
+    const pins = new Map(candidates.map((path, index) => [windowsReadDenyKey(path), rows[index]!]));
+    return new Map(targets.map(path => [windowsReadDenyKey(path), local.has(path)
+      ? checkedWindowsReadDenyEvidence(path, snapshot, pins.get(windowsReadDenyKey(path))) : UNPROVEN_LOCALITY]));
   });
-  const rows = readIsolatedWindowsRows(candidates.map(path => resolve(path)), pinWindowsPaths);
-  const pins = new Map(candidates.map((path, index) => [windowsReadDenyKey(path), rows[index]!]));
-  return new Map(targets.map(path => [windowsReadDenyKey(path), checkedWindowsReadDenyEvidence(path, snapshot, pins.get(windowsReadDenyKey(path)))]));
 }
+
+// Evidence is read, pinned and stamped only for a target whose route is proven local; any other keeps its deny.
+const UNPROVEN_LOCALITY: WindowsReadDenyEvidence = { status: "error", reason: "Target locality is unproven" };
 
 function checkedWindowsReadDenyEvidence(path: string, snapshot: WindowsReadDenySnapshot | undefined, pinRow?: WindowsEvidenceRow<WindowsPathFacts>): WindowsReadDenyEvidence {
   const evidence = snapshot?.get(windowsReadDenyKey(path));
   if (evidence?.status === "error") return evidence;
   if (snapshot !== undefined && evidence === undefined) return { status: "error", reason: "Target absent from DACL snapshot" };
   try {
-    const stat = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+    const stat = withLocalityDecision(() => localFs.lstatBigint(admitLocalRoute(path).verdict));
     if (stat === undefined) return evidence === undefined || evidence.status === "missing" ? { status: "missing" }
       : { status: "error", reason: "DACL snapshot target no longer exists" };
     if (evidence?.status === "missing") return { status: "error", reason: "DACL snapshot target now exists" };
@@ -71,9 +78,10 @@ function checkedWindowsReadDenyEvidence(path: string, snapshot: WindowsReadDenyS
 }
 
 export async function readWindowsReadDenyEvidence(paths: readonly string[]): Promise<WindowsReadDenySnapshot> {
-  const targets = [...new Map(paths.map(path => [windowsReadDenyKey(path), resolve(path)])).values()];
+  const all = [...new Map(paths.map(path => [windowsReadDenyKey(path), resolve(path)])).values()];
+  const targets = withLocalityDecision(() => all.filter(path => routeLocality(path) === "local"));
   const rows = readIsolatedWindowsRows(targets, readWindowsDacls);
-  return new Map(targets.map((path, index) => {
+  return new Map([...all.filter(path => !targets.includes(path)).map(path => [windowsReadDenyKey(path), UNPROVEN_LOCALITY] as const), ...targets.map((path, index) => {
     let evidence: WindowsReadDenyEvidence;
     try {
       const result = rows[index]!;
@@ -86,6 +94,6 @@ export async function readWindowsReadDenyEvidence(paths: readonly string[]): Pro
     } catch (error) {
       evidence = { status: "error", reason: errorMessage(error) };
     }
-    return [windowsReadDenyKey(path), evidence];
-  }));
+    return [windowsReadDenyKey(path), evidence] as const;
+  })]);
 }

@@ -6516,9 +6516,11 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
 
 /** Host container refusals raised while a plugin's factory admits and spawns its child, each with a host-localized message
  * ending in this stable code. Only these reach the Doctor detail; other factory errors may carry paths or internals and
- * keep the generic text. (A start failure is a child RPC error and never carries one of these host refusals.) */
+ * keep the generic text. The user-deny refusals name only the user's own rule and the host path it covers.
+ * (A start failure is a child RPC error and never carries one of these host refusals.) */
 const CONTAINER_REFUSAL_CODES = new Set([
   "native-entry-required", "worker-transport-unsupported", "extension-readiness-refused", "plugin-child-termination-unverified",
+  "user-deny-covers-pierce", "user-deny-cover-undecided",
 ]);
 
 /** A quarantine reason taken from a localized container refusal already ends with that refusal's code; drop it when the

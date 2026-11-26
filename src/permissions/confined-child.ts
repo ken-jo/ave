@@ -3,7 +3,8 @@ import { spawn, type ChildProcess, type SpawnOptions, type StdioOptions } from "
 import { assertSrtWinSpawnIntegrity, srtWinSpawnEnvironment } from "./srt-win-integrity.js";
 import { resolveHostProgram } from "../shared/host-program-path.js";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { createHash } from "node:crypto";
 import { extname, join, win32 as winPath } from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -25,6 +26,7 @@ import {
   type WrapOptions,
 } from "./asrt-sandbox.js";
 import { createAveHomeBoundarySnapshot } from "./ave-home-boundary-snapshot.js";
+import { admitWindowsLookupPaths } from "./admitted-obligation.js";
 import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "./egress-invocations.js";
 import {
   getHostShellExecutionPlan,
@@ -221,44 +223,33 @@ export function assertMxcDescendantOutsideParent(parent: MxcConfinedChildSpawn, 
   const binding = nativeHolderBindings.get(parent);
   if (binding === undefined) return;
   if (!binding.active) throw new MxcProcessContractError("Extension parent backend is no longer admitted");
-  const forms = (paths: readonly string[]): readonly string[] => [...new Set(paths.flatMap(pathForms))];
+  // The lexical spelling and the admitted target, as for the holder's own footprint.
+  const admittedPaths = admitWindowsLookupPaths([...grants.read, ...grants.write], "mxc-launch");
+  const forms = (paths: readonly string[]): readonly string[] => [...new Set(paths.flatMap(path => {
+    const target = admittedPaths.get(path)?.target;
+    if (target === undefined) throw new MxcProcessContractError("Container filesystem footprint could not be admitted");
+    return [winPath.normalize(path), target];
+  }))];
   const declared: LiveHolderFootprint = { writable: forms(grants.write), paths: forms([...grants.read, ...grants.write]), privateDirectories: [], command: [] };
   const refusal = writableContains(binding.footprint, declared) ?? writableContains(declared, binding.footprint);
   if (refusal !== undefined) throw new MxcProcessContractError(refusal);
 }
 const admittedNativeHolderIdentities = new WeakSet<object>();
 
-/** Synchronous file identity of the admitted executable: canonical path, volume/file ID, size and timestamps.
- * It is re-measured in `beforeSpawn`. A same-size rewrite that restores timestamps is closed by refusing any
- * executable inside a live holder's writable root (see `assertNoCoHolderNesting`), leaving only the signed-in user. */
+/** Rechecked before spawn using object identity, size and timestamps. Refusing executables inside any holder's writable
+ * root prevents a confined co-holder from making a same-size rewrite and restoring the timestamps. */
 function measureExecutableIdentity(command: string): string {
-  const canonical = realpathSync.native(command);
-  const stat = statSync(canonical, { bigint: true });
-  if (!stat.isFile()) throw new MxcProcessContractError("Container executable is not a regular file");
-  return createHash("sha256").update([winPath.normalize(canonical).toLowerCase(), stat.dev, stat.ino, stat.size,
-    stat.mtimeNs, stat.ctimeNs, stat.birthtimeNs].join("\0")).digest("hex");
-}
-
-const NOT_FOUND = new Set(["ENOENT", "ENOTDIR"]);
-
-// Lexical and canonical spellings, so a junction-spelled path and its target compare as one location. A path that does
-// not exist yet is canonicalized through its longest existing ancestor, so `link\new` still compares as `target\new`.
-function pathForms(path: string): readonly string[] {
-  const lexical = winPath.normalize(path);
-  const remainder: string[] = [];
-  for (let existing = lexical; ;) {
-    try {
-      const canonical = winPath.join(winPath.normalize(realpathSync.native(existing).replace(/^\\\\\?\\/u, "")), ...remainder);
-      return canonical.toLowerCase() === lexical.toLowerCase() ? [lexical] : [lexical, canonical];
-    } catch (error) {
-      if (!NOT_FOUND.has((error as NodeJS.ErrnoException).code ?? "")) throw error;
-      const parent = winPath.dirname(existing);
-      // No existing ancestor at all (not even the volume root): only the lexical spelling exists.
-      if (parent === existing) return [lexical];
-      remainder.unshift(winPath.basename(existing));
-      existing = parent;
-    }
+  const executable = admitWindowsLookupPaths([command], "mxc-launch").get(command);
+  if (executable?.kind !== "file" || executable.identity === null || executable.changeTime === null) {
+    throw new MxcProcessContractError("Container executable is not a regular file");
   }
+  const stat = withLocalityDecision(() => {
+    const route = admitLocalRoute(executable.target, { projectMissing: true });
+    return route.followedLink ? undefined : localFs.lstatBigint(route.verdict);
+  });
+  if (!stat?.isFile()) throw new MxcProcessContractError("Container executable is not a regular file");
+  return createHash("sha256").update([winPath.normalize(executable.target).toLowerCase(), executable.identity.volumeSerial,
+    executable.identity.fileId, executable.changeTime, stat.size, stat.mtimeNs, stat.birthtimeNs].join("\0")).digest("hex");
 }
 
 /** What a holder that is admitted or still owned (pending, live or quarantined) can write and depends on, in every spelling. */
@@ -337,14 +328,18 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     const live = heldIssuedContainerHome(issuedHome);
     const staged = live !== undefined && (spec.stagingRoot === undefined
       || (isWindowsPathAtOrUnder(spec.home, spec.stagingRoot) && !isWindowsPathAtOrUnder(spec.stagingRoot, spec.home)));
-    if (!staged && pathForms(spec.home).some((form) => isWindowsPathAtOrUnder(form, runtimeRoot))) {
+    const homeTarget = admitWindowsLookupPaths([spec.home], "mxc-launch").get(spec.home)?.target;
+    if (homeTarget === undefined) throw new MxcProcessContractError("Container filesystem footprint could not be admitted");
+    if (!staged && [winPath.normalize(spec.home), homeTarget].some((form) => isWindowsPathAtOrUnder(form, runtimeRoot))) {
       throw new MxcProcessContractError("Container HOME inside the sandbox runtime root is not the one issued to this start");
     }
     assertWriteGrantsOutsideConfinementState([spec.home], declaredConfinementStatePaths(), undefined, staged ? live : undefined);
   };
   assertHomeOutsideState();
   // No working directory inside the runtime root except the launch's own issued HOME itself, by identity.
-  if (pathForms(spec.cwd).some((form) => isWindowsPathAtOrUnder(form, runtimeRoot)) && !isIssuedContainerHome(spec.cwd, spec.home)) {
+  const cwdTarget = admitWindowsLookupPaths([spec.cwd], "mxc-launch").get(spec.cwd)?.target;
+  if (cwdTarget === undefined) throw new MxcProcessContractError("Container filesystem footprint could not be admitted");
+  if ([winPath.normalize(spec.cwd), cwdTarget].some((form) => isWindowsPathAtOrUnder(form, runtimeRoot)) && !isIssuedContainerHome(spec.cwd, spec.home)) {
     throw new MxcProcessContractError("Container working directory is inside the sandbox runtime root");
   }
   const assertParent = (): void => {
@@ -358,14 +353,22 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   // The floor and the admission share one Ave home boundary snapshot.
   const admitted = await runWithSandboxWritePreflight(spec.signal, () => createAveHomeBoundarySnapshot().run(() => admitMxcExtensionFilesystem({
     allowRead: [...(spec.allowRead ?? [])], allowWrite: [...(spec.allowWrite ?? [])],
-    denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyEntries(),
+    denyWrite: getDefaultSensitiveWriteDenyEntries(),
     floorPierces: spec.floorPierces, denyPluginsRoot: true, pinWriteRoots: true,
   }, spec.filesystemOwnership, spec.stagingRoot)));
-  const grants = rankMxcFilesystem(admitted.model, existsSync);
+  const grants = rankMxcFilesystem(admitted.model);
   assertWritesInsideEnvelope(grants, spec.filesystemOwnership);
   assertMxcHolderPrivateDirectories({ home: spec.home, temp: spec.temp, ownership: spec.filesystemOwnership,
     sharedPrivateRoots: [appOwnedSandboxHomeRoot(), appOwnedSandboxTempRoot(), appOwnedTerminalHandoffRoot()] });
-  const forms = (paths: readonly string[]): readonly string[] => Object.freeze([...new Set(paths.flatMap(pathForms))]);
+  const footprintPaths = admitWindowsLookupPaths([
+    ...grants.readwrite, ...grants.readonly, ...grants.denied, ...spec.filesystemOwnership.writeRoots,
+    spec.cwd, spec.home, spec.temp, spec.command,
+  ], "mxc-launch");
+  const forms = (paths: readonly string[]): readonly string[] => Object.freeze([...new Set(paths.flatMap(path => {
+    const target = footprintPaths.get(path)?.target;
+    if (target === undefined) throw new MxcProcessContractError("Container filesystem footprint could not be admitted");
+    return [winPath.normalize(path), target];
+  }))]);
   const ownRoots: LiveHolderFootprint = Object.freeze({
     writable: forms([...grants.readwrite, spec.home, spec.temp, ...spec.filesystemOwnership.writeRoots]),
     paths: forms([...grants.readwrite, ...grants.readonly, ...grants.denied, spec.cwd, spec.home, spec.temp]),
@@ -743,7 +746,7 @@ function requireTempPrincipal(spec: ConfinedChildSpec): SandboxTempPrincipal {
 function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string } | undefined): {
   allowRead?: string[];
   allowWrite?: string[];
-  denyRead: string[];
+  denyRead: ReturnType<typeof getDefaultSensitiveReadDenyPaths>;
   denyWrite: ReturnType<typeof getDefaultSensitiveWriteDenyEntries>;
   pinWriteRoots?: boolean;
   floorPierces?: readonly string[];

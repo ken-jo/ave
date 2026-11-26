@@ -101,6 +101,8 @@ export type SandboxStartFailureCause =
   | "windows-sandbox-missing"
   | "windows-sandbox-integrity-failed"
   | "linux-runtime-probe-failed"
+  | "windows-deny-unenforceable"
+  | "windows-deny-path-unenforceable"
   | "init-failed";
 
 /** Why the shell sandbox is requested for this session but host shells still run without it: a start failure, a platform without a sandbox, a Windows sandbox that is active

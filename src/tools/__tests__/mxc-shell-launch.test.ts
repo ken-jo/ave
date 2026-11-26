@@ -1,8 +1,9 @@
 import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
-import { win32 as winPath } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolve, win32 as winPath } from "node:path";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { closed, echoParentProxy, openTunnel, probePort, within } from "../../__tests__/support/proxy-tunnel-probe.js";
@@ -10,6 +11,7 @@ import { closed, echoParentProxy, openTunnel, probePort, within } from "../../__
 const h = vi.hoisted(() => ({
   openRelay: vi.fn(),
   floor: vi.fn(() => [] as string[]),
+  userDenies: vi.fn(() => [] as string[]),
   boundary: vi.fn((_path: string): string | undefined => undefined),
   privateRoots: vi.fn(() => [] as string[]),
   liveHomes: new Set<string>(),
@@ -17,8 +19,11 @@ const h = vi.hoisted(() => ({
   registerPort: vi.fn(),
   recordRefusal: vi.fn(),
   closeRelay: vi.fn(async () => {}),
-  readdir: vi.fn(),
-  lstat: vi.fn(),
+  // The synthetic C: drive the fixture paths live on. A placeholder is a non-link reparse directory (a cloud file), and a
+  // vanished entry is still listed but gone when looked up; a listing reports both, and every link, as a link.
+  drive: new Map<string, { path: string; kind: DriveKind; target?: string }>(),
+  listed: [] as string[],
+  synthetic: /^(\\\\\?\\)?c:\\/iu,
   // The runtime root start-up proved, or the refusal of one that was not.
   startRoot: vi.fn((): string => "C:\\Users\\alice\\AppData\\Local\\ai.agent-connector.ave\\mxc-runtime"),
   // Stands for the issued-HOME identity check (its own suite runs it on real directories): the invocation's HOME itself.
@@ -32,12 +37,105 @@ vi.mock("../../permissions/sandbox-home-registry.js", async (importOriginal) => 
   ...await importOriginal<typeof import("../../permissions/sandbox-home-registry.js")>(),
   isIssuedContainerHome: (cwd: string, home: string | undefined) => h.issuedHome(cwd, home),
 }));
+type DriveKind = "dir" | "file" | "link" | "placeholder" | "vanished";
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
+  const { win32 } = await import("node:path");
+  const synthetic = (path: unknown): path is string => typeof path === "string" && h.synthetic.test(path);
+  const spell = (path: string) => win32.normalize(path.replace(/^\\\\\?\\/u, ""));
+  const key = (path: string) => spell(path).toLowerCase().replace(/\\$/u, "");
+  const resolve = (path: string, hops = 0): string | undefined => {
+    let current: string | undefined = spell(path).slice(0, 3).toUpperCase();
+    for (const part of spell(path).slice(3).split("\\").filter(Boolean)) {
+      const next = h.drive.get(key(win32.join(current, part)));
+      if (next === undefined || next.kind === "vanished") return undefined;
+      current = next.kind !== "link" ? next.path : hops > 8 || next.target === undefined ? undefined : resolve(next.target, hops + 1);
+      if (current === undefined) return undefined;
+    }
+    return current;
+  };
+  const lookup = (path: string) => {
+    if (spell(path).length === 3) return { path: spell(path).toUpperCase(), kind: "dir" as const, target: undefined };
+    const parent = resolve(win32.dirname(spell(path)));
+    const found = parent === undefined ? undefined : h.drive.get(key(win32.join(parent, win32.basename(spell(path)))));
+    return found?.kind === "vanished" ? undefined : found;
+  };
+  const missing = (path: string) => Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+  const stats = (kind: DriveKind) => ({ isSymbolicLink: () => kind === "link",
+    isDirectory: () => kind === "dir" || kind === "placeholder", isFile: () => kind === "file" });
+  const real = (path: string) => {
+    const resolved = resolve(path);
+    if (resolved === undefined) throw missing(path);
+    return resolved;
+  };
   return { ...actual,
-    readdirSync: (...args: Parameters<typeof actual.readdirSync>) => h.readdir.getMockImplementation() ? h.readdir(...args) : actual.readdirSync(...args),
-    lstatSync: (...args: Parameters<typeof actual.lstatSync>) => h.lstat.getMockImplementation() ? h.lstat(...args) : actual.lstatSync(...args) };
+    existsSync: (path: unknown) => synthetic(path) ? resolve(path) !== undefined : actual.existsSync(path as string),
+    accessSync: ((path: unknown, mode?: number) => synthetic(path) ? void real(path) : actual.accessSync(path as string, mode)) as typeof actual.accessSync,
+    lstatSync: ((path: unknown, options?: { throwIfNoEntry?: boolean }) => {
+      if (!synthetic(path)) return actual.lstatSync(path as string, options as never);
+      const found = lookup(path);
+      if (found !== undefined) return stats(found.kind);
+      if (options?.throwIfNoEntry === false) return undefined;
+      throw missing(path);
+    }) as typeof actual.lstatSync,
+    statSync: ((path: unknown, options?: unknown) => synthetic(path) ? stats(lookup(real(path))?.kind ?? "dir")
+      : actual.statSync(path as string, options as never)) as typeof actual.statSync,
+    readlinkSync: ((path: unknown, options?: unknown) => {
+      if (!synthetic(path)) return actual.readlinkSync(path as string, options as never);
+      const found = lookup(path);
+      if (found?.kind !== "link" || found.target === undefined) throw Object.assign(new Error(`EINVAL: ${path}`), { code: "EINVAL" });
+      return found.target;
+    }) as typeof actual.readlinkSync,
+    realpathSync: Object.assign((path: unknown, options?: unknown) => synthetic(path) ? real(path) : actual.realpathSync(path as string, options as never),
+      { native: (path: unknown, options?: unknown) => synthetic(path) ? real(path) : actual.realpathSync.native(path as string, options as never) }),
+    opendirSync: ((path: unknown, options?: unknown) => {
+      if (!synthetic(path)) return actual.opendirSync(path as string, options as never);
+      const directory = real(path);
+      h.listed.push(spell(path));
+      const entries = [...h.drive.values()].filter(entry => win32.dirname(entry.path).toLowerCase() === directory.toLowerCase())
+        .map(entry => ({ name: win32.basename(entry.path), isSymbolicLink: () => entry.kind !== "dir" && entry.kind !== "file",
+          isDirectory: () => entry.kind === "dir", isFile: () => entry.kind === "file" }));
+      return { readSync: () => entries.shift() ?? null, closeSync: () => {} };
+    }) as typeof actual.opendirSync,
+  };
 });
+// Admission pins the synthetic drive by the same entries; other drives keep the native facts.
+vi.mock("../../shared/windows-path-facts.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../shared/windows-path-facts.js")>();
+  const { win32 } = await import("node:path");
+  const { createHash } = await import("node:crypto");
+  const fs = await import("node:fs");
+  type Facts = ReturnType<typeof actual.pinWindowsPaths>[number];
+  const facts = (path: string): Facts => {
+    const entry = fs.lstatSync(path, { throwIfNoEntry: false });
+    const canonical = entry === undefined ? null : fs.realpathSync.native(path);
+    const listed = h.drive.get(win32.normalize(path).toLowerCase().replace(/\\$/u, ""));
+    const link = entry?.isSymbolicLink() === true;
+    const reparseTag = link ? 0xa0000003 : listed?.kind === "placeholder" ? 0x9000001a : 0;
+    const directory = entry?.isDirectory() === true || link;
+    const id = canonical === null ? null : `0x${createHash("md5").update(canonical.toLowerCase()).digest("hex")}`;
+    const volume = id === null ? null : "0x0000000000000007";
+    return { exists: canonical !== null, canonical, directory, attributes: (directory ? 0x10 : 0) | (reparseTag === 0 ? 0 : 0x400),
+      volumeSerial: volume, volumeSerialNumber: volume, fileId: id, fileIndex: id, changeTime: id === null ? null : "0x0000000000000001",
+      fileSystemName: null, reparseTag, reparseTarget: link ? listed?.target ?? null : null, ancestors: [] };
+  };
+  const pin = (path: string): Facts => {
+    const ancestors: Facts[] = [];
+    for (let parent = win32.dirname(path); ; parent = win32.dirname(parent)) {
+      ancestors.unshift(facts(parent));
+      if (parent === win32.dirname(parent)) break;
+    }
+    return { ...facts(path), ancestors };
+  };
+  return { ...actual, pinWindowsPaths: (paths: readonly string[]) => paths.flatMap(path =>
+    h.synthetic.test(path) ? [pin(path)] : actual.pinWindowsPaths([path])) };
+});
+function onDrive(path: string, kind: DriveKind = "dir", target?: string): void {
+  for (let parent = winPath.dirname(path); parent !== winPath.dirname(parent); parent = winPath.dirname(parent)) {
+    if (!h.drive.has(parent.toLowerCase())) h.drive.set(parent.toLowerCase(), { path: parent, kind: "dir" });
+  }
+  h.drive.set(path.toLowerCase(), { path, kind, ...(target === undefined ? {} : { target }) });
+}
 vi.mock("../../permissions/egress-host-listener.js", () => ({
   openHostEgressListener: h.openRelay,
 }));
@@ -51,6 +149,7 @@ vi.mock("../../permissions/asrt-sandbox.js", () => ({
   insideOwnWindowsSandboxHome: (path: string, home: string | undefined) =>
     home !== undefined && h.liveHomes.has(home) && (path === home || path.startsWith(`${home}\\`)),
   getProtectedReadDenyFloor: h.floor,
+  getUserReadDenies: h.userDenies,
   getWindowsProxyPortRange: () => [60080, 60089],
 }));
 vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
@@ -77,7 +176,12 @@ function endRoute(): () => void {
 }
 
 const WS = String.raw`C:\work\repo`;
-beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
+beforeEach(() => {
+  vi.stubEnv("SystemRoot", "C:\\Windows");
+  h.drive.clear();
+  h.listed.length = 0;
+  onDrive(WS);
+});
 registerMxcShellLaunchAdmissionFixture("tok");
 const INPUT = {
   egressToken: "tok",
@@ -163,9 +267,11 @@ describe("prepareMxcShellLaunch", () => {
     const home = String.raw`C:\Users\alice\.ave`;
     const workspace = String.raw`C:\Users\alice\.ave\workspace\repo`;
     h.boundary.mockImplementation((path: string) => path.startsWith(`${home}\\`) && !path.startsWith(`${home}\\workspace\\`) ? home : undefined);
+    for (const path of [workspace, `${home}\\logs`, `${home}\\traces`]) onDrive(path);
     const lifecycle = createContainedShellLifecycle();
     try {
       const launch = await prepareMxcShellLaunch({ ...INPUT, cwd: workspace, filesystem: {
+        // The home boundary is a read boundary, as the shell composes it; a re-allowed child carves it.
         allowWrite: [workspace, `${home}\\logs`], allowRead: [`${home}\\traces`, workspace], denyRead: [`${home}\\`], denyWrite: [],
       } }, lifecycle);
       const request = decodeRequest(launch.argv);
@@ -176,7 +282,35 @@ describe("prepareMxcShellLaunch", () => {
     }
   });
 
+  it("states the user's read denies as their own rows: one inside a grant is denied, one over the workspace refuses the launch", async () => {
+    relay();
+    const secret = winPath.join(WS, "secret");
+    onDrive(secret);
+    try {
+      h.userDenies.mockReturnValue([secret]);
+      const lifecycle = createContainedShellLifecycle();
+      try {
+        const request = decodeRequest((await prepareMxcShellLaunch(INPUT, lifecycle)).argv);
+        expect(request.filesystem.readwritePaths).toEqual([WS]);
+        expect(request.filesystem.deniedPaths).toEqual([secret]);
+      } finally {
+        expect(await lifecycle.dispose()).toEqual([]);
+      }
+      h.userDenies.mockReturnValue([WS]);
+      const refused = createContainedShellLifecycle();
+      try {
+        await expect(prepareMxcShellLaunch(INPUT, refused)).rejects.toThrow(/working directory must lie inside a granted path/);
+      } finally {
+        await refused.dispose();
+      }
+    } finally {
+      h.userDenies.mockReturnValue([]);
+    }
+  });
+
   describe.runIf(process.platform === "win32")("the confinement backends' own state", () => {
+    // These paths are real directories, off the synthetic drive: their lookup needs the host's resources.
+    beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
     const runtimeRoot = (): string => String(mxcConfinementStatePaths()[0]);
 
     it.each([
@@ -316,6 +450,8 @@ describe("prepareMxcShellLaunch", () => {
       relay();
       h.privateRoots.mockReturnValue([`${ROOT}\\`]);
       h.liveHomes.add(OWN);
+      // Admission ranks only what is on the drive.
+      for (const path of [OWN, `${OWN}\\AppData`, `${ROOT}-other\\repo`, ...CLOSED]) onDrive(path);
     });
     afterEach(() => {
       h.privateRoots.mockReturnValue([]);
@@ -402,26 +538,41 @@ describe("prepareMxcShellLaunch", () => {
 
   it("expands a pattern deny over the filesystem by default, denies a placeholder directory whole and leaves links alone", async () => {
     relay();
-    const sessions = String.raw`C:\Users\u\.ave\sessions`;
+    const sessions = String.raw`C:\Users\bob\.ave\sessions`;
     // Listing reports every reparse point as a link; lstat separates a real link from a cloud placeholder directory.
-    const entry = (name: string, kind: "directory" | "file" | "reparse") => ({ name, isDirectory: () => kind === "directory", isSymbolicLink: () => kind === "reparse" });
-    h.readdir.mockImplementation((directory: string) => directory === sessions
-      ? [entry("one", "directory"), entry("link", "reparse"), entry("cloud", "reparse"), entry("gone", "reparse")]
-      : directory === `${sessions}\\one` ? [entry(".ssh", "directory")] : []);
-    h.lstat.mockImplementation((path: string) => {
-      if (path === `${sessions}\\gone`) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      return { isSymbolicLink: () => path === `${sessions}\\link`, isDirectory: () => path === `${sessions}\\cloud` };
-    });
+    onDrive(`${sessions}\\one\\.ssh`);
+    onDrive(String.raw`C:\Users\bob\elsewhere\.ssh`);
+    onDrive(`${sessions}\\link`, "link", String.raw`C:\Users\bob\elsewhere`);
+    onDrive(`${sessions}\\cloud`, "placeholder");
+    onDrive(`${sessions}\\gone`, "vanished");
     const lifecycle = createContainedShellLifecycle();
     try {
-      const launch = await prepareMxcShellLaunch({ ...INPUT, filesystem: { ...INPUT.filesystem, allowRead: [sessions], denyRead: [`${sessions}/**/.ssh`] } }, lifecycle);
-      expect(h.readdir).toHaveBeenCalledWith(sessions, { withFileTypes: true });
-      for (const name of ["link", "cloud", "gone"]) expect(h.readdir).not.toHaveBeenCalledWith(`${sessions}\\${name}`, expect.anything());
+      // A pattern row is expanded over the filesystem whatever its floor.
+      const pattern = `${sessions}/**/.ssh`;
+      const launch = await prepareMxcShellLaunch({ ...INPUT, filesystem: { ...INPUT.filesystem, allowRead: [sessions],
+        denyRead: [pattern] } }, lifecycle);
+      expect(h.listed).toContain(sessions);
+      for (const name of ["link", "cloud", "gone"]) expect(h.listed).not.toContain(`${sessions}\\${name}`);
       expect(decodeRequest(launch.argv)["filesystem"]["deniedPaths"]).toEqual([`${sessions}\\cloud`, `${sessions}\\one\\.ssh`]);
     } finally {
       expect(await lifecycle.dispose()).toEqual([]);
-      h.readdir.mockReset();
-      h.lstat.mockReset();
+    }
+  });
+
+  it("skips entries removed since the listing, so they count toward no walk cap", async () => {
+    relay();
+    const sessions = String.raw`C:\Users\bob\.ave\sessions`;
+    onDrive(`${sessions}\\one\\.ssh`);
+    // One more than the walk cap; a listing still reports each, as a link.
+    for (let index = 0; index <= 20_000; index++) onDrive(`${sessions}\\gone-${index}`, "vanished");
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const pattern = `${sessions}/**/.ssh`;
+      const launch = await prepareMxcShellLaunch({ ...INPUT, filesystem: { ...INPUT.filesystem, allowRead: [sessions],
+        denyRead: [pattern] } }, lifecycle);
+      expect(decodeRequest(launch.argv).filesystem.deniedPaths).toEqual([`${sessions}\\one\\.ssh`]);
+    } finally {
+      expect(await lifecycle.dispose()).toEqual([]);
     }
   });
 

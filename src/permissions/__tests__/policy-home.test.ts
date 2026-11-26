@@ -110,8 +110,11 @@ describe.skipIf(process.platform !== "win32")("home policy with an absent HOME",
         expect(writes).toContain(join(root, "Library", "LaunchAgents") + sep);
       }
       if (shellHome === explicitHome) {
+        // Windows shell confinement withholds the saved-session store from every command.
         const policy = getBuiltinShellReadPolicy([], explicitHome);
-        expect(policy.allowRead).toContain(canonicalizePathForMatch(join(home, ".ave", "sessions")));
+        const sessions = canonicalizePathForMatch(join(home, ".ave", "sessions"));
+        expect(policy.allowRead).not.toContain(sessions);
+        expect(policy.withheldSessionReadRoot).toBe(sessions);
         expect(policy.denyRead).toContain(join(explicitHome, ".ave", "sessions") + sep);
       }
     }

@@ -116,6 +116,15 @@ function isDescriptor(value: unknown): value is WindowsDacl {
 }
 
 const CONTENT_TOO_LARGE_EXIT_CODE = 5;
+const PATH_READ_FAILURE_EXIT_CODE = 4;
+
+/** A refusal the requested paths caused: an open/read failure, an oversized reply, or an overlong command line. */
+export function isWindowsPathFactsPathFailure(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { status, code } = error as { status?: unknown; code?: unknown };
+  return (status === PATH_READ_FAILURE_EXIT_CODE && !("syscall" in error)) || code === "ENOBUFS" || code === "E2BIG";
+}
+
 function encodeParentDaclFrame(paths: readonly string[]): Buffer {
   if (paths.length > MAX_DACL_FRAME_PATHS) throw new Error("Windows DACL request exceeds the size limit");
   const entries: { path: string; length: number }[] = [];
@@ -167,7 +176,7 @@ function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: read
       const helper = resolveWindowsPathKindHelper();
       const args = [mode, ...flags, ...(framed ? ["--stdin"] : paths)];
       if (windowsCommandLineLength(helper, args) > WINDOWS_COMMAND_LINE_LIMIT) {
-        throw new Error("Windows path facts command line exceeds the process limit");
+        throw Object.assign(new Error("Windows path facts command line exceeds the process limit"), { code: "E2BIG" });
       }
       return execFileSync(helper, args, {
         windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,

@@ -81,6 +81,7 @@ const LAUNCH_FILES = [
   "shared/host-git.ts",
   "shared/host-git-probe.ts",
   "shared/verified-executable.ts",
+  "shared/windows-drive-locality.ts",
   "shared/windows-path-facts.ts",
   "tools/grep-search.ts",
   "tools/image-preparation.ts",

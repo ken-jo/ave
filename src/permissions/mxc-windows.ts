@@ -6,11 +6,20 @@ import { randomBytes } from "node:crypto";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 import { WIN32_POWERSHELL_STARTUP_ARGS } from "../shared/powershell-startup-policy.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../shared/windows-command-line.js";
+import { sessionStorePath } from "../shared/session-store-path.js";
+import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
+import { expandWindowsEnvRefs, stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { openMxcPolicyPipe } from "./mxc-policy-pipe.js";
-import { isPolicyFloorRow, type PolicyModel, type PolicyRow } from "./policy-model.js";
+import { isPolicyFloorRow, userDenyCoversPierce, type PolicyModel, type PolicyRow } from "./policy-model.js";
+import {
+  admitObligations, consumeObligations, obligationWithin, requireEnforceable,
+  type AdmittedObligation, type ObligationRow, type ObligationSet,
+} from "./admitted-obligation.js";
 
 import { errorMessage } from "../shared/error-message.js";
 import { compileGlobMatcher, globToRegExp } from "../lib/glob-matcher.js";
+import { isPlainWindowsPathComponent } from "./windows-stamp-targets.js";
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
 import MXC_PINS from "./mxc-launcher-pins.json" with { type: "json" };
 
@@ -322,6 +331,32 @@ function patternDenyRefusal(pattern: string, reason: string): Error {
   return new Error(`Windows sandbox policy cannot hold pattern deny: ${pattern} (${reason})`);
 }
 
+// The one spelling a pattern's walk prefix and matcher both use: drive-absolute with an upper-case drive, or relative; one separator;
+// `.` dropped; `..` resolved only before the first wildcard. Components Win32 would open under another name are refused.
+function normalizedPatternSpelling(pattern: string): string {
+  const refuse = () => patternDenyRefusal(pattern, "cannot normalize the spelling");
+  const path = stripExtendedPathPrefix(pattern);
+  const drive = /^[a-z]:[\\/]/i.test(path);
+  if (!drive && /^[\\/]|:/.test(path)) throw refuse();
+  const components: string[] = [];
+  let wildcard = false;
+  for (const component of path.slice(drive ? 3 : 0).split(/[\\/]+/)) {
+    if (component === "" || component === ".") continue;
+    if (component === "..") {
+      if (wildcard || components.length === 0) throw refuse();
+      components.pop();
+      continue;
+    }
+    // `~` and digits may be a short name; that is judged against the directory listings (shortNameRefusal).
+    if (!isPlainWindowsPathComponent(component.replace(/[*?%~]/g, "_"))) throw refuse();
+    wildcard ||= PATTERN_SEGMENT.test(component);
+    components.push(component);
+  }
+  if (components.length === 0) throw refuse();
+  const body = components.join("\\") + (/[\\/]$/.test(path) ? "\\" : "");
+  return drive ? `${path.slice(0, 1).toUpperCase()}:\\${body}` : body;
+}
+
 interface CompiledPatternDeny {
   readonly pattern: string;
   readonly matches: (path: string) => boolean;
@@ -357,55 +392,86 @@ function errorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : undefined;
 }
 
-// Native rules are literal paths, so a pattern deny becomes the entries it matches when the shell starts (as Codex's mxc-sandbox and sandbox-runtime
-// on Windows expand deny globs on the host). That snapshot is complete only where the shell cannot create a new match: the region the pattern covers
-// must be read-only to it. A match created later by another process is covered from the next start. An unanchored pattern (`**/.ssh`) covers every
-// granted root. All patterns share one walk and one entry cap.
+interface SpelledPatternDeny {
+  readonly requested: string;
+  readonly pattern: string;
+}
+
+// Where a pattern row ended: walked (every existing match beneath a grant it reaches is returned) or outside every grant.
+type PatternOutcome = "walked" | "outside-reach";
+
+// An 8.3 short name opens its object but is never listed, so no walk or match can see what it names.
+function shortNameRefusal(pattern: string, name: string): Error {
+  return patternDenyRefusal(pattern, `${name} is an 8.3 short name`);
+}
+
+function literalPatternPrefix(pattern: string): string {
+  const segments = pattern.split("\\");
+  const literal = segments.slice(0, segments.findIndex((segment) => PATTERN_SEGMENT.test(segment)));
+  return literal.join("\\") + (literal.length === 1 ? "\\" : "");
+}
+
+// Native rules are literal paths. The admitted launch policy denies existing pattern matches, including in writable grants.
+// A new match is covered at the next launch. Unanchored patterns cover every granted root, and all patterns share one walk cap.
 function expandPatternDenies(
-  patterns: readonly string[],
+  patterns: readonly SpelledPatternDeny[],
   rules: readonly MxcRule[],
   exists: (path: string) => boolean,
-  list: ((directory: string) => readonly MxcDirectoryEntry[]) | undefined,
-): string[] {
+  list: ((directory: string) => Iterable<MxcDirectoryEntry>) | undefined,
+  allowWritableMatches = false,
+  // Whether a lookup of the path opens an object; a `~digit` name it opens that no listing holds is a short name.
+  named?: (path: string) => boolean,
+): { readonly matches: string[]; readonly outcomes: ReadonlyMap<string, PatternOutcome> } {
   const grants = rules.filter((rule) => rule.kind !== "deny");
   const compiled: CompiledPatternDeny[] = [];
+  const outcomes = new Map<string, PatternOutcome>();
   const walkRoots = new Map<string, { readonly root: string; readonly pattern: string }>();
   const addRoot = (root: string, pattern: string): void => {
-    if (exists(root) && !walkRoots.has(foldPath(root))) walkRoots.set(foldPath(root), { root, pattern });
+    let present: boolean;
+    try { present = exists(root); }
+    catch (error) { throw patternDenyRefusal(pattern, errorMessage(error)); }
+    if (present && !walkRoots.has(foldPath(root))) walkRoots.set(foldPath(root), { root, pattern });
   };
-  for (const pattern of patterns) {
+  for (const { requested, pattern } of patterns) {
     const glob = pattern.replaceAll("\\", "/");
     if (!WINDOWS_ABSOLUTE.test(pattern)) {
-      if (grants.length === 0) continue;
-      if (grants.some((rule) => rule.kind === "readwrite")) throw patternDenyRefusal(pattern, "an unanchored pattern reaches a writable grant");
-      if (list === undefined) throw patternDenyRefusal(pattern, "no directory lister");
+      if (grants.length === 0) { outcomes.set(requested, "outside-reach"); continue; }
+      if (!allowWritableMatches && grants.some((rule) => rule.kind === "readwrite")) throw patternDenyRefusal(requested, "an unanchored pattern reaches a writable grant");
+      if (list === undefined) throw patternDenyRefusal(requested, "no directory lister");
       compiled.push({ pattern, matches: compileGlobMatcher(glob.startsWith("**") ? glob : `**/${glob}`, { caseInsensitive: true }) });
-      for (const rule of grants) addRoot(rule.path, pattern);
+      for (const rule of grants) addRoot(rule.path, requested);
+      outcomes.set(requested, "walked");
       continue;
     }
-    const segments = winPath.normalize(pattern).split("\\");
-    const literal = segments.slice(0, segments.findIndex((segment) => PATTERN_SEGMENT.test(segment)));
-    const prefix = winPath.normalize(literal.join("\\") + (literal.length === 1 ? "\\" : ""));
+    const prefix = literalPatternPrefix(pattern);
     const reached = grants.filter((rule) => isWindowsPathAtOrUnder(rule.path, prefix) || isWindowsPathAtOrUnder(prefix, rule.path));
-    if (reached.length === 0) continue;
+    if (reached.length === 0) { outcomes.set(requested, "outside-reach"); continue; }
     // The most specific rule at or above the pattern's literal prefix decides what the shell may do there.
     const nearest = rules.filter((rule) => isWindowsPathAtOrUnder(prefix, rule.path))
       .sort((a, b) => foldPath(b.path).length - foldPath(a.path).length)[0];
-    if (nearest?.kind === "readwrite" || reached.some((rule) => rule.kind === "readwrite" && isWindowsPathAtOrUnder(rule.path, prefix))) {
-      throw patternDenyRefusal(pattern, "the shell can write where it matches");
+    if (!allowWritableMatches && (nearest?.kind === "readwrite" || reached.some((rule) => rule.kind === "readwrite" && isWindowsPathAtOrUnder(rule.path, prefix)))) {
+      throw patternDenyRefusal(requested, "the shell can write where it matches");
     }
-    if (list === undefined) throw patternDenyRefusal(pattern, "no directory lister");
+    if (list === undefined) throw patternDenyRefusal(requested, "no directory lister");
     compiled.push({ pattern, matches: compileGlobMatcher(glob, { caseInsensitive: true }) });
     // Every grant inside the prefix is its own root: the walk from the prefix does not pass links, and a grant can sit behind one.
-    for (const root of [...(nearest?.kind === "readonly" ? [prefix] : []), ...reached.filter((rule) => strictlyUnder(rule.path, prefix)).map((rule) => rule.path)]) {
-      addRoot(root, pattern);
+    for (const root of [...(nearest?.kind === "readonly" || (allowWritableMatches && nearest?.kind === "readwrite") ? [prefix] : []),
+      ...reached.filter((rule) => strictlyUnder(rule.path, prefix)).map((rule) => rule.path)]) {
+      addRoot(root, requested);
     }
+    outcomes.set(requested, "walked");
   }
-  if (compiled.length === 0 || list === undefined) return [];
+  if (compiled.length === 0 || list === undefined) return { matches: [], outcomes };
   const matched = patternMatcher(compiled);
   const out: string[] = [];
   // Roots may nest; a directory one walk already listed is not listed again, so nested roots cost nothing extra.
   const listed = new Set<string>();
+  // Literal `~digit` components the walk compares with listed names: unanchored ones, and those after an anchored pattern's first wildcard.
+  const shortNameCandidates = patterns.flatMap(({ requested, pattern }) => {
+    const segments = pattern.split("\\");
+    const first = WINDOWS_ABSOLUTE.test(pattern) ? segments.findIndex((segment) => PATTERN_SEGMENT.test(segment)) : 0;
+    return segments.slice(first).filter((segment) => !PATTERN_SEGMENT.test(segment) && /~\d/.test(segment)).map((name) => ({ name, requested }));
+  });
   let visited = 0;
   for (const { root, pattern } of walkRoots.values()) {
     const pending = [root];
@@ -413,23 +479,28 @@ function expandPatternDenies(
     for (let directory = pending.pop(); directory !== undefined; directory = pending.pop()) {
       if (listed.has(foldPath(directory))) continue;
       listed.add(foldPath(directory));
-      let entries: readonly MxcDirectoryEntry[];
-      try { entries = list(directory); }
+      const names = new Set<string>();
+      try {
+        for (const entry of list(directory)) {
+          if (++visited > MXC_PATTERN_WALK_LIMIT) break;
+          names.add(entry.name.toLowerCase());
+          const path = `${directory}${directory.endsWith("\\") ? "" : "\\"}${entry.name}`;
+          if (entry.kind === "reparse-directory" || matched(path, entry.name)) out.push(path);
+          else if (entry.kind === "directory") pending.push(path);
+        }
+      }
       catch (error) {
         // Removed since its parent was listed: nothing is left to deny.
         if (errorCode(error) === "ENOENT") continue;
         throw patternDenyRefusal(pattern, `cannot list ${directory} under ${root}: ${errorMessage(error)}`);
       }
-      for (const entry of entries) {
-        if (++visited > MXC_PATTERN_WALK_LIMIT) throw patternDenyRefusal(pattern, `more than ${MXC_PATTERN_WALK_LIMIT} entries to check under ${root}`);
-        const path = `${directory}${directory.endsWith("\\") ? "" : "\\"}${entry.name}`;
-        // A matched directory is denied whole and not descended.
-        if (entry.kind === "reparse-directory" || matched(path, entry.name)) out.push(path);
-        else if (entry.kind === "directory") pending.push(path);
+      if (visited > MXC_PATTERN_WALK_LIMIT) throw patternDenyRefusal(pattern, `more than ${MXC_PATTERN_WALK_LIMIT} entries to check under ${root}`);
+      for (const { name, requested } of shortNameCandidates) {
+        if (!names.has(name.toLowerCase()) && named?.(winPath.join(directory, name)) === true) throw shortNameRefusal(requested, name);
       }
     }
   }
-  return dedupe(out).sort();
+  return { matches: dedupe(out).sort(), outcomes };
 }
 
 // The row classes the ranking below reads, each in the order its rows were stated.
@@ -445,6 +516,24 @@ export interface MxcPolicyRows {
   readonly protectedFloor: readonly string[];
   // Host-minted pierces. A grant at or beneath one is not dropped by the floor.
   readonly floorPierces: readonly string[];
+  // The user's read denies (`user-deny` rows). A grant at or beneath one is dropped, and no pierce covers it.
+  readonly userDenies: readonly string[];
+}
+
+function pathAndAncestors(path: string): string[] {
+  const paths: string[] = [];
+  for (let current = withoutTrailingSeparator(path); ; current = winPath.dirname(current)) {
+    paths.push(current);
+    if (winPath.dirname(current) === current) return paths;
+  }
+}
+
+// Whether a user's normalized read deny pattern names `target`, its contents or an ancestor; a relative pattern matches at any depth.
+function userPatternCovers(pattern: string, target: string): boolean {
+  const glob = pattern.replaceAll("\\", "/");
+  const matches = compileGlobMatcher(WINDOWS_ABSOLUTE.test(pattern) || glob.startsWith("**") ? glob : `**/${glob}`, { caseInsensitive: true });
+  // With a trailing separator a path names its contents too, so `<dir>\**` covers the directory itself.
+  return pathAndAncestors(target).some(path => [path, `${path}/`].some(form => matches(form.replaceAll("\\", "/"))));
 }
 
 export function mxcPolicyRows(model: PolicyModel): MxcPolicyRows {
@@ -453,19 +542,18 @@ export function mxcPolicyRows(model: PolicyModel): MxcPolicyRows {
   return {
     writeGrants: paths((row) => grant(row) && row.access === "rw"),
     readGrants: paths((row) => grant(row) && row.access === "ro"),
-    readDenies: paths((row) => isPolicyFloorRow(row) && row.access === "denied" && row.reason !== "secrets"),
+    readDenies: paths((row) => isPolicyFloorRow(row) && row.access === "denied" && row.reason !== "secrets" && row.reason !== "user-deny"),
     writeFloor: paths((row) => isPolicyFloorRow(row) && row.access === "ro"),
     protectedFloor: paths((row) => row.reason === "secrets"),
     floorPierces: paths((row) => row.reason === "floor-pierce"),
+    userDenies: paths((row) => row.reason === "user-deny"),
   };
 }
 
-// The Windows container adapter: policy rows in, the three container lists out. It owns what this backend needs beyond the rows:
-// which grant wins against which floor row, what an absent path becomes, and which rows the container never needs to hear about.
-// A row is read as a pattern by its spelling, whatever its `literal` marker says: the shell hands over spellings, the extension
-// admission hands over literals, and both were always classified by spelling here.
+// The same ranking over row spellings and caller-supplied lookups, with no admission. No launch uses it; its tests pin the ranking
+// and the pattern walk on simulated layouts.
 // Drop grants piercing protected floors except explicit history read exceptions; write denies downgrade grants to read-only. Missing write-deny targets must stay denied because read-only does not prevent creation. Preserve nested read denies, omit redundant denied ancestors, and drop nonexistent grants.
-export function rankMxcFilesystem(
+export function rankMxcRowsBySpelling(
   model: PolicyModel,
   exists: (path: string) => boolean,
   list?: (directory: string) => readonly MxcDirectoryEntry[],
@@ -476,9 +564,18 @@ export function rankMxcFilesystem(
   const protectedFloor = windowsPaths(rows.protectedFloor);
   const denyWrite = windowsPaths(rows.writeFloor);
   const pierces = rows.floorPierces;
+  const userDenies = windowsPaths(rows.userDenies);
+  // A relative row is unanchored, as a pattern is: it applies wherever the shell reads, so it is expanded rather than dropped.
+  const isPatternDeny = (deny: string): boolean => PATTERN_SEGMENT.test(deny) || !WINDOWS_ABSOLUTE.test(deny);
+  for (const pierce of pierces) {
+    const rule = userDenies.find((deny) => isPatternDeny(deny)
+      ? userPatternCovers(normalizedPatternSpelling(deny), pierce) : isWindowsPathAtOrUnder(pierce, deny));
+    if (rule !== undefined) throw userDenyCoversPierce(rule, pierce);
+  }
   const floored = (path: string): boolean =>
-    protectedFloor.some((floor) => isWindowsPathAtOrUnder(path, floor)) &&
-    !pierces.some((pierce) => isWindowsPathAtOrUnder(path, pierce));
+    userDenies.some((deny) => !isPatternDeny(deny) && isWindowsPathAtOrUnder(path, deny)) ||
+    (protectedFloor.some((floor) => isWindowsPathAtOrUnder(path, floor)) &&
+    !pierces.some((pierce) => isWindowsPathAtOrUnder(path, pierce)));
   const writeDenied = (path: string): boolean => denyWrite.some((deny) => isWindowsPathAtOrUnder(path, deny));
 
   const writeGrants = dedupe(rows.writeGrants).filter((path) => exists(path) && !floored(path));
@@ -489,9 +586,7 @@ export function rankMxcFilesystem(
   // A pierced floor row is the read exception itself; kept, it would deny the pierced grant as soon as a wider grant contains it. Only the
   // exact row goes: a floor row above a pierce stays, and the more specific read grant carves the pierce out of it.
   const pierced = new Set(pierces.map(foldPath));
-  const readDenies = dedupe([...windowsPaths(rows.readDenies), ...protectedFloor.filter((row) => !pierced.has(foldPath(row)))]);
-  // A relative row is unanchored, as a pattern is: it applies wherever the shell reads, so it is expanded rather than dropped.
-  const isPatternDeny = (deny: string): boolean => PATTERN_SEGMENT.test(deny) || !WINDOWS_ABSOLUTE.test(deny);
+  const readDenies = dedupe([...windowsPaths(rows.readDenies), ...protectedFloor.filter((row) => !pierced.has(foldPath(row))), ...userDenies]);
   const literalDenies = readDenies.filter((deny) => !isPatternDeny(deny));
   // Whether reads at `path` are denied: the most specific requested grant or emitted read deny at or above it is a deny (a deny wins a
   // tie). A write-floor row there must not become a read-only grant: being more specific than that deny, the grant would re-open it.
@@ -516,7 +611,8 @@ export function rankMxcFilesystem(
     ...readonlyOut.map((path) => ({ path, kind: "readonly" as const })),
     ...literalDenies.filter((deny) => allGrants.some((grant) => strictlyUnder(deny, grant))).map((path) => ({ path, kind: "deny" as const })),
   ];
-  const patternMatches = expandPatternDenies(readDenies.filter(isPatternDeny), rules, exists, list);
+  const patternMatches = expandPatternDenies(readDenies.filter(isPatternDeny)
+    .map((requested) => ({ requested, pattern: normalizedPatternSpelling(requested) })), rules, exists, list).matches;
   for (const deny of literalDenies) {
     if (allGrants.some((grant) => strictlyUnder(deny, grant))) denied.push(deny);
   }
@@ -545,6 +641,299 @@ export function rankMxcFilesystem(
     denied: dedupe(raised).filter((path, index, paths) =>
       !paths.some((parent, parentIndex) => parentIndex !== index && isWindowsPathAtOrUnder(path, parent))).map(withoutTrailingSeparator),
   };
+}
+
+function expandMxcPolicyPath(path: string): string {
+  return WINDOWS_ABSOLUTE.test(path) ? path : expandLeadingTilde(expandWindowsEnvRefs(path));
+}
+
+export function isMxcReadPattern(path: string): boolean {
+  const spelling = stripExtendedPathPrefix(expandMxcPolicyPath(path));
+  return /^[a-z]:[\\/]/i.test(spelling)
+    ? PATTERN_SEGMENT.test(spelling)
+    : !/^[\\/]|:/u.test(spelling);
+}
+
+function* listMxcPatternDirectory(directory: string): Iterable<MxcDirectoryEntry> {
+  const route = admitLocalRoute(directory);
+  if (route.followedLink) throw new Error("A directory changed while expanding a read deny");
+  if (localFs.lstat(route.verdict)?.isDirectory() !== true) return;
+  const opened = localFs.opendir(route.verdict);
+  try {
+    for (let entry = opened.readSync(); entry !== null; entry = opened.readSync()) {
+      if (!entry.isSymbolicLink()) {
+        yield { name: entry.name, kind: entry.isDirectory() ? "directory" : "file" };
+        continue;
+      }
+      // A listing reports every reparse point as a link; lstat tells a real link from a placeholder directory.
+      const target = localFs.lstat(admitLocalPath(winPath.join(route.verdict.path, entry.name)));
+      // Removed since the listing: nothing is left to deny.
+      if (target === undefined) continue;
+      yield { name: entry.name, kind: target.isSymbolicLink() ? "link" : target.isDirectory() ? "reparse-directory" : "file" };
+    }
+  } finally {
+    opened.closeSync();
+  }
+}
+
+// A policy row as the obligation the ranking below reads. `secrets` rows are the protected floor: a grant at or beneath one is dropped
+// unless a pierce covers it. `user-deny` rows drop it too, and no pierce covers them. `ave-home` and `read-boundary` rows are read
+// masks a grant at their own path or beneath them re-opens. A read deny is a pattern by its spelling; its matches are admitted when
+// the launch is ranked.
+function obligationRowsOf(model: PolicyModel): {
+  readonly rows: readonly ObligationRow[]; readonly patterns: readonly string[]; readonly userPatterns: readonly string[];
+} {
+  const rows: ObligationRow[] = [];
+  const patterns = new Set<string>();
+  const userPatterns = new Set<string>();
+  let sessionRoot: string | undefined;
+  for (const row of model.rows) {
+    const spelling = { path: expandMxcPolicyPath(row.path), literal: true } as const;
+    if (isPolicyFloorRow(row)) {
+      if (row.access === "ro") rows.push({ spelling, polarity: { effect: "deny", access: "write" }, source: "per-command" });
+      else if (isMxcReadPattern(row.path)) {
+        patterns.add(stripExtendedPathPrefix(spelling.path));
+        if (row.reason === "user-deny") userPatterns.add(stripExtendedPathPrefix(spelling.path));
+      } else {
+        const source = row.reason === "secrets" ? "floor" : row.reason === "user-deny" ? "settings" : "read-mask";
+        rows.push({ spelling, polarity: { effect: "deny", access: "read" }, source });
+      }
+    } else if (row.reason === "floor-pierce") {
+      // The saved-session read exception is withheld on Windows.
+      sessionRoot ??= sessionStorePath();
+      if (!isWindowsPathAtOrUnder(row.path, sessionRoot)) rows.push({ spelling, polarity: { effect: "allow", access: "lookup" }, source: "per-command" });
+    } else {
+      rows.push({ spelling, polarity: { effect: "allow", access: row.access === "rw" ? "write" : "read" }, source: row.reason === "user-grant" ? "settings" : "per-command" });
+    }
+  }
+  return { rows, patterns: [...patterns], userPatterns: [...userPatterns] };
+}
+
+interface CanonicalPatternDeny extends SpelledPatternDeny {
+  // The admitted object of the literal prefix; undefined for an unanchored pattern.
+  readonly prefix: AdmittedObligation | undefined;
+}
+
+// A literal prefix is admitted the way a grant is, so the walk and the matcher use the final path the grants carry.
+// A prefix that cannot be admitted, or that overlaps a grant under the requested spelling but resolves outside every grant, refuses the launch.
+function canonicalPatternSpellings(patterns: readonly string[], grants: readonly AdmittedObligation[]): CanonicalPatternDeny[] {
+  const spelled = patterns.map((requested) => ({ requested, pattern: normalizedPatternSpelling(requested) }));
+  const prefixes = [...new Set(spelled.filter(({ pattern }) => WINDOWS_ABSOLUTE.test(pattern)).map(({ pattern }) => literalPatternPrefix(pattern)))];
+  // Each `~digit` prefix component with its parent: the component is a short name when it opens an object its parent does not list.
+  const shortNames = prefixes.flatMap(prefix => prefix.split("\\").flatMap((name, index, components) => index === 0 || !/~\d/.test(name) ? []
+    : [{ name, parent: literalPatternPrefix(`${components.slice(0, index).join("\\")}\\*`), child: components.slice(0, index + 1).join("\\") }]));
+  const set = admitObligations({ purpose: "mxc-launch", principal: "mxc", rows: [...new Set([...prefixes, ...shortNames.flatMap(({ parent, child }) => [parent, child])])].map(path => ({
+    spelling: { path, literal: true }, polarity: { effect: "allow", access: "lookup" }, source: "command-operand",
+  })) });
+  const admitted = new Map(consumeObligations(set, "mxc-launch").map(entry => [entry.origin.row, entry]));
+  const unresolved = new Map(set.unresolved.map(entry => [entry.origin.row, entry.reason]));
+  return spelled.map(({ requested, pattern }) => {
+    if (!WINDOWS_ABSOLUTE.test(pattern)) return { requested, pattern, prefix: undefined };
+    const spelledPrefix = literalPatternPrefix(pattern);
+    const prefix = admitted.get(spelledPrefix);
+    if (prefix === undefined) {
+      throw patternDenyRefusal(requested, `its literal prefix cannot be admitted: ${unresolved.get(spelledPrefix) ?? "incomplete-walk"}`);
+    }
+    for (const { name, parent, child } of shortNames) {
+      if (!isWindowsPathAtOrUnder(spelledPrefix, child)) continue;
+      const directory = admitted.get(parent);
+      const opened = admitted.get(child);
+      if (directory === undefined || opened === undefined) throw patternDenyRefusal(requested, `cannot tell whether ${name} is an 8.3 short name`);
+      if (opened.kind !== "missing" && ![...listMxcPatternDirectory(directory.target)].some(entry => entry.name.toLowerCase() === name.toLowerCase())) {
+        throw shortNameRefusal(requested, name);
+      }
+    }
+    const overlaps = (a: string, b: string) => isWindowsPathAtOrUnder(a, b) || isWindowsPathAtOrUnder(b, a);
+    // Reach: a grant's admitted final path is at, under or above the prefix's admitted final path.
+    // Overlap: the same relation by object identity chain, or between the requested prefix spelling and a grant's final
+    // path or requested row. Overlap without reach is refused: the spellings disagree on where the prefix is, so a walk
+    // from its final path cannot be shown to cover what the grant opens.
+    const reaches = grants.some(grant => overlaps(grant.target, prefix.target));
+    if (!reaches && grants.some(grant => obligationWithin(grant, prefix) || obligationWithin(prefix, grant)
+      || overlaps(spelledPrefix, grant.target) || overlaps(spelledPrefix, stripExtendedPathPrefix(grant.origin.row)))) {
+      throw patternDenyRefusal(requested, "its literal prefix overlaps a grant but resolves outside every grant");
+    }
+    const rest = pattern.slice(spelledPrefix.replace(/\\$/, "").length + 1);
+    return { requested, pattern: `${prefix.target.replace(/[\\/]+$/, "")}\\${rest}`, prefix };
+  });
+}
+
+// Why a reached deny row is left open. The reasons are closed; each names the row by its origin and carries its evidence.
+export type MxcDenyException =
+  // A floor row whose read grant at the same path takes its place; `grant` is that grant's row.
+  | { readonly reason: "lifted-floor"; readonly row: string; readonly grant: string }
+  // A host read mask the grant at its own path carves open; `grant` is that grant's row.
+  | { readonly reason: "read-mask-carve-out"; readonly row: string; readonly grant: string };
+
+export interface MxcDenyOutcomeInput {
+  readonly denies: readonly AdmittedObligation[];
+  readonly exceptions: readonly MxcDenyException[];
+  readonly patterns: readonly CanonicalPatternDeny[];
+  readonly outcomes: ReadonlyMap<string, PatternOutcome>;
+  // The grants a pattern prefix is judged against.
+  readonly reachable: readonly AdmittedObligation[];
+  // This launch's reach: the grants left after every deny.
+  readonly reach: readonly AdmittedObligation[];
+  readonly result: MxcFilesystemGrants;
+}
+
+function exceptionHolds(deny: AdmittedObligation, input: MxcDenyOutcomeInput): boolean {
+  // The named grant row is in this launch's reach at the deny's own path, with an access the reason accepts.
+  const granted = (row: unknown, access: readonly string[]) => typeof row === "string" && input.reach.some(grant =>
+    grant.origin.row === row && grant.polarity.effect === "allow" && access.includes(grant.polarity.access)
+    && foldPath(grant.target) === foldPath(deny.target));
+  return input.exceptions.filter(candidate => candidate.row === deny.origin.row).some(exception => {
+    switch (exception.reason) {
+      case "lifted-floor":
+        return deny.origin.source === "floor" && granted(exception.grant, ["read"]);
+      case "read-mask-carve-out":
+        return deny.origin.source === "read-mask" && granted(exception.grant, ["read", "write"]);
+      default:
+        return false;
+    }
+  });
+}
+
+const DENY_EXCEPTION_REASONS: ReadonlySet<string> = new Set(["lifted-floor", "read-mask-carve-out"] satisfies MxcDenyException["reason"][]);
+
+// Every admitted deny row and every pattern row ends stamped (denied in the result), carried (no granted path reaches it),
+// excepted (a closed reason whose evidence this launch holds), or the launch is refused.
+export function assertMxcDenyOutcomes(input: MxcDenyOutcomeInput): void {
+  const { denies, patterns, outcomes, reachable, result } = input;
+  const unheld = (row: string) => new Error(`Windows sandbox policy left a deny without an outcome: ${row}`);
+  const unknown = input.exceptions.find(exception => !DENY_EXCEPTION_REASONS.has(exception.reason));
+  if (unknown !== undefined) {
+    throw new Error(`Windows sandbox policy named an unknown deny exception for ${unknown.row}: ${String(unknown.reason)}`);
+  }
+  for (const deny of denies) {
+    const write = deny.polarity.access === "write";
+    const stamped = result.denied.some(path => isWindowsPathAtOrUnder(deny.target, path))
+      || (write && result.readonly.some(path => foldPath(path) === foldPath(deny.target)));
+    const grants = [...result.readwrite, ...(write ? [] : result.readonly)];
+    // A grant beneath the deny reaches it too, except a read-mask carve-out or the read grant a floor pierce admits.
+    const beneath = deny.origin.source === "read-mask" ? [] : deny.origin.source === "floor" ? result.readwrite : grants;
+    const reached = grants.some(grant => isWindowsPathAtOrUnder(deny.target, grant)) || beneath.some(grant => strictlyUnder(grant, deny.target));
+    if (!stamped && reached && !exceptionHolds(deny, input)) throw unheld(deny.origin.row);
+  }
+  for (const { requested, pattern, prefix } of patterns) {
+    const outcome = outcomes.get(requested);
+    if (outcome === undefined) throw unheld(requested);
+    if (outcome === "outside-reach" && (prefix === undefined ? reachable.length > 0
+      : reachable.some(grant => isWindowsPathAtOrUnder(grant.target, prefix.target) || isWindowsPathAtOrUnder(prefix.target, grant.target)))) {
+      throw unheld(`${requested} (${pattern})`);
+    }
+  }
+}
+
+// The Windows container adapter: policy rows in, the three container lists out. Every row is admitted to the object it names
+// first, and the ranking compares those objects, never spellings.
+export function rankMxcFilesystem(model: PolicyModel): MxcFilesystemGrants {
+  const { patterns, userPatterns } = obligationRowsOf(model);
+  return rankAdmittedMxcFilesystem(admitMxcFilesystem(model), patterns, userPatterns);
+}
+
+/** The model's literal rows admitted for one container launch; pattern denies are admitted when the launch is ranked. */
+export function admitMxcFilesystem(model: PolicyModel): ObligationSet {
+  return admitObligations({ purpose: "mxc-launch", principal: "mxc", rows: obligationRowsOf(model).rows });
+}
+
+function rankAdmittedMxcFilesystem(set: ObligationSet, requestedPatterns: readonly string[], userPatterns: readonly string[]): MxcFilesystemGrants {
+  requireEnforceable(set);
+  if (set.scope.principal !== "mxc") throw new TypeError("Filesystem obligations were issued for another principal");
+  const entries = consumeObligations(set, "mxc-launch");
+  const allReadDenies = entries.filter(entry => entry.polarity.effect === "deny" && entry.polarity.access === "read");
+  const writeDenies = entries.filter(entry => entry.polarity.effect === "deny" && entry.polarity.access === "write");
+  const floor = allReadDenies.filter(entry => entry.origin.source === "floor");
+  const within = (outer: AdmittedObligation, inner: AdmittedObligation) => obligationWithin(outer, inner)
+    && isWindowsPathAtOrUnder(inner.target, outer.target);
+  const inside = (outer: AdmittedObligation, inner: AdmittedObligation) => within(outer, inner)
+    && foldPath(outer.target) !== foldPath(inner.target);
+  const requestedPierces = entries.filter(entry => entry.polarity.access === "lookup" && entry.origin.source === "per-command" && entry.kind !== "missing");
+  const sessionRoot = requestedPierces.length > 0 ? sessionStorePath() : undefined;
+  const pierces = requestedPierces.filter(entry => sessionRoot === undefined || !isWindowsPathAtOrUnder(entry.target, sessionRoot));
+  for (const pierce of pierces) {
+    const rule = allReadDenies.find(deny => deny.origin.source === "settings" && within(deny, pierce));
+    if (rule !== undefined) throw userDenyCoversPierce(rule.origin.row, pierce.origin.row);
+  }
+  const baseAllows = entries.filter(entry => entry.polarity.effect === "allow" && entry.polarity.access !== "lookup" && entry.kind !== "missing"
+    && !allReadDenies.some(deny => within(deny, entry) && deny.origin.source !== "read-mask"
+      && !(deny.origin.source === "floor" && entry.polarity.access === "read"
+        && pierces.some(pierce => within(deny, pierce) && within(pierce, entry)))));
+  // Remove an exact product floor row only when the read grant takes its place.
+  const lifted = floor.filter(deny => pierces.some(pierce => within(deny, pierce) && !inside(deny, pierce))
+    && baseAllows.some(grant => grant.polarity.access === "read" && within(deny, grant) && !inside(deny, grant)));
+  const readDenies = allReadDenies.filter(deny => !lifted.includes(deny)
+    && !(deny.origin.source === "read-mask" && baseAllows.some(grant => within(deny, grant) && !inside(deny, grant))));
+  let patterns: CanonicalPatternDeny[] = [];
+  let patternOutcomes: ReadonlyMap<string, PatternOutcome> = new Map();
+  const patternDenies = requestedPatterns.length === 0 ? [] : withLocalityDecision(() => {
+    patterns = canonicalPatternSpellings(requestedPatterns, baseAllows);
+    for (const { requested, pattern } of patterns) {
+      if (!userPatterns.includes(requested)) continue;
+      const pierce = pierces.find(entry => userPatternCovers(pattern, entry.target));
+      if (pierce !== undefined) throw userDenyCoversPierce(requested, pierce.origin.row);
+    }
+    const rules: MxcRule[] = [
+      ...baseAllows.map(entry => ({ path: entry.target, kind: entry.polarity.access === "write" ? "readwrite" as const : "readonly" as const })),
+      ...readDenies.filter(deny => baseAllows.some(grant => inside(grant, deny))).map(entry => ({ path: entry.target, kind: "deny" as const })),
+    ];
+    const { matches, outcomes } = expandPatternDenies(patterns, rules, path => {
+      const route = admitLocalRoute(path, { projectMissing: true });
+      // Roots are admitted final paths: one that now follows a link changed during the walk.
+      if (route.followedLink) throw new Error("A pattern deny root changed while expanding a read deny");
+      return localFs.lstat(route.verdict) !== undefined;
+    }, listMxcPatternDirectory, true, path => localFs.lstat(admitLocalRoute(path, { projectMissing: true }).verdict) !== undefined);
+    patternOutcomes = outcomes;
+    const matched = admitObligations({ purpose: "mxc-launch", principal: "mxc", rows: matches.map(path => ({
+      spelling: { path, literal: true }, polarity: { effect: "deny", access: "read" }, source: "settings",
+    })) });
+    requireEnforceable(matched);
+    return consumeObligations(matched, "mxc-launch").filter(deny => deny.kind !== "missing");
+  });
+  const allows = baseAllows.filter(grant => !patternDenies.some(deny => within(deny, grant)));
+  const writes = allows.filter(entry => entry.polarity.access === "write" && !writeDenies.some(deny => within(deny, entry)));
+  const reads = allows.filter(entry => !writes.includes(entry));
+  const activeReadDenies = [...readDenies.filter(deny => allows.some(grant => inside(grant, deny))), ...patternDenies];
+  const denied = [...activeReadDenies];
+  for (const deny of writeDenies) {
+    if (!writes.some(grant => inside(grant, deny))) continue;
+    const denyDepth = Math.max(-1, ...activeReadDenies.filter(read => within(read, deny)).map(read => read.chain.length));
+    const grantDepth = Math.max(-1, ...allows.filter(grant => within(grant, deny)).map(grant => grant.chain.length));
+    if (deny.kind === "missing" || denyDepth >= grantDepth) denied.push(deny);
+    else reads.push(deny);
+  }
+  for (const deny of readDenies) {
+    if (!denied.includes(deny) && reads.some(grant => inside(grant, deny))) denied.push(deny);
+  }
+  const raised = denied.map(deny => {
+    if (deny.kind !== "missing" || !writes.some(grant => inside(grant, deny))) return deny.target;
+    const first = winPath.relative(deny.anchorTarget, deny.target).split("\\")[0];
+    const firstMissing = winPath.join(deny.anchorTarget, first);
+    if (foldPath(firstMissing) === foldPath(deny.target)) return deny.target;
+    if ([...writes, ...reads].some(grant => foldPath(firstMissing) === foldPath(grant.target))
+      || !writes.some(grant => strictlyUnder(firstMissing, grant.target))) {
+      throw new Error("Windows sandbox policy cannot raise missing deny within a writable grant");
+    }
+    return firstMissing;
+  });
+  const readwrite = dedupe(writes.map(entry => entry.target)).map(withoutTrailingSeparator);
+  const result: MxcFilesystemGrants = {
+    readwrite,
+    readonly: dedupe(reads.map(entry => entry.target)).filter(path => !readwrite.some(write => foldPath(write) === foldPath(path))).map(withoutTrailingSeparator),
+    denied: dedupe(raised).filter((path, index, paths) =>
+      !paths.some((parent, parentIndex) => parentIndex !== index && isWindowsPathAtOrUnder(path, parent)
+        && !allows.some(grant => strictlyUnder(grant.target, parent) && isWindowsPathAtOrUnder(path, grant.target)))).map(withoutTrailingSeparator),
+  };
+  const exceptions: MxcDenyException[] = [
+    ...lifted.flatMap(deny => baseAllows.filter(grant => grant.polarity.access === "read" && within(deny, grant) && !inside(deny, grant))
+      .map(grant => ({ reason: "lifted-floor" as const, row: deny.origin.row, grant: grant.origin.row }))),
+    ...allReadDenies.filter(deny => deny.origin.source === "read-mask" && !readDenies.includes(deny))
+      .flatMap(deny => baseAllows.filter(grant => within(deny, grant) && !inside(deny, grant))
+        .map(grant => ({ reason: "read-mask-carve-out" as const, row: deny.origin.row, grant: grant.origin.row }))),
+  ];
+  assertMxcDenyOutcomes({ denies: [...allReadDenies, ...writeDenies, ...patternDenies], exceptions, patterns,
+    outcomes: patternOutcomes, reachable: baseAllows, reach: allows, result });
+  return result;
 }
 
 // The MXC 1.1.0 one-shot request Ave launches. Only the fields Ave sets.

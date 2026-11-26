@@ -52,8 +52,9 @@ export function withShellSessionCwd(
   const sessionCwd = readShellSessionCwd(context.sessionId, context.root);
   if (sessionCwd === undefined) return input;
   if (
-    !isExistingDirectory(sessionCwd) ||
-    validateShellWorkingDirectory(sessionCwd, context.root, context.allowedDirectories) !== null
+    // Authority first: a recorded cwd is looked up only once the workspace scope admits its spelling.
+    validateShellWorkingDirectory(sessionCwd, context.root, context.allowedDirectories) !== null ||
+    !isExistingDirectory(sessionCwd)
   ) {
     clearShellSessionCwd(context.sessionId!);
     return input;

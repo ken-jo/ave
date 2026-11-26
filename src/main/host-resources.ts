@@ -13,6 +13,15 @@ export function configureHostResources(input: HostResources): void {
   resources = Object.freeze({ resourcePath: input.resourcePath, isPackaged: input.isPackaged });
 }
 
+// A child process or worker has no composition root; it adopts its parent's resources or refuses to run.
+export function adoptHostResources(handoff: unknown): void {
+  const value = handoff as Partial<HostResources> | null;
+  if (value === null || typeof value !== "object" || typeof value.resourcePath !== "string" || typeof value.isPackaged !== "boolean") {
+    throw new Error("host-resources-unavailable");
+  }
+  configureHostResources({ resourcePath: value.resourcePath, isPackaged: value.isPackaged });
+}
+
 export function getHostResources(): HostResources {
   if (!resources) throw new Error("host-resources-unavailable");
   return resources;

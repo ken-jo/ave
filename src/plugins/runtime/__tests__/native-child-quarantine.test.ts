@@ -1,6 +1,7 @@
 /** End to end through the runtime, the real out-of-process factory and the real envelope registration:
  * a native plugin child whose termination is unverified quarantines before any second spawn or replacement. */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { t } from "../../../i18n/runtime.js";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { existsSync, mkdtempSync, readdirSync } from "node:fs";
@@ -9,7 +10,7 @@ import { join, win32 as winPath } from "node:path";
 import { PassThrough } from "node:stream";
 import { makeTestPluginRuntime, servedAgentPluginsDocument } from "../../__tests__/test-helpers.js";
 import { admittedMxcChild, nativePluginLaunch } from "../../../__tests__/support/mxc-plugin-launch.js";
-import { mxcStagingParentFor } from "../../../__tests__/support/mxc-staging-parent.js";
+import { mxcStagingParentFor, removeSuiteMxcStagingParent } from "../../../__tests__/support/mxc-staging-parent.js";
 import * as runtimeRoot from "../../../permissions/mxc-runtime-root.js";
 import { MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
 import { createOutOfProcessPluginFactory } from "../../isolation/out-of-process-plugin.js";
@@ -25,6 +26,10 @@ import { planWindowsExtensionHolder } from "../../../permissions/mxc-extension-r
 import { registerMxcReleaseGateEvidence } from "../../../permissions/mxc-extension-admission.js";
 import { MXC_RELEASE_GATE_EVIDENCE } from "../../../__tests__/support/mxc-supervisor.js";
 import { windowsCommandLine } from "../../../shared/windows-command-line.js";
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
+afterAll(removeSuiteMxcStagingParent);
 
 /** Produces the owned process row-2 admission would return; the mock below wraps it as the admitted holder. */
 const spawnNativeChild = vi.hoisted(() => vi.fn());

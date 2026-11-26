@@ -8,3 +8,8 @@ export function writeDenyPaths(config: { filesystem: { denyWrite: readonly Files
     return /^[A-Za-z]:[\\/][^:]*$/u.test(path) ? path.replace(/[\\/]/gu, sep) : path;
   });
 }
+
+/** The paths of policy rows, whether plain spellings or admitted entries. */
+export function entryPaths(entries: readonly FilesystemPathEntry[] | undefined): string[] {
+  return (entries ?? []).map(entry => typeof entry === "string" ? entry : entry.path);
+}
