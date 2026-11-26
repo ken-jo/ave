@@ -287,6 +287,15 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     ["an object ACE without its flags", `04${ace(0x05, mask)}`],
     ["an object ACE in a revision 2 ACL", `02${ace(0x05, `${mask}01000000${"00".repeat(16)}${everyone}`)}`],
     ["an object ACE without its declared GUID", `04${ace(0x05, `${mask}01000000${everyone}`)}`],
+    ["an audit object ACE in a revision 3 ACL", `03${ace(0x07, `${mask}01000000${"11".repeat(16)}${everyone}`)}`],
+    ["an audit callback object ACE in a revision 2 ACL", `02${ace(0x0f, `${mask}00000000${everyone}`)}`],
+    ["an alarm object ACE without its declared GUID", `04${ace(0x08, `${mask}02000000${everyone}`)}`],
+    ["an alarm callback object ACE without its flags", `04${ace(0x10, mask)}`],
+    ["an audit callback mask without a SID", `02${ace(0x0d, mask)}`],
+    ["a header-only alarm ACE", "0203000400"],
+    ["a compound ACE", `02${ace(0x04, mask + everyone)}`],
+    ["a resource attribute ACE", `04${ace(0x12, mask + everyone)}`],
+    ["a scoped policy ACE", `04${ace(0x13, mask + everyone)}`],
   ])("rejects a file DACL reply with %s", (_name, aclHex) => {
     vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([fileDacl(aclHex)])));
     expect(() => readWindowsFileDacls([join(fixture, "directory", "file")])).toThrow("Invalid Windows file DACL response");
@@ -301,6 +310,15 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     ["an allow ACE with slack after its SID", `02${ace(0x00, `${mask}${everyone}00000000`)}`],
     ["an object ACE with one GUID", `04${ace(0x05, `${mask}01000000${"00".repeat(16)}${everyone}`)}`],
     ["a callback ACE with application data", `04${ace(0x09, `${mask}${everyone}61727478`)}`],
+    ["an audit object ACE with one GUID", `04${ace(0x07, `${mask}01000000${"11".repeat(16)}${everyone}`)}`],
+    ["an audit object ACE without GUIDs", `04${ace(0x07, `${mask}00000000${everyone}`)}`],
+    ["a revision 2 audit callback ACE", `02${ace(0x0d, `${mask}${everyone}61727478`)}`],
+    ["a revision 3 audit callback ACE", `03${ace(0x0d, `${mask}${everyone}61727478`)}`],
+    ["an audit callback object ACE with two GUIDs", `04${ace(0x0f, `${mask}03000000${"11".repeat(16)}${"22".repeat(16)}${everyone}61727478`)}`],
+    ["an alarm ACE", `02${ace(0x03, mask + everyone)}`],
+    ["an alarm object ACE with its inherited GUID", `04${ace(0x08, `${mask}02000000${"22".repeat(16)}${everyone}`)}`],
+    ["a revision 3 alarm callback ACE", `03${ace(0x0e, `${mask}${everyone}61727478`)}`],
+    ["an alarm callback object ACE", `04${ace(0x10, `${mask}01000000${"11".repeat(16)}${everyone}61727478`)}`],
   ])("accepts a file DACL reply with %s", (_name, aclHex) => {
     vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([fileDacl(aclHex)])));
     expect(readWindowsFileDacls([join(fixture, "directory", "file")])).toEqual([fileDacl(aclHex)]);

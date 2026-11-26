@@ -275,6 +275,10 @@ describe("workbook file transaction", () => {
 
     const allow = "0000140089001200010100000000000100000000";
     const audit = "0200140089001200010100000000000100000000";
+    const everyone = "010100000000000100000000";
+    const auditCallback = (tail: string) => `0d00180089001200${everyone}${tail}`;
+    const auditObject = (guid: string) => `0700280089001200${"01000000"}${guid.repeat(16)}${everyone}`;
+    const auditCallbackObject = `0f003c0089001200${"03000000"}${"11".repeat(16)}${"22".repeat(16)}${everyone}61727478`;
     function nativeFileDacls(aclFor: (file: string) => { aceCount: number; aclHex: string }) {
       const passthrough = vi.mocked(execFileSync).getMockImplementation();
       vi.mocked(execFileSync).mockImplementation(((helper: string, args: readonly string[] | undefined, options: unknown) => {
@@ -291,6 +295,9 @@ describe("workbook file transaction", () => {
     it.each([
       { form: "a revision 3 allow ACE", acl: { aceCount: 1, aclHex: `03${allow}` }, large: false },
       { form: "allow and audit ACEs", acl: { aceCount: 2, aclHex: `02${allow}${audit}` }, large: true },
+      { form: "a revision 3 audit callback ACE", acl: { aceCount: 2, aclHex: `03${allow}${auditCallback("61727478")}` }, large: false },
+      { form: "a revision 4 audit callback object ACE", acl: { aceCount: 2, aclHex: `04${allow}${auditCallbackObject}` }, large: true },
+      { form: "a revision 4 audit object ACE", acl: { aceCount: 2, aclHex: `04${allow}${auditObject("11")}` }, large: false },
     ])("publishes when every file keeps $form", async ({ acl, large }) => {
       const { path, output } = await workbook(large);
       const snapshot = readWorkbookSnapshot(path);
@@ -304,6 +311,24 @@ describe("workbook file transaction", () => {
       const snapshot = readWorkbookSnapshot(path);
       const restore = nativeFileDacls((file) => file === path
         ? { aceCount: 2, aclHex: `02${allow}${audit}` } : { aceCount: 1, aclHex: `02${allow}` });
+      try {
+        expect(() => publishWorkbookEdit(path, snapshot, output, 1)).toThrow(`[${scope}-acl-differs]`);
+      } finally {
+        restore();
+      }
+      expect(readFileSync(path).equals(before)).toBe(true);
+      expect(temporaryNames()).toEqual([]);
+    });
+
+    it.each([
+      { change: "a callback tail", source: `03${allow}${auditCallback("61727478")}`, copy: `03${allow}${auditCallback("61727479")}`, large: true, scope: "backup" },
+      { change: "a callback tail", source: `03${allow}${auditCallback("61727478")}`, copy: `03${allow}${auditCallback("61727479")}`, large: false, scope: "workbook" },
+      { change: "an object GUID", source: `04${allow}${auditObject("11")}`, copy: `04${allow}${auditObject("22")}`, large: true, scope: "backup" },
+      { change: "an object GUID", source: `04${allow}${auditObject("11")}`, copy: `04${allow}${auditObject("22")}`, large: false, scope: "workbook" },
+    ])("refuses a copy whose retained audit ACE differs in $change (large: $large)", async ({ source, copy, large, scope }) => {
+      const { path, before, output } = await workbook(large);
+      const snapshot = readWorkbookSnapshot(path);
+      const restore = nativeFileDacls((file) => ({ aceCount: 2, aclHex: file === path ? source : copy }));
       try {
         expect(() => publishWorkbookEdit(path, snapshot, output, 1)).toThrow(`[${scope}-acl-differs]`);
       } finally {

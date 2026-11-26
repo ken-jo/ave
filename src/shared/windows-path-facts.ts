@@ -254,13 +254,13 @@ const ACE_HEADER_BYTES = 4;
 const SID_HEADER_BYTES = 8;
 const SID_MAX_SUB_AUTHORITIES = 15;
 
-// SID offset in each ACE layout NTFS keeps in a file DACL: allow, deny and audit, the allow/deny callback forms, then the
-// object forms with optional GUIDs, which need ACL revision 4. Other types never qualify. Like the native validator, a SID
-// only has to fit; callback data may follow it.
+// SID offset in each ACE layout NTFS keeps in a file DACL. Mask then SID: allow, deny, audit, alarm and their callback
+// forms. Mask, flags, optional GUIDs then SID: the object forms, which need ACL revision 4. Other types never qualify.
+// Like the native validator, a SID only has to fit; callback data may follow it.
 function aceSidOffset(ace: Buffer, revision: number): number | undefined {
   switch (ace[0]) {
-    case 0x00: case 0x01: case 0x02: case 0x09: case 0x0a: return 8;
-    case 0x05: case 0x06: case 0x0b: case 0x0c: {
+    case 0x00: case 0x01: case 0x02: case 0x03: case 0x09: case 0x0a: case 0x0d: case 0x0e: return 8;
+    case 0x05: case 0x06: case 0x07: case 0x08: case 0x0b: case 0x0c: case 0x0f: case 0x10: {
       if (revision !== 4 || ace.length < 12) return undefined;
       const flags = ace.readUInt32LE(8);
       return 12 + (flags & 1 ? 16 : 0) + (flags & 2 ? 16 : 0);
