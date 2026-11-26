@@ -17,7 +17,8 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished } from "vit
 import { MxcProcessContractError } from "../mxc-extension-errors.js";
 import {
   AVE_APP_ID, createMxcRunStaging, currentMxcRuntimeHost, establishMxcRuntimeRoot, mxcCacheHome, MxcRuntimeRootError,
-  _forgetMxcRuntimeRootForTest, mxcRunSocketPath, mxcRuntimeRootFloorPath, mxcStagingParent, removeMxcRunStaging, requireMxcRuntimeRoot, sweepMxcRunStaging,
+  _forgetMxcRuntimeRootForTest, mxcRunSocketPath, mxcRuntimeRootFloorPath, mxcStagingParent, removeMxcRunStaging,
+  requireMxcContainerStartRoot, requireMxcRuntimeRoot, sweepMxcRunStaging,
   type MxcRuntimeHost,
 } from "../mxc-runtime-root.js";
 
@@ -72,6 +73,27 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
+});
+
+describe.runIf(posix)("container start runtime root", () => {
+  it.each(["darwin", "linux"] as const)("requires the root proved at startup for %s", (platform) => {
+    const host = hostOf({ platform });
+    expect(() => requireMxcContainerStartRoot(host)).toThrow(/not established/u);
+    const root = establishMxcRuntimeRoot(host);
+    expect(requireMxcContainerStartRoot(host)).toBe(root);
+
+    chmodSync(root, 0o755);
+    expect(() => requireMxcContainerStartRoot(host)).toThrow(MxcRuntimeRootError);
+    chmodSync(root, 0o700);
+    expect(requireMxcContainerStartRoot(host)).toBe(root);
+    rmSync(root, { recursive: true });
+    mkdirSync(root, { mode: 0o700 });
+    expect(() => requireMxcContainerStartRoot(host)).toThrow(MxcRuntimeRootError);
+  });
+
+  it("refuses an OS without runtime root placement", () => {
+    expect(() => requireMxcContainerStartRoot(hostOf({ platform: "freebsd" }))).toThrow(MxcRuntimeRootError);
+  });
 });
 
 describe.runIf(posix)("runtime root selection", () => {
