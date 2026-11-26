@@ -50,6 +50,7 @@ import { isPathWithin } from "../plugins/plugin-storage-containment.js";
 import { AVE_HOME_RUNTIME_DIRECTORY, AVE_RUNTIME_LAYOUT, aveHome } from "../shared/ave-home.js";
 import { assertMxcHolderStaging } from "../permissions/mxc-filesystem-ownership.js";
 import { mxcStagingParent } from "../permissions/mxc-runtime-root.js";
+import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "../permissions/confinement-state-paths.js";
 import { renameDirectory, renameDirectorySyncOnce } from "../lib/transient-fs-lock-retry.js";
 import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "../permissions/egress-invocations.js";
 
@@ -712,6 +713,8 @@ export function prepareMxcHolderStart(input: {
   assertMxcHolderNotBashForm(executable);
   assertExecutableAdmissible(executable, input.allowWrite, []);
   assertNoLiveWorkspaceWriter(input.allowWrite, []);
+  // Caller writes only, before this holder's own staging root, which the state root holds, joins them.
+  assertWriteGrantsOutsideConfinementState(input.allowWrite, declaredConfinementStatePaths());
   const staging = createHolderStaging();
   return { root: staging.root, home: staging.home, temp: staging.temp, release: () => removeHolderStaging(staging.root) };
 }
@@ -728,6 +731,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
   const workspaceRoots = input.workspaceRoots ?? [];
   assertExecutableAdmissible(executable, input.allowWrite, workspaceRoots);
   assertNoLiveWorkspaceWriter(input.allowWrite, workspaceRoots);
+  assertWriteGrantsOutsideConfinementState(input.allowWrite, declaredConfinementStatePaths());
   const staging = createHolderStaging();
   const allowWrite = [...new Set([...input.allowWrite, staging.root])];
   const allowRead = [...new Set([...input.allowRead, winPath.dirname(executable)])];
@@ -749,6 +753,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
       cwd,
       home: staging.home,
       temp: staging.temp,
+      stagingRoot: staging.root,
       filesystemOwnership: { readRoots: [...input.ownedReadRoots], writeRoots: allowWrite, hostStorageRoots: [] },
       holder: Object.freeze({ label: input.label }),
       ...(input.floorPierces !== undefined ? { floorPierces: [...input.floorPierces] } : {}),

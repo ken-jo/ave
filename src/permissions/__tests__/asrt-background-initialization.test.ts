@@ -1,3 +1,9 @@
+// Faked win32 on a POSIX host: no backend state to check here; a Windows host keeps its own.
+const { hostPlatform } = vi.hoisted(() => ({ hostPlatform: process.platform }));
+vi.mock("../confinement-state-paths.js", async (original) => {
+  const actual = await original<typeof import("../confinement-state-paths.js")>();
+  return hostPlatform === "win32" ? actual : { ...actual, declaredConfinementStatePaths: () => [] };
+});
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 const presentTargets = vi.hoisted(() => new Set<string>());

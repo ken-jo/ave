@@ -170,6 +170,7 @@ export async function spawnMxcPluginChild(
       cwd: intent.cwd,
       home: launch.home,
       temp: launch.temp,
+      stagingRoot: staging,
       filesystemOwnership: launch.filesystemOwnership,
       // One holder per incarnation: row 2 refuses a holder it already admitted.
       holder: {},

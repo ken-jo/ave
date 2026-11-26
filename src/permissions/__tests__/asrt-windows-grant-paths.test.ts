@@ -24,9 +24,10 @@ import { ConversationLoop } from "../../engine/conversation-loop.js";
 import { makeBasicConversationLoopDeps } from "../../engine/__tests__/support/conversation-loop-fixtures.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { admitMxcExtensionFilesystem, appOwnedSandboxPrivateRoots, buildSandboxConfig, getBuiltinShellReadPolicy, getDefaultSensitiveWriteDenyEntries, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, runWithSandboxWritePreflight, wrapToolCommand } from "../asrt-sandbox.js";
-import { mxcSandboxHomesParent } from "../mxc-runtime-root.js";
+import { mxcConfinementStatePaths, mxcSandboxHomesParent } from "../mxc-runtime-root.js";
 import { mxcPolicyRows } from "../mxc-windows.js";
 import { createSandboxProcessHome } from "../sandbox-process-home.js";
+import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../sandbox-home-registry.js";
 
 vi.mock("@anthropic-ai/sandbox-runtime", async importOriginal => ({
   ...(await importOriginal<typeof import("@anthropic-ai/sandbox-runtime")>()),
@@ -150,6 +151,28 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
       rmSync(released.path, { recursive: true, force: true });
       rmSync(sibling, { recursive: true, force: true });
       rmSync(`${own}-2`, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["forgotten", (own: string) => forgetIssuedContainerHome(own)],
+    ["issued again at the same name", (own: string) => { forgetIssuedContainerHome(own); recordIssuedContainerHome(own, dirname(mxcSandboxHomesParent())); }],
+  ])("refuses a worker grant whose sandbox HOME is %s while it is granted", async (_case, change) => {
+    const home = createSandboxProcessHome("win32");
+    const own = home.path;
+    try {
+      await initializeAsrtSandbox({});
+      vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => paths.map(() => ({
+        denyMask: 0x1f01ff, inheritableMask: 0x1f01ff, parentMask: 0x40, directory: true,
+      })));
+      let changed = false;
+      // The first validity check runs after the grant took its HOME issuance.
+      const assertStillValid = (): void => { if (!changed) { changed = true; change(own); } };
+      await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [own], allowWrite: [own],
+        sandboxHome: own, assertStillValid })).rejects.toThrow(/Container HOME is no longer the one issued to this launch/u);
+      expect(changed).toBe(true);
+    } finally {
+      home.cleanup();
     }
   });
 
@@ -435,6 +458,72 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     await initializeAsrtSandbox({});
     await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [link] })).rejects.toThrow(/private helper|protected|sensitive/i);
     expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+  });
+
+  it("refuses a write grant at, inside or above the helper's own state and keeps sibling writes and reads", async () => {
+    // TEMP and the Ave home sit outside this profile, so only the state rule can refuse the ancestor.
+    const local = join(fixture, "alice", "AppData", "Local");
+    const state = join(local, "sandbox-runtime");
+    const sibling = join(local, "SomeTool");
+    for (const directory of [join(state, "child"), sibling]) mkdirSync(directory, { recursive: true });
+    vi.stubEnv("LOCALAPPDATA", local);
+    await initializeAsrtSandbox({});
+    for (const path of [state, join(state, "child"), local]) {
+      await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [path] }))
+        .rejects.toMatchObject({ code: "confinement-state-write-grant", path, reason: "helper-ledger" });
+    }
+    // The other backend's runtime root is a read deny here already; the state rule also refuses a folder holding it.
+    const container = dirname(String(mxcConfinementStatePaths()[0]));
+    mkdirSync(container, { recursive: true });
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [container] }))
+      .rejects.toMatchObject({ code: "confinement-state-write-grant", path: container, reason: "container-runtime" });
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+    for (const request of [{ allowWrite: [sibling] }, { allowRead: [state] }]) {
+      const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, ...request });
+      grant.release();
+    }
+    expect(runtime.grantWindowsAcl).toHaveBeenCalledTimes(2);
+  });
+
+  it("also refuses the profile's default state folder and the machine store when the variables point elsewhere", async () => {
+    const elsewhere = join(fixture, "relocated");
+    const profileState = join(fixture, "alice", "AppData", "Local", "sandbox-runtime");
+    const machineState = join(fixture, "machine", "sandbox-runtime", "ca");
+    for (const directory of [elsewhere, profileState, machineState]) mkdirSync(directory, { recursive: true });
+    vi.stubEnv("LOCALAPPDATA", elsewhere);
+    vi.stubEnv("ProgramData", join(fixture, "machine"));
+    await initializeAsrtSandbox({});
+    for (const path of [profileState, machineState]) {
+      await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [path] }))
+        .rejects.toMatchObject({ code: "confinement-state-write-grant", path });
+    }
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+  });
+
+  it("re-checks a container holder's pinned writes at admission, except its own staging root", async () => {
+    const local = join(fixture, "alice", "AppData", "Local");
+    const state = join(local, "sandbox-runtime");
+    const staging = join(String(mxcConfinementStatePaths()[0]), "staging", "0123456789abcdef0123456789abcdef");
+    for (const directory of [state, staging]) mkdirSync(directory, { recursive: true });
+    vi.stubEnv("LOCALAPPDATA", local);
+    await initializeAsrtSandbox({});
+    // A caller's spelling that resolves into the state only by the time admission pins it.
+    const link = join(fixture, "link");
+    symlinkSync(state, link, "junction");
+    const admit = (allowWrite: string[], stagingRoot?: string) => admitMxcExtensionFilesystem({ allowRead: [], allowWrite },
+      { readRoots: [], writeRoots: allowWrite, hostStorageRoots: [] }, stagingRoot);
+    expect(() => admit([link])).toThrow(expect.objectContaining({ code: "confinement-state-write-grant", reason: "helper-ledger" }));
+    expect(() => admit([target, staging])).toThrow(expect.objectContaining({ code: "confinement-state-write-grant", reason: "container-runtime" }));
+    expect(() => admit([dirname(staging)], staging)).toThrow(expect.objectContaining({ code: "confinement-state-write-grant", reason: "container-runtime" }));
+    expect(mxcPolicyRows(admit([target, staging], staging).model).writeGrants).toEqual(expect.arrayContaining([target, staging]));
+  });
+
+  it("refuses every write grant, and no read grant, when the helper's state cannot be located", async () => {
+    vi.stubEnv("LOCALAPPDATA", "");
+    await initializeAsrtSandbox({});
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] }))
+      .rejects.toMatchObject({ code: "confinement-state-write-grant", path: undefined });
+    (await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] })).release();
   });
 
   it("batches every resolved target in each effect-boundary pin", async () => {
