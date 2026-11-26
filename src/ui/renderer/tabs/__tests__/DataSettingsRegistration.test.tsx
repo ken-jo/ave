@@ -26,7 +26,7 @@ function installApi(change: (settings: typeof DEFAULT_SETTINGS) => void = () => 
     diagnostics: { export: vi.fn(async () => ({ ok: false, canceled: true })), crashList: vi.fn(async () => ({ ok: true, dumps: [] })) },
     getUsageRange: vi.fn(async () => {
       const empty = { inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0 };
-      return { today: empty, thisWeek: empty, thisMonth: empty, perVendor: [], perModel: [], trend: [], topConversations: [], generatedAt: new Date().toISOString() };
+      return { today: empty, thisWeek: empty, thisMonth: empty, perVendor: [], perModel: [], trend: [], topConversations: [], topConversationsByTokens: [], generatedAt: new Date().toISOString() };
     }),
     exportUsageCsv: vi.fn(async () => ({ ok: false, canceled: true })),
   });

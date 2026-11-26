@@ -42,6 +42,8 @@ import { SIDE_PANEL_MIN_RESERVE } from "../../shared/side-panel.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { requiredFixture } from "../../__tests__/support/required-fixture.js";
+import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
+import { resolveModelPricing } from "../../shared/model-pricing.js";
 import {
   DEFAULT_LLM_VENDOR,
   freshAllVendorBlocks,
@@ -91,6 +93,37 @@ describe("bundled provider settings", () => {
       writeFileSync(path, stored);
       expect(() => new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath })).toThrow(/installedProviderIds/);
       expect(readFileSync(path, "utf8")).toBe(stored);
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+
+  it("keeps a cached model list filed under another endpoint than it was read from, for every reader but pricing", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "model-list-cache-binding-"));
+    try {
+      // What a refresh writes when the endpoint is saved between its route snapshot and its request:
+      // filed under the blank default route, read from the endpoint now configured.
+      const proxy = "https://proxy.invalid/v1";
+      const key = llmModelListCacheKey("openai", "");
+      const row = {
+        vendor: "openai", endpoint: `${proxy}/models`, models: ["fixture-discovered"],
+        modelEntries: [{ id: "fixture-discovered", pricing: { prompt: "0.000003", completion: "0.000004" } }],
+        fetchedAt: "2026-01-01T00:00:00.000Z",
+      };
+      writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ llm: {
+        provider: "openai",
+        vendors: { openai: { model: "fixture-selected", baseUrl: proxy } },
+        modelListCache: { [key]: row },
+      } }));
+      const llm = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm");
+      expect(llm.modelListCache[key]).toMatchObject({ endpoint: row.endpoint, models: row.models });
+      expect(judgeModelCatalogFrom(llm).optionsFor("openai")).toContain("fixture-discovered");
+      // The same row is not price evidence for the default route it is filed under.
+      const listed = llm.modelListCache[key]?.modelEntries?.find((entry) => entry.id === "fixture-discovered");
+      expect(listed?.pricing).toEqual(row.modelEntries[0]?.pricing);
+      expect(resolveModelPricing("openai", "fixture-discovered", [], {
+        reported: listed?.pricing, reportedAt: llm.modelListCache[key]?.endpoint,
+      })).toEqual({ source: "unknown", reason: "endpoint-price-unavailable" });
     } finally {
       await cleanupTmpDir(userDataPath);
     }

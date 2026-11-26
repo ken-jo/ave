@@ -6,6 +6,7 @@ import { sseResponse } from "../../../__tests__/support/sse-response.js";
 import { collectAsyncIterable as collect } from "../../../__tests__/test-helpers.js";
 import { createGuardedModelProviderFetch } from "../marketplace-provider-fetch.js";
 import { declareDeferredSend, gateModelFetch } from "../model-wire-gate.js";
+import { configuredEndpointId } from "../pricing.js";
 import { createEmbeddingModel, createProvider } from "../provider-factory.js";
 import { findRetiredModelError, RetiredModelError } from "../retired-model-error.js";
 import type { LLMVendor, ProviderConfig } from "../types.js";
@@ -164,7 +165,7 @@ describe("model transports send through the retirement gate", () => {
 
   it.each([
     { name: "refuses a model retired while the guarded fetch validates the address", retires: true, sent: 0 },
-    { name: "sends through the guarded fetch when nothing retires during address validation", retires: false, sent: 1 },
+    { name: "records the served route after the guarded fetch rechecks retirement", retires: false, sent: 1 },
   ])("$name", async ({ retires, sent }) => {
     let retired: string | undefined;
     let releaseLookup!: () => void;
@@ -175,8 +176,12 @@ describe("model transports send through the retirement gate", () => {
         return [{ address: "10.20.30.40", family: 4 }];
       }) as unknown as typeof dns.lookup);
     });
-    const networkFetch = vi.fn<typeof fetch>(async () => completedChat("sent"));
     const baseUrl = "http://models.internal.test:8080/v1";
+    const networkFetch = vi.fn<typeof fetch>(async () => {
+      const response = completedChat("sent");
+      Object.defineProperty(response, "url", { value: `${baseUrl}/chat/completions` });
+      return response;
+    });
     // Credentialed cleartext is allowed only for this exact guarded fetch; the gate must not replace its identity.
     const provider = createProvider({
       vendor: "openai-compatible",
@@ -197,7 +202,19 @@ describe("model transports send through the retirement gate", () => {
     if (retires) {
       expect(outcome).toBeInstanceOf(RetiredModelError);
     } else {
-      expect(outcome).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text_delta", text: "sent" })]));
+      expect(outcome).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "text_delta", text: "sent" }),
+        expect.objectContaining({
+          type: "message_complete",
+          usage: expect.objectContaining({
+            servedRoute: {
+              kind: "configured-endpoint",
+              origin: new URL(baseUrl).origin,
+              configuredBaseId: configuredEndpointId(baseUrl),
+            },
+          }),
+        }),
+      ]));
     }
   });
 

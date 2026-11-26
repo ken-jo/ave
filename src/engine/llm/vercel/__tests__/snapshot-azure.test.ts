@@ -50,7 +50,6 @@ describe("VercelUnifiedProvider azure-foundry", () => {
     expect(createAzureSpy).toHaveBeenCalledWith({
       baseURL: "https://myresource.openai.azure.com/openai",
       apiKey: "azure-key",
-      // Every SDK model sends through the retirement-gated wire fetch.
       fetch: expect.any(Function),
     });
     expect(responsesSpy).toHaveBeenCalledWith("gpt-5.4-mini");
