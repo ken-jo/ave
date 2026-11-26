@@ -8,7 +8,7 @@ import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, min
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { buildPermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
-import { openPendingAnswerCard, personAnswerStands, toolUseAction, type StandingAnswer } from "../permissions/pending-answer-policy.js";
+import { openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, toolUseAction, type StandingAnswer } from "../permissions/pending-answer-policy.js";
 import { t } from "../i18n/index.js";
 import { shellQuote } from "../lib/shell-resolver.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
@@ -28,7 +28,7 @@ export type HookCommandAuthorizer = (
 // Enrollment supplies executable identity; the shared pipeline supplies authority.
 export function createHookCommandAuthorizer(deps: {
   permissionManager: Pick<PermissionManager, "ensureProjectRulesLoaded" | "checkDetailed" | "dispatchReviewer" | "resolveReviewedPermission" | "getPolicyEpoch" | "getPolicyContextEpoch" | "getMode">;
-  approvalGate: Pick<ApprovalGate, "requestAndWait"> & Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer">>;
+  approvalGate: Pick<ApprovalGate, "requestAndWait"> & Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer" | "deferAllowSaves" | "commitStagedAllowSaves">>;
 }): HookCommandAuthorizer {
   return async (hook, payload, cwd, projectDir = cwd, attachWorkingDirectory) => {
     const command = hook.command.map(expandLeadingTilde).map(shellQuote).join(" ");
@@ -99,7 +99,7 @@ export function createHookCommandAuthorizer(deps: {
     let approval: ApprovalDecision | undefined;
     const asksPerson = result.decision === "ask";
     const card = asksPerson ? openPendingAnswerCard(deps.permissionManager, result, check, "stale-refused",
-      { gate: deps.approvalGate, requestId: id, action: toolUseAction(id), uses: ["shell-permit", "shell-policy"] }) : undefined;
+      { gate: deps.approvalGate, requestId: id, action: toolUseAction(id), uses: ["rule-save", "shell-permit", "shell-policy"] }) : undefined;
     const opened = card?.epochs;
     let answer: StandingAnswer | undefined;
     if (asksPerson) {
@@ -136,6 +136,8 @@ export function createHookCommandAuthorizer(deps: {
       current = verdict.fresh;
       if (verdict.kind === "denied") return { decision: "deny", reason: current.reason };
       if (verdict.kind === "stale") return { decision: "deny", reason: t("be_executor.answerQuestionChanged") };
+      const refusal = (await saveStandingAnswerRule(card, approval)).refusal;
+      if (refusal !== undefined) return { decision: "deny", reason: refusal };
       answer = verdict.proof;
     } else {
       current = check();

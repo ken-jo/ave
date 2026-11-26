@@ -23,7 +23,7 @@ import {
 import type { PermissionEvaluationContext } from "./evaluation-context.js";
 import { matchesReviewerApprovalBasis, type ReviewerApprovalBasis, type ReviewerDispatchOutcome } from "./permission-manager.js";
 import { matchesApprovalRuleBasis, type ApprovalRuleBasis } from "./approval-rule-evidence.js";
-import { describePermissionQuestion, type PermissionQuestion, type StaleAnswerOutcome } from "./pending-answer-policy.js";
+import { describePermissionQuestion, spendStandingAnswer, type PermissionQuestion, type StaleAnswerOutcome, type StandingAnswer } from "./pending-answer-policy.js";
 import { NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { isIssuedToolApprovalWait, withToolApprovalWait, type ToolApprovalWait } from "../tools/executor-ceiling.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
@@ -619,7 +619,39 @@ export interface ApprovalPolicyMutation {
   readonly directories?: { readonly from: readonly string[]; readonly to: readonly string[]; readonly directory: string; readonly scope: "session" | "always" };
 }
 
+/** What a held allow save reports once it ran: the store it moved, and that store's generation before and after. */
+export type StagedAllowSaveResult =
+  | { readonly ok: true; readonly store: "rules"; readonly from: string; readonly to: string; readonly scope: "session" | "run" | "project" | "always" }
+  | { readonly ok: true; readonly store: "exact"; readonly from: string; readonly to: string; readonly scope: string }
+  | { readonly ok: false; readonly error: string };
+export type StagedAllowSave = (controller: ApprovalPersistenceGuard) => Promise<StagedAllowSaveResult>;
+
+const POLICY_CHANGED_WHILE_PENDING = "Permission policy changed while approval was pending";
+
+// Rule saves increment the manager generation once and, for project rules,
+// the project revision once. Concurrent policy changes cannot join this receipt.
+function isRuleSaveStep(before: string, after: string, scope: "session" | "run" | "project" | "always" | undefined): boolean {
+  const beforeParts = before.split(":");
+  const afterParts = after.split(":");
+  const generation = Number(beforeParts[0]);
+  const revision = Number(beforeParts[1]);
+  return scope !== undefined && beforeParts.length === 3 && afterParts.length === 3 &&
+    Number.isSafeInteger(generation) && Number.isSafeInteger(revision) && generation >= 0 && revision >= 0 &&
+    afterParts[0] === String(generation + 1) &&
+    afterParts[1] === String(revision + (scope === "project" ? 1 : 0)) &&
+    afterParts[2] === beforeParts[2];
+}
+
+function isExactSaveStep(before: string, after: string, scope: string): boolean {
+  const generation = Number(before);
+  return Number.isSafeInteger(generation) && generation >= 0 && after === String(generation + 1) &&
+    ["session", "run", "persistent", "global"].includes(scope);
+}
+
 interface PendingEntry {
+  /** The pending-answer owner judges this card: an allow its person asks to remember is held until that answer stands. */
+  defersAllowSaves?: true;
+  stagedAllowSaves?: readonly StagedAllowSave[];
   /** Unattributed cards stay with their recipient until that window leaves. */
   unattributedOwner?: WebContents;
   exactSaveTransition?: ApprovalPolicyTransition & { scope: string };
@@ -870,6 +902,9 @@ export class ApprovalGate {
   private readonly approvedPolicyMutations = new WeakMap<ApprovalDecision, ApprovalPolicyMutation>();
   private readonly authenticatedDirectoryAnswers = new WeakSet<ApprovalDecision>();
   private readonly exactSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
+  // Cards the pending-answer owner opened and the gate has not been asked yet.
+  private readonly allowSaveDeferrals = new Set<string>();
+  private readonly stagedAllowSaves = new WeakMap<ApprovalDecision, { saves: readonly StagedAllowSave[]; controller: ApprovalPersistenceGuard }>();
   private readonly approvedBrowserSites = new WeakMap<ApprovalDecision, { sessionId: string; origin: string; choice: BrowserSiteChoice }>();
 
   consumeBrowserSiteChoice(decision: ApprovalDecision, sessionId: string, origin: string): BrowserSiteChoice | undefined {
@@ -905,9 +940,7 @@ export class ApprovalGate {
     if (!saved || this.pending.get(saved.requestId) !== saved.entry) return;
     const transition = saved.entry.exactSaveTransition!;
     transition.saving = false;
-    const before = Number(saved.before);
-    if (!Number.isSafeInteger(before) || before < 0 || after !== String(before + 1) ||
-        !["session", "run", "persistent", "global"].includes(scope)) transition.valid = false;
+    if (!isExactSaveStep(saved.before, after, scope)) transition.valid = false;
     transition.to = after;
     transition.scope = scope;
   }
@@ -953,18 +986,52 @@ export class ApprovalGate {
     if (!saved || this.pending.get(saved.requestId) !== saved.entry) return;
     const transition = saved.entry.ruleSaveTransition!;
     transition.saving = false;
-    const beforeParts = saved.before.split(":");
-    const afterParts = after.split(":");
-    const generation = Number(beforeParts[0]);
-    const revision = Number(beforeParts[1]);
-    // Rule saves increment the manager generation once and, for project rules,
-    // the project revision once. Concurrent policy changes cannot join this receipt.
-    if (scope === undefined || beforeParts.length !== 3 || afterParts.length !== 3 ||
-      !Number.isSafeInteger(generation) || !Number.isSafeInteger(revision) || generation < 0 || revision < 0 ||
-      afterParts[0] !== String(generation + 1) ||
-      afterParts[1] !== String(revision + (scope === "project" ? 1 : 0)) ||
-      afterParts[2] !== beforeParts[2]) transition.valid = false;
+    if (!isRuleSaveStep(saved.before, after, scope)) transition.valid = false;
     transition.to = after;
+  }
+
+  /** The pending-answer owner opens a card on `requestId`: its allow saves wait for the owner's judgement. */
+  deferAllowSaves(requestId: string): void {
+    this.allowSaveDeferrals.add(requestId);
+  }
+
+  defersAllowSaves(requestId: string): boolean {
+    return this.pending.get(requestId)?.defersAllowSaves === true;
+  }
+
+  /** Hold a validated allow save on its live card. False when the card is gone or does not defer; nothing is held then. */
+  stageAllowSave(requestId: string, save: StagedAllowSave): boolean {
+    const entry = this.pending.get(requestId);
+    if (entry?.defersAllowSaves !== true) return false;
+    entry.stagedAllowSaves = [...(entry.stagedAllowSaves ?? []), save];
+    return true;
+  }
+
+  /** Run the allow saves held for the card `decision` answered. They take the standing answer to that card and spend its
+   * rule-save use; each must move its store by exactly its own step. The steps become this decision's same-card mutation evidence. */
+  async commitStagedAllowSaves(decision: ApprovalDecision, answer: StandingAnswer, action: string): Promise<{ readonly saved: boolean; readonly refusal?: string }> {
+    const staged = this.stagedAllowSaves.get(decision);
+    if (!staged) return { saved: false };
+    this.stagedAllowSaves.delete(decision);
+    if (spendStandingAnswer(answer, "rule-save", action)?.decision !== decision) return { saved: false, refusal: POLICY_CHANGED_WHILE_PENDING };
+    let permission: ApprovalPolicyMutation["permission"];
+    let approvals: ApprovalPolicyMutation["approvals"];
+    let saved = false;
+    for (const save of staged.saves) {
+      const result = await save(staged.controller);
+      if (!result.ok) return { saved, refusal: result.error };
+      saved = true;
+      if (result.store === "rules") {
+        if (!isRuleSaveStep(result.from, result.to, result.scope) || (permission !== undefined && permission.to !== result.from)) return { saved, refusal: POLICY_CHANGED_WHILE_PENDING };
+        permission = { from: permission?.from ?? result.from, to: result.to };
+      } else {
+        if (!isExactSaveStep(result.from, result.to, result.scope) || (approvals !== undefined && approvals.to !== result.from)) return { saved, refusal: POLICY_CHANGED_WHILE_PENDING };
+        approvals = { from: approvals?.from ?? result.from, to: result.to, scope: result.scope };
+      }
+    }
+    this.approvedPolicyMutations.set(decision, { ...this.approvedPolicyMutations.get(decision),
+      ...(permission ? { permission } : {}), ...(approvals ? { approvals } : {}) });
+    return { saved };
   }
 
   /** Audit the owner's verdict that a person's Allow answered a question the call no longer asks (pending-answer-policy.ts). No authority follows it. */
@@ -1139,6 +1206,7 @@ export class ApprovalGate {
 
   // Send an approval request to the renderer and wait for the response. ConversationLoop.executeOne awaits this and blocks the turn. The requireExplicit field controls renderer dismiss behavior.
   async requestAndWait(req: ApprovalRequestInput): Promise<ApprovalDecision> {
+    const defersAllowSaves = this.allowSaveDeferrals.delete(req.id);
     const auditFieldsFor = (fields: ApprovalAuditFields, executionPlan?: HostShellExecutionPlanAuditProjection): string =>
       formatApprovalAuditFields({ ...fields, remoteControllerOrigin: req.remoteControllerOrigin }, executionPlan);
     const isAborted = () => this.lifetime.signal.aborted || req.abortSignal?.aborted === true;
@@ -1623,6 +1691,7 @@ export class ApprovalGate {
       }
 
       this.pending.set(fullReq.id, {
+        ...(defersAllowSaves ? { defersAllowSaves: true as const } : {}),
         ...(fullReq.browserSite === undefined ? {} : { browserSite: fullReq.browserSite }),
         ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),
         ...(userOwnedSurface !== undefined && requestedSurfaceReviewFallback === true ? { userOwnedSurfaceReviewFallback: true as const } : {}),
@@ -2184,6 +2253,12 @@ export class ApprovalGate {
     }
     if (nativeRenderer && entry.browserSite !== undefined && entry.sessionId !== undefined && resolvedDecision.choice === "allow-once" && isBrowserSiteChoice(resolvedDecision.browserSiteChoice)) {
       this.approvedBrowserSites.set(resolvedDecision, { sessionId: entry.sessionId, origin: entry.browserSite, choice: resolvedDecision.browserSiteChoice });
+    }
+    if (nativeRenderer && entry.stagedAllowSaves !== undefined && resolvedDecision.choice.startsWith("allow")) {
+      this.stagedAllowSaves.set(resolvedDecision, { saves: entry.stagedAllowSaves, controller: {
+        refresh: () => refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId),
+        isCurrent: () => isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId),
+      } });
     }
     const exactTransition = entry.exactSaveTransition;
     if (nativeRenderer && entry.kind === "out-of-allowed-dir" && resolvedDecision.choice.startsWith("allow")) {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionCheckResult } from "../permission-manager.js";
-import { answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingQuestionStillAsked, permissionQuestionOf, personAnswerStands, samePermissionQuestion, spendStandingAnswer, standingAnswerFor, type PendingAnswerBinding, type StandingAnswer, type StandingAnswerUse } from "../pending-answer-policy.js";
+import { answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingQuestionStillAsked, permissionQuestionOf, personAnswerStands, samePermissionQuestion, saveStandingAnswerRule, spendStandingAnswer, standingAnswerFor, type PendingAnswerBinding, type StandingAnswer, type StandingAnswerUse } from "../pending-answer-policy.js";
 
 /** A manager's two epochs, moved by hand. */
 function policy() {
@@ -223,6 +223,38 @@ describe("a person's answer across a policy change", () => {
     expect(spendStandingAnswer(proof, "shell-policy", action)).toBeUndefined();
     expect(spendStandingAnswer(proof, "shell-permit", action)).toBeDefined();
     expect(spendStandingAnswer(proof, "shell-permit", action)).toBeUndefined();
+  });
+
+  it("holds allow saves on the gate only for a card that names the rule-save use", () => {
+    const deferAllowSaves = vi.fn();
+    openPendingAnswerCard(policy(), floorAsk(true), () => floorAsk(true), "stale-refused", bound({ deferAllowSaves }, "plain"));
+    expect(deferAllowSaves).not.toHaveBeenCalled();
+    openPendingAnswerCard(policy(), floorAsk(true), () => floorAsk(true), "stale-refused", bound({ deferAllowSaves }, "saving", ["rule-save", "shell-permit"]));
+    expect(deferAllowSaves.mock.calls).toEqual([["saving"]]);
+  });
+
+  it("writes a held allow only for a standing answer, and voids the answer when the write is refused", async () => {
+    const commitStagedAllowSaves = vi.fn(async () => ({ saved: true }) as { saved: boolean; refusal?: string });
+    const open = (requestId: string) => openPendingAnswerCard(policy(), floorAsk(true), () => floorAsk(true), "stale-refused", bound({ commitStagedAllowSaves }, requestId, ["rule-save", "shell-permit"]));
+    const unanswered = open("unanswered");
+    expect(await saveStandingAnswerRule(unanswered, allowOnce("unanswered"))).toEqual({ saved: false });
+    const crossed = open("crossed");
+    personAnswerStands(crossed, allowOnce("another"));
+    expect(await saveStandingAnswerRule(crossed, allowOnce("another"))).toEqual({ saved: false });
+    expect(commitStagedAllowSaves).not.toHaveBeenCalled();
+
+    const standing = open("standing");
+    const answer = allowOnce("standing");
+    expect(personAnswerStands(standing, answer)).toBe(true);
+    expect(await saveStandingAnswerRule(standing, answer)).toEqual({ saved: true });
+    expect(commitStagedAllowSaves.mock.calls).toEqual([[answer, proofOf(standing), action]]);
+    expect(spendStandingAnswer(proofOf(standing), "shell-permit", action)).toBeDefined();
+
+    commitStagedAllowSaves.mockResolvedValueOnce({ saved: false, refusal: "rule-save-failed" });
+    const refused = open("refused");
+    expect(personAnswerStands(refused, allowOnce("refused"))).toBe(true);
+    expect(await saveStandingAnswerRule(refused, allowOnce("refused"))).toEqual({ saved: false, refusal: "rule-save-failed" });
+    expect(spendStandingAnswer(proofOf(refused), "shell-permit", action)).toBeUndefined();
   });
 
   it("gives a card one judgement: a second answer mints nothing", () => {

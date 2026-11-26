@@ -1,4 +1,4 @@
-import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingQuestionStillAsked, personAnswerStands, standingAnswerFor, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
+import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingQuestionStillAsked, personAnswerStands, saveStandingAnswerRule, standingAnswerFor, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
@@ -1189,10 +1189,10 @@ export async function executeAuthorizedToolInvocation(
     const manager = services.permissionManager;
     const card = manager ? openPendingAnswerCard(manager, permissionResult,
       () => context.checkCurrentPermission?.() ?? { decision: "deny", reason: policyChanged }, "stale-reasked",
-      { gate: services.approvalGate!, requestId: liveRequest.id, action: cardAction, uses: answerUses }) : undefined;
+      { gate: services.approvalGate!, requestId: liveRequest.id, action: cardAction, uses: ["rule-save", ...answerUses] }) : undefined;
     let decision = await services.approvalGate!.requestAndWait(liveRequest);
     abortSignal?.throwIfAborted();
-    const currentEpoch = manager?.getPolicyEpoch();
+    let currentEpoch = manager?.getPolicyEpoch();
     let cardAnswer: StandingAnswer | undefined;
     if (manager && card) {
       const policyMoved = currentEpoch !== card.epochs.epoch;
@@ -1207,9 +1207,13 @@ export async function executeAuthorizedToolInvocation(
       }
       if (verdict.kind === "stands") cardAnswer = verdict.proof;
       const invalidationReason = verdict.kind === "policy-changed" ? policyChanged : verdict.kind === "denied" ? verdict.fresh.reason : undefined;
-      if (invalidationReason !== undefined) {
-        permissionResult = { ...permissionResult, decision: "deny", reason: invalidationReason };
-        throw new Error(invalidationReason);
+      // The allow the person asked this card to remember is written only now that its answer stands; the policy it moved is the approved one.
+      const save = invalidationReason === undefined ? await saveStandingAnswerRule(card, decision) : undefined;
+      if (save?.saved) currentEpoch = manager.getPolicyEpoch();
+      const refusal = invalidationReason ?? save?.refusal;
+      if (refusal !== undefined) {
+        permissionResult = { ...permissionResult, decision: "deny", reason: refusal };
+        throw new Error(refusal);
       }
     }
     const surfaceResolution = services.permissionManager ? await resolveUserOwnedSurfaceApproval({

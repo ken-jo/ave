@@ -1,4 +1,4 @@
-import { openPendingAnswerCard, personAnswerStands, standingAnswerFor, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
+import { openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, standingAnswerFor, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
 import { RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
@@ -958,7 +958,7 @@ export async function authorizeToolInvocation(
         const approvalRequestId = context.cardRequestId ?? randomUUID();
         const approvalCard = services.permissionManager ? openPendingAnswerCard(services.permissionManager, permissionResult,
           () => checkCurrentPermission?.() ?? { decision: "deny", reason: "Permission manager is unavailable" }, "stale-refused",
-          { gate: services.approvalGate, requestId: approvalRequestId, action: cardAction, uses: answerUses }) : undefined;
+          { gate: services.approvalGate, requestId: approvalRequestId, action: cardAction, uses: ["rule-save", ...answerUses] }) : undefined;
         const approvalPolicyEpoch = approvalCard?.epochs.epoch;
         const readjudicationAssessment = source === "plugin" && context.pluginRuntimeInstance !== undefined &&
           permissionResult.forceModal !== true && !evaluationContext.headless &&
@@ -1227,12 +1227,14 @@ export async function authorizeToolInvocation(
         const cardAnswer = answerVerdict?.kind === "stands" ? answerVerdict.proof : undefined;
         // A stale Allow refuses this call and names why; a stale Deny is reported as the person's Deny below.
         const staleAllow = answerVerdict?.kind === "stale" && decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision);
-        const approvalInvalidationReason = answerVerdict?.kind === "policy-changed"
+        let approvalInvalidationReason = answerVerdict?.kind === "policy-changed"
           ? "Permission policy changed while approval was pending"
           : !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)
             ? "remote-controller-revoked"
             : answerVerdict?.kind === "denied" ? answerVerdict.fresh.reason
               : staleAllow ? t("be_executor.answerQuestionChanged") : undefined;
+        // The allow the person asked this card to remember is written only now: the answer stands and nothing above refuses the call.
+        if (approvalInvalidationReason === undefined && approvalCard) approvalInvalidationReason = (await saveStandingAnswerRule(approvalCard, decision)).refusal;
         if (approvalInvalidationReason !== undefined) {
           const reason = approvalInvalidationReason;
           const msg = t("be_executor.permBlockDeny", {

@@ -6,11 +6,12 @@
 // card the person was not shown. One rule for every card a person answers, so parallel stages do not void each other's cards.
 //
 // A card that can lead to shell or terminal authority is opened as a `PendingAnswerCard`. Its answer is always judged against a fresh
-// check bound at card open, and it stands only while that check asks the card's own question. The card's own rule save (a native
-// same-card receipt) is honored only for such a card.
+// check bound at card open, and it stands only while that check asks the card's own question. An allow the person asks such a card
+// to remember is held by the gate until the answer stands and is written by `saveStandingAnswerRule`; a deny is saved when asked.
 //
 // A standing Allow is handed on as a `StandingAnswer`, which only `personAnswerStands` makes. Whatever acts on a person's answer (a
-// folder grant, a shell permit, terminal typing, a remembered effect grant) takes that object and spends it, once per kind of use.
+// folder grant, a shell permit, terminal typing, a remembered effect grant, a remembered allow) takes that object and spends it,
+// once per kind of use.
 // The kinds an action needs are named when its card is opened; the answer can be spent on no other kind.
 import { decidePermission } from "./decision-pipeline.js";
 import type { PermissionCheckResult, PermissionManager } from "./permission-manager.js";
@@ -112,7 +113,7 @@ export interface PendingAnswerCard {
 }
 
 /** What a standing answer may be spent on. A card names the kinds its action needs at open; each is taken once per answer. */
-export type StandingAnswerUse = "directory-grant" | "shell-permit" | "shell-policy" | "terminal-write" | "effect";
+export type StandingAnswerUse = "directory-grant" | "shell-permit" | "shell-policy" | "terminal-write" | "effect" | "rule-save";
 
 /** What a standing answer is bound to: the card's request, the answer it got, the action it was asked for and the question it put. */
 export interface StandingAnswerFacts {
@@ -157,7 +158,7 @@ export function standingAnswerFor(answer: unknown, action: string): StandingAnsw
 export function spendStandingAnswer(answer: StandingAnswer | undefined, use: StandingAnswerUse, action: string): StandingAnswerFacts | undefined {
   const proof = standingAnswerFor(answer, action);
   const entry = proof && standingAnswers.get(proof);
-  if (!entry || !entry.uses.has(use) || entry.spent.has(use)) return undefined;
+  if (!entry?.uses.has(use) || entry.spent.has(use)) return undefined;
   entry.spent.add(use);
   return entry.facts;
 }
@@ -165,7 +166,7 @@ export function spendStandingAnswer(answer: StandingAnswer | undefined, use: Sta
 /** What a card is bound to at open: the gate that asks it, the request it is asked under, the action it is asked for and the
  * kinds of use that action needs. */
 export interface PendingAnswerBinding {
-  readonly gate: Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer">>;
+  readonly gate: Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer" | "deferAllowSaves" | "commitStagedAllowSaves">>;
   readonly requestId: string;
   readonly action: string;
   readonly uses: readonly StandingAnswerUse[];
@@ -187,7 +188,19 @@ export function openPendingAnswerCard(manager: EpochSource, opened: Questioned, 
   const card: PendingAnswerCard = { epochs: answerEpochsOf(manager), question: permissionQuestionOf(opened), forced: opened.forceModal === true };
   boundCards.set(card, { manager, check, onStale, gate: binding.gate, requestId: binding.requestId, action: binding.action,
     uses: new Set(binding.uses), judged: false });
+  if (binding.uses.includes("rule-save")) binding.gate.deferAllowSaves?.(binding.requestId);
   return card;
+}
+
+/** Write the allow the person asked a card to remember, once its answer stands. `saved`: the policy now holds it. `refusal`: the
+ * write failed or the policy moved with it; the answer is void and the call is refused. */
+export async function saveStandingAnswerRule(card: PendingAnswerCard, decision: ApprovalDecision): Promise<{ readonly saved: boolean; readonly refusal?: string }> {
+  const bound = boundCards.get(card);
+  const verdict = card.verdict;
+  if (bound === undefined || verdict?.kind !== "stands") return { saved: false };
+  const result = await bound.gate.commitStagedAllowSaves?.(decision, verdict.proof, bound.action) ?? { saved: false };
+  if (result.refusal !== undefined) standingAnswers.delete(verdict.proof);
+  return result;
 }
 
 function judgeCard(card: PendingAnswerCard, bound: BoundCard, decision: ApprovalDecision): PendingAnswerVerdict {

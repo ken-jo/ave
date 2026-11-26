@@ -11,7 +11,7 @@ import { HOME_FOLDER_REFUSED } from "../shared/permissions-events.js";
 
 import { assertApprovalPersistenceCurrent, refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 import { runGrantKeyOfSession } from "./run-grants.js";
-import { ProjectRuleScopeChangedError } from "./rules/project-rule-files.js";
+import { ProjectRuleScopeChangedError, matchesProjectRuleRootBinding } from "./rules/project-rule-files.js";
 import { isCurrentIssuedHostShellExecutionPlan } from "./host-shell-execution-plan-issuance.js";
 
 type RequestSnapshot = NonNullable<ReturnType<ApprovalGate["getRequestSnapshot"]>>;
@@ -31,7 +31,18 @@ export type ApprovalRuleSaveResult =
   }
   | { readonly ok: false; readonly error: string; readonly message?: string };
 
-const fail = (error: string, message?: string): ApprovalRuleSaveResult =>
+type SavedRule = Extract<ApprovalRuleSaveResult, { ok: true }>;
+type RefusedRule = Extract<ApprovalRuleSaveResult, { ok: false }>;
+
+/** A card rule that passed every check its request allows. `persist` writes it; with `checkOnly` it stops after the currency
+ * checks, before the audit row and the write. */
+export interface ApprovalCardRulePlan {
+  readonly ok: true;
+  readonly saved: SavedRule;
+  persist(authority?: ApprovalPersistenceGuard, beforePersist?: (saved: SavedRule) => Promise<void>, checkOnly?: boolean): Promise<ApprovalRuleSaveResult>;
+}
+
+const fail = (error: string, message?: string): RefusedRule =>
   message === undefined ? { ok: false, error } : { ok: false, error, message };
 
 // What the save depends on, once its action and scope are known: the rule to store (edited or derived) and whether the request admits this save.
@@ -109,8 +120,18 @@ export async function saveApprovalCardRule(
   answer: { readonly decision: unknown; readonly scope: unknown; readonly displayedVerdictAtApproval: unknown },
   permissionManager: PermissionManager | undefined,
   authority?: ApprovalPersistenceGuard,
-  beforePersist?: (saved: Extract<ApprovalRuleSaveResult, { ok: true }>) => Promise<void>,
+  beforePersist?: (saved: SavedRule) => Promise<void>,
 ): Promise<ApprovalRuleSaveResult> {
+  const plan = planApprovalCardRule(snapshot, rule, answer, permissionManager);
+  return plan.ok ? plan.persist(authority, beforePersist) : plan;
+}
+
+export function planApprovalCardRule(
+  snapshot: RequestSnapshot,
+  rule: Record<string, unknown>,
+  answer: { readonly decision: unknown; readonly scope: unknown; readonly displayedVerdictAtApproval: unknown },
+  permissionManager: PermissionManager | undefined,
+): ApprovalCardRulePlan | RefusedRule {
   const { action, scope, pattern: edited } = rule;
   if (Object.keys(rule).some((key) => key !== "action" && key !== "scope" && key !== "pattern")) {
     return fail("invalid-rule", "A card rule names only its action, scope and, when edited, its pattern");
@@ -140,19 +161,21 @@ export async function saveApprovalCardRule(
       }
     };
     const saved = { ok: true, action: "allow", scope: "session", pattern: floorGrant.code, edited: false } as const;
-    try {
-      await refreshApprovalPersistence(authority);
-      assertFloorGrantCurrent();
-      await beforePersist?.(saved);
-      await refreshApprovalPersistence(authority);
-      assertApprovalPersistenceCurrent(authority);
-      assertFloorGrantCurrent();
-      permissionManager.addFloorSessionGrant(sessionId, floorGrant);
-    } catch (error) {
-      if (error instanceof ProjectRuleScopeChangedError) return fail("project-scope-changed");
-      return fail("rule-save-failed", errorMessage(error));
-    }
-    return saved;
+    return { ok: true, saved, persist: async (authority, beforePersist, checkOnly) => {
+      try {
+        await refreshApprovalPersistence(authority);
+        assertFloorGrantCurrent();
+        if (!checkOnly) await beforePersist?.(saved);
+        await refreshApprovalPersistence(authority);
+        assertApprovalPersistenceCurrent(authority);
+        assertFloorGrantCurrent();
+        if (!checkOnly) permissionManager.addFloorSessionGrant(sessionId, floorGrant);
+      } catch (error) {
+        if (error instanceof ProjectRuleScopeChangedError) return fail("project-scope-changed");
+        return fail("rule-save-failed", errorMessage(error));
+      }
+      return saved;
+    } };
   }
   const target = targetOf(snapshot);
   if (target === undefined) return fail("invalid-rule", "This request has no rule a card can save");
@@ -190,42 +213,51 @@ export async function saveApprovalCardRule(
   const saved = { ok: true, action, scope, pattern, edited: edited !== undefined, ...(warning === undefined ? {} : { warning }) } as const;
   if (scope === "session" && snapshot.sessionId === undefined) return fail("missing-session", "This request has no conversation session");
   if (scope === "project" && target.context.projectCwd === undefined) return fail("scope-not-offered", "This request has no project");
-  try {
-    await refreshApprovalPersistence(authority);
-    await beforePersist?.(saved);
-    assertApprovalPersistenceCurrent(authority);
-    if (scope === "session") {
-      if (snapshot.sessionId === undefined) return fail("missing-session", "This request has no conversation session");
+  return { ok: true, saved, persist: async (authority, beforePersist, checkOnly) => {
+    try {
       await refreshApprovalPersistence(authority);
+      if (!checkOnly) await beforePersist?.(saved);
       assertApprovalPersistenceCurrent(authority);
-      permissionManager.addSessionRule(snapshot.sessionId, pattern);
-    } else if (scope === "run") {
-      await refreshApprovalPersistence(authority);
-      assertApprovalPersistenceCurrent(authority);
-      // Asked again after the waits, with nothing awaited before the rule is added: a run that ended meanwhile gets no rule.
-      if (snapshot.sessionId === undefined || snapshot.runStage?.runAllowOffered !== true || runGrantKeyOfSession(snapshot.sessionId) === undefined) {
-        return fail("run-scope-unavailable", "This request's run has ended or takes no run allow");
+      if (checkOnly) {
+        // The write binds a project rule to its issued root; the check asks the same of the directory as it is now.
+        const root = target.snapshot.shellRuleProjectRoot;
+        if (scope === "project" && target.kind === "shell" && target.context.projectCwd !== undefined &&
+            (root === undefined || !matchesProjectRuleRootBinding(target.context.projectCwd, root))) return fail("project-scope-changed");
+        return saved;
       }
-      permissionManager.addRunRule(snapshot.sessionId, pattern);
-    } else if (scope === "project") {
-      const projectCwd = target.context.projectCwd;
-      if (projectCwd === undefined) return fail("scope-not-offered", "This request has no project");
-      const expectedProjectRoot = target.snapshot.shellRuleProjectRoot;
-      if (target.kind === "shell" && expectedProjectRoot === undefined) return fail("project-scope-changed");
-      await permissionManager.addRulePersist({ pattern, action }, {
-        kind: "project",
-        projectCwd,
-        ...(target.kind === "shell" ? { expectedProjectRoot } : {}),
-      }, ...(authority ? [authority] as const : []));
-    } else {
-      await permissionManager.addRulePersist({ pattern, action }, { kind: "user" }, ...(authority ? [authority] as const : []));
+      if (scope === "session") {
+        if (snapshot.sessionId === undefined) return fail("missing-session", "This request has no conversation session");
+        await refreshApprovalPersistence(authority);
+        assertApprovalPersistenceCurrent(authority);
+        permissionManager.addSessionRule(snapshot.sessionId, pattern);
+      } else if (scope === "run") {
+        await refreshApprovalPersistence(authority);
+        assertApprovalPersistenceCurrent(authority);
+        // Asked again after the waits, with nothing awaited before the rule is added: a run that ended meanwhile gets no rule.
+        if (snapshot.sessionId === undefined || snapshot.runStage?.runAllowOffered !== true || runGrantKeyOfSession(snapshot.sessionId) === undefined) {
+          return fail("run-scope-unavailable", "This request's run has ended or takes no run allow");
+        }
+        permissionManager.addRunRule(snapshot.sessionId, pattern);
+      } else if (scope === "project") {
+        const projectCwd = target.context.projectCwd;
+        if (projectCwd === undefined) return fail("scope-not-offered", "This request has no project");
+        const expectedProjectRoot = target.snapshot.shellRuleProjectRoot;
+        if (target.kind === "shell" && expectedProjectRoot === undefined) return fail("project-scope-changed");
+        await permissionManager.addRulePersist({ pattern, action }, {
+          kind: "project",
+          projectCwd,
+          ...(target.kind === "shell" ? { expectedProjectRoot } : {}),
+        }, ...(authority ? [authority] as const : []));
+      } else {
+        await permissionManager.addRulePersist({ pattern, action }, { kind: "user" }, ...(authority ? [authority] as const : []));
+      }
+    } catch (error) {
+      if (error instanceof ProjectRuleScopeChangedError) return fail("project-scope-changed");
+      // The home's rule stores refuse writes while boot refuses the folder: the card answers once instead and says why.
+      if (error instanceof AveHomeConfigurationRefusedWriteError) return fail(HOME_FOLDER_REFUSED, error.message);
+      // A rule that validated but could not be stored (a refused allow prefix, a corrupt file, a lock or I/O) is reported as a failed save.
+      return fail("rule-save-failed", errorMessage(error));
     }
-  } catch (error) {
-    if (error instanceof ProjectRuleScopeChangedError) return fail("project-scope-changed");
-    // The home's rule stores refuse writes while boot refuses the folder: the card answers once instead and says why.
-    if (error instanceof AveHomeConfigurationRefusedWriteError) return fail(HOME_FOLDER_REFUSED, error.message);
-    // A rule that validated but could not be stored (a refused allow prefix, a corrupt file, a lock or I/O) is reported as a failed save.
-    return fail("rule-save-failed", errorMessage(error));
-  }
-  return saved;
+    return saved;
+  } };
 }

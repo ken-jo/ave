@@ -1,5 +1,5 @@
 import { t } from "../../i18n/runtime.js";
-import { openPendingAnswerCard, personAnswerStands, type StandingAnswer, type StandingAnswerUse } from "../../permissions/pending-answer-policy.js";
+import { openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, type StandingAnswer, type StandingAnswerUse } from "../../permissions/pending-answer-policy.js";
 import { randomUUID } from "node:crypto";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { isHostApprovalRejectedDecision } from "../../permissions/approval-gate.js";
@@ -62,7 +62,7 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   const fallbackId = randomUUID();
   const card = openPendingAnswerCard(manager, permission, () => manager.getPolicyEpoch() === openedEpoch
     ? manager.recheckPermission(permission) : manager.recheckPermission(permission, { acrossMemoryRuleChanges: true }), "stale-refused",
-    { gate, requestId: fallbackId, action: input.action, uses: input.uses });
+    { gate, requestId: fallbackId, action: input.action, uses: ["rule-save", ...input.uses] });
   const fallback: ApprovalRequestInput = {
     ...request,
     id: fallbackId,
@@ -83,5 +83,7 @@ export async function resolveUserOwnedSurfaceApproval(input: {
     if (verdict.kind === "stale" && !isHostApprovalRejectedDecision(decision)) throw new Error(t("be_executor.answerQuestionChanged"));
   }
   if (decision.choice.startsWith("deny") && !isHostApprovalRejectedDecision(decision)) return personDenied(decision);
+  const refusal = (await saveStandingAnswerRule(card, decision)).refusal;
+  if (refusal !== undefined) throw new Error(refusal);
   return { permission, decision, answer: verdict.kind === "stands" && decision.choice === "allow-once" ? verdict.proof : undefined };
 }

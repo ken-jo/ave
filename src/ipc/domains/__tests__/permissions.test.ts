@@ -177,6 +177,7 @@ function makeDeps(options: {
       })),
       resolve: vi.fn((_requestId: string, decision: unknown) => decision),
       resolveFromDesktopRendererWithFreshIdentity: vi.fn((_requestId: string, decision: unknown) => decision),
+      defersAllowSaves: vi.fn(() => false),
       capturePendingRequestAuthority: vi.fn(() => ({
         controller: { refresh: vi.fn(async () => true), isCurrent: vi.fn(() => true) },
         isWorkingDirectoryCurrent: vi.fn(() => true),
