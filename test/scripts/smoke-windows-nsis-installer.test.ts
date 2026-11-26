@@ -1654,15 +1654,11 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(cleanup).toContain("RegistryView]::Registry32");
     expect(cleanup).toContain("System.AppUserModel.ID");
     expect(cleanup).toContain("System.AppUserModel.ToastActivatorCLSID");
-    expect(cleanup).toContain('GetValueKind("CustomActivator")');
-    expect(cleanup).toContain("DoNotExpandEnvironmentNames");
-    expect(cleanup).toContain(
-      "[System.IO.File]::Move($shortcutPath, $quarantinePath)",
-    );
-    expect(cleanup).toContain("[System.IO.File]::Delete($quarantinePath)");
-    expect(cleanup).toContain(
-      "[System.IO.File]::Move($quarantinePath, $shortcutPath)",
-    );
+    expect(cleanup).toContain('ReadSlot("CustomActivator", [Microsoft.Win32.RegistryValueKind]::DWord)');
+    expect(cleanup).toContain("RegQueryValueExW(handle, name");
+    expect(cleanup).toContain("SetFileInformationByHandle(stream.SafeFileHandle, FileRenameInfo");
+    expect(cleanup).toContain("SetFileInformationByHandle(stream.SafeFileHandle, FileDispositionInfo");
+    expect(cleanup).toContain("$restoreFile.RenameTo($shortcutPath)");
     expect(cleanup).toContain(".ave-nsis-per-machine-v1");
     expect(cleanup).toContain(
       'ValidateSet("removed", "foreign-preserved", "verified-absent", "contract-failed")',
@@ -1696,7 +1692,7 @@ describe("Windows NSIS installer smoke contracts", () => {
     );
     const exactOwnedElse = cleanup.indexOf("else {", partialPreserve);
     const quarantineMove = cleanup.indexOf(
-      "[System.IO.File]::Move($shortcutPath, $quarantinePath)",
+      "$parkFile.RenameTo($quarantinePath)",
       exactOwnedElse,
     );
     expect(mismatchCheck).toBeGreaterThanOrEqual(0);
@@ -1714,12 +1710,16 @@ describe("Windows NSIS installer smoke contracts", () => {
       'Write-CleanupEvent "foreign-preserved" "shortcut"',
     );
     const finalToastCheck = cleanup.indexOf(
-      "$remaining = @(Find-ExactToastRegistrations $installedExe)",
+      "Confirm-ToastRegistrationsAbsent $installedExe $candidateClsids",
     );
     const finalShortcutCheck = cleanup.lastIndexOf(
-      "$shortcutResidue = Get-Item",
+      "$shortcutResidue = Get-ShortcutAttributes $shortcutPath",
     );
-    expect(finalShortcutCheck).toBeGreaterThan(finalToastCheck);
+    expect(finalShortcutCheck).toBeGreaterThanOrEqual(0);
+    expect(finalToastCheck).toBeGreaterThan(finalShortcutCheck);
+    const quarantineIdentityCheck = cleanup.indexOf("$deleteFile.Matches($verifiedFile, $digest)");
+    expect(quarantineIdentityCheck).toBeGreaterThan(finalToastCheck);
+    expect(cleanup.indexOf("$deleteFile.Delete()")).toBeGreaterThan(quarantineIdentityCheck);
 
     expect(earlyBoot).toContain(
       '"{62FD3EFB-B3D2-4235-9402-6979F52C0286}"',

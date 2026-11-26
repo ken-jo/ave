@@ -187,9 +187,65 @@ explicitly changes distribution strategy. Runtime assets such as the compressed
 Marketplace, plugin, and MCP artifact bootstrap remain app runtime concerns,
 where signing, permissions, and network policy are available.
 
+### MSIX/AppX packaging decision
+
 MSIX/AppX is a separate packaging decision. Do not ship it alongside NSIS until
 the update mechanism, signing certificate/Partner Center path, and enterprise
 distribution requirements are decided.
+
+The supported fix for per-profile toast registration is a signed package with
+external location. Embed the matching identity in the executable, declare the
+toast activator GUID in the package manifest, provision the package for all
+users, and preserve package registration across updates. See the
+[toast lifecycle design](../architecture/all-profile-windows-toast-lifecycle-adr.md#msixappx-package-identity-with-external-location).
+
+### All-profile toast cleanup
+
+**Release limit — per-profile toast registration.** An unpackaged NSIS build
+always writes HKCU per user who runs Ave, so uninstall can only clean the
+current user's entries. With runtime v45.3.4, the NSIS build runs
+`EnsureShortcut();` and `EnsureCLSIDRegistry();` under
+`if (!is_packaged)` whenever the activator is registered. That condition uses
+OS package identity. The runtime uses the current user's Programs folder and
+HKCU for these calls. The AUMID and CLSID setters select identifiers only.
+Machine entries alone would leave the runtime-created copies in each profile.
+[v45.3.4 `shell/browser/notifications/win/windows_toast_activator.cc:310–321`](https://github.com/electron/electron/blob/v45.3.4/shell/browser/notifications/win/windows_toast_activator.cc#L310-L321)
+
+Genuine uninstall verifies owned toast artifacts in the retained initiating
+user's profile after normal alternate-credential UAC. An already-elevated launch
+uses the process account's profile. Other signed-in and signed-out profiles can
+retain both the per-user Start Menu notification shortcut and the HKCU toast
+activator CLSID after a per-machine uninstall.
+The verification is the cleanup's final read under its per-user lock. A packaged
+Windows start exits when it reads the cleanup marker and finds byte zero locked
+on the same handle. An inconclusive probe allows startup. A writer that does not
+honor the lock, or a launch after cleanup exits and before the executable is
+removed, can leave or recreate a value. Cleanup exit 2 reports an unattributable
+quarantine entry left untouched. Uninstall continues.
+See the [toast lifecycle design](../architecture/all-profile-windows-toast-lifecycle-adr.md)
+for the ownership boundary and migration and rollback outline.
+
+Keep the all-profile cleanup gate open for signed candidates and unsigned
+exceptions. Record the limitation in the release evidence and withhold any claim
+of all-profile cleanup until the following checks pass on the release candidate:
+
+- [ ] Document the supported migration and rollback for the candidate and record
+      the package identity, actual cleanup account, profile session states, and
+      results.
+- [ ] For both a clean per-machine install and a supported migration from an
+      existing install, run genuine uninstall with the second user signed in
+      and again from a fresh fixture with that user signed out. Start from the
+      initiating standard user's session and supply a distinct administrator's
+      credentials. In every run, capture both users' owned shortcuts and
+      registration values before uninstall and verify their absence after
+      uninstall before either user relaunches Ave. Empty registry keys may
+      remain after the owned values are removed. Capture before and after
+      evidence that foreign shortcuts, registry values, and subkeys are unchanged.
+- [ ] In a separate updater run, capture the shortcut and registration values in
+      both profiles before updater uninstall and again after it completes,
+      before either profile relaunches Ave. Prevent automatic relaunch or capture
+      the post-uninstall state before it occurs. Verify both artifacts survived
+      unchanged in each profile, then verify toast activation for both users.
 
 ## Smoke-Test Checklist
 
