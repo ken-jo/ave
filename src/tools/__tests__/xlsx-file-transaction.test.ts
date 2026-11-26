@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
-  renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+  renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import JSZip from "jszip";
@@ -106,7 +106,10 @@ describe("workbook file transaction", () => {
     expect(() => publishWorkbookEdit(path, snapshot, output, 1)).toThrow();
     expect(readFileSync(path).equals(before)).toBe(true);
     if (kind === "file") expect(readFileSync(backup, "utf8")).toBe("incomplete");
-    else expect(lstatSync(backup).isSymbolicLink()).toBe(true);
+    else {
+      expect(lstatSync(backup).isSymbolicLink()).toBe(true);
+      expect(existsSync(join(directory, "absent.xlsx"))).toBe(false);
+    }
     expect(temporaryNames()).toEqual([]);
   });
 
@@ -144,6 +147,12 @@ describe("workbook file transaction", () => {
     expect(readFileSync(`${path}.ave-bak`).equals(before)).toBe(true);
     expect(readFileSync(path).equals(output)).toBe(true);
     expect(temporaryNames()).toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32")("creates the recovery copy owner-only", async () => {
+    const { path, output } = await workbook(true);
+    publishWorkbookEdit(path, readWorkbookSnapshot(path), output, 1);
+    expect(statSync(`${path}.ave-bak`).mode & 0o777).toBe(0o600);
   });
 
   it("removes a recovery copy whose write fails", async () => {

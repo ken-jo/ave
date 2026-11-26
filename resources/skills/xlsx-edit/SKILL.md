@@ -54,14 +54,17 @@ paths are missing or the shell reports failed verification or unavailable native
 confinement, report that prerequisite and leave the workbook untouched. Never
 install another runtime, download packages or request an unsandboxed retry.
 
-The script admits files up to 20 MiB. Above 8 MiB it writes an exclusive
-same-directory temporary backup, calls `fsync`, verifies its length and SHA-256,
-then publishes `<workbook>.ave-bak` with an exclusive hard link. An existing final
-backup, including a partial file or link, blocks that larger-file edit without
-changing it or the workbook. Preserve that copy and ask the user to move it to
-another recovery name before retrying. Failed temporary backups are removed; retry is possible
-when no final backup was published. Smaller files do not get automatic recovery
-copies. Shell edits are outside the host's checkpoint/rewind history.
+The script admits files up to 20 MiB. Above 8 MiB it creates
+`<workbook>.ave-bak` exclusively, writes the original bytes, calls `fsync`,
+re-reads the copy and checks its length and SHA-256 before replacing the
+workbook. If any of that fails, the edit removes the backup it created and leaves
+the workbook unchanged; retry is then possible. An interrupted write can leave a
+partial `.ave-bak` under the final name: never treat such a file as a valid
+copy. An existing backup, including a partial file or link, blocks that
+larger-file edit without changing it or the workbook. Preserve that copy and ask
+the user to move it to another recovery name before retrying. Smaller files do
+not get automatic recovery copies. Shell edits are outside the host's
+checkpoint/rewind history.
 
 Success writes JSON to stdout with `editedCells`, `needsRecalculation: true` and
 `backup` (an absolute path or null). Exit 1 reports a refusal on stderr. Exit 2
