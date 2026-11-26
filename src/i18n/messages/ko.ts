@@ -5399,7 +5399,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "sidebar.copyConversation": "대화 복사",
   "sidebar.deleteConversation": "삭제",
   "sidebar.deleteTerminalCleanupUnproven": "이 대화의 터미널이 종료되지 않았습니다. 대화 삭제를 다시 시도해 주세요.",
-  "sidebar.deleteShellCleanupUnproven": "이 대화의 백그라운드 셸이 종료되지 않았습니다. 대화 삭제를 다시 시도해 주세요.",
+  "sidebar.deleteShellCleanupUnproven": "이 대화의 셸이 종료되지 않았습니다. 대화 삭제를 다시 시도해 주세요.",
   "sidebar.projectMenu": "프로젝트 작업",
   "sidebar.projectMenuEdit": "편집",
   "sidebar.projectMenuArchive": "프로젝트 보관",

@@ -1662,9 +1662,14 @@ went with the job or never exits) is the single fail-closed result
 `cwd-pin-unconfirmed`; it is never reported as reaped and never as the
 command's code. Cancellation, timeout, background stop and session teardown ask
 the launcher to stop by closing its input. Application quit does so for every
-held background launcher. A 15-second deadline starts at the stop request.
+held launcher. Foreground and background launchers are registered when bound
+and remain owned until exit is observed or the process is known to have never
+started. A 15-second deadline starts at the stop request.
 When it expires, the host closes the helper, the OS stops the tree, and the
-result is `cwd-pin-unconfirmed`. If app shutdown cuts the wait short, it records
+result is `cwd-pin-unconfirmed`. Conversation deletion waits at most 15 seconds
+for shell cleanup and returns `shell-cleanup-unproven` while launcher exit is
+unproven. The conversation is kept and deletion can be retried after exit.
+If app shutdown cuts the wait short, it records
 pending runs as unconfirmed before the generic child kill. A lost
 or unconfirmed verdict fails the run with a trusted `cwd-pin-lost` or
 `cwd-pin-unconfirmed` reason carried outside the output (even after exit code

@@ -615,7 +615,6 @@ interface BackgroundShellEntry {
   /** A held run stays running until its launcher's verdict, which is kept here, outside the output. */
   held?: HeldWindowsRun;
   stopRequested: boolean;
-  pinUnconfirmedReported?: boolean;
   pin?: WindowsHoldVerdict;
   /** Resolves when the entry leaves "running". */
   settled: Promise<void>;
@@ -739,6 +738,8 @@ export interface BackgroundShellManager {
   /** User lifecycle cancellation does not consume the model's output cursor. */
   stop(sessionId: string, shellId: string): boolean;
   waitForLocalCleanup(sessionId: string): Promise<void>;
+  registerHeldLauncher(sessionId: string | undefined, child: ChildProcess, held: HeldWindowsRun, terminate?: () => void, shellId?: string): void;
+  stopSessionHeldShells(sessionId: string): Promise<void>;
   hasPendingHeldShells(sessionId: string): boolean;
   /** Kill + drop every shell owned by a session (call on session end). */
   disposeSession(sessionId: string): number;
@@ -921,9 +922,16 @@ function withBrokerTransportMetadata(result: ToolExecutionResult): ToolExecution
   };
 }
 
+interface HeldShellLauncher {
+  sessionId: string | undefined;
+  terminate: () => void;
+  shellId: string | undefined;
+  unconfirmedReported?: boolean;
+}
+
 function createManager(): BackgroundShellManager {
   const shells = new Map<string, BackgroundShellEntry>();
-  const heldShells = new Set<BackgroundShellEntry>();
+  const heldShells = new Map<HeldWindowsRun, HeldShellLauncher>();
   const localCleanup = new Map<string, Set<Promise<void>>>();
   const brokerShells = new Map<string, BrokerBackgroundShellEntry>();
   const brokerCleanup = new Map<string, MutableBrokerSessionCleanup>();
@@ -931,10 +939,41 @@ function createManager(): BackgroundShellManager {
   const loadBrokerRuntime = () =>
     brokerRuntimeImport ??= import("../workload/runtime.js");
 
-  const reportUnconfirmed = (entry: BackgroundShellEntry): void => {
-    if (entry.pinUnconfirmedReported) return;
-    entry.pinUnconfirmedReported = true;
+  const reportUnconfirmed = (entry: HeldShellLauncher): void => {
+    if (entry.unconfirmedReported) return;
+    entry.unconfirmedReported = true;
     shellTaskLog.warn({ shellId: entry.shellId }, "cwd-pin-unconfirmed");
+  };
+
+  const registerHeldLauncher = (
+    sessionId: string | undefined, child: ChildProcess, held: HeldWindowsRun,
+    terminate?: () => void, shellId?: string,
+  ): void => {
+    let verdictSettled = false;
+    const requestStop = terminate ?? (() => { if (!verdictSettled) void held.stop(); });
+    const existing = heldShells.get(held);
+    if (existing !== undefined) {
+      existing.terminate = requestStop;
+      existing.shellId = shellId;
+      return;
+    }
+    let exitObserved = false;
+    const entry: HeldShellLauncher = { sessionId, terminate: requestStop, shellId };
+    heldShells.set(held, entry);
+    const onExit = (): void => {
+      exitObserved = true;
+      if (verdictSettled) heldShells.delete(held);
+    };
+    child.once("exit", onExit);
+    void held.verdict.then((pin) => {
+      verdictSettled = true;
+      if (pin.kind === "unconfirmed") reportUnconfirmed(entry);
+      // The stop deadline settles the result even when the launcher is still alive.
+      if (pin.kind !== "unconfirmed" || exitObserved || child.pid === undefined || child.exitCode != null || child.signalCode != null) {
+        heldShells.delete(held);
+        child.off("exit", onExit);
+      }
+    });
   };
 
   const cleanupReport = (
@@ -1248,10 +1287,7 @@ function createManager(): BackgroundShellManager {
       // A descendant may retain the output pipes after its parent exits, so
       // close is too late to own cleanup. End the owned group at root exit.
       child.once("exit", () => {
-        if (held !== undefined) {
-          if (entry.pin !== undefined) heldShells.delete(entry);
-          return;
-        }
+        if (held !== undefined) return;
         if (killProcessGroup) terminate();
         else terminationRequested = true;
       });
@@ -1268,13 +1304,8 @@ function createManager(): BackgroundShellManager {
       };
       // A held run has one end, its verdict: close, a started child's error and a stop all wait for it.
       if (held !== undefined) {
-        heldShells.add(entry);
+        registerHeldLauncher(sessionId, child, held, terminate, shellId);
         void held.verdict.then((pin) => {
-          // A stop deadline can end the verdict wait before the launcher reports exit.
-          if (pin.kind !== "unconfirmed" || child.pid === undefined || child.exitCode != null || child.signalCode != null) {
-            heldShells.delete(entry);
-          }
-          if (pin.kind === "unconfirmed") reportUnconfirmed(entry);
           const { code, signal } = heldCommandExit(child, pin);
           settle(code, signal, pin);
         });
@@ -1477,8 +1508,16 @@ function createManager(): BackgroundShellManager {
       while (localCleanup.has(sessionId)) await Promise.all([...localCleanup.get(sessionId)!]);
     },
 
+    registerHeldLauncher,
+
+    async stopSessionHeldShells(sessionId): Promise<void> {
+      const pending = [...heldShells].filter(([, entry]) => entry.sessionId === sessionId);
+      for (const [, entry] of pending) entry.terminate();
+      await Promise.all(pending.map(([held]) => held.verdict));
+    },
+
     hasPendingHeldShells(sessionId): boolean {
-      return [...heldShells].some((entry) => entry.sessionId === sessionId);
+      return [...heldShells.values()].some((entry) => entry.sessionId === sessionId);
     },
 
     disposeSession(sessionId): number {
@@ -1496,16 +1535,16 @@ function createManager(): BackgroundShellManager {
 
     async stopAllHeldShells(signal): Promise<void> {
       const pending = [...heldShells];
-      for (const entry of pending) entry.terminate();
+      for (const [, entry] of pending) entry.terminate();
       const reportPending = (): void => {
-        for (const entry of pending) {
-          if (heldShells.has(entry)) reportUnconfirmed(entry);
+        for (const [held, entry] of pending) {
+          if (heldShells.has(held)) reportUnconfirmed(entry);
         }
       };
       signal.addEventListener("abort", reportPending, { once: true });
       if (signal.aborted) reportPending();
       try {
-        await Promise.all(pending.map((entry) => entry.settled));
+        await Promise.all(pending.map(([held]) => held.verdict));
       } finally {
         signal.removeEventListener("abort", reportPending);
       }
@@ -1568,7 +1607,7 @@ function createManager(): BackgroundShellManager {
     },
 
     _resetForTest(): void {
-      for (const entry of heldShells) entry.terminate();
+      for (const entry of heldShells.values()) entry.terminate();
       heldShells.clear();
       for (const entry of [...shells.values()]) {
         entry.stopTracking?.();
@@ -1589,7 +1628,15 @@ function createManager(): BackgroundShellManager {
 }
 
 /** Process-wide singleton, mirroring managed-child-processes.ts. */
-export const backgroundShellManager: BackgroundShellManager = createManager();
+export const backgroundShellManager = createManager();
+
+function bindForegroundShellHold(
+  hold: HostShellSpawnDirectoryHold | undefined, child: ChildProcess, sessionId: string | undefined,
+): HeldWindowsRun | undefined {
+  const held = hold?.bind(child);
+  if (held !== undefined) backgroundShellManager.registerHeldLauncher(sessionId, child, held);
+  return held;
+}
 
 const foregroundShellTasks = new Map<string, {
   sessionId: string;
@@ -1623,7 +1670,7 @@ export function controlShellTask(sessionId: string, action: ShellTaskAction, she
 
 /**
  * The one shell teardown for an ending session, parent or sub-agent: stop its
- * background shells, forget its saved working directory, and settle any
+ * background shells and held launchers, forget its saved working directory, and settle any
  * brokered cleanup. The caller decides what an unproven cleanup means.
  */
 export async function endShellSession(sessionId: string, options?: { forDeletion: true }): Promise<BrokerSessionCleanupReport | undefined> {
@@ -1632,7 +1679,13 @@ export async function endShellSession(sessionId: string, options?: { forDeletion
   const terminalStopped = options?.forDeletion === true
     ? raceWithTimeout(terminalCleanup, TOOL_TIMEOUT_POLICY.windowsHoldStopMs, () => new ShellSessionCleanupError("terminal-cleanup-unproven"))
     : terminalCleanup;
-  await Promise.all([terminalStopped, backgroundShellManager.waitForLocalCleanup(sessionId)]);
+  const shellCleanup = Promise.all([
+    backgroundShellManager.stopSessionHeldShells(sessionId), backgroundShellManager.waitForLocalCleanup(sessionId),
+  ]);
+  const shellsStopped = options?.forDeletion === true
+    ? raceWithTimeout(shellCleanup, TOOL_TIMEOUT_POLICY.windowsHoldStopMs, () => new ShellSessionCleanupError("shell-cleanup-unproven"))
+    : shellCleanup;
+  await Promise.all([terminalStopped, shellsStopped]);
   if (options?.forDeletion === true && backgroundShellManager.hasPendingHeldShells(sessionId)) {
     throw new ShellSessionCleanupError("shell-cleanup-unproven");
   }
@@ -2032,7 +2085,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     const checked = await checkedShellResult(() => spawnWithTimeout(
       input.command, hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd, input.timeoutSeconds, prepared, ctx.abortSignal,
       outputCapture, outputProgress, hostSpawnAuthorization,
-      holdsOutput ? undefined : sessionIdFromContext(ctx), !holdsOutput && !hostShellPlan.requiresExplicitUserApproval && !disposableExecution && process.platform !== "win32",
+      sessionIdFromContext(ctx), !holdsOutput && !hostShellPlan.requiresExplicitUserApproval && !disposableExecution && process.platform !== "win32",
       holdsOutput, shellObservationSandbox(hostShellPlan, disposableExecution),
     ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
     if (checked.refused) return checked.result;
@@ -2846,7 +2899,7 @@ export async function spawnWithSandbox(
         shell: false,
         env: childEnv,
       }) as PipedChild;
-      held = directoryHold.bind(child);
+      held = bindForegroundShellHold(directoryHold, child, sessionId);
     } catch (err) {
       observation?.finish(null, "failed");
       void (async () => {
@@ -2863,7 +2916,7 @@ export async function spawnWithSandbox(
     }
     const closed = checkedShellClose(child, waitForClose, held);
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
-    trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash:asrt" });
+    if (held === undefined) trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash:asrt" });
     // Detached, the child leads its own process group: the sandbox keeps the
     // ended invocation's listener port while anything in that group lives.
     if (process.platform !== "win32" && child.pid !== undefined) egress.noteProcessGroup(child.pid);
@@ -2995,7 +3048,7 @@ async function spawnWithTimeout(
       }) as PipedChild;
     }
     catch (error) { observation?.finish(null, "failed"); throw error; }
-    const held = launchHold?.bind(child);
+    const held = bindForegroundShellHold(launchHold, child, sessionId);
     const closed = checkedShellClose(child, waitForClose, held);
     const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
@@ -3006,7 +3059,7 @@ async function spawnWithTimeout(
     };
     if (held === undefined) child.once("close", () => { void releaseAfterClose(); });
     else void held.verdict.then(releaseAfterClose);
-    const stopTracking = trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash" });
+    const stopTracking = held === undefined ? trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash" }) : undefined;
 
     const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, cwdProbe: probe, progress,
       retainForHandoff: backgroundable, observation });
@@ -3019,7 +3072,7 @@ async function spawnWithTimeout(
     let backgrounded = false;
     const taskId = randomUUID();
     const startedAt = new Date().toISOString();
-    if (sessionId !== undefined) foregroundShellTasks.set(taskId, {
+    if (sessionId !== undefined && !waitForClose) foregroundShellTasks.set(taskId, {
       sessionId,
       snapshot: () => ({
         shellId: taskId, command, startedAt, status: "running", backgrounded: false,
@@ -3046,7 +3099,7 @@ async function spawnWithTimeout(
         backgrounded = true;
         foregroundShellTasks.delete(taskId);
         lifetime.releaseSignal();
-        stopTracking();
+        stopTracking?.();
         outputCollector.handOffOutput((chunk) => backgroundShellManager.appendOutput(sessionId, shellId, chunk));
         void outputCollector.finish(true).catch(() => {
           try { outputCollector.abandonCapture(); } catch { /* The continuing child still has its session owner. */ }
@@ -3779,7 +3832,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     const checked = await checkedShellResult(() => spawnPowerShell(
       input.command, hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd, input.timeoutSeconds, ctx.abortSignal,
       outputCapture, outputProgress, hostSpawnAuthorization, verified,
-      shellObservationSandbox(hostShellPlan, disposableExecution),
+      shellObservationSandbox(hostShellPlan, disposableExecution), sessionIdFromContext(ctx),
     ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
     if (checked.refused) return checked.result;
     const plainResult = checked.result;
@@ -4253,7 +4306,7 @@ async function spawnPowerShellWithSandbox(
         shell: false,
         env: childEnv,
       }) as PipedChild;
-      held = cwdHold.bind(child);
+      held = bindForegroundShellHold(cwdHold, child, sessionId);
     } catch (err) {
       observation?.finish(null, "failed");
       void (async () => {
@@ -4269,7 +4322,7 @@ async function spawnPowerShellWithSandbox(
       return;
     }
     const closed = checkedShellClose(child, waitForClose, held);
-    trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell:asrt" });
+    if (held === undefined) trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell:asrt" });
     // Detached, the child leads its own process group: the sandbox keeps the
     // ended invocation's listener port while anything in that group lives.
     if (process.platform !== "win32" && child.pid !== undefined) egress.noteProcessGroup(child.pid);
@@ -4475,7 +4528,7 @@ async function spawnPowerShellInMxc(
         // The launcher's own environment: the container's is in the request.
         env: buildSafeChildEnv({}),
       }) as PipedChild;
-      held = cwdHold.bind(child);
+      held = bindForegroundShellHold(cwdHold, child, sessionId);
     } catch (error) {
       throw error instanceof HostShellDirectoryHoldError ? error : launcherError(error);
     }
@@ -4579,7 +4632,7 @@ async function spawnPowerShellInMxc(
         }
       }));
       closed = checkedShellClose(spawned, waitForClose, run);
-      trackManagedChildProcess(spawned, { killProcessGroup: false, label: MXC_SHELL_LABEL });
+      if (run === undefined) trackManagedChildProcess(spawned, { killProcessGroup: false, label: MXC_SHELL_LABEL });
       launch.bindChild(spawned);
       collector = createOutputCollector(spawned, { captureFactory: outputCaptureFactory, progress, observation });
       spawned.stdout.on("data", parserResponse === undefined ? collector.collect : parserResponse.collect);
@@ -4661,6 +4714,7 @@ async function spawnPowerShell(
   spawnAuthorization?: HostShellSpawnAuthorization,
   verified?: VerifiedPowerShellExecution,
   sandbox: AgentTerminalObservationInput["sandbox"] = { mode: "unconfined", detail: "host" },
+  sessionId?: string,
 ): Promise<ToolExecutionResult> {
   const waitForClose = verified !== undefined && verifiedShellRequiresResultCheck(verified.handle, verified.identity);
   signal?.throwIfAborted();
@@ -4685,10 +4739,10 @@ async function spawnPowerShell(
       }, verified, launchHold,
     ) as PipedChild; }
     catch (error) { observation?.finish(null, "failed"); throw error; }
-    const held = launchHold?.bind(child);
+    const held = bindForegroundShellHold(launchHold, child, sessionId);
     const closed = checkedShellClose(child, waitForClose, held);
     const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);
-    trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell" });
+    if (held === undefined) trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell" });
 
     const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress, observation });
     child.stdout.on("data", outputCollector.collect);
