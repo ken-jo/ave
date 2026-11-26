@@ -103,16 +103,17 @@ vi.mock("node:fs", async (importOriginal) => {
 
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
+  const nativeWindows = process.platform === "win32";
   return {
     ...original,
     homedir: () => {
       const isolated = process.env.AVE_ASRT_TEST_HOME;
-      return process.platform === "win32" && isolated ? isolated : original.homedir();
+      return nativeWindows && isolated ? isolated : original.homedir();
     },
     userInfo: () => {
       const info = original.userInfo();
       const isolated = process.env.AVE_ASRT_TEST_HOME;
-      return process.platform === "win32" && isolated ? { ...info, homedir: isolated } : info;
+      return nativeWindows && isolated ? { ...info, homedir: isolated } : info;
     },
   };
 });
