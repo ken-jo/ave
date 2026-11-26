@@ -1,14 +1,17 @@
+import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
   renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import JSZip from "jszip";
 import * as XLSX from "xlsx";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { editWorkbookFile } from "../../skills/xlsx-edit.js";
 import { publishWorkbookEdit, readWorkbookSnapshot } from "../../skills/xlsx-file-transaction.js";
 import { parseTableDocument } from "../table-document-reader.js";
+import { configureHostResources } from "../../main/host-resources.js";
+import { readWindowsDacls } from "../../shared/windows-path-facts.js";
 
 // Confined shells refuse hard links; every case here runs without that right.
 vi.mock("node:fs", async (importOriginal) => ({
@@ -176,6 +179,43 @@ describe("workbook file transaction", () => {
     expect(existsSync(`${path}.ave-bak`)).toBe(false);
     expect(readFileSync(path).equals(before)).toBe(true);
     expect(temporaryNames()).toEqual([]);
+  });
+
+  it("refuses the recovery copy when access rules cannot be compared", async () => {
+    const { path, before, output } = await workbook(true);
+    const snapshot = readWorkbookSnapshot(path);
+    for (const readAccessRules of [() => { throw new Error("unavailable"); }, () => ["D:AI(A;ID;FA;;;SY)", "D:AI(A;ID;FA;;;BA)"], () => ["D:AI(A;ID;FA;;;SY)"]]) {
+      expect(() => publishWorkbookEdit(path, snapshot, output, 1, { readAccessRules })).toThrow("own access rules");
+      expect(existsSync(`${path}.ave-bak`)).toBe(false);
+      expect(readFileSync(path).equals(before)).toBe(true);
+    }
+    expect(temporaryNames()).toEqual([]);
+  });
+
+  describe.runIf(process.platform === "win32")("Windows access rules", () => {
+    const aces = (path: string) => {
+      const list = readWindowsDacls([path])[0]?.dacl?.aces;
+      if (!list?.length) throw new Error("No access list was read");
+      return list.map(({ type, flags, mask, sid }) => ({ type, flags, mask, sid }));
+    };
+    beforeEach(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
+
+    it("gives the recovery copy the workbook's inherited access list", async () => {
+      const { path, before, output } = await workbook(true);
+      publishWorkbookEdit(path, readWorkbookSnapshot(path), output, 1);
+      expect(readFileSync(`${path}.ave-bak`).equals(before)).toBe(true);
+      expect(aces(`${path}.ave-bak`)).toEqual(aces(path));
+    });
+
+    it("refuses the edit when the workbook has its own access rules", async () => {
+      const { path, before, output } = await workbook(true);
+      execFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe"), [path, "/grant", "*S-1-1-0:(R)"], { stdio: "ignore" });
+      const snapshot = readWorkbookSnapshot(path);
+      expect(() => publishWorkbookEdit(path, snapshot, output, 1)).toThrow("own access rules");
+      expect(existsSync(`${path}.ave-bak`)).toBe(false);
+      expect(readFileSync(path).equals(before)).toBe(true);
+      expect(temporaryNames()).toEqual([]);
+    });
   });
 
   it("removes failed output staging and leaves source unchanged", async () => {

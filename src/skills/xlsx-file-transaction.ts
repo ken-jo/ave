@@ -1,12 +1,14 @@
+import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve, win32 } from "node:path";
 import { replaceStagedFile } from "../lib/atomic-file.js";
 import { XLSX_EDIT_LIMITS } from "../shared/xlsx-edit.js";
 
 export interface WorkbookFileSnapshot { data: Buffer; identity: fs.BigIntStats }
 export interface WorkbookEditIo {
   write?: (descriptor: number, bytes: Buffer, offset: number, length: number) => number;
+  readAccessRules?: WindowsAccessRulesReader;
 }
 export interface WorkbookEditResult { editedCells: number; needsRecalculation: true; backup: string | null }
 
@@ -105,8 +107,32 @@ function verifyStagedBytes(path: string, bytes: Buffer, message: string): void {
   requireCondition(saved.length === bytes.length && sha256(saved) === sha256(bytes), message);
 }
 
+const ACCESS_RULES_SCRIPT = "$ErrorActionPreference = 'Stop'; foreach ($path in @($env:AVE_XLSX_ACCESS_SOURCE, $env:AVE_XLSX_ACCESS_COPY)) "
+  + "{ (Get-Acl -LiteralPath $path).GetSecurityDescriptorSddlForm('Access') }";
+const WORKBOOK_ACCESS_RULES_REFUSAL = "The workbook has its own access rules; Ave cannot keep them on its backup.";
+
+/** Windows access lists in SDDL, source first. Any failure or malformed answer is no answer. */
+type WindowsAccessRulesReader = (source: string, copy: string) => readonly string[];
+const readWindowsAccessRules: WindowsAccessRulesReader = (source, copy) => {
+  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
+  const shell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const output = execFileSync(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+    Buffer.from(ACCESS_RULES_SCRIPT, "utf16le").toString("base64")], {
+    encoding: "utf8", windowsHide: true, timeout: 60_000, stdio: ["ignore", "pipe", "ignore"],
+    env: { ...process.env, AVE_XLSX_ACCESS_SOURCE: source, AVE_XLSX_ACCESS_COPY: copy },
+  });
+  return output.split(/\r?\n/).filter((line) => line.length > 0);
+};
+
+/** The copy must carry exactly the workbook's access list; a created file only inherits its folder's. */
+function requireSameAccessRules(source: string, copy: string, read: WindowsAccessRulesReader): void {
+  let rules: readonly string[];
+  try { rules = read(source, copy); } catch { throw new Error(`${WORKBOOK_ACCESS_RULES_REFUSAL} (access rules unreadable)`); }
+  requireCondition(rules.length === 2 && rules.every((rule) => rule.startsWith("D:")) && rules[0] === rules[1], WORKBOOK_ACCESS_RULES_REFUSAL);
+}
+
 /** Exclusive create keeps any existing entry, links included, and needs no hard-link right. A copy that fails verification is removed. */
-function writeRecoveryCopy(path: string, bytes: Buffer, io: WorkbookEditIo, verifySource: () => void): void {
+function writeRecoveryCopy(source: string, path: string, bytes: Buffer, io: WorkbookEditIo, verifySource: () => void): void {
   if (fs.lstatSync(path, { throwIfNoEntry: false }) !== undefined) {
     throw Object.assign(new Error(`Recovery path already exists: ${path}`), { code: "EEXIST" });
   }
@@ -118,6 +144,7 @@ function writeRecoveryCopy(path: string, bytes: Buffer, io: WorkbookEditIo, veri
       const named = fs.lstatSync(path, { bigint: true });
       requireCondition(named.isFile() && named.dev === opened.dev && named.ino === opened.ino, "Recovery path changed while opening.");
       created = opened;
+      if (process.platform === "win32") requireSameAccessRules(source, path, io.readAccessRules ?? readWindowsAccessRules);
       writeAndSync(descriptor, bytes, io);
     } finally { fs.closeSync(descriptor); }
     verifyStagedBytes(path, bytes, "Backup verification failed.");
@@ -149,7 +176,7 @@ export function publishWorkbookEdit(path: string, snapshot: WorkbookFileSnapshot
   if (snapshot.data.length > XLSX_EDIT_LIMITS.backupBytes) {
     backup = backupPath;
     checkSource(requestedPath, snapshot, location);
-    writeRecoveryCopy(`${location.path}.ave-bak`, snapshot.data, io, () => checkSource(requestedPath, snapshot, location));
+    writeRecoveryCopy(location.path, `${location.path}.ave-bak`, snapshot.data, io, () => checkSource(requestedPath, snapshot, location));
   }
   checkSource(requestedPath, snapshot, location);
   const staged = temporaryFile(path);

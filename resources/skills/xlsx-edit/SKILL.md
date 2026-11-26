@@ -60,7 +60,11 @@ re-reads the copy and checks its length and SHA-256 before replacing the
 workbook. If any of that fails, the edit removes the backup it created and leaves
 the workbook unchanged; retry is then possible. An interrupted write can leave a
 partial `.ave-bak` under the final name: never treat such a file as a valid
-copy. An existing backup, including a partial file or link, blocks that
+copy. On Windows the backup must carry exactly the workbook's access list; a
+workbook with its own access rules, or one whose rules cannot be read, is
+refused with "The workbook has its own access rules; Ave cannot keep them on its
+backup." Report that to the user and leave the workbook untouched. An existing
+backup, including a partial file or link, blocks that
 larger-file edit without changing it or the workbook. Preserve that copy and ask
 the user to move it to another recovery name before retrying. Smaller files do
 not get automatic recovery copies. Shell edits are outside the host's
