@@ -10,6 +10,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import { consumeMxcExtensionAdmission, createMxcExtensionAdmission, registerMxcReleaseGateEvidence } from "../../permissions/mxc-extension-admission.js";
+import { planWindowsExtensionHolder } from "../../permissions/mxc-extension-readiness.js";
+import { createMxcExtensionRequest } from "../../__tests__/support/mxc-supervisor.js";
 
 const childProcessMock = vi.hoisted(() => ({
   spawn: vi.fn(),
@@ -609,7 +612,11 @@ describe("builtin shell — Windows MXC containers", () => {
 
   it.each(["reports an error", "throws"] as const)("releases the listener and shows only the error code when the launcher's spawn %s", async (failure) => {
     bootMxcShells();
-    const reportLoss = vi.spyOn(backendEvidence, "reportWindowsBackendLoss");
+    passConfirmationInterval();
+    const confirmLoss = vi.spyOn(backendEvidence, "recheckWindowsContainerBackendAfterShellFailure");
+    vi.spyOn(mxcWindows, "getHostWxcExecIdentity").mockReturnValue("verified-launcher");
+    vi.spyOn(mxcWindows, "resolveHostWxcExecPath").mockResolvedValue(WXC_EXEC);
+    vi.spyOn(mxcWindows, "probeHostMxcPowerShellStart").mockResolvedValue({ state: "available", windowsBuild: null });
     // Node names the launcher's absolute path in the message, `syscall`, `path` and `spawnargs`.
     const spawnError = (): Error => Object.assign(new Error(`spawn ${WXC_EXEC} ENOENT`), {
       code: "ENOENT", errno: -4058, syscall: `spawn ${WXC_EXEC}`, path: WXC_EXEC, spawnargs: ["--config-base64", "eyJ9"],
@@ -626,7 +633,7 @@ describe("builtin shell — Windows MXC containers", () => {
     const result = await executePowerShell(context(`ps-mxc-enoent-${failure}`));
     expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
     expect(result.output).toBe("PowerShell spawn failed: container launcher error ENOENT");
-    expect(reportLoss).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ backend: "container" }));
+    expect(confirmLoss).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ backend: "container" }));
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
   });
 
@@ -671,6 +678,36 @@ describe("builtin shell — Windows MXC containers", () => {
     checkStart.mockClear();
     return { checkStart, owner, receipt, lossEpoch: backendEvidence.getWindowsContainerBackendLossEpoch() };
   }
+  it.each([false, true])("preserves or revokes both receipts according to independent shared loss (confirmed=%s)", async (confirmed) => {
+    const { checkStart, owner, receipt, lossEpoch } = await issuedContainerEvidence();
+    const unregister = registerMxcReleaseGateEvidence({
+      ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true,
+      forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true,
+    });
+    try {
+      const issued = {
+        request: createMxcExtensionRequest(), holder: {}, executableIdentity: "a".repeat(64),
+        bootPlan: planWindowsExtensionHolder({ requested: true, mxc: { state: "available" },
+          fallback: { version: "0.0.80", ready: false } }),
+      };
+      const holder = createMxcExtensionAdmission(issued);
+      if (confirmed) checkStart.mockResolvedValue(START_FAILED);
+      const code = confirmed ? "ENOENT" : "ENOMEM";
+      childProcessMock.spawn.mockImplementation((command: string, args: readonly string[]) =>
+        command === WXC_EXEC && !args.includes(PARSER_REQUEST)
+          ? childWithSpawnError(Object.assign(new Error(`spawn ${code}`), { code }))
+          : fakeChild(PARSED, 0));
+      expect((await executePowerShell(context("ps-mxc-classified-start-failure"))).isError).toBe(true);
+      if (confirmed) await vi.waitFor(() => expect(checkStart).toHaveBeenCalledOnce());
+      else expect(checkStart).not.toHaveBeenCalled();
+      expect.soft(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch + (confirmed ? 1 : 0));
+      expect.soft(owner.isCurrent(receipt)).toBe(!confirmed);
+      const consume = () => consumeMxcExtensionAdmission(holder, issued);
+      if (confirmed) expect(consume).toThrow(/does not match/);
+      else expect(consume).not.toThrow();
+    } finally { unregister(); }
+  });
+
   const ambiguousCompletion = (): void => {
     childProcessMock.spawn.mockImplementation((command: string) =>
       command === WXC_EXEC ? fakeChild("", 1, STARTUP_DIAGNOSTIC) : fakeChild(PARSED, 0));

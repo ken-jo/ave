@@ -93,7 +93,7 @@ import {
 import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
 import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
 import { isWindowsPathAtOrUnder, mayIndicateMxcShellStartupFailure, MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
-import { recheckWindowsContainerBackendAfterShellFailure, reportWindowsBackendLoss, type WindowsBackendObservation } from "../permissions/windows-confinement-evidence.js";
+import { recheckWindowsContainerBackendAfterShellFailure, type WindowsBackendObservation } from "../permissions/windows-confinement-evidence.js";
 import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";
 import { createContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 import { buildMandatorySandboxWritePolicy } from "../permissions/sandbox-write-policy.js";
@@ -2532,6 +2532,13 @@ function launcherError(error: unknown): Error {
   return new Error(code === undefined ? "container launcher error" : `container launcher error ${code}`);
 }
 
+function confirmContainerAfterLauncherError(error: unknown, dispatch: WindowsBackendObservation): void {
+  const code = validatedErrorCode(error);
+  if (code === "ENOENT" || code === "ENOEXEC" || code === "EACCES" || code === "EPERM") {
+    void recheckWindowsContainerBackendAfterShellFailure(dispatch);
+  }
+}
+
 // The parser's output and stderr are never shown: how it ended is reported in fixed words.
 function powerShellParserEnding(aborted: boolean, timedOut: boolean, timeoutSeconds: number, code: number | null): string {
   if (aborted) return "Shell command cancelled.";
@@ -4263,7 +4270,7 @@ async function spawnPowerShellInMxc(
         env: launcherEnv,
       });
     } catch (error) {
-      reportWindowsBackendLoss(backendObservation);
+      confirmContainerAfterLauncherError(error, backendObservation);
       throw launcherError(error);
     }
   } catch (error) {
@@ -4323,7 +4330,7 @@ async function spawnPowerShellInMxc(
     let shellDiagnostics = "";
     let closed: Promise<void> | undefined;
     spawned.on("error", (err) => {
-      if (spawned.pid === undefined && backendObservation !== undefined) reportWindowsBackendLoss(backendObservation);
+      if (spawned.pid === undefined && backendObservation !== undefined) confirmContainerAfterLauncherError(err, backendObservation);
       void (async () => {
         if (closed !== undefined) await closed;
         // A spawn that fails (no pid) may never emit "close". A running child keeps its
@@ -4380,7 +4387,7 @@ async function spawnPowerShellInMxc(
       watch.dispose();
       settle(async () => {
         if (!watch.aborted && !watch.timedOut && exitSignal === null && mayIndicateMxcShellStartupFailure(code, shellDiagnostics)) {
-          await recheckWindowsContainerBackendAfterShellFailure();
+          await recheckWindowsContainerBackendAfterShellFailure(backendObservation);
         }
         const metadata = { ...watch.metadata(), returncode: code, timedOut: watch.timedOut, sandboxed: true };
         let completed: SpawnResult = { output: "", isError: true, metadata };

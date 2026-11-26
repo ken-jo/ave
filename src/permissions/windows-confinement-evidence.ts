@@ -215,7 +215,11 @@ let confirmationNotBefore = Number.NEGATIVE_INFINITY;
  * every completion arriving meanwhile shares it. The next one waits out an interval that doubles while no loss is
  * confirmed. A skipped or inconclusive confirmation establishes nothing: it neither revokes nor admits.
  */
-export function recheckWindowsContainerBackendAfterShellFailure(): Promise<void> {
+export function recheckWindowsContainerBackendAfterShellFailure(dispatch?: WindowsBackendObservation): Promise<void> {
+  if (dispatch !== undefined) {
+    const observed = observations.get(dispatch);
+    if (dispatch.backend !== "container" || observed === undefined || !containerBackend.isObserved(observed)) return Promise.resolve();
+  }
   if (confirmation !== undefined) return confirmation;
   if (performance.now() < confirmationNotBefore) return Promise.resolve();
   const observation = observeWindowsBackend("container");
