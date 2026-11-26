@@ -66,16 +66,11 @@ vi.mock("node:fs", async original => {
 });
 
 vi.mock("../windows-stamp-targets.js", async original => {
-  const targets = (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(await original());
-  const filesystem = await import("node:fs");
-  return { ...targets, pinWindowsFilesystemConfig: <T extends Partial<import("@anthropic-ai/sandbox-runtime").FilesystemConfig> | undefined>(config: T): T => {
-    const checked = targets.pinWindowsFilesystemConfig(config);
-    if (!driveFixture.enabled || process.platform !== "win32" || checked === undefined) return checked;
-    const pin = (entry: import("@anthropic-ai/sandbox-runtime").FilesystemPathEntry) => ({
-      path: filesystem.realpathSync.native(typeof entry === "string" ? entry : entry.path), literal: true as const,
-    });
-    return { ...checked, allowRead: checked.allowRead?.map(pin), allowWrite: checked.allowWrite?.map(pin) };
-  } };
+  const actual = await original<typeof import("../windows-stamp-targets.js")>();
+  const targets = (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(actual);
+  // The drive fixture answers every pin through its native drive, so the shipped pinner admits each grant as Windows does.
+  return { ...targets, pinWindowsFilesystemConfig: <T extends Partial<import("@anthropic-ai/sandbox-runtime").FilesystemConfig> | undefined>(config: T): T =>
+    driveFixture.enabled ? actual.pinWindowsFilesystemConfig(config) : targets.pinWindowsFilesystemConfig(config) };
 });
 vi.mock("node:module", async original =>
   // The drive fixture switches every path call to win32, so a POSIX checkout path would be a rootless native spelling: the package resolves on the drive.
@@ -86,9 +81,13 @@ vi.mock("../../shared/windows-path-facts.js", async original => {
   const facts = await (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original(), driveFixture.nativeHost);
   return { ...facts, pinWindowsPaths: (paths: readonly string[]) => {
     if (!driveFixture.enabled || process.platform !== "win32") return facts.pinWindowsPaths(paths);
-    return facts.pinWindowsPaths(paths.map(driveFixture.toHost)).map(row => ({
-      ...row, canonical: row.canonical === null ? null : driveFixture.toNative(row.canonical),
-    }));
+    const native = <T extends { canonical: string | null }>(row: T): T =>
+      ({ ...row, canonical: row.canonical === null ? null : driveFixture.toNative(row.canonical) });
+    // A native row lists its ancestors from its own volume root, never the host directories above the backing drive.
+    return facts.pinWindowsPaths(paths.map(driveFixture.toHost)).map((row, index) => {
+      const depth = (paths[index] ?? "").slice(3).split(/[\\/]+/u).filter(Boolean).length;
+      return { ...native(row), ancestors: depth === 0 ? [] : row.ancestors.slice(-depth).map(native) };
+    });
   } };
 });
 
