@@ -1183,9 +1183,9 @@ export async function executeAuthorizedToolInvocation(
       const policyMoved = currentEpoch !== card.epochs.epoch;
       personAnswerStands(manager, card, { gate: services.approvalGate!, decision });
       const verdict = card.verdict ?? { kind: "policy-changed" as const };
-      if (verdict.kind !== "policy-changed" && (policyMoved || verdict.kind === "stale")) permissionResult = verdict.fresh;
-      // A stale Allow is asked again on a new card; a stale Deny stands as the person's Deny.
-      if (verdict.kind === "stale" && decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision)) {
+      if ("fresh" in verdict && (policyMoved || verdict.kind === "stale")) permissionResult = verdict.fresh;
+      // A stale Allow is asked again on a new card; a Deny stands as the person's Deny.
+      if (verdict.kind === "stale" && !isHostApprovalRejectedDecision(decision)) {
         humanApproved = false;
         terminalWriteAuthority = undefined;
         return;

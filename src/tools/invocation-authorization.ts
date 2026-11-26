@@ -1213,7 +1213,7 @@ export async function authorizeToolInvocation(
           const policyMoved = services.permissionManager.getPolicyEpoch() !== approvalCard.epochs.epoch;
           personAnswerStands(services.permissionManager, approvalCard, { gate: services.approvalGate, decision });
           answerVerdict = approvalCard.verdict ?? { kind: "policy-changed" };
-          if (answerVerdict.kind !== "policy-changed" && (policyMoved || answerVerdict.kind === "stale")) permissionResult = answerVerdict.fresh;
+          if ("fresh" in answerVerdict && (policyMoved || answerVerdict.kind === "stale")) permissionResult = answerVerdict.fresh;
         }
         // A stale Allow refuses this call and names why; a stale Deny is reported as the person's Deny below.
         const staleAllow = answerVerdict?.kind === "stale" && decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision);

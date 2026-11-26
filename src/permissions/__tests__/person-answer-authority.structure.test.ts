@@ -51,7 +51,7 @@ function authoritySites() {
     };
     visit(source, "<module>");
   }
-  return { sites, functions };
+  return { sites, functions, parsed: parsed as Map<string, ts.SourceFile> };
 }
 
 const AUTH = "tools/invocation-authorization.ts#authorizeToolInvocation";
@@ -60,26 +60,25 @@ const HOOK = "hooks/hook-command-policy.ts#createHookCommandAuthorizer";
 const SURFACE = "tools/pipeline/user-owned-surface.ts#resolveUserOwnedSurfaceApproval";
 const DIRECTORY = "tools/invocation-runner.ts#requestOutOfAllowedDirectoryAccess";
 
-// `card`: the function opens a `PendingAnswerCard` and hands it to `personAnswerStands`, the only judge of its answer.
-// `epochs`: a card that carries no same-card receipt; the owner refuses every step that is not a memory-only rule's.
-type Owner = { readonly card: string } | { readonly epochs: string };
+// The owner function opens a `PendingAnswerCard` and hands it to `personAnswerStands`, the only judge of its answer.
+type Owner = { readonly card: string };
 const site = (where: string, what: string, owners: readonly Owner[], count = 1) => ({ key: `${where}: ${what}`, where, what, owners, count });
 const SITES = [
   site(HOOK, 'humanApproved = result.decision === "ask"', [{ card: HOOK }]),
   site(HOOK, "mintHostShellExecutionPermit", [{ card: HOOK }]),
-  site(AUTH, "humanApproved = context.directoryAuthorization?.humanApproved ?? false", [{ epochs: DIRECTORY }]),
+  site(AUTH, "humanApproved = context.directoryAuthorization?.humanApproved ?? false", [{ card: DIRECTORY }]),
   site(AUTH, "humanApproved = surfaceResolution.humanApproved ?? manuallyApproved", [{ card: AUTH }, { card: SURFACE }]),
-  site("tools/invocation-execution.ts#executeAuthorizedToolInvocation", "humanApproved = initialHumanApproved", [{ card: AUTH }, { epochs: DIRECTORY }]),
+  site("tools/invocation-execution.ts#executeAuthorizedToolInvocation", "humanApproved = initialHumanApproved", [{ card: AUTH }, { card: DIRECTORY }]),
   site("tools/invocation-execution.ts#issueTerminalWriteAuthority", "issueHostTerminalWriteAuthority", [{ card: AUTH }, { card: LATE }]),
-  site("tools/invocation-execution.ts#executeAuthorizedToolInvocation", "mintHostShellExecutionPermit", [{ card: AUTH }, { epochs: DIRECTORY }]),
+  site("tools/invocation-execution.ts#executeAuthorizedToolInvocation", "mintHostShellExecutionPermit", [{ card: AUTH }, { card: DIRECTORY }]),
   site(LATE, 'humanApproved = surfaceResolution.humanApproved ?? (decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision))', [{ card: LATE }, { card: SURFACE }]),
   site(LATE, "mintHostShellExecutionPermit", [{ card: LATE }]),
-  site(DIRECTORY, "humanApproved = surfaceResolution.humanApproved ?? true", [{ epochs: DIRECTORY }, { card: SURFACE }]),
-  site(DIRECTORY, "humanApproved = true", [{ epochs: DIRECTORY }], 2),
-  site("tools/invocation-runner.ts#executeAdmitted", "humanApproved = resolution.humanApproved === true", [{ epochs: DIRECTORY }], 2),
+  site(DIRECTORY, "humanApproved = surfaceResolution.humanApproved ?? true", [{ card: DIRECTORY }, { card: SURFACE }]),
+  site(DIRECTORY, "humanApproved = true", [{ card: DIRECTORY }], 2),
+  site("tools/invocation-runner.ts#executeAdmitted", "humanApproved = resolution.humanApproved === true", [{ card: DIRECTORY }], 2),
   site("tools/invocation-runner.ts#executeAuthorized", "humanApproved = authorization.humanApproved", [{ card: AUTH }]),
   // The first card's answer, judged by the caller before it asks this function; then the fallback card's own.
-  site(SURFACE, "humanApproved = true", [{ card: AUTH }, { card: LATE }, { epochs: DIRECTORY }], 2),
+  site(SURFACE, "humanApproved = true", [{ card: AUTH }, { card: LATE }, { card: DIRECTORY }], 2),
   site(SURFACE, 'humanApproved = decision.choice === "allow-once" && !isHostApprovalRejectedDecision(decision)', [{ card: SURFACE }]),
 ];
 
@@ -95,11 +94,10 @@ function calls(node: ts.Node, name: string): ts.CallExpression[] {
 
 /** Where the owner judges a person's answer, or why it does not. */
 function judgement(functions: Map<string, ts.Node>, owner: Owner): number | string {
-  const name = "card" in owner ? owner.card : owner.epochs;
+  const name = owner.card;
   const fn = functions.get(name);
   if (!fn) return `${name}: not found`;
   const judged = calls(fn, "personAnswerStands");
-  if ("epochs" in owner) return judged[0]?.getStart() ?? `${name}: no personAnswerStands`;
   const cards = calls(fn, "openPendingAnswerCard").flatMap((call) => {
     let at: ts.Node | undefined = call.parent;
     while (at && !ts.isVariableDeclaration(at)) at = at.parent;
@@ -126,7 +124,7 @@ describe("authority from a person's answer", () => {
         if (typeof at === "string") failures.push(`${entry.key}: ${at}`);
       }
       // A sink in its owner's own function comes after the judgement.
-      const own = entry.owners.find((owner) => ("card" in owner ? owner.card : owner.epochs) === entry.where);
+      const own = entry.owners.find((owner) => owner.card === entry.where);
       const fn = functions.get(entry.where);
       if (own && fn && SINKS.has(entry.what)) {
         const at = judgement(functions, own);
@@ -134,5 +132,34 @@ describe("authority from a person's answer", () => {
       }
     }
     expect(failures).toEqual([]);
+  });
+
+  // The epoch form judges no fresh check while the policy stands still and honors no same-card receipt. It is left to cards
+  // that grant no shell or terminal authority; a new caller fails here.
+  it("leaves the epoch form only to cards without shell or terminal authority", () => {
+    const legacy: string[] = [];
+    for (const path of sourceFiles(SRC)) {
+      const text = readFileSync(path, "utf8");
+      if (!text.includes("personAnswerStands(")) continue;
+      const file = relative(SRC, path).split("\\").join("/");
+      const source = parseSourceTexts(new Map([[file, text]])).get(file) as ts.SourceFile | undefined;
+      if (!source) throw new Error(`${file} did not parse`);
+      const visit = (node: ts.Node, owner: string): void => {
+        const here = nameOf(node) ?? owner;
+        if (ts.isCallExpression(node) && node.expression.getText() === "personAnswerStands" && node.arguments.length === 4) legacy.push(`${file}#${here}`);
+        node.forEachChild((child) => visit(child, here));
+      };
+      visit(source, "<module>");
+    }
+    expect(legacy.sort()).toEqual([
+      "permissions/effect-enforcement.ts#gateMutatingEffect",
+      "permissions/egress-approval.ts#createApprovalGateEgressRequester",
+      // The write fence: it judges the check it has just run.
+      "permissions/host-terminal-write-authority.ts#refusal",
+      "tools/invocation-execution.ts#authorizeBrowserSite",
+      "tools/invocation-execution.ts#authorizeBrowserSite",
+      "tools/invocation-execution.ts#authorizeBrowserSite",
+      "tools/invocation-execution.ts#lateApprovalStands",
+    ]);
   });
 });

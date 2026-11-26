@@ -1796,7 +1796,8 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
 
     expect(results[0].is_error).toBeUndefined();
     expect(executeSpy).toHaveBeenCalledOnce();
-    expect(checkDetailed).toHaveBeenCalledOnce();
+    // Once to decide, once as the card's bound check when the answer is judged.
+    expect(checkDetailed).toHaveBeenCalledTimes(2);
     expect(approvalGate.requestAndWait).toHaveBeenCalledWith(
       expect.objectContaining({
         toolName: "a2a_always_allow_meta_probe",
@@ -3098,7 +3099,9 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       const results = await callPromise;
       expect(executeSpy).toHaveBeenCalledOnce();
       expect(sentApprovalCards(wc)).toHaveLength(1);
-      expect(checkDetailed).toHaveBeenCalledOnce();
+      // The card's bound check judges the answer on the same captured context.
+      expect(checkDetailed).toHaveBeenCalledTimes(2);
+      expect(checkDetailed.mock.calls[1]).toEqual(checkDetailed.mock.calls[0]);
       expect(checkDetailed.mock.calls[0]?.[4]?.paths).toEqual(expect.arrayContaining([expect.objectContaining({ canonical: caseFoldForMatch(canonicalizePathForMatch(target)), lexical: target, effect: "write" })]));
       expect(results[0].is_error).toBeUndefined();
     } finally {
@@ -3769,8 +3772,10 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       );
 
       expect(overlayResult[0].is_error).toBe(true);
-      expect(checked.mock.calls[1]?.[4]?.ruleSubject).toEqual({ kind: "mcp", server: "generic-mcp", tool: "mcp_network", nonDestructive: false });
-      expect(checked.mock.results[1]?.value).toMatchObject({ decision: "deny", reasonCode: "no-approver", pipelineRequest: { rules: { ask: "Mcp(generic-mcp:mcp_network)" } } });
+      // The overlay card's Deny is judged by its bound check too, so the MCP call's check is the last.
+      expect(checked).toHaveBeenCalledTimes(3);
+      expect(checked.mock.calls[2]?.[4]?.ruleSubject).toEqual({ kind: "mcp", server: "generic-mcp", tool: "mcp_network", nonDestructive: false });
+      expect(checked.mock.results[2]?.value).toMatchObject({ decision: "deny", reasonCode: "no-approver", pipelineRequest: { rules: { ask: "Mcp(generic-mcp:mcp_network)" } } });
       expect(mcpHeadlessResult[0].is_error).toBe(true);
       expect(mcpHeadlessResult[0].content).toContain("do not retry");
       expect(executeSpy).not.toHaveBeenCalled();

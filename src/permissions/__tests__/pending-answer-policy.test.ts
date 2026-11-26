@@ -122,20 +122,30 @@ describe("a person's answer across a policy change", () => {
     expect(check).not.toHaveBeenCalled();
   });
 
-  it("records no stale answer for a Deny", () => {
+  it("keeps a Deny as the person's, judging nothing and recording no stale answer", () => {
     const manager = policy();
-    const card = openPendingAnswerCard(manager, floorAsk(true), () => floorAsk(false), "stale-refused");
-    const { value, recordStaleAnswer } = answer("deny-once");
+    const check = vi.fn(() => floorAsk(false));
+    const card = openPendingAnswerCard(manager, floorAsk(true), check, "stale-refused");
+    manager.otherStep();
+    const { value, recordStaleAnswer } = answer("deny-once", false);
     expect(personAnswerStands(manager, card, value)).toBe(false);
-    expect(card.verdict?.kind).toBe("stale");
+    expect(card.verdict).toEqual({ kind: "declined" });
+    expect(check).not.toHaveBeenCalled();
     expect(recordStaleAnswer).not.toHaveBeenCalled();
   });
 
-  it("refuses the answer when the bound check has no result", () => {
+  it.each(["allow-once", "deny-once"] as const)("refuses a %s when the bound check has no result, without its error text", (choice) => {
     const manager = policy();
     const card = openPendingAnswerCard(manager, floorAsk(true), () => { throw new Error("Project rules were not loaded"); }, "stale-refused");
-    expect(personAnswerStands(manager, card, answer().value)).toBe(false);
-    expect(card.verdict).toMatchObject({ kind: "denied", fresh: { decision: "deny", reason: "Project rules were not loaded" } });
+    expect(personAnswerStands(manager, card, answer(choice).value)).toBe(false);
+    expect(card.verdict).toEqual({ kind: choice === "allow-once" ? "policy-changed" : "declined" });
+  });
+
+  it("reports a Deny as the policy's own denial when the call is now denied", () => {
+    const manager = policy();
+    const card = openPendingAnswerCard(manager, floorAsk(true), () => result({ decision: "deny", reason: "Saved deny rule" }), "stale-refused");
+    expect(personAnswerStands(manager, card, answer("deny-once").value)).toBe(false);
+    expect(card.verdict).toMatchObject({ kind: "denied", fresh: { reason: "Saved deny rule" } });
   });
 
   it("refuses a card the owner did not open", () => {

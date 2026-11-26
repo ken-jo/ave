@@ -802,13 +802,12 @@ describe("executor automated approval pause", () => {
       await vi.waitFor(() => expect(cards).toHaveLength(1));
       registerRunSession("work-board:7#run-a", "sibling-stage-session", { stageId: "build", stageName: "Build", lane: "attended" });
       f.manager.addRunRule("sibling-stage-session", "Bash(npm test)");
-      // What the policy says of the pending call when it is judged again.
-      const original = f.manager.recheckPermission.bind(f.manager);
-      vi.spyOn(f.manager, "recheckPermission").mockImplementation((result, options) => {
-        const rechecked = original(result, options);
-        if (options?.acrossMemoryRuleChanges !== true) return rechecked;
+      // What the card's bound check says of the pending call when it is judged.
+      const original = f.manager.checkDetailed.bind(f.manager);
+      vi.spyOn(f.manager, "checkDetailed").mockImplementation((...args) => {
+        const rechecked = original(...args);
         if (recheck === "allow") rechecked.decision = "allow";
-        if (recheck === "deny") rechecked.decision = "deny";
+        if (recheck === "deny") Object.assign(rechecked, { decision: "deny", reason: "Denied now." });
         if (recheck === "forced ask") rechecked.forceModal = true;
         return rechecked;
       });
@@ -816,6 +815,14 @@ describe("executor automated approval pause", () => {
       if (expected === "runs") {
         await held.waits[1].reached;
         held.waits[1].release();
+      }
+      // An Allow whose question changed is asked again on a new card; its Deny ends the call.
+      const reasked = recheck === "forced ask" && answer === "approve";
+      if (reasked) {
+        await held.waits[1].reached;
+        held.waits[1].release();
+        await vi.waitFor(() => expect(cards).toHaveLength(2));
+        deny(cards[1]);
       }
       const [result] = await pending;
       if (expected === "runs") {
@@ -825,11 +832,11 @@ describe("executor automated approval pause", () => {
       } else {
         expect(result.is_error).toBe(true);
         expect(execute).not.toHaveBeenCalled();
-        // A Deny is refused as the person's own answer, by the card's reason; a changed question is refused as a changed policy.
-        if (answer === "deny") expect(result.content).toBe(cards[0].reason);
-        else expect(result.content).toBe("Permission policy changed before execution.");
+        // A Deny is refused as the person's own answer, by its card's reason; an Allow of a call now denied, by the policy's reason.
+        if (answer === "deny" || reasked) expect(result.content).toBe(cards.at(-1)?.reason);
+        else expect(result.content).toBe("Denied now.");
       }
-      expect(cards).toHaveLength(1);
+      expect(cards).toHaveLength(reasked ? 2 : 1);
     } finally {
       __resetRunGrantsForTest();
     }

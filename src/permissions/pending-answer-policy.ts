@@ -74,9 +74,10 @@ export function answerSurvivesRecheck(now: Rechecked, cardForced: boolean): bool
 export type StaleAnswerOutcome = "stale-reasked" | "stale-refused";
 
 /** The owner's verdict on an answered card. `fresh` is the check it judged by; a caller acts on it, never on a check of its own.
- * A moved policy refuses the answer before any check runs. */
+ * A moved policy refuses an Allow before any check runs, and so does a check with no result. A Deny stays the person's
+ * (`declined`) unless the policy now denies the call itself. */
 export type PendingAnswerVerdict =
-  | { readonly kind: "policy-changed" }
+  | { readonly kind: "declined" | "policy-changed" }
   | { readonly kind: "stands" | "denied"; readonly fresh: PermissionCheckResult }
   | { readonly kind: "stale"; readonly fresh: PermissionCheckResult; readonly from: PermissionQuestion; readonly to: PermissionQuestion };
 
@@ -106,20 +107,21 @@ export interface CardAnswer {
 function judgeCard(manager: EpochSource, card: PendingAnswerCard, answer: CardAnswer): PendingAnswerVerdict {
   const bound = cardChecks.get(card);
   if (!bound) throw new Error("Pending answer card was not opened by openPendingAnswerCard");
+  const allows = answer.decision.choice.startsWith("allow");
   const current = manager.getPolicyEpoch();
   const opened = card.epochs;
   const policyStands = current === opened.epoch ||
     answer.gate.allowsPolicyTransition?.(answer.decision, opened.epoch, current) === true ||
     onlyMemoryRulesChangedSince(manager, opened);
-  if (!policyStands) return { kind: "policy-changed" };
+  if (!policyStands) return { kind: allows ? "policy-changed" : "declined" };
   let fresh: PermissionCheckResult;
   try {
     fresh = bound.check();
-  } catch (error) {
-    // No fresh decision: the answer is refused.
-    return { kind: "denied", fresh: { decision: "deny", reason: error instanceof Error ? error.message : String(error) } };
+  } catch {
+    return { kind: allows ? "policy-changed" : "declined" };
   }
   if (fresh.decision === "deny") return { kind: "denied", fresh };
+  if (!allows) return { kind: "declined" };
   const asked = permissionQuestionOf(fresh);
   // An allow, or an ordinary ask, asks no more than the card did. A forced ask stands only on the card's own forced question.
   if (fresh.decision === "ask" && fresh.forceModal === true && (!card.forced || !samePermissionQuestion(card.question, asked))) {
@@ -139,7 +141,7 @@ export function personAnswerStands(manager: EpochSource, opened: AnswerEpochs | 
     const answer = cardForcedOrAnswer as CardAnswer;
     const verdict = judgeCard(manager, opened, answer);
     (opened as { verdict?: PendingAnswerVerdict }).verdict = verdict;
-    if (verdict.kind === "stale" && answer.decision.choice.startsWith("allow")) {
+    if (verdict.kind === "stale") {
       answer.gate.recordStaleAnswer?.(answer.decision, cardChecks.get(opened)?.onStale ?? "stale-refused", verdict.from, verdict.to);
     }
     return verdict.kind === "stands";

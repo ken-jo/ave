@@ -128,7 +128,9 @@ export function createHookCommandAuthorizer(deps: {
     if (card && approval) {
       personAnswerStands(deps.permissionManager, card, { gate: deps.approvalGate, decision: approval });
       const verdict = card.verdict ?? { kind: "policy-changed" as const };
-      if (verdict.kind === "policy-changed") return { decision: "deny", reason: "Permission policy changed while approval was pending" };
+      if (!("fresh" in verdict)) {
+        return { decision: "deny", reason: verdict.kind === "declined" ? "user denied hook command" : "Permission policy changed while approval was pending" };
+      }
       current = verdict.fresh;
       if (verdict.kind === "denied") return { decision: "deny", reason: current.reason };
       if (verdict.kind === "stale") return { decision: "deny", reason: t("be_executor.answerQuestionChanged") };

@@ -1,3 +1,4 @@
+import { requestBoundShellCard } from "../../__tests__/support/host-shell-approval.js";
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 
@@ -427,7 +428,7 @@ describe("gate: unreviewed shell in default mode", () => {
     } };
     const gate = new ApprovalGate(nativeWebContents as never);
     const id = `unreviewed-${String(level)}`;
-    const pending = gate.requestAndWait({
+    const pending = requestBoundShellCard(gate, {
       id, category: "tool", toolName: "bash", toolCategory: "shell", source: "builtin",
       args, reason: "user confirmation required", createdAt: Date.now(), trustOrigin: "user-keyboard",
       ...(ruleVerdict ? { ruleVerdict } : {}),
@@ -436,7 +437,7 @@ describe("gate: unreviewed shell in default mode", () => {
         trustOrigin: "user-keyboard", executionCwd: project, allowedDirectories: [project],
         pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [],
       }),
-    });
+    }, project);
     expect(displayed).toMatchObject({ persistentAllowAllowed: rememberable });
     expect(displayed!.allowedChoices).toBeUndefined();
     expect(displayed!.exactRecordAllowed).toBe(true);

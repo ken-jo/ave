@@ -1,3 +1,4 @@
+import { requestBoundShellCard } from "../../__tests__/support/host-shell-approval.js";
 import { randomUUID } from "node:crypto";
 import { wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
@@ -107,12 +108,12 @@ describe("exact decisions scoped to the captured working directory", () => {
       if (channel === "ave:approval:request") displayed = request;
     } };
     const gate = new ApprovalGate(nativeWebContents as never);
-    const pending = gate.requestAndWait({
+    const pending = requestBoundShellCard(gate, {
       id: "alias-pending", category: "tool", toolName: "bash", toolCategory: "shell", source: "builtin",
       args, reason: "assessment unavailable", createdAt: Date.now(), trustOrigin: "user-keyboard",
       reviewerVerdict: reviewer.verdict, reviewerOutcome: reviewer.outcome,
       reviewerApprovalBasis: reviewer.approvalBasis, ruleVerdict: assessment.verdict, approvalRuleBasis: assessment.basis, evaluationContext,
-    });
+    }, alias);
     const frozen = captureApprovalWorkingDirectory(first);
     expect(displayed).toMatchObject({ persistentAllowAllowed: true, persistentApprovalCwd: frozen.path });
     expect(displayed).not.toHaveProperty("reviewerApprovalBasis");
@@ -146,7 +147,7 @@ describe("exact decisions scoped to the captured working directory", () => {
       if (channel === "ave:approval:request") displayed = request;
     } };
     const gate = new ApprovalGate(nativeWebContents as never);
-    const pending = gate.requestAndWait({
+    const pending = requestBoundShellCard(gate, {
       id: "ineligible", category: "tool", toolName: "bash", toolCategory: "shell", source: "builtin",
       args: caseName === "changed-input" ? { command: "rm -rf file" } : args,
       reason: "safe title", createdAt: Date.now(), trustOrigin: "user-keyboard",
@@ -157,7 +158,7 @@ describe("exact decisions scoped to the captured working directory", () => {
         trustOrigin: "user-keyboard", executionCwd: cwd, allowedDirectories: [cwd],
         pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [],
       }),
-    });
+    }, cwd);
     expect(displayed).toMatchObject({ persistentAllowAllowed: true });
     expect(displayed?.allowedChoices).toBeUndefined();
     const snapshot = gate.getRequestSnapshot("ineligible")!;

@@ -70,9 +70,11 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   personAnswerStands(manager, card, { gate, decision });
   const verdict = card.verdict ?? { kind: "policy-changed" as const };
   if (verdict.kind === "policy-changed") throw new Error("Permission policy changed while approval was pending.");
-  permission = verdict.fresh;
-  if (permission.decision === "deny") throw new Error(permission.reason);
-  if (verdict.kind === "stale" && decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision)) throw new Error(t("be_executor.answerQuestionChanged"));
+  if ("fresh" in verdict) {
+    permission = verdict.fresh;
+    if (permission.decision === "deny") throw new Error(permission.reason);
+    if (verdict.kind === "stale" && !isHostApprovalRejectedDecision(decision)) throw new Error(t("be_executor.answerQuestionChanged"));
+  }
   if (decision.choice.startsWith("deny") && !isHostApprovalRejectedDecision(decision)) return personDenied(decision);
   return { permission, decision, humanApproved: decision.choice === "allow-once" && !isHostApprovalRejectedDecision(decision) };
 }

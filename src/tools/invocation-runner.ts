@@ -1,4 +1,4 @@
-import { answerEpochsOf, personAnswerStands } from "../permissions/pending-answer-policy.js";
+import { openPendingAnswerCard, personAnswerStands } from "../permissions/pending-answer-policy.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { issueReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
@@ -1612,7 +1612,7 @@ async function runToolInvocationAttempt(
         }) };
       }
       dirLayerResult = directoryPermission;
-      const directoryAnswerEpochs = answerEpochsOf(manager);
+      const directoryCard = openPendingAnswerCard(manager, dirLayerResult, checkDirectoryPermission, "stale-refused");
 
       const trustOrigin = invocationPermissionContext.trustOrigin;
       // A directory-confirm modal is an approval like any other, so it carries
@@ -1868,8 +1868,11 @@ async function runToolInvocationAttempt(
           return { allowed: false, result: await denyCardGrant() };
         }
         // The one rule for answered cards (pending-answer-policy.ts): a sibling stage's "Allow for this run" leaves the answer standing.
-        if (!personAnswerStands(manager, directoryAnswerEpochs, dirLayerResult.forceModal === true, checkDirectoryPermission)) {
-          const denied: PermissionCheckResult = { decision: "deny", reason: "Permission policy changed during approval.", };
+        if (!personAnswerStands(manager, directoryCard, { gate: services.approvalGate, decision })) {
+          const verdict = directoryCard.verdict;
+          const reason = verdict?.kind === "denied" ? verdict.fresh.reason
+            : verdict?.kind === "stale" ? t("be_executor.answerQuestionChanged") : "Permission policy changed during approval.";
+          const denied: PermissionCheckResult = { decision: "deny", reason };
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, denied.reason, true, startTime, denied, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: denied.reason, is_error: true, durationMs: Date.now() - startTime }) };
         }
