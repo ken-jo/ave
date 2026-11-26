@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildMainBoundaryBundle, repositoryRoot } from "../../../plugins/isolation/__tests__/child-entry-bundle.js";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import type { CdpSession } from "../browser-action-guard.js";
 
@@ -240,7 +241,7 @@ describe("browser capture stitch process", () => {
     const healthyEntry = await builtEntryDir();
     runtime.mainDir = entryDir(replyEntry(frame, { later: replyFrame({ id: 0 }) }));
     const session = tiledSession();
-    const release = Promise.withResolvers<void>();
+    const release = deferred<void>();
     let sentLateReply = false;
     termination.hold = (child) => {
       child.stdout?.once("data", () => { sentLateReply = true; });

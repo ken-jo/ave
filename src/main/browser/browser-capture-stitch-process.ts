@@ -30,7 +30,6 @@ export function startCaptureStitcher(
   width: number, height: number, onProtocolFault?: (error: Error, closed: Promise<void>) => void,
 ): CaptureStitcher {
   const jobs = new Map<number, StitchJob>();
-  const closed = Promise.withResolvers<void>();
   let nextId = 0;
   let exited = false;
   let stopped = false;
@@ -47,7 +46,6 @@ export function startCaptureStitcher(
     exited = true;
     for (const job of jobs.values()) job.reject(failure());
     jobs.clear();
-    closed.resolve();
   };
   try {
     // Resolve from the runtime asset root: this module may live in a split chunk.
@@ -64,6 +62,14 @@ export function startCaptureStitcher(
     const { stdin, stdout } = spawned;
     if (!stdin || !stdout) throw new Error("the capture decoder has no pipes");
     input = stdin;
+    const closed = new Promise<void>((resolve) => {
+      spawned.once("close", async () => {
+        // Settle only once a pending tree kill has finished with the child.
+        if (termination) await termination;
+        settleExit();
+        resolve();
+      });
+    });
     const readFrames = captureStitchFrames((message, payload) => {
       if (!isRecord(message) || !hasOnlyKeys(message, ["id", "error"]) || typeof message.id !== "number") {
         throw new Error("invalid capture decoder reply");
@@ -92,18 +98,13 @@ export function startCaptureStitcher(
       if (stopped || exited) return;
       try { readFrames(chunk); } catch {
         stop();
-        onProtocolFault?.(failure(), closed.promise);
+        onProtocolFault?.(failure(), closed);
       }
     });
     stdin.on("error", stop);
     spawned.once("error", () => {
       if (spawned.pid) stop();
       else settleExit();
-    });
-    spawned.once("close", async () => {
-      // Settle only once a pending tree kill has finished with the child.
-      if (termination) await termination;
-      settleExit();
     });
   } catch {
     stop();
