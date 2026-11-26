@@ -1040,15 +1040,22 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
         sessionId: SESSION, executionCwd: root, permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg" }),
       });
       pending.push(result.catch(() => undefined));
-      await vi.waitFor(() => expect(rig.sent.slice(before).filter((frame) => frame.method === "tools/call")).toHaveLength(1));
-      const frame = rig.sent.slice(before).find((candidate) => candidate.method === "tools/call")!;
+      const [frame] = await vi.waitFor(() => {
+        const calls = rig.sent.slice(before).filter((candidate) => candidate.method === "tools/call");
+        expect(calls).toHaveLength(1);
+        return calls as [typeof calls[number]];
+      });
       return { result, token: tokenOf(frame), finish: () => rig.deliver({ jsonrpc: "2.0", id: frame.id as string, result: { content: [] } }) };
     };
     const effectFromChild = (id: string, token: string) => rig.deliver({ jsonrpc: "2.0", id, method: hostApiMethodOf("raiseAlert"),
       params: { input: { kind: "reply", key: id }, _meta: { [INVOCATION_META]: token } } });
     const replyTo = async (id: string) => {
-      await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === id)).toBe(true));
-      return rig.sent.find((frame) => frame.id === id)!;
+      const [reply] = await vi.waitFor(() => {
+        const replies = rig.sent.filter((frame) => frame.id === id);
+        expect(replies).toHaveLength(1);
+        return replies as [typeof replies[number]];
+      });
+      return reply;
     };
     const terminal = (id: string) => readFileSync(audit.getPermissionAuditLogFile(), "utf8").trim().split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.toolUseId === id && row.decision !== "ask");
@@ -1070,15 +1077,15 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
       await vi.waitFor(() => expect(t.cards).toHaveLength(1));
       const b = await t.call("overlap-b");
       vi.spyOn(t.manager, "checkDetailed").mockImplementationOnce(() => { throw new Error("internal storage check detail"); });
-      const [card] = t.cards;
-      t.gate.resolveFromDesktopRenderer(card!.id, { requestId: card!.id, nonce: card!.nonce, hmac: card!.hmac, choice: "allow-once" }, t.desk as never);
+      const [card] = t.cards as [ApprovalRequest];
+      t.gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, nonce: card.nonce, hmac: card.hmac, choice: "allow-once" }, t.desk as never);
       expect((await t.replyTo("effect-a")).error).toBeDefined();
       a.finish();
       b.finish();
       const [[resultA], [resultB]] = await Promise.all([a.result, b.result]);
       expect(resultA).toMatchObject({ is_error: true, content: "Permission recheck failed during approval." });
       expect(resultB).toMatchObject({ content: "spoke" });
-      expect(resultB!.is_error).not.toBe(true);
+      expect(resultB?.is_error).not.toBe(true);
       expect(t.terminal("overlap-a")).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
       expect(t.terminal("overlap-b")).toEqual([expect.objectContaining({ decision: "allow" })]);
       expect(t.write).not.toHaveBeenCalled();
@@ -1103,7 +1110,7 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
       for (const call of [a, b]) {
         const [result] = await call.result;
         expect(result).toMatchObject({ content: "spoke" });
-        expect(result!.is_error).not.toBe(true);
+        expect(result?.is_error).not.toBe(true);
       }
       expect(t.terminal("overlap-a")).toEqual([expect.objectContaining({ decision: "allow" })]);
       expect(t.terminal("overlap-b")).toEqual([expect.objectContaining({ decision: "allow" })]);

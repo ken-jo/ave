@@ -226,14 +226,14 @@ describe("the answerer contract", () => {
   it.each(["allow-session", "deny-once"] as const)("refuses an outside-directory %s the gate settled for another card before a grant or the person's row", async choice => {
     const outside = join(root, "outside");
     await mkdir(outside);
-    const requestAndWait = vi.fn(async () => answeredApprovalDecision({ choice }, "desk", "write_file", "foreign-directory"));
+    const requestAndWait = vi.fn(async (_request: ApprovalRequestInput) => answeredApprovalDecision({ choice }, "desk", "write_file", "foreign-directory"));
     const [onTurnDirectoryGrant, onSessionDirectoryGrant] = [vi.fn(), vi.fn()];
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     await executor.executeAll([{ id: "foreign-directory", name: "write_file", input: { path: join(outside, "foreign.txt"), content: "x" } }], {
       sessionId: randomUUID(), executionCwd: project,
       permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project], onTurnDirectoryGrant, onSessionDirectoryGrant },
     }).catch(() => undefined);
-    expect(requestAndWait.mock.calls.map(([request]) => (request as ApprovalRequestInput).kind)).toEqual(["out-of-allowed-dir"]);
+    expect(requestAndWait.mock.calls.map(([request]) => request.kind)).toEqual(["out-of-allowed-dir"]);
     await vi.waitFor(async () => expect((await auditRows()).filter(row => row.toolUseId === "foreign-directory" && row.decision !== "ask")).toEqual([expect.objectContaining({
       decision: "deny", trustOrigin: "unknown",
       denyReasons: [expect.objectContaining({ reason: expect.stringContaining("Approval answer does not match the pending request") })],

@@ -18,13 +18,13 @@ import { resolveUserOwnedSurfaceApproval } from "../user-owned-surface.js";
 const ask: PermissionCheckResult = { decision: "ask", provenance: RULE_PROVENANCE, reason: "surface review fallback" };
 
 // A deny a person answered on a real gate, so it carries the gate's record of who decided.
-async function answeredDeny(answeredBy: "desk" | "platform-bridge" = "desk"): Promise<ApprovalDecision> {
+async function answeredDeny(pending: ApprovalRequest, answeredBy: "desk" | "platform-bridge" = "desk"): Promise<ApprovalDecision> {
   const card = deferred<ApprovalRequest>();
   const gate = new ApprovalGate({
     isDestroyed: () => false,
     send: (channel: string, request: ApprovalRequest) => { if (channel === IPC_APPROVAL_REQUEST) card.resolve(request); },
   } as never);
-  const decision = gate.requestAndWait({ id: "fallback-card", category: "tool", toolName: "probe", args: {}, reason: "probe", createdAt: Date.now() });
+  const decision = gate.requestAndWait({ id: pending.id, category: "tool", toolName: pending.toolName, args: {}, reason: "probe", createdAt: Date.now() });
   const asked = await card.promise;
   gate.resolve(asked.id, { requestId: asked.id, choice: "deny-once", nonce: asked.nonce, hmac: asked.hmac }, answeredBy);
   return decision;
@@ -32,12 +32,12 @@ async function answeredDeny(answeredBy: "desk" | "platform-bridge" = "desk"): Pr
 
 function surfaceFallback() {
   const answer = deferred<ApprovalDecision>();
-  const asked = deferred<void>();
+  const asked = deferred<ApprovalRequest>();
   const quit = new AbortController();
   const manager = { recheckPermission: () => ask, setUserOwnedSurfaceChoice: () => {}, getPolicyEpoch: () => "epoch", getPolicyContextEpoch: () => "epoch" };
   const gate = {
     consumeUserOwnedSurfaceChoice: () => "auto",
-    requestAndWait: () => { asked.resolve(); return answer.promise; },
+    requestAndWait: (pending: ApprovalRequest) => { asked.resolve(pending); return answer.promise; },
     allowsPolicyTransition: () => false,
   };
   const resolution = resolveUserOwnedSurfaceApproval({
@@ -56,9 +56,8 @@ function surfaceFallback() {
 describe("user-owned surface approval across the quit seal", () => {
   it("returns the fallback card's answered deny when the quit lands before it resumes", async () => {
     const { answer, asked, quit, resolution } = surfaceFallback();
-    await asked;
     // The person's answer settles the card; the quit lands before the awaiting resolution runs again.
-    answer.resolve(await answeredDeny());
+    answer.resolve(await answeredDeny(await asked));
     quit.abort(new HostExitAbortError());
     // The deny is the gate's own answer, not one the policy put in its place.
     const resolved = await resolution;
@@ -79,8 +78,8 @@ describe("user-owned surface approval across the quit seal", () => {
 
   it("still ends on the quit when the fallback card was allowed", async () => {
     const { answer, asked, quit, resolution } = surfaceFallback();
-    await asked;
-    answer.resolve(await answeredApprovalDecision({ requestId: "fallback-card", choice: "allow-once" }));
+    const pending = await asked;
+    answer.resolve(await answeredApprovalDecision({ requestId: pending.id, choice: "allow-once" }, "desk", pending.toolName));
     quit.abort(new HostExitAbortError());
     const resolved = await resolution;
     expect(abortSupersedesApprovalDecision(quit.signal, resolved.decision)).toBe(true);
@@ -106,7 +105,7 @@ describe("user-owned surface approval across the quit seal", () => {
     ["desk", "user-keyboard"],
     ["platform-bridge", "platform-bridge"],
   ] as const)("records who answered a %s deny on the decision itself", async (answeredBy, origin) => {
-    const decision = await answeredDeny(answeredBy);
+    const decision = await answeredDeny({ id: "fallback-card", toolName: "probe" } as ApprovalRequest, answeredBy);
     expect(approvalDecisionTrustOrigin(decision)).toBe(origin);
     expect(isAnsweredApprovalDenial(decision)).toBe(true);
     // A copy is not the gate's decision, so it carries no answerer.
