@@ -1654,8 +1654,8 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(cleanup).toContain("RegistryView]::Registry32");
     expect(cleanup).toContain("System.AppUserModel.ID");
     expect(cleanup).toContain("System.AppUserModel.ToastActivatorCLSID");
-    expect(cleanup).toContain('GetValueKind("CustomActivator")');
-    expect(cleanup).toContain("DoNotExpandEnvironmentNames");
+    expect(cleanup).toContain('ReadValue("CustomActivator", [Microsoft.Win32.RegistryValueKind]::DWord)');
+    expect(cleanup).toContain("RegQueryValueExW(handle, name");
     expect(cleanup).toContain(
       "[System.IO.File]::Move($shortcutPath, $quarantinePath)",
     );

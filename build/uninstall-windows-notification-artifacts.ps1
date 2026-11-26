@@ -190,6 +190,124 @@ function Get-RegistryViews {
   return @([Microsoft.Win32.RegistryView]::Registry32)
 }
 
+function Initialize-ToastRegistry {
+  # Managed registry methods can collapse a native failure into a missing value or a successful delete.
+  Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32;
+using Microsoft.Win32.SafeHandles;
+
+public sealed class ToastRegistryKey : IDisposable
+{
+    private const int FileNotFound = 2;
+    private const int PathNotFound = 3;
+    private const int QueryValueAccess = 0x0001;
+    private const int SetValueAccess = 0x0002;
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int RegOpenKeyExW(SafeRegistryHandle parent, string path, int options,
+        int access, out SafeRegistryHandle key);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int RegQueryValueExW(SafeRegistryHandle key, string name, IntPtr reserved,
+        out RegistryValueKind kind, [Out] byte[] data, ref int size);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int RegDeleteValueW(SafeRegistryHandle key, string name);
+
+    private readonly SafeRegistryHandle handle;
+    private readonly RegistryView view;
+
+    private ToastRegistryKey(SafeRegistryHandle handle, RegistryView view)
+    {
+        this.handle = handle;
+        this.view = view;
+    }
+
+    public static ToastRegistryKey OpenCurrentUser(string path, RegistryView view, bool writable)
+    {
+        using (var currentUser = new SafeRegistryHandle(new IntPtr((int)RegistryHive.CurrentUser), false))
+            return Open(currentUser, path, view, writable);
+    }
+
+    public ToastRegistryKey OpenSubKey(string path, bool writable)
+    {
+        return Open(handle, path, view, writable);
+    }
+
+    private static ToastRegistryKey Open(SafeRegistryHandle parent, string path, RegistryView view, bool writable)
+    {
+        int access = (int)view | QueryValueAccess | (writable ? SetValueAccess : 0);
+        SafeRegistryHandle key;
+        int status = RegOpenKeyExW(parent, path, 0, access, out key);
+        if (status == FileNotFound || status == PathNotFound) return null;
+        CheckStatus(status, "opening registry key", path);
+        return new ToastRegistryKey(key, view);
+    }
+
+    private static void CheckStatus(int status, string operation, string name)
+    {
+        if (status == 0) return;
+        string label = name.Length == 0 ? "(default)" : name;
+        throw new Win32Exception(status, String.Format("Error {0} {1} {2}: {3}",
+            status, operation, label, new Win32Exception(status).Message));
+    }
+
+    private bool TryQueryValue(string name, byte[] data, out RegistryValueKind kind, ref int size)
+    {
+        int status = RegQueryValueExW(handle, name, IntPtr.Zero, out kind, data, ref size);
+        if (status == FileNotFound) return false;
+        CheckStatus(status, "reading registry value", name);
+        return true;
+    }
+
+    public bool HasValue(string name)
+    {
+        RegistryValueKind kind;
+        int size = 0;
+        return TryQueryValue(name, null, out kind, ref size);
+    }
+
+    public object ReadValue(string name, RegistryValueKind expectedKind)
+    {
+        RegistryValueKind kind;
+        int size = 0;
+        if (!TryQueryValue(name, null, out kind, ref size) || kind != expectedKind) return null;
+
+        // Leave room for a data read even if the value reported a size of zero.
+        byte[] data = new byte[Math.Max(size, 1)];
+        size = data.Length;
+        if (!TryQueryValue(name, data, out kind, ref size) || kind != expectedKind) return null;
+
+        if (kind == RegistryValueKind.DWord && size == sizeof(int))
+            return BitConverter.ToInt32(data, 0);
+        if (kind == RegistryValueKind.String && size % sizeof(char) == 0)
+        {
+            if (size >= sizeof(char) && data[size - 1] == 0 && data[size - 2] == 0)
+                size -= sizeof(char);
+            return Encoding.Unicode.GetString(data, 0, size);
+        }
+        throw new InvalidDataException("Invalid data size for registry value: " + name);
+    }
+
+    public void DeleteValue(string name)
+    {
+        int status = RegDeleteValueW(handle, name);
+        if (status != FileNotFound) CheckStatus(status, "deleting registry value", name);
+    }
+
+    public void Dispose()
+    {
+        handle.Dispose();
+    }
+}
+'@
+}
+
 function Test-ExactToastRegistrationHandles {
   param(
     [Parameter(Mandatory = $true)]$RootKey,
@@ -197,49 +315,21 @@ function Test-ExactToastRegistrationHandles {
     [Parameter(Mandatory = $true)][string]$ExpectedExecutable
   )
 
-  try {
-    if ($RootKey.GetValueKind("") -ne [Microsoft.Win32.RegistryValueKind]::String) {
-      return $false
-    }
-    $rootDefault = $RootKey.GetValue(
-      "",
-      $null,
-      [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+  $rootDefault = $RootKey.ReadValue("", [Microsoft.Win32.RegistryValueKind]::String)
+  if (
+    -not [string]::Equals(
+      [string]$rootDefault,
+      "Electron Notification Activator",
+      [System.StringComparison]::Ordinal
     )
-    if (
-      -not [string]::Equals(
-        [string]$rootDefault,
-        "Electron Notification Activator",
-        [System.StringComparison]::Ordinal
-      )
-    ) {
-      return $false
-    }
-    if (
-      $RootKey.GetValueKind("CustomActivator") -ne
-      [Microsoft.Win32.RegistryValueKind]::DWord
-    ) {
-      return $false
-    }
-    if ([int64]$RootKey.GetValue("CustomActivator", 0) -ne 1) {
-      return $false
-    }
-    if ($ServerKey.GetValueKind("") -ne [Microsoft.Win32.RegistryValueKind]::String) {
-      return $false
-    }
-    $serverDefault = $ServerKey.GetValue(
-      "",
-      $null,
-      [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
-    )
-    return (
-      $null -ne $serverDefault -and
-      (Test-SamePath ([string]$serverDefault) $ExpectedExecutable)
-    )
-  }
-  catch {
+  ) {
     return $false
   }
+  if ($RootKey.ReadValue("CustomActivator", [Microsoft.Win32.RegistryValueKind]::DWord) -ne 1) {
+    return $false
+  }
+  $serverDefault = $ServerKey.ReadValue("", [Microsoft.Win32.RegistryValueKind]::String)
+  return Test-SamePath $serverDefault $ExpectedExecutable
 }
 
 function Test-ExactToastRegistration {
@@ -249,15 +339,10 @@ function Test-ExactToastRegistration {
     [Parameter(Mandatory = $true)][string]$ExpectedExecutable
   )
 
-  $base = $null
   $root = $null
   $server = $null
   try {
-    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
-      [Microsoft.Win32.RegistryHive]::CurrentUser,
-      $View
-    )
-    $root = $base.OpenSubKey("Software\Classes\CLSID\$Clsid", $false)
+    $root = [ToastRegistryKey]::OpenCurrentUser("Software\Classes\CLSID\$Clsid", $View, $false)
     if ($null -eq $root) { return $false }
     $server = $root.OpenSubKey("LocalServer32", $false)
     if ($null -eq $server) { return $false }
@@ -266,7 +351,6 @@ function Test-ExactToastRegistration {
   finally {
     if ($null -ne $server) { $server.Dispose() }
     if ($null -ne $root) { $root.Dispose() }
-    if ($null -ne $base) { $base.Dispose() }
   }
 }
 
@@ -277,15 +361,10 @@ function Remove-ExactToastRegistration {
     [Parameter(Mandatory = $true)][string]$ExpectedExecutable
   )
 
-  $base = $null
   $root = $null
   $server = $null
   try {
-    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
-      [Microsoft.Win32.RegistryHive]::CurrentUser,
-      $View
-    )
-    $root = $base.OpenSubKey("Software\Classes\CLSID\$Clsid", $true)
+    $root = [ToastRegistryKey]::OpenCurrentUser("Software\Classes\CLSID\$Clsid", $View, $true)
     if ($null -eq $root) { return $false }
     $server = $root.OpenSubKey("LocalServer32", $true)
     if ($null -eq $server) { return $false }
@@ -296,15 +375,22 @@ function Remove-ExactToastRegistration {
       return $false
     }
 
-    $server.DeleteValue("", $false)
-    $root.DeleteValue("CustomActivator", $false)
-    $root.DeleteValue("", $false)
+    $server.DeleteValue("")
+    $root.DeleteValue("CustomActivator")
+    $root.DeleteValue("")
+    $remainingValues = @(
+      if ($server.HasValue("")) { "LocalServer32 (default)" }
+      if ($root.HasValue("CustomActivator")) { "CustomActivator" }
+      if ($root.HasValue("")) { "CLSID (default)" }
+    )
+    if ($remainingValues.Count -ne 0) {
+      throw "Ave toast registration $Clsid ($View) retained values: $($remainingValues -join ', ')"
+    }
     return $true
   }
   finally {
     if ($null -ne $server) { $server.Dispose() }
     if ($null -ne $root) { $root.Dispose() }
-    if ($null -ne $base) { $base.Dispose() }
   }
 }
 
@@ -356,6 +442,7 @@ try {
   ) {
     throw "the exact zero-byte regular NSIS marker contract is unavailable: $expectedMarker"
   }
+  Initialize-ToastRegistry
   $programs = [Environment]::GetFolderPath(
     [Environment+SpecialFolder]::Programs,
     [Environment+SpecialFolderOption]::DoNotVerify
