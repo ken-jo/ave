@@ -794,6 +794,9 @@ export class SessionRepository {
   private searchIndexBatch: typeof this.searchIndexQueue = [];
   private searchIndexDrain: Promise<void> | undefined;
   private readonly pendingSearchWrites = new Set<string>();
+  private searchSourceRevision = 0;
+  private searchSourceWrites = 0;
+  private readonly liveSearchRecovery = new Set<string>();
   private readonly sessionNamespace: ReturnType<typeof openFeatureNamespace>;
   private searchIndexState: "current" | "stale" | "discarded" = "current";
   private searchIndexChecked = false;
@@ -882,6 +885,7 @@ export class SessionRepository {
         log.warn({ error }, "session search index work failed");
       }
     }
+    this.pendingSearchWrites.clear();
     this.searchIndex.close();
   }
 
@@ -903,7 +907,10 @@ export class SessionRepository {
     try {
       while (this.searchIndexQueue.length > 0) {
         this.searchIndexBatch = this.searchIndexQueue.splice(0);
-        const admit = await refresh().catch((): (() => SessionSearchIndexPolicy) => () => "inactive");
+        const revision = this.searchSourceRevision;
+        const readPolicy = await refresh().catch((): (() => SessionSearchIndexPolicy) => () => "inactive");
+        const admit = (): SessionSearchIndexPolicy => revision === this.searchSourceRevision && this.searchSourceWrites === 0
+          ? readPolicy() : "inactive";
         for (const work of this.searchIndexBatch.splice(0)) {
           try {
             work(admit);
@@ -1052,13 +1059,14 @@ export class SessionRepository {
         && rows !== null
       ) {
         if (rows.length === 0) return "unchanged";
-        const prepared = this.prepareSessionMessagesForDisk(sessionId, rows);
-        this.deferInactiveSearchWrite();
-        const after = await appendJsonlRecords(targetPath, prepared.messages);
-        transcriptWriteStates.set(targetPath, { ids, ...after });
+        await this.withSearchSourceWrite(async () => {
+          const prepared = this.prepareSessionMessagesForDisk(sessionId, rows);
+          const after = await appendJsonlRecords(targetPath, prepared.messages);
+          transcriptWriteStates.set(targetPath, { ids, ...after });
+        });
         return "appended";
       }
-      this.deferInactiveSearchWrite();
+      this.markSearchSourceChanged();
       this.writeSessionTranscriptLocked(sessionId, targetPath, messages);
       return "rewritten";
     });
@@ -1070,8 +1078,13 @@ export class SessionRepository {
       throw new Error(`beginTurnJournal: invalid sessionId "${sessionId}"`);
     }
     const path = turnInflightPath(this.sessionsDir, sessionId);
+    const hadJournal = lstatSync(path, { throwIfNoEntry: false }) !== undefined;
     liveTurnJournals.set(path, (liveTurnJournals.get(path) ?? 0) + 1);
-    await writeTurnInflightRecord(path, { v: 1, startedAt });
+    if (hadJournal) {
+      await this.withSearchSourceWrite(() => writeTurnInflightRecord(path, { v: 1, startedAt }));
+    } else {
+      await writeTurnInflightRecord(path, { v: 1, startedAt });
+    }
   }
 
   // Undefined partial content preserves the in-flight marker.
@@ -1079,10 +1092,14 @@ export class SessionRepository {
     if (!isValidSessionId(sessionId)) {
       throw new Error(`writeTurnPartial: invalid sessionId "${sessionId}"`);
     }
-    await writeTurnInflightRecord(
-      turnInflightPath(this.sessionsDir, sessionId),
-      partial ? { v: 1, startedAt, partial } : { v: 1, startedAt },
-    );
+    await this.withSearchSourceWrite(async () => {
+      if (partial && this.isTurnJournalLive(sessionId)) this.liveSearchRecovery.add(sessionId);
+      await writeTurnInflightRecord(
+        turnInflightPath(this.sessionsDir, sessionId),
+        partial ? { v: 1, startedAt, partial } : { v: 1, startedAt },
+      );
+      if (!partial) this.liveSearchRecovery.delete(sessionId);
+    });
   }
 
   // Deregister the turn but retain recovery evidence until persistence is confirmed.
@@ -1095,12 +1112,16 @@ export class SessionRepository {
       return;
     }
     liveTurnJournals.delete(path);
+    if (this.liveSearchRecovery.delete(sessionId)) this.markSearchSourceChanged();
   }
 
   // Remove the sidecar only after its owner confirms the transcript contains the turn.
   clearTurnJournal(sessionId: string): void {
     if (!isValidSessionId(sessionId) || this.isTurnJournalLive(sessionId)) return;
-    removeTurnInflightRecord(turnInflightPath(this.sessionsDir, sessionId));
+    const path = turnInflightPath(this.sessionsDir, sessionId);
+    if (lstatSync(path, { throwIfNoEntry: false }) === undefined) return;
+    this.markSearchSourceChanged();
+    removeTurnInflightRecord(path);
   }
 
   private isTurnJournalLive(sessionId: string): boolean {
@@ -1167,6 +1188,7 @@ export class SessionRepository {
     const first = this.pendingSearchWrites.size === 0;
     if (first && this.hasSearchRepairIntent()) this.searchIndexState = "stale";
     this.persistSearchRepairIntent();
+    this.searchSourceRevision += 1;
     try {
       write();
     } catch (error) {
@@ -1175,7 +1197,28 @@ export class SessionRepository {
     }
 
     this.pendingSearchWrites.add(sessionId);
-    if (first) this.withSearchIndexPolicy((admit) => this.flushSearchWrites(admit));
+    this.scheduleSearchWrites();
+  }
+
+  private scheduleSearchWrites(): void {
+    this.withSearchIndexPolicy((admit) => this.flushSearchWrites(admit));
+  }
+
+  private markSearchSourceChanged(): void {
+    this.recordSearchRepairIntent();
+    this.searchSourceRevision += 1;
+  }
+
+  private async withSearchSourceWrite<T>(write: () => Promise<T>): Promise<T> {
+    this.markSearchSourceChanged();
+    this.searchSourceWrites += 1;
+    try {
+      return await write();
+    } finally {
+      this.searchSourceRevision += 1;
+      this.searchSourceWrites -= 1;
+      if (this.searchSourceWrites === 0 && this.pendingSearchWrites.size > 0) this.scheduleSearchWrites();
+    }
   }
 
   private writeSessionSearchRow(sessionId: string, messages: unknown[] | null): boolean {
@@ -1198,9 +1241,9 @@ export class SessionRepository {
 
   private flushSearchWrites(admit: () => SessionSearchIndexPolicy): void {
     if (this.pendingSearchWrites.size === 0) return;
+    // Recovery may have already projected every pending source change.
+    if (!this.canUseSearchIndex("write", admit) || this.pendingSearchWrites.size === 0) return;
     try {
-      // Recovery may have already projected every pending source change.
-      if (!this.canUseSearchIndex("write", admit) || this.pendingSearchWrites.size === 0) return;
       if (!this.searchIndex.open()) throw new Error("could not open session search index for writing");
       for (const sessionId of this.pendingSearchWrites) {
         if (!this.writeSessionSearchRow(sessionId, this.loadSession(sessionId))) {
@@ -1231,6 +1274,7 @@ export class SessionRepository {
   }
 
   private clearSearchRepairIntent(): void {
+    if (this.searchSourceWrites > 0 || this.liveSearchRecovery.size > 0) return;
     try {
       unlinkSync(join(this.sessionsDir, SEARCH_REPAIR_INTENT));
     } catch (error) {
@@ -1257,6 +1301,7 @@ export class SessionRepository {
 
   private canUseSearchIndex(operation: "read" | "write", admit: () => SessionSearchIndexPolicy): boolean {
     try {
+      if (this.searchSourceWrites > 0) return false;
       const policy = admit();
       if (policy === "inactive") {
         if (operation === "write") this.recordSearchRepairIntent();
@@ -1266,7 +1311,7 @@ export class SessionRepository {
         this.pauseSearchIndex();
         return false;
       }
-      if (this.searchIndexState !== "current" || (this.pendingSearchWrites.size === 0 && this.hasSearchRepairIntent())) {
+      if (this.searchIndexState !== "current" || (this.pendingSearchWrites.size === 0 && this.liveSearchRecovery.size === 0 && this.hasSearchRepairIntent())) {
         this.rebuildSessionSearchRows();
       }
       if (policy === "enabled-with-recovery" && !this.searchIndexChecked) {
@@ -1320,6 +1365,7 @@ export class SessionRepository {
 
   // Rebuild the complete search projection after detach so retries repair partial metadata/index updates.
   private repairAllSessionSearchRowsForProjectDetach(admit: () => SessionSearchIndexPolicy): void {
+    if (this.searchSourceWrites > 0) return;
     try {
       const policy = admit();
       if (policy === "inactive") return;
@@ -1367,7 +1413,8 @@ export class SessionRepository {
     await withFileLock(targetPath, async () => {
       const prepared = this.prepareSessionMessagesForDisk(sessionId, messages);
       const lines = prepared.messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
-      writeFileSync(targetPath, lines, "utf-8");
+      this.markSearchSourceChanged();
+      writeUtf8FileAtomicSync(targetPath, lines);
       // Release unpublished artifact pins only after durable checkpoint ownership commits.
       const unpublished = this.unpublishedOutputCaptures.get(sessionId);
       for (const id of prepared.keepCaptureIds) unpublished?.delete(id);
@@ -1766,7 +1813,7 @@ export class SessionRepository {
       }
 
       // Persist projection repair before detaching metadata so it survives workspace removal completion.
-      this.recordSearchRepairIntent();
+      this.markSearchSourceChanged();
       for (const { sessionId, targetPath, normalized, next } of plans) {
         writeUtf8FileAtomicSync(targetPath, JSON.stringify(next, null, 2));
         const sessionTombstones = this.detachedProjectRootsBySession.get(sessionId)
@@ -1806,6 +1853,7 @@ export class SessionRepository {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     }
     if (options.bump) {
+      this.markSearchSourceChanged();
       const now = new Date();
       utimesSync(path, now, now);
     }
@@ -2117,6 +2165,7 @@ export class SessionRepository {
     );
     if (kept.length === checkpoints.length) return;
 
+    this.markSearchSourceChanged();
     for (const compactNum of discardedCompactNums) {
       const snapshotPath = join(this.checkpointsDir, sessionId, `${compactNum}.jsonl`);
       try {
