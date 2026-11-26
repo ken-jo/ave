@@ -27,6 +27,7 @@ import { admitMxcExtensionFilesystem, appOwnedSandboxPrivateRoots, buildSandboxC
 import { mxcConfinementStatePaths, mxcSandboxHomesParent } from "../mxc-runtime-root.js";
 import { mxcPolicyRows } from "../mxc-windows.js";
 import { createSandboxProcessHome } from "../sandbox-process-home.js";
+import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../sandbox-home-registry.js";
 
 vi.mock("@anthropic-ai/sandbox-runtime", async importOriginal => ({
   ...(await importOriginal<typeof import("@anthropic-ai/sandbox-runtime")>()),
@@ -150,6 +151,28 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
       rmSync(released.path, { recursive: true, force: true });
       rmSync(sibling, { recursive: true, force: true });
       rmSync(`${own}-2`, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["forgotten", (own: string) => forgetIssuedContainerHome(own)],
+    ["issued again at the same name", (own: string) => { forgetIssuedContainerHome(own); recordIssuedContainerHome(own, dirname(mxcSandboxHomesParent())); }],
+  ])("refuses a worker grant whose sandbox HOME is %s while it is granted", async (_case, change) => {
+    const home = createSandboxProcessHome("win32");
+    const own = home.path;
+    try {
+      await initializeAsrtSandbox({});
+      vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => paths.map(() => ({
+        denyMask: 0x1f01ff, inheritableMask: 0x1f01ff, parentMask: 0x40, directory: true,
+      })));
+      let changed = false;
+      // The first validity check runs after the grant took its HOME issuance.
+      const assertStillValid = (): void => { if (!changed) { changed = true; change(own); } };
+      await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [own], allowWrite: [own],
+        sandboxHome: own, assertStillValid })).rejects.toThrow(/Container HOME is no longer the one issued to this launch/u);
+      expect(changed).toBe(true);
+    } finally {
+      home.cleanup();
     }
   });
 

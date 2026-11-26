@@ -107,3 +107,11 @@ export function liveIssuedContainerHome(issued: IssuedContainerHome | undefined)
   markSandboxHomesUnavailable();
   throw new SandboxHomeUnavailableError(new Error(`Container HOME or a parent of it was replaced: ${held.home}`));
 }
+
+/** `liveIssuedContainerHome` for a launch that took `issued` at its start: one forgotten or issued again since refuses it. */
+export function heldIssuedContainerHome(issued: IssuedContainerHome | undefined): string | undefined {
+  if (issued === undefined) return undefined;
+  const live = liveIssuedContainerHome(issued);
+  if (live === undefined) throw new Error("Container HOME is no longer the one issued to this launch");
+  return live;
+}

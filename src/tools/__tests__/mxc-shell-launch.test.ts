@@ -288,10 +288,14 @@ describe("prepareMxcShellLaunch", () => {
       it.each([
         ["forgotten", () => forgetIssuedContainerHome(own)],
         ["issued again at the same name", () => { forgetIssuedContainerHome(own); recordIssuedContainerHome(own, runtimeRoot()); }],
-      ])("no longer passes it once it is %s while the launch prepares", async (_case, change) => {
-        duringPreparation(change);
-        await expect(launch([WS, own])).rejects.toMatchObject({ code: "confinement-state-write-grant", path: own, reason: "container-runtime" });
-        expect(h.openRelay).toHaveBeenCalledOnce();
+      ])("refuses the launch once it is %s while the launch prepares, granted or not", async (_case, change) => {
+        for (const allowWrite of [[WS, own], [WS]]) {
+          duringPreparation(change);
+          await expect(launch(allowWrite)).rejects.toThrow(/Container HOME is no longer the one issued to this launch/u);
+          forgetIssuedContainerHome(own);
+          recordIssuedContainerHome(own, runtimeRoot());
+        }
+        expect(h.openRelay).toHaveBeenCalledTimes(2);
       });
 
       it("refuses with the named reason once it is replaced while the launch prepares", async () => {

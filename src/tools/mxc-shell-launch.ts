@@ -20,7 +20,7 @@ import {
 } from "../permissions/mxc-windows.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../permissions/policy-model.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
-import { assertIssuedContainerHomeInPlace, isIssuedContainerHome, issuedContainerHome, liveIssuedContainerHome } from "../permissions/sandbox-home-registry.js";
+import { assertIssuedContainerHomeInPlace, heldIssuedContainerHome, isIssuedContainerHome, issuedContainerHome } from "../permissions/sandbox-home-registry.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 
 export interface MxcShellLaunch {
@@ -171,8 +171,11 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   // No working directory inside the root except the invocation's own issued HOME itself, by identity.
   if (privateRootCovering(input.cwd) !== undefined && !isIssuedContainerHome(input.cwd, input.sandboxHome)) throw new Error("Container shell working directory is inside the sandbox runtime root");
   // The invocation's own HOME lies in the runtime root's state; it is passed only while live and still the issuance held.
-  const ownHome = (): string | undefined => input.sandboxHome !== undefined
-    && insideOwnWindowsSandboxHome(input.sandboxHome, input.sandboxHome) ? liveIssuedContainerHome(issuedHome) : undefined;
+  const ownHome = (): string | undefined => {
+    if (issuedHome === undefined) return undefined;
+    const held = heldIssuedContainerHome(issuedHome);
+    return insideOwnWindowsSandboxHome(issuedHome.home, issuedHome.home) ? held : undefined;
+  };
   // Before ranking: the runtime root is only an ordinary read deny there, which an equal or enclosing write survives.
   assertWriteGrantsOutsideConfinementState(input.filesystem.allowWrite, declaredConfinementStatePaths(), undefined, ownHome());
   const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));

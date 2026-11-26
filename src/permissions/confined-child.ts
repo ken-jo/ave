@@ -51,7 +51,7 @@ import type { PluginWorkerControl } from "../plugins/public-contract.js";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { registerMxcHolderLifetime } from "./mxc-holder-lifetime.js";
 import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
-import { assertIssuedContainerHomeInPlace, isIssuedContainerHome, issuedContainerHome, liveIssuedContainerHome } from "./sandbox-home-registry.js";
+import { assertIssuedContainerHomeInPlace, heldIssuedContainerHome, isIssuedContainerHome, issuedContainerHome } from "./sandbox-home-registry.js";
 import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "./confinement-state-paths.js";
 import { assertMxcHolderPrivateDirectories, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { isSandboxWrapperEnvKey } from "../tools/safe-env.js";
@@ -329,11 +329,12 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       writeRoots: Object.freeze([...spec.filesystemOwnership.writeRoots]), hostStorageRoots: Object.freeze([...spec.filesystemOwnership.hostStorageRoots]) }),
   });
   assertIssuedContainerHomeInPlace(spec.home);
-  // The child writes its HOME: inside the runtime root only as the issuance this start holds, beneath its own staging
-  // root when it has one, which waives only the runtime declaration; every other declared state refuses it.
+  // The child writes its HOME: inside the runtime root only as the issuance this start holds (one that lapses refuses
+  // the start), beneath its own staging root when it has one, which waives only the runtime declaration; every other
+  // declared state refuses it.
   const issuedHome = issuedContainerHome(spec.home);
   const assertHomeOutsideState = (): void => {
-    const live = liveIssuedContainerHome(issuedHome);
+    const live = heldIssuedContainerHome(issuedHome);
     const staged = live !== undefined && (spec.stagingRoot === undefined
       || (isWindowsPathAtOrUnder(spec.home, spec.stagingRoot) && !isWindowsPathAtOrUnder(spec.stagingRoot, spec.home)));
     if (!staged && pathForms(spec.home).some((form) => isWindowsPathAtOrUnder(form, runtimeRoot))) {

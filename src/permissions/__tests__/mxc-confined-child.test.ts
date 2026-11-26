@@ -24,7 +24,8 @@ const state = vi.hoisted(() => ({
   // Stands for the issued-HOME identity check (its own suite runs it on real directories): the launch's HOME itself.
   issuedHome: vi.fn((cwd: string, home: string | undefined): boolean => cwd === home),
   homeInPlace: vi.fn((_home: string | undefined): void => undefined),
-  // One observation of the issuance a start holds: by default still live, resolving to its own name.
+  // One observation of the issuance a start holds (its own suite runs it on real directories): by default live, by its
+  // own name; undefined stands for a HOME never issued.
   liveHome: vi.fn((issued: { readonly home: string } | undefined): string | undefined => issued?.home),
   // Each backend's declared state: by default the runtime root alone.
   declared: vi.fn((): { path: string; stateClass: "helper-ledger" | "container-runtime" }[] =>
@@ -41,7 +42,7 @@ vi.mock("../sandbox-home-registry.js", async (original) => ({
   isIssuedContainerHome: (cwd: string, home: string | undefined) => state.issuedHome(cwd, home),
   assertIssuedContainerHomeInPlace: (home: string | undefined) => state.homeInPlace(home),
   issuedContainerHome: (home: string | undefined) => home === undefined ? undefined : { home },
-  liveIssuedContainerHome: (issued: { readonly home: string } | undefined) => state.liveHome(issued),
+  heldIssuedContainerHome: (issued: { readonly home: string } | undefined) => state.liveHome(issued),
 }));
 vi.mock("../asrt-sandbox.js", () => ({
   assertExtensionStartAllowed: () => state.allowed(), admitMxcExtensionFilesystem: (...args: unknown[]) => state.admit(...args),
@@ -566,12 +567,24 @@ describe("the HOME a confined child writes", () => {
   });
 
   it.each([
-    ["no longer the issuance this start holds", () => { state.liveHome.mockReturnValue(undefined); }, {}],
+    ["never issued", () => { state.liveHome.mockReturnValue(undefined); }, {}],
     ["outside its own staging root", () => undefined, { stagingRoot: `${RUNTIME_ROOT}\\staging\\fedcba9876543210fedcba9876543210` }],
   ])("refuses a HOME inside the runtime root that is %s", async (_case, arrange, override) => {
     arrange();
     await expect(spawnMxcConfinedChild({ ...staged(), ...override })).rejects.toThrow(/HOME inside the sandbox runtime root is not the one issued/u);
     expect(state.spawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses the start before the native spawn once the HOME issuance it holds lapses", async () => {
+    admitWrites(WORK, STAGING);
+    state.lease.mockImplementationOnce(async () => {
+      state.liveHome.mockImplementation(() => { throw new Error("Container HOME is no longer the one issued to this launch"); });
+      return { url: "http://127.0.0.1:43210", port: 43210, close: state.close };
+    });
+    const native = vi.fn();
+    state.spawn.mockImplementationOnce(async (_request, options) => { options.beforeSpawn(); native(); });
+    await expect(spawnMxcConfinedChild(staged())).rejects.toThrow(/no longer the one issued/u);
+    expect(native).not.toHaveBeenCalled();
   });
 });
 

@@ -4,7 +4,7 @@ import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProc
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { mxcRuntimeRootFloorPath } from "./mxc-runtime-root.js";
 import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "./confinement-state-paths.js";
-import { issuedContainerHome, liveIssuedContainerHome, liveSandboxProcessHomes, type IssuedContainerHome } from "./sandbox-home-registry.js";
+import { heldIssuedContainerHome, issuedContainerHome, liveSandboxProcessHomes, type IssuedContainerHome } from "./sandbox-home-registry.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyFloorRow, type PolicyGrantRow, type PolicyModel } from "./policy-model.js";
 import { srtWriteFloorRow, toSrtConfig } from "./srt-policy-adapter.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
@@ -3634,8 +3634,8 @@ function assertWindowsGrantBoundaries(read: readonly string[], write: readonly s
     }
   }
   // The caller's own HOME lies in the runtime root's state; it is passed only while live and still the issuance held.
-  const ownHome = sandboxHome !== undefined && insideOwnWindowsSandboxHome(sandboxHome, sandboxHome)
-    ? liveIssuedContainerHome(issuedHome) : undefined;
+  const held = heldIssuedContainerHome(issuedHome);
+  const ownHome = held !== undefined && sandboxHome !== undefined && insideOwnWindowsSandboxHome(sandboxHome, sandboxHome) ? held : undefined;
   assertWriteGrantsOutsideConfinementState(write, declaredConfinementStatePaths(), undefined, ownHome);
 }
 
