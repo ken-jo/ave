@@ -199,7 +199,7 @@ function recordStamp(file: FileIdentity, bytes: Buffer): RecordStamp {
  * File operations that act inside held directories. Each one opens its directories, checks each is the plain directory with the given
  * identity, and names every file relative to that open directory, so a directory moved or replaced by a link after the check changes
  * nothing it does. Linux reaches files through the open descriptor's /proc/self/fd entry; macOS and Windows have no such path, so a
- * native helper holds the directories and performs the whole operation (native/macos-dir-ops, native/windows-path-kind dir-ops.h).
+ * native helper holds the directories and performs the whole operation (native/macos-dir-ops, native/windows-path-kind).
  */
 export interface HeldFileOperations {
   /**
@@ -240,7 +240,7 @@ type TargetReplacement = FileIdentity | { readonly renamed: FileIdentity } | "re
 
 const HELPER_BUILD: Partial<Record<NodeJS.Platform, string>> = {
   darwin: "node scripts/build-macos-dir-ops.mjs",
-  win32: "scripts/build-windows-job.ps1 -Helper path-kind",
+  win32: "bun run build:windows-path-kind",
 };
 
 /** The held-directory operations for this platform; `resourcePath` is the host resources folder the native helper ships in. */

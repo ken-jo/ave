@@ -11,12 +11,38 @@ import {
   windowsJobLauncherState,
   windowsJobSources,
 } from "../../scripts/prepare-windows-job.mjs";
+import {
+  WINDOWS_PATH_KIND_PROFILE, WINDOWS_PATH_KIND_RUSTFLAGS, windowsPathKindReceipt, windowsPathKindReceiptPath,
+} from "../../scripts/lib/windows-path-kind-build.mjs";
 
 const roots: string[] = [];
 const OLD = new Date("2026-01-01T00:00:00Z");
 const NEW = new Date("2026-02-01T00:00:00Z");
 const LAUNCHER = windowsJobLauncherPath("x64");
 const PATH_KIND = join("resources", "windows-path-kind", "x64", "ave-path-kind.exe");
+const RECEIPT = windowsPathKindReceiptPath("x64");
+const PIN = 'channel = "1.92.0"\n';
+const RUST_INPUTS = ["native/windows-path-kind/src/main.rs", "native/windows-path-kind/Cargo.toml",
+  "native/windows-path-kind/Cargo.lock", "scripts/build-windows-path-kind.mjs", "scripts/lib/windows-path-kind-build.mjs"];
+
+function stagePathKind(root: string, machine = 0x8664): void {
+  const binary = Buffer.alloc(90);
+  binary.writeUInt16LE(0x5a4d);
+  binary.writeUInt32LE(64, 60);
+  binary.writeUInt32LE(0x4550, 64);
+  binary.writeUInt16LE(0x8664, 68);
+  binary.writeUInt16LE(0x20b, 88);
+  const toolchain = /^channel = "(.*)"/mu.exec(readFileSync(join(root, "rust-toolchain.toml"), "utf8"))?.[1];
+  if (!toolchain) throw new Error("Missing fixture toolchain");
+  const receipt = windowsPathKindReceipt(root, "x64", {
+    toolchain, compiler: `release: ${toolchain}`, target: "x86_64-pc-windows-msvc",
+    profile: WINDOWS_PATH_KIND_PROFILE, rustflags: WINDOWS_PATH_KIND_RUSTFLAGS,
+  }, binary);
+  binary.writeUInt16LE(machine, 68);
+  mkdirSync(dirname(join(root, PATH_KIND)), { recursive: true });
+  writeFileSync(join(root, PATH_KIND), binary);
+  writeFileSync(join(root, RECEIPT), JSON.stringify(receipt));
+}
 
 function write(root: string, relative: string, time: Date): void {
   mkdirSync(dirname(join(root, relative)), { recursive: true });
@@ -30,8 +56,9 @@ function fixtureRoot({ launcher }: { launcher?: Date } = {}): string {
   for (const source of ["scripts/build-windows-job.ps1", "native/windows-job/launcher.cpp", "native/windows-job/README.md"]) {
     write(root, source, OLD);
   }
-  write(root, "native/windows-path-kind/main.cpp", OLD);
-  write(root, PATH_KIND, NEW);
+  for (const source of RUST_INPUTS) write(root, source, OLD);
+  writeFileSync(join(root, "rust-toolchain.toml"), PIN);
+  stagePathKind(root);
   if (launcher) write(root, LAUNCHER, launcher);
   return root;
 }
@@ -39,7 +66,8 @@ function fixtureRoot({ launcher }: { launcher?: Date } = {}): string {
 function buildStub(root: string, calls: string[][]) {
   return (command: string, args: string[]) => {
     calls.push([command, ...args]);
-    write(root, args.includes("path-kind") ? PATH_KIND : LAUNCHER, new Date());
+    if (args.includes("build:windows-path-kind")) stagePathKind(root);
+    else write(root, LAUNCHER, new Date());
     return { status: 0 };
   };
 }
@@ -123,13 +151,18 @@ describe("prepareWindowsJob", () => {
     expect([calls, lines]).toEqual([[], []]);
   });
 
-  it.each(["missing", "source", "script"])("prepares a path classifier with %s changes independently of the job launcher", (change) => {
+  it.each(["missing", "old executable", "source", "script", "lockfile", "toolchain", "wrong machine"])("prepares a path classifier with %s changes independently of the job launcher", (change) => {
     const root = fixtureRoot({ launcher: new Date("2026-04-01T00:00:00Z") });
     if (change === "missing") rmSync(join(root, PATH_KIND));
-    else write(root, change === "script" ? "scripts/build-windows-job.ps1" : "native/windows-path-kind/include/path.h", new Date("2026-03-01T00:00:00Z"));
+    if (change === "old executable") rmSync(join(root, RECEIPT));
+    if (change === "source") write(root, "native/windows-path-kind/src/extra.rs", OLD);
+    if (change === "script") writeFileSync(join(root, "scripts/build-windows-path-kind.mjs"), "changed");
+    if (change === "lockfile") writeFileSync(join(root, "native/windows-path-kind/Cargo.lock"), "changed");
+    if (change === "toolchain") writeFileSync(join(root, "rust-toolchain.toml"), 'channel = "1.92.1"\n');
+    if (change === "wrong machine") stagePathKind(root, 0xaa64);
     const calls: string[][] = [];
     prepareWindowsJob({ root, platform: "win32", arch: "x64", findBuildTools: () => true, runSync: buildStub(root, calls), log: () => {} });
-    expect(calls).toEqual([["bun.exe", "run", "build:windows-job", "--", "-Helper", "path-kind", "-Arch", "x64"]]);
+    expect(calls).toEqual([["bun.exe", "run", "build:windows-path-kind", "--", "--arch", "x64", "--fixture"]]);
   });
 
   it("refuses a missing path classifier without build tools or a successful build", () => {
@@ -137,7 +170,7 @@ describe("prepareWindowsJob", () => {
     rmSync(join(root, PATH_KIND));
     const options = { root, platform: "win32" as const, arch: "x64", log: () => {} };
     expect(() => prepareWindowsJob({ ...options, findBuildTools: () => false }))
-      .toThrow("run: bun run build:windows-job -- -Helper path-kind");
+      .toThrow("run: bun run build:windows-path-kind");
     expect(() => prepareWindowsJob({ ...options, findBuildTools: () => true, runSync: () => ({ status: 0 }) }))
       .toThrow(`did not produce an up-to-date ${PATH_KIND}`);
   });
@@ -155,7 +188,7 @@ describe("prepareWindowsJob", () => {
   it("fails when the build fails or leaves no up-to-date launcher", () => {
     const root = fixtureRoot();
     const options = { root, platform: "win32" as const, arch: "x64", findBuildTools: () => true, log: () => {} };
-    expect(() => prepareWindowsJob({ ...options, runSync: () => ({ status: 1 }) })).toThrow("bun run build:windows-job failed (exit 1)");
+    expect(() => prepareWindowsJob({ ...options, runSync: () => ({ status: 1 }) })).toThrow("bun run build:windows-job -Arch x64 failed (exit 1)");
     expect(() => prepareWindowsJob({ ...options, runSync: () => ({ status: 0 }) })).toThrow("did not produce an up-to-date");
   });
 });

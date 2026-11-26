@@ -59,6 +59,9 @@ vi.mock("../../boot/steps/plugin-runtime/host-api-factory.js", () => ({ peekFloa
 vi.mock("../host-api/pick-folders.js", () => ({ pickFoldersForPlugin: vi.fn() }));
 vi.mock("../browser/browser-workspace-desktop.js", () => ({ getBrowserWorkspaceService: vi.fn() }));
 vi.mock("../../boot/desktop-relaunch.js", () => ({ relaunchDesktopHost: vi.fn() }));
+vi.mock("../../data/node-secret-encryption.js", () => ({ createNodeSecretEncryption: () => ({}) }));
+vi.mock("../corp-ca-runtime.js", () => ({ ensureCorporateCaInjected: vi.fn(async () => {}) }));
+vi.mock("../persisted-corp-ca.js", () => ({ readPersistedCorpCaConfigSync: () => undefined }));
 vi.mock("../../data/settings-store.js", () => ({
   settingsFilePath: (userDataPath: string) => win32.join(userDataPath, "settings.json"),
 }));
@@ -90,6 +93,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.doUnmock("../../shared/windows-native-host.js");
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("desktop host resource startup", () => {
@@ -124,6 +128,64 @@ describe("desktop host resource startup", () => {
     expect(io.helperExists).toHaveBeenCalledWith(win32.join(expectedResources.resourcePath, "windows-path-kind", process.arch, "ave-path-kind.exe"));
     expect(io.spawnHelper).toHaveBeenCalledBefore(io.realpath);
     expect(io.realpath).toHaveBeenCalledBefore(io.sharedBootstrap);
+  });
+
+  it.each([false, true])("builds the desktop host without global resources (packaged: %s)", async (isPackaged) => {
+    const { app } = await import("electron");
+    const { createDesktopBootHost } = await import("../../boot/desktop-host-runtime.js");
+    const { protectedControlEntryFor } = await import("../../permissions/sensitive-paths.js");
+    const { getConfiguredHostResources } = await import("../host-resources.js");
+    Object.defineProperty(app, "isPackaged", { value: isPackaged });
+    const lexical = "C:\\profile\\settings.json";
+    const canonical = "C:\\physical\\settings.json";
+    io.realpath.mockImplementation((path: string) => path === lexical ? canonical : path);
+
+    io.lstat.mockClear();
+    const host = createDesktopBootHost(PROJECT_ROOT);
+    const match = (path: string) => protectedControlEntryFor(path, undefined, { inspectHostFiles: false });
+    try {
+      const root = isPackaged ? PACKAGED_RESOURCES : win32.join(PROJECT_ROOT, "resources");
+      expect(io.helperExists).toHaveBeenCalledExactlyOnceWith(win32.join(root, "windows-path-kind", process.arch, "ave-path-kind.exe"));
+      expect(io.spawnHelper).toHaveBeenCalledBefore(io.lstat);
+      expect(getConfiguredHostResources()).toBeUndefined();
+      expect(match(lexical)).toBe("runtime-settings-file");
+      expect(match(canonical)).toBe("runtime-settings-file");
+    } finally { await host.close(); }
+    expect(match(lexical)).toBeUndefined();
+    expect(match(canonical)).toBeUndefined();
+  });
+
+  it("does no target I/O if the desktop host starts without global resources and the helper is missing", async () => {
+    const { app } = await import("electron");
+    const { createDesktopBootHost } = await import("../../boot/desktop-host-runtime.js");
+    Object.defineProperty(app, "isPackaged", { value: true });
+    io.helperExists.mockReturnValue(false);
+    io.lstat.mockClear();
+    const host = createDesktopBootHost(PROJECT_ROOT);
+    await host.close();
+    expect(io.helperExists).toHaveBeenCalledExactlyOnceWith(win32.join(PACKAGED_RESOURCES, "windows-path-kind", process.arch, "ave-path-kind.exe"));
+    expect(io.spawnHelper).not.toHaveBeenCalled();
+    expect(io.realpath).not.toHaveBeenCalled();
+    expect(io.lstat).not.toHaveBeenCalled();
+  });
+
+  it("uses separate Node host locality decisions without global resources", async () => {
+    const { createNodeBootHost } = await import("../../boot/node-host-runtime.js");
+    const { getRuntimeSensitiveKeyPaths } = await import("../../permissions/sensitive-paths.js");
+    const { getConfiguredHostResources } = await import("../host-resources.js");
+    const key = "C:\\example\\private.key";
+    const physical = "C:\\physical\\private.key";
+    const binary = win32.join(PACKAGED_RESOURCES, "windows-path-kind", process.arch, "ave-path-kind.exe");
+    vi.stubEnv("AVE_SECRET_KEY_FILE", key);
+    io.realpath.mockImplementation((path: string) => path === key ? physical : path);
+
+    const host = await createNodeBootHost({ userDataPath: "C:\\profile", resourcePath: PACKAGED_RESOURCES, isPackaged: true, keyFilePath: key });
+    try {
+      expect(io.helperExists.mock.calls).toEqual([[binary], [binary]]);
+      expect(io.spawnHelper).toHaveBeenCalledBefore(io.lstat);
+      expect(getRuntimeSensitiveKeyPaths()).toEqual([key, physical]);
+      expect(getConfiguredHostResources()).toBeUndefined();
+    } finally { await host.close(); }
   });
 
   it("refuses path admission before lookup when the configured helper is unavailable", async () => {

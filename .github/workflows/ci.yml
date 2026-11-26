@@ -913,6 +913,10 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/fetch-uv.mjs
+      - name: Install the pinned path helper toolchain
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node .github/scripts/install-windows-path-kind-rust.mjs x64
       - name: Generate the Windows preparation input manifest
         id: windows-preparation-key
         if: steps.docs-impact.outputs.docs_only != 'true'
@@ -943,7 +947,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
+          node scripts/build-windows-path-kind.mjs --arch x64 --fixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify native background process ownership
         if: steps.docs-impact.outputs.docs_only != 'true'
@@ -1037,6 +1041,7 @@ jobs:
           path: |
             ave/resources/windows-job/x64/ave-job.exe
             ave/resources/windows-path-kind/x64/ave-path-kind.exe
+            ave/resources/windows-path-kind/x64/ave-path-kind.exe.build.json
             ave/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/*/*.exe
             ave/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/*/build-receipt.json
             ave/src/permissions/generated/srt-win-build-receipts.*
@@ -1327,6 +1332,10 @@ jobs:
         working-directory: ave
         shell: powershell
         run: bun install --frozen-lockfile --ignore-scripts --production
+      - name: Install the pinned path helper toolchain
+        working-directory: ave
+        shell: powershell
+        run: node .github/scripts/install-windows-path-kind-rust.mjs arm64
       - name: Build the native job launcher
         working-directory: ave
         shell: powershell
@@ -1335,7 +1344,7 @@ jobs:
         working-directory: ave
         shell: powershell
         run: |
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Arch arm64 -Helper path-kind
+          node scripts/build-windows-path-kind.mjs --arch arm64 --fixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .github/scripts/run-in-job.mjs node scripts/test-windows-path-kind.mjs
       - name: Remove isolated system-volume job directory

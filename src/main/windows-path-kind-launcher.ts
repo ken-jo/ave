@@ -10,7 +10,7 @@ import { getHostResources } from "./host-resources.js";
 const EXIT_NO_MAPPING = 1;
 
 // What to do when the helper is broken: it ships with Ave, so the install is incomplete.
-const REPAIR = "Reinstall Ave; in a development checkout, build it with scripts/build-windows-job.ps1 -Helper path-kind.";
+const REPAIR = "Reinstall Ave; in a development checkout, build it with bun run build:windows-path-kind.";
 // What to do when the helper gave no answer (helper-unavailable): the same restart wording as the home privacy notice.
 const RESTART = "Restart Ave; if it persists, reinstall Ave.";
 
@@ -19,8 +19,8 @@ export function windowsPathKindHelperIn(resourcePath: string): string {
   return join(resourcePath, "windows-path-kind", process.arch, "ave-path-kind.exe");
 }
 
-export function resolveWindowsPathKindHelper(): string {
-  const binary = windowsPathKindHelperIn(getHostResources().resourcePath);
+export function resolveWindowsPathKindHelper(resourcePath = getHostResources().resourcePath): string {
+  const binary = windowsPathKindHelperIn(resourcePath);
   if (!existsSync(binary)) {
     throw missingWindowsPathKindHelper();
   }

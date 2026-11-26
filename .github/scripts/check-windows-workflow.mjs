@@ -65,6 +65,10 @@ const POWERSHELL_SHELL_RE = /^(?:pwsh|powershell)(?:\.exe)?(?:\s|$)/i;
 const SETUP_COMMAND = "node ave/.github/scripts/isolate-job-home.mjs";
 const WRAPPER = ["node", ".github/scripts/run-in-job.mjs"];
 const ARM64_BUILD = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Arch arm64";
+const X64_RUST_INSTALL = "node .github/scripts/install-windows-path-kind-rust.mjs x64";
+const X64_PATH_KIND_BUILD = "node scripts/build-windows-path-kind.mjs --arch x64 --fixture";
+const ARM64_RUST_INSTALL = "node .github/scripts/install-windows-path-kind-rust.mjs arm64";
+const ARM64_PATH_KIND_BUILD = "node scripts/build-windows-path-kind.mjs --arch arm64 --fixture";
 const ARM64_INSTALL = "bun install --frozen-lockfile --ignore-scripts --production";
 const ARM64_TEST = "node scripts/test-windows-path-kind.mjs";
 const ARM64_SELECTION = "needs.build.outputs.windows_arm64_path_kind";
@@ -84,7 +88,9 @@ const UNCONTAINED_COMMANDS = new Map([
   ...["key", "restore", "seal", "verify-installed", "verify-publication"].map(operation => ["node .github/scripts/windows-preparation-cache.mjs " + operation, "inventories or verifies preparation bytes"]),
   ["node scripts/fetch-uv.mjs", "fetches a pinned tool"],
   ["node .github/scripts/python-archive-cache.mjs", "computes a cache key"],
-  ...["", " -FailureFixture", " -QueryFailureFixture", " -Helper path-kind"].map(option => [
+  [X64_RUST_INSTALL, "installs the pinned compiler and target"],
+  [X64_PATH_KIND_BUILD, "builds the classifier and its fixture"],
+  ...["", " -FailureFixture", " -QueryFailureFixture"].map(option => [
     `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1${option}`,
     "builds the containment launcher and its native helpers",
   ]),
@@ -251,7 +257,7 @@ function inspectPowerShell(shell, steps) {
 function containedCommandProblems(commands, manifest, wrapped, jobId) {
   return commands.flatMap(({ text, line, elements, redirected, operator }) => {
     if (elements[0]?.text !== WRAPPER[0] || elements[1]?.text !== WRAPPER[1]) {
-      const arm64Setup = jobId === ARM64_JOB && [ARM64_INSTALL, ARM64_BUILD, `${ARM64_BUILD} -Helper path-kind`].includes(text);
+      const arm64Setup = jobId === ARM64_JOB && [ARM64_INSTALL, ARM64_RUST_INSTALL, ARM64_BUILD, ARM64_PATH_KIND_BUILD].includes(text);
       return arm64Setup || UNCONTAINED_COMMANDS.has(text)
         ? [] : [`line ${line}: command runs outside the job containment launcher: ${text}`];
     }
@@ -311,6 +317,7 @@ const PREPARATION_CACHE_MAIN_SAVE = REGRESSION_CONDITION + " && github.ref == 'r
 function checkPreparationCache(job) {
   const steps = job.steps;
   const find = name => steps.find(step => step.name === name);
+  const rust = find("Install the pinned path helper toolchain");
   const key = find("Generate the Windows preparation input manifest");
   const restore = find("Restore Windows preparation outputs");
   const verify = find("Verify Windows preparation outputs or rebuild");
@@ -323,6 +330,9 @@ function checkPreparationCache(job) {
   const exact = (step, action) => step?.uses?.startsWith("actions/cache/" + action + "@")
     && step.with?.key === PREPARATION_CACHE_KEY && step.with?.path === PREPARATION_CACHE_PATH
     && Object.keys(step.with).length === 2;
+  if (rust?.run !== X64_RUST_INSTALL || rust.if !== REGRESSION_CONDITION || rust["working-directory"] !== "ave" || !before(rust, key)) {
+    throw new Error("Windows preparation must install its pinned compiler and target before computing the cache key");
+  }
   if (key?.id !== "windows-preparation-key" || key.run !== PREPARATION_CACHE_COMMAND + " key"
     || key.if !== REGRESSION_CONDITION || key["working-directory"] !== "ave"
     || !exact(restore, "restore") || restore.id !== "windows-preparation-restore"
@@ -334,7 +344,8 @@ function checkPreparationCache(job) {
     || verify["working-directory"] !== "ave" || verify.env?.AVE_WINDOWS_PREP_KEY !== PREPARATION_CACHE_KEY
     || verify.env?.AVE_WINDOWS_PREP_EXACT_HIT !== "${{ steps.windows-preparation-restore.outputs.cache-hit }}"
     || !before(restore, verify) || !before(verify, build)
-    || build.if !== REGRESSION_CONDITION + " && env.AVE_WINDOWS_PREP_VERIFIED != 'true'") {
+    || build.if !== REGRESSION_CONDITION + " && env.AVE_WINDOWS_PREP_VERIFIED != 'true'"
+    || !build.run?.split(/\r?\n/u).includes(X64_PATH_KIND_BUILD)) {
     throw new Error("Windows preparation cache must verify or rebuild before any output is used");
   }
   for (const name of ["Verify native background process ownership", "Verify both Windows native payload packages",
@@ -458,18 +469,18 @@ function checkArm64PathKindJob(jobs) {
   if (arm64["timeout-minutes"] !== PATH_KIND_TIMEOUT_MINUTES) {
     throw new Error(`${ARM64_JOB}: expected a 30-minute timeout`);
   }
-  const [checkout, node, bun, isolate, install, launcher, test, cleanup] = arm64.steps ?? [];
-  if (arm64.steps?.length !== 8
+  const [checkout, node, bun, isolate, install, rust, launcher, test, cleanup] = arm64.steps ?? [];
+  if (arm64.steps?.length !== 9
     || !checkout?.uses?.startsWith("actions/checkout@") || checkout.with?.path !== "ave"
     || checkout.with?.["persist-credentials"] !== false
     || !node?.uses?.startsWith("actions/setup-node@") || node.with?.["node-version"] !== "24"
     || node.with?.architecture !== "arm64" || node.with?.["package-manager-cache"] !== false
     || bun?.uses !== "./ave/.github/actions/setup-bun" || bun.with?.["bun-version-file"] !== "ave/.bun-version"
     || isolate?.run !== SETUP_COMMAND || isolate.shell !== "bash"
-    || install?.run !== ARM64_INSTALL || launcher?.run !== ARM64_BUILD
-    || test?.run?.trimEnd() !== [`${ARM64_BUILD} -Helper path-kind`,
+    || install?.run !== ARM64_INSTALL || rust?.run !== ARM64_RUST_INSTALL || launcher?.run !== ARM64_BUILD
+    || test?.run?.trimEnd() !== [ARM64_PATH_KIND_BUILD,
       "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", `${WRAPPER.join(" ")} ${ARM64_TEST}`].join("\n")
-    || [install, launcher, test].some(step => step["working-directory"] !== "ave" || step.shell !== "powershell")
+    || [install, rust, launcher, test].some(step => step["working-directory"] !== "ave" || step.shell !== "powershell")
     || cleanup?.run !== `${SETUP_COMMAND} --cleanup` || cleanup.shell !== "powershell"
     || cleanup.if !== "always() && env.AVE_CI_JOB_ROOT != ''"
     || arm64.steps.some(step => step["continue-on-error"] !== undefined || (step !== cleanup && step.if !== undefined))) {

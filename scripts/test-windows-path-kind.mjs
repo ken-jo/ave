@@ -2,8 +2,10 @@
 // Output must contain only the resolved mapping.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { once } from "node:events";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -707,7 +709,7 @@ async function recoveryTests() {
   if (failed > 0) process.exit(1);
 }
 
-await recoveryTests();
+if (process.argv[2] !== "--wire-only") await recoveryTests();
 if (process.argv[2] === "--held-recovery-only") process.exit(0);
 
 function uint32(value) {
@@ -715,6 +717,66 @@ function uint32(value) {
   bytes.writeUInt32LE(value);
   return bytes;
 }
+
+async function policyContract() {
+  const name = `\\\\.\\pipe\\ave-mxc-${randomBytes(16).toString("hex")}`;
+  const policy = Buffer.from([0xff, 0x00, 0x0a, 0x1a, 0x0d, 0x80]);
+  const framed = Buffer.concat([uint32(policy.length), policy]);
+  for (const [args, bytes] of [
+    [["--mxc-policy", name.toUpperCase(), "2000"], framed],
+    [["--mxc-policy", name, "0"], framed],
+    [["--mxc-policy", name, "2000"], uint32(0)],
+    [["--mxc-policy", name, "2000"], framed.subarray(0, -1)],
+  ]) {
+    assert.deepEqual(runWithInput(args, bytes), { code: 2, stdout: "", stderr: "" });
+  }
+
+  const child = spawn(helper, ["--mxc-policy", name, "5000"], { windowsHide: true });
+  const closed = once(child, "close");
+  const deadline = setTimeout(() => child.kill(), 6000);
+  let stderr = "";
+  child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+  try {
+    child.stdin.write(framed);
+    const [ready] = await once(child.stdout, "data");
+    assert.deepEqual(ready, Buffer.from("ready\n"));
+    child.stdin.write(uint32(process.pid));
+    for (let index = 0; index < 2; index += 1) {
+      const connection = createConnection(name);
+      try {
+        const [bytes] = await once(connection, "data");
+        assert.deepEqual(bytes, policy);
+      } finally {
+        connection.destroy();
+      }
+    }
+    assert.deepEqual(await closed, [0, null]);
+    assert.equal(stderr, "");
+  } finally {
+    clearTimeout(deadline);
+    child.stdin.destroy();
+    child.kill();
+  }
+
+  const ownerEof = runWithInput(["--mxc-policy", name, "2000"], framed);
+  assert.deepEqual(ownerEof, { code: 1, stdout: "ready\n", stderr: "Windows sandbox policy delivery failed or expired\r\n" });
+  const expired = spawn(helper, ["--mxc-policy", name, "250"], { windowsHide: true });
+  const expiredClosed = once(expired, "close");
+  const deadlineGuard = setTimeout(() => expired.kill(), 4000);
+  try {
+    expired.stdin.write(framed);
+    const [ready] = await once(expired.stdout, "data");
+    assert.deepEqual(ready, Buffer.from("ready\n"));
+    assert.deepEqual(await expiredClosed, [1, null], "the helper expires without a PID or owner EOF");
+  } finally {
+    clearTimeout(deadlineGuard);
+    expired.stdin.destroy();
+    expired.kill();
+  }
+  console.log("policy pipe: validation, readiness, authorized PID, binary delivery, owner EOF and deadline passed");
+}
+
+await policyContract();
 
 function daclFrame(operands) {
   const body = Buffer.concat([uint32(operands.length), ...operands.flatMap(path => {
@@ -743,6 +805,13 @@ const runtimeSystemDirectory = execFileSync(join(systemDirectory, "WindowsPowerS
 assert.equal(systemDirectory.toLowerCase(), runtimeSystemDirectory.toLowerCase(), "native and runtime OS system-directory APIs agree");
 assert.equal(run("--system-directory", "unexpected").code, 2);
 console.log(`OS system directory: ${systemDirectory}; spoofed environment ignored`);
+
+const documents = run("--documents-directory");
+assert.equal(documents.code, 0, documents.stderr);
+assert.equal(documents.stderr, "");
+assert.match(documents.stdout, /^(?:[a-z]:\\|\\\\)[^\r\n]+\r\n$/iu);
+assert.equal(run("--documents-directory", "unexpected").code, 2);
+console.log("OS Documents directory: one UTF-8 line");
 
 function unusedDrives() {
   const unused = [];
@@ -804,7 +873,7 @@ try {
 } finally {
   rmSync(target, { recursive: true, force: true });
 }
-// Held directory operations (dir-ops.h): each step names files only through handles held on its folders, and a held folder and
+// Held directory operations: each step names files only through handles held on its folders, and a held folder and
 // every folder above it cannot be renamed until the step ends.
 const dirOps = mkdtempSync(join(tmpdir(), "ave dir ops "));
 try {
@@ -1025,6 +1094,25 @@ public static class FixtureReparse {
   const lateFailure = runWithInput(args, daclFrame([file, join(fixture, "invalid|target")]));
   assert.equal(lateFailure.code, 4);
   assert.equal(lateFailure.stdout, "", "a failed late snapshot emits no partial batch");
+
+  const sid = "S-1-5-123-456";
+  const denies = run("--deny-acls", sid, file, directory, paths[2]);
+  assert.equal(denies.code, 0, denies.stderr);
+  assert.equal(denies.stderr, "");
+  assert.deepEqual(JSON.parse(denies.stdout), [false, true, false].map(directory => ({
+    denyMask: 0, inheritableMask: 0, parentMask: 0, directory,
+  })));
+  assert.deepEqual(run("--deny-acls", "invalid", file), {
+    code: 2, stdout: "", stderr: "invalid deny DACL request\r\n",
+  });
+  assert.deepEqual(run("--deny-acls", sid, file, link), {
+    code: 4, stdout: "", stderr: "could not verify deny DACL handles\r\n",
+  });
+  const oversized = join(fixture, "oversized");
+  writeFileSync(oversized, Buffer.alloc(1024 * 1024 + 1));
+  const oversize = run("--dacl", "--content", oversized);
+  assert.equal(oversize.code, 5);
+  assert.equal(oversize.stdout, "");
 
   const writer = openSync(file, "r+");
   try {

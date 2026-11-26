@@ -27,10 +27,10 @@ module.exports = async function beforePack(context) {
   const manifest = JSON.parse(readFileSync(join(context.packager.projectDir, "dist", "src", "main", "bundle-manifest.json")));
   if (manifest.srtWinReceiptsSha256 !== assertSrtWinReceiptModule()) throw new Error("Windows helper receipts changed after bundling");
   assertSrtWinVendor(join(context.packager.projectDir, "node_modules", "@anthropic-ai", "sandbox-runtime", "vendor"));
-  for (const helper of ["job", "path-kind"]) {
-    execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-      join(context.packager.projectDir, "scripts", "build-windows-job.ps1"), "-Arch", arch, "-Helper", helper], { stdio: "inherit", env: windowsPowerShellEnv() });
-  }
+  execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+    join(context.packager.projectDir, "scripts", "build-windows-job.ps1"), "-Arch", arch], { stdio: "inherit", env: windowsPowerShellEnv() });
+  const { buildWindowsPathKind } = await import("./build-windows-path-kind.mjs");
+  buildWindowsPathKind({ root: context.packager.projectDir, arch });
   const { stageMxcSdkAddon, stageMxcLauncher } = await import(pathToFileURL(join(context.packager.projectDir, "scripts", "fetch-mxc.mjs")).href);
   await stageMxcSdkAddon({ arch, projectRoot: context.packager.projectDir });
   const { verifyMxcSdkSource } = await import("./lib/mxc-sdk-integrity.mjs");

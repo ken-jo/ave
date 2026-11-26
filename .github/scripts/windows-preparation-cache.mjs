@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { verifyWindowsPathKindBuild, windowsPathKindCompiler } from "../../scripts/lib/windows-path-kind-build.mjs";
 import {
   restoreWindowsPreparation, sealWindowsPreparation, verifyInstalledWindowsPreparation,
   verifySealedWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
@@ -30,6 +31,7 @@ function nativeFiles(arch) {
   return [
     ...["ave-job", "ave-job-failure", "ave-job-query-failure"].map(name => `resources/windows-job/${arch}/${name}.exe`),
     `resources/windows-path-kind/${arch}/ave-path-kind.exe`,
+    "resources/windows-path-kind/" + arch + "/ave-path-kind.exe.build.json",
     ...ARCHES.flatMap(target => ["upstream-srt-win.exe", "srt-win.exe", "build-receipt.json"]
       .map(name => `${VENDOR}/srt-win/${target}/${name}`)),
     `${RECEIPTS}.js`,
@@ -45,6 +47,7 @@ function compilerIdentity(root, env) {
   ]));
   return {
     image: env.ImageOS, imageVersion: env.ImageVersion, arch: process.arch, compiler,
+    rust: windowsPathKindCompiler(root, process.arch),
     node: process.version, bun: run("bun.exe", ["--version"]), git: run("git", ["--version"]),
   };
 }
@@ -79,7 +82,7 @@ async function main(operation, root, env) {
     appendFileSync(outputs, `key=${windowsPreparationKey(manifest)}\n`);
     return;
   }
-  if (key && !/^ave-windows-native-helpers-v2-[a-f0-9]{64}$/u.test(key)) throw new Error("Invalid Windows preparation key");
+  if (key && !/^ave-windows-native-helpers-v3-[a-f0-9]{64}$/u.test(key)) throw new Error("Invalid Windows preparation key");
   const native = nativeFiles(process.arch);
   const pinTest = "ave-path-pin-test.exe";
   const destinations = Object.fromEntries([
@@ -92,6 +95,7 @@ async function main(operation, root, env) {
       if (!key || !isAbsolute(env.AVE_WINDOWS_PREP_STORE ?? "")) throw new Error("Missing restored helper cache identity");
       await verifyInstalledWindowsPreparation(env.AVE_WINDOWS_PREP_STORE, key, destinations, env.AVE_WINDOWS_PREP_RESTORED_DIGEST);
     }
+    verifyWindowsPathKindBuild(root, process.arch);
     return;
   }
   if (operation === "restore") {
@@ -115,7 +119,7 @@ async function main(operation, root, env) {
           const outputs = Object.entries(destinations).map(([file, destination]) => [destination, readVerified(file)]);
           for (const [destination, bytes] of outputs) writeOutput(destination, temporary => writeFileSync(temporary, bytes));
           const now = new Date();
-          for (const file of native.slice(0, 4)) utimesSync(join(root, file), now, now);
+          for (const file of native.slice(0, 3)) utimesSync(join(root, file), now, now);
           installedDigest = manifestDigest;
         },
       },
@@ -133,6 +137,7 @@ async function main(operation, root, env) {
     return;
   }
   if (operation !== "seal") throw new Error("Unknown Windows preparation command");
+  verifyWindowsPathKindBuild(root, process.arch);
   for (const file of native) copyOutput(join(root, file), join(store, "native", file));
   copyOutput(join(tmpdir(), pinTest), join(store, "native", pinTest));
   const digest = await sealWindowsPreparation(store, key, required);

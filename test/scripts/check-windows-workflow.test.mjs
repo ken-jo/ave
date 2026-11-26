@@ -264,7 +264,9 @@ const EXEMPTIONS = [
   ...["key", "restore", "seal", "verify-installed", "verify-publication"].map(operation => `node .github/scripts/windows-preparation-cache.mjs ${operation}`),
   "node scripts/fetch-uv.mjs",
   "node .github/scripts/python-archive-cache.mjs",
-  ...["", " -FailureFixture", " -QueryFailureFixture", " -Helper path-kind"]
+  "node .github/scripts/install-windows-path-kind-rust.mjs x64",
+  "node scripts/build-windows-path-kind.mjs --arch x64 --fixture",
+  ...["", " -FailureFixture", " -QueryFailureFixture"]
     .map(option => `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1${option}`),
   "bun run check:plugin-host-protocol-schema",
   "node scripts/check-srt-win-integrity.cjs --upstream --inputs",
@@ -356,13 +358,14 @@ it("runs path classification with the arm64 runtime and native job launcher", ()
   assert.equal(arm64.needs, "build");
   assert.equal(arm64.if, "needs.build.outputs.windows_arm64_path_kind == 'true'");
 
-  const [, node, , isolate, install, build, test, cleanup] = arm64.steps;
+  const [, node, , isolate, install, rust, build, test, cleanup] = arm64.steps;
   assert.equal(node.with.architecture, "arm64");
   assert.equal(isolate.run, "node ave/.github/scripts/isolate-job-home.mjs");
   assert.equal(install.run, "bun install --frozen-lockfile --ignore-scripts --production");
+  assert.equal(rust.run, "node .github/scripts/install-windows-path-kind-rust.mjs arm64");
   assert.equal(build.run, "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Arch arm64");
   assert.deepEqual(test.run.trimEnd().split("\n"), [
-    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Arch arm64 -Helper path-kind",
+    "node scripts/build-windows-path-kind.mjs --arch arm64 --fixture",
     "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
     "node .github/scripts/run-in-job.mjs node scripts/test-windows-path-kind.mjs",
   ]);
@@ -431,10 +434,10 @@ for (const [name, change, expected] of [
   }, /path-kind selection/u],
   ["an emulated runtime", jobs => { jobs[ARM64_JOB].steps[1].with.architecture = "x64"; }, /expected arm64 setup/u],
   ["a test outside the launcher", jobs => {
-    const step = jobs[ARM64_JOB].steps[6];
+    const step = jobs[ARM64_JOB].steps[7];
     step.run = step.run.replace(`${WRAPPER} `, "");
   }, /contained path-kind test/u],
-  ["cleanup without the job-root guard", jobs => { jobs[ARM64_JOB].steps[7].if = "always()"; }, /job-root cleanup/u],
+  ["cleanup without the job-root guard", jobs => { jobs[ARM64_JOB].steps[8].if = "always()"; }, /job-root cleanup/u],
   ["a missing aggregate dependency", jobs => {
     const aggregate = jobs["build-and-test"];
     aggregate.needs = aggregate.needs.filter(jobId => jobId !== ARM64_JOB);

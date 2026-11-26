@@ -20,6 +20,7 @@ import { ElectronFloatingDockSurface, hostDockThemeSource } from "../main/floati
 import { peekFloatingDock } from "./steps/plugin-runtime/host-api-factory.js";
 import { pickFoldersForPlugin } from "../main/host-api/pick-folders.js";
 import { getBrowserWorkspaceService } from "../main/browser/browser-workspace-desktop.js";
+import { openLocalityDecision, withLocalityDecision } from "../shared/local-path-io.js";
 import type { BootHost } from "./host-runtime.js";
 import { desktopResourcePath } from "../main/desktop-resource-path.js";
 import { queryWindowsDocumentsDirectory } from "../main/windows-path-kind-launcher.js";
@@ -107,7 +108,10 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       closeDocuments: (signal) => closeMainWindowDocuments(getAppWindows(), signal),
     },
   };
-  const releaseSettingsPath = protectRuntimeSettingsPath(settingsFilePath(host.userDataPath));
+  const releaseSettingsPath = withLocalityDecision(
+    () => protectRuntimeSettingsPath(settingsFilePath(host.userDataPath)),
+    openLocalityDecision(host.resourcePath),
+  );
   const releaseOAuthOpener = installOAuthLoginOpener(openLogin);
   host.close = async () => { releaseOAuthOpener(); releaseSettingsPath(); };
   return host;

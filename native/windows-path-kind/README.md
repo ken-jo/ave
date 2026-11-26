@@ -1,6 +1,6 @@
 # Windows folder classification
 
-`path-kind.cpp` builds `ave-path-kind.exe`. Its drive mode prints the current
+`src/main.rs` builds `ave-path-kind.exe`. Its drive mode prints the current
 MS-DOS device mapping of one drive letter:
 
 ```text
@@ -30,7 +30,7 @@ the mapping could not be written. Only `1` is an answer about the drive.
 same script as the job helper and downloads nothing:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
+bun run build:windows-path-kind -- --fixture
 node scripts/test-windows-path-kind.mjs
 ```
 
@@ -237,8 +237,8 @@ system-directory API and repeats the query with spoofed system-root variables.
 
 ## Path and descriptor facts
 
-`pin.h` owns normalization, component opens and handle lifetime for all path
-modes. `dacl.h` owns the one handle-based security-descriptor read, shared
+`src/pin.rs` owns normalization, component opens and handle lifetime for all path
+modes. `src/security.rs` owns the one handle-based security-descriptor read, shared
 by facts serialization and the compatibility deny scan. Each component is
 opened with `BACKUP_SEMANTICS | OPEN_REPARSE_POINT`,
 read-attributes/read-control access and read sharing only. Handles remain open
@@ -307,7 +307,7 @@ with its exact original spelling in `requestPath`. Exceeding the output
 budget returns 4 with no partial reply. The host checks the count and
 each echoed operand before using the facts.
 
-Build both facts modes with `scripts/build-windows-job.ps1 -Helper path-kind`
+Build both facts modes with `bun run build:windows-path-kind`
 and run `scripts/test-windows-path-kind.mjs` and the shared facts Vitest suite.
 
 ## Compatibility deny evidence

@@ -118,7 +118,7 @@ describe("Windows folder classifier launcher", () => {
     // With nothing on stderr the exit status stands in for the spawn message, which names the install path.
     fail(Object.assign(new Error(`Command failed: ${helper} Q:`), { code: 4 }));
     const exit = await rejection();
-    expect(exit.message).toBe("the Windows folder classifier failed for Q: (exit 4). Reinstall Ave; in a development checkout, build it with scripts/build-windows-job.ps1 -Helper path-kind.");
+    expect(exit.message).toBe("the Windows folder classifier failed for Q: (exit 4). Reinstall Ave; in a development checkout, build it with bun run build:windows-path-kind.");
     expect(isWindowsPathKindHelperUnavailable(exit)).toBe(false);
     expect(exit).not.toHaveProperty("cause");
     mocks.execFile.mockImplementationOnce(helperReply());
