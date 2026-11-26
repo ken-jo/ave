@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -7,6 +7,8 @@ import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 const fixture = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   cwd: "",
+  defaultRoot: "",
+  collectRealFiles: false,
   query: undefined as undefined | { mock: { calls: unknown[][] } },
   atWalk: [] as string[],
   atCollect: [] as string[],
@@ -19,7 +21,17 @@ vi.mock("electron", () => ({
   shell: {},
 }));
 vi.mock("../../gated.js", () => ({ validateHostRendererSender: () => true, auditUnauthorized: vi.fn() }));
-vi.mock("../../../main/default-workspace-root.js", () => ({ getDefaultWorkspaceRoot: () => fixture.cwd }));
+vi.mock("../../../main/default-workspace-root.js", async (original) => {
+  const actual = await original<typeof import("../../../main/default-workspace-root.js")>();
+  return {
+    ...actual,
+    getDefaultWorkspaceRoot: () => {
+      const cwd = vi.spyOn(process, "cwd").mockReturnValue(fixture.defaultRoot);
+      try { return actual.getDefaultWorkspaceRoot(); }
+      finally { cwd.mockRestore(); }
+    },
+  };
+});
 vi.mock("../../../permissions/permission-settings-store.js", async (original) => ({
   ...await original<typeof import("../../../permissions/permission-settings-store.js")>(),
   readPermissionSettings: () => ({ permissions: { additionalDirectories: [], pendingWorkspaceRootRemovals: [] } }),
@@ -34,13 +46,17 @@ vi.mock("../workspace-file-search.js", async (original) => {
     }),
   };
 });
-vi.mock("../../../tools/file-tools.js", async (original) => ({
-  ...await original<typeof import("../../../tools/file-tools.js")>(),
-  collectFiles: vi.fn(async () => {
-    fixture.atCollect = (fixture.query?.mock.calls ?? []).map(([drive]) => String(drive).toUpperCase());
-    return { ok: true, value: { files: [], truncated: false } };
-  }),
-}));
+vi.mock("../../../tools/file-tools.js", async (original) => {
+  const actual = await original<typeof import("../../../tools/file-tools.js")>();
+  return {
+    ...actual,
+    collectFiles: vi.fn(async (...args: Parameters<typeof actual.collectFiles>) => {
+      fixture.atCollect = (fixture.query?.mock.calls ?? []).map(([drive]) => String(drive).toUpperCase());
+      if (fixture.collectRealFiles) return actual.collectFiles(...args);
+      return { ok: true, value: { files: [], truncated: false } };
+    }),
+  };
+});
 
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { configureHostResources } from "../../../main/host-resources.js";
@@ -53,6 +69,7 @@ describe.runIf(process.platform === "win32")("workspace folder search judged onc
   beforeAll(() => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     fixture.cwd = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-search-locality-")));
+    fixture.defaultRoot = fixture.cwd;
     mkdirSync(join(fixture.cwd, "src"));
     fixture.query = query;
     setWindowsDriveQueryForTest(query);
@@ -87,5 +104,26 @@ describe.runIf(process.platform === "win32")("workspace folder search judged onc
     expect(fixture.atCollect.length).toBeGreaterThan(0);
     expect(fixture.atCollect).toEqual(fixture.atWalk);
     expect(fixture.atCollect).toEqual([...new Set(fixture.atCollect)]);
+  });
+
+  it("returns the stored spelling of the default workspace and its files", async () => {
+    const storedRoot = join(fixture.cwd, "StoredRoot");
+    mkdirSync(storedRoot);
+    const path = join(storedRoot, "Notes.txt");
+    writeFileSync(path, "abc");
+    fixture.defaultRoot = join(fixture.cwd, "storedroot");
+    fixture.collectRealFiles = true;
+    query.mockClear();
+    try {
+      const handler = fixture.handlers.get(CHANNELS.workspace.searchFiles);
+      expect(await handler?.({ sender: { id: 1 } }, "notes")).toEqual({
+        ok: true, truncated: false, matches: [{ path, root: storedRoot, relativePath: "Notes.txt", bytes: 3 }],
+      });
+      expect(fixture.atCollect).toHaveLength(1);
+      expect(fixture.atCollect).toEqual(fixture.atWalk);
+    } finally {
+      fixture.defaultRoot = fixture.cwd;
+      fixture.collectRealFiles = false;
+    }
   });
 });

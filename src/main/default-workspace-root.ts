@@ -6,7 +6,7 @@ import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensi
 export function getDefaultWorkspaceRoot(): string {
   const cwd = process.cwd();
   return process.platform === "win32"
-    ? withLocalityDecision(() => localFs.realpath(admitLocalRoute(cwd).verdict))
+    ? withLocalityDecision(() => localFs.realpathNative(admitLocalRoute(cwd).verdict))
     : realpathSync.native(cwd);
 }
 
