@@ -12,16 +12,18 @@ import { mainDir } from '../../main-paths.js';
 import { MemoryMapHostError } from '../errors.js';
 import type { LocalInferenceRoute } from '../local-runtime.js';
 import type { ConfinedChildSpec } from '../../../permissions/confined-child.js';
+import type { WindowsBackgroundAdmission } from '../../../permissions/windows-background-features.js';
 import { parseChildLaunchArgs } from '../../../plugins/isolation/child-loopback-link.js';
 import { runInferenceChild } from '../inference-child.js';
 import { MAX_INFERENCE_TASK_BYTES } from '../inference-request.js';
 import { MODEL_FILES } from '../model-manifest.js';
 
-const { spawn, spawnMxc, spawnHost, route, refreshAdmission, grant, createHome, connectLoopback } = vi.hoisted(() => ({
+const { spawn, spawnMxc, spawnHost, route, refreshAdmission, grant, createHome, connectLoopback, helperIdentity } = vi.hoisted(() => ({
   spawn: vi.fn<(spec: ConfinedChildSpec) => unknown>(), grant: vi.fn(), createHome: vi.fn(), connectLoopback: vi.fn(),
   spawnMxc: vi.fn(), spawnHost: vi.fn(),
-  route: vi.fn<(_enabled?: boolean) => LocalInferenceRoute>(() => 'offline-sandbox'),
-  refreshAdmission: vi.fn<() => Promise<undefined>>(async () => undefined),
+  route: vi.fn<(_enabled?: boolean, _admission?: WindowsBackgroundAdmission) => LocalInferenceRoute>(() => 'offline-sandbox'),
+  refreshAdmission: vi.fn<() => Promise<WindowsBackgroundAdmission | undefined>>(async () => undefined),
+  helperIdentity: vi.fn(() => 'helper'),
 }));
 vi.mock('node:child_process', async importOriginal => ({
   ...await importOriginal<typeof import('node:child_process')>(),
@@ -43,7 +45,7 @@ vi.mock('../../../permissions/sandbox-process-home.js', () => ({
 vi.mock('../../../permissions/asrt-sandbox.js', () => ({
   cleanupAsrtSandboxAfterCommand: vi.fn(),
   getWindowsConfinementRoute: () => [],
-  getWindowsAccountConfinementHelperIdentity: () => 'helper',
+  getWindowsAccountConfinementHelperIdentity: helperIdentity,
 }));
 vi.mock('../local-runtime.js', async importOriginal => ({
   ...await importOriginal<typeof import('../local-runtime.js')>(),
@@ -74,6 +76,7 @@ beforeEach(async () => {
   spawnHost.mockReset();
   route.mockReset();
   refreshAdmission.mockReset();
+  helperIdentity.mockReset();
   connectLoopback.mockReset();
   folder = await mkdtemp(join(tmpdir(), 'inference-stream-'));
   for (const file of MODEL_FILES) writeFileSync(join(folder, file.name), Buffer.alloc(file.bytes));
@@ -86,19 +89,23 @@ afterEach(async () => {
   await rm(folder, { recursive: true, force: true });
 });
 
-function serveReply(beforeWrite?: (received: number) => void) {
+function serveReply(beforeWrite?: (received: number) => void | Promise<void>) {
   let received = 0;
   const stdout = new PassThrough();
   const completed = vi.fn();
   const stdin = new Writable({
     write(chunk: Buffer, _encoding, callback) {
-      beforeWrite?.(received);
-      received += chunk.length;
-      if (received === REQUEST_FRAME.length) {
-        completed();
-        stdout.write('{"kind":"result","value":"embedded"}\n');
-      }
-      callback();
+      const receive = () => {
+        received += chunk.length;
+        if (received === REQUEST_FRAME.length) {
+          completed();
+          stdout.write('{"kind":"result","value":"embedded"}\n');
+        }
+        callback();
+      };
+      const pending = beforeWrite?.(received);
+      if (pending) void pending.then(receive);
+      else receive();
     },
   });
   const child = Object.assign(new EventEmitter(), {
@@ -180,6 +187,82 @@ describe('inference model stream', () => {
       expect(mode.transport).toBe('stdio');
       expect(connectLoopback).not.toHaveBeenCalled();
     }
+  });
+
+  it('closes the offline transport when the helper changes during a held handshake', async () => {
+    setProcessPlatform('win32');
+    vi.stubEnv('SystemRoot', FIXTURE_SYSTEM_ROOT);
+    const cleanup = vi.fn();
+    createHome.mockReturnValue({ env: {}, cleanup });
+    const { child, completed } = serveReply();
+    child.kill.mockImplementation(() => child.emit('close'));
+    const [socket, peer] = duplexPair();
+    const requestWrite = vi.spyOn(socket, 'write');
+    peer.pipe(child.stdin);
+    child.stdout.pipe(peer);
+    const connecting = deferred<void>();
+    const connect = deferred<typeof socket>();
+    connectLoopback.mockImplementationOnce(() => { connecting.resolve(); return connect.promise; });
+
+    const inference = runInferenceChild(folder, TASK, new AbortController().signal);
+    await connecting.promise;
+    helperIdentity.mockReturnValue('replacement-helper');
+    connect.resolve(socket);
+    try {
+      await expect.soft(inference).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
+      expect.soft(requestWrite).not.toHaveBeenCalled();
+      expect.soft(completed).not.toHaveBeenCalled();
+      expect.soft(socket.destroyed).toBe(true);
+      expect(child.kill).toHaveBeenCalledOnce();
+      expect(cleanup).toHaveBeenCalledOnce();
+    } finally {
+      socket.destroy();
+      peer.destroy();
+    }
+  });
+
+  it('withholds the final unconfined request bytes when a held write outlives its receipt', async () => {
+    const admission: WindowsBackgroundAdmission = {
+      areSwitchesAvailable: () => current === admission,
+      searchIndexPolicy: () => 'inactive',
+      isBackendOperational: () => false,
+    };
+    const replacement = { ...admission, areSwitchesAvailable: () => true };
+    let current: WindowsBackgroundAdmission = admission;
+    refreshAdmission.mockResolvedValue(admission);
+    route.mockImplementation((_enabled, receipt) => {
+      if (!receipt?.areSwitchesAvailable()) throw new MemoryMapHostError('local-runtime-unavailable');
+      return 'unconfined';
+    });
+    const writing = deferred<void>();
+    const release = deferred<void>();
+    const { child, completed } = serveReply(received => {
+      if (received !== 0) return;
+      writing.resolve();
+      return release.promise;
+    });
+    spawnHost.mockReturnValue(child);
+
+    const inference = runInferenceChild(folder, TASK, new AbortController().signal);
+    await writing.promise;
+    current = replacement;
+    refreshAdmission.mockResolvedValue(replacement);
+    release.resolve();
+    await expect.soft(inference).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
+    expect.soft(completed).not.toHaveBeenCalled();
+    expect.soft(child.stdin.destroyed).toBe(true);
+    expect.soft(child.stdout.destroyed).toBe(true);
+    expect(child.kill).toHaveBeenCalledOnce();
+  });
+
+  it('discards a result that arrives after the dispatched route is superseded', async () => {
+    const { child, completed } = serveReply();
+    completed.mockImplementationOnce(() => {
+      route.mockImplementation(() => { throw new MemoryMapHostError('local-runtime-unavailable'); });
+    });
+    await expect(runInferenceChild(folder, TASK, new AbortController().signal)).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
+    expect(completed).toHaveBeenCalledOnce();
+    expect(child.kill).toHaveBeenCalledOnce();
   });
 
   it.each([

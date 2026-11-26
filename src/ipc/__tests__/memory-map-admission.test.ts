@@ -124,7 +124,9 @@ describe.each(['account', 'container'] as const)('%s admission', backend => {
         memoryManager: { readMemoryPanelCatalog: () => ({ notes: [note] }) },
       } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
       const event = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
-      const build = () => state.handle!(event);
+      const handle = state.handle;
+      if (handle === undefined) throw new Error('Memory-map build IPC is not registered');
+      const build = () => handle(event);
       expect(await build()).toMatchObject({ ok: true, value: { status: 'ready' } });
       const path = join(state.root, 'memory-map', 'snapshot.json');
       const previous = await readFile(path);

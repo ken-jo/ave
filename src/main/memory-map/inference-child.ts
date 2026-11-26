@@ -32,7 +32,7 @@ function write(output: Writable, chunk: Buffer): Promise<void> {
 }
 
 // The child reads no model file: the host streams the verified bytes, so no grant reaches the model folder.
-async function writeRequest(output: Writable, folder: string, taskJson: string, lengths: readonly number[]): Promise<void> {
+async function writeRequest(output: Writable, folder: string, taskJson: string, lengths: readonly number[], assertStillValid: () => void): Promise<void> {
   const handles: FileHandle[] = [];
   const opened: { handle: FileHandle; file: ModelFile; initial: BigIntStats }[] = [];
   try {
@@ -45,6 +45,7 @@ async function writeRequest(output: Writable, folder: string, taskJson: string, 
     }
     const prefix = Buffer.alloc(INFERENCE_PREFIX_BYTES);
     for (const [index, bytes] of lengths.entries()) prefix.writeUInt32BE(bytes, index * 4);
+    assertStillValid();
     await write(output, prefix);
     await write(output, Buffer.from(taskJson, 'utf8'));
     let frameTail: Buffer | undefined;
@@ -73,6 +74,7 @@ async function writeRequest(output: Writable, folder: string, taskJson: string, 
       }
     }));
     if (frameTail === undefined) throw new MemoryMapHostError('model-integrity-failed');
+    assertStillValid();
     await write(output, frameTail);
   } finally { await Promise.all(handles.map(handle => handle.close())); }
 }
@@ -87,7 +89,7 @@ function sandboxHomeOrRefusal(): ReturnType<typeof createSandboxProcessHome> {
 }
 
 async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal: AbortSignal): Promise<{
-  input: Readable; output: Writable; stop: () => void | Promise<void>;
+  input: Readable; output: Writable; stop: () => void | Promise<void>; assertStillValid: () => void;
 }> {
   signal.throwIfAborted();
   const { route, assertStillValid: assertRoute } = bindLocalEmbeddingRuntime(readRoute);
@@ -118,7 +120,7 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
       assertStillValid,
     });
     holder.process.stderr.resume();
-    return { input: holder.process.stdout, output: holder.process.stdin, stop: holder.release };
+    return { input: holder.process.stdout, output: holder.process.stdin, stop: holder.release, assertStillValid };
   }
 
   const cwd = windows ? win32SystemBinary('') : undefined;
@@ -164,13 +166,13 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
     running.stderr?.resume();
     const { stdout, stdin } = running;
     if (!stdout || !stdin) throw new Error('[memory-map-inference] the child has no pipes');
-    if (!home || route === 'unconfined') return { input: stdout, output: stdin, stop };
+    if (!home || route === 'unconfined') return { input: stdout, output: stdin, stop, assertStillValid };
     const exited = new Promise<string>(resolve => {
       running.once('exit', (code, signal) => resolve(`code=${String(code)} signal=${String(signal)}`));
       running.once('error', error => resolve(error.message));
     });
     const socket = await connectToAnnouncedChild({ stdout, exited, timeoutMs: TOOL_TIMEOUT_POLICY.windowsInferenceChildConnectMs });
-    return { input: socket, output: socket, stop };
+    return { input: socket, output: socket, stop, assertStillValid };
   } catch (error) {
     child?.kill();
     release();
@@ -187,7 +189,7 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
   const taskJson = JSON.stringify(task);
   const lengths = [Buffer.byteLength(taskJson, 'utf8'), ...INFERENCE_FILES.map(file => file.bytes)];
   checkedInferenceFrameBytes(lengths);
-  const { input, output, stop } = await spawnInferenceChild(readRoute, signal);
+  const { input, output, stop, assertStillValid } = await spawnInferenceChild(readRoute, signal);
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const lines = createInterface({ input });
@@ -195,6 +197,10 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
       if (settled) return; settled = true;
       signal.removeEventListener('abort', abort);
       lines.close();
+      if (error) {
+        output.destroy();
+        input.destroy();
+      }
       void Promise.resolve().then(stop).then(
         () => { if (error) reject(error); else resolve(value as T); },
         (cleanupError: unknown) => reject(error ?? cleanupError),
@@ -202,6 +208,7 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
     };
     const abort = () => finish(new Error('Memory worker cancelled'));
     const failed = () => finish(new Error('Memory worker failed'));
+    const refuse = (error: unknown) => finish(error instanceof Error ? error : new Error('Memory worker failed'));
     input.on('error', failed);
     output.on('error', failed);
     // The line reader re-emits its input's errors.
@@ -211,13 +218,17 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
       let message: { kind?: string; progress?: MemoryMapProgress; value?: unknown; error?: unknown };
       try { message = JSON.parse(line) as typeof message; } catch { finish(new Error('Memory worker failed')); return; }
       if (message.kind === 'progress') { if (message.progress !== undefined) onProgress?.(message.progress); }
-      else if (message.kind === 'result') finish(undefined, message.value as T);
+      else if (message.kind === 'result') {
+        try { assertStillValid(); } catch (error) { refuse(error); return; }
+        finish(undefined, message.value as T);
+      }
       else if (message.kind === 'error' && (message.error === 'invalid-input' || message.error === 'model-integrity-failed' || message.error === 'catalog-too-large')) finish(new MemoryMapHostError(message.error));
       else finish(new Error('Memory worker failed'));
     });
     lines.once('close', () => finish(new Error('Memory worker exited before completion')));
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) { abort(); return; }
-    writeRequest(output, folder, taskJson, lengths).catch((error: unknown) => finish(error instanceof Error ? error : new Error('Memory worker failed')));
+    try { assertStillValid(); } catch (error) { refuse(error); return; }
+    void writeRequest(output, folder, taskJson, lengths, assertStillValid).catch(refuse);
   });
 }
