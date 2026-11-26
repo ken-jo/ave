@@ -1,16 +1,31 @@
 import { AssertionError } from "node:assert";
+import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { build } from "esbuild";
-import { beforeAll, expect, it } from "vitest";
-import { fill, GENERIC_HOME_FAMILIES, MIXED_ESCAPE_FRAGMENT, secretFamiliesAt } from "./fixtures/dlp-performance-inputs.js";
-import type { DlpPerformanceCase, DlpPerformanceMessage, DlpPerformanceRequest } from "./fixtures/dlp-performance-worker.js";
+import { beforeAll, expect, it, onTestFinished } from "vitest";
+import { fill, GENERIC_HOME_FAMILIES, MIXED_ESCAPE_FRAGMENT, secretFamiliesAt, WINDOWS_SEPARATOR_HOMES, WINDOWS_SEPARATOR_INPUTS } from "./fixtures/dlp-performance-inputs.js";
+import type { DlpPerformanceCase, DlpPerformanceRequest } from "./fixtures/dlp-performance-worker.js";
 
 const PROBE_DEADLINE_SECONDS = 10;
+const BATCH_DEADLINE_SECONDS = 120;
 const SUITE_CASE_TIMEOUT_MS = 180_000;
 const POSIX_HOME = { path: "/srv/fixtures/habitat", platform: "linux" } as const;
 const SECRET_OPERATIONS = ["diagnostic secrets", "display secrets"] as const;
 let workerSource: string;
+
+function instrumentHomeDecoder(source: string): string {
+  const entry = "export function decodeHomeEscapes(text: string, family: HomeEscapeFamily): string {";
+  const escapeRead = "width = readHomeEscape(text, index, output, jsHex);";
+  for (const marker of [entry, escapeRead]) {
+    if (source.split(marker).length !== 2) throw new Error(`DLP worker could not locate a unique decoder site: ${marker}`);
+  }
+  return 'import { homeEscapeDecoderProbe } from "./__tests__/fixtures/dlp-performance-mutations.js";\n'
+    + source.replace(entry, `${entry}\n  if (family === "full") homeEscapeDecoderProbe.fullCalls++;`)
+      .replace(escapeRead, "width = homeEscapeDecoderProbe.quadratic && family === 'full' && homeEscapeDecoderProbe.isEntityTerminatorMissing(text, index)"
+        + " ? -1 : readHomeEscape(text, index, output, jsHex);");
+}
 
 beforeAll(async () => {
   const { outputFiles } = await build({
@@ -19,67 +34,85 @@ beforeAll(async () => {
     platform: "node",
     format: "cjs",
     write: false,
+    plugins: [{
+      name: "instrument-home-decoder",
+      setup(builder) {
+        builder.onLoad({ filter: /home-path-decode\.ts$/ }, async ({ path }) => ({
+          contents: instrumentHomeDecoder(await readFile(path, "utf8")),
+          loader: "ts",
+          resolveDir: dirname(path),
+        }));
+      },
+    }],
   });
   workerSource = outputFiles[0].text;
 });
 
-function runProbes(request: DlpPerformanceRequest, deadlineSeconds = PROBE_DEADLINE_SECONDS): Promise<void> {
+async function runProbes(request: DlpPerformanceRequest, {
+  probeSeconds = PROBE_DEADLINE_SECONDS,
+  batchSeconds = BATCH_DEADLINE_SECONDS,
+  source = workerSource,
+} = {}): Promise<void> {
   const [first] = request.cases;
   if (!first) throw new Error("DLP worker requires at least one probe");
-  const worker = new Worker(workerSource, { eval: true, execArgv: [], workerData: request });
-  return new Promise((resolve, reject) => {
-    let complete = false;
-    let deadline: ReturnType<typeof setTimeout>;
-    const stopWatching = (): void => {
-      clearTimeout(deadline);
-      worker.off("message", handleMessage);
-    };
-    const armDeadline = (seconds: number, message: string): void => {
-      clearTimeout(deadline);
-      deadline = setTimeout(() => {
-        stopWatching();
-        worker.unref();
-        void worker.terminate();
-        reject(new AssertionError({ message }));
-      }, seconds * 1_000);
-    };
-    const handleMessage = (message: DlpPerformanceMessage): void => {
-      if (message.kind === "started") {
-        armDeadline(deadlineSeconds, `DLP ${message.label} exceeded ${deadlineSeconds} s: likely super-linear backtracking`);
-      } else {
-        complete = true;
-        armDeadline(PROBE_DEADLINE_SECONDS, `DLP worker for ${first.label} did not exit within ${PROBE_DEADLINE_SECONDS} s`);
-      }
-    };
-    armDeadline(PROBE_DEADLINE_SECONDS, `DLP worker for ${first.label} did not start a probe within ${PROBE_DEADLINE_SECONDS} s`);
-    worker.on("message", handleMessage);
-    worker.once("error", (error) => {
-      stopWatching();
-      reject(error);
+  const worker = new Worker(source, { eval: true, execArgv: [], workerData: request });
+  let termination: Promise<number> | undefined;
+  const terminate = async (): Promise<void> => {
+    termination ??= worker.terminate();
+    await termination;
+  };
+  onTestFinished(terminate);
+  let probeTimer: ReturnType<typeof setTimeout> | undefined;
+  let batchTimer: ReturnType<typeof setTimeout> | undefined;
+  let activeLabel = first.label;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let complete = false;
+      let started = 0;
+      const fail = (message: string): void => reject(new AssertionError({ message }));
+      const armProbeDeadline = (seconds: number, message: string): void => {
+        clearTimeout(probeTimer);
+        probeTimer = setTimeout(() => fail(message), seconds * 1_000);
+      };
+      batchTimer = setTimeout(
+        () => fail(`DLP batch exceeded ${batchSeconds} s while running ${activeLabel}`), batchSeconds * 1_000,
+      );
+      armProbeDeadline(probeSeconds, `DLP worker for ${first.label} did not start a probe within ${probeSeconds} s`);
+      worker.on("message", (message: unknown) => {
+        if (!complete && typeof message === "object" && message !== null && "kind" in message) {
+          const next = request.cases[started];
+          if (message.kind === "started" && next && "label" in message && message.label === next.label) {
+            started++;
+            activeLabel = next.label;
+            armProbeDeadline(probeSeconds, `DLP ${activeLabel} exceeded ${probeSeconds} s: likely super-linear backtracking`);
+            return;
+          }
+          if (message.kind === "complete" && started === request.cases.length) {
+            complete = true;
+            armProbeDeadline(probeSeconds, `DLP worker for ${activeLabel} did not exit within ${probeSeconds} s`);
+            return;
+          }
+        }
+        fail(`DLP ${activeLabel} received an unexpected worker message`);
+      });
+      worker.once("error", reject);
+      worker.once("exit", (code) => {
+        if (code === 0 && complete) resolve();
+        else fail(`DLP worker for ${activeLabel} exited with code ${code} before completing the probes`);
+      });
     });
-    worker.once("exit", (code) => {
-      stopWatching();
-      if (code === 0 && complete) resolve();
-      else reject(new Error(`DLP worker exited with code ${code} before completing the probes`));
-    });
-  });
+  } finally {
+    clearTimeout(probeTimer);
+    clearTimeout(batchTimer);
+    await terminate();
+  }
 }
 
-it.each([
-  { shape: "UNC", path: String.raw`\\server\share\alice` },
-  { shape: "extended", path: String.raw`\\?\D:\fixtures\alice` },
-  { shape: "drive", path: String.raw`D:\fixtures\alice` },
-])("bounds home redaction growth for $shape paths", async ({ shape, path }) => {
-  const firstSeparator = path.indexOf("\\");
-  const prefix = path.slice(0, firstSeparator);
-  const nearMiss = `${path.slice(firstSeparator).replace(/^\\+/u, "").slice(0, -1)}X`;
+it.each(WINDOWS_SEPARATOR_HOMES)("bounds home redaction growth for $shape paths", async ({ shape, path }) => {
   const small = 100 * 1024;
   const large = 800 * 1024;
-  const cases = [
-    { name: "separator run", input: (size: number) => `${"\\".repeat(size - 9)}near-miss` },
-    { name: "near-miss name", input: (size: number) => prefix + "\\".repeat(size - prefix.length - nearMiss.length) + nearMiss },
-  ].map(({ name, input }): DlpPerformanceCase => ({
-    label: `${shape} ${name}`, operation: "home text", small: input(small), large: input(large), unchanged: true,
+  const cases = WINDOWS_SEPARATOR_INPUTS.map(({ name, input }): DlpPerformanceCase => ({
+    label: `${shape} ${name}`, operation: "home text", small: input(path, small), large: input(path, large), unchanged: true,
   }));
   await runProbes({ cases, home: { path, platform: "win32" } });
 }, SUITE_CASE_TIMEOUT_MS);
@@ -91,10 +124,17 @@ it.each(["%", "\\u", "&#", "&#x", "&amp;", "%25", "peeling", "zeros", MIXED_ESCA
       if (shape === "zeros") return `&#${"0".repeat(size)}47;`;
       return shape.repeat(Math.ceil(size / shape.length));
     };
-    await runProbes({ home: POSIX_HOME, cases: [{
-      label: `escape decoder ${shape}`, operation: "home text", small: input(100 * 1024), large: input(800 * 1024),
-      unchanged: shape === MIXED_ESCAPE_FRAGMENT ? true : undefined,
-    }] });
+    const small = input(100 * 1024);
+    const large = input(800 * 1024);
+    const base = { operation: "home text", small, large, unchanged: true } as const;
+    const cases: DlpPerformanceCase[] = [];
+    if (shape === "peeling" || shape === "zeros") {
+      cases.push({ ...base, label: `full escape decoder ${shape}`, decoder: "full" });
+    } else {
+      cases.push({ ...base, label: `escape decoder guard ${shape}`, decoder: "guard" });
+      cases.push({ ...base, label: `full escape decoder ${shape}`, small: `/${small}`, large: `/${large}`, decoder: "full" });
+    }
+    await runProbes({ home: POSIX_HOME, cases });
   }, SUITE_CASE_TIMEOUT_MS,
 );
 
@@ -133,14 +173,14 @@ it("bounds scrubber growth across adversarial secret families", async () => {
 }, SUITE_CASE_TIMEOUT_MS);
 
 const DECODER_CONTROL: DlpPerformanceCase = {
-  label: "entity decoder", operation: "home text",
-  small: "&#".repeat(2048), large: "&#".repeat(16384), unchanged: true,
+  label: "entity decoder", operation: "home text", decoder: "full",
+  small: `/${"&#".repeat(2048)}`, large: `/${"&#".repeat(16384)}`, unchanged: true,
 };
 
 it("rejects the quadratic entity decoder mutation by CPU growth", async () => {
   await runProbes({ home: POSIX_HOME, cases: [DECODER_CONTROL] });
   await expect(runProbes({ home: POSIX_HOME, cases: [{
-    ...DECODER_CONTROL, label: "quadratic entity decoder", operation: "quadratic entity decoder",
+    ...DECODER_CONTROL, label: "quadratic entity decoder", decoder: "quadratic",
   }] })).rejects.toThrow(/DLP quadratic entity decoder CPU growth .* exceeded/u);
 }, SUITE_CASE_TIMEOUT_MS);
 
@@ -148,10 +188,30 @@ const REGEX_CONTROL: DlpPerformanceCase = {
   label: "regex near miss", operation: "diagnostic secrets",
   small: "a".repeat(5), large: "a".repeat(40), unchanged: true,
 };
+const REGEX_MUTATION: DlpPerformanceCase = {
+  ...REGEX_CONTROL, label: "exponential backtracking regex", operation: "exponential backtracking regex",
+};
 
 it("rejects the exponential backtracking regex mutation by deadline", async () => {
   await runProbes({ cases: [REGEX_CONTROL] });
-  await expect(runProbes({ cases: [{
-    ...REGEX_CONTROL, label: "exponential backtracking regex", operation: "exponential backtracking regex",
-  }] }, 2)).rejects.toThrow("DLP exponential backtracking regex exceeded 2 s: likely super-linear backtracking");
+  await expect(runProbes({ cases: [REGEX_MUTATION] }, { probeSeconds: 2 })).rejects.toThrow(
+    "DLP exponential backtracking regex exceeded 2 s: likely super-linear backtracking",
+  );
+}, SUITE_CASE_TIMEOUT_MS);
+
+it("rejects an expired batch with the active probe label", async () => {
+  await expect(runProbes({ cases: [REGEX_CONTROL, REGEX_MUTATION] }, { batchSeconds: 2 })).rejects.toThrow(
+    "DLP batch exceeded 2 s while running exponential backtracking regex",
+  );
+}, SUITE_CASE_TIMEOUT_MS);
+
+it("rejects an unexpected worker message with the active probe label", async () => {
+  const source = `
+    const { parentPort, workerData } = require("node:worker_threads");
+    parentPort.postMessage({ kind: "started", label: workerData.cases[0].label });
+    parentPort.postMessage({ kind: "progress" });
+  `;
+  await expect(runProbes({ cases: [REGEX_CONTROL] }, { source })).rejects.toThrow(
+    "DLP regex near miss received an unexpected worker message",
+  );
 }, SUITE_CASE_TIMEOUT_MS);
