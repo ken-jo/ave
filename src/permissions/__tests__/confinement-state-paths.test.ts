@@ -166,8 +166,8 @@ describe.runIf(process.platform === "win32")("write admission resolves the decla
     refused(join(helper.toUpperCase(), "x"));
     const listing = execFileSync("cmd.exe", ["/d", "/c", "dir", "/x", "/a:d", local], { encoding: "utf8", windowsHide: true });
     const short = /(\S+~\d+)\s+sandbox-runtime\s*$/mu.exec(listing)?.[1];
-    if (short === undefined) context.skip("short names are off on this volume");
-    refused(join(local, short!, "x"));
+    if (short === undefined) return context.skip("short names are off on this volume");
+    refused(join(local, short, "x"));
   });
 
   it("passes the holder's own staging root and refuses anything inside it", () => {
