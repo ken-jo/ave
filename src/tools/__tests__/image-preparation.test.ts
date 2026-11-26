@@ -170,10 +170,32 @@ describe("bounded image preparation", () => {
 
   it.skipIf(process.platform === "win32")("denies a missing out-of-scope image before native source resolution", async () => {
     const cwd = join(directory, "allowed-image-directory");
+    const path = join(directory, "missing-out-of-scope.png");
+    const calls = join(directory, "denied-image-realpath-calls");
+    const preload = join(directory, "trace-denied-realpath.mjs");
     await mkdir(cwd);
-    await expect(prepareImageFile(join(directory, "missing-out-of-scope.png"), {
+    await writeFile(preload, `
+      import { appendFileSync, writeFileSync } from "node:fs";
+      import fs from "node:fs/promises";
+      import { syncBuiltinESMExports } from "node:module";
+      const calls = ${JSON.stringify(calls)};
+      writeFileSync(calls, "");
+      const realpath = fs.realpath;
+      fs.realpath = (path, ...args) => {
+        if (path === ${JSON.stringify(path)}) appendFileSync(calls, "lookup\\n");
+        return realpath(path, ...args);
+      };
+      syncBuiltinESMExports();
+    `);
+    const spawn = managed.spawnManaged;
+    vi.spyOn(managed, "spawnManaged").mockImplementationOnce((program, args, ...options) =>
+      spawn(program, ["--import", pathToFileURL(preload).href, ...args], ...options));
+
+    const result = await prepareImageFile(path, {
       cwd, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true,
-    })).rejects.toThrow(/^invalid-image: Sandbox:/);
+    }).catch((error: unknown) => error);
+    expect(await readFile(calls, "utf8")).toBe("");
+    expect(result).toMatchObject({ message: expect.stringMatching(/^invalid-image: Sandbox:/) });
   });
 
   it.skipIf(process.platform === "win32")("decodes the sealed image through a symlink target containing dot-dot", async () => {
