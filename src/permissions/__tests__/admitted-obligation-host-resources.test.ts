@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { getConfiguredHostResources } from "../../main/host-resources.js";
 import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
+import { physicalReadTarget, pinSandboxLookups } from "../../sandbox/path-validator.js";
 import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 import { admitObligations, type ObligationRow } from "../admitted-obligation.js";
 
@@ -24,6 +25,16 @@ describe.runIf(process.platform === "win32")("admitObligations pin failures", ()
     expect(getConfiguredHostResources()).toBeUndefined();
     expect(() => admitObligations({ purpose: "sandbox-config", principal: "srt-sandbox", rows: [deny(join(root, "a"))] }))
       .toThrow("host-resources-unavailable");
+  });
+
+  it("surfaces missing host resources from a physical read lookup", () => {
+    expect(getConfiguredHostResources()).toBeUndefined();
+    expect(() => physicalReadTarget(join(root, "a"), root, [])).toThrow(/^host-resources-unavailable$/u);
+  });
+
+  it("surfaces missing host resources while pinning sandbox lookups", () => {
+    expect(getConfiguredHostResources()).toBeUndefined();
+    expect(() => pinSandboxLookups([join(root, "a"), root])).toThrow(/^host-resources-unavailable$/u);
   });
 
   it("throws a malformed helper reply", () => {

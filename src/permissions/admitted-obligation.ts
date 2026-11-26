@@ -229,6 +229,7 @@ function walkRoute(path: string, facts: LocalFilesystemFacts, preview = false): 
     return physical === undefined ? { reason: "incomplete-walk" } : { physical, followedLink };
   } catch (error) {
     const { code, incomplete, cause } = error as { code?: unknown; incomplete?: unknown; cause?: unknown };
+    if (preview && code !== "ENETWORKSHAREPATH") throw error;
     if (preview && cause instanceof TypeError) throw cause;
     // The row's own drive is local, so a refusal on the walk came through a link.
     if (code === "ENETWORKSHAREPATH" && incomplete !== true) return { reason: "link-to-remote" };

@@ -88,9 +88,10 @@ export function physicalReadTarget(path: string, cwd: string, extraAllowed: read
         return share === undefined ? admitWindowsLookupPaths([path], "preview").get(path)?.target
           : resolveAuthorizedShare(share, shareAuthorities(cwd, extraAllowed));
       }
-      const route = admittedRoute(path);
-      return typeof route === "string" ? path : localFs.realpathNative(route.verdict);
-    } catch {
+      const route = filesystemResolution(() => admittedRoute(path));
+      return typeof route === "string" ? path : resolveExistingPath(route.verdict);
+    } catch (error) {
+      if (!(error instanceof PathResolutionError)) throw error;
       return nativeWindows ? undefined : path;
     }
   });
@@ -162,11 +163,7 @@ export function isLexicallyWithinSandbox(path: string, cwd: string, extraAllowed
 export function pinSandboxLookups(paths: readonly string[]): void {
   if (!windowsObligationsApply()) return;
   const local = paths.map(path => pathResolve(expandLeadingTilde(path))).filter(path => windowsSharePath(path) === undefined);
-  try {
-    admitWindowsLookupPaths(local, "preview");
-  } catch {
-    // Each lookup that follows admits its own spelling and reports its own failure.
-  }
+  admitWindowsLookupPaths(local, "preview");
 }
 
 /** How one spelling may be looked up: following its names, or inspecting its own entry. */
