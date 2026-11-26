@@ -62,10 +62,9 @@ function entryDir(program?: string): string {
 }
 
 function mockStitchChild(pid?: number): ChildProcess {
-  const child = new ChildProcess();
-  child.pid = pid;
-  child.stdin = new PassThrough();
-  child.stdout = new PassThrough();
+  const child = Object.assign(new ChildProcess(), {
+    pid, stdin: new PassThrough(), stdout: new PassThrough(),
+  });
   runtime.mainDir = entryDir("");
   runtime.child = child;
   return child;
