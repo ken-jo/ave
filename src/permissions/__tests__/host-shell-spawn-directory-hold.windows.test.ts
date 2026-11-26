@@ -83,7 +83,7 @@ describe.runIf(process.platform === "win32")("host shell spawn directory hold", 
     return held;
   };
   const holdLeafWithFixture = async (env: Record<string, string>) => {
-    if (!existsSync(FIXTURE)) throw new Error("Build the hold fixture: bun run build:windows-job -- -Helper path-kind -HoldFixture");
+    if (!existsSync(FIXTURE)) throw new Error("Build the hold fixture: bun run build:windows-path-kind --fixture");
     helpers.binary = FIXTURE;
     helpers.env = env;
     return await holdLeaf().finally(() => { helpers.binary = undefined; helpers.env = undefined; });
@@ -415,7 +415,7 @@ describe.runIf(process.platform === "win32")("host shell spawn directory hold", 
     });
 
     it("refuses a command's attempt to start a process outside the hold job", async () => {
-      if (!existsSync(FIXTURE)) throw new Error("Build the hold fixture: bun run build:windows-job -- -Helper path-kind -HoldFixture");
+      if (!existsSync(FIXTURE)) throw new Error("Build the hold fixture: bun run build:windows-path-kind --fixture");
       const held = await holdLeaf();
       const { child, run, output } = start(held, FIXTURE, ["--breakaway", process.execPath]);
       expect(await run.verdict).toEqual({ kind: "ok", stopped: false });

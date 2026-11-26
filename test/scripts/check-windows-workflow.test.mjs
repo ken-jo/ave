@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import childProcess, { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { fileURLToPath } from "node:url";
+import { userInfo } from "node:os";
+import { join } from "node:path";
 import { it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { parse, stringify } from "yaml";
 import { windowsTestCommands } from "../../scripts/run-windows-test-list.mjs";
 import { COMMAND_LINE_BUDGET_CHARS, commandLineLength } from "../../scripts/hooks/spawn-command.mjs";
@@ -316,7 +318,9 @@ const EXEMPTIONS = [
   ...["key", "restore", "seal", "verify-installed", "verify-publication"].map(operation => `node .github/scripts/windows-preparation-cache.mjs ${operation}`),
   "node scripts/fetch-uv.mjs",
   "node .github/scripts/python-archive-cache.mjs",
-  ...["", " -FailureFixture", " -QueryFailureFixture", " -Helper path-kind"]
+  "node .github/scripts/install-windows-path-kind-rust.mjs x64",
+  "node scripts/build-windows-path-kind.mjs --arch x64 --fixture",
+  ...["", " -FailureFixture", " -QueryFailureFixture"]
     .map(option => `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1${option}`),
   "bun run check:plugin-host-protocol-schema",
   "node scripts/check-srt-win-integrity.cjs --upstream --inputs",
@@ -399,6 +403,29 @@ it("rejects a second bare test command on a contained line", () => {
 const ARM64_JOB = "windows-arm64-path-kind";
 const ARM64_RESULT_STEP = "Require the build and every Vitest shard";
 
+it("installs the pinned path helper toolchain in the account store under job home isolation", async t => {
+  const originalEnv = process.env;
+  const originalArgv = process.argv;
+  const install = t.mock.method(childProcess, "execFileSync", () => {});
+  syncBuiltinESMExports();
+  const home = "C:\\ave-ci-a1b2c3\\home";
+  process.env = { ...originalEnv, HOME: home, USERPROFILE: home, RUSTUP_HOME: `${home}\\.rustup` };
+  process.argv = [process.execPath, "install-windows-path-kind-rust.mjs", "x64"];
+  try {
+    await import("../../.github/scripts/install-windows-path-kind-rust.mjs");
+    assert.equal(install.mock.callCount(), 1);
+    const [command, , options] = install.mock.calls[0].arguments;
+    assert.equal(command, "rustup");
+    assert.equal(options.env?.RUSTUP_HOME, join(userInfo().homedir, ".rustup"));
+    assert.equal(options.env?.USERPROFILE, home);
+  } finally {
+    process.argv = originalArgv;
+    process.env = originalEnv;
+    install.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
 it("runs path classification with the arm64 runtime and native job launcher", () => {
   const { jobs } = parse(workflow);
   const arm64 = jobs[ARM64_JOB];
@@ -408,13 +435,14 @@ it("runs path classification with the arm64 runtime and native job launcher", ()
   assert.equal(arm64.needs, "build");
   assert.equal(arm64.if, "needs.build.outputs.windows_arm64_path_kind == 'true'");
 
-  const [, node, , isolate, install, build, test, cleanup] = arm64.steps;
+  const [, node, , isolate, install, rust, build, test, cleanup] = arm64.steps;
   assert.equal(node.with.architecture, "arm64");
   assert.equal(isolate.run, "node ave/.github/scripts/isolate-job-home.mjs");
   assert.equal(install.run, "bun install --frozen-lockfile --ignore-scripts --production");
+  assert.equal(rust.run, "node .github/scripts/install-windows-path-kind-rust.mjs arm64");
   assert.equal(build.run, "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Arch arm64");
   assert.deepEqual(test.run.trimEnd().split("\n"), [
-    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Arch arm64 -Helper path-kind",
+    "node scripts/build-windows-path-kind.mjs --arch arm64 --fixture",
     "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
     "node .github/scripts/run-in-job.mjs node scripts/test-windows-path-kind.mjs",
   ]);
@@ -484,10 +512,10 @@ for (const [name, change, expected] of [
   }, /path-kind selection/u],
   ["an emulated runtime", jobs => { jobs[ARM64_JOB].steps[1].with.architecture = "x64"; }, /expected arm64 setup/u],
   ["a test outside the launcher", jobs => {
-    const step = jobs[ARM64_JOB].steps[6];
+    const step = jobs[ARM64_JOB].steps[7];
     step.run = step.run.replace(`${WRAPPER} `, "");
   }, /contained path-kind test/u],
-  ["cleanup without the job-root guard", jobs => { jobs[ARM64_JOB].steps[7].if = "always()"; }, /job-root cleanup/u],
+  ["cleanup without the job-root guard", jobs => { jobs[ARM64_JOB].steps[8].if = "always()"; }, /job-root cleanup/u],
   ["a missing aggregate dependency", jobs => {
     const aggregate = jobs["build-and-test"];
     aggregate.needs = aggregate.needs.filter(jobId => jobId !== ARM64_JOB);
@@ -595,6 +623,44 @@ for (const plan of [undefined, "config/alternate.json"]) {
   });
 }
 
+for (const job of ["windows-permission-tests", "windows-tier-tests"]) {
+  it(`${job} requires the path helper and hold fixture digests from the producing job`, () => {
+    for (const variable of ["AVE_WINDOWS_PATH_KIND_SHA256", "AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256", "AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256"]) {
+      const changed = changedWorkflow((_steps, get) => {
+        get("Run Windows regressions").env[variable] = "independent digest required";
+      }, job);
+      assert.throws(() => checkWindowsWorkflow(changed, parsedLines), /must use the producing build's path helper digests/);
+    }
+  });
+}
+
+it("requires the pinned path helper toolchain before building the Windows development desktop", () => {
+  const changed = changedWorkflow((steps, get) => {
+    const build = get("Build Windows development desktop");
+    const install = steps.findIndex(step => step.run === "node .github/scripts/install-windows-path-kind-rust.mjs x64");
+    if (install !== -1) steps.splice(install, 1);
+    steps.splice(steps.indexOf(build) + 1, 0, {
+      run: "node .github/scripts/install-windows-path-kind-rust.mjs x64",
+      if: CONDITION,
+      "working-directory": "ave",
+    });
+  }, "windows-dev-boot");
+  assert.throws(() => checkWindowsWorkflow(changed, parsedLines), /must install the pinned path helper toolchain before building/);
+});
+
+it("requires the pinned path helper toolchain before running the Windows script tests", () => {
+  const changed = changedWorkflow((steps, get) => {
+    const install = steps.findIndex(step => step.run === "node .github/scripts/install-windows-path-kind-rust.mjs x64");
+    if (install !== -1) steps.splice(install, 1);
+    steps.splice(steps.indexOf(get("Run script tests")) + 1, 0, {
+      run: "node .github/scripts/install-windows-path-kind-rust.mjs x64",
+      if: CONDITION,
+      "working-directory": "ave",
+    });
+  }, "windows-script-tests");
+  assert.throws(() => checkWindowsWorkflow(changed, parsedLines), /must install the pinned path helper toolchain before running/);
+});
+
 it("rejects a contained test step allowed to fail", () => {
   const changed = changedWorkflow((_steps, get) => {
     get("Run Windows regressions")["continue-on-error"] = true;
@@ -655,6 +721,15 @@ it("rehashes the installed helpers before the first launcher command", () => {
   }
 });
 
+it("builds the Windows path helper even after a preparation cache hit", () => {
+  const name = "Build Windows path helper and fixture";
+  const steps = parse(workflow).jobs["windows-native-preparation"].steps;
+  assert.ok(steps.find(step => step.name === name), "missing fresh build step");
+  assert.throws(() => checkWindowsWorkflow(changedWorkflow((_steps, get) => {
+    get(name).if += " && env.AVE_WINDOWS_PREP_VERIFIED != 'true'";
+  }), parsedLines), /must build the Windows path helper on every run/);
+});
+
 it("runs every restored or cached binary after the job's trust point", () => {
   const { jobs } = parse(workflow);
   for (const job of ["windows-native-preparation", "windows-permission-tests"]) checkHelperExecutionOrder(job, jobs[job].steps);
@@ -681,9 +756,9 @@ for (const [name, job, change, expected, workflowExpected] of [
     provision.run = provision.run.replace("node scripts/check-srt-win-integrity.cjs\n", "");
   }, /runs the sandbox helper before this job replaced the cached node_modules copy and checked its integrity/],
   ["a launcher fixture run before the rehash", "windows-native-preparation", (_steps, get) => {
-    const build = get("Build Windows launcher and classification helpers");
+    const build = get("Build Windows job launcher and fixtures");
     build.run += "& './resources/windows-job/x64/ave-job-failure.exe' --probe\n";
-  }, /Build Windows launcher and classification helpers: executes a restored or cached binary before rehashing/,
+  }, /Build Windows job launcher and fixtures: executes a restored or cached binary before rehashing/,
   // The command allowlist also refuses this uncontained helper call.
   /command runs outside the job containment launcher: & '\.\/resources\/windows-job\/x64\/ave-job-failure\.exe' --probe/],
   ["the shard provisioning above the artifact restore", "windows-permission-tests", (steps, get) => {

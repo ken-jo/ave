@@ -321,7 +321,7 @@ describe.runIf(process.platform === "win32")("Windows directory hold helper prot
     });
 
     it("writes exactly the limit on the wire and refuses one byte over it", async () => {
-      if (!existsSync(fixture)) throw new Error("Build the hold fixture: bun run build:windows-job -- -Helper path-kind -HoldFixture");
+      if (!existsSync(fixture)) throw new Error("Build the hold fixture: bun run build:windows-path-kind --fixture");
       fake.real = true;
       const full = await reply(MAX_REPLY);
       expect(full.code).toBe(0);

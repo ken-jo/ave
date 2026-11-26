@@ -118,7 +118,8 @@
     "dist:win:fast": "node scripts/build-installers.mjs --win --fast",
     "release": "node scripts/release.mjs",
     "build:srt-win": "node scripts/build-srt-win.mjs",
-    "build:windows-job": "node scripts/build-windows-job.mjs"
+    "build:windows-job": "node scripts/build-windows-job.mjs",
+    "build:windows-path-kind": "node scripts/build-windows-path-kind.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "~4.0.106",
@@ -547,6 +548,7 @@
     "win": {
       "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(win32){,/**/*}"],
       "signExts": [
+        "!ave-path-kind.exe",
         "!srt-win.exe",
         "!wxc-exec.exe",
         "!mxc_ffi.dll",

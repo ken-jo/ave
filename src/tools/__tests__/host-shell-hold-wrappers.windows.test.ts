@@ -89,7 +89,7 @@ describe.runIf(process.platform === "win32")("held working directory under the c
   });
 
   const containerRoute = async (skip: () => never): Promise<string> => {
-    if (!existsSync(FIXTURE)) throw new Error("Build the hold fixture: bun run build:windows-job -- -Helper path-kind -HoldFixture");
+    if (!existsSync(FIXTURE)) throw new Error("Build the hold fixture: bun run build:windows-path-kind --fixture");
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-hold-mxc-")));
     directory = root;

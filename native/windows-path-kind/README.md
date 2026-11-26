@@ -1,6 +1,6 @@
 # Windows folder classification
 
-`path-kind.cpp` builds `ave-path-kind.exe`. Its drive mode prints the current
+`src/main.rs` builds `ave-path-kind.exe`. Its drive mode prints the current
 MS-DOS device mapping of one drive letter:
 
 ```text
@@ -25,12 +25,11 @@ mapping for the drive (the call failed, an unknown drive among them), with the
 Windows error on stderr; `2` the argument is not a drive letter and colon; `3`
 the mapping could not be written. Only `1` is an answer about the drive.
 
-`src/main/windows-path-kind-launcher.ts` runs it, as
-`src/main/windows-job-launcher.ts` runs the job helper. The build uses the
-same script as the job helper and downloads nothing:
+`src/main/windows-path-kind-launcher.ts` runs it. Development builds compile
+the helper offline and embed its digest in the main bundle. The native test
+builds a fresh helper and pin fixture before running:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
 node scripts/test-windows-path-kind.mjs
 ```
 
@@ -237,8 +236,8 @@ system-directory API and repeats the query with spoofed system-root variables.
 
 ## Path and descriptor facts
 
-`pin.h` owns normalization, component opens and handle lifetime for all path
-modes. `dacl.h` owns the one handle-based security-descriptor read, shared
+`src/pin.rs` owns normalization, component opens and handle lifetime for all path
+modes. `src/security.rs` owns the one handle-based security-descriptor read, shared
 by facts serialization and the compatibility deny scan. Each component is
 opened with `BACKUP_SEMANTICS | OPEN_REPARSE_POINT`,
 read-attributes/read-control access and read sharing only. Handles remain open
@@ -307,7 +306,7 @@ with its exact original spelling in `requestPath`. Exceeding the output
 budget returns 4 with no partial reply. The host checks the count and
 each echoed operand before using the facts.
 
-Build both facts modes with `scripts/build-windows-job.ps1 -Helper path-kind`
+Build both facts modes with `bun run build:windows-path-kind`
 and run `scripts/test-windows-path-kind.mjs` and the shared facts Vitest suite.
 
 ## Held working directory
@@ -335,7 +334,7 @@ The helper stops nothing and reports no result: the launcher bounds its own
 waits and decides the run. The helper's exit closes the job, which stops
 everything in it.
 
-Build `-Helper path-kind -HoldFixture` for `ave-path-kind-hold-fixture.exe`,
+Build `bun run build:windows-path-kind --fixture` for `ave-path-kind-hold-fixture.exe`,
 which is never packaged. It reads the reply limit from
 `AVE_TEST_HOLD_REPLY_LIMIT`. With `AVE_TEST_HOLD_RECHECK=lost` it answers
 every recheck `X`, and with `stall` it never answers one. An `L` on stdin

@@ -33,13 +33,14 @@ export function writeCanvasRuntimePackage(nodeModules: string, platform: string,
 }
 
 /** Writes an app.asar holding the pdf.js entries plus the page renderer notices beside it. */
-export function writePageRuntimeResources(resources: string): void {
+export function writePageRuntimeResources(resources: string, extraEntries: Readonly<Record<string, string>> = {}): void {
   const bundledRendererNotices = createRequire(import.meta.url)("../../../scripts/lib/bundled-renderer-notices.json") as readonly { noticeFile: string }[];
   mkdirSync(join(resources, "licenses", "renderer"), { recursive: true });
   for (const { noticeFile: notice } of bundledRendererNotices) copyFileSync(resolve("resources/licenses/renderer", notice), join(resources, "licenses", "renderer", notice));
   const input = mkdtempSync(join(tmpdir(), "pdf-runtime-asar-"));
   try {
     for (const entry of PDF_RUNTIME_FIXTURE_ENTRIES) writeFixtureFile(input, entry.slice(1), "pdf runtime fixture");
+    for (const [entry, bytes] of Object.entries(extraEntries)) writeFixtureFile(input, entry, bytes);
     const pack = spawnSync(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, [asarCliPath(), "pack", input, join(resources, "app.asar")], {
       encoding: "utf8", timeout: 15_000, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
     });

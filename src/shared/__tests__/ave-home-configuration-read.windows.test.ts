@@ -81,7 +81,7 @@ it.each(["--pin", "--dacl"])("revalidates through an edited configuration helper
     owner, protected: true, nullDacl: false, aces: [{ type: 0, flags: 0, mask: 1, sid: owner, account: "alice" }],
   };
   const native = vi.spyOn(windowsNative, "runWindowsNative").mockImplementation(operation => operation());
-  const helper = vi.spyOn(pathKind, "resolveWindowsPathKindHelper").mockReturnValue("ave-path-kind.exe");
+  const helper = vi.spyOn(pathKind, "withWindowsPathKindHelper").mockImplementation(launch => launch("ave-path-kind.exe"));
   const execute = vi.mocked(childProcess.execFileSync);
   const original = execute.getMockImplementation();
   if (original === undefined) throw new Error("Configuration helper fixture is missing");

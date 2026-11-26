@@ -822,6 +822,12 @@ jobs:
     # windows-2025, the image the release matrix builds the installer on, so
     # a windows-latest rollover cannot test one image and ship another.
     runs-on: windows-2025
+    # The path helper digests returned by this job's build; the shards check
+    # the downloaded helper against them before using it.
+    outputs:
+      path_kind_sha256: ${{ steps.windows-path-kind-build.outputs.binary_sha256 }}
+      path_kind_receipt_sha256: ${{ steps.windows-path-kind-build.outputs.receipt_sha256 }}
+      path_kind_hold_fixture_sha256: ${{ steps.windows-path-kind-build.outputs.hold_fixture_sha256 }}
     env: &windows-validation-env
       # Keep bun's package cache and Electron's download cache in the
       # workspace, under the cache keys below.
@@ -931,6 +937,11 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/fetch-uv.mjs
+      - &windows-path-kind-rust
+        name: Install the pinned path helper toolchain
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node .github/scripts/install-windows-path-kind-rust.mjs x64
       - name: Generate the Windows preparation input manifest
         id: windows-preparation-key
         if: steps.docs-impact.outputs.docs_only != 'true'
@@ -950,7 +961,7 @@ jobs:
           AVE_WINDOWS_PREP_KEY: ${{ steps.windows-preparation-key.outputs.key }}
           AVE_WINDOWS_PREP_EXACT_HIT: ${{ steps.windows-preparation-restore.outputs.cache-hit }}
         run: node .github/scripts/windows-preparation-cache.mjs restore
-      - name: Build Windows launcher and classification helpers
+      - name: Build Windows job launcher and fixtures
         if: steps.docs-impact.outputs.docs_only != 'true' && env.AVE_WINDOWS_PREP_VERIFIED != 'true'
         working-directory: ave
         shell: powershell
@@ -961,9 +972,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind -HoldFixture
+      - name: Build Windows path helper and fixture
+        id: windows-path-kind-build
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        shell: powershell
+        run: |
+          node scripts/build-windows-path-kind.mjs --arch x64 --fixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify native background process ownership
         if: steps.docs-impact.outputs.docs_only != 'true'
@@ -1042,6 +1057,7 @@ jobs:
             ave/resources/windows-job/x64/ave-job.exe
             ave/resources/windows-job/x64/ave-job-query-failure.exe
             ave/resources/windows-path-kind/x64/ave-path-kind.exe
+            ave/resources/windows-path-kind/x64/ave-path-kind.exe.build.json
             ave/resources/windows-path-kind/x64/ave-path-kind-hold-fixture.exe
             ave/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/*/*.exe
             ave/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/*/build-receipt.json
@@ -1177,6 +1193,10 @@ jobs:
         name: Verify and configure the shared test inputs
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+        env:
+          AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
+          AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
+          AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_hold_fixture_sha256 }}
         run: node .github/scripts/restore-windows-ci-inputs.mjs
       # The sandbox account and permissions are local to each runner.
       - *windows-provision
@@ -1198,6 +1218,9 @@ jobs:
       - name: Run Windows regressions
         env:
           AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
+          AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
+          AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
+          AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_hold_fixture_sha256 }}
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1269,6 +1292,10 @@ jobs:
       - name: Verify and configure the shared test inputs
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+        env:
+          AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
+          AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
+          AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_hold_fixture_sha256 }}
         run: node .github/scripts/restore-windows-ci-inputs.mjs
       # The sandbox account and permissions are local to each runner.
       - *windows-provision
@@ -1287,6 +1314,9 @@ jobs:
       - name: Run Windows regressions
         env:
           AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
+          AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
+          AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
+          AVE_WINDOWS_PATH_KIND_HOLD_FIXTURE_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_hold_fixture_sha256 }}
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1365,6 +1395,7 @@ jobs:
         shell: powershell
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
       - *windows-provision
+      - *windows-path-kind-rust
       - name: Run script tests
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1397,6 +1428,7 @@ jobs:
       - *windows-download-mirror
       - *windows-restore-inputs
       - *windows-provision
+      - *windows-path-kind-rust
       - name: Build Windows development desktop
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1441,6 +1473,10 @@ jobs:
         working-directory: ave
         shell: powershell
         run: bun install --frozen-lockfile --ignore-scripts --production
+      - name: Install the pinned path helper toolchain
+        working-directory: ave
+        shell: powershell
+        run: node .github/scripts/install-windows-path-kind-rust.mjs arm64
       - name: Build the native job launcher
         working-directory: ave
         shell: powershell
@@ -1449,7 +1485,7 @@ jobs:
         working-directory: ave
         shell: powershell
         run: |
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Arch arm64 -Helper path-kind
+          node scripts/build-windows-path-kind.mjs --arch arm64 --fixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .github/scripts/run-in-job.mjs node scripts/test-windows-path-kind.mjs
       - name: Remove isolated system-volume job directory

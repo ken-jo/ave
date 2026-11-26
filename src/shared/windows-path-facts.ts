@@ -1,9 +1,9 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { isAbsolute, win32 } from "node:path";
-import { toUSVString } from "node:util";
 import type { Duplex } from "node:stream";
+import { toUSVString } from "node:util";
 import { resolveWindowsJobLauncher } from "../main/windows-job-launcher.js";
-import { isWindowsPathKindHelperTimeout, resolveWindowsPathKindHelper, windowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
+import { isWindowsPathKindHelperTimeout, windowsPathKindHelperUnavailable, withWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, windowsCommandLineLength } from "./windows-command-line.js";
 import { decodeWindowsNativeReply, runWindowsNative } from "./windows-native-host.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
@@ -174,8 +174,7 @@ function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: read
   const input = framed ? encodeParentDaclFrame(paths) : undefined;
   let output: Buffer;
   try {
-    output = runWindowsNative(() => {
-      const helper = resolveWindowsPathKindHelper();
+    output = runWindowsNative(() => withWindowsPathKindHelper(helper => {
       const args = [mode, ...flags, ...(framed ? ["--stdin"] : paths)];
       if (windowsCommandLineLength(helper, args) > WINDOWS_COMMAND_LINE_LIMIT) {
         throw Object.assign(new Error("Windows path facts command line exceeds the process limit"), { code: "E2BIG" });
@@ -184,7 +183,7 @@ function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: read
         windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
         maxBuffer: MAX_PATH_FACTS_OUTPUT_BYTES, input,
       });
-    });
+    }));
   } catch (error) {
     // Spawn and timeout errors name the helper's install path; only their code is kept.
     if (isWindowsPathKindHelperTimeout(error)) {
@@ -278,7 +277,8 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
   if (!isAbsolute(path)) return Promise.resolve(undefined);
   let child: ChildProcess;
   try {
-    child = runWindowsNative(() => spawn(resolveWindowsPathKindHelper(), ["--hold", path], { windowsHide: true, stdio: ["pipe", "pipe", "ignore", "pipe"] }));
+    child = runWindowsNative(() => withWindowsPathKindHelper((helper) =>
+      spawn(helper, ["--hold", path], { windowsHide: true, stdio: ["pipe", "pipe", "ignore", "pipe"] })));
   } catch {
     return Promise.resolve(undefined);
   }

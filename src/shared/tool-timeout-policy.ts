@@ -33,6 +33,7 @@ export const TOOL_TIMEOUT_POLICY = {
   tailnetIdentityProbeMs: 5_000,
   // The path-kind helper answers drive and Documents queries from the OS in milliseconds; this bound only ends a stalled start.
   windowsPathKindQueryMs: 15_000,
+  windowsDriveLocalityMs: 5_000,
   // A held shell run reports within this long of its stop request; past it the hold is released, which stops its whole job.
   windowsHoldStopMs: 15_000,
   // Cold native startup includes module loading, compilation and account-provider initialization before READY.

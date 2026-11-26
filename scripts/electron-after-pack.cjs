@@ -300,6 +300,10 @@ function assertBetterSqlite3Binary(context) {
 }
 
 module.exports = async function afterPack(context) {
+  if (context.electronPlatformName === "win32") {
+    const { assertPackagedWindowsPathKind } = await import("./lib/windows-path-kind-package.mjs");
+    assertPackagedWindowsPathKind(context.appOutDir, ARCH_DIR_BY_ENUM[context.arch]);
+  }
   if (context.electronPlatformName === "darwin" && ARCH_DIR_BY_ENUM[context.arch] !== "arm64") {
     throw new Error(`Unsupported macOS package architecture: ${context.arch}`);
   }

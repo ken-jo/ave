@@ -18,7 +18,7 @@ class Decision {
   readonly memos = new Map<object, Map<string, unknown>>();
   // A decision opened by a single lookup outside any running decision; it serves only the synchronous run that opened it.
   open = true;
-  constructor(readonly detached = false) {}
+  constructor(readonly detached = false, readonly resourcePath?: string) {}
 }
 
 let active: Decision | undefined;
@@ -26,8 +26,8 @@ let active: Decision | undefined;
 /** One permission, sandbox or listing decision; drive mappings are read again for the next one. */
 export type LocalityDecision = object;
 
-export function openLocalityDecision(): LocalityDecision {
-  return new Decision();
+export function openLocalityDecision(resourcePath?: string): LocalityDecision {
+  return new Decision(false, resourcePath);
 }
 
 /**
@@ -134,7 +134,7 @@ function refuseSpelling(path: string): string | undefined {
 function driveIdentity(drive: string, decision: Decision): DriveIdentity {
   let identity = decision.drives.get(drive);
   if (identity === undefined) {
-    identity = queryDriveIdentity(drive);
+    identity = queryDriveIdentity(drive, decision.resourcePath);
     decision.drives.set(drive, identity);
   }
   return identity;

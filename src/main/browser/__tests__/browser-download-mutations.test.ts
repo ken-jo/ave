@@ -15,19 +15,19 @@ import { _descriptorFileOperationsForTest } from "../browser-download-files.js";
 const ROOT = join(import.meta.dirname, "../../../..");
 const NATIVE_DIRECTORIES = ["native/windows-path-kind", "native/macos-dir-ops"] as const;
 // Test-only programs that model competing filesystem actors, and prose.
-const NATIVE_FIXTURES = new Set(["native/windows-path-kind/pin-test.cpp", "native/windows-path-kind/README.md", "native/macos-dir-ops/README.md"]);
+const NATIVE_FIXTURES = new Set(["native/windows-path-kind/src/fixture.rs", "native/windows-path-kind/src/faults.rs", "native/windows-path-kind/README.md", "native/macos-dir-ops/README.md"]);
 const PRIMITIVES: Readonly<Record<string, readonly string[]>> = {
-  "native/windows-path-kind/dir-recovery.h": ["inline FileFailure mutate_entry("],
+  "native/windows-path-kind/src/directory/recovery.rs": ["pub(super) fn move_entry(", "pub(super) fn retire_checked("],
   "native/macos-dir-ops/dir-ops.c": ["static enum remove_result mutate_entry(", "static void swap_file("],
 };
 const HOST_OWNER = "src/main/browser/browser-download-files.ts";
 
 const NATIVE_RULES: readonly (readonly [string, RegExp])[] = [
+  ["Rust filesystem mutation", /\b(?:remove_file|remove_dir(?:_all)?|hard_link|symlink_file|symlink_dir)\b|\.truncate\s*\(\s*true\s*\)/gu],
   ["raw mutation call", /\b(?:unlink(?:at)?|rename(?:at2?|atx_np|x_np)?|DeleteFile\w*|MoveFile\w*|RemoveDirectory\w*|ReplaceFile\w*|NtDeleteFile|ZwDeleteFile)\s*\(/gu],
   ["CRT or library name change", /(?:\b_w?(?:unlink|remove|rename)\b|\bremove\s*\(|std::filesystem::|\bfilesystem::)/gu],
   ["mutation name taken as a value", /(?:&\s*(?:::)?|=\s*(?:::)?)(?:_w?)?(?:unlink(?:at)?|rename(?:at2?|atx_np|x_np)?|remove|DeleteFile\w*|MoveFile\w*|RemoveDirectory\w*)\b(?!\s*\()/gu],
-  // The job-object limit call configures process lifetime and takes no file handle.
-  ["set-information capability", /\b(?!SetInformationJobObject\b)\w*Set\w*Information\w*\b/gu],
+  ["set-information capability", /\b\w*Set\w*Information\w*\b/gu],
   ["information class type or numeric class", /\b(?:FILE_INFORMATION_CLASS|FILE_INFO_BY_HANDLE_CLASS)\b|\bFile(?:Disposition|Rename)Info\w*|\bFILE_(?:DISPOSITION|RENAME)_INFO\w*/gu],
   ["delete on close", /\b(?:FILE_DELETE_ON_CLOSE|FILE_FLAG_DELETE_ON_CLOSE)\b|\b0x0*1000\b|\b0x0*4000000\b|\b4096u?\b|\b1u?\s*<<\s*12\b/gu],
   ["truncating or superseding open", /\bFILE_(?:SUPERSEDE|OVERWRITE(?:_IF)?)\b|\b(?:CREATE_ALWAYS|TRUNCATE_EXISTING|O_TRUNC)\b/gu],
@@ -59,17 +59,24 @@ function nativeViolations(path: string, text: string): string[] {
   for (const signature of PRIMITIVES[path] ?? []) source = removeFunction(source, signature);
   const code = source.replace(/\/\*[\s\S]*?\*\//gu, " ").replace(/\/\/[^\n]*/gu, "");
   const violations: string[] = [];
+  // The security descriptor flag shares the native open option's number.
+  const mutationCode = path === "native/windows-path-kind/src/security.rs"
+    ? code.replace(/^pub const SE_DACL_PROTECTED: u16 = 0x1000;$/mu, "") : code;
   for (const match of code.matchAll(/\b\w+\s*<[^<>;]*>\s*\(\s*"(\w+)"/gu)) {
     if (!NATIVE_LOOKUPS.has(match[1] ?? "")) violations.push(`${path}: native lookup ${match[1]}: ${lineOf(code, match.index)}`);
   }
-  const bare = code.replace(/L?"(?:[^"\\\n]|\\.)*"/gu, '""');
+  const bare = mutationCode.replace(/L?"(?:[^"\\\n]|\\.)*"/gu, '""');
   for (const match of code.matchAll(/"((?:Nt|Zw)\w+)"/gu)) {
     if (!NATIVE_LOOKUPS.has(match[1] ?? "") && /Information|Delete/u.test(match[1] ?? "")) {
       violations.push(`${path}: native entry name ${match[1]}: ${lineOf(code, match.index)}`);
     }
   }
   for (const [rule, pattern] of NATIVE_RULES) {
-    for (const match of bare.matchAll(pattern)) violations.push(`${path}: ${rule}: ${lineOf(bare, match.index)}`);
+    for (const match of bare.matchAll(pattern)) {
+      // The job limit configures process lifetime and takes no file handle.
+      if (path === "native/windows-path-kind/src/hold.rs" && match[0] === "SetInformationJobObject") continue;
+      violations.push(`${path}: ${rule}: ${lineOf(bare, match.index)}`);
+    }
   }
   return violations;
 }
@@ -154,7 +161,7 @@ function backendSources(): Map<string, string> {
 it("keeps native name changes inside the verified entry primitives", () => {
   const sources = backendSources();
   expect([...sources.keys()]).toEqual(expect.arrayContaining([HOST_OWNER, "src/main/browser/browser-download-staging.ts",
-    "native/windows-path-kind/dir-ops.h", "native/windows-path-kind/dir-recovery.h", "native/macos-dir-ops/dir-ops.c"]));
+    "native/windows-path-kind/src/directory/mod.rs", "native/windows-path-kind/src/directory/recovery.rs", "native/macos-dir-ops/dir-ops.c"]));
   expect(lockViolations(sources)).toEqual([]);
 });
 
@@ -163,8 +170,8 @@ const insert = (path: string, after: string, added: string) => (sources: Map<str
   if (text?.includes(after) !== true) throw new Error(`fixture anchor missing in ${path}`);
   sources.set(path, text.replace(after, `${after}${added}`));
 };
-const WINDOWS_OPS = "native/windows-path-kind/dir-ops.h";
-const WINDOWS_ANCHOR = "\n#include \"dir-recovery.h\"\n\nnamespace dir_ops {\n";
+const WINDOWS_OPS = "native/windows-path-kind/src/directory/mod.rs";
+const WINDOWS_ANCHOR = "mod recovery;\n";
 const BYPASSES: readonly (readonly [string, (sources: Map<string, string>) => void, readonly RegExp[]])[] = [
   ["1 set-information lookup through a local alias with a numeric class", insert(WINDOWS_OPS, WINDOWS_ANCHOR,
     "inline void probe_a(HANDLE h) {\n  using Set = NTSTATUS(NTAPI*)(HANDLE, IO_STATUS_BLOCK*, void*, ULONG, FILE_INFORMATION_CLASS);\n" +
