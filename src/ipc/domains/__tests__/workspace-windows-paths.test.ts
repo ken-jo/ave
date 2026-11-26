@@ -208,12 +208,21 @@ describe("workspace search path identities", () => {
     const alias = "D:\\PROJECTS\\MIXED";
     expect(resolvePathForPolicy(FOLDED_ROOT)).toBe(fixture.root);
     expect(resolvePathForPolicy(alias)).toBe(fixture.root);
-    await Promise.all([
+    await searchWorkspaceFiles({ ...args, roots: [FOLDED_ROOT, alias] });
+    expect(fixture.collectFiles).toHaveBeenCalledTimes(1);
+    expect(fixture.collectFiles).toHaveBeenCalledWith(fixture.root, 20_000);
+  });
+
+  it("walks equivalent Windows roots independently across searches", async () => {
+    const args = { query: "notes", cwd: fixture.cwd, extraAllowed: [fixture.root] };
+    const alias = "D:\\PROJECTS\\MIXED";
+    const [left, right] = await Promise.all([
       searchWorkspaceFiles({ ...args, roots: [FOLDED_ROOT] }),
       searchWorkspaceFiles({ ...args, roots: [alias] }),
     ]);
-    expect(fixture.collectFiles).toHaveBeenCalledTimes(1);
-    expect(fixture.collectFiles).toHaveBeenCalledWith(fixture.root, 20_000);
+    expect(fixture.collectFiles).toHaveBeenCalledTimes(2);
+    expect(left?.matches[0]?.root).toBe(fixture.root);
+    expect(right).toEqual(left);
   });
 
   it("deduplicates returned file identities across different native spellings", async () => {

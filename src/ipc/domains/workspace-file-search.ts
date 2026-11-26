@@ -117,8 +117,8 @@ export async function searchWorkspaceFiles(args: {
       }
     }
   } else {
-    for (const inputRoot of args.roots) {
-      const root = resolvePathForPolicy(inputRoot);
+    const roots = withLocalityDecision(() => new Set(args.roots.map((root) => resolvePathForPolicy(root))));
+    for (const root of roots) {
       const listing = await listRoot(root, now);
       truncated ||= listing.truncated;
       for (const file of listing.files) {
