@@ -110,6 +110,13 @@ vi.mock("../../main/managed-child-processes.js", async (importOriginal) => {
   return { ...actual, spawnManaged };
 });
 
+function beforeCandidateRealpath(path: unknown): void {
+  if (path !== hooks.openTarget || hooks.beforeRealpath === undefined) return;
+  const before = hooks.beforeRealpath;
+  hooks.beforeRealpath = undefined;
+  before();
+}
+
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   const open = (async (path: string, flags?: unknown, ...rest: unknown[]) => {
@@ -144,7 +151,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     }
     return handle;
   }) as typeof actual.open;
-  return { ...actual, default: { ...actual, open }, open };
+  const realpath = ((path, options) => {
+    beforeCandidateRealpath(path);
+    return Reflect.apply(actual.realpath, actual, [path, options]);
+  }) as typeof actual.realpath;
+  return { ...actual, default: { ...actual, open, realpath }, open, realpath };
 });
 
 vi.mock("../../shared/local-path-io.js", async original => {
@@ -154,11 +165,7 @@ vi.mock("../../shared/local-path-io.js", async original => {
     localFs: {
       ...actual.localFs,
       realpath(verdict: Parameters<typeof actual.localFs.realpath>[0]) {
-        if (verdict.path === hooks.openTarget && hooks.beforeRealpath !== undefined) {
-          const before = hooks.beforeRealpath;
-          hooks.beforeRealpath = undefined;
-          before();
-        }
+        beforeCandidateRealpath(verdict.path);
         return actual.localFs.realpath(verdict);
       },
     },
@@ -306,6 +313,42 @@ describe.each([
     expect((await grep({ path: ".", outputMode: "count" })).output).toContain(`${file}: 1`);
     expect((await grep({ path: ".", outputMode: "files_with_matches" })).output).toContain(file);
   });
+});
+
+it.skipIf(process.platform === "win32")("keeps the POSIX grep root classification after listing starts", async () => {
+  const home = join(project, "next-home");
+  const root = join(home, "config");
+  const key = join(root, "report.pem");
+  mkdirSync(root, { recursive: true });
+  writeFileSync(key, "-----BEGIN PRIVATE KEY-----\nneedle placeholder\n");
+  const previousHome = process.env.AVE_HOME;
+  const release = allowKeyMaterialInspectionUnder(() => [project]);
+  hooks.search = { swap: () => { process.env.AVE_HOME = home; }, restore: () => {} };
+  try {
+    const result = await grep({ path: root });
+    expect(hooks.search).toBeUndefined();
+    expect(result.isError, result.output).toBe(false);
+    expect(result.metadata).toMatchObject({ matchCount: 0 });
+  } finally {
+    release();
+    if (previousHome === undefined) delete process.env.AVE_HOME;
+    else process.env.AVE_HOME = previousHome;
+  }
+});
+
+it.skipIf(process.platform === "win32")("keeps POSIX grep results from the opened file after a root alias moves", async () => {
+  const alias = join(project, "alias");
+  const replacement = join(project, "replacement");
+  mkdirSync(replacement);
+  symlinkSync(folder, alias);
+  hooks.open = {
+    swap: () => { unlinkSync(alias); symlinkSync(replacement, alias); },
+    restore: () => {},
+  };
+  const result = await searchWithRipgrep(alias, GrepFilesInputSchema.parse({ pattern: "needle" }), undefined);
+  expect(hooks.open).toBeUndefined();
+  expect(result.isError, result.output).toBe(false);
+  expect(result.output).toContain("needle: buy milk");
 });
 
 describe("grep_files feeding a search of one file's bytes", () => {
