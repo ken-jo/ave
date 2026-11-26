@@ -306,6 +306,15 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     expect(readWindowsFileDacls([join(fixture, "directory", "file")])).toEqual([fileDacl(aclHex)]);
   });
 
+  it.each([[65524, true], [65528, false], [65532, false]])("bounds ACE bytes by the native ACL size (%i ACE bytes accepted: %s)", (total, accepted) => {
+    const sized = (size: number) => `0900${(size & 0xff).toString(16).padStart(2, "0")}${(size >> 8).toString(16).padStart(2, "0")}${mask}${everyone}${"00".repeat(size - 20)}`;
+    const reply = fileDacl(`04${sized(total)}`);
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([reply])));
+    const read = () => readWindowsFileDacls([join(fixture, "directory", "file")]);
+    if (accepted) expect(read()).toEqual([reply]);
+    else expect(read).toThrow("Invalid Windows file DACL response");
+  });
+
   it("accepts allow and audit ACEs in one file DACL", () => {
     const reply = fileDacl(`02${ace(0x00, mask + everyone)}${ace(0x02, mask + everyone)}`, 2);
     vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([reply])));

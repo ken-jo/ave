@@ -249,6 +249,7 @@ interface WindowsFileDacl {
 const DACL_PRESENT = 0x0004;
 const FILE_DACL_CONTROL_MASK = 0x1500 | DACL_PRESENT;
 
+const ACL_HEADER_BYTES = 8;
 const ACE_HEADER_BYTES = 4;
 const SID_HEADER_BYTES = 8;
 const SID_MAX_SUB_AUTHORITIES = 15;
@@ -277,7 +278,9 @@ function isCompleteAce(ace: Buffer, revision: number): boolean {
 
 function isCompleteFileAcl(aclHex: unknown, aceCount: number): boolean {
   if (aclHex === null) return aceCount === 0;
-  if (typeof aclHex !== "string" || aclHex.length > 131072 || aclHex.length % 2 !== 0 || !/^[0-9a-f]+$/u.test(aclHex)) return false;
+  // The wire form drops the 8-byte native ACL header, which the 16-bit native size still has to cover.
+  if (typeof aclHex !== "string" || aclHex.length > 2 * (1 + 0xffff - ACL_HEADER_BYTES) || aclHex.length % 2 !== 0
+    || !/^[0-9a-f]+$/u.test(aclHex)) return false;
   const bytes = Buffer.from(aclHex, "hex");
   const revision = bytes[0];
   if (revision !== 2 && revision !== 3 && revision !== 4) return false;
