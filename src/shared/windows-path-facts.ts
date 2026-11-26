@@ -242,11 +242,31 @@ interface WindowsFileDacl {
   readonly volumeSerialNumber: string;
   readonly fileIndex: string;
   readonly control: number;
+  readonly aceCount: number;
   readonly aclHex: string | null;
 }
 
 const DACL_PRESENT = 0x0004;
 const FILE_DACL_CONTROL_MASK = 0x1500 | DACL_PRESENT;
+
+const ACE_HEADER_BYTES = 4;
+
+function isCompleteFileAcl(aclHex: unknown, aceCount: number): boolean {
+  if (aclHex === null) return aceCount === 0;
+  if (typeof aclHex !== "string" || aclHex.length > 131072 || aclHex.length % 2 !== 0 || !/^[0-9a-f]+$/u.test(aclHex)) return false;
+  const bytes = Buffer.from(aclHex, "hex");
+  const revision = bytes[0];
+  if (revision !== 2 && revision !== 4) return false;
+
+  let offset = 1;
+  for (let index = 0; index < aceCount; index++) {
+    if (offset + ACE_HEADER_BYTES > bytes.length) return false;
+    const size = bytes.readUInt16LE(offset + 2);
+    if (size < ACE_HEADER_BYTES || size % 4 !== 0 || size > bytes.length - offset) return false;
+    offset += size;
+  }
+  return offset === bytes.length;
+}
 
 function isFileDacl(value: unknown): value is WindowsFileDacl {
   if (value === null || typeof value !== "object") return false;
@@ -255,8 +275,7 @@ function isFileDacl(value: unknown): value is WindowsFileDacl {
     && BigInt(row.volumeSerialNumber) <= 0xffffffffn
     && typeof row.fileIndex === "string" && HEX_64_PATTERN.test(row.fileIndex)
     && isUint(row.control, FILE_DACL_CONTROL_MASK) && (row.control & ~FILE_DACL_CONTROL_MASK) === 0 && (row.control & DACL_PRESENT) !== 0
-    && (row.aclHex === null || (typeof row.aclHex === "string"
-      && row.aclHex.length <= 131072 && row.aclHex.length % 2 === 0 && /^[0-9a-f]+$/u.test(row.aclHex)));
+    && isUint(row.aceCount, 0xffff) && isCompleteFileAcl(row.aclHex, row.aceCount);
 }
 
 /** File-only metadata for callers that bind the result to an already known identity. */

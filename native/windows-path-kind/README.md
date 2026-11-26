@@ -299,9 +299,10 @@ Relative paths, device namespace paths and alternate streams are refused.
 `ave-path-kind.exe --dacl --file-access <absolute-file-path>...` opens only the
 requested files with metadata access. It returns ordered rows with
 `volumeSerialNumber`, `fileIndex`, `control` (DACL presence, protection and
-auto-inheritance bits), and `aclHex` (ACL revision followed by ordered, complete
-ACE bytes, or `null` for a missing or null ACL). The control bits distinguish
-missing and null ACLs. The caller checks each identity against its file
+auto-inheritance bits), `aceCount`, and `aclHex` (ACL revision followed by ordered,
+complete ACE bytes). A missing or null ACL reports a zero count and `null`
+bytes. The control bits distinguish missing and null ACLs. The caller checks
+the revision and ACE sizes against the count and each identity against its file
 snapshot or descriptor. An unreadable file, reparse point, directory or
 multiply linked file fails the whole request.
 

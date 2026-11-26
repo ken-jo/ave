@@ -237,6 +237,7 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
         expect(size).toBeGreaterThanOrEqual(8);
         offset += size;
       }
+      expect(row.aceCount).toBe(aceHeaders.length);
       const [facts] = readWindowsDacls([file]);
       expect(aceHeaders).toEqual(facts?.dacl?.aces.map(({ type, flags, mask }) => ({ type, flags, mask })));
     } finally {
@@ -259,10 +260,19 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
   it("rejects incomplete or malformed file DACL replies", () => {
     const file = join(fixture, "directory", "file");
     const identity = { volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex };
-    for (const rows of [[], [identity], [{ ...identity, control: 4, aclHex: "abc" }], [{ ...identity, control: 2, aclHex: null }]]) {
+    const row = { ...identity, control: 4, aceCount: 0, aclHex: "02" };
+    for (const rows of [[], [identity], [{ ...row, aclHex: "abc" }], [{ ...row, control: 2, aclHex: null }],
+      [{ ...row, aclHex: "03" }], [{ ...row, aclHex: "0200" }], [{ ...row, aceCount: 1, aclHex: null }],
+      [{ ...row, aceCount: 1, aclHex: "0200000000" }], [{ ...row, aceCount: 1, aclHex: "020000050000" }]]) {
       vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify(rows)));
       expect(() => readWindowsFileDacls([file])).toThrow("Invalid Windows file DACL response");
     }
+  });
+
+  it.each(["02", "04", null])("accepts a zero-ACE file DACL with ACL bytes %s", (aclHex) => {
+    const row = { volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex, control: 4, aceCount: 0, aclHex };
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([row])));
+    expect(readWindowsFileDacls([join(fixture, "directory", "file")])).toEqual([row]);
   });
 
   it("distinguishes missing paths from native failures and returns no partial batch", () => {

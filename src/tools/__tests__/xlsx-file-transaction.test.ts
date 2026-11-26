@@ -13,6 +13,11 @@ import { parseTableDocument } from "../table-document-reader.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+});
+
 // Confined shells refuse hard links; every case here runs without that right.
 vi.mock("node:fs", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:fs")>(),
@@ -202,6 +207,31 @@ describe("workbook file transaction", () => {
 
       expect(() => publishWorkbookEdit(path, snapshot, output, 1, { write }))
         .toThrow(`[${scope}-acl-unreadable]`);
+      expect(write).not.toHaveBeenCalled();
+      expect(existsSync(`${path}.ave-bak`)).toBe(false);
+      expect(readFileSync(path)).toEqual(before);
+      expect(temporaryNames()).toEqual([]);
+    });
+
+    it.each([
+      { damage: "cut header", aceCount: 1, aclHex: "0200", large: false },
+      { damage: "cut body", aceCount: 1, aclHex: "020000140089001200", large: true },
+      { damage: "missing whole ACE", aceCount: 2, aclHex: "020000140089001200010100000000000100000000", large: false },
+    ])("refuses a native DACL reply with a $damage before writing", async ({ aceCount, aclHex, large }) => {
+      const { path, before, output } = await workbook(large);
+      const snapshot = readWorkbookSnapshot(path);
+      const scope = large ? "backup" : "workbook";
+      const write = vi.fn((descriptor: number, bytes: Buffer, offset: number, length: number) => writeSync(descriptor, bytes, offset, length));
+      const nativeCall = vi.mocked(execFileSync).mockImplementationOnce((_helper, args) =>
+        Buffer.from(JSON.stringify(args?.slice(2).map((file) => {
+          const { dev, ino } = lstatSync(file, { bigint: true });
+          return { volumeSerialNumber: `0x${dev.toString(16).padStart(16, "0")}`,
+            fileIndex: `0x${ino.toString(16).padStart(16, "0")}`, control: 4, aceCount, aclHex };
+        }))));
+
+      expect(() => publishWorkbookEdit(path, snapshot, output, 1, { write }))
+        .toThrow(expect.objectContaining({ code: `${scope}-acl-unreadable` }));
+      expect(nativeCall.mock.lastCall?.[1]?.slice(0, 3)).toEqual(["--dacl", "--file-access", path]);
       expect(write).not.toHaveBeenCalled();
       expect(existsSync(`${path}.ave-bak`)).toBe(false);
       expect(readFileSync(path)).toEqual(before);

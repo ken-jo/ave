@@ -216,16 +216,18 @@ bool file_access_json(const wchar_t* path, std::string& output) {
       || info.nNumberOfLinks != 1 || !read_descriptor(file.value, security)) return false;
   constexpr SECURITY_DESCRIPTOR_CONTROL access_flags =
     SE_DACL_PRESENT | SE_DACL_PROTECTED | SE_DACL_AUTO_INHERIT_REQ | SE_DACL_AUTO_INHERITED;
+  const DWORD ace_count = security.dacl == nullptr ? 0 : security.dacl->AceCount;
   output += "{\"volumeSerialNumber\":" + hex_number(info.dwVolumeSerialNumber)
     + ",\"fileIndex\":" + hex_number((static_cast<ULONGLONG>(info.nFileIndexHigh) << 32) | info.nFileIndexLow)
-    + ",\"control\":" + std::to_string(security.control & access_flags) + ",\"aclHex\":";
+    + ",\"control\":" + std::to_string(security.control & access_flags)
+    + ",\"aceCount\":" + std::to_string(ace_count) + ",\"aclHex\":";
   if (security.dacl == nullptr) {
     output += "null}";
     return true;
   }
   output += "\"";
   append_hex(output, &security.dacl->AclRevision, 1);
-  for (DWORD index = 0; index < security.dacl->AceCount; ++index) {
+  for (DWORD index = 0; index < ace_count; ++index) {
     void* raw = nullptr;
     if (!GetAce(security.dacl, index, &raw)) return false;
     append_hex(output, static_cast<const BYTE*>(raw), static_cast<const ACE_HEADER*>(raw)->AceSize);
