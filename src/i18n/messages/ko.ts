@@ -532,6 +532,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "auditPanel.integrityChainBroken": "감사 체인 손상: {file}{lineHint}",
   "auditPanel.integritySealMismatch": "일별 봉인 불일치: {file}",
   "auditPanel.integrityBrokenGeneric": "감사 무결성 손상 감지됨",
+  "auditPanel.integrityInvalidTerminalKinds": "무결성 오류: 감사 기록의 종료 유형이 잘못됨 ({count}건)",
   "auditPanel.integritySealMissing": "체인 OK · 봉인 미생성 일자 있음 ({totalFiles}일 / {totalEntries}건)",
   "auditPanel.integrityOk": "감사 체인 정상 — {totalFiles}일 / {totalEntries}건 검증됨",
 

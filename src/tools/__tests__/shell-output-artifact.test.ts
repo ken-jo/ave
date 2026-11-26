@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { ToolOutputArtifactStore } from "../../memory/tool-output-artifact-store.js";
 import { prepareMarkedToolResultsForWire } from "../../engine/wire-serialize.js";
 import { ToolExecutor } from "../executor.js";
@@ -151,7 +152,7 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     registry.register(new BashTool());
     registry.register(createReadToolResultChunkTool());
     const permissions = new PermissionManager(join(dir, "permissions.json"));
-    permissions.checkDetailed = () => ({ decision: "allow", reason: "artifact regression", });
+    permissions.checkDetailed = () => ({ decision: "allow", provenance: RULE_PROVENANCE, reason: "artifact regression", });
     const executor = new ToolExecutor(registry, undefined, permissions);
     const displays: string[] = [];
     const syntheticCredential = "ghp_" + "a".repeat(32);
@@ -190,7 +191,7 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     const { dir, memoryManager } = setup();
     const registry = new ToolRegistry(); registry.register(new BashTool());
     const permissions = new PermissionManager(join(dir, "permissions.json"));
-    permissions.checkDetailed = () => ({ decision: "allow", reason: "abandon regression", });
+    permissions.checkDetailed = () => ({ decision: "allow", provenance: RULE_PROVENANCE, reason: "abandon regression", });
     const executor = new ToolExecutor(registry, undefined, permissions);
     let owned: ReturnType<MemoryManager["sessions"]["startToolOutputCapture"]> | undefined;
     await expect(executor.executeAll([{ id: TOOL, name: "bash", input: { command: "printf '%60000s' x", timeoutSeconds: 5 } }], {

@@ -23,6 +23,7 @@ const state = vi.hoisted(() => ({
   junctions: new Map<string, string>(),
   missing: new Set<string>(),
   spawn: vi.fn(), close: vi.fn(), admit: vi.fn(), validate: vi.fn(), allowed: vi.fn(), lease: vi.fn(),
+  pierceNotices: vi.fn(() => []),
   shellPlan: undefined as unknown, issued: new WeakSet<object>(),
   // The runtime root start-up proved, or the refusal of one that was not.
   startRoot: vi.fn((): string => "C:\\ave-cache\\mxc-runtime"),
@@ -52,6 +53,7 @@ vi.mock("../sandbox-home-registry.js", async (original) => ({
 vi.mock("../asrt-sandbox.js", () => ({
   assertExtensionStartAllowed: () => state.allowed(), admitMxcExtensionFilesystem: (...args: unknown[]) => state.admit(...args),
   runWithSandboxWritePreflight: async (_signal: AbortSignal | undefined, compose: () => unknown) => compose(),
+  userDenyInsidePierceNotices: state.pierceNotices,
   getDefaultSensitiveReadDenyPaths: () => ["C:\\private"], getDefaultSensitiveWriteDenyEntries: () => ["D:\\work\\.git"],
   appOwnedSandboxHomeRoot: () => "C:\\ave\\sandbox\\home", appOwnedSandboxTempRoot: () => "C:\\ave\\sandbox\\temp",
   appOwnedTerminalHandoffRoot: () => "C:\\ave\\sandbox\\handoff",
@@ -213,6 +215,7 @@ describe("native confined holder admission", () => {
       }));
       const child = await spawnMxcConfinedChild({ ...spec(), allowRead, floorPierces });
       expect(state.admit.mock.calls[0]?.[0].floorPierces).toEqual(floorPierces);
+      expect(state.pierceNotices).toHaveBeenCalledExactlyOnceWith(floorPierces);
       const filesystem = state.spawn.mock.calls[0]?.[0].filesystem;
       expect(filesystem.readonlyPaths).toContain(certs);
       expect(filesystem.readonlyPaths).not.toContain(sessions);
@@ -221,6 +224,15 @@ describe("native confined holder admission", () => {
     } finally {
       homeSpy.mockRestore();
     }
+  });
+
+  it("leaves the read deny notice for a plugin child to the plugin runtime", async () => {
+    const child = await spawnMxcConfinedChild({
+      ...spec(),
+      egressOwner: { kind: "worker", role: "plugin-child", pluginId: "sample" },
+    });
+    expect(state.pierceNotices).not.toHaveBeenCalled();
+    await child.release();
   });
 
   it("binds exactly one egress lease and releases only after owned termination", async () => {

@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -63,8 +64,8 @@ describe("ToolExecutor permission audit chain", () => {
     const permissionManager = new PermissionManager(join(testHome, "permissions.json"));
     permissionManager.checkDetailed = (toolName) =>
       toolName === "blocked_tool"
-        ? { decision: "deny", reason: "test deny", }
-        : { decision: "allow", reason: "test allow", };
+        ? { decision: "deny", provenance: RULE_PROVENANCE, reason: "test deny", }
+        : { decision: "allow", provenance: RULE_PROVENANCE, reason: "test allow", };
 
     const auditLogger = createAuditLogger();
     await auditLogger.setupPermissionAuditChain(SECRET);
@@ -112,7 +113,7 @@ describe("ToolExecutor permission audit chain", () => {
     }));
 
     const permissionManager = new PermissionManager(join(testHome, "permissions.json"));
-    permissionManager.checkDetailed = () => ({ decision: "allow", reason: "test allow", });
+    permissionManager.checkDetailed = () => ({ decision: "allow", provenance: RULE_PROVENANCE, reason: "test allow", });
     const auditLogger = createAuditLogger();
     await auditLogger.setupPermissionAuditChain(SECRET);
     vi.spyOn(auditLogger, "appendPermissionAuditEntry").mockRejectedValue(new Error("append boom"));
@@ -146,7 +147,7 @@ describe("ToolExecutor permission audit chain", () => {
     }));
 
     const permissionManager = new PermissionManager(join(testHome, "permissions.json"));
-    permissionManager.checkDetailed = () => ({ decision: "allow", reason: "test allow", });
+    permissionManager.checkDetailed = () => ({ decision: "allow", provenance: RULE_PROVENANCE, reason: "test allow", });
     const auditLogger = createAuditLogger();
     await auditLogger.setupPermissionAuditChain(SECRET);
     writeFileSync(auditLogger.getPermissionAuditLogFile(), JSON.stringify({ corrupt: true }) + "\n");

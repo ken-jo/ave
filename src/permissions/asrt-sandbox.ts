@@ -973,8 +973,6 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
     assertWriteGrantsOutsideConfinementState(windowsPinnedPaths(pinned.allowWrite ?? []), declaredConfinementStatePaths(), stagingRoot);
   };
   assertStillValid();
-  // Named only once the holder is admitted, so a refused admission records no notice.
-  for (const notice of userDenyInsidePierceNotices(pierces)) log.warn(notice);
   return { model, assertStillValid };
 }
 

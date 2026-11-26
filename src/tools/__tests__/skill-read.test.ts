@@ -1,6 +1,7 @@
 // Reads require session attribution, an approved overlay entry, and a load-time manifest path.
 // Plugin generation drift refuses access; every acquired lease must be released.
 import { describe, it, expect } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -241,7 +242,7 @@ describe("skill_load — approval covers the bundled manifest", () => {
         overlay: new SkillOverlay(),
         approvals: approvals as never,
         approvalGate: ({
-          requestAndWait: async () => { prompts += 1; return { choice: "allow" }; },
+          requestAndWait: answeringRequestAndWait(() => { prompts += 1; return { choice: "allow-once" }; }),
         }) as never,
         emit: () => {},
       });
@@ -308,7 +309,7 @@ describe("skill_read — manifest fidelity", () => {
           approve: async () => {},
         } as never,
         approvalGate: ({
-          requestAndWait: async () => { prompts += 1; return { choice: "allow" }; },
+          requestAndWait: answeringRequestAndWait(() => { prompts += 1; return { choice: "allow-once" }; }),
         }) as never,
         emit: () => {},
       });
@@ -344,7 +345,7 @@ describe("skill_load — approval key domains", () => {
             approvedMaterial.push(material);
           },
         } as never,
-        approvalGate: ({ requestAndWait: async () => ({ choice: "allow" }) }) as never,
+        approvalGate: ({ requestAndWait: answeringRequestAndWait(() => ({ choice: "allow-once" })) }) as never,
         emit: () => {},
       });
       await tool.execute({ skillName: "flat" }, ctx());

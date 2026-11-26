@@ -23,6 +23,7 @@ import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const reviewResources = new PermissionTestResources();
 let directory: string;
@@ -120,7 +121,7 @@ describe("confined shell reviewer invocation", () => {
     const tool = new BashTool();
     const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "reviewed", isError: false });
     const registry = new ToolRegistry(); registry.register(tool);
-    const requestAndWait = vi.fn(async (_request: unknown) => ({ choice: "deny-once", approved: false }));
+    const requestAndWait = answeringRequestAndWait(async (_request: unknown) => ({ choice: "deny-once", approved: false }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never);
     const sessionId = "confined-shell-review";
     const input = { command };
@@ -172,7 +173,7 @@ describe("shell review requires a risk judgment", () => {
     const tool = new BashTool();
     const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "executed", isError: false });
     const registry = new ToolRegistry(); registry.register(tool);
-    const requestAndWait = vi.fn(async (_request: unknown) => ({ choice: "deny-once", approved: false }));
+    const requestAndWait = answeringRequestAndWait(async (_request: unknown) => ({ choice: "deny-once", approved: false }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never);
     const [result] = await runWithToolExecutionCwd(directory, () => executor.executeAll([
       { id: "judgment-required", name: "bash", input: { command } },

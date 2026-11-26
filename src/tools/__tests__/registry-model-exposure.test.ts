@@ -1,5 +1,6 @@
 // App-only tools remain registered for governed execution but must be absent from every model listing.
 // Registration, model exposure, and ownership are separate boundaries.
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { describe, it, expect, vi } from "vitest";
 import { ToolRegistry } from "../registry.js";
 import { createDynamicTool, type Tool } from "../base.js";
@@ -194,7 +195,7 @@ describe("executor refuses a model-origin call to an app-only tool (the model-un
   // Auto-allow makes a missing origin guard observable; model denial must precede permission checks.
   function executorFor(registry: ToolRegistry): ToolExecutor {
     const permMgr = new PermissionManager("/tmp/nonexistent-model-exposure.json");
-    permMgr.checkDetailed = () => ({ decision: "allow", reason: "test auto-allow", });
+    permMgr.checkDetailed = () => ({ decision: "allow", provenance: RULE_PROVENANCE, reason: "test auto-allow", });
     return new ToolExecutor(registry, undefined, permMgr);
   }
 

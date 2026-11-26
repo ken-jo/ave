@@ -11,6 +11,7 @@ import { PluginOperationGrantCoordinator } from "../../permissions/plugin-operat
 import { hashReceiptFiles, writeInstallReceipt } from "../../plugins/plugin-install-receipt.js";
 import { makeTestTreeWritable, servedAgentPluginsDocument, TestPluginRuntime, writeTestPluginRegistry } from "../../plugins/__tests__/test-helpers.js";
 import { mcpToolToPluginTool, type DiscoveredMcpTool } from "../../mcp/plugin-tool-from-mcp.js";
+import { admitToolInvocation } from "../invocation-ledger.js";
 import { runToolInvocation } from "../invocation-runner.js";
 import { AuditWriter } from "../pipeline/audit-writer.js";
 import { RateLimiter } from "../pipeline/rate-limiter.js";
@@ -97,20 +98,21 @@ describe("executor human re-adjudication card production", () => {
     });
     const hooks = new ScriptHookManager();
     hooks.setPluginGenerationAccess(generations);
+    const admission = admitToolInvocation(TOOL_NAME);
     const services = {
-      toolRegistry: tools, hookRunner: new HookRunner(), permissionManager: manager,
+      invocationTerminal: admission.terminal, toolRegistry: tools, hookRunner: new HookRunner(), permissionManager: manager,
       approvalGate, scriptHookManager: hooks, auditLogger: audit, requirePermissionAuditChain: true,
       hostClassifiesRiskProvider: () => true, sandboxFsContainedProvider: () => false,
       workspaceRootLifecycleProvider: () => undefined,
       auditWriter: new AuditWriter(audit, tools, hooks, true), rateLimiter: new RateLimiter(),
-      tryUserApprovalMemorySkip, pluginOperationGrants: new PluginOperationGrantCoordinator(),
+      executeReplay: vi.fn(), tryUserApprovalMemorySkip, pluginOperationGrants: new PluginOperationGrantCoordinator(),
       pluginGenerationAccessProvider: () => generations, pluginOperationIdentityProvider: () => undefined,
     };
     const input = { operation: "publish" };
     const result = await runToolInvocation(services, { id: "publish-request", name: TOOL_NAME, input }, "publishing-group", 0, {
       sessionId: "publishing-session", executionCwd: root,
       permissionContext: userPermissionContext({ headless: false }),
-    });
+    }).finally(() => admission.settle());
     expect(result).toHaveProperty("is_error", true);
     expect(invoke).not.toHaveBeenCalled();
     expect(cards).toHaveLength(1);

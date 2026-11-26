@@ -231,7 +231,7 @@ it.each([
   expect(f.execute).not.toHaveBeenCalled();
   expect(backend).not.toHaveBeenCalled();
   expect(f.wc.send).not.toHaveBeenCalled();
-  expect(verifiedCommands.prepareVerifiedShellCommand).toHaveBeenCalledWith({ command, dialect: "bash", cwd }, expect.objectContaining({ mode: expect.any(String) }), undefined);
+  expect(verifiedCommands.prepareVerifiedShellCommand).toHaveBeenCalledWith({ command, dialect: "bash", cwd }, expect.objectContaining({ mode: expect.any(String) }), expect.any(AbortSignal));
   expect(verifiedCommands.prepareVerifiedShellCommand).toHaveResolvedWith(undefined);
   expect(childProcess.spawn).not.toHaveBeenCalled();
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { setupCommittedAveHome } from "../../__tests__/support/committed-ave-home.js";
 
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
@@ -34,10 +35,7 @@ function makeLoop() {
     }),
   };
   const approvalGate = {
-    requestAndWait: vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "allow-once" as const,
-    })),
+    requestAndWait: answeringRequestAndWait(() => ({ choice: "allow-once" })),
   };
   const auditLogger = {
     isPermissionAuditChainReady: vi.fn(() => true),

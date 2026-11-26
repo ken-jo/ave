@@ -763,7 +763,7 @@ describe("ConversationLoop onTurnSummary", () => {
     );
   });
 
-  async function sameIdentityFallbackRecords(resumePrimary = false) {
+  async function sameIdentityFallbackRecords(resumePrimary = false, log = vi.fn<AuditLogger["log"]>()) {
     const model = "gpt-5.4-mini";
     const llm = fakeLlmSettings({ model });
     const primarySent: StreamTurnParams[] = [];
@@ -790,7 +790,7 @@ describe("ConversationLoop onTurnSummary", () => {
         yield { type: "message_complete", stopReason: resumePrimary ? "tool_use" : "end_turn", usage: { inputTokens: 10, outputTokens: 1 } };
       },
     }));
-    const auditLogger = { logTurn: vi.fn(), logToolCall: vi.fn(), isPermissionAuditChainReady: () => false };
+    const auditLogger = { logTurn: vi.fn(), log, isPermissionAuditChainReady: () => false };
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
       name: "read_item", description: "Read an item", source: "builtin", category: "read", version: "1",
@@ -861,6 +861,13 @@ describe("ConversationLoop onTurnSummary", () => {
     }
   });
 
+  it("settles a tool turn when terminal audit telemetry rejects", async () => {
+    const failure = new Error("terminal audit write failed");
+    const log = vi.fn<AuditLogger["log"]>().mockRejectedValueOnce(failure);
+    await expect(sameIdentityFallbackRecords(true, log)).rejects.toBe(failure);
+    expect(log).toHaveBeenCalledOnce();
+  });
+
   it("keeps mixed-provider fallback rounds out of single-model turn badge pricing", async () => {
     vi.useFakeTimers();
     const toolRegistry = new ToolRegistry();
@@ -912,7 +919,7 @@ describe("ConversationLoop onTurnSummary", () => {
     const saveSession = vi.fn(async () => {});
     const auditLogger = {
       logTurn: vi.fn(),
-      logToolCall: vi.fn(),
+      log: vi.fn<AuditLogger["log"]>(),
       isPermissionAuditChainReady: () => false,
     };
     const loop = createLoopWithRegistry(provider, toolRegistry, {
@@ -932,8 +939,8 @@ describe("ConversationLoop onTurnSummary", () => {
       },
     }, undefined, { ...userKeyboardTurn() },
     );
-    // Wait for round-two I/O before advancing each retry timer independently.
-    await retryRoundStarted;
+    // Surface an early turn failure before waiting on a round that may never start.
+    await Promise.race([retryRoundStarted, pending]);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await vi.advanceTimersByTimeAsync(1_000);
     }

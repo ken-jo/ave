@@ -893,6 +893,7 @@ export function createOutOfProcessPluginFactory(
         });
         child = native;
         // Named only once the child is admitted and running, so a refused launch records no notice.
+        for (const notice of userDenyInsidePierceNotices(floorPierces)) log.warn(notice);
         logUserDeniesInsidePierces(pluginId, floorPierces);
         // Whoever starts termination (teardown, a transport fault, revocation or the child's own exit), the
         // registration learns at once, and an unverified result quarantines it without waiting for onClosed,

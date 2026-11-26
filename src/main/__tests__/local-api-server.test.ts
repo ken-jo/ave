@@ -1,5 +1,6 @@
 // AVE_HOME points at a temporary directory; every real loopback listener is closed after each test.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -321,7 +322,7 @@ describe("local-api-server", () => {
       const gateResult = new Promise<{ requestId: string; choice: "allow-once" }>((resolve) => {
         releaseGate = resolve;
       });
-      const requestAndWait = vi.fn(async () => await gateResult);
+      const requestAndWait = answeringRequestAndWait(() => gateResult);
       let approveA2A: Parameters<NonNullable<Parameters<typeof maybeStartLocalApiServer>[0]["createA2ARouter"]>>[0]["approveAgentAction"];
       const result = await maybeStartLocalApiServer({
         services: makeServices({}, "plan", { requestAndWait }),
@@ -532,7 +533,7 @@ describe("local-api-server", () => {
     });
 
     it("calls requestAndWait with category 'agent-action' + English reason; allow-once -> true", async () => {
-      const requestAndWait = vi.fn(async () => ({ requestId: "r", choice: "allow-once" as const }));
+      const requestAndWait = answeringRequestAndWait(() => ({ requestId: "r", choice: "allow-once" }));
       const approver = buildExternalMutationApprover(
         { requestAndWait } as unknown as ApprovalGate,
         () => {},
@@ -604,7 +605,7 @@ describe("local-api-server", () => {
         const gateResult = new Promise<{ requestId: string; choice: "allow-once" }>((resolve) => {
           releaseGate = (choice) => resolve({ requestId: "r", choice });
         });
-        const requestAndWait = vi.fn(async () => gateResult);
+        const requestAndWait = answeringRequestAndWait(() => gateResult);
         const logs: string[] = [];
         const approver = buildExternalMutationApprover(
           { requestAndWait } as unknown as ApprovalGate,
@@ -642,7 +643,7 @@ describe("local-api-server", () => {
       });
 
       it("after the first ask resolves allow, a subsequent ask calls the gate again (guard released)", async () => {
-        const requestAndWait = vi.fn(async () => ({ requestId: "r", choice: "allow-once" as const }));
+        const requestAndWait = answeringRequestAndWait(() => ({ requestId: "r", choice: "allow-once" }));
         const approver = buildExternalMutationApprover(
           { requestAndWait } as unknown as ApprovalGate,
           () => {},
@@ -665,10 +666,8 @@ describe("local-api-server", () => {
       });
 
       it("the guard releases even when the gate throws, so the next ask calls the gate again", async () => {
-        const requestAndWait = vi
-          .fn()
-          .mockRejectedValueOnce(new Error("gate exploded"))
-          .mockResolvedValueOnce({ requestId: "r", choice: "allow-once" as const });
+        const requestAndWait = answeringRequestAndWait(() => ({ requestId: "r", choice: "allow-once" }))
+          .mockRejectedValueOnce(new Error("gate exploded"));
         const approver = buildExternalMutationApprover(
           { requestAndWait } as unknown as ApprovalGate,
           () => {},
