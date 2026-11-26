@@ -606,8 +606,9 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     })));
     const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] });
     try {
-      expect(stampWindowsAclAsync).toHaveBeenLastCalledWith(expect.objectContaining({ denyRead: [join(target, "foo")] }));
-      for (const [requests] of read.mock.calls) expect(requests).toEqual([join(target, "foo")]);
+      const required = [join(target, ".agents"), join(target, ".ave", "commands"), join(target, ".ave", "hooks")];
+      expect(stampWindowsAclAsync).toHaveBeenLastCalledWith(expect.objectContaining({ denyRead: [join(target, "foo"), ...required] }));
+      for (const [requests] of read.mock.calls) expect(requests).toEqual([join(target, "foo"), ...required]);
     } finally { grant.release(); }
   });
 
