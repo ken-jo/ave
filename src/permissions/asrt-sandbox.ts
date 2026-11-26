@@ -9,6 +9,7 @@ import { buildPolicyModel, policyFloorRow, policyGrantRow, userDenyCoversPierce,
 import { srtWriteFloorRow, toSrtConfig } from "./srt-policy-adapter.js";
 import { isMxcReadPattern } from "./mxc-windows.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
+import { isContainerRouteEnabled } from "../shared/container-platform.js";
 import { buildLauncherEnvironment } from "./launcher-environment.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
@@ -3095,7 +3096,7 @@ async function initializeSandboxRuntime(
     noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
     // Every contained Windows route gets its egress from the relay. Its allow list stays empty: each destination goes to the ask callback,
     // and without one the service is not started, so no route opens.
-    if (process.platform === "win32" && askCb !== undefined) {
+    if (isContainerRouteEnabled(process.platform) && askCb !== undefined) {
       startEgressRelayService({ ask: askCb, ...(trustedSettings.upstreamRouter ? { router: trustedSettings.upstreamRouter } : {}) });
     }
     if (SandboxManager === undefined) {
