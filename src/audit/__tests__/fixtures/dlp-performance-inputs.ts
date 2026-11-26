@@ -1,6 +1,25 @@
 const DRIVE_BOB = String.raw`C:\Users\bob`;
 export const MIXED_ESCAPE_FRAGMENT = String.raw`%252541&amp;amp;amp;B\u0043`;
 
+export const WINDOWS_SEPARATOR_HOMES = [
+  { shape: "UNC", path: String.raw`\\server\share\alice` },
+  { shape: "extended drive", path: String.raw`\\?\D:\fixtures\alice` },
+  { shape: "drive", path: String.raw`D:\fixtures\alice` },
+] as const;
+
+export const WINDOWS_SEPARATOR_INPUTS = [
+  { name: "separator run", input: (_path: string, size: number) => `${"\\".repeat(size - 9)}near-miss` },
+  {
+    name: "near-miss name",
+    input: (path: string, size: number) => {
+      const firstSeparator = path.indexOf("\\");
+      const prefix = path.slice(0, firstSeparator);
+      const nearMiss = `${path.slice(firstSeparator).replace(/^\\+/u, "").slice(0, -1)}X`;
+      return prefix + "\\".repeat(size - prefix.length - nearMiss.length) + nearMiss;
+    },
+  },
+] as const;
+
 export const fill = (size: number, unit: string, head = "") => head + unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
 export const GENERIC_HOME_FAMILIES = [
   ["x y ", "/home/"], ["/home/x y", ""], [DRIVE_BOB, ""], ["%C3", "/home/"], ["a", "https://"], ["a:/users/", "/home/"],

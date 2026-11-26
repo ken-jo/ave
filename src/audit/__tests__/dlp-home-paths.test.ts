@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { posix, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 import { judgeInvocation, judgeRequest } from "../../permissions/judge/__tests__/judge-request-fixture.js";
-import { MIXED_ESCAPE_FRAGMENT } from "./fixtures/dlp-performance-inputs.js";
+import { MIXED_ESCAPE_FRAGMENT, WINDOWS_SEPARATOR_HOMES, WINDOWS_SEPARATOR_INPUTS } from "./fixtures/dlp-performance-inputs.js";
 const fixture = vi.hoisted(() => ({ home: `D:/fixtures/${"long-root/".repeat(18)}home`, platform: "win32" as "win32" | "linux" | "darwin" }));
 const WINDOWS_HOME = fixture.home;
 vi.mock("node:os", async (importOriginal) => {
@@ -212,6 +212,48 @@ describe.each(["win32", "linux"] as const)("home text suffix matrix on %s", (pla
 });
 
 
+describe.each([
+  ...WINDOWS_SEPARATOR_HOMES,
+  { shape: "extended UNC", path: String.raw`\\?\UNC\server\share\alice` },
+])("Windows separator runs for $shape homes", ({ path }) => {
+  it("redacts native, doubled, slash and case variants while retaining suffix bytes", async () => {
+    fixture.home = path;
+    vi.resetModules();
+    const { redactHomePathsInText } = await import("../dlp-filter.js");
+    const spellings = [path, path.replaceAll("\\", "\\\\"), path.replaceAll("\\", "/"), path.toUpperCase()];
+    for (const spelling of spellings) {
+      for (const suffix of ["", String.raw`\Mixed/FiLe.TXT`, String.raw`\\Mixed/FiLe.TXT`, "/Mixed/FiLe.TXT", '","other":1}', ";x", ". Next"]) {
+        expect(redactHomePathsInText(spelling + suffix), spelling + suffix).toBe(`[home]${suffix}`);
+      }
+      for (const suffix of ["2", "_old", "-bak", ".bak", "é", "٢"]) {
+        expect(redactHomePathsInText(spelling + suffix), spelling + suffix).toBe(spelling + suffix);
+      }
+    }
+  });
+
+  if (path.startsWith("\\")) {
+    it("redacts the whole leading separator run with extra backslashes or a slash", async () => {
+      fixture.home = path;
+      vi.resetModules();
+      const { redactHomePathsInText } = await import("../dlp-filter.js");
+      for (const prefix of ["\\".repeat(3), "/"]) {
+        const suffix = String.raw`\\Mixed/FiLe.TXT`;
+        expect(redactHomePathsInText(prefix + path + suffix), prefix + path + suffix).toBe(`[home]${suffix}`);
+      }
+    });
+  }
+});
+
+describe.each(WINDOWS_SEPARATOR_HOMES)("small Windows separator inputs for $shape homes", ({ path }) => {
+  it.each(WINDOWS_SEPARATOR_INPUTS)("preserves the 2 KiB $name", async ({ input }) => {
+    fixture.home = path;
+    vi.resetModules();
+    const { redactHomePathsInText } = await import("../dlp-filter.js");
+    const text = input(path, 2 * 1024);
+    expect(redactHomePathsInText(text)).toBe(text);
+  });
+});
+
 describe.each(["win32", "linux"] as const)("reversible home encodings on %s", (platform) => {
   async function load(home?: string) {
     fixture.platform = platform;
@@ -305,6 +347,12 @@ it("keeps the generated entity subset complete and bounded", async () => {
   expect(Object.keys(HOME_NAMED_ENTITIES)).toHaveLength(158);
   for (const codePoint of Object.values(HOME_NAMED_ENTITIES)) expect(codePoint).toBeLessThanOrEqual(255);
   expect(HOME_NAMED_ENTITIES).toMatchObject({ sol: 47, bsol: 92, colon: 58, period: 46, lowbar: 95, amp: 38, percnt: 37, apos: 39, eacute: 233 });
+});
+
+it("preserves the mixed escape fragment at 2 KiB", async () => {
+  const { redactHomePathsInText } = await loadHomeRedactor("linux");
+  const text = MIXED_ESCAPE_FRAGMENT.repeat(Math.ceil(2 * 1024 / MIXED_ESCAPE_FRAGMENT.length));
+  expect(redactHomePathsInText(text)).toBe(text);
 });
 
 it("checks a long mixed token when a necessary path character is synthesized in later layers", async () => {
