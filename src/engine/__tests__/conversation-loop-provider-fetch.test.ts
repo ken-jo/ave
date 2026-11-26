@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { llmModelListCacheKey, type LlmModelListCache } from "../../shared/llm-model-list.js";
@@ -503,6 +503,85 @@ async function collectStream(iterable: AsyncIterable<unknown>,
       marketplaceProviderPresetSecretKey("future-router"),
     );
     expect(getSecret).not.toHaveBeenCalledWith("llm.apiKey.openai-compatible");
+  });
+
+  it.each([
+    { name: "continues to a fallback when the primary override is unlisted during its retry window", hasFallback: true, markerSet: false },
+    { name: "reports retirement when the primary is unlisted and no fallback is configured", hasFallback: false, markerSet: true },
+    { name: "reports retirement without fetching fallback credentials when the active route is blocked", hasFallback: true, markerSet: true },
+  ])("$name", async ({ hasFallback, markerSet }) => {
+    vi.useFakeTimers();
+    const primaryDispatch = vi.fn();
+    const createProvider = vi.fn(({ vendor }: ProviderConfig): LLMProvider => ({
+      vendor,
+      async *streamTurn({ model }) {
+        if (vendor === "deepseek") {
+          primaryDispatch();
+          yield { type: "error", error: "429 rate limit", classification: "rate-limit" };
+        } else {
+          yield { type: "text_delta", text: model };
+        }
+      },
+    }));
+    vi.doMock("../llm/provider-factory.js", () => ({
+      createProvider,
+      secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
+    }));
+    const { ConversationLoop } = await import("../conversation-loop.js");
+    let settings = {
+      ...fakeLlmSettings({ provider: "deepseek", model: markerSet ? "deepseek-v4-pro" : "deepseek-flash" }),
+      modelListCache: {} as LlmModelListCache,
+      fallbackChain: hasFallback ? [{ provider: "openai" as const, model: "o4-mini" }] : [],
+    };
+    const getSecret = vi.fn((_key: string) => "fixture-key");
+    const loop = new ConversationLoop({
+      settingsService: { get: () => settings, getSecret },
+      ...(markerSet ? {} : { modelOverride: "deepseek-v4-pro" }),
+      ...makeLoopDeps(new ToolRegistry()),
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    await loop.whenProviderReady();
+
+    const provider = loop.provider;
+    assert(provider);
+    const pending = collectStream(provider.streamTurn({
+      model: "deepseek-v4-pro",
+      systemPrompt: "sys",
+      messages: [{ role: "user", content: "hi" }],
+    }));
+    const outcome = pending.then((events) => ({ events }), (error: unknown) => ({ error }));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(primaryDispatch).toHaveBeenCalledOnce();
+    expect(getSecret.mock.calls).toEqual([["llm.apiKey.deepseek"]]);
+    settings = {
+      ...settings,
+      ...(markerSet ? { retiredProvider: { vendor: "deepseek", model: "deepseek-v4-pro", reason: "unlisted" } as const } : {}),
+      modelListCache: {
+        [llmModelListCacheKey("deepseek", settings.vendors.deepseek.baseUrl)]: {
+          vendor: "deepseek",
+          endpoint: "https://api.deepseek.com/v1/models",
+          complete: true,
+          models: ["deepseek-flash"],
+          fetchedAt: "2026-10-13T00:00:00.000Z",
+        },
+      },
+    };
+    await vi.advanceTimersByTimeAsync(500);
+    const attemptsAtRetryBoundary = primaryDispatch.mock.calls.length;
+    const providersAtRetryBoundary = createProvider.mock.calls.map(([{ vendor }]) => vendor);
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    const fellBack = hasFallback && !markerSet;
+    if (fellBack) {
+      expect(await outcome).toEqual({ events: [{ type: "text_delta", text: "o4-mini" }] });
+    } else {
+      expect(await outcome).toMatchObject({ error: { name: "RetiredModelError" } });
+    }
+    expect(attemptsAtRetryBoundary).toBe(1);
+    expect(primaryDispatch).toHaveBeenCalledOnce();
+    expect(providersAtRetryBoundary).toEqual(fellBack ? ["deepseek", "openai"] : ["deepseek"]);
+    expect(getSecret.mock.calls).toEqual(fellBack
+      ? [["llm.apiKey.deepseek"], ["llm.apiKey.openai"]]
+      : [["llm.apiKey.deepseek"]]);
   });
 
   it.each([

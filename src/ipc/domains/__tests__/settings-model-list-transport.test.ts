@@ -101,6 +101,37 @@ describe("model list IPC transport injection", () => {
     });
   });
 
+  it("reports a cache save failure when discovery returns a different endpoint", async () => {
+    const { registerSettingsHandlers } = await import("../settings.js");
+    const deps = makeDeps(vi.fn() as unknown as typeof fetch);
+    const listing = { ok: true, ...OPENAI_LISTING, endpoint: "https://different.example/v1/models" };
+    listLlmModelsFromSettingsMock.mockResolvedValueOnce(listing);
+    registerSettingsHandlers(deps as never);
+
+    await expect(invoke(CHANNELS.settings.listLlmModels, { vendor: "openai" })).resolves.toEqual({
+      ...listing, cacheSaveFailed: true,
+    });
+    expect(deps.settingsService.patch).not.toHaveBeenCalled();
+  });
+
+  it("silently leaves a newer cache entry in place", async () => {
+    const { registerSettingsHandlers } = await import("../settings.js");
+    const deps = makeDeps(vi.fn() as unknown as typeof fetch);
+    const newer = { ...OPENAI_LISTING, models: ["fixture-newer-model"], fetchedAt: "2026-10-24T00:00:00.000Z" };
+    const llm = {
+      ...deps.settingsService.get("llm"),
+      modelListCache: { [llmModelListCacheKey("openai")]: newer },
+    };
+    deps.settingsService.get.mockImplementation((key) => key === "llm" ? llm : {});
+    listLlmModelsFromSettingsMock.mockResolvedValueOnce({ ok: true, ...OPENAI_LISTING });
+    registerSettingsHandlers(deps as never);
+
+    await expect(invoke(CHANNELS.settings.listLlmModels, { vendor: "openai" })).resolves.toEqual({
+      ok: true, ...OPENAI_LISTING,
+    });
+    expect(deps.settingsService.patch).not.toHaveBeenCalled();
+  });
+
   it("persists a notice dismissal without refreshing provider bindings", async () => {
     const { registerSettingsHandlers } = await import("../settings.js");
     const deps = {

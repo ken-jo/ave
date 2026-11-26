@@ -1149,6 +1149,34 @@ describe("LlmTab provider cards", () => {
     expect(within(chooserOption(model)).queryByTestId(`llm-tab:model-vision:${model}`)).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["en", "Failed to save settings"],
+    ["ko", "설정 저장 실패"],
+  ] as const)("shows the model list cache save failure in %s", async (locale, message) => {
+    const { getLocale, setLocale } = await import("../../../../i18n/runtime.js");
+    const { loadLocaleMessages } = await import("../../../../i18n/messages/index.js");
+    const previousLocale = getLocale();
+    await loadLocaleMessages(locale);
+    setLocale(locale);
+    try {
+      const model = "gpt-4o";
+      const { api } = profileApi({ vendors: { openai: { model } } }, {
+        hasApiKey: storedKeysFor("openai"),
+        listLlmModels: vi.fn().mockResolvedValue(listedModels(
+          "openai", "https://different.example/v1/models", [model], { cacheSaveFailed: true },
+        )),
+      });
+      await renderTab(api, { vendor: "openai", model });
+      await waitFor(() => {
+        const status = screen.getByTestId("llm-tab:connection-subline:openai");
+        expect(status).toHaveAttribute("data-provider-sync-status", "error");
+        expect(status).toHaveTextContent(message);
+      });
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
   it("does not apply the generic route's named no-tools entry to a preset", async () => {
     const gateway = preset("model-gateway", "Model Gateway", "https://gateway.example/v1");
     const model = "gpt-4.1";

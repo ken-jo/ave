@@ -194,12 +194,42 @@ async function run(
     model: "test-model",
     control,
     llmSettings: LLM_SETTINGS,
+    activeRuntime: {
+      getLlm: () => ({ activeChatRuntime: { kind: "api" } }),
+      onMismatch: () => { throw new Error("Unexpected runtime mismatch"); },
+    },
     abortSignal,
     now: NOW,
   });
 }
 
 describe("runRationaleOnlyRound", () => {
+  it("interrupts before dispatch when the active model is retired", async () => {
+    const provider = new RecordingProvider([{ type: "message_complete", stopReason: "end_turn" }]);
+    const onMismatch = vi.fn();
+    const activeLlm: ReturnType<streamCollector.ActiveRuntimeStreamGuard["getLlm"]> = {
+      activeChatRuntime: { kind: "api" },
+    };
+    const input = {
+      provider,
+      model: "test-model",
+      control: fixture(),
+      llmSettings: LLM_SETTINGS,
+      activeRuntime: {
+        getLlm: () => activeLlm,
+        onMismatch,
+      },
+      now: NOW,
+    };
+
+    const pending = runRationaleOnlyRound(input);
+    activeLlm.retiredProvider = { vendor: provider.vendor, model: "test-model", reason: "unlisted" };
+
+    await expect(pending).resolves.toEqual({ kind: "interrupted", usage: null });
+    expect(onMismatch).toHaveBeenCalledOnce();
+    expect(provider.requests).toEqual([]);
+  });
+
   it("includes host-bound hook context separately from user evidence", async () => {
     const control = fixture();
     const context = '<system-reminder source="hook" identity="reviewed-hash">External policy note</system-reminder>';
@@ -440,7 +470,7 @@ describe("runRationaleOnlyRound", () => {
   });
 
   it("rejects a collector interruption without a host boundary owner", async () => {
-    const collect = vi.spyOn(streamCollector, "collectRoundStream").mockResolvedValueOnce({
+    const collect = vi.spyOn(streamCollector, "collectActiveRuntimeRoundStream").mockResolvedValueOnce({
       kind: "interrupted",
       text: "",
     });

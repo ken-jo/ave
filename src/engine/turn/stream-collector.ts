@@ -17,6 +17,12 @@ import {
 import { providerMatchesActiveChatRuntime } from "./provider.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { imageInputRecoveryMessage } from "../../shared/model-capability-settings.js";
+import { RetiredModelError } from "../llm/vercel/fallback-chain.js";
+
+export interface ActiveRuntimeStreamGuard {
+  getLlm: () => Pick<LLMSettings, "activeChatRuntime" | "retiredProvider">;
+  onMismatch: () => void;
+}
 
 export interface StreamCollectParams {
   provider: LLMProvider;
@@ -70,11 +76,10 @@ export type StreamCollectResult =
 // Recheck the active route beside dispatch to cover independently constructed or stale loops.
 export function collectActiveRuntimeRoundStream(
   params: StreamCollectParams,
-  activeLlm: Pick<LLMSettings, "activeChatRuntime" | "retiredProvider">,
-  onRuntimeMismatch: () => void,
+  activeRuntime: ActiveRuntimeStreamGuard,
 ): Promise<StreamCollectResult> {
-  if (!providerMatchesActiveChatRuntime(params.provider, activeLlm)) {
-    onRuntimeMismatch();
+  if (!providerMatchesActiveChatRuntime(params.provider, activeRuntime.getLlm())) {
+    activeRuntime.onMismatch();
     return Promise.resolve({ kind: "interrupted", text: "" });
   }
   return collectRoundStream(params);
@@ -246,6 +251,19 @@ export async function collectRoundStream(
   } catch (err) {
     if (abortSignal?.aborted) {
       return { kind: "interrupted", text };
+    }
+    if (err instanceof RetiredModelError) {
+      return {
+        kind: "stream_error",
+        userMessage: t("app.retiredModelNoticeTitle", { model: err.model }),
+        classification: "model",
+        providerError: {
+          origin: "unknown",
+          classification: "model",
+          providerCode: "model-retired",
+          messagePreview: err.message,
+        },
+      };
     }
     if (isContextLengthError(err)) {
       return { kind: "context_error", errorMessage: (err as Error)?.message ?? String(err) };

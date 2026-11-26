@@ -214,14 +214,20 @@ export async function buildProvider(
         chain,
         async (v) => (await deps.settingsService.getSecret(secretKeyFor(v))) ?? "",
         createLoopProvider,
-        ({ provider, model, baseUrl }) => {
-          const cache = deps.settingsService.get("llm").modelListCache;
-          return resolveModelRetirement({
-            vendor: provider,
-            model,
-            baseUrl,
-            listing: cache?.[llmModelListCacheKey(provider, baseUrl)],
-          }) === "unlisted";
+        {
+          primaryBaseUrl: effectiveBaseUrl,
+          getRetiredModelId: ({ provider, model, baseUrl }) => {
+            const { modelListCache, retiredProvider } = deps.settingsService.get("llm");
+            // The saved-route marker fences API-key dispatch and credential access for the whole walk.
+            if (typeof retiredProvider === "object") return retiredProvider.model;
+            const retirement = resolveModelRetirement({
+              vendor: provider,
+              model,
+              baseUrl,
+              listing: modelListCache?.[llmModelListCacheKey(provider, baseUrl)],
+            });
+            return retirement === "unlisted" ? model : undefined;
+          },
         },
       );
     } catch {

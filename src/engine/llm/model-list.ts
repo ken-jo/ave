@@ -904,16 +904,15 @@ export async function persistRouteModelList(
   address: LlmRouteCatalogAddress,
   result: Extract<LlmModelListResult, { ok: true }>,
   options?: Parameters<SettingsService["patch"]>[1],
-): Promise<boolean> {
+): Promise<"saved" | "route-mismatch" | "empty" | "superseded"> {
   const { vendor, baseUrl, credentialScope } = address;
   const expectedBaseUrl = baseUrl || STANDARD_MODEL_LIST_BASE_URLS[vendor];
-  if (result.vendor !== vendor || !result.models.length || !expectedBaseUrl || !sameModelListEndpoint(result.endpoint, expectedBaseUrl)) {
-    return false;
-  }
+  if (!expectedBaseUrl || result.vendor !== vendor || !sameModelListEndpoint(result.endpoint, expectedBaseUrl)) return "route-mismatch";
+  if (!result.models.length) return "empty";
   const key = llmModelListCacheKey(vendor, baseUrl, credentialScope);
   // Merge at write time so another route's discovery is never replaced by a stale snapshot.
   const { [key]: previous, ...otherEntries } = settingsService.get("llm").modelListCache ?? {};
-  if (previous && Date.parse(previous.fetchedAt) > Date.parse(result.fetchedAt)) return false;
+  if (previous && Date.parse(previous.fetchedAt) > Date.parse(result.fetchedAt)) return "superseded";
   await settingsService.patch({
     llm: {
       modelListCache: {
@@ -931,7 +930,7 @@ export async function persistRouteModelList(
       },
     },
   }, options);
-  return true;
+  return "saved";
 }
 
 /** Refresh capacity from the active endpoint without requiring a settings window.
@@ -970,5 +969,5 @@ export async function refreshRouteModelList(params: {
     log.info(`model list: ${address.vendor} did not answer (${result.error})`);
     return false;
   }
-  return persistRouteModelList(settingsService, address, result, { notifyLlmListeners: true });
+  return (await persistRouteModelList(settingsService, address, result, { notifyLlmListeners: true })) === "saved";
 }

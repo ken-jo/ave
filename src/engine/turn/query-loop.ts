@@ -35,7 +35,7 @@ import type {
   ToolUseBlock,
 } from "../../tools/executor.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../../tools/registry.js";
-import { collectActiveRuntimeRoundStream } from "./stream-collector.js";
+import { collectActiveRuntimeRoundStream, type ActiveRuntimeStreamGuard } from "./stream-collector.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import { vendorSupportsLengthContinuation } from "../llm/vendor-capabilities.js";
 import { rejectedToolNameFromError, withoutDroppedTools } from "../llm/rejected-tool-schema.js";
@@ -149,6 +149,10 @@ export async function queryLoop(
     // What history stores of an answer. A routine loop keeps its <summary> block out of the conversation; the turn's return keeps it.
     const storedText = (text: string, partial = false): string => (self.deps.stripRoutineSummary ? stripRoutineSummary(text, { partial }) : text);
     const llmSettings = self.deps.settingsService.get("llm");
+    const activeRuntime: ActiveRuntimeStreamGuard = {
+      getLlm: () => self.deps.settingsService.get("llm"),
+      onMismatch: () => self.abortCurrentTurn(new Error("active chat route became unavailable")),
+    };
     const storedBlock = getLlmVendorSettings(
       llmSettings.vendors,
       llmSettings.provider,
@@ -877,8 +881,7 @@ export async function queryLoop(
             },
           }),
         },
-        self.deps.settingsService.get("llm"),
-        () => self.abortCurrentTurn(new Error("active chat route became unavailable")),
+        activeRuntime,
       );
       // Consume prefill once; the continuation branch re-arms it only if the chain extends.
       continuationPrefillText = undefined;
@@ -1841,6 +1844,7 @@ export async function queryLoop(
             provider: turnProvider,
             model,
             llmSettings: roundLlmSettings,
+            activeRuntime,
             ...(abortSignal ? { abortSignal } : {}),
             requestAnchor: bounds.requestAnchor ?? null,
             rationaleProvenance: currentRationaleProvenance,

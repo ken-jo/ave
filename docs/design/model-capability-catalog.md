@@ -626,7 +626,12 @@ names the model and its tier.
 A saved fallback in either tier is kept as saved; its picker shows no selection and
 names the tier ("… is retired — choose a model" / "… is scheduled for retirement —
 choose a model"). The fallback walk skips entries proven retired by the current listing
-for their route. A catalog-only deprecation keeps a saved fallback eligible.
+for their route. The walk rechecks the primary and each fallback before dispatch,
+after retry waits, and after fallback credential lookup. A retired primary can
+hand off to an eligible fallback if the active route remains available. If the
+saved route becomes blocked during the primary's retry wait, the turn reports
+retirement and stops API-key dispatch. A catalog-only deprecation keeps a saved
+fallback eligible.
 
 If a refreshed catalog deprecates a shipped default, the next launch hides it from
 the choices and shows the non-blocking warning if it is still the saved selection.

@@ -963,7 +963,9 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     const previous = settingsService.get("llm");
     const presets = settingsService.get("marketplace").installedProviderPresets;
     try {
-      if (!await persistRouteModelList(settingsService, address, result)) return result;
+      const saveStatus = await persistRouteModelList(settingsService, address, result);
+      if (saveStatus === "route-mismatch") return { ...result, cacheSaveFailed: true as const };
+      if (saveStatus !== "saved") return result;
     } catch (err) {
       log.warn({ err }, "could not save model listing");
       return { ...result, cacheSaveFailed: true as const };
