@@ -9,6 +9,7 @@ import type * as SandboxProcessHome from "../../permissions/sandbox-process-home
 import type * as StampTargets from "../../permissions/windows-stamp-targets.js";
 import type * as ConfigurationHandles from "../../shared/windows-configuration-handles.js";
 import type * as PathFacts from "../../shared/windows-path-facts.js";
+import { isPlainWindowsStampPath } from "../../shared/windows-path-spelling.js";
 
 type Fn = (...args: unknown[]) => unknown;
 const DRIVE_PATH = /^[A-Za-z]:[\x5c/]/;
@@ -79,6 +80,16 @@ export async function simulatedWindowsPathFacts(actual: typeof PathFacts, native
     return { ...facts(path), ancestors };
   };
   return { ...actual,
+    holdWindowsDirectory: async path => process.platform !== "win32"
+      ? actual.holdWindowsDirectory(path) : { facts: facts(path), launcherArgs: [], command: (executable, args) => ({ executable, args: [...args] }), stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
+          // No launcher runs here: the stand-in's verdict is the child's own end.
+          bind: child => {
+            const verdict = new Promise<{ kind: "ok"; stopped: boolean } | { kind: "unconfirmed" }>(resolve => {
+              child.once("close", () => resolve({ kind: "ok", stopped: false }));
+              child.once("error", () => resolve({ kind: "unconfirmed" }));
+            });
+            return { verdict, stop: () => { child.kill(); return verdict; } };
+          }, isHeld: () => true, async release() {} },
     pinWindowsPaths: paths => process.platform !== "win32"
       ? actual.pinWindowsPaths(paths) : paths.map(walked),
     readWindowsDacls: (paths, options) => process.platform !== "win32"
@@ -160,15 +171,25 @@ export function simulatedDriveModule(actual: typeof Module, onDrive: () => boole
 }
 
 /** Lifecycle fixtures on another kernel validate spellings but cannot open native handles. */
-export function simulatedStampTargets(actual: typeof StampTargets): typeof StampTargets {
-  return { ...actual, pinWindowsFilesystemConfig: <T extends Parameters<typeof actual.pinWindowsFilesystemConfig>[0]>(filesystem: T): T => {
-    if (host === "win32") return actual.pinWindowsFilesystemConfig(filesystem);
+export function simulatedStampTargets(actual: typeof StampTargets, requiresNativePinning = () => false): typeof StampTargets {
+  const shouldPinNatively = () => host === "win32" || process.platform !== "win32" || requiresNativePinning();
+  const pinWindowsFilesystemConfig: typeof actual.pinWindowsFilesystemConfig = filesystem => {
+    if (shouldPinNatively()) return actual.pinWindowsFilesystemConfig(filesystem);
     for (const entries of [filesystem?.allowRead, filesystem?.allowWrite, filesystem?.denyRead, filesystem?.denyWrite]) {
       for (const entry of entries ?? []) {
         const path = typeof entry === "string" ? entry : entry.path;
-        if (/[A-Za-z]:/.test(path) && !actual.isPlainWindowsStampPath(path.replace(/\//g, "\x5c"))) throw new Error("Invalid simulated drive path");
+        if (/[A-Za-z]:/.test(path) && !isPlainWindowsStampPath(path.replace(/\//g, "\x5c"))) throw new Error("Invalid simulated drive path");
       }
     }
     return filesystem;
-  } };
+  };
+  const projectGrants = (grants: StampTargets.WindowsGrantRequests["allowRead"]) => grants.map(({ entry }) => {
+    const path = typeof entry === "string" ? entry : entry.path;
+    // Expansion gives host fixture paths Windows separators. Restore them before policy composition.
+    const projected = /^\\(?!\\)/u.test(path) ? path.replaceAll("\\", "/") : path;
+    return typeof entry === "string" ? projected : { ...entry, path: projected };
+  });
+  return { ...actual, pinWindowsFilesystemConfig, pinWindowsGrantRequests: requests => shouldPinNatively()
+    ? actual.pinWindowsGrantRequests(requests)
+    : pinWindowsFilesystemConfig({ allowRead: projectGrants(requests.allowRead), allowWrite: projectGrants(requests.allowWrite) }) };
 }

@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager, type ReviewerDispatchResult } from "../permission-manager.js";
 import { ApprovalGate, isHostApprovalRejectedDecision, type ApprovalRequest } from "../approval-gate.js";
-import { createEgressAskCallback } from "../egress-ask.js";
+import { createEgressAskCallback, EGRESS_DENY_REASONS } from "../egress-ask.js";
 import { createApprovalGateEgressRequester, createShellNetworkPermissionEvaluator } from "../egress-approval.js";
 import { EgressGrantStore } from "../egress-grants.js";
 import type { ShellEgressOwner } from "../egress-invocations.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { bindRemoteControllerToSession, type RemoteControllerAuthority } from "../../shared/chat-origin.js";
 import type { SandboxEgressDecisionAuditEntry } from "../../audit/sandbox-audit.js";
+import type { EgressGrantScope } from "../../shared/egress-grant-scopes.js";
 
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -18,7 +19,7 @@ const DESTINATION = { host: "downloads.example.com", port: 443 };
 const TOKEN = "1".repeat(32);
 
 function fixture(options: { headless?: boolean; forced?: boolean; askEnabled?: boolean; mode?: "strict" | "default" | "auto" | "allow";
-  remoteControllerAuthority?: RemoteControllerAuthority; afterAnswer?: () => void } = {}) {
+  remoteControllerAuthority?: RemoteControllerAuthority; abortSignal?: AbortSignal; afterAnswer?: () => void } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "egress-pipeline-"));
   directories.push(directory);
   const manager = new PermissionManager(join(directory, "permissions.json"));
@@ -38,7 +39,7 @@ function fixture(options: { headless?: boolean; forced?: boolean; askEnabled?: b
   const audit = vi.fn<(entry: SandboxEgressDecisionAuditEntry) => void>();
   const callback = createEgressAskCallback({
     identityStrength: () => "kernel-channel", ownerOf: (token) => token === TOKEN ? owner : undefined,
-    abortSignalOf: () => undefined, workerAllowedDomains: () => [], grants,
+    abortSignalOf: () => options.abortSignal, workerAllowedDomains: () => [], grants,
     evaluateShellPermission: evaluate, shellAskEnabled: () => options.askEnabled ?? true, requester: () => async request => {
       const decision = await requester(request);
       options.afterAnswer?.();
@@ -55,9 +56,9 @@ function fixture(options: { headless?: boolean; forced?: boolean; askEnabled?: b
     await vi.waitFor(() => expect(sentApprovalCards(wc)).toHaveLength(count));
     return sentApprovalCards<ApprovalRequest>(wc)[count - 1]!;
   };
-  const answer = (request: ApprovalRequest, allow: boolean) => gate.resolveFromDesktopRenderer(request.id, {
+  const answer = (request: ApprovalRequest, allow: boolean, scope: EgressGrantScope = "once") => gate.resolveFromDesktopRenderer(request.id, {
     requestId: request.id, nonce: request.nonce, hmac: request.hmac, choice: allow ? "allow-once" : "deny-once",
-    ...(allow ? { egressScope: "once" as const } : {}),
+    ...(allow ? { egressScope: scope } : {}),
   }, wc as never);
   return { manager, owner, grants, wc, gate, evaluate, subject, callback, connection, card, answer, onNoApprover, audit };
 }
@@ -67,7 +68,61 @@ async function remember(f: ReturnType<typeof fixture>) {
 }
 
 describe("actual shell network pipeline authority", () => {
-  it.each(["desk first", "revocation first"] as const)("keeps the correct egress refusal with %s", async order => {
+  it.each([
+    { throws: true, basis: "policy", reason: "Permission recheck failed during approval." },
+    { throws: false, basis: "rule", reason: "denied by host rule Network(downloads.example.com:443)" },
+  ])("audits a network approval recheck refusal on the $basis basis", async ({ throws, basis, reason }) => {
+    const f = fixture();
+    const grant = vi.spyOn(f.grants, "grant");
+    const save = vi.spyOn(f.gate, "commitStagedAllowSaves");
+    const pending = f.callback(DESTINATION, { attributionKey: TOKEN, identity: "listener", phase: "resolved",
+      addresses: ["93.184.216.34"], resolution: "pinned" });
+    const request = await f.card(1);
+    const check = f.manager.checkLoadedNetworkPermission.bind(f.manager);
+    const recheck = vi.spyOn(f.manager, "checkLoadedNetworkPermission").mockImplementationOnce((...args) => {
+      if (throws) throw new Error("internal network check detail");
+      f.manager.setRules([{ pattern: "Network(downloads.example.com:443)", action: "deny" }]);
+      return check(...args);
+    });
+    expect(f.answer(request, true, "session")?.choice).toBe("allow-once");
+    const decision = await pending;
+    expect(recheck).toHaveBeenCalledOnce();
+    expect(grant).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(await f.grants.matchingScope(f.subject, { ...DESTINATION, network: "public" }, ["once", "session", "always"])).toBeUndefined();
+    expect(f.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ decision: "deny", basis, reason, scope: null }));
+    expect(decision).toEqual({ allow: false, reason });
+  });
+
+  it.each(["live", "interrupted"] as const)("handles a fresh rule denial with revocation text when the invocation is %s", async (state) => {
+    const controller = new AbortController();
+    const f = fixture({ abortSignal: controller.signal, afterAnswer: () => {
+      if (state === "interrupted") controller.abort();
+    } });
+    const grant = vi.spyOn(f.grants, "grant");
+    const save = vi.spyOn(f.gate, "commitStagedAllowSaves");
+    const pending = f.callback(DESTINATION, { attributionKey: TOKEN, identity: "listener", phase: "resolved",
+      addresses: ["93.184.216.34"], resolution: "pinned" });
+    const request = await f.card(1);
+    const pattern = "Network(downloads.example.com:443)";
+    const check = f.manager.checkLoadedNetworkPermission.bind(f.manager);
+    const recheck = vi.spyOn(f.manager, "checkLoadedNetworkPermission").mockImplementationOnce((...args) => {
+      f.manager.setRules([{ pattern, action: "deny" }]);
+      const checked = check(...args);
+      return { ...checked, permission: { ...checked.permission, reason: EGRESS_DENY_REASONS.controllerRevoked } };
+    });
+    expect(f.answer(request, true, "session")?.choice).toBe("allow-once");
+    const reason = state === "live" ? `${EGRESS_DENY_REASONS.denyRule} ${pattern}` : EGRESS_DENY_REASONS.unattributed;
+    await expect(pending).resolves.toEqual({ allow: false, reason, ...(state === "interrupted" ? { unattributed: true } : {}) });
+    expect(f.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      decision: "deny", reason, basis: state === "live" ? "rule" : "policy", scope: null,
+    }));
+    expect(recheck).toHaveBeenCalledOnce();
+    expect(grant).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it.each(["desk first", "revocation first", "revocation before delivery"] as const)("keeps the correct egress refusal with %s", async order => {
     let current = true;
     const remoteControllerAuthority = bindRemoteControllerToSession({
       kind: "tailnet-controller",
@@ -76,18 +131,30 @@ describe("actual shell network pipeline authority", () => {
       pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => current },
     }, "session-1");
     const f = fixture({ remoteControllerAuthority, afterAnswer: () => { current = false; } });
+    if (order === "revocation before delivery") {
+      const requestAndWait = f.gate.requestAndWait.bind(f.gate);
+      vi.spyOn(f.gate, "requestAndWait").mockImplementationOnce(request => {
+        current = false;
+        return requestAndWait(request);
+      });
+    }
     const pending = f.callback(DESTINATION, { attributionKey: TOKEN, identity: "listener", phase: "resolved",
       addresses: ["93.184.216.34"], resolution: "pinned" });
-    const request = await f.card(1);
-    if (order === "revocation first") current = false;
-    const decision = await f.gate.resolveFromDesktopRendererWithFreshIdentity(request.id, {
-      requestId: request.id, nonce: request.nonce, hmac: request.hmac, choice: "deny-once",
-    }, f.wc as never);
-    expect(decision?.choice).toBe("deny-once");
-    expect(isHostApprovalRejectedDecision(decision)).toBe(order === "revocation first");
+    if (order !== "revocation before delivery") {
+      const request = await f.card(1);
+      if (order === "revocation first") current = false;
+      const decision = await f.gate.resolveFromDesktopRendererWithFreshIdentity(request.id, {
+        requestId: request.id, nonce: request.nonce, hmac: request.hmac, choice: "deny-once",
+      }, f.wc as never);
+      expect(decision?.choice).toBe("deny-once");
+      expect(isHostApprovalRejectedDecision(decision)).toBe(order === "revocation first");
+    }
     const reason = order === "desk first" ? "denied by the user" : "remote-controller-revoked";
     expect(await pending).toEqual({ allow: false, reason });
-    expect(f.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ decision: "deny", reason }));
+    if (order === "revocation before delivery") expect(sentApprovalCards(f.wc)).toHaveLength(0);
+    expect(f.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      decision: "deny", reason, basis: order === "desk first" ? "prompt" : "policy",
+    }));
   });
 
   it("a remembered destination cannot bypass an inherited floor in allow mode", async () => {

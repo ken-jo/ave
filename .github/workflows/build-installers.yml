@@ -223,6 +223,9 @@ jobs:
             test "$(x86_64-linux-gnu-gcc -dumpmachine)" = x86_64-linux-gnu
           fi
           dpkg-query -W -f='${Package} ${Version} ${Architecture}\n' "${tools[@]#*:}" 2>/dev/null | sort -u || true
+      - name: Install the pinned path helper toolchain
+        if: matrix.target == 'win'
+        run: node .github/scripts/install-windows-path-kind-rust.mjs x64
       - name: Verify native owner token flow
         if: matrix.target == 'win'
         run: node test/scripts/probes/windows-owner-flow.mjs
@@ -268,6 +271,9 @@ jobs:
           # explicitly uses publish=never; other builds use that script default.
           # The separate publisher assembles all platforms for tag releases.
           node scripts/build-installers.mjs "${args[@]}"
+      - name: Verify macOS app and helpers are arm64
+        if: matrix.target == 'mac'
+        run: node scripts/verify-macos-package-arch.mjs
       # Hard gate: every ELF and every .node in linux-unpacked, the AppImage
       # runtime, and the extracted deb and rpm payloads (plus their declared
       # arch) must be x86-64 by both the ELF header and file(1).

@@ -1,0 +1,23 @@
+[package]
+name = "ave-path-kind"
+version = "0.1.0"
+edition = "2024"
+publish = false
+build = false
+
+[features]
+fixture = []
+
+[[bin]]
+name = "ave-path-kind"
+path = "src/main.rs"
+
+[[bin]]
+name = "ave-path-pin-test"
+path = "src/fixture.rs"
+required-features = ["fixture"]
+
+[[bin]]
+name = "ave-path-kind-hold-fixture"
+path = "src/hold-fixture.rs"
+required-features = ["fixture"]

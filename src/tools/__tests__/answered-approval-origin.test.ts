@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
@@ -80,6 +81,26 @@ describe("plugin-emitted invocations answered at the desk", () => {
     expect(requestAndWait).toHaveBeenCalledOnce();
     expect((await auditRows()).filter(row => row.toolUseId === "plugin-tool-write" && row.decision === "allow"))
       .toEqual([expect.objectContaining({ trustOrigin: "user-keyboard" })]);
+  });
+
+  it.each(["ordinary", "directory"] as const)("records a recordless %s refusal as host-owned", async (route) => {
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    const path = join(route === "directory" ? outside : project, "refused.txt");
+    const requestAndWait = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "deny-always" as const }));
+    const saveDeny = vi.spyOn(manager, "addAlwaysDeniedPersist");
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const [result] = await executor.executeAll([{ id: "host-refused", name: "write_file", input: { path, content: "refused" } }], {
+      sessionId: randomUUID(), executionCwd: project, permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
+    });
+    expect(requestAndWait).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ category: "tool", toolName: "write_file" }));
+    expect(requestAndWait.mock.calls[0]?.[0].kind).toBe(route === "directory" ? "out-of-allowed-dir" : undefined);
+    expect(result).toMatchObject({ is_error: true, content: t("be_executor.approvalRejectedByHost", { name: "write_file", reason: t("be_executor.approvalHostRejectedReason") }) });
+    expect(existsSync(path)).toBe(false);
+    expect(saveDeny).not.toHaveBeenCalled();
+    expect(await ledger("host-refused")).toEqual([expect.objectContaining({
+      decision: "deny", trustOrigin: "unknown", terminalKind: "denied",
+    })]);
   });
 
   it("records the directory grant and allow as the desk's", async () => {
@@ -167,16 +188,23 @@ describe("the answerer contract", () => {
     })).rejects.toThrow("does not settle this allow of write_file");
   });
 
-  it("refuses an allow the gate settled for another invocation before the tool runs", async () => {
-    const requestAndWait = vi.fn(async () => answeredApprovalDecision({ choice: "allow-once" }, "desk", "write_file", "other-invocation"));
+  it.each([
+    { substitution: "another invocation", toolUseId: "other-invocation", reason: "does not settle this allow of write_file" },
+    { substitution: "another card", toolUseId: "plugin-substituted-write", reason: "Approval answer does not match the pending request" },
+  ])("refuses an allow the gate settled for $substitution before the tool runs", async ({ substitution, toolUseId, reason }) => {
+    const requestAndWait = vi.fn((request: ApprovalRequestInput) => answeredApprovalDecision({
+      choice: "allow-once", requestId: substitution === "another invocation" ? request.id : "another-card",
+    }, "desk", "write_file", toolUseId));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     await expect(executor.executeAll([{ id: "plugin-substituted-write", name: "write_file", input: { path: join(project, "substituted.txt"), content: "substituted" } }], {
       sessionId: randomUUID(), executionCwd: project,
       permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
-    })).rejects.toThrow("does not settle this allow of write_file");
+    })).rejects.toThrow(reason);
     await expect(readFile(join(project, "substituted.txt"))).rejects.toThrow();
     await vi.waitFor(async () => expect((await auditRows()).filter(row => row.toolUseId === "plugin-substituted-write" && row.decision !== "ask"))
-      .toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]));
+      .toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown", terminalKind: "denied",
+        denyReasons: [expect.objectContaining({ reason: expect.stringContaining(reason) })],
+      })]));
   });
 
   it("keeps the claim open when the terminal writer refuses another invocation's allow, so the host writes the one row", async () => {
@@ -200,18 +228,43 @@ describe("the answerer contract", () => {
     })]);
   });
 
-  it("ends a selected deny whose record fails its integrity check with the host's own refusal row", async () => {
-    const requestAndWait = vi.fn(async (request: ApprovalRequestInput) =>
-      answeredApprovalDecision({ requestId: request.id, choice: "deny-once" }, "desk", request.toolName, "other-invocation"));
+  it.each([
+    { substitution: "another invocation", choice: "deny-once", foreignToolUseId: "other-invocation", reason: "does not settle this deny of write_file" },
+    { substitution: "another invocation", choice: "deny-always", foreignToolUseId: "other-invocation", reason: "does not settle this deny of write_file" },
+    { substitution: "another card", choice: "deny-always", foreignToolUseId: "foreign-deny", reason: "Approval answer does not match the pending request" },
+  ] as const)("refuses a $choice the gate settled for $substitution before it is selected or remembered", async ({ choice, substitution, foreignToolUseId, reason }) => {
+    const requestAndWait = vi.fn((request: ApprovalRequestInput) => answeredApprovalDecision({
+      choice, requestId: substitution === "another invocation" ? request.id : "another-card",
+    }, "desk", "write_file", foreignToolUseId));
+    const remembered = vi.spyOn(manager, "addAlwaysDeniedPersist");
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
-    await executor.executeAll([{ id: "integrity-deny", name: "write_file", input: { path: join(project, "integrity.txt"), content: "x" } }], {
+    await executor.executeAll([{ id: "foreign-deny", name: "write_file", input: { path: join(project, "foreign-deny.txt"), content: "x" } }], {
       sessionId: randomUUID(), executionCwd: project,
       permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
     }).catch(() => undefined);
-    await vi.waitFor(async () => expect(await ledger("integrity-deny")).toEqual([expect.objectContaining({
-      decision: "deny", trustOrigin: "unknown",
-      denyReasons: [expect.objectContaining({ reason: expect.stringContaining("the terminal row failed its integrity check") })],
+    await vi.waitFor(async () => expect(await ledger("foreign-deny")).toEqual([expect.objectContaining({
+      decision: "deny", trustOrigin: "unknown", denyReasons: [expect.objectContaining({ reason: expect.stringContaining(reason) })],
     })]));
+    expect(remembered).not.toHaveBeenCalled();
+  });
+
+  it.each(["allow-session", "deny-once"] as const)("refuses an outside-directory %s the gate settled for another card before a grant or the person's row", async choice => {
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    const requestAndWait = vi.fn(async (_request: ApprovalRequestInput) => answeredApprovalDecision({ choice }, "desk", "write_file", "foreign-directory"));
+    const [onTurnDirectoryGrant, onSessionDirectoryGrant] = [vi.fn(), vi.fn()];
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    await executor.executeAll([{ id: "foreign-directory", name: "write_file", input: { path: join(outside, "foreign.txt"), content: "x" } }], {
+      sessionId: randomUUID(), executionCwd: project,
+      permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project], onTurnDirectoryGrant, onSessionDirectoryGrant },
+    }).catch(() => undefined);
+    expect(requestAndWait.mock.calls.map(([request]) => request.kind)).toEqual(["out-of-allowed-dir"]);
+    await vi.waitFor(async () => expect((await auditRows()).filter(row => row.toolUseId === "foreign-directory" && row.decision !== "ask")).toEqual([expect.objectContaining({
+      decision: "deny", trustOrigin: "unknown",
+      denyReasons: [expect.objectContaining({ reason: expect.stringContaining("Approval answer does not match the pending request") })],
+    })]));
+    expect(existsSync(join(outside, "foreign.txt"))).toBe(false);
+    expect([onTurnDirectoryGrant, onSessionDirectoryGrant].flatMap(grant => grant.mock.calls)).toEqual([]);
   });
 
   it("tells a host refusal from an allow without a record", () => {
@@ -269,7 +322,7 @@ describe("one terminal row per plugin-emitted invocation answered at the desk", 
     expect(JSON.stringify(rows[0]?.denyReasons).includes("remote-controller-revoked")).toBe(vetoed);
   });
 
-  it.each(["rule", "revoked"] as const)("reports a %s refusal after the directory answer", async outcome => {
+  it.each(["rule", "host"] as const)("preserves a settled %s refusal after the directory answer and controller revocation", async outcome => {
     const outside = join(root, "outside");
     await mkdir(outside);
     const sessionId = randomUUID();
@@ -282,9 +335,9 @@ describe("one terminal row per plugin-emitted invocation answered at the desk", 
     const surface = await import("../pipeline/user-owned-surface.js");
     const reason = "The surface policy refused this directory.";
     const resolve = vi.spyOn(surface, "resolveUserOwnedSurfaceApproval").mockImplementationOnce(async ({ decision }) => {
-      if (outcome === "revoked") current = false;
-      const provenance = outcome === "revoked" ? HOST_PROVENANCE : RULE_PROVENANCE;
-      return { permission: { decision: "deny", reason, provenance }, decision: { requestId: decision.requestId, choice: "deny-once" }, provenance };
+      current = false;
+      const provenance = outcome === "host" ? HOST_PROVENANCE : RULE_PROVENANCE;
+      return { permission: { decision: "deny", reason, provenance }, decision: { requestId: decision.requestId, choice: "deny-once" }, provenance, answer: undefined };
     });
     const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" as const }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
@@ -297,10 +350,9 @@ describe("one terminal row per plugin-emitted invocation answered at the desk", 
       });
       expect(resolve).toHaveBeenCalledOnce();
       expect(requestAndWait).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: "out-of-allowed-dir" }));
-      const expected = outcome === "revoked" ? "remote-controller-revoked" : reason;
-      expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(expected) });
+      expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(reason) });
       expect(await ledger(id)).toEqual([expect.objectContaining({
-        decision: "deny", trustOrigin: "tailnet-surface", denyReasons: [expect.objectContaining({ reason: expected })],
+        decision: "deny", trustOrigin: outcome === "host" ? "unknown" : "tailnet-surface", denyReasons: [expect.objectContaining({ reason })],
       })]);
       await expect(readFile(path)).rejects.toThrow();
     } finally {

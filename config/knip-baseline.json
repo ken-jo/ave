@@ -135,11 +135,6 @@
     {
       "type": "exports",
       "file": "src/main/ask-user-question-gate.ts",
-      "name": "IPC_ASK_USER_QUESTION_REQUEST"
-    },
-    {
-      "type": "exports",
-      "file": "src/main/ask-user-question-gate.ts",
       "name": "IPC_ASK_USER_QUESTION_RESPOND"
     },
     {
@@ -551,11 +546,6 @@
       "type": "types",
       "file": "src/permissions/permission-audit-runner.ts",
       "name": "DayVerifyResult"
-    },
-    {
-      "type": "types",
-      "file": "src/permissions/permission-manager.ts",
-      "name": "PermissionDecision"
     },
     {
       "type": "types",

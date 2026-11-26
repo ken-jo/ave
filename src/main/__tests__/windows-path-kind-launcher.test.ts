@@ -1,11 +1,19 @@
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { helperImage } from "../../__tests__/support/windows-helper-image.js";
 
-const mocks = vi.hoisted(() => ({ execFile: vi.fn(), execFileSync: vi.fn(), existsSync: vi.fn(), access: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  execFile: vi.fn(), execFileSync: vi.fn(), accessSync: vi.fn(), access: vi.fn(), readFileSync: vi.fn(), lockWindowsExecutableAsync: vi.fn(),
+}));
 vi.mock("node:child_process", () => ({ execFile: mocks.execFile, execFileSync: mocks.execFileSync }));
-vi.mock("node:fs", () => ({ existsSync: mocks.existsSync }));
+vi.mock("node:fs", () => ({ accessSync: mocks.accessSync, readFileSync: mocks.readFileSync }));
 vi.mock("node:fs/promises", () => ({ access: mocks.access }));
+vi.mock("../../../scripts/lib/windows-locked-executable.mjs", async original => ({
+  ...await original<typeof import("../../../scripts/lib/windows-locked-executable.mjs")>(),
+  lockWindowsExecutable: (path: string) => ({ path, bytes: mocks.readFileSync(path), close: vi.fn() }),
+  lockWindowsExecutableAsync: mocks.lockWindowsExecutableAsync,
+}));
 vi.mock("../../shared/tool-timeout-policy.js", async original => {
   const actual = await original<typeof import("../../shared/tool-timeout-policy.js")>();
   return { ...actual, TOOL_TIMEOUT_POLICY: { ...actual.TOOL_TIMEOUT_POLICY, windowsPathKindQueryMs: 300 } };
@@ -14,6 +22,16 @@ import { isWindowsPathKindHelperUnavailable, queryDosDevice, queryWindowsDocumen
 import { sleepingHelper } from "../../__tests__/support/sleeping-helper.js";
 import { configureHostResources } from "../host-resources.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { windowsPeImageDigest } from "../../../scripts/lib/windows-path-kind-image-digest.mjs";
+
+/** The image as a signer leaves it: a new checksum and a certificate table appended at the end. */
+function signedImage(image: Buffer): Buffer {
+  const signed = Buffer.concat([image, Buffer.alloc(16, 0x5a)]);
+  signed.writeUInt32LE(0x1234, 88 + 64);
+  signed.writeUInt32LE(image.length, 88 + 112 + 32);
+  signed.writeUInt32LE(16, 88 + 112 + 36);
+  return signed;
+}
 
 // The real spawn of a helper that never answers, under the caller's own deadline.
 function sleepingReply() {
@@ -45,12 +63,47 @@ describe("Windows folder classifier launcher", () => {
   beforeEach(() => {
     configureHostResources({ resourcePath: "/trusted/resources", isPackaged: true });
     mocks.execFile.mockReset();
-    mocks.existsSync.mockReset().mockReturnValue(true);
+    mocks.accessSync.mockReset();
+    mocks.lockWindowsExecutableAsync.mockReset().mockImplementation(async (path: string) => ({ path, bytes: mocks.readFileSync(path), close: vi.fn() }));
     vi.stubGlobal("process", { ...process, platform: "win32", arch: "x64" });
   });
 
   it("resolves the packaged asset under the host resources", () => {
     expect(resolveWindowsPathKindHelper()).toBe(join("/trusted/resources", "windows-path-kind", "x64", "ave-path-kind.exe"));
+  });
+
+  it("refuses changed checkout bytes before any drive, Documents or system directory spawn", async () => {
+    configureHostResources({ resourcePath: "/trusted/resources", isPackaged: false });
+    const built = helperImage("built output");
+    vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", windowsPeImageDigest(built));
+    mocks.readFileSync.mockReturnValueOnce(built);
+    expect(resolveWindowsPathKindHelper()).toBe(join("/trusted/resources", "windows-path-kind", "x64", "ave-path-kind.exe"));
+
+    const changed = helperImage("independently supplied bytes");
+    mocks.readFileSync.mockReturnValue(changed);
+    await expect(queryDosDevice("C:")).rejects.toSatisfy(isWindowsPathKindHelperUnavailable);
+    await expect(queryWindowsDocumentsDirectory()).rejects.toSatisfy(isWindowsPathKindHelperUnavailable);
+    await expect(queryWindowsSystemDirectory()).rejects.toSatisfy(isWindowsPathKindHelperUnavailable);
+    expect(mocks.execFile).not.toHaveBeenCalled();
+  });
+
+  it("refuses an installed helper whose image is not the bundle's before any drive, Documents or system directory spawn", async () => {
+    const resources = resolve(dirname(process.execPath), "resources");
+    configureHostResources({ resourcePath: resources, isPackaged: true });
+    const built = helperImage("built output");
+    vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", windowsPeImageDigest(built));
+    const changed = helperImage("independently supplied bytes");
+    mocks.readFileSync.mockReturnValue(changed);
+    expect(() => resolveWindowsPathKindHelper()).toThrow("does not match this build");
+    await expect(queryDosDevice("C:")).rejects.toSatisfy(isWindowsPathKindHelperUnavailable);
+    await expect(queryWindowsDocumentsDirectory()).rejects.toSatisfy(isWindowsPathKindHelperUnavailable);
+    await expect(queryWindowsSystemDirectory()).rejects.toSatisfy(isWindowsPathKindHelperUnavailable);
+    mocks.readFileSync.mockReturnValue(Buffer.from("not an image"));
+    expect(() => resolveWindowsPathKindHelper()).toThrow("does not match this build");
+    expect(mocks.execFile).not.toHaveBeenCalled();
+
+    mocks.readFileSync.mockReturnValue(signedImage(built));
+    expect(resolveWindowsPathKindHelper()).toBe(join(resources, "windows-path-kind", "x64", "ave-path-kind.exe"));
   });
 
   it("runs the helper on the drive letter alone, hidden and bounded, and returns its one line", async () => {
@@ -65,7 +118,7 @@ describe("Windows folder classifier launcher", () => {
   });
 
   it("fails clearly without the asset, off Windows, or for anything but a drive, and never runs a command", async () => {
-    mocks.existsSync.mockReturnValue(false);
+    mocks.accessSync.mockImplementationOnce(() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); });
     // Unavailable, yet with no file-system code: a missing helper says nothing about the folder being read. Its install path stays out
     // of the message, which reaches the privacy failure reason, the boot gate and the audit log.
     const missing = await queryDosDevice("C:").then(() => { throw new Error("resolved"); }, (error: unknown) => error as Error);
@@ -73,7 +126,6 @@ describe("Windows folder classifier launcher", () => {
       + "so it reads no folder on a drive. Restart Ave; if it persists, reinstall Ave.");
     expect(isWindowsPathKindHelperUnavailable(missing)).toBe(true);
     expect(missing).not.toHaveProperty("code");
-    mocks.existsSync.mockReturnValue(true);
     await expect(queryDosDevice("C:\\x")).rejects.toThrow("not a drive letter");
     await expect(queryDosDevice("\\\\server\\share")).rejects.toThrow("not a drive letter");
     vi.stubGlobal("process", { ...process, platform: "darwin", arch: "x64" });
@@ -118,7 +170,7 @@ describe("Windows folder classifier launcher", () => {
     // With nothing on stderr the exit status stands in for the spawn message, which names the install path.
     fail(Object.assign(new Error(`Command failed: ${helper} Q:`), { code: 4 }));
     const exit = await rejection();
-    expect(exit.message).toBe("the Windows folder classifier failed for Q: (exit 4). Reinstall Ave; in a development checkout, build it with scripts/build-windows-job.ps1 -Helper path-kind.");
+    expect(exit.message).toBe("the Windows folder classifier failed for Q: (exit 4). Reinstall Ave; in a development checkout, build it with bun run build:windows-path-kind.");
     expect(isWindowsPathKindHelperUnavailable(exit)).toBe(false);
     expect(exit).not.toHaveProperty("cause");
     mocks.execFile.mockImplementationOnce(helperReply());
@@ -133,7 +185,7 @@ describe("native Documents directory launcher", () => {
     configureHostResources({ resourcePath: "/trusted/resources", isPackaged: true });
     mocks.execFile.mockReset();
     mocks.execFileSync.mockReset().mockReturnValue(Buffer.from("D:\\Documents\r\n"));
-    mocks.existsSync.mockReset().mockReturnValue(true);
+    mocks.accessSync.mockReset();
     vi.stubGlobal("process", { ...process, platform: "win32", arch: "x64" });
   });
   afterEach(() => vi.unstubAllGlobals());
@@ -173,6 +225,8 @@ describe("native system directory launcher", () => {
     configureHostResources({ resourcePath: "/trusted/resources", isPackaged: true });
     mocks.execFile.mockReset();
     mocks.access.mockReset().mockResolvedValue(undefined);
+    mocks.readFileSync.mockReset();
+    mocks.lockWindowsExecutableAsync.mockReset();
     vi.stubGlobal("process", { ...process, platform: "win32", arch: "x64" });
   });
   afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
@@ -199,6 +253,49 @@ describe("native system directory launcher", () => {
     }
   });
 
+  it("rejects an expired deadline before opening the pinned helper", async () => {
+    const image = helperImage("built output");
+    vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", windowsPeImageDigest(image));
+    mocks.readFileSync.mockReturnValue(image);
+    await expect(queryWindowsSystemDirectory(10, performance.now())).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(mocks.readFileSync).not.toHaveBeenCalled();
+    expect(mocks.lockWindowsExecutableAsync).not.toHaveBeenCalled();
+    expect(mocks.execFile).not.toHaveBeenCalled();
+  });
+
+  it("lets the host run and refuses to spawn when pinned preparation outlasts the deadline", async () => {
+    const bytes = helperImage("built output");
+    const close = vi.fn();
+    const prepare = deferred<{ path: string; bytes: Buffer; close: () => void }>();
+    vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", windowsPeImageDigest(bytes));
+    mocks.lockWindowsExecutableAsync.mockReturnValueOnce(prepare.promise);
+    mocks.execFile.mockImplementation(helperReply("D:\\OperatingSystem\\System32\n"));
+    mocks.readFileSync.mockReturnValueOnce(bytes);
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
+    try {
+      const hostTurn = vi.fn();
+      setTimeout(hostTurn, 1);
+      const pending = queryWindowsSystemDirectory(10, performance.now() + 10);
+      const result = pending.catch((error: unknown) => error);
+      expect(mocks.readFileSync).not.toHaveBeenCalled();
+      expect(mocks.lockWindowsExecutableAsync).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(hostTurn).toHaveBeenCalledOnce();
+      expect(mocks.execFile).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(9);
+      expect(await result).toMatchObject({ name: "TimeoutError" });
+      const checkDeadline = mocks.lockWindowsExecutableAsync.mock.calls[0]?.[1];
+      expect(checkDeadline).toThrow(expect.objectContaining({ name: "TimeoutError" }));
+
+      prepare.resolve({ path: "held.exe", bytes, close });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(close).toHaveBeenCalledOnce();
+      expect(mocks.execFile).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("simulates the OS answer through the packaged helper with no inherited environment", async () => {
     vi.stubEnv("SystemRoot", "Z:\\untrusted");
     vi.stubEnv("WINDIR", "Y:\\untrusted");
@@ -215,7 +312,7 @@ describe("native system directory launcher", () => {
   });
 
   it("refuses missing helpers and unsupported platforms without another lookup", async () => {
-    mocks.access.mockRejectedValueOnce(new Error("missing"));
+    mocks.access.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
     await expect(queryWindowsSystemDirectory()).rejects.toThrow("classifier is missing");
     vi.stubGlobal("process", { ...process, platform: "linux" });
     await expect(queryWindowsSystemDirectory()).rejects.toThrow("requires Windows");

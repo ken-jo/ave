@@ -5,7 +5,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
-import { checkShellPermission } from "../../__tests__/support/permission-lane.js";
+import { analysisLimitAnswer, checkShellPermission } from "../../__tests__/support/permission-lane.js";
 import { countDecisionWork, decisionWorkSummary as json, expectLinearDecisionWork, expectRefusedAtAnalysisCap } from "../../__tests__/support/permission-decision-cost.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
@@ -95,10 +95,7 @@ describe("adversarial complete manager work", () => {
     }
     const work = counted[0]!;
     process.stdout.write(`permission adversarial work ${JSON.stringify({ dialect, radix, nested, lane: runsSandboxed ? "A" : "B", chars: length, smallChars: small ? smallCommand.length : undefined, work: json(work), smallWork: small ? json(small.work) : undefined, results: results.map(({ decision, forceModal }) => ({ decision, forceModal: forceModal === true })) })}\n`);
-    // These generated long inputs contain more than the complete evidence token budget.
-    const expected = runsSandboxed
-      ? { decision: "deny", reasonCode: "shell-analysis-limit" }
-      : { decision: "ask", reasonCode: "shell-approval" };
+    const expected = runsSandboxed ? analysisLimitAnswer(false) : { decision: "ask", reasonCode: "shell-approval" };
     for (const result of results) expect(result).toMatchObject(expected);
     for (const repeated of counted) expect(json(repeated)).toEqual(json(work));
     if (small) {
@@ -107,12 +104,10 @@ describe("adversarial complete manager work", () => {
     } else {
       expectRefusedAtAnalysisCap(work, command);
     }
-    for (const result of results) expect(result.forceModal).toBeUndefined();
+    if (!runsSandboxed) for (const result of results) expect(result.forceModal).toBeUndefined();
     manager.setMode("allow");
     const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);
-    expect(permitted).toMatchObject(runsSandboxed
-      ? { decision: "deny", reasonCode: "shell-analysis-limit" }
-      : { decision: "allow", reasonCode: "allow-mode" });
+    expect(permitted).toMatchObject(runsSandboxed ? analysisLimitAnswer(false) : { decision: "allow", reasonCode: "allow-mode" });
     expect(permitted.pipelineRequest?.shell).toEqual(results[0]!.pipelineRequest?.shell);
   });
 });

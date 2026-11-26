@@ -31,6 +31,16 @@ function outcomeCopy(outcome: string | undefined, t: Translate): string {
       return t("remoteA2aActionButton.retryLater");
     case "cancel-already-settled":
       return t("remoteA2aActionButton.alreadySettled");
+    case "approval-denied":
+      return t("remoteA2aActionButton.approvalDenied");
+    case "approval-rejected":
+      return t("remoteA2aActionButton.approvalRejected");
+    case "approval-expired":
+      return t("remoteA2aActionButton.approvalExpired");
+    case "approval-cancelled":
+      return t("remoteA2aActionButton.approvalCancelled");
+    case "approval-unavailable":
+      return t("remoteA2aActionButton.approvalUnavailable");
     // Provably never left this desktop: the Task's actions are free again.
     case "not-sent":
       return t("remoteA2aActionButton.neverSentRetry");

@@ -21,7 +21,9 @@ export function answerEachStart(answer: (start: PendingExtensionStart) => "yes" 
 export async function approvedExtensionStart(key: string, identity: string = FIXTURE_START_IDENTITY): Promise<ExtensionStartAuthority | undefined> {
   setExtensionStartAsker({ ask: answerEachStart(() => "yes"), notify: () => {} });
   try {
-    return await requestExtensionStartConsent({ key, identity, kind: "plugin-child", label: key, cause: "no-backend" }, { sessionId: "fixture", attended: true });
+    const outcome = await requestExtensionStartConsent({ key, identity, kind: "plugin-child", label: key, cause: "no-backend" }, { sessionId: "fixture", attended: true });
+    if (typeof outcome === "string") throw new Error(`Fixture approval failed: ${outcome}`);
+    return outcome;
   } finally {
     setExtensionStartAsker(undefined);
   }

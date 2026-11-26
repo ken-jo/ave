@@ -2,7 +2,19 @@ import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import PINS from "../../permissions/mxc-launcher-pins.json" with { type: "json" };
+import type { ContainerTarget } from "../../shared/container-platform.js";
 import { contentHash } from "./content-hash.js";
+
+/** Copy the installed launcher and notice for a before-pack fixture without network access. */
+export function copyMxcLauncherPackageInputs(projectRoot: string, target: ContainerTarget): void {
+  const project = fileURLToPath(new URL("../../../", import.meta.url));
+  const { launcher } = PINS.targets[target];
+  for (const relative of [join("node_modules", PINS.package, launcher.member), "resources/licenses/mxc/LICENSE.md"]) {
+    const destination = join(projectRoot, relative);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(join(project, relative), destination);
+  }
+}
 
 /** Hash-verification fixture only; no addon or SDK code is executed. */
 export function writeMxcRuntimePackage(resources: string, executable: string): string {

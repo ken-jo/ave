@@ -17,7 +17,8 @@ import type {
   RationaleGenerationProviderFailureCause,
 } from "../../tools/pipeline/rationale-ticket-lifecycle.js";
 import {
-  collectRoundStream,
+  collectActiveRuntimeRoundStream,
+  type ActiveRuntimeStreamGuard,
   type StreamCollectParams,
   type StreamCollectResult,
 } from "./stream-collector.js";
@@ -38,6 +39,7 @@ export interface RunRationaleOnlyRoundInput {
   control: RationaleRequiredControl;
   userRoleTexts?: readonly string[];
   llmSettings: StreamCollectParams["llmSettings"];
+  activeRuntime: ActiveRuntimeStreamGuard;
   abortSignal?: AbortSignal;
   now?: number;
 }
@@ -122,8 +124,9 @@ export async function runRationaleOnlyRound(
   const providerEnvelope = toRationaleProviderEnvelope(input.control);
   const hookContext = hookContextForControl(input.control);
 
+  let runtimeMismatch = false;
   const streamOutcome = await runWithAbortableDeadline(
-    (abortSignal) => collectRoundStream({
+    (abortSignal) => collectActiveRuntimeRoundStream({
       provider: input.provider,
       model: input.model,
       systemPrompt: RATIONALE_ONLY_SYSTEM_INSTRUCTION,
@@ -133,6 +136,12 @@ export async function runRationaleOnlyRound(
       toolSchemas: [...roundContract.schemas],
       llmSettings: input.llmSettings,
       abortSignal,
+    }, {
+      getLlm: input.activeRuntime.getLlm,
+      onMismatch: () => {
+        runtimeMismatch = true;
+        input.activeRuntime.onMismatch();
+      },
     }),
     {
       deadlineMs: TOOL_TIMEOUT_POLICY.rationaleGenerationMs,
@@ -161,6 +170,7 @@ export async function runRationaleOnlyRound(
   const stream = streamOutcome.value;
 
   if (stream.kind === "interrupted") {
+    if (runtimeMismatch) return { kind: "interrupted", usage: null };
     // Settle the deadline before aborting collection so owned interruption cannot appear successful.
     throw new Error("Rationale stream interrupted without a deadline or caller abort");
   }

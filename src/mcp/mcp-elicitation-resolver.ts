@@ -1,9 +1,12 @@
 /** Route untrusted elicitation through per-server host approval, never user-command dispatch.
  * URL mode asks consent; forms return captured input; unsupported input methods throw. */
 import { randomUUID } from "node:crypto";
-import type {
-  ApprovalDecision,
-  ApprovalRequestInput,
+import {
+  admitApprovalAnswer,
+  approvalFailureKind,
+  type ApprovalFailureKind,
+  type ApprovalDecision,
+  type ApprovalRequestInput,
 } from "../permissions/approval-gate.js";
 import type { McpInputRequestResolver } from "./mcp-client.js";
 import {
@@ -73,6 +76,7 @@ function shouldValidateFormContent(request: Record<string, unknown>): boolean {
 /** Bind server identity per resolver so approval attribution cannot be selected by the caller. */
 export function createElicitationResolverFactory(deps: {
   approvalGate: ElicitationApprovalGate;
+  onApprovalFailure?: (requestId: string, outcome: ApprovalFailureKind) => void;
 }): (serverId: string) => McpInputRequestResolver {
   return (serverId: string): McpInputRequestResolver => {
     return async (id: string, request: Record<string, unknown>): Promise<ElicitResult> => {
@@ -92,33 +96,41 @@ export function createElicitationResolverFactory(deps: {
         ? { message, url: request.url, elicitationId: request.elicitationId }
         : { message, requestedSchema: request.requestedSchema };
 
-      const decision = await deps.approvalGate.requestAndWait({
-        id: randomUUID(),
-        category: "agent-action",
-        kind: "agent-action",
-        allowedChoices: ["allow-once", "deny-once"],
-        durableApprovalRecordAllowed: false,
-        toolName: `mcp:${serverId}:elicitation`,
-        toolCategory: "meta",
-        args,
-        reason: message,
-        source: "mcp",
-        createdAt: Date.now(),
-        trustOrigin: "plugin-emitted",
-      });
+      const requestId = randomUUID();
+      const toolName = `mcp:${serverId}:elicitation`;
+      const refuse = (outcome: ApprovalFailureKind): ElicitResult => {
+        try { deps.onApprovalFailure?.(requestId, outcome); } catch { /* Audit failures cannot change the answer. */ }
+        return { action: outcome === "denied" ? "decline" : "cancel" };
+      };
+      try {
+        const decision = await deps.approvalGate.requestAndWait({
+          id: requestId,
+          category: "agent-action",
+          kind: "agent-action",
+          allowedChoices: ["allow-once", "deny-once"],
+          durableApprovalRecordAllowed: false,
+          toolName,
+          toolCategory: "meta",
+          args,
+          reason: message,
+          source: "mcp",
+          createdAt: Date.now(),
+          trustOrigin: "plugin-emitted",
+        });
+        const admitted = admitApprovalAnswer(decision, { requestId, toolName, toolUseId: undefined });
+        if (admitted?.choice !== "allow-once") return refuse(approvalFailureKind(decision) ?? "rejected");
 
-      if (decision.choice !== "allow-once") return { action: "decline" };
-
-      if (shouldValidateFormContent(request)) {
-        const schema = parseElicitationSchema(request.requestedSchema);
-        if (!schema || !isRecord(decision.elicitationContent)) return { action: "decline" };
-        if (!validateElicitationContent(schema, decision.elicitationContent)) {
-          return { action: "decline" };
+        if (shouldValidateFormContent(request)) {
+          const schema = parseElicitationSchema(request.requestedSchema);
+          if (!schema || !isRecord(decision.elicitationContent) || !validateElicitationContent(schema, decision.elicitationContent)) {
+            return refuse("rejected");
+          }
+          return { action: "accept", content: decision.elicitationContent };
         }
-        return { action: "accept", content: decision.elicitationContent };
+        return { action: "accept", content: {} };
+      } catch {
+        return refuse("rejected");
       }
-
-      return { action: "accept", content: {} };
     };
   };
 }

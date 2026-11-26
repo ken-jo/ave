@@ -40,7 +40,7 @@ function fixture(
     ...value,
     handleWire: vi.fn(),
   }));
-  const agentActionApprover = vi.fn(async () => null);
+  const agentActionApprover = vi.fn(async () => ({ approved: false as const, outcome: "denied" as const }));
   const services = {
     settingsService: { get, getEncryptedSecret },
     a2aRemoteRuntime: receiverProfile ? {

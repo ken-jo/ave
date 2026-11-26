@@ -37,6 +37,7 @@ function conflict(value: unknown): boolean {
 }
 function joins(value: unknown): boolean {
   return list(value, 12, join => isRecord(join) && isTemplateId(join.joinId) && ids(join.stageIds) && ["integrating", "integrated", "conflict", "rejected"].includes(join.status as string)
+    && optional(join, "conflictGeneration", value => typeof value === "number" && Number.isSafeInteger(value) && value > 0)
     && optional(join, "conflict", conflict) && (join.status !== "conflict" || join.conflict !== undefined) && optional(join, "decidedAt", timestamp))
     && new Set(value.map(join => (join as { joinId: string }).joinId)).size === value.length;
 }

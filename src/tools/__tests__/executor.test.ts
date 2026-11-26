@@ -4,8 +4,8 @@ import { _resetAveHomePrivacyForTest, aveHome, setAveHomeConfigurationRefusedAtB
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Admission denials and forced approvals must precede tool execution.
-import { beforeAll, afterEach, describe, it, expect, vi } from "vitest";
-import { configureHostResources } from "../../main/host-resources.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
 import childProcess, { ChildProcess } from "node:child_process";
@@ -72,6 +72,8 @@ import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { approvalCacheKeyFor } from "../pipeline/display-mask.js";
 import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+
+withSourceHostResources();
 
 async function waitForApprovalPayload<T>(
   wc: ReturnType<typeof makeMockWebContents>,
@@ -154,8 +156,6 @@ function denyingApprovalGate() {
   return { wc, gate };
 }
 
-// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
-beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("ToolExecutor — A2A parent delivery capability provenance", () => {
   it.each([
@@ -1773,7 +1773,8 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
 
     expect(results[0].is_error).toBeUndefined();
     expect(executeSpy).toHaveBeenCalledOnce();
-    expect(checkDetailed).toHaveBeenCalledOnce();
+    // Once to decide, once as the card's bound check when the answer is judged.
+    expect(checkDetailed).toHaveBeenCalledTimes(2);
     expect(approvalGate.requestAndWait).toHaveBeenCalledWith(
       expect.objectContaining({
         toolName: "a2a_always_allow_meta_probe",
@@ -2241,20 +2242,17 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     const turn = new AbortController();
     let signalGivenToGate: AbortSignal | undefined;
     let abortedAtRequest: boolean | undefined;
-    const approvalGate = {
-      requestAndWait: vi.fn((req: { id: string; abortSignal?: AbortSignal }) => {
-        signalGivenToGate = req.abortSignal;
-        abortedAtRequest = req.abortSignal?.aborted;
-        queueMicrotask(() => turn.abort(new Error("user cancelled turn")));
-        return new Promise<{ requestId: string; choice: "deny-once" }>((resolve) => {
-          const denyOnce = () => resolve({ requestId: req.id, choice: "deny-once" });
-          // Model gate timeout denial when abort wiring is absent so a regression fails assertions instead of hanging.
-          if (req.abortSignal === undefined) denyOnce();
-          else req.abortSignal.addEventListener("abort", denyOnce, { once: true });
-        });
-      }),
-    };
-    const executor = new ToolExecutor(registry, undefined, permMgr, undefined, approvalGate as never);
+    const surface = makeMockWebContents();
+    const approvalGate = new ApprovalGate(surface as never);
+    const requestAndWait = approvalGate.requestAndWait.bind(approvalGate);
+    vi.spyOn(approvalGate, "requestAndWait").mockImplementation((req) => {
+      signalGivenToGate = req.abortSignal;
+      abortedAtRequest = req.abortSignal?.aborted;
+      if (!req.abortSignal) throw new Error("Missing approval abort signal");
+      queueMicrotask(() => turn.abort(new Error("user cancelled turn")));
+      return requestAndWait(req);
+    });
+    const executor = new ToolExecutor(registry, undefined, permMgr, undefined, approvalGate);
 
     const results = await executor.executeAll(
       [{ id: "tu-stop-probe", name: "tool_stop_probe", input: { value: "a" } }],
@@ -2429,7 +2427,7 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
       const gate = new ApprovalGate(wc as never);
       const requestSpy = vi
         .spyOn(gate, "requestAndWait")
-        .mockImplementation((request) => answeredApprovalDecision({ requestId: "req-test", choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
+        .mockImplementation((request) => answeredApprovalDecision({ requestId: request.id, choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
 
       const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
 
@@ -2464,7 +2462,7 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
     const gate = new ApprovalGate(wc as never);
     const requestSpy = vi
       .spyOn(gate, "requestAndWait")
-      .mockImplementation((request) => answeredApprovalDecision({ requestId: "req-persist", choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
+      .mockImplementation((request) => answeredApprovalDecision({ requestId: request.id, choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
 
     const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
 
@@ -3107,7 +3105,9 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       const results = await callPromise;
       expect(executeSpy).toHaveBeenCalledOnce();
       expect(sentApprovalCards(wc)).toHaveLength(1);
-      expect(checkDetailed).toHaveBeenCalledOnce();
+      // The card's bound check judges the answer on the same captured context.
+      expect(checkDetailed).toHaveBeenCalledTimes(2);
+      expect(checkDetailed.mock.calls[1]).toEqual(checkDetailed.mock.calls[0]);
       expect(checkDetailed.mock.calls[0]?.[4]?.paths).toEqual(expect.arrayContaining([expect.objectContaining({ canonical: caseFoldForMatch(canonicalizePathForMatch(target)), lexical: target, effect: "write" })]));
       expect(results[0].is_error).toBeUndefined();
     } finally {
@@ -3775,8 +3775,10 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       );
 
       expect(overlayResult[0].is_error).toBe(true);
-      expect(checked.mock.calls[1]?.[4]?.ruleSubject).toEqual({ kind: "mcp", server: "generic-mcp", tool: "mcp_network", nonDestructive: false });
-      expect(checked.mock.results[1]?.value).toMatchObject({ decision: "deny", reasonCode: "no-approver", pipelineRequest: { rules: { ask: "Mcp(generic-mcp:mcp_network)" } } });
+      // The overlay card's Deny is judged by its bound check too, so the MCP call's check is the last.
+      expect(checked).toHaveBeenCalledTimes(3);
+      expect(checked.mock.calls[2]?.[4]?.ruleSubject).toEqual({ kind: "mcp", server: "generic-mcp", tool: "mcp_network", nonDestructive: false });
+      expect(checked.mock.results[2]?.value).toMatchObject({ decision: "deny", reasonCode: "no-approver", pipelineRequest: { rules: { ask: "Mcp(generic-mcp:mcp_network)" } } });
       expect(mcpHeadlessResult[0].is_error).toBe(true);
       expect(mcpHeadlessResult[0].content).toContain("do not retry");
       expect(executeSpy).not.toHaveBeenCalled();
@@ -4907,7 +4909,7 @@ describe("ToolExecutor remote controller session authority", () => {
     let current = true;
     const sessionId = "controller-revoked-after-card";
     const context = remoteContext(sessionId, { pairedShare, pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => current } });
-    requestAndWait.mockImplementation(async request => { current = false; return answeredApprovalDecision({ requestId: request.id, choice: "allow-once" }); });
+    requestAndWait.mockImplementation(async request => { current = false; return answeredApprovalDecision({ requestId: request.id, choice: "allow-once" }, "desk", request.toolName, request.invocationToolUseId); });
     const result = await executor.executeAll([{ id: sessionId, name: "controller_probe", input: {} }], { sessionId, permissionContext: context });
     expect(requestAndWait).toHaveBeenCalledOnce();
     expect(executed).not.toHaveBeenCalled();

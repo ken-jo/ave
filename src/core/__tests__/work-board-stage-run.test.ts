@@ -458,8 +458,9 @@ it("a retry is checked by the run authority before it spawns", () => withHarness
   (await h.untilLive(1))[0].finish({ ok: false, summary: "failed", error: "failed" });
   expect(await run).toMatchObject({ status: "awaiting_approval" });
   const item = await h.untilStage(id, "a", "failed");
+  expect(await h.engine.retryStage(id, { runId: item.runId ?? "", stageId: "a", attempt: 2 })).toEqual({ ok: false, reason: "not_pending" });
   h.unauthorised.add(A);
-  expect(await h.engine.retryStage(id, { runId: item.runId ?? "", stageId: "a" })).toEqual({ ok: true });
+  expect(await h.engine.retryStage(id, { runId: item.runId ?? "", stageId: "a", attempt: 1 })).toEqual({ ok: true });
   expect((await h.until(id, current => current.runStatus !== "executing")).runStatus).toBe("cancelled");
   expect(h.children).toHaveLength(1);
   expect(await h.settleEvent()).toMatchObject({ reasonCode: "scope-not-authorised" });
@@ -474,7 +475,7 @@ it("a retry whose stage folder is no longer the run's own fails the stage there 
   const item = await h.untilStage(id, "a", "failed");
   const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   try {
-    expect(await h.engine.retryStage(id, { runId: item.runId ?? "", stageId: "a" })).toEqual({ ok: true });
+    expect(await h.engine.retryStage(id, { runId: item.runId ?? "", stageId: "a", attempt: 1 })).toEqual({ ok: true });
     const ended = await h.until(id, current => current.stageRuns.some(stage => stage.stageId === "a" && stage.attempt === 2 && stage.status === "failed"));
     expect(ended.stageRuns.find(stage => stage.stageId === "a")).toMatchObject({ attempt: 2, status: "failed", failure: "error" });
     expect(warned.mock.calls.flat().map(String).some(text => text.includes("workspace-missing: workspace-identity-changed"))).toBe(true);
@@ -608,4 +609,31 @@ it("a start whose row is gone when the run is recorded is not found, never refus
   vi.spyOn(h.board, "beginRun").mockResolvedValueOnce({ status: "not_found", itemId: id });
   expect(await h.start(id, h.local(version))).toEqual({ status: "not_found" });
   expect(h.live()).toHaveLength(0);
+}));
+
+it("a scheduled run parks at its human gate after reconcile and a local approve continues it", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a"), auto("b", { inputs: ["a"] })]);
+  const attachment = await h.attach(version);
+  if (attachment.source.kind !== "schedule-attachment") throw new Error("Expected schedule source");
+  const started = await h.engine.startScheduledTemplate(attachment.source, "Scheduled work");
+  if (!started.ok) throw new Error(started.code);
+  (await h.untilLive(1))[0].finish();
+  expect(await started.result).toMatchObject({ status: "awaiting_approval" });
+  const saved = await h.item(started.itemId);
+  expect(isAwaitingStageReview(saved)).toBe(true);
+  expect(saved.stageRuns[0].gate).toMatchObject({ type: "human", status: "pending" });
+
+  const restarted = h.makeEngine();
+  expect(await h.board.reconcileInterruptedRuns()).toBe(0);
+  await restarted.adoptParkedTemplateRuns();
+  expect(h.children).toHaveLength(1);
+  const reconciled = await h.item(started.itemId);
+  expect(isAwaitingStageReview(reconciled)).toBe(true);
+  expect(reconciled.stageRuns[0].gate).toEqual(saved.stageRuns[0].gate);
+  expect(await restarted.projectTemplateRuns([reconciled])).toMatchObject([{ templateRunState: "awaiting_review" }]);
+  expect(await h.decide(started.itemId, "a", "approve")).toEqual({ ok: true, status: "approved" });
+  const [second] = await h.untilLive(1);
+  expect(second.input.unattendedStage).toMatchObject({ stageId: "b" });
+  second.finish();
+  await h.until(started.itemId, item => item.runStatus === "completed");
 }));

@@ -22,7 +22,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 const PDF_ENTRIES = [...PDF_RUNTIME_FIXTURE_ENTRIES];
 
 describe("packaged PDF page renderer files", () => {
-  it.each([["darwin", "x64"], ["darwin", "arm64"], ["linux", "x64"], ["linux", "arm64"], ["win32", "x64"], ["win32", "arm64"]] as const)(
+  it.each([["darwin", "arm64"], ["linux", "x64"], ["linux", "arm64"], ["win32", "x64"], ["win32", "arm64"]] as const)(
     "requires the %s-%s canvas binding", (platform, arch) => {
       const root = mkdtempSync(join(tmpdir(), "canvas-package-")); roots.push(root);
       const binding = writeCanvasRuntimePackage(root, platform, arch);
@@ -32,6 +32,11 @@ describe("packaged PDF page renderer files", () => {
       writeFileSync(binding, "");
       expect(() => assertCanvasRuntimeFiles(root, platform, arch)).toThrow("missing or empty");
     });
+
+  it("refuses a canvas binding for x64 macOS", () => {
+    const root = mkdtempSync(join(tmpdir(), "canvas-package-")); roots.push(root);
+    expect(() => assertCanvasRuntimeFiles(root, "darwin", "x64")).toThrow("unsupported page renderer target");
+  });
 
   it("refuses a native package whose version differs from the wrapper", () => {
     const root = mkdtempSync(join(tmpdir(), "canvas-package-")); roots.push(root);

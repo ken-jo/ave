@@ -4,6 +4,7 @@ import type {
   A2AJsonRpcId,
 } from "../shared/a2a-wire.js";
 import { isIP } from "node:net";
+import type { AgentActionApprovalFailure } from "../permissions/agent-action-approver.js";
 import { A2AJsonRpcMethod } from "../shared/a2a-wire.js";
 import { isRecord, hasExactKeys } from "../shared/is-record.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
@@ -172,7 +173,7 @@ export interface A2ARemoteMutationApprover {
     lineageDigestSha256: string;
     semanticDigestSha256: string;
     targetLabel: string;
-  }>): Promise<A2ARemoteApprovalDecision | null>;
+  }>): Promise<A2ARemoteApprovalDecision | { readonly outcome: AgentActionApprovalFailure }>;
 }
 
 export interface A2ARemoteAuthorizationContext {

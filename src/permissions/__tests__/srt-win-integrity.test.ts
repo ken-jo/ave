@@ -100,7 +100,7 @@ describe("Windows helper integrity", () => {
   it("excludes the pinned helper from signing while preserving application signing", () => {
     const { build } = require("../../../package.json");
     expect(build.win.signExts).toEqual([
-      "!srt-win.exe", "!wxc-exec.exe", "!mxc_ffi.dll", "!wslcsdk.dll", "!koffi.node",
+      "!ave-path-kind.exe", "!srt-win.exe", "!wxc-exec.exe", "!mxc_ffi.dll", "!wslcsdk.dll", "!koffi.node",
       "!OpenConsole.exe", "!winpty-agent.exe", "!conpty.dll", "!winpty.dll",
     ]);
     expect(build.win.signExecutable).not.toBe(false);
@@ -346,7 +346,7 @@ describe("Windows helper integrity", () => {
       copyFileSync(join(vendor, "srt-win", arch, "srt-win.exe"), join(target, "srt-win.exe"));
       copyFileSync(join(vendor, "srt-win", arch, "build-receipt.json"), join(target, "build-receipt.json"));
     }
-    // Isolate the separate SDK boundary; the actual signing hook and helper
+    // Isolate the separate SDK and path helper boundaries; the actual signing hook and helper
     // verifier still read the final unpacked images in this subprocess.
     const script = `
       import { registerHooks, createRequire } from 'node:module';
@@ -357,6 +357,10 @@ describe("Windows helper integrity", () => {
           format: 'module', shortCircuit: true,
           source: 'export function recordMxcSupervisorRuntime(...args) { globalThis.sdkCalls.push(["record", ...args]); }'
             + 'export function assertPackagedMxcSdk(...args) { globalThis.sdkCalls.push(["verify", ...args]); }',
+        };
+        if (url.endsWith('/scripts/lib/windows-path-kind-package.mjs')) return {
+          format: 'module', shortCircuit: true,
+          source: 'export function assertSignedWindowsPathKind(...args) { globalThis.sdkCalls.push(["path-kind", ...args]); }',
         };
         return nextLoad(url, context);
       }});
@@ -380,6 +384,7 @@ describe("Windows helper integrity", () => {
     expect(valid.error).toBeUndefined();
     expect(valid.status, valid.stderr).toBe(0);
     expect(JSON.parse(valid.stdout)).toEqual([
+      ["path-kind", directory, "x64"],
       ["record", join(directory, "resources"), "x64", join(directory, "Ave.exe")],
       ["verify", join(directory, "resources"), "x64"],
     ]);

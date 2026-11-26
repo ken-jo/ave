@@ -1,19 +1,18 @@
 import { spawnSync } from "node:child_process";
-import { isWindowsPathKindHelperTimeout, isWindowsPathKindHelperUnavailable, resolveWindowsPathKindHelper, windowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
+import { isWindowsPathKindHelperTimeout, isWindowsPathKindHelperUnavailable, windowsPathKindHelperUnavailable, withWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
+import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { decodeWindowsNativeReply, runWindowsNative } from "./windows-native-host.js";
 
-// The drive query opens nothing, so its timeout only bounds a hung helper.
-const QUERY_TIMEOUT_MS = 5_000;
 // The helper's one answer about a drive: the OS has no mapping for it (native/windows-path-kind/README.md).
 const EXIT_NO_MAPPING = 1;
 
 /** The MS-DOS device mapping of a drive (`X:`) as QueryDosDeviceW reads it, or null when the OS has none. */
-type DriveQuery = (drive: string) => string | null;
+type DriveQuery = (drive: string, resourcePath?: string) => string | null;
 
-function queryWithHelper(drive: string): string | null {
-  const result = runWindowsNative(() => spawnSync(resolveWindowsPathKindHelper(), [drive], {
-    windowsHide: true, shell: false, timeout: QUERY_TIMEOUT_MS, encoding: "buffer",
-  }));
+function queryWithHelper(drive: string, resourcePath?: string): string | null {
+  const result = runWindowsNative(() => withWindowsPathKindHelper(helper => spawnSync(helper, [drive], {
+    windowsHide: true, shell: false, timeout: TOOL_TIMEOUT_POLICY.windowsDriveLocalityMs, encoding: "buffer",
+  }), resourcePath));
   if (result.error) {
     // A launch failure or a timeout is no answer; the spawn error names the install path, so only its code is kept.
     const { code } = result.error as NodeJS.ErrnoException;
@@ -44,11 +43,11 @@ export function setWindowsDriveQueryForTest(next?: DriveQuery): void {
  */
 export type DriveIdentity = { local: true } | { local: false; root: string; absent: boolean; unavailable?: Error };
 
-export function queryDriveIdentity(drive: string): DriveIdentity {
+export function queryDriveIdentity(drive: string, resourcePath?: string): DriveIdentity {
   const letter = drive.toUpperCase();
   const opaque = `\\\\?\\GLOBALROOT\\??\\${letter}`;
   let mapping: string | null;
-  try { mapping = query(letter); } catch (error) {
+  try { mapping = resourcePath === undefined ? query(letter) : query(letter, resourcePath); } catch (error) {
     if (!isWindowsPathKindHelperUnavailable(error)) throw error;
     return { local: false, root: opaque, absent: false, unavailable: error as Error };
   }

@@ -20,6 +20,12 @@ export function toPricingVendor(vendor: string): PricingVendor {
     : "openai-compatible";
 }
 
+export function averageDailyCost(trend: readonly { cost: number; unknownCostTurns?: number }[]): number | undefined {
+  if (trend.some((point) => point.unknownCostTurns || !Number.isFinite(point.cost))) return undefined;
+  const average = trend.reduce((sum, point) => sum + point.cost / trend.length, 0);
+  return Number.isFinite(average) ? average : undefined;
+}
+
 /** A crossed prompt tier replaces rates for the whole request; omitted rates retain base values. */
 export interface TokenRateTier {
   afterInputTokens: number;

@@ -1,8 +1,10 @@
 // Plans describe substrates, not authorization. Bind proof privately to one final action and consume it before plain-host spawn.
 import { withLocalityDecision } from "../shared/local-path-io.js";
+import type { ChildProcess } from "node:child_process";
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
-import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
+import type { HeldWindowsDirectory, HeldWindowsRun } from "../shared/windows-path-facts.js";
+import { captureShellWorkingDirectoryIdentity, holdShellWorkingDirectory, matchesShellWorkingDirectoryIdentity, pinShellWorkingDirectory, sameShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
 import {
   parseHostShellExecutionInput,
   exactRulePassesUnsandboxedShellAsk,
@@ -11,10 +13,8 @@ import {
   type HostShellExecutionPlan,
   type HostShellExecutionRequest,
 } from "./host-shell-execution-plan.js";
-import {
-  consumeHostApprovedOneShotExecutionBinding,
-  type ApprovalDecision,
-} from "./approval-gate.js";
+import { consumeHostApprovedOneShotExecutionBinding } from "./approval-gate.js";
+import { spendStandingAnswer, toolUseAction, type StandingAnswer } from "./pending-answer-policy.js";
 import {
   consumeIssuedFloorSessionDecision,
   isIssuedFloorSessionDecision,
@@ -25,9 +25,15 @@ import {
   type PermissionManager,
   type ShellAllowRuleAuthorization,
 } from "./permission-manager.js";
-import { withShellPolicyHandoff, type ShellPolicyHandoff } from "./shell-policy-handoff.js";
+import { withShellPolicyHandoff } from "./shell-policy-handoff.js";
 
 export type HostShellToolName = "bash" | "powershell";
+
+export const HOST_SHELL_DIRECTORY_HOLD_ERROR = "this host shell execution could not keep its working directory and parent folders from being renamed or deleted. Request authorization again.";
+
+export class HostShellDirectoryHoldError extends Error {
+  constructor() { super(HOST_SHELL_DIRECTORY_HOLD_ERROR); }
+}
 
 export const HOST_SHELL_AUTHORIZATION_REVOKED_ERROR = "this host shell execution requires a one-shot host approval permit. The working directory or permission policy changed, or the permit is invalid or revoked. Request authorization again.";
 
@@ -41,6 +47,7 @@ export interface HostShellExecutionPermitBinding {
   readonly requestedCwd: string | undefined;
   readonly executionCwd: string;
   readonly resolvedCwd: string;
+  readonly cwdIdentity?: ShellWorkingDirectoryIdentity;
   readonly timeoutSeconds: number;
   readonly executionMode: HostShellExecutionRequest;
   readonly justification: string | undefined;
@@ -64,6 +71,28 @@ interface PermitRecord extends HostShellExecutionPermitBinding {
 export interface HostShellSpawnAuthorization {
   readonly cwdIdentity: ShellWorkingDirectoryIdentity;
 }
+
+export function createShellApprovalDirectory(binding: HostShellExecutionPermitBinding) {
+  let release: (() => void) | undefined;
+  return {
+    binding,
+    get held() { return release !== undefined; },
+    hold(): boolean {
+      const { cwdIdentity, resolvedCwd } = binding;
+      if (cwdIdentity === undefined) return false;
+      if (release !== undefined) return matchesShellWorkingDirectoryIdentity(resolvedCwd, cwdIdentity);
+      release = holdShellWorkingDirectory(resolvedCwd, cwdIdentity);
+      return release !== undefined;
+    },
+    dispose(): void {
+      const close = release;
+      release = undefined;
+      close?.();
+    },
+  };
+}
+
+export type ShellApprovalDirectory = ReturnType<typeof createShellApprovalDirectory>;
 
 const permits = new WeakMap<HostShellExecutionPermit, PermitRecord>();
 const pendingHandoffs = new WeakMap<HostShellSpawnAuthorization, PermitRecord>();
@@ -107,39 +136,46 @@ export function buildHostShellExecutionPermitBinding(input: {
 }): HostShellExecutionPermitBinding | undefined {
   const parsed = parseHostShellExecutionInput(input.rawInput);
   if (parsed === undefined || parsed.executionMode !== input.plan.executionRequest) return undefined;
-  const executionCwd = pathResolve(input.executionCwd);
-  return Object.freeze({
-    planIdentity: input.plan.identity,
-    plan: input.plan,
-    toolName: input.toolName,
-    toolUseId: input.toolUseId,
-    command: parsed.command,
-    requestedCwd: parsed.cwd,
-    executionCwd: input.executionCwd,
-    resolvedCwd: resolveHostShellWorkingDirectory(executionCwd, parsed.cwd),
-    timeoutSeconds: parsed.timeoutSeconds,
-    executionMode: parsed.executionMode,
-    justification: parsed.justification,
-    runInBackground: parsed.runInBackground,
-    allowedDirectories: canonicalizeHostShellAllowedDirectories(
-      input.extraAllowedDirectories,
-    ),
+  return withLocalityDecision(() => {
+    const resolvedCwd = resolveHostShellWorkingDirectory(input.executionCwd, parsed.cwd);
+    const cwdIdentity = captureShellWorkingDirectoryIdentity(resolvedCwd);
+    return Object.freeze({
+      planIdentity: input.plan.identity,
+      plan: input.plan,
+      toolName: input.toolName,
+      toolUseId: input.toolUseId,
+      command: parsed.command,
+      requestedCwd: parsed.cwd,
+      executionCwd: input.executionCwd,
+      resolvedCwd,
+      ...(cwdIdentity === undefined ? {} : { cwdIdentity }),
+      timeoutSeconds: parsed.timeoutSeconds,
+      executionMode: parsed.executionMode,
+      justification: parsed.justification,
+      runInBackground: parsed.runInBackground,
+      allowedDirectories: canonicalizeHostShellAllowedDirectories(
+        input.extraAllowedDirectories,
+      ),
+    });
   });
 }
 
 // Only the host authorization pipeline records these after its policy/reviewer gates pass. Bind to the exact in-process action, never renderer-supplied data.
 const policyAuthorizations = new WeakSet<HostShellExecutionPermitBinding>();
 
-// Record one host-policy authorization; it does not change any sandbox plan.
-export function recordHostShellPolicyAuthorization(binding: HostShellExecutionPermitBinding): void {
+// Record one host-policy authorization; it does not change any sandbox plan. Under the sandbox-unavailable ask only a person's
+// standing answer to this action records one, and the record spends it.
+export function recordHostShellPolicyAuthorization(binding: HostShellExecutionPermitBinding, answer: StandingAnswer | undefined): void {
+  if (requiresUnsandboxedShellAsk(binding.plan) &&
+      spendStandingAnswer(answer, "shell-policy", toolUseAction(binding.toolUseId)) === undefined) return;
   policyAuthorizations.add(binding);
 }
 
-// Consume only action-bound host proof: a one-shot approval, a rule decision for an explicit host request or the no-confinement floor,
-// a floor session decision, or a policy authorization for this action.
+// Consume only action-bound host proof: a person's standing answer with its one-shot approval, a rule decision for an explicit host
+// request or the no-confinement floor, a floor session decision, or a policy authorization for this action.
 export function mintHostShellExecutionPermit(input: {
   plan: HostShellExecutionPlan;
-  approvalDecision: ApprovalDecision | undefined;
+  answer: StandingAnswer | undefined;
   allowRuleDecision?: PermissionCheckResult | undefined;
   // A floor session allow `checkDetailed` issued for this action: the person's own "This session" answer on the sandbox-unavailable floor card.
   floorSessionDecision?: PermissionCheckResult | undefined;
@@ -151,10 +187,13 @@ export function mintHostShellExecutionPermit(input: {
   let allowRuleAuthorization: ShellAllowRuleAuthorization | undefined;
   // Consumed on every mint attempt, so a recorded authorization never outlives it.
   const policyApproved = policyAuthorizations.delete(input.binding);
+  // The answer is spent here whatever follows, and only its own receipt is looked up.
+  const approvalDecision = spendStandingAnswer(input.answer, "shell-permit", toolUseAction(input.binding.toolUseId))?.decision;
+  if (input.answer !== undefined && approvalDecision === undefined) return undefined;
   let floorSessionAuthorized = false;
-  if (input.approvalDecision === undefined && policyApproved) {
+  if (approvalDecision === undefined && policyApproved) {
     // The policy lane already decided this exact action.
-  } else if (input.approvalDecision === undefined && isIssuedFloorSessionDecision(input.floorSessionDecision, input.permissionManager)) {
+  } else if (approvalDecision === undefined && isIssuedFloorSessionDecision(input.floorSessionDecision, input.permissionManager)) {
     // Burn the floor session proof before any plan check, so a mismatch cannot be probed or replayed.
     floorSessionAuthorized = consumeIssuedFloorSessionDecision(input.floorSessionDecision, {
       toolName: input.binding.toolName,
@@ -164,7 +203,7 @@ export function mintHostShellExecutionPermit(input: {
       planIdentity: input.binding.planIdentity,
     }, input.permissionManager) !== undefined;
     if (!floorSessionAuthorized) return undefined;
-  } else if (input.approvalDecision === undefined) {
+  } else if (approvalDecision === undefined) {
     if (input.allowRuleDecision === undefined) return undefined;
     // Burn the rule proof before any plan check, so a mismatch cannot be probed or replayed.
     allowRuleAuthorization = consumeIssuedShellAllowRuleDecision(input.allowRuleDecision, {
@@ -177,12 +216,12 @@ export function mintHostShellExecutionPermit(input: {
     if (input.plan.executionRequest !== "host" && allowRuleAuthorization.floorPlanIdentity === undefined) return undefined;
   } else if (
     !consumeHostApprovedOneShotExecutionBinding(
-      input.approvalDecision,
+      approvalDecision,
       input.binding,
     )
   ) return undefined;
   // Any receipt-bearing mint attempt consumes its receipt before checking plan compatibility, so a mismatch cannot be probed or replayed.
-  if (!requiresExplicitHostShellApproval(input.plan, input.binding.toolName)) return undefined;
+  if (!requiresExplicitHostShellApproval(input.plan, input.binding.toolName) && !policyApproved) return undefined;
   // On a plan under the sandbox-unavailable floor a saved rule stands in for fresh consent only as the exact-rule pass issued on this very plan
   // (tree T:151); policy records are made only after a human card. A pass proof answers no other plan.
   if (allowRuleAuthorization !== undefined && (requiresUnsandboxedShellAsk(input.plan)
@@ -194,8 +233,10 @@ export function mintHostShellExecutionPermit(input: {
     input.binding.plan !== input.plan ||
     input.binding.planIdentity !== input.plan.identity
   ) return undefined;
-  const cwdIdentity = allowRuleAuthorization?.cwdIdentity ?? captureShellWorkingDirectoryIdentity(input.binding.resolvedCwd);
-  if (cwdIdentity === undefined) return undefined;
+  const { cwdIdentity } = input.binding;
+  if (cwdIdentity === undefined ||
+      (allowRuleAuthorization !== undefined && !sameShellWorkingDirectoryIdentity(cwdIdentity, allowRuleAuthorization.cwdIdentity)) ||
+      !matchesShellWorkingDirectoryIdentity(input.binding.resolvedCwd, cwdIdentity)) return undefined;
   const permit = Object.freeze({}) as HostShellExecutionPermit;
   permits.set(permit, Object.freeze({ ...input.binding, plan: input.plan, allowRuleAuthorization, cwdIdentity }));
   return permit;
@@ -221,7 +262,7 @@ export function consumeHostShellExecutionPermitForSpawn(input: {
   const record = permits.get(input.permit);
   if (record === undefined) return undefined;
   permits.delete(input.permit);
-  const valid = (
+  const valid = withLocalityDecision(() => (
     (record.allowRuleAuthorization === undefined || isShellAllowRuleAuthorizationCurrent(record.allowRuleAuthorization)) &&
     matchesShellWorkingDirectoryIdentity(record.resolvedCwd, record.cwdIdentity) &&
     record.plan === input.plan &&
@@ -240,28 +281,99 @@ export function consumeHostShellExecutionPermitForSpawn(input: {
     record.allowedDirectories.every(
       (directory, index) => directory === input.allowedDirectories[index],
     )
-  );
+  ));
   if (!valid) return undefined;
   const authorization = Object.freeze({ cwdIdentity: record.cwdIdentity });
   pendingHandoffs.set(authorization, record);
   return authorization;
 }
 
+function isHostShellSpawnDirectoryCurrent(record: PermitRecord): boolean {
+  // POSIX launches from the physical path after consumption has checked the requested path.
+  const cwd = process.platform === "win32" ? record.resolvedCwd : record.cwdIdentity.realpath;
+  return matchesShellWorkingDirectoryIdentity(cwd, record.cwdIdentity);
+}
+
+export interface HostShellSpawnDirectoryHold {
+  /** Throws HostShellDirectoryHoldError once the directory is no longer held. */
+  assertHeld(): void;
+  /** The program and arguments that start the given executable inside the hold's job. */
+  command(executable: string, args: readonly string[]): { executable: string; args: string[] };
+  /** Arguments that make a job launcher join the hold's job. */
+  readonly launcherArgs: readonly string[];
+  /** The standard handles a held launch needs; undefined without a hold. */
+  readonly stdio: HeldWindowsDirectory["stdio"] | undefined;
+  /** Keep the hold for this started launcher and return its run; undefined without a hold. */
+  bind(child: ChildProcess): HeldWindowsRun | undefined;
+  /** Wait for release unless a child owns the hold. */
+  dispose(): void | Promise<void>;
+}
+
+const NO_DIRECTORY_HOLD: HostShellSpawnDirectoryHold = Object.freeze({
+  assertHeld() {}, command: (executable: string, args: readonly string[]) => ({ executable, args: [...args] }),
+  launcherArgs: [], stdio: undefined, bind: () => undefined, dispose() {},
+});
+
+/** Windows children open their cwd by path, so a permit-bearing Bash or PowerShell launch holds the approved directory chain
+ * against rename and delete from before its final check until the run's verdict. The hold helper owns the only handle to a
+ * kill-on-close job; the job launcher joins that job before it starts the command, so a helper that is gone refuses the
+ * launch and a helper that exits stops the whole tree. The launcher alone decides the run (see HeldWindowsRun): its record
+ * is the verdict, and every path without one is unconfirmed. Acquisition failure, an identity mismatch or an observed loss
+ * refuses before spawn. Nothing is proven inside the child, and a held leaf whose contents can be removed can still become
+ * a junction in place. */
+export async function holdHostShellSpawnDirectory(authorization: HostShellSpawnAuthorization | undefined): Promise<HostShellSpawnDirectoryHold> {
+  if (authorization === undefined || process.platform !== "win32") return NO_DIRECTORY_HOLD;
+  const held = await pinShellWorkingDirectory(authorization.cwdIdentity);
+  if (held === undefined) throw new HostShellDirectoryHoldError();
+  let bound = false;
+  return {
+    assertHeld() { if (!held.isHeld()) throw new HostShellDirectoryHoldError(); },
+    command: held.command,
+    launcherArgs: held.launcherArgs,
+    stdio: held.stdio,
+    bind(child) {
+      const run = held.bind(child);
+      bound = true;
+      return run;
+    },
+    dispose() { if (!bound) return held.release(); },
+  };
+}
+
 // Burn the spawn authority again at the final, serialized execution handoff.
-export function withHostShellExecutionHandoff<T>(
+export async function withHostShellExecutionHandoff<T>(
   authorization: HostShellSpawnAuthorization,
-  handoff: ShellPolicyHandoff<T>,
+  handoff: (hold: HostShellSpawnDirectoryHold) => T & (T extends PromiseLike<unknown> ? never : unknown),
   prepare?: () => Promise<void>,
 ): Promise<T | undefined> {
   const record = pendingHandoffs.get(authorization);
   pendingHandoffs.delete(authorization);
-  return withShellPolicyHandoff(() => {
-    if (record === undefined ||
-      (record.allowRuleAuthorization !== undefined && !isShellAllowRulePolicyCurrent(record.allowRuleAuthorization)) ||
-      !matchesShellWorkingDirectoryIdentity(record.cwdIdentity.realpath, record.cwdIdentity)) return undefined;
-    // This host's persisted policy mutations share this queue. Uncoordinated external edits after this final validation apply from the next command. The synchronous handoff grants the waiting child (or spawns it on platforms without a child guard); it must never await between validation and grant.
-    return handoff();
-  }, prepare);
+  let hold: HostShellSpawnDirectoryHold | undefined;
+  try {
+    return await withShellPolicyHandoff(() => {
+      if (record === undefined || hold === undefined ||
+        (record.allowRuleAuthorization !== undefined && !isShellAllowRulePolicyCurrent(record.allowRuleAuthorization)) ||
+        !isHostShellSpawnDirectoryCurrent(record)) return undefined;
+      hold.assertHeld();
+      // This host's persisted policy mutations share this queue. Uncoordinated external edits after this final validation apply from the next command. The synchronous handoff grants the waiting child (or spawns it on platforms without a child guard); it must never await between validation and grant.
+      return handoff(hold);
+    }, async () => {
+      await prepare?.();
+      if (record !== undefined) hold = await holdHostShellSpawnDirectory(authorization);
+    });
+  } finally {
+    await hold?.dispose();
+  }
+}
+
+export function assertHostShellSpawnDirectory(authorization: HostShellSpawnAuthorization | undefined): void {
+  if (authorization === undefined) return;
+  const record = pendingHandoffs.get(authorization);
+  if (record === undefined ||
+      !isHostShellSpawnDirectoryCurrent(record)) {
+    throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
+  }
+  pendingHandoffs.delete(authorization);
 }
 
 export function consumeHostShellExecutionPermit(

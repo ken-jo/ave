@@ -38,10 +38,8 @@ const SANDBOX_PROTECTED_ROOT_ENTRIES = [...new Set([
 // edit them without that card. The two children are named, not `.ave` itself: under a write root that holds the Ave home,
 // `<root>/.ave` is the home, and a deny there would take the command's own HOME and temp with it. `.codex` and a project `.aws`
 // are not named (owner decision 2026-11-25).
-// Linux carries one row per root for each entry. macOS carries none here; its wrap appends rules anchored at the write roots
-// (macos-sandbox-wrap.ts), because a row per root costs the root's length for every entry, which the longest supported darwin
-// layout cannot fit in MAX_POSIX_WRITE_DENY_POLICY_BYTES, and because the `.ave` directory itself can be pinned there. The Windows
-// floor is stamped and watched per row and is not changed here.
+// Linux and Windows carry one row per root for each entry. The macOS wrap appends rules anchored at the write roots
+// (macos-sandbox-wrap.ts) to fit the policy budget and pin the `.ave` directory itself.
 export const SANDBOX_NAMED_ENTRIES = [".agents", ".ave/commands", ".ave/hooks"] as const;
 function caseInsensitivePattern(path: string): string {
   return path.replace(/[a-z]/gu, character => `[${character}${character.toUpperCase()}]`);
@@ -1015,6 +1013,7 @@ export function buildMandatorySandboxWritePolicy(
   inheritedWriteDenies: readonly string[] = [],
 ): Pick<FilesystemConfig, "denyWrite"> & {
   allowWrite: string[];
+  windowsRequiredWriteDenies: readonly string[];
   narrowedWriteRoots: readonly { root: string; reason: "entry-budget" | "path-budget" | "filesystem-access" | "routing-link" }[];
   gitControlSnapshot?: SandboxGitControlSnapshot;
 } {
@@ -1024,10 +1023,26 @@ export function buildMandatorySandboxWritePolicy(
     // A marked literal already carries the admitted identity; discovery must retain that canonical path.
     return { original, physical: typeof entry === "string" ? resolvePolicyPath(original, process.cwd()) : original };
   });
-  const rootEntries = process.platform === "linux" ? [...SANDBOX_PROTECTED_ROOT_ENTRIES, ...SANDBOX_NAMED_ENTRIES] : SANDBOX_PROTECTED_ROOT_ENTRIES;
+  const rootEntries = process.platform === "linux"
+    ? [...SANDBOX_PROTECTED_ROOT_ENTRIES, ...SANDBOX_NAMED_ENTRIES]
+    : SANDBOX_PROTECTED_ROOT_ENTRIES;
+  const rootSpellings = [...new Set(rootSnapshots.flatMap(({ original, physical }) => [original, physical]))];
+  const windowsNamedEntries = new Map<string, string>();
+  const windowsProtectedBoundaries = [...rootSpellings];
+  if (process.platform === "win32") {
+    for (const { original, physical } of rootSnapshots) {
+      // A grant on a file has no writable children.
+      if (gitEntryIdentity(physical)?.kind === "file") continue;
+      for (const root of new Set([original, physical])) {
+        const carrier = join(root, ".ave");
+        windowsProtectedBoundaries.push(carrier, resolvePolicyDenyPath(carrier));
+        for (const entry of SANDBOX_NAMED_ENTRIES) windowsNamedEntries.set(join(root, entry), entry);
+      }
+    }
+  }
   const paths = new Set([
-    ...rootSnapshots.flatMap(({ original, physical }) => [original, physical]).flatMap((root) =>
-      rootEntries.map((entry) => join(root, entry))),
+    ...rootSpellings.flatMap((root) => rootEntries.map((entry) => join(root, entry))),
+    ...windowsNamedEntries.keys(),
     // The configuration directory is a control boundary, including future files.
     join(aveHome(), AVE_HOME_CONFIGURATION_DIRECTORY),
     permissionSettingsPath(),
@@ -1126,8 +1141,18 @@ export function buildMandatorySandboxWritePolicy(
       || !roots.some(root => isPhysicalPathWithin(root, path))) routingPins.add(path);
   }
   // Preserve both the directory entry and its target when a setting is a link.
+  const windowsRequiredWriteDenies = new Set<string>();
   const resolvedDenyPaths = [...new Set([...paths].flatMap((path) => {
     const physical = resolvePolicyDenyPath(path);
+    const name = windowsNamedEntries.get(path);
+    if (name !== undefined) {
+      if (path.toLowerCase() !== physical.toLowerCase()
+        && windowsProtectedBoundaries.some(boundary => isPhysicalPathWithin(physical, boundary))) {
+        throw new Error(t("sandboxPolicy.namedEntryLinksToWriteBoundary", { entry: name }));
+      }
+      windowsRequiredWriteDenies.add(path);
+      windowsRequiredWriteDenies.add(physical);
+    }
     if (mandatoryPaths.has(path)) mandatoryPaths.add(physical);
     return [path, physical];
   }))];
@@ -1135,8 +1160,9 @@ export function buildMandatorySandboxWritePolicy(
   // when its lexical spelling is already covered by a denied parent directory.
   // Windows may omit an inherited deny during ACL narrowing; retain its full
   // mandatory set until that later platform-specific decision has finished.
-  const entries: FilesystemPathEntry[] = minimalLiteralDenyPaths(resolvedDenyPaths, process.platform === "win32" ? [] : inheritedWriteDenies)
-    .map((path) => /[*?\[\]]/.test(path) ? { path, literal: true } : path);
+  const compacted = minimalLiteralDenyPaths(resolvedDenyPaths, process.platform === "win32" ? [] : inheritedWriteDenies);
+  const entries: FilesystemPathEntry[] = [...new Set([...compacted, ...windowsRequiredWriteDenies])]
+    .map((path) => /[*?\[\]]/.test(path) || (windowsRequiredWriteDenies.has(path) && path.includes("%")) ? { path, literal: true } : path);
   // Linux consumes routing links only to revoke covering grants. Replaying one as a deny bind would follow its target and could mask an unrelated subtree.
   if (process.platform !== "linux") {
     entries.push(...[...routingPins].map(path => ({ path, literal: true } as const)));
@@ -1149,6 +1175,7 @@ export function buildMandatorySandboxWritePolicy(
   assertSandboxWritePolicySize(backendEntries, backendMandatoryPaths);
   return {
     allowWrite: roots.filter(root => !revoked.has(root)), denyWrite: backendEntries,
+    windowsRequiredWriteDenies: [...windowsRequiredWriteDenies].map(nativeWriteDenyPath),
     narrowedWriteRoots: [...narrowed].map(([root, reason]) => ({ root, reason })),
     ...(gitDiscovery ? { gitControlSnapshot: finishGitControlSnapshot(
       new Map([...rootIdentities].filter(([root]) => !revoked.has(root))),

@@ -1,11 +1,15 @@
 import { readFileSync } from "node:fs";
 import { win32 } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { helperImage } from "../../__tests__/support/windows-helper-image.js";
 import type { BootHost } from "../../boot/host-runtime.js";
 import type { HostResources } from "../host-resources.js";
+import { windowsPeImageDigest } from "../../../scripts/lib/windows-path-kind-image-digest.mjs";
 
 const io = vi.hoisted(() => ({
-  helperExists: vi.fn(),
+  accessHelper: vi.fn(),
+  helperBytes: vi.fn(),
+  lockHelper: vi.fn<(path: string) => { path: string; bytes: Buffer; close(): void }>(),
   spawnHelper: vi.fn(),
   lstat: vi.fn(),
   realpath: vi.fn(),
@@ -20,11 +24,23 @@ vi.mock("node:path", async (importOriginal) => {
   return { ...simulatedDrivePath(actual), sep: actual.win32.sep };
 });
 vi.mock("../../permissions/generated/srt-win-build-receipts.js", () => ({ default: {} }));
-vi.mock("node:fs", async (importOriginal) => ({
-  ...await importOriginal<typeof import("node:fs")>(),
-  existsSync: io.helperExists,
-  lstatSync: io.lstat,
-  realpathSync: Object.assign(vi.fn(), { native: io.realpath }),
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...fs,
+    accessSync: (file: Parameters<typeof fs.accessSync>[0], mode?: number) => (
+      typeof file === "string" && file.endsWith("ave-path-kind.exe") ? io.accessHelper(file) : fs.accessSync(file, mode)
+    ),
+    readFileSync: (file: Parameters<typeof fs.readFileSync>[0], options?: Parameters<typeof fs.readFileSync>[1]) => (
+      typeof file === "string" && file.endsWith("ave-path-kind.exe") ? io.helperBytes(file) : Reflect.apply(fs.readFileSync, fs, [file, options])
+    ),
+    lstatSync: io.lstat,
+    realpathSync: Object.assign(vi.fn(), { native: io.realpath }),
+  };
+});
+vi.mock("../../../scripts/lib/windows-locked-executable.mjs", async original => ({
+  ...await original<typeof import("../../../scripts/lib/windows-locked-executable.mjs")>(),
+  lockWindowsExecutable: io.lockHelper,
 }));
 vi.mock("node:child_process", () => ({ execFile: vi.fn(), spawnSync: io.spawnHelper }));
 vi.mock("electron", () => ({
@@ -59,12 +75,17 @@ vi.mock("../../boot/steps/plugin-runtime/host-api-factory.js", () => ({ peekFloa
 vi.mock("../host-api/pick-folders.js", () => ({ pickFoldersForPlugin: vi.fn() }));
 vi.mock("../browser/browser-workspace-desktop.js", () => ({ getBrowserWorkspaceService: vi.fn() }));
 vi.mock("../../boot/desktop-relaunch.js", () => ({ relaunchDesktopHost: vi.fn() }));
+vi.mock("../../data/node-secret-encryption.js", () => ({ createNodeSecretEncryption: () => ({}) }));
+vi.mock("../corp-ca-runtime.js", () => ({ ensureCorporateCaInjected: vi.fn(async () => {}) }));
+vi.mock("../persisted-corp-ca.js", () => ({ readPersistedCorpCaConfigSync: () => undefined }));
 vi.mock("../../data/settings-store.js", () => ({
   settingsFilePath: (userDataPath: string) => win32.join(userDataPath, "settings.json"),
 }));
 
 const PROJECT_ROOT = "C:\\project";
 const PACKAGED_RESOURCES = "C:\\bundle\\resources";
+const BUILT_HELPER = helperImage("fresh build output");
+const BUILT_HELPER_SHA256 = windowsPeImageDigest(BUILT_HELPER);
 
 beforeEach(() => {
   vi.resetModules();
@@ -78,7 +99,9 @@ beforeEach(() => {
     platform: { value: "win32" },
     resourcesPath: { value: PACKAGED_RESOURCES },
   }));
-  io.helperExists.mockReturnValue(true);
+  io.accessHelper.mockReset();
+  io.helperBytes.mockReturnValue(BUILT_HELPER);
+  io.lockHelper.mockImplementation(path => ({ path, bytes: io.helperBytes(path), close: vi.fn() }));
   io.spawnHelper.mockReturnValue({ status: 0, stdout: Buffer.from("\\Device\\HarddiskVolume1") });
   io.lstat.mockReturnValue({ isSymbolicLink: () => false });
   io.realpath.mockImplementation((path: string) => path);
@@ -90,10 +113,27 @@ beforeEach(() => {
 afterEach(() => {
   vi.doUnmock("../../shared/windows-native-host.js");
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("desktop host resource startup", () => {
+  it("refuses an independently supplied checkout helper image before starting the unpackaged host", async () => {
+    const { app } = await import("electron");
+    Object.defineProperty(app, "isPackaged", { value: false });
+    const { createDesktopBootHost } = await import("../../boot/desktop-host-runtime.js");
+    vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
+    io.helperBytes.mockReturnValue(helperImage("independently supplied executable"));
+    io.lstat.mockClear();
+
+    const start = vi.fn(() => createDesktopBootHost(PROJECT_ROOT));
+    const boot = async () => (await start()).close();
+    await expect(boot()).rejects.toThrow(/Windows folder classifier/u);
+    expect(io.spawnHelper).not.toHaveBeenCalled();
+    expect(io.lstat).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("configures resources before early boot and host construction (packaged: %s)", async (isPackaged) => {
+    if (!isPackaged) vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
     const { app } = await import("electron");
     const { desktopResourcePath } = await import("../desktop-resource-path.js");
     const { configureHostResources, getConfiguredHostResources } = await import("../host-resources.js");
@@ -120,10 +160,71 @@ describe("desktop host resource startup", () => {
     await expect(bootstrap(PROJECT_ROOT, null, () => null, "interactive")).resolves.toMatchObject(expectedResources);
     expect(resourcesAtEarlyBoot).toEqual(expectedResources);
     expect(runEarlyBootEnv).toHaveBeenCalledBefore(io.acquireHostInstanceLock);
-    expect(io.acquireHostInstanceLock).toHaveBeenCalledBefore(io.helperExists);
-    expect(io.helperExists).toHaveBeenCalledWith(win32.join(expectedResources.resourcePath, "windows-path-kind", process.arch, "ave-path-kind.exe"));
+    const checkHelper = isPackaged ? io.accessHelper : io.lockHelper;
+    expect(io.acquireHostInstanceLock).toHaveBeenCalledBefore(checkHelper);
+    expect(checkHelper).toHaveBeenCalledWith(win32.join(expectedResources.resourcePath, "windows-path-kind", process.arch, "ave-path-kind.exe"));
     expect(io.spawnHelper).toHaveBeenCalledBefore(io.realpath);
     expect(io.realpath).toHaveBeenCalledBefore(io.sharedBootstrap);
+  });
+
+  it.each([false, true])("builds the desktop host without global resources (packaged: %s)", async (isPackaged) => {
+    if (!isPackaged) vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
+    const { app } = await import("electron");
+    const { createDesktopBootHost } = await import("../../boot/desktop-host-runtime.js");
+    const { protectedControlEntryFor } = await import("../../permissions/sensitive-paths.js");
+    const { getConfiguredHostResources } = await import("../host-resources.js");
+    Object.defineProperty(app, "isPackaged", { value: isPackaged });
+    const lexical = "C:\\profile\\settings.json";
+    const canonical = "C:\\physical\\settings.json";
+    io.realpath.mockImplementation((path: string) => path === lexical ? canonical : path);
+
+    io.lstat.mockClear();
+    const host = createDesktopBootHost(PROJECT_ROOT);
+    const match = (path: string) => protectedControlEntryFor(path, undefined, { inspectHostFiles: false });
+    try {
+      const root = isPackaged ? PACKAGED_RESOURCES : win32.join(PROJECT_ROOT, "resources");
+      const checkHelper = isPackaged ? io.accessHelper : io.lockHelper;
+      expect(checkHelper).toHaveBeenCalledExactlyOnceWith(win32.join(root, "windows-path-kind", process.arch, "ave-path-kind.exe"));
+      expect(io.spawnHelper).toHaveBeenCalledBefore(io.lstat);
+      expect(getConfiguredHostResources()).toBeUndefined();
+      expect(match(lexical)).toBe("runtime-settings-file");
+      expect(match(canonical)).toBe("runtime-settings-file");
+    } finally { await host.close(); }
+    expect(match(lexical)).toBeUndefined();
+    expect(match(canonical)).toBeUndefined();
+  });
+
+  it("does no target I/O if the desktop host starts without global resources and the helper is missing", async () => {
+    const { app } = await import("electron");
+    const { createDesktopBootHost } = await import("../../boot/desktop-host-runtime.js");
+    Object.defineProperty(app, "isPackaged", { value: true });
+    io.accessHelper.mockImplementationOnce(() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); });
+    io.lstat.mockClear();
+    const host = createDesktopBootHost(PROJECT_ROOT);
+    await host.close();
+    expect(io.accessHelper).toHaveBeenCalledExactlyOnceWith(win32.join(PACKAGED_RESOURCES, "windows-path-kind", process.arch, "ave-path-kind.exe"));
+    expect(io.spawnHelper).not.toHaveBeenCalled();
+    expect(io.realpath).not.toHaveBeenCalled();
+    expect(io.lstat).not.toHaveBeenCalled();
+  });
+
+  it("uses separate Node host locality decisions without global resources", async () => {
+    const { createNodeBootHost } = await import("../../boot/node-host-runtime.js");
+    const { getRuntimeSensitiveKeyPaths } = await import("../../permissions/sensitive-paths.js");
+    const { getConfiguredHostResources } = await import("../host-resources.js");
+    const key = "C:\\example\\private.key";
+    const physical = "C:\\physical\\private.key";
+    const binary = win32.join(PACKAGED_RESOURCES, "windows-path-kind", process.arch, "ave-path-kind.exe");
+    vi.stubEnv("AVE_SECRET_KEY_FILE", key);
+    io.realpath.mockImplementation((path: string) => path === key ? physical : path);
+
+    const host = await createNodeBootHost({ userDataPath: "C:\\profile", resourcePath: PACKAGED_RESOURCES, isPackaged: true, keyFilePath: key });
+    try {
+      expect(io.accessHelper.mock.calls).toEqual([[binary], [binary]]);
+      expect(io.spawnHelper).toHaveBeenCalledBefore(io.lstat);
+      expect(getRuntimeSensitiveKeyPaths()).toEqual([key, physical]);
+      expect(getConfiguredHostResources()).toBeUndefined();
+    } finally { await host.close(); }
   });
 
   it("refuses path admission before lookup when the configured helper is unavailable", async () => {
@@ -131,14 +232,14 @@ describe("desktop host resource startup", () => {
     const { isWindowsPathKindHelperUnavailable } = await import("../windows-path-kind-launcher.js");
     const { admitLocalRoute } = await import("../../shared/local-path-io.js");
     configureHostResources({ resourcePath: PACKAGED_RESOURCES, isPackaged: true });
-    io.helperExists.mockReturnValue(false);
+    io.accessHelper.mockImplementationOnce(() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); });
 
     const admit = () => admitLocalRoute("C:\\profile");
     expect(admit).toThrow(expect.objectContaining({
       code: "ENETWORKSHAREPATH",
       cause: expect.toSatisfy(isWindowsPathKindHelperUnavailable),
     }));
-    expect(io.helperExists).toHaveBeenCalledOnce();
+    expect(io.accessHelper).toHaveBeenCalledOnce();
     expect(io.spawnHelper).not.toHaveBeenCalled();
     expect(io.realpath).not.toHaveBeenCalled();
     expect(io.lstat).not.toHaveBeenCalled();

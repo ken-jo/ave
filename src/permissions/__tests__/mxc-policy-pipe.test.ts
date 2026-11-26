@@ -17,7 +17,7 @@ function helperChild() {
 }
 
 beforeEach(() => {
-  vi.spyOn(helperPath, "resolveWindowsPathKindHelper").mockReturnValue(String.raw`C:\Ave\ave-path-kind.exe`);
+  vi.spyOn(helperPath, "withWindowsPathKindHelper").mockImplementation(launch => launch(String.raw`C:\Ave\ave-path-kind.exe`));
   vi.spyOn(managedChildren, "trackManagedChildProcess").mockReturnValue(() => {});
 });
 
@@ -254,7 +254,7 @@ describe("native policy pipe lifecycle", () => {
     expect(received.readUInt32LE(0)).toBe(6);
     expect(received.subarray(4, 10).toString()).toBe("policy");
     expect(received.readUInt32LE(10)).toBe(1234);
-    expect(helperPath.resolveWindowsPathKindHelper).toHaveBeenCalledOnce();
+    expect(helperPath.withWindowsPathKindHelper).toHaveBeenCalledOnce();
     const resolvedHelper = String.raw`C:\Ave\ave-path-kind.exe`;
     expect(spawn.mock.calls[0]?.[0]).toBe(resolvedHelper);
     expect(spawn.mock.calls[0]?.[2]).toEqual({
@@ -269,7 +269,7 @@ describe("native policy pipe lifecycle", () => {
   });
 
   it("refuses to search for a helper when resource identity resolution fails", async () => {
-    vi.mocked(helperPath.resolveWindowsPathKindHelper).mockImplementation(() => { throw new Error("missing helper"); });
+    vi.mocked(helperPath.withWindowsPathKindHelper).mockImplementation(() => { throw new Error("missing helper"); });
     const spawn = vi.spyOn(childProcess, "spawn");
     await expect(openMxcPolicyPipe(Buffer.from("policy"), PIPE)).rejects.toThrow("missing helper");
     expect(spawn).not.toHaveBeenCalled();

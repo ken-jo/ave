@@ -5,12 +5,14 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { analysisLimitAnswer } from "../../__tests__/support/permission-lane.js";
+import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { PermissionManager, type PermissionRule } from "../permission-manager.js";
 import { canonicalizePathForMatch, SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
-import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/literal-shell-inspection.js";
+import { inspectShellCommand, shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/literal-shell-inspection.js";
 import { analyzeShellForRules, evaluateShellRules } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { SHELL_PREFIX_POLICY, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
@@ -564,20 +566,49 @@ describe("shared runner decisions", () => {
     expect(checkCommand(manager, dialect, command).decision).toBe("allow");
   });
 
-  // Exhausted evidence budgets deny before rules or modes can grant execution.
+  it.each([["rm -f build", true], ["printf ready", false]] as const)("keeps the saved deny ahead of the analysis floor: %s", async (first, denied) => {
+    const manager = runnerManager();
+    manager.setMode("allow");
+    await manager.addRulePersist({ pattern: "Bash(rm *)", action: "deny" }, { kind: "user" });
+    const tail = Array.from({ length: Math.ceil(MAX_SHELL_ANALYSIS_TOKENS / 20) }, () => `:${" x".repeat(19)}`).join("; ");
+    const command = `${first}; bash -c '${tail}'`;
+    expect(inspectShellCommand(command, CWD).analysisLimited).toBe(true);
+    const result = checkCommand(manager, "bash", command, true);
+    expect(result).toMatchObject(denied ? { decision: "deny", reasonCode: "rule-deny" } : analysisLimitAnswer(false));
+    expect(result.reviewer).toBeUndefined();
+    if (denied) expect(result.forceModal).toBeUndefined();
+  });
+
+  it.each(["saved allow rule", "remembered approval"])("requires a person past the contained parse limit with a %s", async (grant) => {
+    const command = `echo ${"x".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1)}`;
+    const permissionsPath = join(directory, `saved-${managerSequence++}.json`);
+    let manager = runnerManager(permissionsPath);
+    const key = actionKey("bash", command);
+    await manager.addAlwaysAllowedPersist(key);
+    if (grant === "saved allow rule") {
+      manager = runnerManager(permissionsPath);
+      await manager.loadRulesFromFile();
+    }
+    expect(checkCommand(manager, "bash", command, true)).toMatchObject({
+      decision: "ask", reasonCode: "shell-analysis-limit",
+      pipelineRequest: { rules: grant === "saved allow rule" ? { allow: key } : { remembered: expect.any(String) } },
+    });
+  });
+
   it.each([
     { name: "input over the hard length cap", dialect: "bash" as const, command: `echo ${"x".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1)}` },
     { name: "expression lexer out of budget", dialect: "powershell" as const, command: `Get-Content (${"'a' + ".repeat(3000)}'b')` },
-  ])("denies $name before modes or remembered grants", async ({ dialect, command }) => {
+  ])("requires a person on either route when $name, even with remembered grants", async ({ dialect, command }) => {
     const manager = runnerManager();
-    const expected = { decision: "deny", reasonCode: "shell-analysis-limit" };
-    expect(checkCommand(manager, dialect, command)).toMatchObject(expected);
+    expect(checkCommand(manager, dialect, command)).toMatchObject(analysisLimitAnswer(false));
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
     for (const mode of ["strict", "default", "auto", "allow"] as const) {
       manager.setMode(mode);
       for (const sandboxed of [false, true]) {
-        expect(checkCommand(manager, dialect, command, sandboxed)).toMatchObject(expected);
-        expect(checkCommand(manager, dialect, command, sandboxed, true)).toMatchObject(expected);
+        for (const headless of [false, true]) {
+          expect(checkCommand(manager, dialect, command, sandboxed, headless), `${mode} sandboxed=${sandboxed} headless=${headless}`)
+            .toMatchObject(analysisLimitAnswer(headless));
+        }
       }
     }
     expect(buildShellRuleApproval(dialect, command, CWD, { allow: true, deny: true }).exactRule).toBeNull();

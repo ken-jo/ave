@@ -134,7 +134,7 @@ it.each([
     expect((await h.item(id)).stageJoins).toEqual([]);
     expect(seals).toBe(1);
     expect(integrations).toBe(0);
-    expect(await h.engine.retryStage(id, { runId, stageId: "a" })).toMatchObject({ ok: true });
+    expect(await h.engine.retryStage(id, { runId, stageId: "a", attempt: 1 })).toMatchObject({ ok: true });
     const replacement = (await h.untilSpawned(2))[1];
     await h.drainRunWork();
     expect((await h.stageRun(id, "a")).childSessionId).toBe(replacement.sessionId);

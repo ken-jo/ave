@@ -7,7 +7,7 @@ import {
 } from "../shared/multimodal-token-estimate.js";
 import { estimateTokens } from "../shared/token-estimate.js";
 import { formatCost } from "./cost-format.js";
-import type { ModelPricingSource } from "../shared/model-pricing.js";
+import type { ModelPricingSource, UnknownModelPricingReason } from "../shared/model-pricing.js";
 
 export { estimateTokens } from "../shared/token-estimate.js";
 
@@ -19,20 +19,31 @@ export interface EstimateInput {
   maxOutputTokens: number;
 }
 
-export interface EstimateBreakdown {
+export type EstimateBreakdown = {
   inputTokens: number;
   outputTokens: number;
-  inputCost: number;
-  outputCost: number;
-  total: number;
-  pricingKnown?: boolean;
   outputLimitSource?: "user" | "host-default" | "provider-reported" | "model-catalog";
-  pricingSource?: ModelPricingSource;
-  /** A zero catalog price is source provenance, not a claim that usage is free. */
-  catalogListsZero?: string;
-  /** Color the badge by expected cost; show the full output limit only as the upper range bound. */
-  expected?: ExpectedOutput & { total: number };
-}
+} & (
+  | {
+      pricingKnown?: true;
+      inputCost: number;
+      outputCost: number;
+      total: number;
+      pricingSource?: ModelPricingSource;
+      /** The full output limit is the upper range bound. */
+      expected?: ExpectedOutput & { total: number };
+    }
+  | {
+      pricingKnown: false;
+      inputCost?: never;
+      outputCost?: never;
+      total?: never;
+      pricingSource?: never;
+      catalogListsZero?: string;
+      reason?: UnknownModelPricingReason;
+      expected?: ExpectedOutput;
+    }
+);
 
 /** Average completed-turn output within the current limit; before the first completion, estimate input only. */
 export interface ExpectedOutput {

@@ -25,7 +25,7 @@ class Decision {
   readonly memos = new Map<object, Map<string, unknown>>();
   // A decision opened by a single lookup outside any running decision; it serves only the synchronous run that opened it.
   open = true;
-  constructor(readonly detached = false) {}
+  constructor(readonly detached = false, readonly resourcePath?: string) {}
 
   close(): void {
     this.open = false;
@@ -53,6 +53,13 @@ export function rethrowLocalityFailure(error: unknown): void {
   active?.assertUsable();
 }
 
+/** A single synchronous judgment with an explicit helper resource path. */
+export type LocalityDecision = object;
+
+export function openLocalityDecision(resourcePath?: string): LocalityDecision {
+  return new Decision(false, resourcePath);
+}
+
 /**
  * A yes/no judgment for a caller that has no decision of its own (a timer, an event callback): a failed drive query
  * answers no. Inside a running decision the failure propagates to that decision instead.
@@ -73,8 +80,11 @@ export function assertLocalityDecisionUsable(): void {
 }
 
 /** Reuse an enclosing synchronous judgment or open a fresh one. */
-export function withLocalityDecision<T>(fn: () => T): T {
-  const chosen = active ?? new Decision();
+export function withLocalityDecision<T>(fn: () => T, decision?: LocalityDecision): T {
+  const chosen = decision ?? active ?? new Decision();
+  if (!(chosen instanceof Decision) || chosen.detached || !chosen.open || (active !== undefined && chosen !== active)) {
+    throw new TypeError("Invalid locality decision");
+  }
   chosen.assertUsable();
   const previous = active;
   active = chosen;
@@ -167,7 +177,9 @@ function driveIdentity(drive: string, decision: Decision): DriveIdentity {
   let identity = decision.drives.get(drive);
   if (identity === undefined) {
     try {
-      identity = queryDriveIdentity(drive);
+      identity = decision.resourcePath === undefined
+        ? queryDriveIdentity(drive)
+        : queryDriveIdentity(drive, decision.resourcePath);
       if (!identity.local && identity.unavailable !== undefined) throw identity.unavailable;
     } catch (error) {
       if (typeof error === "object" && error !== null) driveQueryFailures.add(error);

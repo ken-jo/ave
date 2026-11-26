@@ -1,4 +1,5 @@
-export const WINDOWS_TEST_SHARDS: readonly [1, 2, 3, 4, 5, 6];
+export const WINDOWS_TEST_SHARDS: readonly [1, 2, 3, 4, 5, 6, 7, 8];
+export const WINDOWS_TEST_WORKERS: 2;
 export const WINDOWS_TIER_TEST_SHARDS: readonly [1, 2, 3];
 export type WindowsPlanTier = "native" | "census";
 export interface WindowsTestPlan {

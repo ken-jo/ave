@@ -15,6 +15,7 @@ import type { RemovedRunProject, RunRef, StageWorkspaceProvider, WORKSPACE_REFUS
 import { ADMIN_MARK, adminPinOf, IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, PIN_DIR, RUN_FILE, RUN_MARK, runBranch, runPinOf, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
 import { isRecordFilePath, isWorkspaceRecord, type LiveRepo, type OutputFile, ownerOf, recordFits, type Registration, runFolderOf, type StageEntry, samePath, vetRecordPath, type WorkspaceRecord } from "./workspace-record.js";
 import { copySeedFiles, hashSeedFile, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
+import { isHostWorkspaceConsumable } from "../../shared/host-workspace-gate.js";
 
 const log = createLogger("work-board-stage-workspace");
 
@@ -679,7 +680,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         if (input.from === "project") {
           // The folder that is listed is the one the files are then read from: the caller's open project, not the record's path.
           const project = file.project as NonNullable<WorkspaceRecord["project"]>;
-          if (root === undefined || realDirId(root) !== project.id) return "seed-unreadable";
+          // A project whose protected names are unresolved after a sandboxed run seeds nothing.
+          if (root === undefined || realDirId(root) !== project.id || !isHostWorkspaceConsumable(root)) return "seed-unreadable";
           source = { path: root, id: project.id };
           const listed = await listSeedFiles(root, input.paths, seedRules(plain?.ignored ?? ignoreRulesOf(at)));
           if (!listed.ok) return listed.code;
@@ -697,13 +699,14 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
           bytes += paths.reduce((sum, path) => sum + (file.out[path]?.size ?? 0), 0);
         }
         if (files > limits.files || bytes > limits.bytes) return "seed-too-large";
-        for (const copied of await copySeedFiles(source, target, paths, expect)) seeded[copied.path] = copied.sha256;
+        for (const copied of await copySeedFiles(source, target, paths, expect, input.from === "project")) seeded[copied.path] = copied.sha256;
       }
     } catch {
       return "seed-unreadable";
     } finally {
       await plain?.done();
     }
+    if (root !== undefined && inputs.some(input => input.from === "project") && !isHostWorkspaceConsumable(root)) return "seed-unreadable";
     const entry = file.stages[stage.id];
     if (entry) Object.assign(entry, { ready: true, seeded, outputs: stage.outputs ?? ["**"] });
     writeRunFile(at, file);
@@ -1009,6 +1012,21 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     });
   }
 
+  function openJoinFolder(run: RunRef, open: (path: string) => Promise<boolean>): Promise<boolean> {
+    return serial(run.runId, async () => {
+      try {
+        const at = locate(run);
+        if (!at?.live || at.file.kind !== "git" || at.file.joinDir === undefined) return false;
+        const folder = at.run.child(JOIN_DIR, at.file.joinDir);
+        if (!folder) return false;
+        folder.check();
+        return await open(folder.path);
+      } catch {
+        return false;
+      }
+    });
+  }
+
   /** The refs the run made go only while each is still at the commit it was made at: a branch a stage was collected onto is the run's
    * result and stays, and so does one git gave no answer for. */
   async function deleteRunRefs(at: Held): Promise<void> {
@@ -1280,5 +1298,5 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
   }
 
-  return { open, prepare, seal, integrate, release, discard, sweep };
+  return { open, prepare, seal, integrate, openJoinFolder, release, discard, sweep };
 }

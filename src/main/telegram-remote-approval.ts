@@ -1,9 +1,12 @@
+import { approvalPresentationDenial, presentRemoteApprovalCard } from "../permissions/approval-presentation.js";
 // Verified button presses resolve through the same ApprovalGate checks as desktop decisions. Cards contain fixed host text and coarse tool IDs only;
 // callback tokens map to pending approvals in memory.
 import { randomBytes } from "node:crypto";
 import {
-  isHostApprovalTimeoutDecision,
+  admitApprovalAnswer,
+  approvalFailureKind,
   type ApprovalDecision,
+  type ApprovalFailureKind,
   type PendingApprovalObserver,
   type PendingApprovalView,
 } from "../permissions/approval-gate.js";
@@ -46,6 +49,14 @@ const CARD_TEXT = Object.freeze({
   ackDenied: "Denied",
   ackStale: "This approval is no longer active",
 });
+
+const APPROVAL_FAILURE_TEXT = {
+  denied: { card: "was denied", ack: CARD_TEXT.ackDenied },
+  rejected: { card: "was refused by the host", ack: "The host refused this approval" },
+  expired: { card: "timed out", ack: "This approval timed out" },
+  unavailable: { card: "had no available approver", ack: "No approver was available" },
+  cancelled: { card: "was cancelled", ack: "This approval was cancelled" },
+} satisfies Record<ApprovalFailureKind, { card: string; ack: string }>;
 
 // The narrow slice of the approval gate this feature is allowed to touch: observe what is parked, and answer through the one shared resolve chokepoint
 // as the `"platform-bridge"` answerer.
@@ -124,6 +135,8 @@ function remoteApprovalOffer(view: PendingApprovalView): RemoteApprovalOffer | n
 
 interface RemoteApprovalCard {
   readonly requestId: string;
+  readonly toolName: string;
+  readonly toolUseId: string | undefined;
   // The one row of an extension-start ask this card answers; undefined when the card answers the whole request.
   readonly row?: string;
   readonly toolIdentifier: string;
@@ -137,6 +150,7 @@ interface RemoteApprovalCard {
   messageId?: number;
   // Set at settlement; applied as soon as a message id exists.
   finalText?: string;
+  failureOutcome?: ApprovalFailureKind;
 }
 
 export function createTelegramRemoteApprovalCoordinator(
@@ -186,11 +200,20 @@ export function createTelegramRemoteApprovalCoordinator(
   };
 
   const finalTextFor = (card: RemoteApprovalCard, decision: ApprovalDecision): string => {
-    // Read before the guard: its `decision is ApprovalDecision` predicate would otherwise narrow the negated branch to `never`.
+    let answer: ReturnType<typeof admitApprovalAnswer>;
+    try {
+      answer = admitApprovalAnswer(decision, card);
+    } catch {
+      return CARD_TEXT.expired(card.toolIdentifier);
+    }
+    const outcome = approvalFailureKind(decision);
+    if (outcome !== undefined) {
+      card.failureOutcome = outcome;
+      if (outcome !== "denied") return `Ave: the approval for tool ${card.toolIdentifier} ${APPROVAL_FAILURE_TEXT[outcome].card}`;
+    }
     // A row card shows its own start's answer. An answer that names no row is for the whole ask: a dismissed desk card, or the one start of a one-start card.
     const rowAnswer = card.row === undefined ? undefined : decision.extensionStartChoices?.[card.row];
-    const approved = rowAnswer === undefined ? decision.choice.startsWith("allow") : rowAnswer === "yes";
-    if (isHostApprovalTimeoutDecision(decision)) return CARD_TEXT.expired(card.toolIdentifier);
+    const approved = rowAnswer === undefined ? answer?.decision === "allow" : rowAnswer === "yes";
     return approved
       ? CARD_TEXT.approved(card.toolIdentifier)
       : CARD_TEXT.denied(card.toolIdentifier);
@@ -198,7 +221,7 @@ export function createTelegramRemoteApprovalCoordinator(
 
   const observer: PendingApprovalObserver = {
     onPending: (view) => {
-      if (disposed) return;
+      if (disposed || approvalPresentationDenial()) return;
       const offer = remoteApprovalOffer(view);
       if (offer === null) return;
       let chatId: string | null;
@@ -217,6 +240,8 @@ export function createTelegramRemoteApprovalCoordinator(
       for (const [index, row] of rows.slice(0, shown).entries()) {
         const card: RemoteApprovalCard = {
           requestId: view.requestId,
+          toolName: view.toolName,
+          toolUseId: view.toolUseId,
           ...(row === undefined ? {} : { row }),
           toolIdentifier: offer.toolIdentifier,
           chatId,
@@ -239,9 +264,12 @@ export function createTelegramRemoteApprovalCoordinator(
           : shown < rows.length && index === shown - 1
             ? CARD_TEXT.promptRowLast(card.toolIdentifier, index + 1, rows.length, rows.length - shown)
             : CARD_TEXT.promptRow(card.toolIdentifier, index + 1, rows.length);
-        void client
-          .sendDecisionCard(card.chatId, prompt, buttons)
-          .then((result) => {
+        const sent = presentRemoteApprovalCard(client, card.chatId, prompt, buttons);
+        if (!sent) {
+          forgetCard(card);
+          continue;
+        }
+        void sent.then((result) => {
             if (!result.ok) {
               // An unsent card must not keep live tokens: a press can only arrive for a card that exists on the owner's screen.
               forgetCard(card);
@@ -306,20 +334,35 @@ export function createTelegramRemoteApprovalCoordinator(
         "platform-bridge",
       );
       if (decision === null) {
-        // Raced by a local decision between lookup and resolve.
+        const outcome = binding.card.failureOutcome;
+        await acknowledge(callback.callbackQueryId, outcome === undefined ? CARD_TEXT.ackStale : APPROVAL_FAILURE_TEXT[outcome].ack);
+        return;
+      }
+      const partialRow = binding.card.row !== undefined && cardsByToken.get(callback.data) === binding;
+      let answer: ReturnType<typeof admitApprovalAnswer>;
+      try {
+        answer = admitApprovalAnswer(decision, { ...binding.card, ...(partialRow ? { extensionStartRow: binding.card.row } : {}) });
+      } catch {
         await acknowledge(callback.callbackQueryId, CARD_TEXT.ackStale);
         return;
       }
-      // A row answered while other starts still wait: the gate has not settled the ask, so this card is closed here.
-      if (binding.card.row !== undefined && cardsByToken.get(callback.data) === binding) {
-        const allowed = binding.choice === "allow-once";
+      const outcome = approvalFailureKind(decision);
+      if (outcome !== undefined && outcome !== "denied") {
+        await acknowledge(callback.callbackQueryId, APPROVAL_FAILURE_TEXT[outcome].ack);
+        return;
+      }
+      if (partialRow) {
+        const allowed = answer?.choice === "allow-once";
         retireCard(binding.card, allowed ? CARD_TEXT.rowAllowed(binding.card.toolIdentifier) : CARD_TEXT.rowDeclined(binding.card.toolIdentifier));
         await acknowledge(callback.callbackQueryId, allowed ? CARD_TEXT.ackRowAllowed : CARD_TEXT.ackRowDeclined);
         return;
       }
       await acknowledge(
         callback.callbackQueryId,
-        (binding.card.row === undefined ? decision.choice.startsWith("allow") : binding.choice === "allow-once") ? CARD_TEXT.ackApproved : CARD_TEXT.ackDenied,
+        (binding.card.row === undefined
+          ? answer?.choice === "allow-once"
+          : (decision.extensionStartChoices?.[binding.card.row] ?? (answer?.choice === "allow-once" ? "yes" : "no")) === "yes")
+          ? CARD_TEXT.ackApproved : CARD_TEXT.ackDenied,
       );
     },
     dispose(): void {

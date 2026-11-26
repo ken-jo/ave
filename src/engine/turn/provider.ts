@@ -1,6 +1,6 @@
 import { createProvider, secretKeyFor } from "../llm/provider-factory.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
-import type { LLMProvider, ProviderConfig } from "../llm/types.js";
+import type { LLMProvider, LLMVendor, ProviderConfig } from "../llm/types.js";
 import type { LLMSettings, SettingsService } from "../../data/settings-store.js";
 import {
   canUseLlmVendorWithoutApiKey,
@@ -8,12 +8,13 @@ import {
   activeLlmRouteModel,
 } from "../../shared/llm-vendor-defaults.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
+import { resolveModelRetirement } from "../../shared/context-budget.js";
+import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import { selectProviderRuntimeFetch } from "../llm/marketplace-provider-fetch.js";
 import type { ConversationLoopDeps } from "./types.js";
 import {
   MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH,
   subscriptionAcceptsModelOverride,
-  type ActiveChatRuntime,
   type SubscriptionChatRuntimeSelection,
 } from "../../shared/subscription-runtime.js";
 import { stripSuggestedReplies } from "../suggested-replies.js";
@@ -78,11 +79,12 @@ function selectionWithModelOverride(
 /** Match the active authentication boundary, not model equality; stale API-key transports are forbidden. */
 export function providerMatchesActiveChatRuntime(
   provider: LLMProvider | null,
-  activeChatRuntime: ActiveChatRuntime | undefined,
+  llm: Pick<LLMSettings, "activeChatRuntime" | "retiredProvider">,
 ): boolean {
   if (!provider) return false;
+  const { activeChatRuntime, retiredProvider } = llm;
   if (activeChatRuntime?.kind !== "subscription") {
-    return provider.subscriptionRuntime === undefined;
+    return !retiredProvider && provider.subscriptionRuntime === undefined;
   }
   return provider.subscriptionRuntime?.provider === activeChatRuntime.provider;
 }
@@ -177,9 +179,31 @@ export async function buildProvider(
         });
       };
 
+      const routeRetirement = {
+        primaryBaseUrl: effectiveBaseUrl,
+        primaryPresetId: marketplaceProviderPreset?.providerId,
+        // The saved-route marker fences API-key dispatch and credential access for the whole walk.
+        getBlockedModelId: (): string | undefined => {
+          const { retiredProvider } = deps.settingsService.get("llm");
+          return typeof retiredProvider === "object" ? retiredProvider.model : undefined;
+        },
+        getRetiredModelId: (route: { provider: LLMVendor; model: string; baseUrl?: string; presetId?: string }): string | undefined => {
+          const { modelListCache } = deps.settingsService.get("llm");
+          const retirement = resolveModelRetirement({
+            vendor: route.provider,
+            model: route.model,
+            baseUrl: route.baseUrl,
+            listing: modelListCache?.[llmModelListCacheKey(route.provider, route.baseUrl, route.presetId)],
+          });
+          return retirement === "unlisted" ? route.model : undefined;
+        },
+      };
       const primary = createLoopProvider({
         vendor,
         apiKey: providerApiKey,
+        getRetiredModelId: (model) => routeRetirement.getBlockedModelId() ?? routeRetirement.getRetiredModelId({
+          provider: vendor, model, baseUrl: effectiveBaseUrl, presetId: routeRetirement.primaryPresetId,
+        }),
         // Child model overrides take precedence; absent overrides retain the configured vendor model.
         model: effectiveModel,
         ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
@@ -212,6 +236,7 @@ export async function buildProvider(
         chain,
         async (v) => (await deps.settingsService.getSecret(secretKeyFor(v))) ?? "",
         createLoopProvider,
+        routeRetirement,
       );
     } catch {
       return null;
@@ -247,7 +272,7 @@ export async function generateTextForRoute(
     const model = provider?.subscriptionRuntime
       ? provider.subscriptionRuntime.model ?? "default"
       : activeLlmRouteModel(llm, cleanModelOverride(options?.modelOverride));
-    if (!provider || !model || !providerMatchesActiveChatRuntime(provider, llm.activeChatRuntime)) {
+    if (!provider || !model || !providerMatchesActiveChatRuntime(provider, llm)) {
       throw new Error("LLM provider not configured");
     }
     if (abortSignal?.aborted) throw new Error("LLM generation aborted");

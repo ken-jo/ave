@@ -103,3 +103,21 @@ export function windowsVolumeRoot(path: string): string {
   }
   return win32.parse(path).root;
 }
+
+const RESERVED_DEVICE_NAME = /^(con|prn|aux|nul|conin\$|conout\$|clock\$|com[0-9¹²³]|lpt[0-9¹²³])$/i;
+
+// Positive grammar: only a plain drive-absolute path whose every component Win32 opens as spelled, so no later layer can reinterpret it.
+export function isPlainWindowsStampPath(path: string): boolean {
+  const match = /^[A-Z]:\\(.*)$/s.exec(path);
+  if (match === null) return false;
+  const body = match[1]!.endsWith("\\") ? match[1]!.slice(0, -1) : match[1]!;
+  if (body === "") return true;
+  return body.split("\\").every(isPlainWindowsPathComponent);
+}
+
+export function isPlainWindowsPathComponent(component: string): boolean {
+  return component !== "" && component !== "." && component !== ".." &&
+    !/[\x00-\x1f\x7f<>:"/|?*%~]/.test(component) &&
+    !/[. ]$/.test(component) &&
+    !RESERVED_DEVICE_NAME.test(component.split(".")[0]!.trimEnd());
+}

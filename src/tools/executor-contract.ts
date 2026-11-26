@@ -91,6 +91,7 @@ export interface ToolPermissionContext {
   otherPrincipal?: boolean;
   admissionDenial?: PermissionDecisionRequest["admissionDenial"];
   floor?: PermissionDecisionRequest["floor"];
+  shellAnalysisLimited?: PermissionCheckContext["shellAnalysisLimited"];
   paths?: PermissionCheckContext["paths"];
   secretRead?: boolean;
   headless?: boolean;
@@ -152,6 +153,8 @@ export interface HostPluginAuthLifecycle {
 
 export interface ExecuteOptions {
   callbacks?: ToolExecutorCallbacks;
+  /** When set, only names advertised in the provider request may be invoked. */
+  advertisedToolNames?: ReadonlySet<string>;
   /** Final model-facing result, after invocation cleanup; awaited before ordered execution continues. */
   onToolResult?: (result: ToolResult) => void | Promise<void>;
   sessionId?: string;

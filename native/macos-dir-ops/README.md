@@ -5,7 +5,7 @@ download where the user chose and removes staged files. Node has no
 `openat`/`renameat`/`unlinkat`, and macOS has no path that names an open
 directory, so the host cannot do these steps itself without naming files by a
 path that could be swapped after it was checked. `native/windows-path-kind`
-implements the same modes in `ave-path-kind.exe` (`dir-ops.h`); Linux does
+implements the same modes in `ave-path-kind.exe` (`src/directory/mod.rs`); Linux does
 them in process through `/proc/self/fd`
 (`src/main/browser/browser-download-files.ts`).
 

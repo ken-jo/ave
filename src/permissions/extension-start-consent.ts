@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { createLogger } from "../lib/logger.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { errorMessage } from "../shared/error-message.js";
-import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
+import { turnExtensionPolicyContext, unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
+import type { ApprovalFailureKind } from "./approval-gate.js";
 
 const log = createLogger("extension-start-consent");
 
@@ -23,8 +24,8 @@ export function extensionStartIdentity(facts: unknown): string {
 export class ExtensionStartConsentRequiredError extends Error {
   readonly code = EXTENSION_START_CONSENT_REQUIRED_CODE;
   /** `start` is the start the refused crossing presented; a probe presents none. */
-  constructor(readonly unconfinedCause: ExtensionStartUnconfinedCause, readonly start?: ExtensionStartIdentity) {
-    super(`Extension start needs approval: it would run without OS isolation (${unconfinedCause}; ${EXTENSION_START_CONSENT_REQUIRED_CODE})`);
+  constructor(readonly unconfinedCause: ExtensionStartUnconfinedCause, readonly start?: ExtensionStartIdentity, readonly approvalOutcome?: ApprovalFailureKind) {
+    super(`Extension start needs approval: it would run without OS isolation (${unconfinedCause}; ${EXTENSION_START_CONSENT_REQUIRED_CODE})${approvalOutcome === undefined ? "" : ` [approval=${approvalOutcome}]`}`);
     this.name = "ExtensionStartConsentRequiredError";
   }
 }
@@ -122,7 +123,7 @@ export interface ExtensionStartSession {
 /** The session of the turn this call runs in. Outside a turn, or in one no person watches, it is unattended. */
 export function turnExtensionStartSession(sessionId: string): ExtensionStartSession {
   const turn = turnExtensionPolicyContext.getStore();
-  const attended = turn !== undefined && turn.headless !== true && turn.ownerUnattended !== true
+  const attended = !unattendedApprovalDenial() && turn !== undefined && turn.headless !== true && turn.ownerUnattended !== true
     && turn.approvalSurface !== "unavailable" && turn.remoteControllerAuthority === undefined && turn.withholdSessionAuthority !== true;
   return { sessionId, attended, ...(turn?.abortSignal ? { abortSignal: turn.abortSignal } : {}) };
 }
@@ -139,12 +140,12 @@ interface ExtensionStartCardSession {
 type ExtensionStartAnswers = ReadonlyMap<string, "yes" | "no">;
 
 export interface ExtensionStartAsker {
-  /** One card for every start waiting in one session; each start gets its own yes or no. "no-approver": nobody answered. */
-  ask(starts: readonly PendingExtensionStart[], session: ExtensionStartCardSession): Promise<ExtensionStartAnswers | "no-approver">;
+  /** One card for every start waiting in one session. */
+  ask(starts: readonly PendingExtensionStart[], session: ExtensionStartCardSession): Promise<ExtensionStartAnswers | ApprovalFailureKind>;
   /** One install-hint notice per start and reason. */
   notify(start: PendingExtensionStart, why: ExtensionStartNotice): void;
   /** Audit row for a start that did not run, or that ran confined after waiting. */
-  record?(event: "waiting" | "confined" | ExtensionStartNotice, start: PendingExtensionStart): void;
+  record?(event: "waiting" | "confined" | ExtensionStartNotice | ApprovalFailureKind, start: PendingExtensionStart): void;
 }
 
 type Entry = PendingExtensionStart & { state: "pending" | "asking" | "declined" };
@@ -195,6 +196,7 @@ export function listPendingExtensionStarts(): readonly (PendingExtensionStart & 
  * another identity under the same key is another start, so no earlier answer, open card or waiting consent covers it.
  */
 export function deferExtensionStart(start: PendingExtensionStart): void {
+  if (unattendedApprovalDenial()) return;
   if (differentStartWaits(start)) dropExtensionStart(start.key);
   const existing = entries.get(start.key);
   // A start being asked about, or already declined, keeps its entry.
@@ -211,6 +213,7 @@ function differentStartWaits(start: ExtensionStartIdentity): boolean {
 
 /** The consent a yes parked for this key, removed from the list; the caller threads it to its spawn. */
 export function takeExtensionStartGrant(key: string): ExtensionStartAuthority | undefined {
+  if (unattendedApprovalDenial()) return undefined;
   const grant = parked.get(key);
   if (grant === undefined) return undefined;
   parked.delete(key);
@@ -242,10 +245,11 @@ export function dropPluginExtensionStarts(pluginId: string, scope: "plugin" | "g
   }
 }
 
-function notifyOnce(start: PendingExtensionStart, why: ExtensionStartNotice): void {
+function notifyOnce(start: PendingExtensionStart, why: ExtensionStartNotice, approvalOutcome?: ApprovalFailureKind): void {
+  if (approvalOutcome !== undefined) record(approvalOutcome, start);
   if (noticed.has(`${why}:${start.key}`)) return;
   noticed.add(`${why}:${start.key}`);
-  record(why, start);
+  if (approvalOutcome === undefined) record(why, start);
   try {
     asker?.notify(start, why);
   } catch (error) {
@@ -253,7 +257,7 @@ function notifyOnce(start: PendingExtensionStart, why: ExtensionStartNotice): vo
   }
 }
 
-type AskOutcome = { readonly authority: ExtensionStartAuthority } | "confined" | undefined;
+type AskOutcome = { readonly authority: ExtensionStartAuthority } | "confined" | ApprovalFailureKind | undefined;
 
 /** One start waiting for its session's card. */
 interface Asked {
@@ -280,7 +284,7 @@ function cardAbortSignal(batch: readonly Asked[]): AbortSignal | undefined {
 }
 
 /** Applies one start's answer in the tick the card was answered, so a removal or an edit after it still finds the consent to burn. */
-function settleAsked(asked: Asked, outcome: "yes" | "no" | "no-approver" | "confined"): void {
+function settleAsked(asked: Asked, outcome: "yes" | "no" | "confined" | ApprovalFailureKind): void {
   const { entry } = asked;
   asking.delete(entry.key);
   entry.state = "pending";
@@ -297,9 +301,14 @@ function settleAsked(asked: Asked, outcome: "yes" | "no" | "no-approver" | "conf
     }
     asked.resolve({ authority });
   } else {
-    if (outcome === "no") entry.state = "declined";
-    notifyOnce(entry, outcome === "no" ? "declined" : "unattended");
-    asked.resolve(undefined);
+    if (outcome === "no" || outcome === "denied") {
+      entry.state = "declined";
+      notifyOnce(entry, "declined");
+      asked.resolve("denied");
+    } else {
+      notifyOnce(entry, "unattended", outcome);
+      asked.resolve(outcome);
+    }
   }
 }
 
@@ -313,8 +322,8 @@ async function showCards(sessionId: string, waitingForCard: Asked[]): Promise<vo
       const batch: Asked[] = [];
       for (const asked of queued) {
         // What changed while this start waited behind an open card is read again before it is shown.
-        if (removals.get(asked.entry.key) !== asked.removal) settleAsked(asked, "no-approver");
-        else if (asked.session.abortSignal?.aborted || asker === undefined) settleAsked(asked, "no-approver");
+        if (removals.get(asked.entry.key) !== asked.removal || asked.session.abortSignal?.aborted) settleAsked(asked, "cancelled");
+        else if (asker === undefined) settleAsked(asked, "unavailable");
         else {
           const now = asked.waiting ? asked.entry.recheck?.() : undefined;
           if (now === "confined") settleAsked(asked, "confined");
@@ -324,17 +333,17 @@ async function showCards(sessionId: string, waitingForCard: Asked[]): Promise<vo
       }
       if (batch.length === 0 || asker === undefined) continue;
       const signal = cardAbortSignal(batch);
-      let answers: ExtensionStartAnswers | "no-approver";
+      let answers: Awaited<ReturnType<ExtensionStartAsker["ask"]>>;
       try {
         answers = await asker.ask(batch.map((asked) => asked.entry), { sessionId, ...(signal ? { abortSignal: signal } : {}) });
       } catch (error) {
         log.warn(`extension start ask failed (${batch.length} starts): %s`, errorMessage(error));
-        answers = "no-approver";
+        answers = "rejected";
       }
       for (const asked of batch) {
-        // A start cancelled while the card was open was not answered, whatever the card says.
-        const answer = answers === "no-approver" || asked.session.abortSignal?.aborted ? undefined : answers.get(asked.entry.key);
-        settleAsked(asked, answer === "yes" || answer === "no" ? answer : "no-approver");
+        const answer = typeof answers === "string" ? answers
+          : asked.session.abortSignal?.aborted ? "cancelled" : answers.get(asked.entry.key) ?? "rejected";
+        settleAsked(asked, answer);
       }
     }
   } finally {
@@ -345,9 +354,14 @@ async function showCards(sessionId: string, waitingForCard: Asked[]): Promise<vo
 function answer(entry: Entry, session: ExtensionStartSession): Promise<AskOutcome> {
   // One question per start at a time, whichever site asks.
   if (entry.state !== "pending" || asking.has(entry.key)) return Promise.resolve(undefined);
+  const unattended = unattendedApprovalDenial();
+  if (unattended) {
+    log.info("Extension start denied (%s): %s", entry.kind, unattended);
+    return Promise.resolve("rejected");
+  }
   if (!session.attended || asker === undefined) {
     notifyOnce(entry, "unattended");
-    return Promise.resolve(undefined);
+    return Promise.resolve("unavailable");
   }
   const waiting = entries.get(entry.key) === entry;
   asking.add(entry.key);
@@ -410,11 +424,11 @@ export async function settlePendingExtensionStarts(session?: ExtensionStartSessi
   }
   for (const { entry, answered } of asked) {
     const outcome = await answered;
-    if (outcome === undefined) continue;
     if (outcome === "confined") {
       if (entries.get(entry.key) === entry) await runConfined(entry);
       continue;
     }
+    if (typeof outcome !== "object") continue;
     // Parked when the card was answered, so a removal or an edit while an earlier start ran has already burned it.
     const { authority } = outcome;
     if (entry.retry === undefined) continue;
@@ -428,13 +442,13 @@ export async function settlePendingExtensionStarts(session?: ExtensionStartSessi
   }
 }
 
-/** A session-bound site (a hook, a worker inside a tool call) asks now. Its answer covers this run only. Undefined: do not start. */
+/** A session-bound site asks now. Its authority covers this run only. */
 export async function requestExtensionStartConsent(
   start: PendingExtensionStart,
   session: ExtensionStartSession,
-): Promise<ExtensionStartAuthority | undefined> {
+): Promise<ExtensionStartAuthority | ApprovalFailureKind | undefined> {
   const outcome = await answer({ ...start, state: "pending" }, session);
-  return typeof outcome === "object" ? outcome.authority : undefined;
+  return typeof outcome === "object" ? outcome.authority : outcome === "confined" ? undefined : outcome;
 }
 
 /**
@@ -451,12 +465,15 @@ export async function runExtensionStart<T>(
   } catch (error) {
     // The spawn site names what it would run; the question and the consent are for exactly that.
     if (!isExtensionStartConsentRequired(error) || error.start?.key !== pending.key) throw error;
+    const unattended = unattendedApprovalDenial();
+    if (unattended) throw new Error(unattended);
     const start = { ...pending, identity: error.start.identity, cause: error.unconfinedCause };
     if (session === undefined) {
       deferExtensionStart(start);
       throw error;
     }
     const authority = await requestExtensionStartConsent(start, session);
+    if (typeof authority === "string") throw new ExtensionStartConsentRequiredError(error.unconfinedCause, error.start, authority);
     if (authority === undefined) throw error;
     return run(authority);
   }

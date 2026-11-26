@@ -9,7 +9,8 @@ import type { ToolRegistry } from "./registry.js";
 import type { ToolCategory, ToolSource } from "./types.js";
 import type { ApprovalGate } from "../permissions/approval-gate.js";
 import type { PermissionDirectoryLifecycle } from "../permissions/permission-slash.js";
-import type { PermissionManager } from "../permissions/permission-manager.js";
+import type { PermissionCheckResult, PermissionManager } from "../permissions/permission-manager.js";
+import { HOST_PROVENANCE, RULE_PROVENANCE } from "../permissions/decision-provenance.js";
 import type { HookDispatchResult, ScriptHookManager } from "../hooks/script-hook-manager.js";
 import type { HookTrustOrigin, ScriptHookType } from "../hooks/script-hook-types.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
@@ -18,6 +19,7 @@ import type { ExecuteOptions, ToolPermissionContext, ToolResult, ToolUseBlock } 
 import type { HookRunner } from "../hooks/hook-runner.js";
 import type { AuditWriter } from "./pipeline/audit-writer.js";
 import type { RateLimiter } from "./pipeline/rate-limiter.js";
+import { refusal } from "./pipeline/approval-outcome.js";
 import { resolveEnforcedCategory as resolveEnforcedCategoryImpl } from "./pipeline/risk-classification.js";
 import { tryUserApprovalMemorySkip as tryUserApprovalMemorySkipImpl } from "./pipeline/approval-memory-skip.js";
 import {
@@ -68,6 +70,11 @@ export function resolveEnforcedCategory(
     sandboxFsContained: services.sandboxFsContainedProvider(tool),
     operationFloor,
   });
+}
+
+export function scriptHookRefusal(hook: Pick<HookDispatchResult, "reason" | "results">): PermissionCheckResult {
+  const failure = hook.results.at(-1)?.commandAdmissionFailure;
+  return refusal(hook.reason, failure === "recheck-failed" ? HOST_PROVENANCE : RULE_PROVENANCE);
 }
 
 export async function runScriptHook(

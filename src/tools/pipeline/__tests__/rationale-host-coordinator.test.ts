@@ -10,6 +10,7 @@ import type {
   ApprovalChoice,
   ApprovalDecision,
   ApprovalRequest,
+  ApprovalRequestInput,
 } from "../../../permissions/approval-gate.js";
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
 import type { PermissionCheckResult } from "../../../permissions/permission-manager.js";
@@ -181,7 +182,7 @@ function setup(options: SetupOptions = {}) {
     readonly projection: RationaleUiAuditProjection;
     readonly at: number;
   }> = [];
-  const approvalRequests: Array<Omit<ApprovalRequest, "requireExplicit">> = [];
+  const approvalRequests: ApprovalRequestInput[] = [];
   // Modal tests use a high re-evaluation; allow cases supply a low/medium reviewer.
   const reviewer = options.reviewer ?? {
     async reevaluate(input) {
@@ -214,14 +215,15 @@ function setup(options: SetupOptions = {}) {
     const resolve = pendingApprovals.get(requestId);
     if (!resolve) return false;
     pendingApprovals.delete(requestId);
-    if (choice.startsWith("allow")) void answeredApprovalDecision({ requestId, choice }).then(resolve);
-    else resolve({ requestId, choice });
+    if (choice.startsWith("allow")) {
+      const card = approvalRequests.find((request) => request.id === requestId);
+      if (!card) throw new Error("fixture approval request was not captured");
+      void answeredApprovalDecision({ requestId, choice }, "desk", card.toolName, card.invocationToolUseId).then(resolve);
+    } else resolve({ requestId, choice });
     return true;
   };
   const fallbackApprovalGate = {
-    requestAndWait: vi.fn(async (
-      request: Omit<ApprovalRequest, "requireExplicit">,
-    ) => {
+    requestAndWait: vi.fn(async (request: ApprovalRequestInput) => {
       approvalRequests.push(request);
       if (options.deferApproval) {
         return await new Promise<ApprovalDecision>((resolve) => {
@@ -231,7 +233,7 @@ function setup(options: SetupOptions = {}) {
       return await answeredApprovalDecision({
         requestId: request.id,
         choice: options.approvalChoice ?? "allow-once",
-      });
+      }, "desk", request.toolName, request.invocationToolUseId);
     }),
     cancelPendingRequest: vi.fn((requestId: string) =>
       resolvePendingApproval(requestId, "deny-once")
@@ -1363,6 +1365,27 @@ it.each(["allow-once", "allow-session", "allow-always"] as const)("normal ration
   expect(await state.coordinator.promptForApproval(control.ticketId, { now: NOW })).toBeNull();
 });
 
+
+it.each([false, true])("attributes a rationale denial only to its bound answer (authenticated=%s)", async (authenticated) => {
+  const recordTerminalDenial = vi.fn(async () => {});
+  const state = setup({
+    recordTerminalDenial,
+    ...(authenticated ? { approvalChoice: "deny-once" as const }
+      : { requestHumanApproval: async ({ requestId }: { requestId: string }) => ({ requestId, choice: "deny-once" as const }) }),
+  });
+  const { control } = materialize(state);
+  await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: responseFor(control) }] }, now: NOW });
+  const result = await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  if (authenticated) {
+    expect(result).toMatchObject({ outcome: "denied", ticket: { state: "denied" } });
+    expect(recordTerminalDenial).toHaveBeenCalledExactlyOnceWith("The user denied this permission request.");
+  } else {
+    expect(result).toMatchObject({ outcome: "denied", reason: "approval rejected by host", ticket: { state: "denied", terminalReason: "host-denied" } });
+    expect(recordTerminalDenial).toHaveBeenCalledExactlyOnceWith("approval rejected by host");
+  }
+  expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext, now: NOW })).toBeNull();
+});
 
 it("preserves an explicit hook or policy denial without relabeling it as user cancellation", async () => {
   const state = setup({ requestHumanApproval: async () => { throw new RationaleHumanApprovalDeniedError("The permission hook blocked this request."); } });

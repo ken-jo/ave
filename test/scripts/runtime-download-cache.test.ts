@@ -57,7 +57,7 @@ describe("dependency installer archive cache behavior", () => {
       const restored = job.steps
         .filter((step: { uses?: string }) => step.uses === cacheAction)
         .flatMap((step: { with: { path: string } }) => step.with.path.trim().split("\n"))
-        .find((path: string) => /^\.cache\/electron(?:-win)?$/.test(path));
+        .find((path: string) => /^\.cache\/electron(?:-mxc)?$/.test(path));
       if (!restored) throw new Error("Restored archive directory is missing");
       const restoredPath = join(root, restored);
       const env = Object.fromEntries(Object.entries(job.env as Record<string, string>)

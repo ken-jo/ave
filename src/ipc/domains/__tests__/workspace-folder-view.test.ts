@@ -41,7 +41,7 @@ vi.mock("../../../main/windows-path-kind-launcher.js", async (original) => {
   const actual = await original<typeof import("../../../main/windows-path-kind-launcher.js")>();
   const path = await vi.importActual<typeof import("node:path")>("node:path");
   const helper = actual.windowsPathKindHelperIn(path.resolve("resources"));
-  return { ...actual, resolveWindowsPathKindHelper: () => helper };
+  return { ...actual, withWindowsPathKindHelper: <T>(launch: (path: string) => T) => launch(helper) };
 });
 
 import { registerWorkspaceHandlers } from "../workspace.js";

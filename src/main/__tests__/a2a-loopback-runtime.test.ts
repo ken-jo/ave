@@ -125,8 +125,8 @@ describe("A2A production loopback runtime", () => {
     await runtime!.dispose();
   });
 
-  it("applies remote receiver approval and audit provenance to actual mutations", async () => {
-    const approveAgentAction = vi.fn(async () => null);
+  it.each(["denied", "rejected", "expired", "unavailable", "cancelled"] as const)("retains the remote receiver approval outcome for actual mutations (%s)", async (outcome) => {
+    const approveAgentAction = vi.fn(async () => ({ approved: false as const, outcome }));
     const auditLog = vi.fn();
     let captured: A2ARequestHandler | undefined;
     const runtime = await createA2ALoopbackRuntime(makeOptions([
@@ -155,7 +155,7 @@ describe("A2A production loopback runtime", () => {
         role: A2ARole.USER,
         parts: [{ text: "remote work" }],
       },
-    })).rejects.toBeDefined();
+    })).rejects.toMatchObject({ approvalOutcome: outcome });
     expect(approveAgentAction).toHaveBeenCalledWith(expect.objectContaining({
       toolName: expect.stringContaining("send"),
       reason: "[A2A Wire: Remote] Approve the remote mutation?",
@@ -163,7 +163,7 @@ describe("A2A production loopback runtime", () => {
     }));
     expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "a2a-remote-wire",
-      input: expect.stringContaining("a2a-remote-wire:task-lifecycle:dropped:consent-denied:"),
+      input: expect.stringMatching(new RegExp(`a2a-remote-wire:task-lifecycle:dropped:consent-denied:.*:approval=${outcome}$`)),
     }));
     await runtime!.dispose();
   });

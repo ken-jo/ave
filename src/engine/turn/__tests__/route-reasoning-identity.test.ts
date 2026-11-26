@@ -8,6 +8,7 @@ import { ConversationLoop } from "../../conversation-loop.js";
 import type { ProviderConfig, StreamEvent } from "../../llm/types.js";
 import { VercelUnifiedProvider } from "../../llm/vercel/adapter.js";
 import { queryLoop } from "../query-loop.js";
+import { noRetirementEvidence } from "../../llm/model-wire-gate.js";
 
 const state = vi.hoisted(() => ({ bodies: [] as Record<string, unknown>[] }));
 
@@ -19,7 +20,7 @@ vi.mock("../../llm/provider-factory.js", async (importOriginal) => ({
       state.bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       return new Response("refused", { status: 400 });
     },
-    {}, config.providerMetadata,
+    { getRetiredModelId: noRetirementEvidence }, config.providerMetadata,
   ),
 }));
 

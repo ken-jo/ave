@@ -3,6 +3,23 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import path from "node:path";
 import { MxcIntegrityError, PTY_SOURCE_BUILD_DIRECTORIES, SDK_INSTALLATION_AUXILIARIES, verifyMxcSdk, verifyMxcSupervisorRuntime } from "./mxc-sdk-integrity.mjs";
 import PINS from "../../src/permissions/mxc-launcher-pins.json" with { type: "json" };
+import { mxcLauncherForTarget } from "../fetch-mxc.mjs";
+
+export function assertPackagedLauncher(resources, target) {
+  const pin = mxcLauncherForTarget(target);
+  const directory = path.join(resources, "mxc", pin.arch);
+  const file = path.join(directory, pin.name);
+  const entry = lstatSync(file, { throwIfNoEntry: false });
+  if (!entry?.isFile()) throw new Error(`Packaged launcher missing or not a regular file: ${file}`);
+  if (realpathSync(directory) !== path.resolve(directory)) throw new Error(`Packaged launcher directory redirected: ${directory}`);
+  const entries = readdirSync(directory);
+  const expected = pin.platform === "win32" ? [pin.name, "supervisor-runtime-pins.json"] : [pin.name];
+  if (entries.some((name) => !expected.includes(name))) throw new Error(`Unexpected packaged launcher entry: ${directory}`);
+  if (pin.platform !== "win32" && (entry.mode & 0o111) !== 0o111) throw new Error(`Packaged launcher is not executable: ${file}`);
+  if (createHash("sha256").update(readFileSync(file)).digest("hex") !== pin.sha256) {
+    throw new Error(`Packaged launcher hash mismatch: ${file}`);
+  }
+}
 
 export function finalizePackagedMxcSdk(resources, arch, executable) {
   prunePackagedMxcSdk(resources, arch);

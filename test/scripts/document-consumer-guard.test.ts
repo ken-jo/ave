@@ -23,7 +23,7 @@ function trackedPackageFixture() {
   const directory = mkdtempSync(join(tmpdir(), "document-package-"));
   const documents = [
     "docs/guide.md", "docs/other.md", "docs/release/guide.md", "docs/coverage/guide.md",
-    "docs/dist/guide.md", "docs/node_modules/guide.md", "docs/mac/x64.md",
+    "docs/dist/guide.md", "docs/node_modules/guide.md", "docs/mac/arm64.md", "docs/mac/x64.md",
     "docs/win/x64.md", "docs/linux/x64.md",
   ];
   for (const path of documents) {
@@ -76,7 +76,7 @@ async function copiedBuilderDocuments(directory: string, build: Record<string, u
   const { getFileMatchers, getMainFileMatchers, copyFiles } = packagingFileMatcher();
   const copied = new Set<string>();
   for (const platform of ["mac", "win", "linux"]) {
-    const arch = "x64";
+    const arch = platform === "mac" ? "arm64" : "x64";
     const macroExpander = (value: string) => value.replace(/\$\{(arch|os|platform)\}/g, (_, name) =>
       name === "arch" ? arch : platform);
     for (const field of ["files", "extraFiles", "extraResources"]) {
@@ -301,6 +301,10 @@ describe("documentation consumer guard", () => {
         expect(selected, name).toEqual(expect.arrayContaining(expected));
         if (name.startsWith("nested.")) expect(expected, name).toContain(`docs/${name.slice("nested.".length)}/guide.md`);
         if (name.startsWith("alias.")) expect(expected, name).toContain("docs/guide.md");
+        if (name === "platform.macro") {
+          expect(selected).toContain("docs/mac/arm64.md");
+          expect(selected).not.toContain("docs/mac/x64.md");
+        }
         if (name === "excluded.files") expect(expected).toEqual([]);
       }
     } finally {

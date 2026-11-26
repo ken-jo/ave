@@ -1241,12 +1241,13 @@ describe("installer smoke and packaging discipline", () => {
     // other version or asset falls through to a refusal. A .bun-version bump
     // without new pin rows fails here, and the script refuses it too.
     const bunVersion = readRepoFile(".bun-version").trim();
-    for (const asset of ["linux-x64", "linux-aarch64", "darwin-x64", "darwin-aarch64", "windows-x64", "windows-aarch64"]) {
+    for (const asset of ["linux-x64", "linux-aarch64", "darwin-aarch64", "windows-x64", "windows-aarch64"]) {
       expect(archiveScript).toMatch(new RegExp(
         `\\n {6}${bunVersion.replace(/\./gu, "\\.")}:bun-${asset}\\) pinned=[0-9a-f]{64} ;;\\n`,
         "u",
       ));
     }
+    expect(archiveScript).not.toContain(":bun-darwin-x64)");
     expect(archiveScript).toContain(
       '      *) echo "no pinned SHA-256 for $asset.zip of v$version" >&2; exit 1 ;;\n',
     );
@@ -1606,7 +1607,8 @@ describe("installer smoke and packaging discipline", () => {
     const command = workflow.jobs["build-and-test"].steps[0].run as string;
     const result = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
       ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: build, VITEST_RESULT: vitest, DOCS_ONLY: docs,
-      PLATFORM_CHECKS: selected, WINDOWS_PREPARATION_RESULT: native, WINDOWS_RESULT: native, MACOS_RESULT: native, LINUX_RESULT: native,
+      PLATFORM_CHECKS: selected, WINDOWS_PREPARATION_RESULT: native,
+      WINDOWS_PACKAGING_RESULT: native, WINDOWS_SCRIPTS_RESULT: native, WINDOWS_DEV_BOOT_RESULT: native, WINDOWS_RESULT: native, MACOS_RESULT: native, LINUX_RESULT: native,
       WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
       VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: "false", WINDOWS_TIER_RESULT: "skipped",
     } });
@@ -1626,6 +1628,7 @@ describe("installer smoke and packaging discipline", () => {
     const result = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
       ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success", VITEST_RESULT: "success",
       DOCS_ONLY: "false", PLATFORM_CHECKS: "true", WINDOWS_PREPARATION_RESULT: preparation,
+      WINDOWS_PACKAGING_RESULT: "success", WINDOWS_SCRIPTS_RESULT: "success", WINDOWS_DEV_BOOT_RESULT: "success",
       WINDOWS_RESULT: shards, MACOS_RESULT: "success", LINUX_RESULT: "success",
       WINDOWS_ARM64_PATH_KIND: "true", WINDOWS_ARM64_PATH_KIND_RESULT: "success",
       VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: "false", WINDOWS_TIER_RESULT: "skipped",
@@ -1687,32 +1690,44 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 
-  it("requires both Windows packaging targets in the cached required CI check", () => {
+  it("requires both Windows and Linux packaging targets in the cached CI check", () => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
       jobs: Record<string, { "runs-on": string; env: Record<string, string>; steps: Record<string, unknown>[]; "continue-on-error"?: boolean }>;
     };
-    const job = workflow.jobs["mxc-pins"]!;
+    const job = workflow.jobs["mxc-pins"];
+    if (!job) throw new Error("Expected mxc-pins CI job");
     expect(job["runs-on"]).toBe("ubuntu-24.04-arm");
     expect(job["continue-on-error"]).not.toBe(true);
-    const command = "bun run check:mxc-pins && bun run check:mxc-packaging";
-    const step = job.steps.find((entry) => entry.run === command)!;
-    expect(step).toBeDefined();
+    const step = job.steps.find((entry) => entry.name === "Verify SDK pins and package both Windows targets");
+    const linux = job.steps.find((entry) => entry.name === "Verify Linux launcher packaging on both architectures");
+    const cache = job.steps.find((entry) => entry.name === "Cache launcher packaging runtime archives");
+    if (!step || !linux || !cache) throw new Error("Expected both packaging steps and their runtime cache");
     expect(step["continue-on-error"]).not.toBe(true);
     expect(step.if).toBeUndefined();
     expect(step["working-directory"]).toBe("ave");
-    expect(job.env.ELECTRON_CACHE).toBe("${{ github.workspace }}/.cache/electron-win");
-    const cache = job.steps.find((entry) => entry.name === "Cache Windows runtime archives")!;
-    expect(cache).toBeDefined();
+    expect(step.run).toBe("bun run check:mxc-pins\nbun run check:mxc-packaging --target win32-x64\nbun run check:mxc-packaging --target win32-arm64\n");
+    expect(linux.run).toBe("bun run check:mxc-packaging --target linux-arm64\nbun run check:mxc-packaging --target linux-x64\n");
+    expect(job.env.ELECTRON_CACHE).toBe("${{ github.workspace }}/.cache/electron-mxc");
     expect(cache.uses).toMatch(/^actions\/cache@/);
-    expect(cache.with).toMatchObject({ path: ".cache/electron-win", key: "ci-win-electron-${{ hashFiles('ave/bun.lock') }}" });
+    expect(cache.with).toMatchObject({ path: ".cache/electron-mxc", key: "ci-mxc-electron-${{ hashFiles('ave/bun.lock') }}" });
     expect(job.steps.indexOf(cache)).toBeLessThan(job.steps.indexOf(step));
+    expect(job.steps.indexOf(cache)).toBeLessThan(job.steps.indexOf(linux));
+
+    const mac = workflow.jobs["macos-permission-tests"];
+    expect(mac?.["runs-on"]).toBe("macos-15");
+    const macStep = mac?.steps.find((entry) => entry.name === "Verify SDK pins and package the macOS launcher");
+    expect(macStep?.run).toBe("bun run check:mxc-pins\nbun run check:mxc-packaging\n");
+    const regressions = mac?.steps.find((entry) => entry.name === "Run macOS permission regressions");
+    for (const name of ["container-platform", "container-route-unswitched", "host-shell-execution-plan", "mxc-launcher", "mxc-posix-ranking"]) {
+      expect(regressions?.run).toContain(`/${name}.test.ts`);
+    }
   });
 
   it("also verifies both payload targets with the production collector on the native host", () => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
       jobs: Record<string, { "runs-on": string; env: Record<string, string>; steps: Record<string, unknown>[] }>;
     };
-    const job = workflow.jobs["windows-native-preparation"]!;
+    const job = workflow.jobs["windows-payload-packaging"]!;
     expect(job["runs-on"]).toBe("windows-2025");
     const step = job.steps.find((entry) => entry.name === "Verify both Windows native payload packages")!;
     expect(step).toBeDefined();
@@ -1722,8 +1737,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(step["working-directory"]).toBe("ave");
     const contained = "node .github/scripts/run-in-job.mjs bun run";
     expect(step.run).toBe(`${contained} check:mxc-pins\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n${contained} check:mxc-packaging\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n`);
-    // The containment launcher is built before the checks that run inside it.
-    const launcher = job.steps.findIndex((entry) => typeof entry.run === "string" && entry.run.startsWith("powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1\n"));
+    const launcher = job.steps.findIndex((entry) => entry.run === "node .github/scripts/restore-windows-ci-inputs.mjs");
     expect(launcher).toBeGreaterThanOrEqual(0);
     expect(launcher).toBeLessThan(job.steps.indexOf(step));
     const cache = job.steps.find((entry) => entry.name === "Cache Windows packaging runtime archives")!;
@@ -1748,7 +1762,7 @@ describe("installer smoke and packaging discipline", () => {
     // a cancellation cannot skip either, fails unless both succeeded.
     // Independent gates must report success through the required aggregate.
     const body = verification as string;
-    expect(body).toMatch(/^ {4}needs: \[build, vitest, vitest-tiers, windows-native-preparation, windows-permission-tests, windows-tier-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins\]$/mu);
+    expect(body).toMatch(/^ {4}needs: \[build, vitest, vitest-tiers, windows-native-preparation, windows-payload-packaging, windows-script-tests, windows-dev-boot, windows-permission-tests, windows-tier-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins\]$/mu);
     expect(body).toMatch(/^ {4}if: always\(\)$/mu);
     expect(body).not.toContain("cancelled()");
     expect(body).toContain("      - name: Require the build and every Vitest shard\n        if: always()\n");
@@ -2516,13 +2530,18 @@ describe("installer smoke and packaging discipline", () => {
 
 it("builds the native path classifier before the Windows permission boundaries", () => {
   const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
-    jobs: Record<string, { steps: { name?: string; run?: string }[] }>;
+    jobs: Record<string, { steps: { name?: string; run?: string; with?: { path?: string } }[] }>;
   };
   const steps = workflow.jobs["windows-permission-tests"]?.steps;
   if (steps === undefined) throw new Error("Windows permission path job is missing");
   const preparation = workflow.jobs["windows-native-preparation"]?.steps;
-  expect(preparation?.some(step => step.run?.includes("-Helper path-kind"))).toBe(true);
-  expect(preparation?.some(step => step.name === "Upload the checked Windows native helpers")).toBe(true);
+  expect(preparation?.some(step => step.run?.includes("node scripts/build-windows-path-kind.mjs --arch x64 --fixture"))).toBe(true);
+  const artifact = preparation?.find(step => step.name === "Upload the checked Windows native helpers");
+  expect(artifact?.with?.path?.split("\n")).toEqual(expect.arrayContaining([
+    "ave/resources/windows-job/x64/ave-job-query-failure.exe",
+    "ave/resources/windows-path-kind/x64/ave-path-kind.exe.build.json",
+    "ave/resources/windows-path-kind/x64/ave-path-kind-hold-fixture.exe",
+  ]));
   const classifier = steps.findIndex(step => step.name === "Verify and configure the shared test inputs");
   const regressions = steps.findIndex(step => step.name === "Run Windows regressions");
   expect(classifier).toBeGreaterThan(-1);

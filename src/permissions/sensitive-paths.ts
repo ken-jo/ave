@@ -41,7 +41,7 @@ import { compileSensitivePathGlob } from "./sensitive-path-glob.js";
 import { isWindowsNetworkOrDevicePath, localDriveAlias, modelShellPath, withoutStreamSuffixes } from "../shared/shell-native-path.js";
 import {
   admitLocalPath, admitLocalRoute, admitRouteAncestor, decisionMemo, type LocalFilesystemFacts, localFs,
-  type LocalRoute, unprovenLookup, withLocalityDecision,
+  type LocalRoute, rethrowLocalityFailure, unprovenLookup, withLocalityDecision,
 } from "../shared/local-path-io.js";
 import { classifyWindowsSpelling } from "../shared/windows-path-spelling.js";
 
@@ -495,6 +495,7 @@ function resolveLocalPathForPolicy(rawPath: string, spend?: () => void, facts?: 
   let route: LocalRoute;
   try { route = admitLocalRoute(canonical, { maxSymlinkHops: MAX_WALK_UP, facts }); }
   catch (error) {
+    rethrowLocalityFailure(error);
     // Matching stays lexical for opaque network identities, as for direct operands: a link to one is judged by the spelling
     // it reaches, never the local spelling before it. Physical shell resolution separately propagates the error.
     return reachedSpelling(error, canonical);
@@ -504,7 +505,8 @@ function resolveLocalPathForPolicy(rawPath: string, spend?: () => void, facts?: 
   spend?.();
   try {
     canonical = localFs.realpathNative(route.verdict);
-  } catch {
+  } catch (error) {
+    rethrowLocalityFailure(error);
     let parent = canonical;
     let resolved = false;
     for (let depth = 0; depth < MAX_WALK_UP; depth++) {
@@ -519,7 +521,8 @@ function resolveLocalPathForPolicy(rawPath: string, spend?: () => void, facts?: 
         canonical = remainder ? pathResolve(realParent, remainder) : realParent;
         resolved = true;
         break;
-      } catch {
+      } catch (error) {
+        rethrowLocalityFailure(error);
         // keep walking
       }
     }

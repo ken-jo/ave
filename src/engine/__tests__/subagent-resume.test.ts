@@ -2429,28 +2429,24 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     });
     restore();
 
-    let markStarted!: () => void;
-    const started = new Promise<void>((resolve) => {
-      markStarted = resolve;
-    });
-    let releaseWinner!: () => void;
-    const winnerGate = new Promise<void>((resolve) => {
-      releaseWinner = resolve;
-    });
+    const started = deferred<void>();
+    const winnerGate = deferred<void>();
     const blockingProvider: LLMProvider = {
       vendor: "openai",
       async *streamTurn(): AsyncIterable<StreamEvent> {
-        markStarted();
-        await winnerGate;
+        started.resolve();
+        await winnerGate.promise;
         yield { type: "text_delta", text: "winner completed" };
         yield { type: "message_complete", stopReason: "end_turn" };
       },
     };
     restore = patchProvider(blockingProvider);
     const events: AgentSpawnEvent[] = [];
+    const backgroundCompletions: Promise<void>[] = [];
     const tool = createAgentSpawnTool({
       getRunner: () => runner,
       emit: (event) => events.push(event),
+      _onBackgroundCompletionForTest: (completion) => backgroundCompletions.push(completion),
     });
     const toolContext = {
       cwd: process.cwd(),
@@ -2462,40 +2458,38 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       },
     };
     const originalLoadSession = ConversationLoop.prototype.loadSession;
-    let markLoadStarted!: () => void;
-    const loadStarted = new Promise<void>((resolve) => { markLoadStarted = resolve; });
-    let releaseLoad!: () => void;
-    const loadGate = new Promise<void>((resolve) => { releaseLoad = resolve; });
+    const loadStarted = deferred<void>();
+    const loadGate = deferred<void>();
     const loadSession = vi.spyOn(ConversationLoop.prototype, "loadSession")
       .mockImplementationOnce(async function (
         this: ConversationLoop,
         ...args: Parameters<typeof originalLoadSession>
       ) {
-        markLoadStarted();
-        await loadGate;
+        loadStarted.resolve();
+        await loadGate.promise;
         return originalLoadSession.apply(this, args);
       });
 
+    let handleReturned = false;
+    const winnerRequest = tool.execute(
+      {
+        title: "background-resume",
+        instructions: "continue",
+        resumeId: spawn.childSessionId,
+        background: true,
+      },
+      toolContext,
+    ).then((result) => {
+      handleReturned = true;
+      return result;
+    });
     try {
-      let handleReturned = false;
-      const winnerRequest = tool.execute(
-        {
-          title: "background-resume",
-          instructions: "continue",
-          resumeId: spawn.childSessionId,
-          background: true,
-        },
-        toolContext,
-      ).then((result) => {
-        handleReturned = true;
-        return result;
-      });
-      await loadStarted;
+      await Promise.race([loadStarted.promise, winnerRequest]);
       expect(handleReturned).toBe(false);
-      releaseLoad();
+      loadGate.resolve();
       const winnerResult = await winnerRequest;
       const winner = JSON.parse(winnerResult.output);
-      await started;
+      await started.promise;
       expect(winnerResult.isError).toBe(false);
       expect(winner).toMatchObject({
         childSessionId: spawn.childSessionId,
@@ -2534,26 +2528,16 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         status: "running",
         taskState: "TASK_STATE_WORKING",
       });
-      await vi.waitFor(() =>
-        expect(
-          events.some(
-            (event) =>
-              event.spawnId === loser.spawnId && event.type === "error",
-          ),
-        ).toBe(true),
+      expect(backgroundCompletions).toHaveLength(2);
+      await backgroundCompletions[1];
+      expect(events).toContainEqual(
+        expect.objectContaining({ spawnId: loser.spawnId, type: "error" }),
       );
       expect(deliverToParent).not.toHaveBeenCalled();
 
-      releaseWinner();
-      await vi.waitFor(() => expect(deliverToParent).toHaveBeenCalledTimes(1));
-      await vi.waitFor(() =>
-        expect(
-          events.some(
-            (event) =>
-              event.spawnId === winner.spawnId && event.type === "done",
-          ),
-        ).toBe(true),
-      );
+      winnerGate.resolve();
+      await Promise.all(backgroundCompletions);
+      expect(deliverToParent).toHaveBeenCalledTimes(1);
 
       const winnerTerminal = events.filter(
         (event) =>
@@ -2584,7 +2568,10 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         childSessionId: spawn.childSessionId,
       });
     } finally {
-      releaseWinner();
+      loadGate.resolve();
+      winnerGate.resolve();
+      await Promise.allSettled([winnerRequest]);
+      await Promise.allSettled(backgroundCompletions);
       loadSession.mockRestore();
       restore();
     }

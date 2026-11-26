@@ -1,12 +1,14 @@
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
-import { resolve, win32 as winPath } from "node:path";
+import { join, resolve, win32 as winPath } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { configureHostResources } from "../../main/host-resources.js";
 import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { configureHostResources } from "../../main/host-resources.js";
+import { t } from "../../i18n/index.js";
 import { closed, echoParentProxy, openTunnel, probePort, within } from "../../__tests__/support/proxy-tunnel-probe.js";
+import { deferWatchedReceipt, isWatchedWorkspaceConsumable, listWatchedQuarantine, pruneWatchedRows, WATCHED_ROW_VIOLATION, watchedProtectedRows } from "../../permissions/windows-watched-rows.js";
 
 const h = vi.hoisted(() => ({
   openRelay: vi.fn(),
@@ -22,6 +24,7 @@ const h = vi.hoisted(() => ({
   // The synthetic C: drive the fixture paths live on. A placeholder is a non-link reparse directory (a cloud file), and a
   // vanished entry is still listed but gone when looked up; a listing reports both, and every link, as a link.
   drive: new Map<string, { path: string; kind: DriveKind; target?: string }>(),
+  replaced: new Set<string>(),
   listed: [] as string[],
   // Keep native scratch paths on the same volume outside the synthetic fixture tree.
   synthetic: /^(?:\\\\\?\\)?c:\\(?:(?:work|users\\(?:alice|bob))(?:\\|$)|users\\?$|$)/iu,
@@ -131,7 +134,8 @@ vi.mock("../../shared/windows-path-facts.js", async (importOriginal) => {
     const link = entry?.isSymbolicLink() === true;
     const reparseTag = link ? 0xa0000003 : listed?.kind === "placeholder" ? 0x9000001a : 0;
     const directory = entry?.isDirectory() === true || link;
-    const id = canonical === null ? null : `0x${createHash("md5").update(canonical.toLowerCase()).digest("hex")}`;
+    const id = canonical === null ? null
+      : `0x${createHash("md5").update(canonical.toLowerCase()).update(h.replaced.has(canonical) ? ":replacement" : "").digest("hex")}`;
     const volume = id === null ? null : "0x0000000000000007";
     return { exists: canonical !== null, canonical, directory, attributes: (directory ? 0x10 : 0) | (reparseTag === 0 ? 0 : 0x400),
       volumeSerial: volume, volumeSerialNumber: volume, fileId: id, fileIndex: id, changeTime: id === null ? null : "0x0000000000000001",
@@ -260,6 +264,25 @@ describe("prepareMxcShellLaunch", () => {
       await lifecycle.dispose();
     }
   });
+  it.runIf(process.platform === "win32")("refuses activation when a granted directory is replaced at the same path", async () => {
+    relay();
+    const read = String.raw`C:\work\reading`;
+    onDrive(read);
+    h.afterTransport = () => { h.replaced.add(read); };
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const launch = await prepareMxcShellLaunch({
+        ...INPUT,
+        filesystem: { ...INPUT.filesystem, allowRead: [read] },
+      }, lifecycle);
+      expect(() => launch.activate()).toThrow("Target identity changed");
+      expect(h.openRelay.mock.calls[0]?.[1].acceptsConnections()).toBe(false);
+    } finally {
+      h.afterTransport = undefined;
+      h.replaced.clear();
+      await lifecycle.dispose();
+    }
+  });
   it("checks the HOME and the declared state of each launch pass in one decision", async () => {
     relay();
     const owner = {};
@@ -289,6 +312,116 @@ describe("prepareMxcShellLaunch", () => {
     } finally {
       h.privateRoots.mockReturnValue([]);
       await lifecycle.dispose();
+    }
+  });
+
+  it.runIf(process.platform === "win32")("claims the watched project children at activation and quarantines only them after the shell job exits", async () => {
+    relay();
+    configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-shell-watch-")));
+    const cwd = join(root, "project");
+    const home = join(root, "home");
+    mkdirSync(cwd);
+    mkdirSync(home);
+    vi.stubEnv("AVE_HOME", home);
+    const carrier = join(cwd, ".ave");
+    const agents = join(cwd, ".agents");
+    const children = [join(carrier, "commands"), join(carrier, "hooks")];
+    const denied = [agents, ...children];
+    const lifecycle = createContainedShellLifecycle();
+    const job = deferred<void>();
+    try {
+      const launch = await prepareMxcShellLaunch({ ...INPUT, cwd,
+        filesystem: { ...INPUT.filesystem, allowWrite: [cwd], denyWrite: denied, requiredWriteDenies: denied },
+        exists: (path) => existsSync(path) || path.endsWith("wxc-exec.exe"),
+      }, lifecycle);
+      expect(decodeRequest(launch.argv).filesystem.deniedPaths).toEqual([agents]);
+      expect(existsSync(carrier)).toBe(false);
+      // Nothing is claimed until the launcher is about to be spawned.
+      expect(watchedProtectedRows().some((path) => children.includes(path))).toBe(false);
+      launch.activate();
+      expect(watchedProtectedRows()).toEqual(expect.arrayContaining(children));
+      pruneWatchedRows([]);
+      expect(watchedProtectedRows()).toEqual(expect.arrayContaining(children));
+      lifecycle.jobStarted(job.promise);
+      mkdirSync(carrier);
+      for (const child of children) mkdirSync(child);
+      const sibling = join(carrier, "ordinary.txt");
+      writeFileSync(sibling, "keep");
+      // A receipt no command result carried yet rides this command's result.
+      deferWatchedReceipt("[fixture] receipt from a released holder");
+      const disposal = lifecycle.dispose();
+      expect(children.every(existsSync)).toBe(true);
+      job.resolve(undefined);
+      expect(await disposal).toEqual([]);
+      expect(launch.watchedNotice).toContain(WATCHED_ROW_VIOLATION);
+      expect(launch.watchedNotice).toContain("[fixture] receipt from a released holder");
+      expect(children.some(existsSync)).toBe(false);
+      expect(watchedProtectedRows().some((path) => children.includes(path))).toBe(false);
+      expect(isWatchedWorkspaceConsumable(cwd)).toBe(true);
+      expect(readFileSync(sibling, "utf8")).toBe("keep");
+    } finally {
+      job.resolve(undefined);
+      await lifecycle.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "win32")("releases an activated claim when the launch ends without a shell job", async () => {
+    relay();
+    configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-shell-watch-")));
+    const cwd = join(root, "project");
+    const home = join(root, "home");
+    mkdirSync(cwd);
+    mkdirSync(home);
+    vi.stubEnv("AVE_HOME", home);
+    const children = [join(cwd, ".ave", "commands"), join(cwd, ".ave", "hooks")];
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const launch = await prepareMxcShellLaunch({ ...INPUT, cwd,
+        filesystem: { ...INPUT.filesystem, allowWrite: [cwd], denyWrite: children, requiredWriteDenies: children },
+        exists: (path) => existsSync(path) || path.endsWith("wxc-exec.exe"),
+      }, lifecycle);
+      launch.activate();
+      expect(watchedProtectedRows()).toEqual(expect.arrayContaining(children));
+      expect(await lifecycle.dispose()).toEqual([]);
+      expect(watchedProtectedRows().some((path) => children.includes(path))).toBe(false);
+    } finally {
+      await lifecycle.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "win32")("refuses at activation, naming the protected path, when a watched name's parent appeared after ranking, and sweeps nothing it never started", async () => {
+    relay();
+    configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-shell-late-")));
+    const cwd = join(root, "project");
+    const home = join(root, "home");
+    mkdirSync(cwd);
+    mkdirSync(home);
+    vi.stubEnv("AVE_HOME", home);
+    const children = [join(cwd, ".ave", "commands"), join(cwd, ".ave", "hooks")] as const;
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const launch = await prepareMxcShellLaunch({ ...INPUT, cwd,
+        filesystem: { ...INPUT.filesystem, allowWrite: [cwd], denyWrite: children, requiredWriteDenies: children },
+        exists: (path) => existsSync(path) || path.endsWith("wxc-exec.exe"),
+      }, lifecycle);
+      mkdirSync(join(cwd, ".ave"));
+      expect(() => launch.activate()).toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: children[0] }));
+      expect(watchedProtectedRows().some((path) => children.includes(path))).toBe(false);
+      // The host creates a name the refused launch ranked: a launch that never started moves nothing.
+      mkdirSync(children[1]);
+      expect(isWatchedWorkspaceConsumable(cwd)).toBe(true);
+      expect(await lifecycle.dispose()).toEqual([]);
+      expect(launch.watchedNotice).toBeUndefined();
+      expect(existsSync(children[1])).toBe(true);
+      expect(listWatchedQuarantine()).toEqual([]);
+    } finally {
+      await lifecycle.dispose();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

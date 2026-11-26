@@ -4,6 +4,7 @@ import { PAGE_PREVIEW_LIMITS, type PreviewPageDocument, type PreviewPageFormat }
 import { TableDocumentError } from "./table-document-error.js";
 import { readStructuredPageDocument } from "../observation/structured-document.js";
 import { isUnicodeBoundary } from "../shared/bounded-tool-output.js";
+import { deferPdfRasterFonts, pdfRasterCanvasFactory } from "./pdf-raster-context.js";
 
 function corrupt(): never { throw new TableDocumentError("corrupt-document", "Invalid document package."); }
 function limit(): never { throw new TableDocumentError("parse-limit", "Document exceeds the page preview budget."); }
@@ -116,6 +117,7 @@ async function pdf(bytes: Buffer, index: number): Promise<PreviewPageDocument> {
     task = library.getDocument({
       data: new Uint8Array(bytes), disableFontFace: true, useSystemFonts: false,
       useWorkerFetch: false, isOffscreenCanvasSupported: false, isImageDecoderSupported: false,
+      CanvasFactory: pdfRasterCanvasFactory(createCanvas),
       maxImageSize: PAGE_PREVIEW_LIMITS.maxPixels, canvasMaxAreaInBytes: PAGE_PREVIEW_LIMITS.maxPixels * 4,
       stopAtErrors: true, verbosity: 0,
       standardFontDataUrl: pdfAssetDirectory(fileURLToPath(new URL("../../standard_fonts/", moduleUrl))),
@@ -138,7 +140,9 @@ async function pdf(bytes: Buffer, index: number): Promise<PreviewPageDocument> {
     const height = Math.max(1, Math.floor(viewport.height));
     const canvas = createCanvas(width, height);
     try {
-      await page.render({ canvas: canvas as unknown as HTMLCanvasElement, viewport }).promise;
+      const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+      deferPdfRasterFonts(context);
+      await page.render({ canvas: canvas as unknown as HTMLCanvasElement, canvasContext: context as unknown as CanvasRenderingContext2D, viewport }).promise;
       const text = await page.getTextContent();
       streams.assertComplete();
       const png = canvas.toBuffer("image/png");

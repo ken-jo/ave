@@ -2,17 +2,32 @@
 // Output must contain only the resolved mapping.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { once } from "node:events";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { buildWindowsPathKind } from "./build-windows-path-kind.mjs";
+import { withVerifiedWindowsExecutable } from "./lib/windows-locked-executable.mjs";
 
 if (process.platform !== "win32") throw new Error("This test requires Windows");
-const helper = resolve(`resources/windows-path-kind/${process.arch}/ave-path-kind.exe`);
+const root = fileURLToPath(new URL("../", import.meta.url));
+// A private output directory: another build cannot replace the helper or fixture this run executes.
+const output = mkdtempSync(join(tmpdir(), "ave-path-kind-test-"));
+process.on("exit", () => rmSync(output, { recursive: true, force: true }));
+const { helper, binarySha256, fixture: pinFixture, fixtureSha256 } = buildWindowsPathKind({ root, fixture: true, outDir: output });
+const withHelper = (launch) => withVerifiedWindowsExecutable(helper, binarySha256, launch);
+const withPinFixture = (launch) => withVerifiedWindowsExecutable(pinFixture, fixtureSha256, launch);
+const spawnHelper = (args, options) => withHelper(path => spawn(path, args, options));
+const spawnHelperSync = (args, options) => withHelper(path => spawnSync(path, args, options));
+const spawnPinFixture = (args, options) => withPinFixture(path => spawn(path, args, options));
+const spawnPinFixtureSync = (args, options) => withPinFixture(path => spawnSync(path, args, options));
 const replyDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function runWithInput(args, input) {
-  const result = spawnSync(helper, args, { input, windowsHide: true, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+  const result = spawnHelperSync(args, { input, windowsHide: true, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
   if (result.error) throw result.error;
   return { code: result.status, stdout: replyDecoder.decode(result.stdout), stderr: replyDecoder.decode(result.stderr) };
 }
@@ -31,8 +46,8 @@ function answered(args, input = "c") {
   return { code, lines: stdout.replace(/\r?\n$/u, "").split(/\r?\n/u), stderr };
 }
 
-function runCopy(args, onLine, executable = helper) {
-  const child = spawn(executable, args, { windowsHide: true, shell: false, env: {} });
+function runCopy(args, onLine, start = spawnHelper) {
+  const child = start(args, { windowsHide: true, shell: false, env: {} });
   return new Promise((resolveCopy, rejectCopy) => {
     const lines = [];
     let pending = "";
@@ -217,7 +232,7 @@ async function recoveryTests() {
   for (const existing of [false, true]) add(`a volume without file-ID opens refuses the copy before it starts (existing target: ${existing})`, (dir) => {
     writeFileSync(join(dir, "source"), "source");
     if (existing) writeFileSync(join(dir, "target"), "old bytes");
-    const result = spawnSync(join(tmpdir(), "ave-path-pin-test.exe"),
+    const result = spawnPinFixtureSync(
       ["volume-without-file-ids", "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden],
       { input: "c", windowsHide: true, shell: false, env: {}, timeout: 10_000, encoding: "utf8" });
     assert.ifError(result.error);
@@ -234,7 +249,7 @@ async function recoveryTests() {
     let result;
     try {
       assert.throws(() => readFileSync(join(dir, "target")), { code: "EBUSY" });
-      result = spawnSync(join(tmpdir(), "ave-path-pin-test.exe"),
+      result = spawnPinFixtureSync(
         [mode, "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden],
         { input: "c", windowsHide: true, shell: false, env: {}, timeout: 10_000, encoding: "utf8" });
     } finally {
@@ -319,7 +334,7 @@ async function recoveryTests() {
       const restore = boundary !== "no-exclusive-rename";
       const args = restore ? ["--dir-restore", ...held(dir), hidden, part, ...snapshot(source)]
         : ["--dir-remove-id", ...held(dir), hidden, ...snapshot(source)];
-      const result = spawnSync(join(tmpdir(), "ave-path-pin-test.exe"), [boundary, ...args], {
+      const result = spawnPinFixtureSync([boundary, ...args], {
         input: "c", windowsHide: true, shell: false, env: {}, timeout: 10_000, encoding: "utf8",
       });
       assert.ifError(result.error);
@@ -433,7 +448,7 @@ async function recoveryTests() {
     const result = await runCopy(args, (line, stdin) => {
       if (line === "ready") stdin.write("c");
       if (line === "copied") stdin.end("c");
-    }, join(tmpdir(), "ave-path-pin-test.exe"));
+    }, spawnPinFixture);
     assert.equal(result.code, 3, JSON.stringify(result));
     assert.equal(result.lines.at(-1), "refused target removed");
     assert.equal(readFileSync(target, "utf8"), "competing bytes");
@@ -453,7 +468,7 @@ async function recoveryTests() {
       const result = await runCopy(failure === "none" ? args : [`replace-${failure}-failure`, ...args], (line, stdin) => {
         if (line === "ready") stdin.write("c");
         if (line === "copied") stdin.end("c");
-      }, failure === "none" ? helper : join(tmpdir(), "ave-path-pin-test.exe"));
+      }, failure === "none" ? spawnHelper : spawnPinFixture);
       assert.equal(result.code, failure === "none" ? 0 : 4, JSON.stringify(result));
       assert.equal(readFileSync(source, "utf8"), "new bytes");
       assert.ok(!existsSync(join(dir, part)));
@@ -618,7 +633,7 @@ async function recoveryTests() {
           expect(["--dir-write-record", ...held(root), record, saved], ["ready", "written"]);
           stdin.end("c");
         }
-      }, join(tmpdir(), "ave-path-pin-test.exe"));
+      }, spawnPinFixture);
       assert.equal(result.code, 7, JSON.stringify(result));
       assert.equal(result.lines[1], `target-id ${old[1]}`);
       if (boundary === "leftover") assert.match(result.lines.at(-1), /^target-left left /u);
@@ -661,7 +676,7 @@ async function recoveryTests() {
         const result = await runCopy([`file-id-${fault}-${position}`, ...args], (line, stdin) => {
           if (line === "ready") stdin.write("c");
           if (line === "copied") stdin.end("c");
-        }, join(tmpdir(), "ave-path-pin-test.exe"));
+        }, spawnPinFixture);
         const expected = site === "directory" ? { code: 3, lines: ["refused to"] }
           : site === "writer" ? { code: 4, lines: ["ready", "failed EUNKNOWN left"] }
           : { code: 0, lines: ["ready", "left"] };
@@ -681,7 +696,7 @@ async function recoveryTests() {
       const result = await runCopy(args, (line, stdin) => {
         if (line === "ready") stdin.write("c");
         if (line === "copied") stdin.end("c");
-      }, join(tmpdir(), "ave-path-pin-test.exe"));
+      }, spawnPinFixture);
       assert.equal(result.code, 3, JSON.stringify(result));
       assert.equal(result.lines.at(-1), blocked ? "refused target changed" : "refused target left");
       assert.equal(readFileSync(join(dir, part), "utf8"), blocked ? "" : "source");
@@ -707,7 +722,7 @@ async function recoveryTests() {
   if (failed > 0) process.exit(1);
 }
 
-await recoveryTests();
+if (process.argv[2] !== "--wire-only") await recoveryTests();
 if (process.argv[2] === "--held-recovery-only") process.exit(0);
 
 function uint32(value) {
@@ -715,6 +730,66 @@ function uint32(value) {
   bytes.writeUInt32LE(value);
   return bytes;
 }
+
+async function policyContract() {
+  const name = `\\\\.\\pipe\\ave-mxc-${randomBytes(16).toString("hex")}`;
+  const policy = Buffer.from([0xff, 0x00, 0x0a, 0x1a, 0x0d, 0x80]);
+  const framed = Buffer.concat([uint32(policy.length), policy]);
+  for (const [args, bytes] of [
+    [["--mxc-policy", name.toUpperCase(), "2000"], framed],
+    [["--mxc-policy", name, "0"], framed],
+    [["--mxc-policy", name, "2000"], uint32(0)],
+    [["--mxc-policy", name, "2000"], framed.subarray(0, -1)],
+  ]) {
+    assert.deepEqual(runWithInput(args, bytes), { code: 2, stdout: "", stderr: "" });
+  }
+
+  const child = spawnHelper(["--mxc-policy", name, "5000"], { windowsHide: true });
+  const closed = once(child, "close");
+  const deadline = setTimeout(() => child.kill(), 6000);
+  let stderr = "";
+  child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+  try {
+    child.stdin.write(framed);
+    const [ready] = await once(child.stdout, "data");
+    assert.deepEqual(ready, Buffer.from("ready\n"));
+    child.stdin.write(uint32(process.pid));
+    for (let index = 0; index < 2; index += 1) {
+      const connection = createConnection(name);
+      try {
+        const [bytes] = await once(connection, "data");
+        assert.deepEqual(bytes, policy);
+      } finally {
+        connection.destroy();
+      }
+    }
+    assert.deepEqual(await closed, [0, null]);
+    assert.equal(stderr, "");
+  } finally {
+    clearTimeout(deadline);
+    child.stdin.destroy();
+    child.kill();
+  }
+
+  const ownerEof = runWithInput(["--mxc-policy", name, "2000"], framed);
+  assert.deepEqual(ownerEof, { code: 1, stdout: "ready\n", stderr: "Windows sandbox policy delivery failed or expired\r\n" });
+  const expired = spawnHelper(["--mxc-policy", name, "250"], { windowsHide: true });
+  const expiredClosed = once(expired, "close");
+  const deadlineGuard = setTimeout(() => expired.kill(), 4000);
+  try {
+    expired.stdin.write(framed);
+    const [ready] = await once(expired.stdout, "data");
+    assert.deepEqual(ready, Buffer.from("ready\n"));
+    assert.deepEqual(await expiredClosed, [1, null], "the helper expires without a PID or owner EOF");
+  } finally {
+    clearTimeout(deadlineGuard);
+    expired.stdin.destroy();
+    expired.kill();
+  }
+  console.log("policy pipe: validation, readiness, authorized PID, binary delivery, owner EOF and deadline passed");
+}
+
+await policyContract();
 
 function daclFrame(operands) {
   const body = Buffer.concat([uint32(operands.length), ...operands.flatMap(path => {
@@ -729,7 +804,7 @@ assert.equal(systemDirectoryResult.code, 0, systemDirectoryResult.stderr);
 assert.equal(systemDirectoryResult.stderr, "");
 assert.match(systemDirectoryResult.stdout, /^[a-z]:\\[^\r\n]+\r?\n$/iu);
 const systemDirectory = systemDirectoryResult.stdout.replace(/\r?\n$/u, "");
-const spoofedDirectory = spawnSync(helper, ["--system-directory"], {
+const spoofedDirectory = spawnHelperSync(["--system-directory"], {
   windowsHide: true, shell: false, timeout: 10_000,
   env: { SystemRoot: "Z:\\untrusted-root", WINDIR: "Y:\\untrusted-root", PATH: "X:\\untrusted-path" },
 });
@@ -743,6 +818,13 @@ const runtimeSystemDirectory = execFileSync(join(systemDirectory, "WindowsPowerS
 assert.equal(systemDirectory.toLowerCase(), runtimeSystemDirectory.toLowerCase(), "native and runtime OS system-directory APIs agree");
 assert.equal(run("--system-directory", "unexpected").code, 2);
 console.log(`OS system directory: ${systemDirectory}; spoofed environment ignored`);
+
+const documents = run("--documents-directory");
+assert.equal(documents.code, 0, documents.stderr);
+assert.equal(documents.stderr, "");
+assert.match(documents.stdout, /^(?:[a-z]:\\|\\\\)[^\r\n]+\r\n$/iu);
+assert.equal(run("--documents-directory", "unexpected").code, 2);
+console.log("OS Documents directory: one UTF-8 line");
 
 function unusedDrives() {
   const unused = [];
@@ -804,7 +886,7 @@ try {
 } finally {
   rmSync(target, { recursive: true, force: true });
 }
-// Held directory operations (dir-ops.h): each step names files only through handles held on its folders, and a held folder and
+// Held directory operations: each step names files only through handles held on its folders, and a held folder and
 // every folder above it cannot be renamed until the step ends.
 const dirOps = mkdtempSync(join(tmpdir(), "ave dir ops "));
 try {
@@ -849,7 +931,7 @@ try {
   assert.match(result.lines[2], /^writing \d+:[0-9a-f]{32}:creation:[1-9]\d*$/u);
   assert.equal(result.lines[3], "cancelled", "input that arrives while bytes are copied stops the copy");
   assert.deepEqual(readdirSync(to).sort(), ["junction.pdf", "report.pdf"]);
-  const copy = spawn(helper, ["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part", ".0123456789abcdef0123456789abcdef.removing"], { windowsHide: true, shell: false, env: {} });
+  const copy = spawnHelper(["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part", ".0123456789abcdef0123456789abcdef.removing"], { windowsHide: true, shell: false, env: {} });
   const copied = await new Promise((resolveCopy, rejectCopy) => {
     let output = "";
     copy.once("error", rejectCopy);
@@ -911,7 +993,7 @@ console.log("windows-path-kind: ok");
 
 const fixture = mkdtempSync(join(tmpdir(), "ave-path-facts-"));
 try {
-  console.log(execFileSync(join(tmpdir(), "ave-path-pin-test.exe"), [fixture], { windowsHide: true, encoding: "utf8" }).trim());
+  console.log(withPinFixture(path => execFileSync(path, [fixture], { windowsHide: true, encoding: "utf8" })).trim());
   console.log("native pin: deterministic retag and swapped ancestor checks passed");
   const directory = join(fixture, "directory");
   mkdirSync(directory);
@@ -1025,6 +1107,25 @@ public static class FixtureReparse {
   const lateFailure = runWithInput(args, daclFrame([file, join(fixture, "invalid|target")]));
   assert.equal(lateFailure.code, 4);
   assert.equal(lateFailure.stdout, "", "a failed late snapshot emits no partial batch");
+
+  const sid = "S-1-5-123-456";
+  const denies = run("--deny-acls", sid, file, directory, paths[2]);
+  assert.equal(denies.code, 0, denies.stderr);
+  assert.equal(denies.stderr, "");
+  assert.deepEqual(JSON.parse(denies.stdout), [false, true, false].map(directory => ({
+    denyMask: 0, inheritableMask: 0, parentMask: 0, directory,
+  })));
+  assert.deepEqual(run("--deny-acls", "invalid", file), {
+    code: 2, stdout: "", stderr: "invalid deny DACL request\r\n",
+  });
+  assert.deepEqual(run("--deny-acls", sid, file, link), {
+    code: 4, stdout: "", stderr: "could not verify deny DACL handles\r\n",
+  });
+  const oversized = join(fixture, "oversized");
+  writeFileSync(oversized, Buffer.alloc(1024 * 1024 + 1));
+  const oversize = run("--dacl", "--content", oversized);
+  assert.equal(oversize.code, 5);
+  assert.equal(oversize.stdout, "");
 
   const writer = openSync(file, "r+");
   try {

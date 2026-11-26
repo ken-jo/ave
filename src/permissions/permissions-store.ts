@@ -10,7 +10,7 @@ import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, 
 import { readAveHomeInput } from "../shared/ave-home-trust.js";
 import { withShellPolicyMutation } from "./shell-policy-handoff.js";
 
-import { commitApprovalFile, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
+import { assertApprovalPersistenceCurrent, commitApprovalFile, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 
 // Location shared by the rules writer and sandbox write protection.
 export function permissionsFilePath(): string {
@@ -90,6 +90,7 @@ export async function updatePermissionsFile(
   if (isInRefusedAveHome(filePath)) throw new AveHomeConfigurationRefusedWriteError(filePath);
   await withShellPolicyMutation(() => withPermissionsLock(filePath, async () => {
     await withFileLock(filePath, async () => {
+      assertApprovalPersistenceCurrent(authority);
       const existing = await readPermissionsFile(filePath);
       const file: PermissionsFile = existing ?? {
         version: 1,
@@ -106,6 +107,6 @@ export async function updatePermissionsFile(
       } else {
         writeUtf8FileAtomicSync(filePath, `${JSON.stringify(file, null, 2)}\n`, 0o600);
       }
-    });
+    }, { createTarget: authority === undefined });
   }));
 }
