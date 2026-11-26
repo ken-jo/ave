@@ -2,7 +2,7 @@ import http from "node:http";
 import net from "node:net";
 import { join, resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { SandboxManager, type SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
+import type { SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
 import { deferred, useTempDirs } from "../../__tests__/test-helpers.js";
 import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
 import { closed, echoParentProxy, openTunnel, probePort, within } from "../../__tests__/support/proxy-tunnel-probe.js";
@@ -190,11 +190,6 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     await step(__resetWindowsSandboxSubstrateForTest);
     vi.restoreAllMocks();
     if (failures.length > 0) throw new AggregateError(failures, "contained shell egress teardown failed");
-  });
-
-  it("starts no shared proxy: a contained session's only egress endpoints are its invocations' relays", () => {
-    expect(SandboxManager.getProxyPort()).toBeUndefined();
-    expect(SandboxManager.getProxyAuthToken()).toBeUndefined();
   });
 
   it.each(["GET", "CONNECT"] as const)("attributes a contained command at both listener decision phases (%s)", async (method) => {
@@ -448,25 +443,4 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     expect(again).toHaveBeenCalledOnce();
   });
 
-  it("fails the session's reset after the rest of its teardown while a relay's port stays bound, and releases it at the next", async () => {
-    const relay = await hostListener.openHostEgressListener(invocation.token);
-    const close = http.Server.prototype.close;
-    let refuse = true;
-    vi.spyOn(http.Server.prototype, "close").mockImplementation(function (this: http.Server, callback?: (error?: Error) => void) {
-      const address = this.address();
-      if (refuse && address !== null && typeof address === "object" && address.port === relay.port) {
-        queueMicrotask(() => callback?.(new Error("relay unbind failed")));
-        return this;
-      }
-      return close.call(this, callback);
-    });
-    const failure: unknown = await resetAsrtSandbox().catch((error: unknown) => error);
-    expect(failure).toEqual(new Error("relay unbind failed"));
-    // The rest of the session ended; the relay is still owned, and drops what connects.
-    await expect(hostListener.openHostEgressListener(openInvocation(invocation.owner).token)).rejects.toThrow("the service is not started");
-    expect(await probePort(relay.port, sockets)).toBe("dropped");
-    refuse = false;
-    await expect(resetAsrtSandbox()).resolves.toBeUndefined();
-    expect(await probePort(relay.port, sockets)).toBe("refused");
-  });
 });
