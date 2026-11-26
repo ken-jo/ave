@@ -449,10 +449,15 @@ it.each([false, true])("does no SQLite work for a superseded refresh (first inve
     await initSandboxGate(harness.context(false, false));
     h.checkDeps.mockClear();
     const rejected = { ...NO_ACCOUNT_BACKEND, warnings: ["inventory incomplete"] };
-    h.checkDeps.mockResolvedValueOnce(firstClean ? NO_ACCOUNT_BACKEND : rejected)
+    h.checkDeps.mockResolvedValue(rejected).mockResolvedValueOnce(firstClean ? NO_ACCOUNT_BACKEND : rejected)
       .mockResolvedValueOnce(firstClean ? rejected : NO_ACCOUNT_BACKEND);
     const slow = deferred<object>();
-    h.detectMxc.mockClear().mockReturnValue(slow.promise);
+    const late = deferred<object>();
+    const lateProbeStarted = deferred<void>();
+    h.detectMxc.mockClear().mockReturnValueOnce(slow.promise).mockImplementationOnce(() => {
+      lateProbeStarted.resolve();
+      return late.promise;
+    });
     const methods = ["open", "writeRebuiltSessions", "upsertSession", "deleteSession", "discard"] as const;
     const sqlite = methods.map(method => vi.spyOn(SessionSearchIndex.prototype, method));
     try {
@@ -463,11 +468,16 @@ it.each([false, true])("does no SQLite work for a superseded refresh (first inve
       slow.resolve(NO_CONTAINER);
       expect((await second).areSwitchesAvailable()).toBe(!firstClean);
       expect(await search).toEqual([]);
+      await lateProbeStarted.promise;
+      for (const call of sqlite) expect.soft(call).not.toHaveBeenCalled();
+      late.resolve(NO_CONTAINER);
       await repository.searchIndexIdle();
-      expect(h.detectMxc).toHaveBeenCalledOnce();
+      expect(h.detectMxc).toHaveBeenCalledTimes(2);
+      expect(h.checkDeps).toHaveBeenCalledTimes(3);
       for (const call of sqlite) expect.soft(call).not.toHaveBeenCalled();
     } finally {
       slow.resolve(NO_CONTAINER);
+      late.resolve(NO_CONTAINER);
       await repository.searchIndexIdle();
       for (const call of sqlite) call.mockRestore();
     }
