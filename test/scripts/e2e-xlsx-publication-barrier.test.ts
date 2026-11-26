@@ -540,6 +540,35 @@ describe("workbook publication build", () => {
         expect(server.listening).toBe(false);
         for (const path of [fixture.root, ...seeds, fixture.workspace]) expect(existsSync(path)).toBe(false);
       });
+
+      it("bounds a hung model server close and a hung seed remover inside the teardown budget", async () => {
+        const fixture = prepared();
+        const [profile, home] = seededDirectories() as [string, string];
+        const { app } = fakeApp();
+        const server = { listening: true, closeAllConnections: vi.fn(), close: vi.fn() };
+        let teardownStarted = 0;
+        const failure = await runBoundedTest({
+          body: async () => {
+            await fixture.launch(async () => { fixture.seeded(profile, never); fixture.seeded(home); fixture.starting(); fixture.own(app); });
+          },
+          diagnose: async () => {},
+          teardown: () => { teardownStarted = Date.now(); return teardownWorkbookTest(fixture, server, fixture.workspace, deadlines); },
+        }, budget).catch((error: unknown) => error);
+        const teardownElapsed = Date.now() - teardownStarted;
+        try {
+          expect(failure).toBeInstanceOf(AggregateError);
+          expect((failure as AggregateError).errors.map(String)).toEqual([
+            `Error: Workbook fixture path left at ${profile}`, "Error: Workbook model server close exceeded 200 ms"]);
+          expect(server.closeAllConnections).toHaveBeenCalledOnce();
+          expect(existsSync(profile)).toBe(true);
+          expect(existsSync(home)).toBe(false);
+          expect(existsSync(fixture.root)).toBe(false);
+          expect(teardownElapsed).toBeLessThan(budget.teardownMs);
+        } finally {
+          rmSync(profile, { recursive: true, force: true });
+          rmSync(fixture.workspace, { recursive: true, force: true });
+        }
+      });
     });
   });
 
