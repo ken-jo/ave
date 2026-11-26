@@ -739,9 +739,8 @@ try {
     throw "the exact zero-byte regular NSIS marker contract is unavailable: $expectedMarker"
   }
 
-  # One per-user lock coordinates cleanup with other cleanups and with Ave,
-  # which exits at startup while the lock is held (src/main/windows-notification-cleanup-lock.ts).
-  # Taking it before the process check means a later Ave start cannot provision artifacts.
+  # Take the per-user lock before the process check. A later Ave start exits if
+  # its probe confirms the held lock. An inconclusive probe allows startup.
   $lockDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
   if ([string]::IsNullOrWhiteSpace($lockDirectory)) {
     throw "the current user's roaming application data folder is unavailable"

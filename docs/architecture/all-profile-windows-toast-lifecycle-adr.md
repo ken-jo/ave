@@ -106,8 +106,8 @@ One per-user lock replaces repeated scans.
   `src/main/windows-notification-cleanup-lock.ts`) before setting the toast
   activator CLSID. It exits only after reading the exact cleanup marker and
   getting the Windows busy result when reading byte zero on that same handle.
-  Path lookup, file open, marker read, and descriptor close errors allow an
-  ordinary startup to proceed.
+  An inconclusive probe allows startup. A descriptor close error leaves the
+  probe's decision unchanged.
 - **Ordering.** Cleanup publishes the marker and then runs
   `Assert-AveStopped` once. An Ave process that already existed fails cleanup
   before artifact mutation. A later Ave process whose probe confirms the held
