@@ -1,13 +1,13 @@
-import { spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import * as XLSX from "xlsx";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { stageWindowsPathKindHelper } from "../../src/__tests__/support/bundled-skill-resources.js";
 import { configureHostResources } from "../../src/main/host-resources.js";
 import { hostScriptInvocationReadPaths, hostScriptRuntimePaths, hostScriptWriteDenyPaths, isVerifiedHostScript } from "../../src/main/host-script-runtime.js";
@@ -22,7 +22,7 @@ import { preparePowerShellLaunch } from "../../src/tools/powershell-launch.js";
 import { buildSafeChildEnv } from "../../src/tools/safe-env.js";
 import { findShellPathPolicyViolation } from "../../src/tools/shell-path-policy.js";
 import { awaitedHostScriptCommand, findPowerShellAstPathViolation, powerShellHostScriptReadPaths, resolvePowerShellExecutable } from "../../src/tools/shell-tools.js";
-import { fileSystemIo, type FixtureBuildIo, prepareWorkbookPublicationBuild, renderWorkbookCommand, terminateProcessTree, withinDeadline } from "../e2e/ui/xlsx-publication-barrier.js";
+import { boundedDiagnostic, fileSystemIo, type FixtureBuildIo, type OwnedApp, prepareWorkbookPublicationBuild, renderWorkbookCommand } from "../e2e/ui/xlsx-publication-barrier.js";
 
 let root: string;
 let checkout: string;
@@ -204,103 +204,170 @@ describe("workbook publication build", () => {
   });
 
   describe("owned app lifecycle", () => {
-    const quick = { shutdownMs: 200, terminateMs: 10_000, closeMs: 10_000 };
-    const hangingApp = () => spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"],
-      { stdio: "pipe", detached: process.platform !== "win32", windowsHide: true });
+    const quick = { shutdownMs: 200, closeMs: 200, launchMs: 200 };
     const prepared = (io?: FixtureBuildIo) => prepareWorkbookPublicationBuild(checkout, mkdtempSync(join(root, "owned-")), io);
+    const seededDirectories = () => [mkdtempSync(join(root, "profile-")), mkdtempSync(join(root, "home-"))];
 
-    it("terminates the owned tree after a startup timeout, then removes the copy", async () => {
+    class FakeChild extends EventEmitter {
+      exitCode: number | null = null;
+      signalCode: NodeJS.Signals | null = null;
+      readonly pid = 4242;
+      readonly kills: unknown[][] = [];
+      onKill = () => {};
+      kill(...args: unknown[]): boolean { this.kills.push(args); this.onKill(); return true; }
+      exit(): void { this.exitCode = 0; this.emit("exit", 0, null); }
+      closePipes(): void { this.emit("close", 0, null); }
+    }
+    function fakeApp(onClose: (child: FakeChild) => Promise<void> = async (child) => { child.exit(); child.closePipes(); }) {
+      const child = new FakeChild();
+      const calls = { close: 0 };
+      const app: OwnedApp = { close: () => { calls.close++; return onClose(child); }, process: () => child as unknown as ChildProcess };
+      return { app, child, calls };
+    }
+    const never = () => new Promise<void>(() => {});
+
+    it("acts only through the owned handles, so no numeric PID reaches a terminator", async () => {
+      const source = readFileSync(new URL("../e2e/ui/xlsx-publication-barrier.ts", import.meta.url), "utf8");
+      expect(source).not.toMatch(/taskkill|process\.kill|execFile|spawn/);
+      const signals = vi.spyOn(process, "kill");
+      try {
+        const fixture = prepared();
+        const seeds = seededDirectories();
+        fixture.seeded(...seeds);
+        const { app, child, calls } = fakeApp(never);
+        child.onKill = () => { child.exit(); child.closePipes(); };
+        fixture.own(app);
+        const settled = await fixture.settle(quick);
+        expect(calls.close).toBe(1);
+        expect(child.kills).toEqual([[]]);
+        expect(signals).not.toHaveBeenCalled();
+        expect(settled.closed).toBe(true);
+        expect(settled.failures.map(String)).toEqual([expect.stringContaining("Workbook app close exceeded 200 ms")]);
+        for (const path of [fixture.root, ...seeds]) expect(existsSync(path)).toBe(false);
+      } finally {
+        signals.mockRestore();
+      }
+    });
+
+    it("ends a real process through its child handle and removes the copy after close", async () => {
       const fixture = prepared();
-      const app = hangingApp();
-      fixture.own(app);
-      await expect(withinDeadline(new Promise(() => {}), 50, "Workbook app startup")).rejects.toThrow("Workbook app startup exceeded 50 ms");
-      const steps: string[] = [];
-      const settled = await fixture.settle({ terminate: async (pid) => { steps.push("terminate"); await terminateProcessTree(pid); } }, quick);
-      expect(steps).toEqual(["terminate"]);
-      expect(settled).toEqual({ closed: true, failures: [] });
-      expect(app.exitCode !== null || app.signalCode !== null).toBe(true);
+      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "pipe", windowsHide: true });
+      fixture.own({ close: never, process: () => child });
+      const settled = await fixture.settle({ ...quick, closeMs: 10_000 });
+      expect(settled.closed).toBe(true);
+      expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
       expect(existsSync(fixture.root)).toBe(false);
       expectSharedBuildUsable();
     });
 
+    it("removes the copy, profile and home after a graceful close", async () => {
+      const fixture = prepared();
+      const seeds = seededDirectories();
+      fixture.seeded(...seeds);
+      const { app, child } = fakeApp();
+      fixture.own(app);
+      expect(await fixture.settle(quick)).toEqual({ closed: true, failures: [] });
+      expect(child.kills).toEqual([]);
+      for (const path of [fixture.root, ...seeds]) expect(existsSync(path)).toBe(false);
+    });
+
+    it("keeps and reports every path when the parent exits but its pipes stay open", async () => {
+      const fixture = prepared();
+      const seeds = seededDirectories();
+      fixture.seeded(...seeds);
+      const { app, child } = fakeApp(async (exited) => { exited.exit(); });
+      fixture.own(app);
+      const settled = await fixture.settle(quick);
+      expect(child.kills).toEqual([]);
+      expect(settled.closed).toBe(false);
+      expect(String(settled.failures.at(-1))).toContain(
+        `paths retained because the owned app did not close: ${[fixture.root, ...seeds].join(", ")}`);
+      for (const path of [fixture.root, ...seeds]) expect(existsSync(path)).toBe(true);
+      for (const path of [fixture.root, ...seeds]) fileSystemIo.remove(path);
+    });
+
+    it("completes within its deadlines when a diagnostic and the close both stall", async () => {
+      const started = Date.now();
+      expect(await boundedDiagnostic(() => new Promise<string>(() => {}), "fallback", 50)).toBe("fallback");
+      expect(await boundedDiagnostic(() => Promise.reject(new Error("renderer gone")), "fallback", 50)).toBe("fallback");
+      const fixture = prepared();
+      const seeds = seededDirectories();
+      fixture.seeded(...seeds);
+      const { app, child } = fakeApp(never);
+      fixture.own(app);
+      const settled = await fixture.settle(quick);
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(child.kills).toEqual([[]]);
+      expect(settled.closed).toBe(false);
+      expect(settled.failures.map(String)).toEqual([
+        expect.stringContaining("Workbook app close exceeded 200 ms"),
+        expect.stringContaining("Workbook app pipe closure exceeded 200 ms"),
+        expect.stringContaining(`the owned app did not close: ${[fixture.root, ...seeds].join(", ")}`),
+      ]);
+      for (const path of [fixture.root, ...seeds]) expect(existsSync(path)).toBe(true);
+      for (const path of [fixture.root, ...seeds]) fileSystemIo.remove(path);
+    });
+
+    it("removes the copy, profile and home after a startup failure whose app closed", async () => {
+      const fixture = prepared();
+      const seeds = seededDirectories();
+      const { app } = fakeApp();
+      await expect(fixture.launch(async () => {
+        fixture.seeded(...seeds);
+        fixture.own(app);
+        await app.close();
+        throw new Error("first window failed");
+      })).rejects.toThrow("first window failed");
+      expect(await fixture.settle(quick)).toEqual({ closed: true, failures: [] });
+      for (const path of [fixture.root, ...seeds]) expect(existsSync(path)).toBe(false);
+    });
+
+    it("keeps and reports every path when a launch supplied no owned app", async () => {
+      const fixture = prepared();
+      const seeds = seededDirectories();
+      await expect(fixture.launch(async () => { fixture.seeded(...seeds); throw new Error("launch refused"); })).rejects.toThrow("launch refused");
+      const settled = await fixture.settle(quick);
+      expect(settled.closed).toBe(false);
+      expect(String(settled.failures.at(-1))).toContain(`the launch supplied no owned app: ${[fixture.root, ...seeds].join(", ")}`);
+      for (const path of [fixture.root, ...seeds]) fileSystemIo.remove(path);
+    });
+
+    it("keeps every path after a startup timeout, then closes and reports the late arrival", async () => {
+      const fixture = prepared();
+      const seeds = seededDirectories();
+      let arrive = () => {};
+      const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+      const { app, child, calls } = fakeApp();
+      const launching = fixture.launch(async () => { fixture.seeded(...seeds); await arrived; fixture.own(app); }, 50);
+      await expect(launching).rejects.toThrow("Workbook app startup exceeded 50 ms");
+      const settled = await fixture.settle(quick);
+      expect(settled.closed).toBe(false);
+      expect(settled.failures.map(String)).toEqual([expect.stringContaining("Workbook app launch settlement exceeded 200 ms"),
+        expect.stringContaining(`the launch is still in progress: ${[fixture.root, ...seeds].join(", ")}`)]);
+      for (const path of [fixture.root, ...seeds]) expect(existsSync(path)).toBe(true);
+      arrive();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const late = await fixture.late();
+      expect(late.map(String)).toEqual([expect.stringContaining("arrived after its fixture was settled")]);
+      expect(calls.close).toBe(1);
+      expect(child.exitCode).toBe(0);
+      for (const path of [fixture.root, ...seeds]) fileSystemIo.remove(path);
+    });
+
     it.each([
-      ["rejects", () => Promise.reject(new Error("teardown fault")), "teardown fault"],
-      ["hangs", () => new Promise<void>(() => {}), "Workbook app shutdown exceeded 200 ms"],
-    ] as const)("terminates the owned tree when shutdown %s, records it, then removes the copy", async (_name, shutdown, failure) => {
-      const fixture = prepared();
-      fixture.own(hangingApp());
-      const steps: string[] = [];
-      const settled = await fixture.settle({
-        shutdown: () => { steps.push("shutdown"); return shutdown(); },
-        terminate: async (pid) => { steps.push("terminate"); await terminateProcessTree(pid); },
-      }, quick);
-      expect(steps).toEqual(["shutdown", "terminate"]);
+      ["succeeded", undefined],
+      ["failed", (kind: keyof FixtureBuildIo) => kind === "remove"],
+    ] as const)("closes and reports an arrival after removal %s", async (_name, fault) => {
+      const fixture = prepared(fault ? faultyIo(fault) : undefined);
+      const settled = await fixture.settle(quick);
       expect(settled.closed).toBe(true);
-      expect(settled.failures.map(String)).toEqual([expect.stringContaining(failure)]);
-      expect(existsSync(fixture.root)).toBe(false);
-    });
-
-    it("ignores a failed termination of an already ended tree when close follows", async () => {
-      const fixture = prepared();
-      const app = hangingApp();
-      fixture.own(app);
-      const settled = await fixture.settle({
-        shutdown: async () => { await terminateProcessTree(app.pid as number); },
-        terminate: async () => { throw new Error("process not found"); },
-      }, { ...quick, shutdownMs: 10_000 });
-      expect(settled).toEqual({ closed: true, failures: [] });
-      expect(existsSync(fixture.root)).toBe(false);
-    });
-
-    it("still runs shutdown when the owned app already closed", async () => {
-      const fixture = prepared();
-      const app = hangingApp();
-      fixture.own(app);
-      const closed = once(app, "close");
-      await terminateProcessTree(app.pid as number);
-      await closed;
-      const steps: string[] = [];
-      const settled = await fixture.settle({ shutdown: async () => { steps.push("shutdown"); },
-        terminate: async () => { steps.push("terminate"); } }, quick);
-      expect(steps).toEqual(["shutdown"]);
-      expect(settled).toEqual({ closed: true, failures: [] });
-      expect(existsSync(fixture.root)).toBe(false);
-    });
-
-    it("ends an app that launches after its fixture was settled", async () => {
-      const fixture = prepared();
-      expect(await fixture.settle({}, quick)).toEqual({ closed: true, failures: [] });
-      const late = hangingApp();
-      const closed = once(late, "close");
-      expect(() => fixture.own(late)).toThrow("launched after its fixture was settled");
-      await withinDeadline(closed, 10_000, "Late app close");
-    });
-
-    it("keeps the copy and names it when closure is not confirmed", async () => {
-      const fixture = prepared();
-      const app = hangingApp();
-      fixture.own(app);
-      try {
-        const settled = await fixture.settle({ terminate: async () => {} }, { ...quick, closeMs: 200 });
-        expect(settled.closed).toBe(false);
-        expect(settled.failures.map(String)).toEqual([expect.stringContaining("Workbook app pipe closure exceeded 200 ms"),
-          expect.stringContaining(`Workbook fixture build left at ${fixture.root}`)]);
-        expect(existsSync(fixture.mainEntry)).toBe(true);
-      } finally {
-        const closed = once(app, "close");
-        await terminateProcessTree(app.pid as number);
-        await closed;
-        fixture.dispose();
-      }
-      expect(existsSync(fixture.root)).toBe(false);
-    });
-
-    it("names the copy when removal fails after a confirmed close", async () => {
-      const fixture = prepared(faultyIo((kind) => kind === "remove"));
-      fixture.own(hangingApp());
-      const settled = await fixture.settle({}, quick);
-      expect(settled.closed).toBe(true);
-      expect(settled.failures.map(String)).toEqual([`Error: Workbook fixture build left at ${fixture.root}`]);
+      expect(settled.failures.map(String)).toEqual(fault ? [`Error: Workbook fixture path left at ${fixture.root}`] : []);
+      const { app, child, calls } = fakeApp();
+      expect(() => fixture.own(app)).toThrow("arrived after its fixture was settled");
+      expect((await fixture.late()).map(String)).toEqual([expect.stringContaining("arrived after its fixture was settled")]);
+      expect(calls.close).toBe(1);
+      expect(child.exitCode).toBe(0);
+      expect(existsSync(fixture.root)).toBe(fault !== undefined);
       expectSharedBuildUsable();
       fileSystemIo.remove(fixture.root);
     });

@@ -14,7 +14,7 @@ import * as XLSX from "xlsx";
 import { offsetWorkbook } from "../../../src/__tests__/support/table-document-fixtures.js";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
-import { FIXTURE_DEADLINES, prepareWorkbookPublicationBuild, renderWorkbookCommand, withinDeadline } from "./xlsx-publication-barrier.js";
+import { boundedDiagnostic, FIXTURE_CLEANUP_MS, FIXTURE_DEADLINES, prepareWorkbookPublicationBuild, renderWorkbookCommand } from "./xlsx-publication-barrier.js";
 
 test("edited workbook shows a recalculation badge through the real viewer", async () => {
   expect(builtMainExists()).toBe(true);
@@ -164,7 +164,8 @@ contextBridge.exposeInMainWorld("workbookIpcProbe", {
 });
 
 test("approved agent edits stream into the read-only workbook panel", async () => {
-  test.setTimeout(180_000);
+  // Cleanup keeps its own budget beyond the body's, including bounded diagnostics.
+  test.setTimeout(180_000 + FIXTURE_CLEANUP_MS + 3 * FIXTURE_DEADLINES.diagnosticMs);
   expect(builtMainExists()).toBe(true);
   mkdirSync(join(process.cwd(), ".cache"), { recursive: true });
   const directory = mkdtempSync(join(process.cwd(), ".cache", "xlsx-agent-live-"));
@@ -234,9 +235,10 @@ test("approved agent edits stream into the read-only workbook panel", async () =
   try {
     const publicationBarrier = prepareWorkbookPublicationBuild(REPO_ROOT, directory);
     barrier = publicationBarrier;
-    ctx = await withinDeadline(launchSeededElectron({ sessionTitle: "Agent document observation", settings, historyRows: [],
-      mainEntry: publicationBarrier.mainEntry, onLaunched: (app) => publicationBarrier.own(app.process()) }),
-    FIXTURE_DEADLINES.startupMs, "Workbook app startup");
+    ctx = await publicationBarrier.launch(() => launchSeededElectron({ sessionTitle: "Agent document observation", settings,
+      historyRows: [], mainEntry: publicationBarrier.mainEntry,
+      onSeeded: ({ userDataDir, tempHome }) => publicationBarrier.seeded(userDataDir, tempHome),
+      onLaunched: (app) => publicationBarrier.own(app) }));
     writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [directory],
       reviewer: { interactive: { autoApprove: "off" } } } }));
     const runtime = await ctx.app.evaluate(() => process.execPath);
@@ -365,24 +367,23 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     } finally { await cdp.detach(); }
   } catch (error) {
     bodyFailure = { error };
+    const page = ctx?.page;
     const diagnostic = {
       toolResults, modelCalls, provisionalFrames, backup: existsSync(`${path}.ave-bak`),
       bytes: existsSync(path) ? readFileSync(path).length : null,
-      events: ctx ? await ctx.page.evaluate(() => (window as unknown as { observedDocumentEvents: unknown[] }).observedDocumentEvents).catch(() => []) : [],
+      events: page ? await boundedDiagnostic(() => page.evaluate(() =>
+        (window as unknown as { observedDocumentEvents: unknown[] }).observedDocumentEvents), []) : [],
     };
     const failurePath = test.info().outputPath("agent-document-failure.json");
     writeFileSync(failurePath, JSON.stringify(diagnostic, null, 2));
-    await test.info().attach("agent-document-failure", { path: failurePath, contentType: "application/json" });
-    await ctx?.page.screenshot({ path: test.info().outputPath("agent-document-failure.png") }).catch(() => {});
+    await boundedDiagnostic(() => test.info().attach("agent-document-failure", { path: failurePath, contentType: "application/json" }), undefined);
+    if (page) await boundedDiagnostic(() => page.screenshot({ path: test.info().outputPath("agent-document-failure.png") }), undefined);
   } finally {
     const cleanup = async (action: () => void | Promise<void>): Promise<void> => {
       try { await action(); } catch (error) { cleanupFailures.push(error); }
     };
     await cleanup(() => { barrier?.release(); });
-    const launched = ctx;
-    const settled = barrier
-      ? await barrier.settle({ shutdown: launched ? () => teardownSeededElectron(launched, { terminate: true }) : undefined })
-      : { closed: true, failures: [] };
+    const settled = barrier ? await barrier.settle() : { closed: true, failures: [] };
     cleanupFailures.push(...settled.failures);
     await cleanup(() => { server.closeAllConnections(); });
     await cleanup(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));

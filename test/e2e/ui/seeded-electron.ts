@@ -229,6 +229,8 @@ export async function launchSeededElectron(opts: {
   /** A disposable build root's entry; the checkout's build by default. */
   mainEntry?: string;
   prepareHome?: (aveHome: string) => void | Promise<void>;
+  /** Receives the seeded profile and home as soon as they exist. */
+  onSeeded?: (directories: { userDataDir: string; tempHome: string }) => void;
   onLaunched?: (app: ElectronApplication) => void;
 }): Promise<SeededElectronContext> {
   const sessionId = opts.sessionId ?? "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
@@ -238,6 +240,7 @@ export async function launchSeededElectron(opts: {
   const tempHome = mkdtempSync(
     resolve(tmpdir(), opts.homePrefix ?? "ave-seeded-e2e-home-"),
   );
+  opts.onSeeded?.({ userDataDir, tempHome });
   const aveHome = resolve(tempHome, ".ave");
 
   let app: ElectronApplication | undefined;

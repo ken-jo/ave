@@ -1,4 +1,4 @@
-import { type ChildProcess, execFile } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -43,9 +43,52 @@ export const fileSystemIo: FixtureBuildIo = {
   remove: (path) => rmSync(path, { recursive: true, force: true, maxRetries: 5 }),
 };
 
-export interface FixtureDeadlines { readonly shutdownMs: number; readonly terminateMs: number; readonly closeMs: number }
-export const FIXTURE_DEADLINES: FixtureDeadlines & { readonly startupMs: number } =
-  Object.freeze({ startupMs: 90_000, shutdownMs: 30_000, terminateMs: 15_000, closeMs: 15_000 });
+export interface FixtureDeadlines { readonly shutdownMs: number; readonly closeMs: number; readonly launchMs: number }
+export const FIXTURE_DEADLINES: FixtureDeadlines & { readonly startupMs: number; readonly diagnosticMs: number } =
+  Object.freeze({ startupMs: 90_000, shutdownMs: 30_000, closeMs: 15_000, launchMs: 15_000, diagnosticMs: 5_000 });
+/** The longest settle() can take, to reserve beyond a test body's own budget. */
+export const FIXTURE_CLEANUP_MS = FIXTURE_DEADLINES.shutdownMs + FIXTURE_DEADLINES.closeMs + FIXTURE_DEADLINES.launchMs;
+
+/** The handles a launch supplies: graceful close, and the process it started. */
+export interface OwnedApp {
+  close(): Promise<void>;
+  process(): ChildProcess;
+}
+
+interface OwnedLifetime {
+  app: OwnedApp;
+  child: ChildProcess;
+  closed: Promise<void>;
+  isClosed(): boolean;
+}
+
+function ownLifetime(app: OwnedApp): OwnedLifetime {
+  const child = app.process();
+  let closed = false;
+  const closing = new Promise<void>((resolve) => child.once("close", () => { closed = true; resolve(); }));
+  return { app, child, closed: closing, isClosed: () => closed };
+}
+
+// Only the owned handles act: graceful close, then the child handle's kill. Each step is best effort and bounded.
+async function closeOwned(owned: OwnedLifetime, deadlines: FixtureDeadlines = FIXTURE_DEADLINES): Promise<unknown[]> {
+  const failures: unknown[] = [];
+  if (owned.isClosed()) return failures;
+  try { await withinDeadline(Promise.resolve().then(() => owned.app.close()), deadlines.shutdownMs, "Workbook app close"); }
+  catch (error) { failures.push(error); }
+  if (!owned.isClosed() && owned.child.exitCode === null && owned.child.signalCode === null) {
+    try { owned.child.kill(); } catch (error) { failures.push(error); }
+  }
+  if (!owned.isClosed()) {
+    try { await withinDeadline(owned.closed, deadlines.closeMs, "Workbook app pipe closure"); }
+    catch (error) { failures.push(error); }
+  }
+  return failures;
+}
+
+/** Best-effort diagnostics: the fallback on failure or once the deadline passes, so cleanup always starts. */
+export function boundedDiagnostic<T>(work: () => Promise<T>, fallback: T, ms = FIXTURE_DEADLINES.diagnosticMs): Promise<T> {
+  return withinDeadline(Promise.resolve().then(work), ms, "Workbook diagnostic").catch(() => fallback);
+}
 
 /** Rejects once `ms` pass; a late settlement of `work` is then ignored. */
 export function withinDeadline<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
@@ -55,18 +98,6 @@ export function withinDeadline<T>(work: Promise<T>, ms: number, label: string): 
     timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms} ms`)), ms);
   });
   return Promise.race([work, expired]).finally(() => clearTimeout(timer));
-}
-
-/** End the owned process and its descendants so inherited pipes can close. */
-export async function terminateProcessTree(pid: number): Promise<void> {
-  if (process.platform === "win32") {
-    await new Promise<void>((resolve, reject) => {
-      execFile("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true }, (error) => error ? reject(error) : resolve());
-    });
-    return;
-  }
-  try { process.kill(-pid, "SIGKILL"); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
 }
 
 /** The PowerShell or POSIX command the model sends for this argv. */
@@ -117,13 +148,17 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
   const readyPath = join(workspace, "publication-ready");
   const releasePath = join(workspace, "publication-release");
   let disposed = false;
-  let owned: { pid: number | undefined; closed: Promise<void> } | undefined;
-  let ownedClosed = false;
   const dispose = (): void => {
     if (disposed) return;
     io.remove(root);
     disposed = true;
   };
+  const seededPaths: string[] = [];
+  let launch: { settled: Promise<void>; pending: boolean } | undefined;
+  let owned: OwnedLifetime | undefined;
+  let settling = false;
+  const lateArrivals: Promise<unknown[]>[] = [];
+  const retainedPaths = () => [root, ...seededPaths];
   return {
     root,
     mainEntry: join(root, "dist", "src", "main", "main.js"),
@@ -141,47 +176,57 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
     },
     /** Call only after the owned application and its command process have closed. */
     dispose,
-    /** Register the owned application process as soon as launch supplies it. */
-    own(child: ChildProcess): void {
-      if (owned) throw new Error("The workbook fixture already owns a process");
-      if (disposed) {
-        // A launch that outlived its startup deadline; the copy is gone, so only its tree is left to end.
-        if (child.pid !== undefined) terminateProcessTree(child.pid).catch(() => {});
-        throw new Error("The workbook app launched after its fixture was settled");
+    /** Start the one launch this copy serves; settle() keeps every path while it is still in progress. */
+    launch<T>(start: () => Promise<T>, startupMs = FIXTURE_DEADLINES.startupMs): Promise<T> {
+      if (settling || launch) throw new Error("The workbook fixture serves exactly one launch before settle");
+      const started = Promise.resolve().then(start);
+      const state = { pending: true, settled: Promise.resolve() };
+      state.settled = started.then(() => { state.pending = false; }, () => { state.pending = false; });
+      launch = state;
+      return withinDeadline(started, startupMs, "Workbook app startup");
+    },
+    /** Record the seeded profile and home as soon as they exist; they are removed with the copy. */
+    seeded(...paths: string[]): void {
+      seededPaths.push(...paths);
+      if (settling) lateArrivals.push(Promise.resolve([new Error(`Workbook app seeded after its fixture was settled: ${paths.join(", ")}`)]));
+    },
+    /** Register the handles launch supplies. An arrival after settle is closed through them and reported. */
+    own(app: OwnedApp): void {
+      if (settling) {
+        const failure = new Error(`Workbook app arrived after its fixture was settled; paths: ${retainedPaths().join(", ")}`);
+        lateArrivals.push(Promise.resolve().then(async () => [failure, ...await closeOwned(ownLifetime(app))]));
+        throw failure;
       }
-      const closed = new Promise<void>((resolve) => child.once("close", () => { ownedClosed = true; resolve(); }));
-      owned = { pid: child.pid, closed };
+      if (owned) throw new Error("The workbook fixture already owns an app");
+      owned = ownLifetime(app);
+    },
+    /** Reports from arrivals after settle, each bounded by the close deadlines. */
+    async late(): Promise<unknown[]> {
+      return (await Promise.all(lateArrivals)).flat();
     },
     /**
-     * Shut the owned process down within deadlines, then remove the copy only after its close (process exit and pipe
-     * closure) is confirmed. Otherwise the copy stays and a failure names its path.
+     * Close the owned app through its handles within deadlines. The copy, profile and home are removed only after the
+     * launch settled and the owned process closed (exit and pipe closure); otherwise every retained path is reported.
      */
-    async settle(steps: { shutdown?: () => Promise<void>; terminate?: (pid: number) => Promise<void> },
-      deadlines: FixtureDeadlines = FIXTURE_DEADLINES): Promise<{ closed: boolean; failures: unknown[] }> {
+    async settle(deadlines: FixtureDeadlines = FIXTURE_DEADLINES): Promise<{ closed: boolean; failures: unknown[] }> {
+      settling = true;
       const failures: unknown[] = [];
-      if (steps.shutdown) {
-        try { await withinDeadline(steps.shutdown(), deadlines.shutdownMs, "Workbook app shutdown"); }
+      if (owned) failures.push(...await closeOwned(owned, deadlines));
+      if (launch?.pending) {
+        try { await withinDeadline(launch.settled, deadlines.launchMs, "Workbook app launch settlement"); }
         catch (error) { failures.push(error); }
       }
-      if (owned && !ownedClosed) {
-        // A tree that shutdown already ended can fail termination; that only matters if close never follows.
-        let terminationFailure: { error: unknown } | undefined;
-        if (!ownedClosed && owned.pid !== undefined) {
-          try { await withinDeadline((steps.terminate ?? terminateProcessTree)(owned.pid), deadlines.terminateMs, "Workbook app tree termination"); }
-          catch (error) { terminationFailure = { error }; }
-        }
-        if (!ownedClosed) {
-          try { await withinDeadline(owned.closed, deadlines.closeMs, "Workbook app pipe closure"); }
-          catch (error) { failures.push(error); }
-        }
-        if (!ownedClosed) {
-          if (terminationFailure) failures.push(terminationFailure.error);
-          failures.push(new Error(`Workbook fixture build left at ${root}: the owned process did not close`));
-          return { closed: false, failures };
-        }
+      const reason = launch?.pending ? "the launch is still in progress"
+        : launch && !owned ? "the launch supplied no owned app"
+          : owned && !owned.isClosed() ? "the owned app did not close" : undefined;
+      if (reason) {
+        failures.push(new Error(`Workbook fixture paths retained because ${reason}: ${retainedPaths().join(", ")}`));
+        return { closed: false, failures };
       }
-      try { dispose(); }
-      catch (error) { failures.push(new Error(`Workbook fixture build left at ${root}`, { cause: error })); }
+      for (const path of seededPaths) {
+        try { io.remove(path); } catch (error) { failures.push(new Error(`Workbook fixture path left at ${path}`, { cause: error })); }
+      }
+      try { dispose(); } catch (error) { failures.push(new Error(`Workbook fixture path left at ${root}`, { cause: error })); }
       return { closed: true, failures };
     },
   };
