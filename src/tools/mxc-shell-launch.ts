@@ -15,6 +15,7 @@ import {
   buildMxcShellRequest,
   getHostWxcExecIdentity,
   isWindowsPathAtOrUnder,
+  MxcLauncherIntegrityError,
   openMxcRequestTransport,
   rankMxcFilesystem,
   resolveHostWxcExecPath,
@@ -138,12 +139,12 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   let wxcExec: string;
   let launcherIdentity: string;
   // Taken before the launcher check starts, so its failure reaches only the evidence it was measured against.
-  const backendObservation = observeWindowsBackend("container");
+  const backendObservation = observeWindowsBackend("container", "shell");
   try {
     launcherIdentity = getHostWxcExecIdentity();
     wxcExec = await resolveHostWxcExecPath(launcherIdentity);
-  } catch {
-    reportWindowsBackendLoss(backendObservation);
+  } catch (error) {
+    if (error instanceof MxcLauncherIntegrityError) reportWindowsBackendLoss(backendObservation);
     // The resolver's failures name the launcher's absolute path.
     throw new Error("Contained shell launcher could not be verified on this installation");
   }
@@ -222,7 +223,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     proxyPort: listener.port,
     activate: () => {
       assertDispatch();
-      const observation = observeWindowsBackend("container");
+      const observation = observeWindowsBackend("container", "shell");
       active = true;
       return observation;
     },

@@ -68,42 +68,41 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
   });
 
   it.each([
-    ["base containment", "none", true, true],
-    ["denied base containment fallback", "base-container", true, true],
-    ["extension-only path queries", "base-container", false, false],
-  ] as const)("reports shared backend loss for %s only when base containment is unavailable", async (_name, tier, enumerate, needsDaclAugmentation) => {
+    ["request refusal", "none", true, true, true],
+    ["denied base containment fallback", "base-container", true, true, true],
+    ["extension-only path queries", "base-container", false, false, true],
+    ["a missing common backend", "none", false, true, false],
+  ] as const)("reports shared backend loss for %s only on measured platform absence", async (_name, tier, enumerate, needsDaclAugmentation, baseContainerApiPresent) => {
     const reportLoss = vi.spyOn(backendEvidence, "reportWindowsBackendLoss");
     try {
       const f = transportFixture();
-      f.probe.mockReturnValue({ tier, needsDaclAugmentation, probes: { baseContainerSupportsEnumeratePaths: enumerate } } as ProbeOutput);
+      f.probe.mockReturnValue({ tier, needsDaclAugmentation, probes: { baseContainerSupportsEnumeratePaths: enumerate, baseContainerApiPresent } } as ProbeOutput);
       await expect(f.launch()).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
       expect(f.spawn).not.toHaveBeenCalled();
-      expect(reportLoss).toHaveBeenCalledTimes(tier !== "base-container" || needsDaclAugmentation ? 1 : 0);
+      expect(reportLoss).toHaveBeenCalledTimes(baseContainerApiPresent ? 0 : 1);
     } finally { reportLoss.mockRestore(); }
   });
 
-  it("revokes receipts when native creation reports backend loss", async () => {
+  it("does not revoke receipts when native creation fails with an ambiguous backend error", async () => {
     const reportLoss = vi.spyOn(backendEvidence, "reportWindowsBackendLoss");
     try {
       const f = transportFixture();
       f.spawn.mockRejectedValue(Object.assign(new Error("Base containment was withdrawn"), { code: "backend_unavailable" }));
       await expect(f.launch()).rejects.toBeInstanceOf(MxcProcessCleanupError);
-      expect(reportLoss).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ backend: "container" }));
+      expect(reportLoss).not.toHaveBeenCalled();
     } finally { reportLoss.mockRestore(); }
   });
 
   it.each([
-    ["revokes the evidence it measured", false],
-    ["leaves evidence that replaced what it measured", true],
-  ] as const)("a native creation failure %s", async (_name, superseded) => {
-    const f = transportFixture();
-    f.spawn.mockImplementation(async () => {
-      if (superseded) void backendEvidence.WINDOWS_BACKEND_EVIDENCE.container.refresh();
-      throw Object.assign(new Error("Base containment was withdrawn"), { code: "backend_unavailable" });
-    });
+    ["shell", true, false], ["extension", false, true], ["common", true, true],
+  ] as const)("revokes only the evidence measured by a %s loss", async (scope, shellLost, extensionLost) => {
+    const shell = backendEvidence.WINDOWS_BACKEND_EVIDENCE.container;
+    const shellObservation = shell.observe();
+    const loss = backendEvidence.observeWindowsBackend("container", scope);
     const lossEpoch = backendEvidence.getWindowsContainerBackendLossEpoch();
-    await expect(f.launch()).rejects.toBeInstanceOf(MxcProcessCleanupError);
-    expect(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch + (superseded ? 0 : 1));
+    expect(backendEvidence.reportWindowsBackendLoss(loss)).toBe(true);
+    expect(shell.isObserved(shellObservation)).toBe(!shellLost);
+    expect(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch + Number(extensionLost));
   });
 
   it("checks the input fence at every frame and still stops after a refusal", async () => {

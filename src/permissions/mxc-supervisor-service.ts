@@ -28,6 +28,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
   let forwarding = false;
   let spawnPendingAtCancellation = false;
   let stopping = false;
+  let commonBackendAbsent = false;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   let resolveTerminal!: (result: { exitCode: number; timedOut: boolean } | null) => void;
   let rejectTerminal!: (error: unknown) => void;
@@ -83,7 +84,10 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
             // Start evidence (contract fields 1-5): each value is what this start observed, reported on its ready frame.
             const baseContainerReady = probe.tier === "base-container" && probe.needsDaclAugmentation === false;
             const ancestorQueriesSupported = probe.probes.baseContainerSupportsEnumeratePaths === true;
-            if (!baseContainerReady) throw new MxcBaseContainmentUnavailableError();
+            if (!baseContainerReady) {
+              commonBackendAbsent = probe.probes.baseContainerApiPresent === false;
+              throw new MxcBaseContainmentUnavailableError();
+            }
             if (!ancestorQueriesSupported) {
               throw new MxcCapabilityUnavailableError("Required native containment is unavailable");
             }
@@ -194,7 +198,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
     await channel.end();
   } catch (cause) {
     stop();
-    const backendUnavailable = cause instanceof MxcBaseContainmentUnavailableError;
+    const backendLoss = commonBackendAbsent ? "common" : cause instanceof MxcIntegrityError && cause.cause === undefined ? "extension" : undefined;
     let failure = cause;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -221,7 +225,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
     try {
       // Every other error receipt certifies that creation never began or native
       // termination and disposal completed; cleanup failure has its own code.
-      await channel.send({ type: "error", code, ...(backendUnavailable ? { backendUnavailable: true } : {}),
+      await channel.send({ type: "error", code, ...(backendLoss ? { backendLoss } : {}),
         message: failure instanceof Error ? failure.message.slice(0, 1024) : "Supervisor failed" });
       await channel.end();
     } catch { /* The parent may already be gone; process exit closes the native job. */ }

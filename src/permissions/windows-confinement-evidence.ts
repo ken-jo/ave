@@ -189,21 +189,38 @@ declare const WINDOWS_BACKEND_OBSERVATION: unique symbol;
 /** What a failure observer measured against: one backend's evidence generation and route. */
 export interface WindowsBackendObservation { readonly [WINDOWS_BACKEND_OBSERVATION]: true; readonly backend: WindowsBackend }
 
-const observations = new WeakMap<WindowsBackendObservation, ReturnType<WindowsBackendEvidenceOwner["observe"]>>();
+type ContainerObservationScope = "shell" | "extension" | "common";
+const observations = new WeakMap<WindowsBackendObservation, {
+  scope: ContainerObservationScope;
+  measured: ReturnType<WindowsBackendEvidenceOwner["observe"]>;
+  extensionEpoch: number;
+  extensionRoute: readonly unknown[];
+}>();
+const extensionRoute = () => [getSandboxGeneration(), ...getWindowsConfinementRoute(), getWindowsExtensionBackendPlan()];
 
 /** Taken before a failure observer starts measuring, so its later report can only reach the evidence it measured. */
-export function observeWindowsBackend(backend: WindowsBackend): WindowsBackendObservation {
+export function observeWindowsBackend(backend: WindowsBackend, scope: ContainerObservationScope = "common"): WindowsBackendObservation {
   const observation = Object.freeze({ backend }) as WindowsBackendObservation;
-  observations.set(observation, WINDOWS_BACKEND_EVIDENCE[backend].observe());
+  observations.set(observation, { scope, measured: WINDOWS_BACKEND_EVIDENCE[backend].observe(),
+    extensionEpoch: containerBackendLossEpoch, extensionRoute: extensionRoute() });
   return observation;
 }
 
 /** Revokes the evidence the observer measured. A report that outlived that evidence is dropped: it changes nothing. */
 export function reportWindowsBackendLoss(observation: WindowsBackendObservation): boolean {
   const observed = observations.get(observation);
-  if (observed === undefined || !WINDOWS_BACKEND_EVIDENCE[observation.backend].isObserved(observed)) return false;
-  invalidateWindowsBackendEvidence(observation.backend);
-  return true;
+  if (!observed) return false;
+  if (observation.backend === "account") {
+    if (!accountBackend.isObserved(observed.measured)) return false;
+    accountBackend.invalidate();
+    return true;
+  }
+  const shellLost = observed.scope !== "extension" && containerBackend.isObserved(observed.measured);
+  const extensionLost = observed.scope !== "shell" && containerBackendLossEpoch === observed.extensionEpoch
+    && sameRoute(observed.extensionRoute, extensionRoute());
+  if (shellLost) containerBackend.invalidate();
+  if (extensionLost) containerBackendLossEpoch += 1;
+  return shellLost || extensionLost;
 }
 
 let confirmation: Promise<void> | undefined;
@@ -218,11 +235,11 @@ let confirmationNotBefore = Number.NEGATIVE_INFINITY;
 export function recheckWindowsContainerBackendAfterShellFailure(dispatch?: WindowsBackendObservation): Promise<void> {
   if (dispatch !== undefined) {
     const observed = observations.get(dispatch);
-    if (dispatch.backend !== "container" || observed === undefined || !containerBackend.isObserved(observed)) return Promise.resolve();
+    if (dispatch.backend !== "container" || observed === undefined || !containerBackend.isObserved(observed.measured)) return Promise.resolve();
   }
   if (confirmation !== undefined) return confirmation;
   if (performance.now() < confirmationNotBefore) return Promise.resolve();
-  const observation = observeWindowsBackend("container");
+  const observation = observeWindowsBackend("container", "shell");
   const flight: Promise<void> = (async () => {
     let confirmedLoss = false;
     try {

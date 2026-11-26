@@ -67,7 +67,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
   private closedAlready = false;
   private admitInput: (() => void) | undefined;
   // Taken before the supervisor starts measuring the backend, so its failure reaches only that evidence.
-  private readonly backendObservation = observeWindowsBackend("container");
+  private readonly backendObservations = { common: observeWindowsBackend("container"), extension: observeWindowsBackend("container", "extension") };
   private resolveReady!: () => void;
   private rejectReady!: (error: Error) => void;
   private resolveCompletion!: (result: ProcessResult) => void;
@@ -184,7 +184,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
         this.observe({ type: "stopped", spawnPendingAtCancellation: frame.spawnPendingAtCancellation });
       } else if (frame.type === "error") {
         this.failureReceipt = true;
-        if (frame.backendUnavailable === true) reportWindowsBackendLoss(this.backendObservation);
+        if (frame.backendLoss) reportWindowsBackendLoss(this.backendObservations[frame.backendLoss]);
         if (frame.code === "cleanup-unverified") throw new MxcProcessCleanupError(frame.message);
         if (frame.code === "integrity") throw new MxcIntegrityError(frame.message);
         if (frame.code === "capability-unavailable") throw new MxcCapabilityUnavailableError(frame.message);

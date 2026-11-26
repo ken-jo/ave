@@ -222,7 +222,8 @@ describe("prepareMxcShellLaunch", () => {
     const home = String.raw`C:\private\home`;
     onDrive(home);
     relay();
-    const inherited = h.openRelay.getMockImplementation()!;
+    const inherited = h.openRelay.getMockImplementation();
+    if (!inherited) throw new Error("Missing relay fixture");
     h.openRelay.mockImplementation(async (...args) => {
       const opened = await inherited(...args);
       preparing.resolve();
@@ -492,15 +493,15 @@ describe("prepareMxcShellLaunch", () => {
     expect(h.openRelay).not.toHaveBeenCalled();
   });
 
-  it("refuses in fixed words, with no cause, when the launcher cannot be verified", async () => {
+  it("refuses an ambiguous hash read without reporting shared backend loss", async () => {
     relay();
-    h.wxcExec.mockRejectedValueOnce(new Error(String.raw`launcher D:\example\outside\wxc-exec.exe is not the pinned build`));
+    h.wxcExec.mockRejectedValueOnce(Object.assign(new Error(String.raw`could not read D:\example\outside\wxc-exec.exe`), { code: "EACCES" }));
     const lifecycle = createContainedShellLifecycle();
     const error: unknown = await prepareMxcShellLaunch(INPUT, lifecycle).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe("Contained shell launcher could not be verified on this installation");
     expect((error as Error).cause).toBeUndefined();
-    expect(reportWindowsBackendLoss).toHaveBeenCalledExactlyOnceWith(vi.mocked(observeWindowsBackend).mock.results[0]?.value);
+    expect(reportWindowsBackendLoss).not.toHaveBeenCalled();
     expect(await lifecycle.dispose()).toEqual([]);
     expect(h.openRelay).not.toHaveBeenCalled();
   });

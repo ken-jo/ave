@@ -1135,11 +1135,13 @@ async function sha256OfFile(path: string): Promise<string> {
 
 const verifiedLaunchers = new Map<string, { identity: string; verified: Promise<void> }>();
 
+export class MxcLauncherIntegrityError extends Error {}
+
 function getHostWxcExecFile(): { path: string; identity: string } {
   const path = wxcExecPathFor(getHostResources().resourcePath, process.arch);
-  if (path === undefined) throw new Error("Contained shell launcher is missing from this installation");
+  if (path === undefined) throw new MxcLauncherIntegrityError("Contained shell launcher is missing from this installation");
   const stats = lstatSync(path, { bigint: true, throwIfNoEntry: false });
-  if (stats?.isFile() !== true) throw new Error("Contained shell launcher is missing from this installation");
+  if (stats?.isFile() !== true) throw new MxcLauncherIntegrityError("Contained shell launcher is missing from this installation");
   return { path, identity: `${path}:${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}` };
 }
 
@@ -1150,18 +1152,21 @@ export function getHostWxcExecIdentity(): string {
 // The protected installation permits reusing the digest for the same file identity.
 export async function resolveHostWxcExecPath(expectedIdentity?: string): Promise<string> {
   const { path, identity } = getHostWxcExecFile();
-  if (expectedIdentity !== undefined && expectedIdentity !== identity) throw new Error("Contained shell launcher changed before verification");
+  if (expectedIdentity !== undefined && expectedIdentity !== identity) throw new MxcLauncherIntegrityError("Contained shell launcher changed before verification");
   let entry = verifiedLaunchers.get(path);
   if (entry?.identity !== identity) {
     const pinned = pinnedWxcExecSha256(process.arch);
     const verified = sha256OfFile(path).then((digest) => {
-      if (digest !== pinned) throw new Error(`Contained shell launcher ${path} is not the pinned build`);
+      if (digest !== pinned) throw new MxcLauncherIntegrityError(`Contained shell launcher ${path} is not the pinned build`);
+    }, (error: unknown) => {
+      if (verifiedLaunchers.get(path)?.verified === verified) verifiedLaunchers.delete(path);
+      throw error;
     });
     entry = { identity, verified };
     verifiedLaunchers.set(path, entry);
   }
   await entry.verified;
-  if (getHostWxcExecIdentity() !== identity) throw new Error("Contained shell launcher changed during verification");
+  if (getHostWxcExecIdentity() !== identity) throw new MxcLauncherIntegrityError("Contained shell launcher changed during verification");
   return path;
 }
 
