@@ -1624,7 +1624,7 @@ function getBuiltinShellSessionReadPolicyInSnapshot(userDataDir = _baseTrustedSe
 
 // Whether a user deny can match something strictly beneath `root`, so it withholds part of what a grant of `root` reads: a path
 // under it, or a pattern rooted at or above it (`~/.ave/**/*.json`). A class matches one character, so it reads as `?`, or as any
-// run when it may match a separator (it holds one, or is negated); the answer is "maybe" when the reach rests on a class.
+// run when it may match a separator (it holds one, or is negated); the answer is "maybe" for any deny that holds a class.
 function userDenyInside(entry: string, root: string): "certain" | "maybe" | undefined {
   const spelling = expandLeadingTilde(process.platform === "win32" ? expandWindowsEnvRefs(entry) : entry);
   const rootSegments = canonicalizePathForMatch(root).replace(/\/+$/u, "").split("/");
@@ -1641,8 +1641,8 @@ function userDenyInside(entry: string, root: string): "certain" | "maybe" | unde
     return reaches(0, 0);
   };
   if (!reachesWith((match) => (/[/\\]|^\[[!^]/u.test(match) ? "**" : "?"))) return undefined;
-  // A class read as matching nothing: the reach that survives does not rest on one.
-  return !/[[\]]/u.test(spelling) || reachesWith(() => "\uffff") ? "certain" : "maybe";
+  // Any class leaves what the deny withholds inexact in the shared grammar, wherever it sits.
+  return /[[\]]/u.test(spelling) ? "maybe" : "certain";
 }
 
 // The user-deny notices already shown, per session setup and Ave session: each rule is named once per read it withholds from.

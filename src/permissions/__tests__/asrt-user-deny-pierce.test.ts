@@ -198,6 +198,14 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
     if (restated) expect(config.denyRead).toContain(rule());
   });
 
+  it("on darwin, says Ave cannot tell what a bracket deny inside the pierce withholds", async () => {
+    await initializeWith([bracketInside()]);
+    setProcessPlatform("darwin");
+    const seen: string[] = [];
+    buildPerCommandSandboxCustomConfig({ allowRead: [certs(), corp()], denyRead: getDefaultSensitiveReadDenyPaths(), floorPierces: [certs()] }, notice => seen.push(notice));
+    expect(seen).toEqual([`Ave cannot tell whether your read deny ${bracketInside()} applies inside ${certs()}, which this launch reads; the launch keeps the rest of it and cannot read what the deny matches.`]);
+  });
+
   it.each([bracketElsewhere, bracketInside])("on linux, a bracket deny meets the Git quarantine refusal, not a user-deny refusal (%#)", async (rule) => {
     await initializeWith([rule()]);
     expect(() => readFor("linux")).toThrow("Linux Git quarantine cannot represent a filesystem deny pattern");
