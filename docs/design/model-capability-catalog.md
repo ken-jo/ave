@@ -552,6 +552,8 @@ decides:
   that raced a settings save can write one) stays in the cache for discovery, the
   judge's model chooser and every other reader; it is only not price evidence. Where
   nothing else prices the model the result is `endpoint-price-unavailable`.
+  A report passed without the address it was listed at is not evidence either; the
+  composer's pre-send estimate and the query loop both pass it.
 - A fallback's own cached report is not looked up; off its vendor's own base it is
   `endpoint-price-unavailable`.
 

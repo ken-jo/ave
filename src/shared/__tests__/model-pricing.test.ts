@@ -64,7 +64,7 @@ describe("parseResolvedModelPricing", () => {
 
 describe("resolveModelPricing — source order and provenance", () => {
   it("records why a name-matched proxy route without its own price is unknown", () => {
-    const proxy = { baseUrl: "https://proxy.example.test/v1" };
+    const proxy = { baseUrl: "https://proxy.example.test/v1", reportedAt: "https://proxy.example.test/v1/models" };
     const expected = { source: "unknown", reason: "endpoint-price-unavailable" };
     expect(resolveModelPricing("openai", "gpt-5.4", [], proxy)).toEqual(expected);
     expect(resolveModelPricing("openai", "gpt-5.4", [], {
@@ -282,9 +282,13 @@ describe("computeCost — cache and reasoning rates", () => {
 
 describe("resolveModelPricing — the endpoint's own price report", () => {
   const report = { prompt: "0.0000025", completion: "0.00001", inputCacheRead: "0.00000025", inputCacheWrite: "0.000003", internalReasoning: "0.0000004" };
+  // Where each route's model list is read: a report counts only with the address it came from.
+  const openRouterList = "https://openrouter.ai/api/v1/models";
+  const proxyRoute = { baseUrl: "https://proxy.invalid/v1", reportedAt: "https://proxy.invalid/v1/models" };
+  const foundryRoute = { baseUrl: "https://fixture.openai.azure.com/openai/v1", reportedAt: "https://fixture.openai.azure.com/openai/v1/models" };
 
   it("reads OpenRouter's USD-per-token strings as per-million rates", () => {
-    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [], { reported: report })).toEqual({
+    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [], { reported: report, reportedAt: openRouterList })).toEqual({
       source: "endpoint-report",
       rates: { inputPer1M: 2.5, outputPer1M: 10, cacheReadPer1M: 0.25, cacheWritePer1M: 3, reasoningPer1M: 0.4 },
     });
@@ -297,20 +301,26 @@ describe("resolveModelPricing — the endpoint's own price report", () => {
   });
 
   it("prices a route that does not establish the catalog's model from its report, not the name match", () => {
-    expect(resolveModelPricing("azure-foundry", "gpt-4o", [], { reported: report })).toMatchObject({ source: "endpoint-report" });
-    expect(resolveModelPricing("openai", "gpt-5.4", [], { baseUrl: "https://proxy.invalid/v1", reported: report }))
+    expect(resolveModelPricing("azure-foundry", "gpt-4o", [], { ...foundryRoute, reported: report })).toMatchObject({ source: "endpoint-report" });
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { ...proxyRoute, reported: report }))
       .toMatchObject({ source: "endpoint-report" });
+    // A report that does not say where it was listed is not evidence for any route.
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { baseUrl: proxyRoute.baseUrl, reported: report }))
+      .toEqual({ source: "unknown", reason: "endpoint-price-unavailable" });
+    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [], { reported: report }))
+      .toEqual({ source: "unknown", reason: "endpoint-price-unavailable" });
   });
 
   it("keeps the catalog where the route establishes the model and the catalog prices it", () => {
-    expect(resolveModelPricing("openai", "gpt-5.4", [], { reported: report })).toMatchObject({ source: "model-catalog", catalogEntry: "openai/gpt-5.4" });
-    expect(resolveModelPricing("openai", "gpt-5.4", [], { baseUrl: "https://api.openai.com/v1", reported: report }))
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { reported: report, reportedAt: "https://api.openai.com/v1/models" }))
+      .toMatchObject({ source: "model-catalog", catalogEntry: "openai/gpt-5.4" });
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { baseUrl: "https://api.openai.com/v1", reported: report, reportedAt: "https://api.openai.com/v1/models" }))
       .toMatchObject({ source: "model-catalog" });
   });
 
   it("takes the user's correction over the report", () => {
     const override = { vendor: "openrouter", model: "lab/unlisted-reasoner", inputPer1M: 1, outputPer1M: 2 };
-    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [override], { reported: report })).toMatchObject({ source: "user" });
+    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [override], { reported: report, reportedAt: openRouterList })).toMatchObject({ source: "user" });
   });
 
   it.each([
@@ -319,13 +329,13 @@ describe("resolveModelPricing — the endpoint's own price report", () => {
     [{ prompt: "0.000001" }],
     [{ prompt: "free", completion: "0.000002" }],
   ])("is not a price: %j", (reported) => {
-    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [], { reported })).toEqual({ source: "unknown" });
+    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [], { reported, reportedAt: openRouterList })).toEqual({ source: "unknown" });
   });
 
   it("rejects non-finite endpoint rates and rates that overflow during scaling", () => {
     for (const prompt of ["1e309", "1e308", "1.8e302"]) {
       expect(resolveModelPricing("openai", "gpt-5.4", [], {
-        baseUrl: "https://proxy.invalid/v1",
+        ...proxyRoute,
         reported: { prompt, completion: "0.000001" },
       })).toEqual({ source: "unknown", reason: "endpoint-price-unavailable" });
     }
@@ -343,7 +353,7 @@ describe("resolveModelPricing — the endpoint's own price report", () => {
   });
 
   it("drops an extra price that does not parse instead of the whole report", () => {
-    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [], { reported: { prompt: "1e-6", completion: "0.000002", inputCacheRead: "n/a" } }))
+    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [], { reportedAt: openRouterList, reported: { prompt: "1e-6", completion: "0.000002", inputCacheRead: "n/a" } }))
       .toEqual({ source: "endpoint-report", rates: { inputPer1M: 1, outputPer1M: 2 } });
   });
 

@@ -261,9 +261,7 @@ export function resolveModelPricing(
   const reportBase = served === undefined
     ? route?.baseUrl?.trim() || vendorDefaultApiBase(vendor)
     : served.kind === "unknown" ? undefined : served.base;
-  const reportApplies = served === undefined && route?.reportedAt === undefined
-    ? true
-    : route?.reportedAt !== undefined && reportBase !== undefined && urlIsUnderBase(route.reportedAt, reportBase);
+  const reportApplies = route?.reportedAt !== undefined && reportBase !== undefined && urlIsUnderBase(route.reportedAt, reportBase);
   const reportedRates = route?.reported !== undefined && reportApplies
     ? endpointTokenRates(route.reported)
     : undefined;

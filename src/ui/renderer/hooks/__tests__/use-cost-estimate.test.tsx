@@ -182,10 +182,19 @@ describe("useCostEstimate — prices through the catalog, with provenance", () =
   it("prices from the route's own price report where the catalog cannot", () => {
     const { result } = renderHook(() => useCostEstimate({
       entries: atPrompt(1_000_000), draft: { text: "" }, llmVendor: "openrouter", llmModel: "lab/unlisted-reasoner", maxOutputTokens: 1_000_000,
-      pricingRoute: { reported: { prompt: "0.000001", completion: "0.000002" } },
+      pricingRoute: { reported: { prompt: "0.000001", completion: "0.000002" }, reportedAt: "https://openrouter.ai/api/v1/models" },
     }));
     expect(result.current.costEstimate).toMatchObject({ pricingKnown: true, pricingSource: "endpoint-report" });
     expect(result.current.costEstimate.outputCost).toBeCloseTo(2, 9);
+  });
+
+  it("shows no price from a model list read at another address than the route it is filed under", () => {
+    const { result } = renderHook(() => useCostEstimate({
+      entries: atPrompt(1_000_000), draft: { text: "" }, llmVendor: "openrouter", llmModel: "lab/unlisted-reasoner", maxOutputTokens: 1_000_000,
+      pricingRoute: { reported: { prompt: "0.000001", completion: "0.000002" }, reportedAt: "https://proxy.invalid/v1/models" },
+    }));
+    expect(result.current.costEstimate).toMatchObject({ pricingKnown: false });
+    expect(result.current.costEstimate.pricingSource).toBeUndefined();
   });
 
   it("says the catalog listed a zero instead of showing $0", () => {
