@@ -15,9 +15,10 @@ const io = vi.hoisted(() => ({
 
 vi.unmock("../../shared/windows-drive-locality.js");
 vi.mock("node:path", async (importOriginal) => {
-  const path = await importOriginal<typeof import("node:path")>();
-  return { ...path, ...path.win32 };
+  const { simulatedDrivePath } = await import("../../__tests__/support/simulated-win32-drive.js");
+  return simulatedDrivePath(await importOriginal());
 });
+vi.mock("../../permissions/generated/srt-win-build-receipts.js", () => ({ default: {} }));
 vi.mock("node:fs", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:fs")>(),
   existsSync: io.helperExists,
@@ -25,10 +26,6 @@ vi.mock("node:fs", async (importOriginal) => ({
   realpathSync: Object.assign(vi.fn(), { native: io.realpath }),
 }));
 vi.mock("node:child_process", () => ({ execFile: vi.fn(), spawnSync: io.spawnHelper }));
-vi.mock("../../shared/windows-native-host.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../shared/windows-native-host.js")>(),
-  runWindowsNative: (operation: () => unknown) => operation(),
-}));
 vi.mock("electron", () => ({
   app: {
     isPackaged: false,
@@ -71,6 +68,11 @@ const PACKAGED_RESOURCES = "C:\\bundle\\resources";
 beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
+  // Register after the native guard so the drive query can reach the mocked I/O.
+  vi.doMock("../../shared/windows-native-host.js", async (importOriginal) => ({
+    ...await importOriginal<typeof import("../../shared/windows-native-host.js")>(),
+    runWindowsNative: (operation: () => unknown) => operation(),
+  }));
   vi.stubGlobal("process", Object.create(process, {
     platform: { value: "win32" },
     resourcesPath: { value: PACKAGED_RESOURCES },
@@ -84,7 +86,10 @@ beforeEach(() => {
   ) => host);
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.doUnmock("../../shared/windows-native-host.js");
+  vi.unstubAllGlobals();
+});
 
 describe("desktop host resource startup", () => {
   it.each([false, true])("configures resources before early boot and host construction (packaged: %s)", async (isPackaged) => {
