@@ -5,7 +5,6 @@ import { chmodSync, closeSync, linkSync, existsSync, mkdirSync, mkdtempSync, ope
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { afterQueuedCallbacks } from "../../../__tests__/support/deferred.js";
@@ -2221,8 +2220,20 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
 
 const runCommand = promisify(execFile);
 
+async function readVolumeHolders(mountPoint: string): Promise<string> {
+  // Query the mounted filesystem as a whole, including process working directories.
+  try {
+    const { stdout, stderr } = await runCommand("/usr/sbin/lsof", ["-nP", "+f", "--", mountPoint], { timeout: 5_000 });
+    return [stdout, stderr].filter(Boolean).join("\n");
+  } catch (failure) {
+    const error = failure as Error & { code?: number; stdout?: string; stderr?: string };
+    return [error.stdout, error.stderr].filter(Boolean).join("\n") || (error.code === 1 ? "No visible holders" : error.message);
+  }
+}
+
 async function detachTestVolume(mountPoint: string): Promise<void> {
-  const attempts = 5;
+  const attempts = 2;
+  let previousHolders = "";
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       await runCommand("hdiutil", ["detach", mountPoint], { timeout: 5_000 });
@@ -2230,15 +2241,12 @@ async function detachTestVolume(mountPoint: string): Promise<void> {
     } catch (error) {
       const stderr = (error as { stderr?: string }).stderr;
       if (!/^hdiutil: (?:couldn't eject "[^"]+"|detach failed) - Resource busy\s*$/m.test(stderr ?? "")) throw error;
+      const holders = await readVolumeHolders(mountPoint);
       if (attempt === attempts) {
-        // Query the mounted filesystem as a whole, including process working directories.
-        const holders = await runCommand("/usr/sbin/lsof", ["-nP", "+f", "--", mountPoint], { timeout: 5_000 })
-          .then(({ stdout, stderr }) => [stdout, stderr].filter(Boolean).join("\n"))
-          .catch((error: Error & { code?: number; stdout?: string; stderr?: string }) =>
-            error.stdout || error.stderr || (error.code === 1 ? "No visible holders" : error.message));
-        throw new Error(`Test volume is busy after ${attempts} detach attempts. Volume holders:\n${holders}`, { cause: error });
+        throw new Error(`Test volume is busy after ${attempts} detach attempts.\nHolders before retry:\n${previousHolders}\nHolders after retry:\n${holders}`, { cause: error });
       }
-      await delay(200 * attempt);
+      previousHolders = holders;
+      // If holders remain, the fixture has no release event to wait on. Allow one immediate retry.
     }
   }
 }

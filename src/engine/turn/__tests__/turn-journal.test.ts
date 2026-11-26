@@ -171,9 +171,8 @@ describe("append cost on a 60-round turn", () => {
     const syncWrite = vi.mocked(fs.writeFileSync);
     const appendBytes: number[] = [];
     const snapshotBytes: number[] = [];
+    const snapshotOperations: string[] = [];
     let appendSyncs = 0;
-    let snapshotSyncs = 0;
-    let snapshotDirectorySyncs = 0;
 
     try {
       for (let i = 0; i < 200; i += 1) {
@@ -185,6 +184,10 @@ describe("append cost on a 60-round turn", () => {
       syncFsync.mockClear();
       syncWrite.mockClear();
       rename.mockClear();
+      rename.mockImplementation(async (from, to) => {
+        await actualAsync.rename(from, to);
+        if (to === snapshot) snapshotOperations.push("rename");
+      });
       open.mockImplementation(async (...args) => {
         const handle = await actualAsync.open(...args);
         const [path, flags] = args;
@@ -204,7 +207,7 @@ describe("append cost on a 60-round turn", () => {
           const sync = handle.sync.bind(handle);
           handle.sync = async () => {
             await sync();
-            snapshotDirectorySyncs++;
+            snapshotOperations.push("directory fsync");
           };
         } else if (typeof path === "string" && dirname(path) === dirname(snapshot) && flags === "wx") {
           const write = handle.writeFile.bind(handle);
@@ -212,11 +215,12 @@ describe("append cost on a 60-round turn", () => {
             if (typeof data !== "string") throw new TypeError("Expected snapshot text");
             await write(data, options);
             snapshotBytes.push(Buffer.byteLength(data));
+            snapshotOperations.push("write");
           };
           const sync = handle.sync.bind(handle);
           handle.sync = async () => {
             await sync();
-            snapshotSyncs++;
+            snapshotOperations.push("file fsync");
           };
         }
         return handle;
@@ -234,18 +238,21 @@ describe("append cost on a 60-round turn", () => {
         expectedRows.push(assistant, result);
         outcomes.push(await mm.sessions.appendSessionProgress(SESSION, history.getMessages()));
       }
-      const partialContent = "w".repeat(20_000);
-      for (let i = 0; i < 20; i += 1) {
-        await mm.sessions.writeTurnPartial(SESSION, 1, { messageId: "p", content: partialContent, updatedAt: i });
+      const snapshotCount = 20;
+      const partialText = "w".repeat(20_000);
+      const publicationOrder = ["write", "file fsync", "rename"];
+      if (process.platform !== "win32") publicationOrder.push("directory fsync");
+      for (let round = 1; round <= snapshotCount; round += 1) {
+        snapshotOperations.length = 0;
+        await mm.sessions.writeTurnPartial(SESSION, 1, { messageId: "p", content: `${round}: ${partialText}`, updatedAt: round });
+        expect(snapshotOperations, `snapshot ${round}`).toEqual(publicationOrder);
       }
 
       expect(outcomes).toEqual(Array(60).fill("appended"));
       expect(appendBytes).toHaveLength(60);
       expect(appendSyncs).toBe(60);
-      expect(snapshotBytes).toHaveLength(20);
-      expect(snapshotSyncs).toBe(20);
-      expect(snapshotDirectorySyncs).toBe(process.platform === "win32" ? 0 : 20);
-      expect(rename.mock.calls.map(([, destination]) => destination)).toEqual(Array(20).fill(snapshot));
+      expect(snapshotBytes).toHaveLength(snapshotCount);
+      expect(rename.mock.calls.map(([, destination]) => destination)).toEqual(Array(snapshotCount).fill(snapshot));
       expect(syncWrite).not.toHaveBeenCalled();
       expect(syncFsync).not.toHaveBeenCalled();
 
@@ -264,18 +271,20 @@ describe("append cost on a 60-round turn", () => {
       }
       expect(appendBytes.reduce((sum, bytes) => sum + bytes, 0)).toBe(current.length - initial.length);
       for (const bytes of snapshotBytes) {
-        expect(bytes).toBeLessThanOrEqual(Buffer.byteLength(partialContent) + 256);
+        expect(bytes).toBeLessThanOrEqual(Buffer.byteLength(partialText) + 256);
       }
 
-      expect(mm.sessions.loadSession(SESSION)?.at(-1)).toMatchObject({
-        content: partialContent,
-        meta: { interrupted: true, interruptedBy: "host-exit" },
+      const recovered = mm.sessions.loadSession(SESSION)?.at(-1);
+      expect(recovered).toMatchObject({
+        meta: { messageId: "p", createdAt: snapshotCount, interrupted: true, interruptedBy: "host-exit" },
       });
+      expect(recovered).toMatchObject({ content: `${snapshotCount}: ${partialText}` });
       await mm.sessions.saveSession(SESSION, history.getMessages());
       expect(new Set((mm.sessions.loadSession(SESSION) as Array<{ meta: { messageId: string } }>).map((m) => m.meta.messageId)).size)
         .toBe(history.length);
     } finally {
       open.mockRestore();
+      rename.mockRestore();
       await cleanupTmpDir(dir);
     }
   });
