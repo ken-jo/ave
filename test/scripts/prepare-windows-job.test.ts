@@ -19,6 +19,7 @@ import {
   windowsPathKindPath, windowsPathKindReceipt, windowsPathKindReceiptPath, windowsPathKindRustflags, windowsPathKindToolPaths,
   verifyWindowsPathKindReceipt,
 } from "../../scripts/lib/windows-path-kind-build.mjs";
+import { windowsPeImageDigest } from "../../scripts/lib/windows-pe-image-digest.mjs";
 
 const roots: string[] = [];
 const OLD = new Date("2026-01-01T00:00:00Z");
@@ -708,5 +709,44 @@ describe("Windows CI path helper restore", () => {
     expect(workflow.split(restore)).toHaveLength(3);
     expect(readFileSync(resolve("scripts/build-windows-path-kind.mjs"), "utf8"))
       .toContain("binary_sha256=${binarySha256}\nreceipt_sha256=${receiptSha256}\n");
+  });
+});
+
+describe("signing-stable Windows helper image digest", () => {
+  const SECURITY = 88 + 112 + 32;
+  const withTable = (image: Buffer, start = image.length, size = 16, trailing = 0) => {
+    const result = Buffer.concat([image, Buffer.alloc(start - image.length), Buffer.alloc(size, 0x5a), Buffer.alloc(trailing)]);
+    result.writeUInt32LE(0xbeef, 88 + 64);
+    result.writeUInt32LE(start, SECURITY);
+    result.writeUInt32LE(size + trailing, SECURITY + 4);
+    return result;
+  };
+
+  it("keeps the digest across signing and changes it for any image byte", () => {
+    const image = pathKindPe();
+    const digest = windowsPeImageDigest(image);
+    expect(windowsPeImageDigest(withTable(image))).toBe(digest);
+    const checksum = Buffer.from(image);
+    checksum.writeUInt32LE(7, 88 + 64);
+    expect(windowsPeImageDigest(checksum)).toBe(digest);
+    for (const offset of [0x208, 72, 0x3ff]) {
+      const changed = Buffer.from(image);
+      changed[offset] ^= 1;
+      expect(windowsPeImageDigest(changed), String(offset)).not.toBe(digest);
+    }
+    const unaligned = Buffer.concat([image, Buffer.from([1, 2, 3])]);
+    expect(windowsPeImageDigest(withTable(unaligned, image.length + 8))).toBe(windowsPeImageDigest(unaligned));
+  });
+
+  it("refuses a certificate table that hides image bytes or does not end the file", () => {
+    const image = pathKindPe();
+    for (const candidate of [
+      (() => { const inside = Buffer.from(image); inside.writeUInt32LE(0x200, SECURITY); inside.writeUInt32LE(0x200, SECURITY + 4); return inside; })(), // covers the section
+      withTable(image, image.length + 4), // unaligned
+      (() => { const extra = withTable(image); extra.writeUInt32LE(8, SECURITY + 4); return extra; })(), // ends before the file
+      Buffer.from("MZ not an image"),
+    ]) {
+      expect(() => windowsPeImageDigest(candidate)).toThrow("not a PE image");
+    }
   });
 });
