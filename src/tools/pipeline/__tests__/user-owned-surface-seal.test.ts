@@ -1,5 +1,6 @@
 import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { describe, expect, it } from "vitest";
+import { answeredApprovalDecision } from "../../../__tests__/support/answering-approval-gate.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { abortSupersedesApprovalDecision } from "../approval-outcome.js";
 import {
@@ -78,7 +79,7 @@ describe("user-owned surface approval across the quit seal", () => {
   it("still ends on the quit when the fallback card was allowed", async () => {
     const { answer, asked, quit, resolution } = surfaceFallback();
     await asked;
-    answer.resolve({ requestId: "fallback-card", choice: "allow-once" });
+    answer.resolve(await answeredApprovalDecision({ requestId: "fallback-card", choice: "allow-once" }));
     quit.abort(new HostExitAbortError());
     const resolved = await resolution;
     expect(abortSupersedesApprovalDecision(quit.signal, resolved.decision)).toBe(true);

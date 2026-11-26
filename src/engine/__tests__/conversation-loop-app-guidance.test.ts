@@ -112,7 +112,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
     const permissions = new PermissionManager(join(root, "permissions.json"));
     permissions.setMode("allow");
     const hooks = new ScriptHookManager();
-    const hookApproval = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-once" as const }));
+    const hookApproval = answeringRequestAndWait<ApprovalRequestInput>(() => ({ choice: "allow-once" }));
     hooks.setCommandAuthorizer(createHookCommandAuthorizer({ permissionManager: permissions, approvalGate: { requestAndWait: hookApproval } }));
     hooks.setTrustedRegistry([], [{ id: "stop-guidance", event: "Stop", source: "config", configDir: resolve(__dirname, "../../../test/fixtures/hooks"),
       command: ["node", resolve(__dirname, "../../../test/fixtures/hooks/contract-command.cjs"), "echo"], timeoutMs: 5000 }]);

@@ -1,6 +1,7 @@
 /** The review fallback card of a user-owned surface, answered while the policy moves (pending-answer-policy.ts): a sibling stage's
  * "Allow for this run" leaves the answer standing; any other change, and a call the policy now denies or forces, refuses it. */
 import { describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../../permissions/approval-gate.js";
 import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import type { PermissionCheckResult, PermissionManager } from "../../../permissions/permission-manager.js";
@@ -47,12 +48,12 @@ async function answerFallback(change: Change, rechecked: Partial<PermissionCheck
   const gate = {
     consumeUserOwnedSurfaceChoice: () => "auto",
     allowsPolicyTransition: () => false,
-    requestAndWait: async (request: ApprovalRequestInput): Promise<ApprovalDecision> => {
+    requestAndWait: answeringRequestAndWait((request: ApprovalRequestInput) => {
       cards.push(request);
       if (change !== "none") state.generation += 1;
       if (change === "memory rule") state.memoryRules += 1;
-      return { requestId: request.id, choice: fallbackChoice };
-    },
+      return { choice: fallbackChoice };
+    }),
   } as unknown as ApprovalGate;
   const request = {
     id: "surface-card", sessionId: "stage-session", category: "tool", kind: "tool", toolName: "browser_click", toolCategory: "write",

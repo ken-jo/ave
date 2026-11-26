@@ -1,5 +1,6 @@
 import { dispatchPermissionReviewerCommandWithRewire } from "../permission-slash.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,10 +42,7 @@ function makeDeps() {
     }),
   };
   const approvalGate = {
-    requestAndWait: vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "allow-once" as const,
-    })),
+    requestAndWait: answeringRequestAndWait(() => ({ choice: "allow-once" })),
   };
   const auditLogger = {
     isPermissionAuditChainReady: vi.fn(() => true),

@@ -3,6 +3,7 @@ import { useConfigurationOwner } from "../../../__tests__/support/configuration-
 useConfigurationOwner();
 
 import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
+import { answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { buildChainedEntries } from "../../../audit/hmac-chain.js";
 import { tmpdir } from "node:os";
@@ -170,10 +171,7 @@ function makeDeps(options: {
       addSessionAdditionalDirectory: vi.fn(),
     },
     approvalGate: {
-      requestAndWait: vi.fn(async (req: { id: string }) => ({
-        requestId: req.id,
-        choice: options.approvalChoice ?? "allow-once",
-      })),
+      requestAndWait: answeringRequestAndWait(() => ({ choice: options.approvalChoice ?? "allow-once" })),
       resolve: vi.fn((_requestId: string, decision: unknown) => decision),
       resolveFromDesktopRendererWithFreshIdentity: vi.fn((_requestId: string, decision: unknown) => decision),
       capturePendingRequestIdentityGuard: vi.fn(() => ({ refresh: vi.fn(async () => true), isCurrent: vi.fn(() => true) })),

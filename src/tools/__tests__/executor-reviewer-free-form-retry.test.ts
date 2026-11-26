@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 import { createDynamicTool } from "../base.js";
@@ -238,10 +239,7 @@ describe("ToolExecutor foreground reviewer free-form retry boundaries", () => {
         reason: "valid fresh result immediately before caller abort",
       };
     });
-    const requestAndWait = vi.fn(async () => ({
-      requestId: "must-not-open",
-      choice: "allow-once" as const,
-    }));
+    const requestAndWait = answeringRequestAndWait(() => ({ requestId: "must-not-open", choice: "allow-once" }));
     const statuses: string[] = [];
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-reviewer-abort-"));
     try {

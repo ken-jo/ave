@@ -404,9 +404,9 @@ describe("one terminal row per plugin-emitted invocation answered at the desk", 
   it("records a failing directory card as the host's refusal and never as an allow", async () => {
     const outside = join(root, "outside");
     await mkdir(outside);
-    const requestAndWait = vi.fn(async (request: ApprovalRequestInput) => {
+    const requestAndWait = answeringRequestAndWait((request: ApprovalRequestInput) => {
       if (request.kind === "out-of-allowed-dir") throw new Error("approval surface crashed");
-      return { requestId: request.id, choice: "allow-once" as const };
+      return { choice: "allow-once" };
     });
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     const [result] = await executor.executeAll([{ id: "plugin-dir-gate-error", name: "write_file", input: { path: join(outside, "gate.txt"), content: "gate" } }], {

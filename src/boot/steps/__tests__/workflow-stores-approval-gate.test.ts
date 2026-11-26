@@ -1,6 +1,7 @@
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
 /** Drive setupWorkflowStores to verify first-use approval shares the executor’s gate instance. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -54,10 +55,10 @@ function makeCtx(): { ctx: BootContext; registry: InstanceType<typeof ToolRegist
   const probe: GateProbe = { requests: [] };
   const approvalGate = {
     setConversationTitleResolver: vi.fn(),
-    requestAndWait: async (req: { toolName?: string; args?: unknown }) => {
+    requestAndWait: answeringRequestAndWait((req: { id: string; toolName?: string; args?: unknown }) => {
       probe.requests.push({ toolName: req.toolName, args: req.args });
-      return { choice: "allow" };
-    },
+      return { choice: "allow-once" };
+    }),
   };
   const ctx = {
       host: createBootHostFixture(),
@@ -196,7 +197,7 @@ describe("setupWorkflowStores — ask_user_question on a headless turn", () => {
           },
         },
       }),
-      approvalGate: { setConversationTitleResolver: vi.fn(), requestAndWait: async () => ({ choice: "allow" }) },
+      approvalGate: { setConversationTitleResolver: vi.fn(), requestAndWait: answeringRequestAndWait(() => ({ choice: "allow-once" })) },
       toolRegistry: registry,
       settingsService: { get: () => undefined, getAll: () => ({}) },
     } as unknown as BootContext;
@@ -259,7 +260,7 @@ describe("setupWorkflowStores — web_fetch transport", () => {
     const ctx = {
       host: createBootHostFixture(),
       getMainWindow: () => null,
-      approvalGate: { setConversationTitleResolver: vi.fn(), requestAndWait: async () => ({ choice: "allow" }) },
+      approvalGate: { setConversationTitleResolver: vi.fn(), requestAndWait: answeringRequestAndWait(() => ({ choice: "allow-once" })) },
       networkFetch: plain,
       singleHopNetworkFetch: singleHop,
       toolRegistry: registry,
