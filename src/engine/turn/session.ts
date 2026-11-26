@@ -161,9 +161,21 @@ export function revokeWorkspaceRoot(
   removedRoot: string,
   options: WorkspaceRootRevocationOptions = {},
 ): WorkspaceRootRevocationResult {
+  return planWorkspaceRootRevocation(self, removedRoot, options)();
+}
+
+/**
+ * Judge a revocation without changing anything and return the change to apply. Judging several owners in one decision
+ * and applying only after it returns leaves no owner half revoked when a later judgment fails.
+ */
+export function planWorkspaceRootRevocation(
+  self: ConversationLoop,
+  removedRoot: string,
+  options: WorkspaceRootRevocationOptions = {},
+): () => WorkspaceRootRevocationResult {
   const normalizedRoot = normalizeProjectString(removedRoot);
   if (!normalizedRoot) {
-    return { sessionDirectoriesRemoved: 0, turnDirectoriesRemoved: 0, projectRebound: false };
+    return () => ({ sessionDirectoriesRemoved: 0, turnDirectoriesRemoved: 0, projectRebound: false });
   }
   const previousSessionDirectories = [...self.sessionAdditionalDirectories];
   const previousTurnDirectories = [...self.turnAdditionalDirectories];
@@ -179,6 +191,27 @@ export function revokeWorkspaceRoot(
       projectNeedsReauthorization: Boolean(previousProjectRoot && isRevoked(previousProjectRoot)),
     };
   });
+  return () => applyWorkspaceRootRevocation(self, {
+    ownsSession, retainedSessionDirectories, retainedTurnDirectories, projectNeedsReauthorization,
+    previousSessionDirectories, previousTurnDirectories, previousProjectRoot, previousProjectName, previousProjectWasDefault,
+  });
+}
+
+function applyWorkspaceRootRevocation(self: ConversationLoop, plan: {
+  ownsSession: boolean;
+  retainedSessionDirectories: string[];
+  retainedTurnDirectories: string[];
+  projectNeedsReauthorization: boolean;
+  previousSessionDirectories: string[];
+  previousTurnDirectories: string[];
+  previousProjectRoot: string | null;
+  previousProjectName: string | null;
+  previousProjectWasDefault: ConversationLoop["sessionProjectIsDefault"];
+}): WorkspaceRootRevocationResult {
+  const {
+    ownsSession, retainedSessionDirectories, retainedTurnDirectories, projectNeedsReauthorization,
+    previousSessionDirectories, previousTurnDirectories, previousProjectRoot, previousProjectName, previousProjectWasDefault,
+  } = plan;
   if (ownsSession) self.revokeProjectWork();
 
   self.turnAdditionalDirectories = retainedTurnDirectories;

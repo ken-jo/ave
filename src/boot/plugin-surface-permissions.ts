@@ -52,24 +52,26 @@ export function createPluginSurfacePermissionScope(
       removedRoot: string,
       revocation: { readonly preserveRoots?: readonly string[] } = {},
     ): { sessionDirectoriesRemoved: number; turnDirectoriesRemoved: number } {
-      return withLocalityDecision(() => {
+      // Judge every owner's grants first; the live map changes only once the whole judgment has succeeded.
+      const plan = withLocalityDecision(() => {
         const isRevoked = createWorkspaceRootRevocationFilter(
           removedRoot,
           revocation.preserveRoots ?? [],
         );
-        let sessionDirectoriesRemoved = 0;
-        for (const [subject, directories] of sessionAdditionalDirectories) {
-          const retained = directories.filter((directory) => !isRevoked(directory));
-          if (retained.length === directories.length) continue;
-          sessionDirectoriesRemoved += directories.length - retained.length;
-          if (retained.length === 0) sessionAdditionalDirectories.delete(subject);
-          else sessionAdditionalDirectories.set(subject, retained);
-        }
-        if (sessionDirectoriesRemoved > 0) options.onSessionDirectoriesRevoked?.();
-        // Turn grants die with their invocation; only session grants are durable sweep targets.
-        return { sessionDirectoriesRemoved, turnDirectoriesRemoved: 0 };
+        return [...sessionAdditionalDirectories].map(([subject, directories]) => ({
+          subject, directories, retained: directories.filter((directory) => !isRevoked(directory)),
+        }));
       });
-
+      let sessionDirectoriesRemoved = 0;
+      for (const { subject, directories, retained } of plan) {
+        if (retained.length === directories.length) continue;
+        sessionDirectoriesRemoved += directories.length - retained.length;
+        if (retained.length === 0) sessionAdditionalDirectories.delete(subject);
+        else sessionAdditionalDirectories.set(subject, retained);
+      }
+      if (sessionDirectoriesRemoved > 0) options.onSessionDirectoriesRevoked?.();
+      // Turn grants die with their invocation; only session grants are durable sweep targets.
+      return { sessionDirectoriesRemoved, turnDirectoriesRemoved: 0 };
     },
     createPermissionContext(
       context: PluginToolInvocationContext,

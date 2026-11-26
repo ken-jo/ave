@@ -107,7 +107,7 @@ import { errorMessage } from "../shared/error-message.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import type { ApprovalSurface } from "../shared/authorization-required.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
-import { withLocalityDecision } from "../shared/local-path-io.js";
+import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { t } from "../i18n/index.js";
 import { windowsDenyUnenforceableAtBoot, windowsObligationsApply } from "./admitted-obligation.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
@@ -569,7 +569,8 @@ function pathGrantRemovalMatcher(root: string, preserveRoots: readonly string[] 
         return [];
       }
       return [{ canonical, raw }];
-    } catch {
+    } catch (error) {
+      rethrowLocalityFailure(error);
       return [];
     }
   });
@@ -1420,16 +1421,17 @@ export class PermissionManager {
       });
     }));
     // Reconcile by scope on every retry, not only by patterns removed in this disk pass. A prior attempt may have committed the file shrink and then thrown while broadcasting/revoking bearers; the retry must still remove stale live cache entries and re-run the revoke signal.
-    withLocalityDecision(() => {
+    // Judge first, then change the live caches, so a failed judgment leaves both untouched.
+    const { rules, revokedAllows } = withLocalityDecision(() => {
       const isUnderRoot = pathGrantRemovalMatcher(root, options?.preserveRoots);
       const shouldRevoke = (pattern: string): boolean => prunedPatterns.has(pattern) || isUnderRoot(pattern);
-      this.rules = this.rules.filter(
-        (r) => !(r.action === "allow" && !r.source && shouldRevoke(r.pattern)),
-      );
-      for (const pattern of [...this.alwaysAllowed.keys()]) {
-        if (shouldRevoke(pattern)) this.alwaysAllowed.delete(pattern);
-      }
+      return {
+        rules: this.rules.filter((r) => !(r.action === "allow" && !r.source && shouldRevoke(r.pattern))),
+        revokedAllows: [...this.alwaysAllowed.keys()].filter(shouldRevoke),
+      };
     });
+    this.rules = rules;
+    for (const pattern of revokedAllows) this.alwaysAllowed.delete(pattern);
 
     this.policyGeneration += 1;
     this.broadcastConfigChanged?.();

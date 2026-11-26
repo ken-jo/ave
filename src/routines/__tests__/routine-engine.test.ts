@@ -274,6 +274,7 @@ describe("RoutineEngine workspace lifecycle", () => {
     const loop = {
       ...makeLoop(),
       revokeWorkspaceRoot,
+      planWorkspaceRootRevocation: (root: string, options: unknown) => () => revokeWorkspaceRoot(root, options),
       runTurn: vi.fn(() => new Promise<{
         text: string;
         toolCalls: never[];
@@ -328,11 +329,9 @@ describe("RoutineEngine workspace lifecycle", () => {
     }));
     const engine = new RoutineEngine({} as never);
     const activeLoops = (engine as unknown as {
-      activeLoops: Set<{ revokeWorkspaceRoot: ReturnType<typeof vi.fn> }>;
+      activeLoops: Set<{ planWorkspaceRootRevocation: () => () => unknown }>;
     }).activeLoops;
-    activeLoops.add({ revokeWorkspaceRoot: first });
-    activeLoops.add({ revokeWorkspaceRoot: failing });
-    activeLoops.add({ revokeWorkspaceRoot: last });
+    for (const revoke of [first, failing, last]) activeLoops.add({ planWorkspaceRootRevocation: () => () => revoke() });
 
     let thrown: unknown;
     try {

@@ -1,5 +1,6 @@
 /** Spawn isolated child history with scoped tools, a host-assigned round budget, labeled approval prompts, and streamed status.
  * Never expose agent_spawn to children or mutate the parent loop's state. */
+import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import type { ListSessionsOptions, RestoredSubAgentSession, SessionListEntry } from "../memory/session-repository.js";
 import {
   SUBAGENT_MAX_ROUNDS_DEFAULT,
@@ -1079,8 +1080,9 @@ export class SubAgentRunner {
   } {
     let canonicalRoot: string;
     try {
-      canonicalRoot = canonicalizePathForMatch(root);
-    } catch {
+      canonicalRoot = withLocalityDecision(() => canonicalizePathForMatch(root));
+    } catch (error) {
+      rethrowLocalityFailure(error);
       return { activeChildrenVisited: 0, liveScopesRevoked: 0 };
     }
 
