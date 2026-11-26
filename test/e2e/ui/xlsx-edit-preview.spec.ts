@@ -4,7 +4,6 @@ import type { WebContents } from "electron";
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createHash, randomBytes } from "node:crypto";
-import { once } from "node:events";
 import JSZip from "jszip";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -15,7 +14,7 @@ import * as XLSX from "xlsx";
 import { offsetWorkbook } from "../../../src/__tests__/support/table-document-fixtures.js";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
-import { prepareWorkbookPublicationBuild, renderWorkbookCommand } from "./xlsx-publication-barrier.js";
+import { FIXTURE_DEADLINES, prepareWorkbookPublicationBuild, renderWorkbookCommand, withinDeadline } from "./xlsx-publication-barrier.js";
 
 test("edited workbook shows a recalculation badge through the real viewer", async () => {
   expect(builtMainExists()).toBe(true);
@@ -230,14 +229,14 @@ test("approved agent edits stream into the read-only workbook panel", async () =
   settings.features = { ...(settings.features as Record<string, unknown>), osToolSandbox: true };
   let barrier: ReturnType<typeof prepareWorkbookPublicationBuild> | undefined;
   let ctx: Awaited<ReturnType<typeof launchSeededElectron>> | undefined;
-  let processClosed: Promise<unknown> | undefined;
   const cleanupFailures: unknown[] = [];
   let bodyFailure: { error: unknown } | undefined;
   try {
     const publicationBarrier = prepareWorkbookPublicationBuild(REPO_ROOT, directory);
     barrier = publicationBarrier;
-    ctx = await launchSeededElectron({ sessionTitle: "Agent document observation", settings, historyRows: [], mainEntry: publicationBarrier.mainEntry,
-      onLaunched: (app) => { processClosed = once(app.process(), "close"); } });
+    ctx = await withinDeadline(launchSeededElectron({ sessionTitle: "Agent document observation", settings, historyRows: [],
+      mainEntry: publicationBarrier.mainEntry, onLaunched: (app) => publicationBarrier.own(app.process()) }),
+    FIXTURE_DEADLINES.startupMs, "Workbook app startup");
     writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [directory],
       reviewer: { interactive: { autoApprove: "off" } } } }));
     const runtime = await ctx.app.evaluate(() => process.execPath);
@@ -380,15 +379,14 @@ test("approved agent edits stream into the read-only workbook panel", async () =
       try { await action(); } catch (error) { cleanupFailures.push(error); }
     };
     await cleanup(() => { barrier?.release(); });
-    await cleanup(async () => { if (ctx) await teardownSeededElectron(ctx, { terminate: true }); });
+    const launched = ctx;
+    const settled = barrier
+      ? await barrier.settle({ shutdown: launched ? () => teardownSeededElectron(launched, { terminate: true }) : undefined })
+      : { closed: true, failures: [] };
+    cleanupFailures.push(...settled.failures);
     await cleanup(() => { server.closeAllConnections(); });
     await cleanup(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
-    let closed = processClosed === undefined;
-    if (processClosed) await cleanup(async () => { await processClosed; closed = true; });
-    if (closed) {
-      await cleanup(() => { barrier?.dispose(); });
-      await cleanup(() => { rmSync(directory, { recursive: true, force: true }); });
-    }
+    if (settled.closed) await cleanup(() => { rmSync(directory, { recursive: true, force: true }); });
   }
   if (cleanupFailures.length) throw new AggregateError(bodyFailure
     ? [bodyFailure.error, ...cleanupFailures] : cleanupFailures, "Workbook observation cleanup failed");

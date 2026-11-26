@@ -22,7 +22,7 @@ import { preparePowerShellLaunch } from "../../src/tools/powershell-launch.js";
 import { buildSafeChildEnv } from "../../src/tools/safe-env.js";
 import { findShellPathPolicyViolation } from "../../src/tools/shell-path-policy.js";
 import { awaitedHostScriptCommand, findPowerShellAstPathViolation, powerShellHostScriptReadPaths, resolvePowerShellExecutable } from "../../src/tools/shell-tools.js";
-import { fileSystemIo, type FixtureBuildIo, prepareWorkbookPublicationBuild, renderWorkbookCommand } from "../e2e/ui/xlsx-publication-barrier.js";
+import { fileSystemIo, type FixtureBuildIo, prepareWorkbookPublicationBuild, renderWorkbookCommand, terminateProcessTree, withinDeadline } from "../e2e/ui/xlsx-publication-barrier.js";
 
 let root: string;
 let checkout: string;
@@ -68,6 +68,7 @@ function leftoverBuilds(): string[] {
 
 function faultyIo(fault: (operation: keyof FixtureBuildIo, path: string) => boolean): FixtureBuildIo {
   return {
+    canonical: (path) => { if (fault("canonical", path)) throw new Error(`canonical fault ${path}`); return fileSystemIo.canonical(path); },
     copy: (source, target) => { if (fault("copy", target)) throw new Error(`copy fault ${target}`); fileSystemIo.copy(source, target); },
     write: (path, bytes) => { if (fault("write", path)) throw new Error(`write fault ${path}`); fileSystemIo.write(path, bytes); },
     remove: (path) => { if (fault("remove", path)) throw new Error(`remove fault ${path}`); fileSystemIo.remove(path); },
@@ -154,6 +155,7 @@ describe("workbook publication build", () => {
   });
 
   it.each([
+    ["the root canonicalization", "canonical", ""],
     ["the build copy", "copy", join("dist", "src")],
     ["the resource copy", "copy", "resources"],
     ["the prelude install", "write", "edit-xlsx.cjs"],
@@ -199,6 +201,73 @@ describe("workbook publication build", () => {
     expectSharedBuildUsable();
     fileSystemIo.remove(abandoned.root);
     expect(leftoverBuilds()).toEqual([]);
+  });
+
+  describe("owned app lifecycle", () => {
+    const quick = { shutdownMs: 200, terminateMs: 10_000, closeMs: 10_000 };
+    const hangingApp = () => spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"],
+      { stdio: "pipe", detached: process.platform !== "win32", windowsHide: true });
+    const prepared = (io?: FixtureBuildIo) => prepareWorkbookPublicationBuild(checkout, mkdtempSync(join(root, "owned-")), io);
+
+    it("terminates the owned tree after a startup timeout, then removes the copy", async () => {
+      const fixture = prepared();
+      const app = hangingApp();
+      fixture.own(app);
+      await expect(withinDeadline(new Promise(() => {}), 50, "Workbook app startup")).rejects.toThrow("Workbook app startup exceeded 50 ms");
+      const steps: string[] = [];
+      const settled = await fixture.settle({ terminate: async (pid) => { steps.push("terminate"); await terminateProcessTree(pid); } }, quick);
+      expect(steps).toEqual(["terminate"]);
+      expect(settled).toEqual({ closed: true, failures: [] });
+      expect(app.exitCode !== null || app.signalCode !== null).toBe(true);
+      expect(existsSync(fixture.root)).toBe(false);
+      expectSharedBuildUsable();
+    });
+
+    it.each([
+      ["rejects", () => Promise.reject(new Error("teardown fault")), "teardown fault"],
+      ["hangs", () => new Promise<void>(() => {}), "Workbook app shutdown exceeded 200 ms"],
+    ] as const)("terminates the owned tree when shutdown %s, records it, then removes the copy", async (_name, shutdown, failure) => {
+      const fixture = prepared();
+      fixture.own(hangingApp());
+      const steps: string[] = [];
+      const settled = await fixture.settle({
+        shutdown: () => { steps.push("shutdown"); return shutdown(); },
+        terminate: async (pid) => { steps.push("terminate"); await terminateProcessTree(pid); },
+      }, quick);
+      expect(steps).toEqual(["shutdown", "terminate"]);
+      expect(settled.closed).toBe(true);
+      expect(settled.failures.map(String)).toEqual([expect.stringContaining(failure)]);
+      expect(existsSync(fixture.root)).toBe(false);
+    });
+
+    it("keeps the copy and names it when closure is not confirmed", async () => {
+      const fixture = prepared();
+      const app = hangingApp();
+      fixture.own(app);
+      try {
+        const settled = await fixture.settle({ terminate: async () => {} }, { ...quick, closeMs: 200 });
+        expect(settled.closed).toBe(false);
+        expect(settled.failures.map(String)).toEqual([expect.stringContaining("Workbook app pipe closure exceeded 200 ms"),
+          expect.stringContaining(`Workbook fixture build left at ${fixture.root}`)]);
+        expect(existsSync(fixture.mainEntry)).toBe(true);
+      } finally {
+        const closed = once(app, "close");
+        await terminateProcessTree(app.pid as number);
+        await closed;
+        fixture.dispose();
+      }
+      expect(existsSync(fixture.root)).toBe(false);
+    });
+
+    it("names the copy when removal fails after a confirmed close", async () => {
+      const fixture = prepared(faultyIo((kind) => kind === "remove"));
+      fixture.own(hangingApp());
+      const settled = await fixture.settle({}, quick);
+      expect(settled.closed).toBe(true);
+      expect(settled.failures.map(String)).toEqual([`Error: Workbook fixture build left at ${fixture.root}`]);
+      expectSharedBuildUsable();
+      fileSystemIo.remove(fixture.root);
+    });
   });
 
   it.runIf(process.platform === "win32")("keeps the exact helper grant through the parsed PowerShell command the E2E sends", () => {

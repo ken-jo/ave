@@ -1,3 +1,4 @@
+import { type ChildProcess, execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -29,16 +30,44 @@ function digest(bytes: Uint8Array): string {
 }
 
 export interface FixtureBuildIo {
+  canonical(path: string): string;
   copy(source: string, target: string): void;
   write(path: string, bytes: Uint8Array): void;
   remove(path: string): void;
 }
 
 export const fileSystemIo: FixtureBuildIo = {
+  canonical: (path) => realpathSync.native(path),
   copy: (source, target) => cpSync(source, target, { recursive: true, errorOnExist: true, force: false }),
   write: (path, bytes) => writeFileSync(path, bytes, { flag: "wx" }),
   remove: (path) => rmSync(path, { recursive: true, force: true, maxRetries: 5 }),
 };
+
+export interface FixtureDeadlines { readonly shutdownMs: number; readonly terminateMs: number; readonly closeMs: number }
+export const FIXTURE_DEADLINES: FixtureDeadlines & { readonly startupMs: number } =
+  Object.freeze({ startupMs: 90_000, shutdownMs: 30_000, terminateMs: 15_000, closeMs: 15_000 });
+
+/** Rejects once `ms` pass; a late settlement of `work` is then ignored. */
+export function withinDeadline<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+  work.catch(() => {});
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms} ms`)), ms);
+  });
+  return Promise.race([work, expired]).finally(() => clearTimeout(timer));
+}
+
+/** End the owned process and its descendants so inherited pipes can close. */
+export async function terminateProcessTree(pid: number): Promise<void> {
+  if (process.platform === "win32") {
+    await new Promise<void>((resolve, reject) => {
+      execFile("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true }, (error) => error ? reject(error) : resolve());
+    });
+    return;
+  }
+  try { process.kill(-pid, "SIGKILL"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+}
 
 /** The PowerShell or POSIX command the model sends for this argv. */
 export function renderWorkbookCommand(platform: NodeJS.Platform, argv: readonly string[]): string {
@@ -67,26 +96,34 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
     scripts: { ...manifest.scripts, [name]: digest(script) } }, null, 2)}\n`);
   const outputs = join(checkout, ".cache");
   mkdirSync(outputs, { recursive: true });
-  const root = realpathSync.native(mkdtempSync(join(outputs, "xlsx-publication-build-")));
-  const scriptsDirectory = join(root, "dist", "skill-scripts");
-  const scriptPath = join(scriptsDirectory, name);
+  let root = mkdtempSync(join(outputs, "xlsx-publication-build-"));
+  const scriptsDirectory = () => join(root, "dist", "skill-scripts");
   try {
+    root = io.canonical(root);
     io.copy(join(checkout, "dist", "src"), join(root, "dist", "src"));
     io.copy(join(checkout, "resources"), join(root, "resources"));
     if (existsSync(join(checkout, "build"))) io.copy(join(checkout, "build"), join(root, "build"));
-    mkdirSync(scriptsDirectory);
+    mkdirSync(scriptsDirectory());
     for (const entry of Object.keys(manifest.scripts)) {
-      if (entry !== name) io.copy(join(sharedScripts, entry), join(scriptsDirectory, entry));
+      if (entry !== name) io.copy(join(sharedScripts, entry), join(scriptsDirectory(), entry));
     }
-    io.write(scriptPath, script);
-    io.write(join(scriptsDirectory, "manifest.json"), preparedManifest);
+    io.write(join(scriptsDirectory(), name), script);
+    io.write(join(scriptsDirectory(), "manifest.json"), preparedManifest);
   } catch (error) {
     try { io.remove(root); } catch { /* A leftover root is never consumed by another instance. */ }
     throw error;
   }
+  const scriptPath = join(scriptsDirectory(), name);
   const readyPath = join(workspace, "publication-ready");
   const releasePath = join(workspace, "publication-release");
   let disposed = false;
+  let owned: { pid: number | undefined; closed: Promise<void> } | undefined;
+  let ownedClosed = false;
+  const dispose = (): void => {
+    if (disposed) return;
+    io.remove(root);
+    disposed = true;
+  };
   return {
     root,
     mainEntry: join(root, "dist", "src", "main", "main.js"),
@@ -103,10 +140,44 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
       }
     },
     /** Call only after the owned application and its command process have closed. */
-    dispose(): void {
-      if (disposed) return;
-      io.remove(root);
-      disposed = true;
+    dispose,
+    /** Register the owned application process as soon as launch supplies it. */
+    own(child: ChildProcess): void {
+      if (owned) throw new Error("The workbook fixture already owns a process");
+      const closed = new Promise<void>((resolve) => child.once("close", () => { ownedClosed = true; resolve(); }));
+      owned = { pid: child.pid, closed };
+    },
+    /**
+     * Shut the owned process down within deadlines, then remove the copy only after its close (process exit and pipe
+     * closure) is confirmed. Otherwise the copy stays and a failure names its path.
+     */
+    async settle(steps: { shutdown?: () => Promise<void>; terminate?: (pid: number) => Promise<void> },
+      deadlines: FixtureDeadlines = FIXTURE_DEADLINES): Promise<{ closed: boolean; failures: unknown[] }> {
+      const failures: unknown[] = [];
+      if (owned && !ownedClosed) {
+        if (steps.shutdown) {
+          try { await withinDeadline(steps.shutdown(), deadlines.shutdownMs, "Workbook app shutdown"); }
+          catch (error) { failures.push(error); }
+        }
+        if (!ownedClosed && owned.pid !== undefined) {
+          try { await withinDeadline((steps.terminate ?? terminateProcessTree)(owned.pid), deadlines.terminateMs, "Workbook app tree termination"); }
+          catch (error) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            if (!ownedClosed) failures.push(error);
+          }
+        }
+        if (!ownedClosed) {
+          try { await withinDeadline(owned.closed, deadlines.closeMs, "Workbook app pipe closure"); }
+          catch (error) { failures.push(error); }
+        }
+        if (!ownedClosed) {
+          failures.push(new Error(`Workbook fixture build left at ${root}: the owned process did not close`));
+          return { closed: false, failures };
+        }
+      }
+      try { dispose(); }
+      catch (error) { failures.push(new Error(`Workbook fixture build left at ${root}`, { cause: error })); }
+      return { closed: true, failures };
     },
   };
 }
