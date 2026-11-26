@@ -1656,13 +1656,9 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(cleanup).toContain("System.AppUserModel.ToastActivatorCLSID");
     expect(cleanup).toContain('ReadSlot("CustomActivator", [Microsoft.Win32.RegistryValueKind]::DWord)');
     expect(cleanup).toContain("RegQueryValueExW(handle, name");
-    expect(cleanup).toContain(
-      "[System.IO.File]::Move($shortcutPath, $quarantinePath)",
-    );
+    expect(cleanup).toContain("SetFileInformationByHandle(stream.SafeFileHandle, FileRenameInfo");
     expect(cleanup).toContain("SetFileInformationByHandle(stream.SafeFileHandle, FileDispositionInfo");
-    expect(cleanup).toContain(
-      "[System.IO.File]::Move($quarantinePath, $shortcutPath)",
-    );
+    expect(cleanup).toContain("$restoreFile.RenameTo($shortcutPath)");
     expect(cleanup).toContain(".ave-nsis-per-machine-v1");
     expect(cleanup).toContain(
       'ValidateSet("removed", "foreign-preserved", "verified-absent", "contract-failed")',
@@ -1696,7 +1692,7 @@ describe("Windows NSIS installer smoke contracts", () => {
     );
     const exactOwnedElse = cleanup.indexOf("else {", partialPreserve);
     const quarantineMove = cleanup.indexOf(
-      "[System.IO.File]::Move($shortcutPath, $quarantinePath)",
+      "$parkFile.RenameTo($quarantinePath)",
       exactOwnedElse,
     );
     expect(mismatchCheck).toBeGreaterThanOrEqual(0);

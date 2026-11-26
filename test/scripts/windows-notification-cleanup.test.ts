@@ -37,9 +37,11 @@ function prepareRegistryFixture(clsid = legacyClsid) {
   const registryOpen = /\[ToastRegistryKey\]::OpenCurrentUser\(/g;
   const shortcutDeleteBoundary =
     /^ {4}(?:\[System\.IO\.File\]::Delete\(\$entry\.Path\)|\$deleteFile = \[ToastShortcutFile\]::Open\(\$entry\.Path, \$true\))/m;
+  const parkedShortcutCheck = "        $verifiedClsid = Get-OwnedShortcutClsid $quarantinePath $expectedShortcut";
   expect(cleanup.match(registryOpen)).toHaveLength(2);
   expect(cleanup).toMatch(programsLookup);
   expect(cleanup).toMatch(shortcutDeleteBoundary);
+  expect(cleanup).toContain(parkedShortcutCheck);
   expect(cleanup).toContain("$shortcutMoved = $false");
   // The lock must land in the fixture directory, never in the real profile.
   if (cleanup.includes(lockName)) expect(cleanup).toMatch(lockLookup);
@@ -48,7 +50,7 @@ function prepareRegistryFixture(clsid = legacyClsid) {
     .replace(lockLookup, "$env:AVE_FIXTURE_DIRECTORY")
     .replace(registryOpen, "[FixtureRegistryKey]::OpenCurrentUser(")
     .replace(shortcutDeleteBoundary, (statement) => `    Update-ShortcutBeforeDelete $entry.Path\n${statement}`)
-    .replace("[System.IO.File]::Move($shortcutPath, $quarantinePath)", (move) => `${move}\n        Wait-AfterShortcutMove`)
+    .replace(parkedShortcutCheck, (check) => `        Wait-AfterShortcutMove\n${check}`)
     .replace("$shortcutMoved = $false", () => `${registryFixture}\n$shortcutMoved = $false`);
   writeFileSync(script, fixtureScript);
 
@@ -356,6 +358,23 @@ describe("current-user toast cleanup", () => {
     expect(result.stdout).not.toContain('"status":"removed","artifact":"shortcut"');
   });
 
+  it.runIf(process.platform === "win32")("leaves a byte-identical replacement parked on failure before any registry delete", () => {
+    const fixture = prepareRegistryFixture();
+    const state = foreignOnly(fixture.initialState);
+    fixture.writeState(state);
+
+    const result = fixture.run("replace-shortcut-file");
+    expect(result.error).toBeUndefined();
+    expect(result.stderr).toContain("fixture exercised replace-shortcut-file");
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(1);
+    expect(result.stderr).toContain("the quarantined shortcut changed before deletion");
+    expect(fixture.readState()).toEqual(state);
+    expect(existsSync(join(fixture.installDir, "Ave.lnk"))).toBe(false);
+    fixture.expectShortcutQuarantined();
+    expect(result.stdout).toContain('"status":"contract-failed","artifact":"shortcut-quarantine"');
+    expect(result.stdout).toContain("the quarantined shortcut changed before restoration");
+  });
+
   it.runIf(process.platform === "win32")("reports unattributable quarantine entries without touching them or blocking cleanup", () => {
     const fixture = prepareRegistryFixture();
     const directory = join(fixture.installDir, quarantineName("a"));
@@ -584,7 +603,7 @@ describe("current-user toast cleanup", () => {
     expect(new Set(hives.map((match) => match[1]))).toEqual(new Set(["CurrentUser"]));
     const registered = cleanup.indexOf("Confirm-ToastRegistrationsAbsent $installedExe $candidateClsids");
     expect(cleanup.indexOf("$deleteFile.Delete()")).toBeGreaterThan(registered);
-    expect(cleanup).toContain("[System.IO.File]::Move($quarantinePath, $shortcutPath)");
+    expect(cleanup).toMatch(/\$restoreFile\.Matches\(\$parkedFile, \$parkedDigest\)[\s\S]+?\$restoreFile\.RenameTo\(\$shortcutPath\)/);
   });
 
   it("removes only owned values and allows empty keys in the smoke postcondition", () => {

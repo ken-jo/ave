@@ -350,6 +350,7 @@ public sealed class ToastShortcutFile : IDisposable
     private const uint GenericRead = 0x80000000;
     private const uint DeleteAccess = 0x00010000;
     private const uint OpenReparsePoint = 0x00200000;
+    private const int FileRenameInfo = 3;
     private const int FileDispositionInfo = 4;
     private const int FileAttributeTagInfo = 9;
     private const int FileIdInfo = 18;
@@ -369,6 +370,15 @@ public sealed class ToastShortcutFile : IDisposable
         public ulong High;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RenameInfo
+    {
+        public uint Flags;
+        public IntPtr RootDirectory;
+        public int FileNameLength;
+        public ushort FileName;
+    }
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
     private static extern SafeFileHandle CreateFileW(string path, uint access, FileShare share,
         IntPtr security, FileMode mode, uint flags, IntPtr template);
@@ -385,6 +395,10 @@ public sealed class ToastShortcutFile : IDisposable
     private static extern bool SetFileInformationByHandle(SafeFileHandle handle, int informationClass,
         ref byte information, int size);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetFileInformationByHandle(SafeFileHandle handle, int informationClass,
+        byte[] information, int size);
+
     private readonly FileStream stream;
     private readonly FileIdentity identity;
 
@@ -394,9 +408,9 @@ public sealed class ToastShortcutFile : IDisposable
         this.identity = identity;
     }
 
-    public static ToastShortcutFile Open(string path, bool forDeletion)
+    public static ToastShortcutFile Open(string path, bool forMutation)
     {
-        var handle = CreateFileW(path, GenericRead | (forDeletion ? DeleteAccess : 0), FileShare.Read,
+        var handle = CreateFileW(path, GenericRead | (forMutation ? DeleteAccess : 0), FileShare.Read,
             IntPtr.Zero, FileMode.Open, OpenReparsePoint, IntPtr.Zero);
         try
         {
@@ -429,6 +443,19 @@ public sealed class ToastShortcutFile : IDisposable
         return identity.Volume == verifiedFile.identity.Volume &&
             identity.Low == verifiedFile.identity.Low && identity.High == verifiedFile.identity.High &&
             Digest() == digest;
+    }
+
+    public void RenameTo(string path)
+    {
+        byte[] name = Encoding.Unicode.GetBytes(path + "\0");
+        int lengthOffset = Marshal.OffsetOf(typeof(RenameInfo), "FileNameLength").ToInt32();
+        int nameOffset = Marshal.OffsetOf(typeof(RenameInfo), "FileName").ToInt32();
+        // Zero flags preserve an occupied destination. The name is an absolute path.
+        byte[] information = new byte[Math.Max(Marshal.SizeOf(typeof(RenameInfo)), nameOffset + name.Length)];
+        BitConverter.GetBytes(name.Length - sizeof(ushort)).CopyTo(information, lengthOffset);
+        name.CopyTo(information, nameOffset);
+        if (!SetFileInformationByHandle(stream.SafeFileHandle, FileRenameInfo, information, information.Length))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
     }
 
     public void Delete()
@@ -812,8 +839,24 @@ try {
           $ShortcutName,
           [System.Guid]::NewGuid().ToString("N")
         )
-        [System.IO.File]::Move($shortcutPath, $quarantinePath)
-        $shortcutMoved = $true
+        $parkedFile = [ToastShortcutFile]::Open($shortcutPath, $false)
+        try {
+          if ((Get-OwnedShortcutClsid $shortcutPath $expectedShortcut) -ne ([guid]$record.ToastClsid).ToString("B")) {
+            throw "the shortcut toast activator CLSID changed before atomic quarantine"
+          }
+          $parkedDigest = $parkedFile.Digest()
+        }
+        finally { $parkedFile.Dispose() }
+
+        $parkFile = [ToastShortcutFile]::Open($shortcutPath, $true)
+        try {
+          if (-not $parkFile.Matches($parkedFile, $parkedDigest)) {
+            throw "the shortcut changed before quarantine"
+          }
+          $parkFile.RenameTo($quarantinePath)
+          $shortcutMoved = $true
+        }
+        finally { $parkFile.Dispose() }
         $verifiedClsid = Get-OwnedShortcutClsid $quarantinePath $expectedShortcut
         if ($verifiedClsid -ne ([guid]$record.ToastClsid).ToString("B")) {
           throw "the shortcut toast activator CLSID changed before atomic quarantine"
@@ -903,13 +946,19 @@ catch {
     }
     else {
       try {
-        # Move never overwrites, so a reoccupied path leaves the shortcut in quarantine.
-        [System.IO.File]::Move($quarantinePath, $shortcutPath)
+        $restoreFile = [ToastShortcutFile]::Open($quarantinePath, $true)
+        try {
+          if (-not $restoreFile.Matches($parkedFile, $parkedDigest)) {
+            throw "the quarantined shortcut changed before restoration"
+          }
+          $restoreFile.RenameTo($shortcutPath)
+        }
+        finally { $restoreFile.Dispose() }
         Write-CleanupEvent "foreign-preserved" "shortcut" "restored the quarantined shortcut after cleanup failed"
       }
       catch {
         Write-CleanupEvent "contract-failed" "shortcut-quarantine" (
-          "left the owned shortcut in quarantine at {0} for the next cleanup to resume: {1}" -f
+          "could not restore the shortcut from quarantine at {0}: {1}" -f
           $quarantinePath, $_.Exception.Message
         )
       }

@@ -129,9 +129,11 @@ One per-user lock replaces repeated scans.
   properties. The deletion handle checks the same file identity and contents
   before marking that handle for deletion. On a failure before the first
   registry delete attempt, cleanup makes a best-effort move of the shortcut
-  it parked during that run back to the original path. The move never
-  overwrites a reoccupied path, so a still-parked shortcut stays in quarantine
-  in that case. After a registry delete has been attempted, cleanup skips
+  it parked during that run back to the original path. Parking records the
+  file identity and digest from an ownership-checked handle. Restoration
+  compares both on the handle it will rename. A missing or unverifiable
+  source or a reoccupied destination is reported as a restoration failure.
+  After a registry delete has been attempted, cleanup skips
   restoration, including when the first delete fails. The next cleanup lists
   parked entries with `Get-QuarantinedShortcuts` and re-verifies each through
   `Get-OwnedShortcutClsid`. An exact owned entry is resumed in place. Its
