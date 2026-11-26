@@ -147,6 +147,14 @@ describe("bounded image preparation", () => {
     expect((await admitted).width).toBe(8);
   });
 
+  it.skipIf(process.platform === "win32")("denies a missing out-of-scope image before native source resolution", async () => {
+    const cwd = join(directory, "allowed-image-directory");
+    await mkdir(cwd);
+    await expect(prepareImageFile(join(directory, "missing-out-of-scope.png"), {
+      cwd, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true,
+    })).rejects.toThrow(/^invalid-image: Sandbox:/);
+  });
+
   it.skipIf(process.platform === "win32")("decodes the sealed image through a symlink target containing dot-dot", async () => {
     const root = join(directory, "posix-image-links");
     const actual = join(root, "actual");

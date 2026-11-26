@@ -60,21 +60,33 @@ if (!adoptParentHostResources()) {
         : ImagePreparationRequestSchema.or(ImagePreparationPosixFileRequestSchema);
       const request = schema.parse(raw);
       if (!isAbsolute(request.path) || !isAbsolute(request.scope.cwd)) throw new Error("invalid-image-path: Image source and read scope must be absolute.");
-      const requireAuthorizedPath = (real: string): string => {
-        if ("expectedPath" in request && real !== request.expectedPath) throw new TargetIdentityChangedError();
-        // Check policy on both names before opening the authorized file.
-        const context = { ...request.scope, metadata: {} };
-        const denied = ensureFileAccess(request.path, context, "read") ?? ensureFileAccess(real, context, "read");
+      const context = { ...request.scope, metadata: {} };
+      const requireReadAccess = (path: string): void => {
+        const denied = ensureFileAccess(path, context, "read");
         if (denied) throw new Error(denied.output);
-        return real;
       };
-      const judged = process.platform === "win32" ? withLocalityDecision(() => {
-        return requireAuthorizedPath(localFs.realpathNative(admitLocalRoute(request.path).verdict));
-      }) : requireAuthorizedPath(await realpath(request.path));
+      const requireExpectedPath = (real: string): void => {
+        if ("expectedPath" in request && real !== request.expectedPath) throw new TargetIdentityChangedError();
+      };
+      let judged: string;
+      if (process.platform === "win32") {
+        judged = withLocalityDecision(() => {
+          const real = localFs.realpathNative(admitLocalRoute(request.path).verdict);
+          requireExpectedPath(real);
+          requireReadAccess(request.path);
+          requireReadAccess(real);
+          return real;
+        });
+      } else {
+        requireReadAccess(request.path);
+        judged = await realpath(request.path);
+        requireExpectedPath(judged);
+        requireReadAccess(judged);
+      }
       const bytes = await readImageInput(judged, new AbortController().signal);
       const image = await normalizeImage(bytes, request.options);
-      if (process.platform !== "win32" && "expectedPath" in request && await realpath(request.path) !== request.expectedPath) {
-        throw new TargetIdentityChangedError();
+      if (process.platform !== "win32" && "expectedPath" in request) {
+        requireExpectedPath(await realpath(request.path));
       }
       process.stdout.write(JSON.stringify({ ok: true, image }));
     }
