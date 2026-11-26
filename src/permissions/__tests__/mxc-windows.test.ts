@@ -24,20 +24,24 @@ import {
   type MxcRunResult,
 } from "../mxc-windows.js";
 import { rankAdmittedMxcLists, rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
+import { HOST_CONTAINER_ABSENCE_PROBE } from "../../__tests__/support/mxc-probe-report.js";
 
-// Verbatim shapes captured from wxc-exec 1.0.0 on Windows 11 26300.9711 (2026-10-19).
-const PROBE_BASE_CONTAINER = `{
-  "tier": "base-container",
-  "needsDaclAugmentation": false,
-  "warnings": [],
-  "probes": { "baseContainerApiPresent": true, "baseContainerSupportsDenyPaths": true,
-    "baseContainerSupportsIngressHostLoopbackAllow": true }
-}
-`;
-// The 1.1.0 probe of a request the backend cannot serve: no tier, an `error`, the host facts (the shape its API validates; not captured on such a host).
-const PROBE_NO_TIER = (apiPresent: boolean, error: unknown = "the container backend is unavailable on this host"): string => JSON.stringify({
+const PROBE_BASE_CONTAINER = JSON.stringify({
+  tier: "base-container",
+  needsDaclAugmentation: false,
   warnings: [],
-  probes: { baseContainerApiPresent: apiPresent, baseContainerSupportsDenyPaths: false },
+  probes: {
+    ...HOST_CONTAINER_ABSENCE_PROBE.probes,
+    baseContainerApiPresent: true,
+    baseContainerSupportsDenyPaths: true,
+    baseContainerSupportsIngressHostLoopbackAllow: true,
+  },
+}, null, 2);
+const PROBE_NO_TIER = (apiPresent: boolean, error: unknown = apiPresent
+  ? "required path support is unavailable"
+  : HOST_CONTAINER_ABSENCE_PROBE.error): string => JSON.stringify({
+  ...HOST_CONTAINER_ABSENCE_PROBE,
+  probes: { ...HOST_CONTAINER_ABSENCE_PROBE.probes, baseContainerApiPresent: apiPresent },
   error,
 });
 // What the 1.1.0 launcher prints for a validated request (measured 2026-11-25): no tier line.
@@ -64,15 +68,13 @@ const DRY_RUN_NON_LOOPBACK =
 
 describe("parseMxcProbeOutput", () => {
   it("reads the tier from the probe JSON", () => {
-    expect(parseMxcProbeOutput(PROBE_BASE_CONTAINER)).toEqual({ tier: "base-container", needsDaclAugmentation: false, error: undefined, baseContainerApiPresent: true });
+    expect(parseMxcProbeOutput(PROBE_BASE_CONTAINER)).toMatchObject({
+      tier: "base-container", needsDaclAugmentation: false, probes: { baseContainerApiPresent: true },
+    });
   });
   it("reads the error and the host fact a tier-less probe carries", () => {
-    expect(parseMxcProbeOutput(PROBE_NO_TIER(false))).toEqual({
-      tier: undefined, needsDaclAugmentation: undefined, error: "the container backend is unavailable on this host", baseContainerApiPresent: false,
-    });
-    expect(parseMxcProbeOutput(PROBE_NO_TIER(true, { code: "malformed_request" }))).toEqual({
-      tier: undefined, needsDaclAugmentation: undefined, error: undefined, baseContainerApiPresent: true,
-    });
+    expect(parseMxcProbeOutput(PROBE_NO_TIER(false))).toEqual(HOST_CONTAINER_ABSENCE_PROBE);
+    expect(parseMxcProbeOutput(PROBE_NO_TIER(true, { code: "malformed_request" }))).toBeUndefined();
   });
   it("returns undefined for output that is not JSON", () => {
     expect(parseMxcProbeOutput("Request error")).toBeUndefined();
@@ -214,13 +216,13 @@ describe("detectMxcSupport", () => {
     await expect(detectMxcSupport(deps(override))).resolves.toMatchObject({ state: "unavailable", reason });
   });
 
-  it.each([[0, false], [1, false], [0, true]] as const)("reports an unserved request with the probe's error and container API fact (exit %i, API %s)", async (code, apiPresent) => {
+  it.each([[0, false], [1, false], [2, false], [0, true]] as const)("reports an unserved request with the probe's error and container API fact (exit %i, API %s)", async (code, apiPresent) => {
     const d = deps({ runs: { "--probe": { code, stdout: PROBE_NO_TIER(apiPresent), stderr: "" } } });
     await expect(detectMxcPrerequisites(d)).resolves.toStrictEqual({
       state: "unavailable", reason: "container-unavailable", windowsBuild: "10.0.26300",
-      detail: `the container backend is unavailable on this host (container API ${String(apiPresent)})`,
+      detail: `${apiPresent ? "required path support is unavailable" : HOST_CONTAINER_ABSENCE_PROBE.error} (container API ${String(apiPresent)})`,
       baseContainerApiPresent: apiPresent,
-      ...(code === 0 && !apiPresent ? { containerBackendAbsent: true } : {}),
+      ...((code === 0 || code === 1) && !apiPresent ? { containerBackendAbsent: true } : {}),
     });
     expect(d.calls.map((c) => c[0])).toEqual(["--probe"]);
   });

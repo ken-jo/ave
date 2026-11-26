@@ -52,7 +52,8 @@ vi.mock("../../lib/logger.js", () => ({
   createLogger: vi.fn(() => h.logger),
 }));
 
-vi.mock("../../permissions/mxc-windows.js", () => ({
+vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../permissions/mxc-windows.js")>(),
   detectHostMxcPrerequisites: h.detectMxc,
   probeHostMxcPowerShellStart: h.startProbe,
 }));
@@ -83,6 +84,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
 });
 
 import { initSandboxGate } from "../steps/sandbox-init.js";
+import { HOST_CONTAINER_ABSENCE_PROBE } from "../../__tests__/support/mxc-probe-report.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import { createMemoryMapRuntime } from "../../ipc/domains/memory-map-runtime.js";
 import { rendererSettingsSnapshot } from "../../ipc/domains/settings.js";
@@ -91,6 +93,7 @@ import { assertLocalEmbeddingRuntime } from "../../main/memory-map/local-runtime
 import { SessionRepository } from "../../memory/session-repository.js";
 import { SessionSearchIndex } from "../../memory/session-search-index.js";
 import { registerMxcReleaseGateEvidence } from "../../permissions/mxc-extension-admission.js";
+import { detectMxcPrerequisites, pinnedWxcExecSha256 } from "../../permissions/mxc-windows.js";
 import { areWindowsBackgroundSwitchesAvailable, sessionSearchIndexPolicy } from "../../permissions/windows-background-features.js";
 import { decidePermission } from "../../permissions/decision-pipeline.js";
 import { requiresUnsandboxedShellAsk } from "../../permissions/host-shell-execution-plan.js";
@@ -322,8 +325,18 @@ it.each([false, true])("checks background feature availability with both tool sc
   }
 });
 
+const ABSENCE_FACTS = HOST_CONTAINER_ABSENCE_PROBE.probes;
+
 it.each([
-  { label: "both backends absent", mxc: NO_CONTAINER, deps: NO_ACCOUNT_BACKEND, available: true },
+  { label: "partial probe", response: { error: HOST_CONTAINER_ABSENCE_PROBE.error, probes: { baseContainerApiPresent: false } } },
+  { label: "missing host fact", response: { ...HOST_CONTAINER_ABSENCE_PROBE,
+    probes: { ...ABSENCE_FACTS, baseContainerSupportsEnumeratePaths: undefined } } },
+  { label: "contradictory enumeration", response: { ...HOST_CONTAINER_ABSENCE_PROBE,
+    probes: { ...ABSENCE_FACTS, baseContainerSupportsEnumeratePaths: true } } },
+  { label: "contradictory proxy support", response: { ...HOST_CONTAINER_ABSENCE_PROBE,
+    probes: { ...ABSENCE_FACTS, baseContainerSupportsIdentitylessLoopbackProxy: true } } },
+  { label: "generic detector error", response: { ...HOST_CONTAINER_ABSENCE_PROBE, error: "host capability query failed" } },
+  { label: "definitive host absence", response: HOST_CONTAINER_ABSENCE_PROBE, available: true },
   { label: "container API present", mxc: { ...MXC_OLD, baseContainerApiPresent: true }, deps: NO_ACCOUNT_BACKEND },
   { label: "container API fact missing", mxc: MXC_OLD, deps: NO_ACCOUNT_BACKEND },
   { label: "contradictory container facts", mxc: { ...NO_CONTAINER, baseContainerApiPresent: true }, deps: NO_ACCOUNT_BACKEND },
@@ -338,14 +351,24 @@ it.each([
   { label: "account setup failed", mxc: NO_CONTAINER, deps: { errors: ["setup failed"], warnings: [] } },
   { label: "contradictory account result", mxc: NO_CONTAINER, deps: { ...NO_ACCOUNT_BACKEND, errors: ["setup failed"] } },
   { label: "backend ready", mxc: NO_CONTAINER, deps: { errors: [], warnings: [] } },
-])("projects settings and admits unconfined inference only with boot evidence: $label", async ({ mxc, deps, available, rootFailed }) => {
+])("projects settings and admits unconfined inference only with boot evidence: $label", async ({ mxc, deps, response, available, rootFailed }) => {
   const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
   try {
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
     if (rootFailed) h.establishHomesError = new Error("root not private");
-    h.checkDeps.mockResolvedValue(deps);
-    h.detectMxc.mockResolvedValue(mxc);
+    h.checkDeps.mockResolvedValue(deps ?? NO_ACCOUNT_BACKEND);
+    const run = vi.fn(async () => ({ code: 0, stdout: JSON.stringify(response), stderr: "" }));
+    if (response) {
+      h.detectMxc.mockImplementation(() => detectMxcPrerequisites({
+        platform: "win32", arch: "x64", resourcePath: "C:\\example\\resources", windowsBuild: null,
+        systemRoot: "C:\\Windows", probeDirectory: "C:\\example\\probe", exists: () => true,
+        sha256: async () => pinnedWxcExecSha256("x64") ?? "", run,
+      }));
+    } else {
+      h.detectMxc.mockResolvedValue(mxc);
+    }
     await initSandboxGate(harness.context(false, false));
+    if (response) expect(run).toHaveBeenCalledOnce();
 
     const settingsService = {
       getAll: () => DEFAULT_SETTINGS,

@@ -3,6 +3,8 @@
 import { win32 as winPath } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import type { ProbeOutput } from "@microsoft/mxc-sdk/v1";
+import { z } from "zod";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 import { WIN32_POWERSHELL_STARTUP_ARGS } from "../shared/powershell-startup-policy.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../shared/windows-command-line.js";
@@ -57,44 +59,54 @@ export function wxcExecPathFor(resourcePath: string, arch: string): string | und
   return winPath.join(resourcePath, "mxc", arch, "wxc-exec.exe");
 }
 
-// The fields of `wxc-exec --probe` Ave reads.
-export interface MxcProbeReport {
-  readonly tier: string | undefined;
-  readonly needsDaclAugmentation: boolean | undefined;
-  // Given instead of a tier when the backend cannot serve the request, beside the host facts.
-  readonly error: string | undefined;
-  readonly baseContainerApiPresent: boolean | undefined;
-  readonly contradictsContainerAbsence?: true;
-}
+const MxcProbeFactsSchema = z.strictObject({
+  baseContainerApiPresent: z.boolean(),
+  nativeCaptureAvailable: z.boolean(),
+  guardedCaptureAvailable: z.boolean(),
+  bfscfgPresent: z.boolean(),
+  bfsCompiledIn: z.boolean(),
+  baseContainerSupportsDenyPaths: z.boolean(),
+  baseContainerSupportsEnumeratePaths: z.boolean(),
+  baseContainerSupportsIngressHostLoopbackAllow: z.boolean(),
+  baseContainerSupportsIdentitylessLoopbackProxy: z.boolean(),
+  isolationSessionAvailable: z.boolean(),
+  hyperlightAvailable: z.boolean(),
+  uiCapabilities: z.strictObject({
+    canBlockClipboardRead: z.boolean(),
+    canBlockClipboardWrite: z.boolean(),
+    canBlockInputInjection: z.boolean(),
+    canBlockInputMethodChanges: z.boolean(),
+    canBlockExternalUiObjects: z.boolean(),
+    canBlockGlobalUiNamespace: z.boolean(),
+    canBlockDesktopSwitching: z.boolean(),
+    canBlockLogoffOrShutdown: z.boolean(),
+    canBlockSystemParameterChanges: z.boolean(),
+    canBlockDisplaySettingsChanges: z.boolean(),
+  }),
+});
+
+const MxcProbeSchema = z.strictObject({
+  tier: z.enum(["base-container", "appcontainer-bfs", "appcontainer-dacl"]).optional(),
+  needsDaclAugmentation: z.boolean().optional(),
+  warnings: z.array(z.string()),
+  probes: MxcProbeFactsSchema,
+  error: z.string().optional(),
+}).refine(({ tier, needsDaclAugmentation, error }) => tier === undefined
+  ? error !== undefined && needsDaclAugmentation === undefined
+  : needsDaclAugmentation !== undefined && error === undefined);
+
+const MXC_HOST_ABSENCE_DIAGNOSTIC = "Windows ProcessContainer is unavailable: PSEC is not enabled";
 
 // Parse `wxc-exec --probe` stdout (one JSON object), or undefined when it is not one.
-export function parseMxcProbeOutput(stdout: string): MxcProbeReport | undefined {
-  const start = stdout.indexOf("{");
-  const end = stdout.lastIndexOf("}");
-  if (start < 0 || end <= start) return undefined;
+export function parseMxcProbeOutput(stdout: string): ProbeOutput | undefined {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stdout.slice(start, end + 1));
+    parsed = JSON.parse(stdout);
   } catch {
     return undefined;
   }
-  if (typeof parsed !== "object" || parsed === null) return undefined;
-  const record = parsed as { tier?: unknown; needsDaclAugmentation?: unknown; error?: unknown; probes?: unknown };
-  const probes = typeof record.probes === "object" && record.probes !== null
-    ? record.probes as { baseContainerApiPresent?: unknown; baseContainerSupportsDenyPaths?: unknown;
-      baseContainerSupportsIngressHostLoopbackAllow?: unknown } : undefined;
-  const apiPresent = probes?.baseContainerApiPresent;
-  const contradictsContainerAbsence = record.tier !== undefined
-    || (record.needsDaclAugmentation !== undefined && record.needsDaclAugmentation !== false)
-    || [probes?.baseContainerSupportsDenyPaths, probes?.baseContainerSupportsIngressHostLoopbackAllow]
-      .some(fact => fact !== undefined && fact !== false);
-  return {
-    tier: typeof record.tier === "string" ? record.tier : undefined,
-    needsDaclAugmentation: typeof record.needsDaclAugmentation === "boolean" ? record.needsDaclAugmentation : undefined,
-    error: typeof record.error === "string" ? record.error : undefined,
-    baseContainerApiPresent: typeof apiPresent === "boolean" ? apiPresent : undefined,
-    ...(apiPresent === false && contradictsContainerAbsence ? { contradictsContainerAbsence: true } : {}),
-  };
+  const report = MxcProbeSchema.safeParse(parsed);
+  return report.success ? report.data : undefined;
 }
 
 export type MxcDryRunResult = { readonly ok: true } | { readonly ok: false; readonly detail: string };
@@ -219,15 +231,18 @@ export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promis
   }
   // The probe either serves the request (the container tier, no DACL changes) or omits the tier and gives an error with the host facts. Anything else is not an answer.
   if (report.tier === undefined && report.error !== undefined) {
-    const containerBackendAbsent = probe.code === 0 && probe.stderr.trim() === "" && report.error.trim() !== ""
-      && report.baseContainerApiPresent === false && !report.contradictsContainerAbsence;
+    const { uiCapabilities, ...facts } = report.probes;
+    const containerBackendAbsent = (probe.code === 0 || probe.code === 1) && probe.stderr.trim() === ""
+      && report.error === MXC_HOST_ABSENCE_DIAGNOSTIC
+      && Object.values(facts).every((present) => !present)
+      && Object.values(uiCapabilities).every((supported) => !supported);
     return {
-      ...unavailable("container-unavailable", `${report.error.slice(0, 400)} (container API ${String(report.baseContainerApiPresent)})`),
-      ...(report.baseContainerApiPresent === undefined ? {} : { baseContainerApiPresent: report.baseContainerApiPresent }),
+      ...unavailable("container-unavailable", `${report.error.slice(0, 400)} (container API ${String(facts.baseContainerApiPresent)})`),
+      baseContainerApiPresent: facts.baseContainerApiPresent,
       ...(containerBackendAbsent ? { containerBackendAbsent: true } : {}),
     };
   }
-  if (report.tier !== MXC_CONTAINER_TIER || report.needsDaclAugmentation !== false) {
+  if (report.tier !== MXC_CONTAINER_TIER || report.needsDaclAugmentation !== false || !report.probes.baseContainerApiPresent) {
     return unavailable("probe-failed", `unexpected probe answer: tier ${String(report.tier).slice(0, 100)}, needsDaclAugmentation ${String(report.needsDaclAugmentation)}`);
   }
   if (probe.code !== 0) return unavailable("probe-failed", `--probe exit ${String(probe.code)}`);
