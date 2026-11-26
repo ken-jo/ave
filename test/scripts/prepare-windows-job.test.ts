@@ -258,17 +258,34 @@ describe("Windows path helper build", () => {
     ["C:/Windows\\System32/ExT-Ms-Win-CrT-Runtime-L1-1-0", true],
     ["C:\\Windows\\System32\\VcRuNtImE140.DlL", false],
     ["C:/Windows/System32/UcRtBaSe.DlL", true],
+    ["VCRUNT~1.DLL", true],
+    ["KERNEL~1.DLL", false],
+    ["unknown.dll", false],
+    ["C:/example/KERNEL32.dll", true],
+    ["kernel32", true],
+    ["kernel32.dll ", true],
   ] as const)("rejects receipt creation and verification for an executable importing %s", (dll, delayed) => {
     const root = fixtureRoot();
     const receipt = JSON.parse(readFileSync(join(root, RECEIPT), "utf8"));
     const binary = pathKindPe(dll, delayed);
-    const message = `Windows path helper imports a dynamic CRT: ${dll}`;
-    expect.soft(() => windowsPathKindReceipt(root, "x64", receipt, binary)).toThrow(message);
+    expect.soft(() => windowsPathKindReceipt(root, "x64", receipt, binary)).toThrow(dll);
     receipt.binarySha256 = createHash("sha256").update(binary).digest("hex");
     writeFileSync(join(root, PATH_KIND), binary);
     writeFileSync(join(root, RECEIPT), JSON.stringify(receipt));
-    expect(() => verifyWindowsPathKindReceipt(root, "x64")).toThrow(message);
+    expect(() => verifyWindowsPathKindReceipt(root, "x64")).toThrow(dll);
   });
+
+  it.each([["KERNEL32.dll", false], ["api-ms-win-core-synch-l1-2-0.dll", true]] as const)(
+    "accepts the permitted system import %s", (dll, delayed) => {
+      const root = fixtureRoot();
+      const build = JSON.parse(readFileSync(join(root, RECEIPT), "utf8"));
+      const binary = pathKindPe(dll, delayed);
+      const receipt = windowsPathKindReceipt(root, "x64", build, binary);
+      writeFileSync(join(root, PATH_KIND), binary);
+      writeFileSync(join(root, RECEIPT), JSON.stringify(receipt));
+      verifyWindowsPathKindReceipt(root, "x64");
+    },
+  );
 });
 
 describe("windowsJobLauncherState", () => {

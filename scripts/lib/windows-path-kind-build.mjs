@@ -19,7 +19,10 @@ const IMPORT_DIRECTORIES = [
   { index: 1, descriptorSize: 20, nameOffset: 12 },
   { index: 13, descriptorSize: 32, nameOffset: 4 },
 ];
-const CRT_DLL = /^(?:api-ms-win-crt-|ext-ms-win-crt-|ucrtbase|msvcr|msvcp|vcruntime|concrt|vccorlib)[^.]*\.dll$/iu;
+const SYSTEM_DLLS = new Set([
+  "advapi32.dll", "api-ms-win-core-synch-l1-2-0.dll", "bcrypt.dll", "dbghelp.dll", "kernel32.dll",
+  "ntdll.dll", "ole32.dll", "shell32.dll", "userenv.dll", "ws2_32.dll",
+]);
 export const WINDOWS_PATH_KIND_PROFILE = "release";
 export const WINDOWS_PATH_KIND_PROFILE_SETTINGS = Object.freeze({
   "opt-level": 3,
@@ -270,7 +273,7 @@ export function assertWindowsPathKindMachine(bytes, arch) {
   }
 }
 
-function assertStaticCrt(bytes) {
+function assertSystemImports(bytes) {
   const pe = bytes.readUInt32LE(60);
   const optional = pe + 24;
   const optionalSize = bytes.readUInt16LE(pe + 20);
@@ -313,9 +316,7 @@ function assertStaticCrt(bytes) {
       const end = name.indexOf(0);
       if (end <= 0) throw invalid();
       const dll = name.toString("latin1", 0, end);
-      const basename = win32.basename(dll).replace(/[ .]+$/u, "");
-      const moduleName = win32.extname(basename) ? basename : `${basename}.dll`;
-      if (CRT_DLL.test(moduleName)) throw new Error(`Windows path helper imports a dynamic CRT: ${dll}`);
+      if (!SYSTEM_DLLS.has(dll.toLowerCase())) throw new Error(`Windows path helper imports an unapproved DLL: ${dll}`);
     }
     if (offset + descriptorSize > size) throw invalid();
   }
@@ -323,7 +324,7 @@ function assertStaticCrt(bytes) {
 
 export function windowsPathKindReceipt(root, arch, build, binary) {
   assertWindowsPathKindMachine(binary, arch);
-  assertStaticCrt(binary);
+  assertSystemImports(binary);
   assertWindowsPathKindInvocation(build);
   const { identity, invocation, targetDir } = build;
   return { identity, invocation, targetDir, sourceSha256: windowsPathKindSourceDigest(root), binarySha256: sha256(binary) };
