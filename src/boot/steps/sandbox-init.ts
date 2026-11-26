@@ -689,8 +689,9 @@ async function detectWindowsBootInputs(
   const mxc = await detectHostMxcPrerequisites().catch((error: unknown): MxcSupport => ({
     state: "unavailable", reason: "probe-failed", windowsBuild: null, detail: errorMessage(error),
   }));
-  const accountBackendAbsent = dependencies.accountBackendAbsent === true && dependencies.errors.length === 0
-    && dependencies.dependencyFailure === undefined;
+  const accountProbeSucceeded = dependencies.errors.length === 0 && dependencies.dependencyFailure === undefined;
+  const accountBackendAbsent = dependencies.accountBackendAbsent === true && accountProbeSucceeded
+    && dependencies.warnings.length === 0;
   if (runtimeRootUnproved) logMxcUnavailable("runtime-root-unproved", mxc.windowsBuild, "the container runtime root was not proved at start-up");
   else if (mxc.state === "unavailable") logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
   return {
@@ -704,7 +705,7 @@ async function detectWindowsBootInputs(
     // Neither shell startup nor a holder's own start evidence (fields 1-5, known only after a start) certifies that gate.
     extensionMxc: { state: "unavailable", reason: "native-validation-required" },
     windowsBuild: mxc.windowsBuild,
-    srtWinReady: dependencies.errors.length === 0 && !accountBackendAbsent,
+    srtWinReady: accountProbeSucceeded && dependencies.accountBackendAbsent !== true,
     ...(accountBackendAbsent ? { accountBackendAbsent: true } : {}),
   };
 }

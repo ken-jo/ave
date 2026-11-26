@@ -489,6 +489,58 @@ it.each([false, true])("checks background feature availability with both tool sc
 const ABSENCE_FACTS = HOST_CONTAINER_ABSENCE_PROBE.probes;
 
 it.each([
+  ["container", true],
+  ["container", false],
+  ["account", true],
+  ["account", false],
+] as const)("preserves the host index when backend absence carries a warning (%s, preference %s)", async (backend, preference) => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const indexPath = join(dir, "search", "index.db");
+  const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const getSearchIndexPolicy = () => sessionSearchIndexPolicy(preference);
+  const repository = new SessionRepository({ aveDir: dir, getSearchIndexPolicy });
+  const warning = "host capability query could not complete";
+  try {
+    await new SessionRepository({ aveDir: dir }).saveSession(sessionId, [{ role: "user", content: "retained evidence" }]);
+    const originalIndex = readFileSync(indexPath);
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(backend === "account" ? { ...NO_ACCOUNT_BACKEND, warnings: [warning] } : NO_ACCOUNT_BACKEND);
+    const run = vi.fn(async () => ({
+      code: 0, stderr: "",
+      stdout: JSON.stringify(backend === "container"
+        ? { ...HOST_CONTAINER_ABSENCE_PROBE, warnings: [warning] } : HOST_CONTAINER_ABSENCE_PROBE),
+    }));
+    h.detectMxc.mockImplementation(() => detectMxcPrerequisites({
+      platform: "win32", arch: "x64", resourcePath: "C:\\example\\resources", windowsBuild: null,
+      systemRoot: "C:\\Windows", probeDirectory: "C:\\example\\probe", exists: () => true,
+      sha256: async () => pinnedWxcExecSha256("x64") ?? "", run,
+    }));
+    await initSandboxGate(harness.context(false, false));
+    expect(run).toHaveBeenCalledOnce();
+
+    const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
+    const discardIndex = vi.spyOn(SessionSearchIndex.prototype, "discard");
+    try {
+      await repository.verifyOrRebuildSearchIndex();
+      await repository.saveSession(sessionId, [{ role: "user", content: "changed evidence" }]);
+      expect.soft(getSearchIndexPolicy()).toBe("inactive");
+      expect.soft(areWindowsBackgroundSwitchesAvailable()).toBe(false);
+      expect.soft(openIndex).toHaveBeenCalledTimes(0);
+      expect.soft(discardIndex).toHaveBeenCalledTimes(0);
+      expect(existsSync(indexPath) && readFileSync(indexPath).equals(originalIndex)).toBe(true);
+    } finally {
+      openIndex.mockRestore();
+      discardIndex.mockRestore();
+    }
+  } finally {
+    repository.closeSearchIndex();
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it.each([
   { label: "partial probe", response: { error: HOST_CONTAINER_ABSENCE_PROBE.error, probes: { baseContainerApiPresent: false } } },
   { label: "missing host fact", response: { ...HOST_CONTAINER_ABSENCE_PROBE,
     probes: { ...ABSENCE_FACTS, baseContainerSupportsEnumeratePaths: undefined } } },

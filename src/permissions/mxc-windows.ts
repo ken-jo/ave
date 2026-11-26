@@ -235,7 +235,7 @@ export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promis
   if (report.tier === undefined && report.error !== undefined) {
     const { uiCapabilities, ...facts } = report.probes;
     const containerBackendAbsent = (probe.code === 0 || probe.code === 1) && probe.stderr.trim() === ""
-      && report.error === MXC_HOST_ABSENCE_DIAGNOSTIC
+      && report.error === MXC_HOST_ABSENCE_DIAGNOSTIC && report.warnings.length === 0
       && Object.values(facts).every((present) => !present)
       && Object.values(uiCapabilities).every((supported) => !supported);
     return {
