@@ -613,9 +613,12 @@ function groupByProject(items: readonly WorkApprovalView[], projects: readonly W
   return groups.filter((group) => group.items.length > 0);
 }
 
-function ReplanningList({ items, onOpen }: {
+function ReplanningList({ items, onOpen, focusRef, tabIndexFor, onFocusItem }: {
   items: readonly (WorkPlanApprovalView | WorkApprovalNavigationView)[];
   onOpen: (item: WorkApprovalNavigationView) => void;
+  focusRef: FocusableProps["focusRef"];
+  tabIndexFor: (key: string) => number;
+  onFocusItem: FocusableProps["onFocusItem"];
 }) {
   if (items.length === 0) return null;
   return (
@@ -623,7 +626,9 @@ function ReplanningList({ items, onOpen }: {
       <h3 className="text-xs text-muted-foreground">{t("workApprovals.replanningHeading", { count: items.length })}</h3>
       <ul className="space-y-1.5">
         {items.map((item) => (
-          <li key={item.key} className="rounded-md border border-dashed bg-card px-3 py-2 text-xs" data-approval-key={item.key}>
+          <li key={item.key} ref={node => focusRef(item.key, node)} tabIndex={tabIndexFor(item.key)}
+            onFocus={() => onFocusItem(item.key)}
+            className="rounded-md border border-dashed bg-card px-3 py-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring" data-approval-key={item.key}>
             <div className="flex items-center gap-2">
               <KindChip item={item} />
               <span className="min-w-0 flex-1 truncate">{item.title}</span>
@@ -682,10 +687,11 @@ export function WorkApprovalStack({
   const listed = useMemo(() => (allProjects ? groups.flatMap((group) => group.items) : filtered), [allProjects, filtered, groups]);
   const head = listed.find((item) => item.key === expandedKey) ?? listed[0] ?? null;
   const queued = listed.filter((item) => item !== head);
-  // All-projects rows list every item (the card is the selected one); a project home lists the rest under its card.
+  // All-projects rows follow project order. A project home puts the selected card first.
   const order = useMemo(
-    () => (allProjects ? groups.flatMap((group) => group.items.map((item) => item.key)) : head ? [head.key, ...queued.map((item) => item.key)] : []),
-    [allProjects, groups, head, queued],
+    () => [...(allProjects ? listed.map(item => item.key) : head ? [head.key, ...queued.map(item => item.key)] : []),
+      ...replanning.map(item => item.key)],
+    [allProjects, listed, head, queued, replanning],
   );
   const roving = useRovingFocus(order);
   const clock = now();
@@ -704,10 +710,9 @@ export function WorkApprovalStack({
     onShowAllConsumed?.();
   }, [onShowAllConsumed, showAllRequest]);
 
-  // A popover navigation lands here: show that item as the card and focus it, then report the request consumed (once per request). Only a
+  // A popover or row navigation lands here: show the item in its section and focus it, then report the request consumed. Only a
   // list that answers the current request counts: after the popover switched projects, the previous project's list is still on screen.
-  // A target that is no longer listed (decided elsewhere, or waiting on the agent) lands on the card on top, or on the stack when it is
-  // empty, so the popover never leaves focus on the page body.
+  // When the target has disappeared, focus the first row or the stack itself.
   const handledFocusKey = useRef<string | null>(null);
   const sectionRef = useRef<HTMLElement | null>(null);
   const stackHeading = useRef<HTMLHeadingElement>(null);
@@ -731,18 +736,18 @@ export function WorkApprovalStack({
     }
     if (!fresh || handledFocusKey.current === focusKey) return;
     handledFocusKey.current = focusKey;
-    const listedNow = decidable.some((item) => item.key === focusKey);
-    if (listedNow) {
+    const targetItem = sorted.find(item => item.key === focusKey);
+    if (targetItem && isCounted(targetItem)) {
       setFilter("all");
       setExpandedKey(focusKey);
     }
     requestAnimationFrame(() => {
-      const target = listedNow ? focusKey : firstKeyRef.current;
+      const target = targetItem?.key ?? firstKeyRef.current;
       if (target !== undefined) focusNode(target);
       else sectionRef.current?.focus();
     });
     onFocusConsumed?.();
-  }, [allProjects, decidable, focusKey, focusNode, fresh, onFocusConsumed]);
+  }, [allProjects, sorted, focusKey, focusNode, fresh, onFocusConsumed]);
 
   const parkedTools = parkedToolApprovals && (
     <section className="space-y-1.5" aria-label={t("workApprovals.stageToolApprovals")}>
@@ -839,7 +844,7 @@ export function WorkApprovalStack({
       data-mode={allProjects ? "all" : "project"}
       ref={sectionRef}
       onFocusCapture={event => {
-        focusedDecision.current = event.target.closest<HTMLElement>("article[data-approval-key]")?.dataset.approvalKey;
+        focusedDecision.current = event.target.closest<HTMLElement>("[data-approval-key]")?.dataset.approvalKey;
       }}
       tabIndex={-1}
       className="flex min-h-0 flex-col gap-2 outline-none"
@@ -934,7 +939,8 @@ export function WorkApprovalStack({
         <p className="text-dense text-muted-foreground" data-testid="work-approvals-keyboard-legend">{t("workApprovals.keyboardLegend")}</p>
       )}
       {parkedTools}
-      <ReplanningList items={replanning} onOpen={openNavigation} />
+      <ReplanningList items={replanning} onOpen={openNavigation} focusRef={roving.focusRef}
+        tabIndexFor={roving.tabIndexFor} onFocusItem={roving.setFocusedKey} />
       <p className="text-dense text-muted-foreground" data-testid="work-approvals-tool-note">{t("workApprovals.toolApprovalsNote")}</p>
     </section>
   );

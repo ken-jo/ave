@@ -22,12 +22,13 @@ const STAGE_STATE_KEYS = {
   stage_failed: "workflowTemplates.stageFailed",
 } as const;
 
-export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals, onStop, onRetry, onComplete, onHistory, onClose, restoreFocus }: {
+export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals, parkedApprovals, onStop, onRetry, onComplete, onHistory, onClose, restoreFocus }: {
   api: Pick<AveApi, "getWorkBoardItem" | "getWorkflowTemplate" | "onWorkBoardItemChanged" | "decideWorkStage" | "decideWorkJoin" | "openWorkBoardJoin">;
   item: WorkItemResolved;
   run?: WorkItemRunState;
   requestedVersion?: TemplateVersion;
   approvals: ReactNode;
+  parkedApprovals: ReactNode;
   onStop: (id: number) => Promise<WorkBoardCancelIpcResult | { ok: false; error: string }>;
   onRetry: AveApi["retryWorkStage"];
   onComplete: (id: number) => Promise<void>;
@@ -75,6 +76,11 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
   const pending = showingHistory ? [] : (readItem.pendingWorkflowDecisions ?? []).filter(review => review.binding.runId === item.runId);
 
   const runHeading = useRef<HTMLHeadingElement>(null);
+  const parkedApprovalSection = useRef<HTMLElement>(null);
+  const showParkedApprovals = !showingHistory && Boolean(parkedApprovals);
+  useLayoutEffect(() => {
+    if (showParkedApprovals) parkedApprovalSection.current?.focus();
+  }, [showParkedApprovals]);
   const focusedDecision = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
     if (!focusedDecision.current || pending.some(review => workflowDecisionKey(review) === focusedDecision.current)) return;
@@ -190,7 +196,13 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
 
   return (
     <Dialog open onOpenChange={open => { if (!open && !busy) onClose(); }}>
-      <DialogContent size="2xl" className="min-w-0" onCloseAutoFocus={event => { event.preventDefault(); restoreFocus(); }}>
+      <DialogContent size="2xl" className="min-w-0"
+        onOpenAutoFocus={event => {
+          if (!parkedApprovalSection.current) return;
+          event.preventDefault();
+          parkedApprovalSection.current.focus();
+        }}
+        onCloseAutoFocus={event => { event.preventDefault(); restoreFocus(); }}>
         <DialogHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <DialogTitle ref={runHeading} tabIndex={-1} className="break-words">{stageDisplayName(item.title)}</DialogTitle>
@@ -202,6 +214,12 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
           </div>
           <DialogDescription>{[item.projectName, item.runId].flatMap(value => value ? [stageDisplayName(value)] : []).join(" · ") || t("workflowTemplates.openRun")}</DialogDescription>
         </DialogHeader>
+        {showParkedApprovals && (
+          <section ref={parkedApprovalSection} tabIndex={-1} aria-label={t("workApprovals.stageToolApprovals")} className="space-y-2 rounded-lg focus-visible:ring-2 focus-visible:ring-ring">
+            <h2 className="text-sm font-semibold">{t("workApprovals.stageToolApprovals")}</h2>
+            <div className="grid min-w-0 gap-3 sm:grid-cols-2">{parkedApprovals}</div>
+          </section>
+        )}
         {run?.phase === "error" && <p role="alert" className="text-sm text-destructive">{run.reason ?? t("workflowTemplates.runFailed")}</p>}
         {run?.busy && !item.runId && <p role="status" className="text-sm">{t("workBoard.loadingLabel")}</p>}
         {!!item.workflowRunPins?.some(entry => entry.runId !== item.runId) && (
@@ -217,7 +235,7 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
           </label>
         )}
         {readError && <p role="alert" className="text-sm text-destructive">{t("workflowTemplates.runReadFailed")}</p>}
-        {!showingHistory && (parked || pending.length > 0) && (
+        {!showingHistory && (pending.length > 0 || (parked && !showParkedApprovals)) && (
           <section className="space-y-1 rounded-lg border border-warning bg-background p-3 text-sm" onFocusCapture={event => {
             focusedDecision.current = event.target.closest<HTMLElement>("[data-workflow-decision-key]")?.dataset.workflowDecisionKey;
           }}>

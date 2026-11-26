@@ -497,3 +497,30 @@ it("keeps a navigation-only replanning row in the replanning section and out of 
     cleanup();
   }
 });
+
+it("focuses the replanning row in the destination project alongside a pending approval", async () => {
+  const replanning = plan({ key: "plan:5", itemId: 5, title: "Revise refund handling", phase: "replanning" });
+  const { key, scope, title } = replanning;
+  const { api, list } = stubApi(request => (
+    request && typeof request === "object" && "allProjects" in request
+      ? okList([{ kind: "navigation", targetKind: "plan", key, scope, title, phase: "replanning" }], 0)
+      : okList([plan(), replanning])
+  ));
+  const onCountChange = vi.fn();
+  const onOpenApproval = vi.fn();
+  const { rerender } = renderStack(api, {
+    project: PROJECTS[2], showAllProjects: true, onOpenApproval, onCountChange,
+  });
+
+  const waiting = within(await screen.findByTestId("work-approvals-replanning"));
+  fireEvent.click(waiting.getByRole("button", { name: t("workApprovals.openApproval") }));
+  expect(onOpenApproval).toHaveBeenCalledExactlyOnceWith(key, CHECKOUT.projectRoot);
+  rerender(<WorkApprovalStack api={api} actions={actions()} project={CHECKOUT} focusKey={key} onCountChange={onCountChange} />);
+  expect(await screen.findByText("Retry failed payment webhooks.", { exact: false })).toBeVisible();
+  expect(list).toHaveBeenLastCalledWith({ projectRoot: CHECKOUT.projectRoot });
+  const row = within(screen.getByTestId("work-approvals-replanning")).getByRole("listitem");
+  expect(row).toHaveTextContent(title);
+  expect(row).toHaveTextContent(t("workApprovals.replanningFooter"));
+  expect(onCountChange).toHaveBeenLastCalledWith(1);
+  await waitFor(() => expect(row).toHaveFocus());
+});

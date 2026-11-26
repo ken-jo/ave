@@ -2235,7 +2235,8 @@ export function WorkBoardPanel({
     requests.push(request);
     parkedByItem.set(route.itemId, requests);
   }
-  const parkedTools = [...parkedByItem].map(([id, requests]) => (
+  const workflowParkedApprovals = workflowItem ? parkedByItem.get(workflowItem.id) : undefined;
+  const parkedTools = [...parkedByItem].filter(([id]) => id !== workflowItem?.id).map(([id, requests]) => (
     <div key={id} className="space-y-1">
       {renderApproval(items.find(item => item.id === id)?.title ?? t("workApprovals.stageToolApprovals"), requests)}
     </div>
@@ -2477,6 +2478,7 @@ export function WorkBoardPanel({
       {workflowDialog?.kind === "run" && workflowItem && (
         <WorkflowRunDialog api={api} item={workflowItem} run={runState[workflowItem.id]} requestedVersion={workflowDialog.requestedVersion}
           approvals={renderApproval(workflowItem.title, workflowApprovals)}
+          parkedApprovals={workflowParkedApprovals && renderApproval(workflowItem.title, workflowParkedApprovals)}
           onStop={stop} onRetry={(id, input) => api.retryWorkStage(id, input)} onClose={closeWorkflowDialog} restoreFocus={focusWorkflowTrigger}
           onHistory={() => {
             setWorkflowDialog(undefined);

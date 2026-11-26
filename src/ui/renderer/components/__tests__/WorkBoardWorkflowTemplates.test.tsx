@@ -1,7 +1,7 @@
 import { useState } from "react";
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import { approvalRequest, approvalSurfaceStub, withApprovalSurface } from "../../../../../test/renderer/helpers.js";
@@ -406,5 +406,38 @@ it("draws a parked stage tool request in the selected project's Work Approvals q
   const queue = within(await screen.findByRole("region", { name: t("workApprovals.stageToolApprovals") }));
   expect(queue.getAllByText(t("toolApprovalDialog.runStage", { stage: "Gather reports" })).length).toBeGreaterThan(0);
   fireEvent.click(queue.getByTestId(TEST_IDS.approveButton));
+  expect(vi.mocked(surface.decide).mock.calls.map(call => call[0])).toEqual(["parked-tool"]);
+});
+
+it("focuses the parked stage tool approval inside the run opened in another project", async () => {
+  const target = { projectRoot: "/workspace/other", projectName: "Other workspace" };
+  const row = { ...item, ...target, runPin: pin };
+  const parked = approvalRequest({
+    id: "parked-tool", sessionId: "stage-child", toolName: "read_file",
+    runStage: { stageId: "gather", stageName: "Gather reports", runAllowOffered: false },
+    workBoardProjectApproval: { projectRoot: target.projectRoot, itemId: item.id, parked: true },
+  }) as unknown as ApprovalRequest;
+  const { api, surface, openProject } = mount([], [template], [parked], [project, target]);
+  api.addWorkBoardItem.mockResolvedValue({ status: "created", itemId: item.id, item: row });
+  api.listWorkBoard.mockImplementation(async filter => ({
+    status: "ok", items: filter?.projectRoot === target.projectRoot ? [row] : [],
+  }));
+  api.getWorkBoardItem.mockResolvedValue({ status: "found", item: row });
+
+  const library = await templates();
+  fireEvent.click(await library.findByRole("button", { name: template.name }));
+  fireEvent.click(await library.findByRole("button", { name: t("workflowTemplates.startRun") }));
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.workTitle")), { target: { value: item.title } });
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.scope")), { target: { value: target.projectRoot } });
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.createAndRun") }));
+  fireEvent.click(await screen.findByRole("button", { name: t("workflowTemplates.openInProject", { project: target.projectName }) }));
+
+  expect(openProject).toHaveBeenCalledExactlyOnceWith(target.projectRoot);
+  const run = within(await screen.findByRole("dialog", { name: item.title }));
+  const approval = run.getByRole("region", { name: t("workApprovals.stageToolApprovals") });
+  await waitFor(() => expect(approval).toHaveFocus());
+  const approve = within(approval).getByTestId(TEST_IDS.approveButton);
+  expect(approve).toBeEnabled();
+  fireEvent.click(approve);
   expect(vi.mocked(surface.decide).mock.calls.map(call => call[0])).toEqual(["parked-tool"]);
 });
