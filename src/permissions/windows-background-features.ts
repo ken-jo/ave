@@ -18,7 +18,14 @@ export function isWindowsBackgroundFeatureReleaseEnabled(): boolean {
 }
 
 function hasWindowsBackgroundHealth(): boolean {
-  return !isSandboxGateUndecidedAtBoot() && isAveHomePrivacyVerifiedAtBoot() && !getSandboxHomesUnavailable();
+  if (!isAveHomePrivacyVerifiedAtBoot() || getSandboxHomesUnavailable()) return false;
+  try {
+    mxcSandboxHomesParent();
+    return true;
+  } catch {
+    markSandboxHomesUnavailable();
+    return false;
+  }
 }
 
 function hasDefinitiveWindowsBackendAbsence(): boolean {
@@ -33,8 +40,8 @@ function hasDefinitiveWindowsBackendAbsence(): boolean {
 }
 
 export function areWindowsBackgroundSwitchesAvailable(): boolean {
-  return isWindowsBackgroundFeatureReleaseEnabled() && hasWindowsBackgroundHealth()
-    && !isAsrtSandboxActive() && hasDefinitiveWindowsBackendAbsence();
+  return isWindowsBackgroundFeatureReleaseEnabled() && !isSandboxGateUndecidedAtBoot() && !isAsrtSandboxActive()
+    && hasDefinitiveWindowsBackendAbsence() && hasWindowsBackgroundHealth();
 }
 
 function isWindowsContainerConfinementOperational(): boolean {
@@ -49,18 +56,12 @@ function isWindowsContainerConfinementOperational(): boolean {
 
 export function sessionSearchIndexPolicy(preference: boolean | undefined): SessionSearchIndexPolicy {
   if (!isWindowsBackgroundFeatureReleaseEnabled()) return "enabled";
-  if (!hasWindowsBackgroundHealth()) return "inactive";
+  if (isSandboxGateUndecidedAtBoot()) return "inactive";
   const substrate = getWindowsSandboxSubstrate();
   const confinementOperational = (substrate?.srtWinReady === true && substrate.accountBackendAbsent !== true
       && isWindowsAccountConfinementOperational())
     || (substrate?.mxc.state === "available" && substrate.shells === "mxc" && isWindowsContainerConfinementOperational());
   if (!confinementOperational && (isAsrtSandboxActive() || !hasDefinitiveWindowsBackendAbsence())) return "inactive";
-  try {
-    // Recheck the root and HOME parent even before a failed child start can report their loss.
-    mxcSandboxHomesParent();
-  } catch {
-    markSandboxHomesUnavailable();
-    return "inactive";
-  }
+  if (!hasWindowsBackgroundHealth()) return "inactive";
   return !confinementOperational && preference === false ? "paused" : "enabled-with-recovery";
 }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { deferred } from '../../__tests__/support/deferred.js';
 import type { IpcMainInvokeEvent } from 'electron';
 import type { IpcDeps } from '../types.js';
 import type { MemoryMapApi } from '../../shared/memory-map.js';
@@ -52,6 +53,28 @@ beforeEach(() => {
 });
 afterEach(() => { Object.defineProperty(process, 'platform', originalPlatform); });
 describe('memory map host boundary', () => {
+  it('rechecks switch eligibility when a queued settings write runs', async () => {
+    const firstWrite = deferred<void>();
+    const set = vi.fn(async () => {}).mockImplementationOnce(() => firstWrite.promise);
+    registerMemoryMapHandlers({
+      auditLogger: { log: state.audit },
+      settingsService: { get: () => undefined, hasStoredSecret: async () => false, set },
+    } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
+    state.releaseGateOpen = true;
+    const first = invoke('settingsSet', { localInferenceWithoutSandbox: true });
+    await vi.waitFor(() => expect(set).toHaveBeenCalledOnce());
+    const queued = invoke('settingsSet', { localInferenceWithoutSandbox: false });
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      state.releaseGateOpen = false;
+    } finally {
+      firstWrite.resolve(undefined);
+    }
+    await expect(first).resolves.toMatchObject({ ok: true });
+    await expect(queued).resolves.toEqual({ ok: false, error: 'local-runtime-unavailable' });
+    expect(set).toHaveBeenCalledOnce();
+  });
+
   it('exposes and persists the preference only with release readiness, and refuses local operations while off', async () => {
     const localModelPath = '/example/model';
     let config: MemoryEmbeddingConfig = { source: 'local', localModelPath };

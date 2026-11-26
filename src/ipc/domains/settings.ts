@@ -109,8 +109,9 @@ export async function rendererSettingsSnapshot(
 ): Promise<RendererSettingsSnapshot> {
   // `upstreamProxy` has its own channels (permissions upstreamProxyGet/Set).
   const { a2aRemote: _mainOnly, upstreamProxy: _ownChannel, memoryEmbedding: _embeddingConfig, ...projected } = structuredClone(snapshot);
+  const activeChatModel = await resolveMainActiveChatModel(settingsService);
   if (!areWindowsBackgroundSwitchesAvailable()) delete projected.features?.sessionIndexingWithoutContainment;
-  return { ...projected, activeChatModel: await resolveMainActiveChatModel(settingsService) };
+  return { ...projected, activeChatModel };
 }
 
 /** Shared by every handler that mutates settings and must re-broadcast the projected snapshot to all windows. */
@@ -661,11 +662,6 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (partial && typeof partial === "object" && Object.hasOwn(partial, "memoryEmbedding")) {
       return { ok: false, error: "invalid-input" };
     }
-    const features = partial?.features;
-    if (features && typeof features === "object" && Object.hasOwn(features, "sessionIndexingWithoutContainment")
-      && (typeof features.sessionIndexingWithoutContainment !== "boolean" || !areWindowsBackgroundSwitchesAvailable())) {
-      return { ok: false, error: "invalid-input" };
-    }
     // Where the sandbox egress proxy sends allowed connections: written only through the
     // permissions upstreamProxySet channel, which validates it and keeps credentials in the secret store.
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "upstreamProxy")) {
@@ -760,6 +756,11 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       settingsService.get("shortcuts"),
       settingsService.get("system"),
     );
+    const features = partial?.features;
+    if (features && typeof features === "object" && Object.hasOwn(features, "sessionIndexingWithoutContainment")
+      && (typeof features.sessionIndexingWithoutContainment !== "boolean" || !areWindowsBackgroundSwitchesAvailable())) {
+      return { ok: false, error: "invalid-input" };
+    }
     const layoutPatch = partial?.system?.mainLayout;
     if (layoutPatch !== undefined) {
       const window = mainWindowForContents(e.sender);

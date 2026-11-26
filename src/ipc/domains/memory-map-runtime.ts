@@ -161,8 +161,8 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     settingsGet: settings,
     settingsSet: async input => {
       if ('localInferenceWithoutSandbox' in input) {
-        if (!isLocalInferenceSwitchAvailable()) throw new MemoryMapHostError('local-runtime-unavailable');
         const pending = settingsWrite.catch(() => {}).then(async () => {
+          if (!isLocalInferenceSwitchAvailable()) throw new MemoryMapHostError('local-runtime-unavailable');
           const previous = deps.settingsService.get('memoryEmbedding');
           const enabled = input.localInferenceWithoutSandbox;
           if (!enabled && previous?.localInferenceWithoutSandbox !== false) {

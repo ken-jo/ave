@@ -16,14 +16,21 @@ import { CHANNELS } from "../../../contract/app-contract.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { SECURITY_FEATURE_KEYS } from "../../../shared/security-settings.js";
 import { securitySettingsGestures } from "../../security-settings-gesture.js";
-import { __resetWindowsSandboxSubstrateForTest } from "../../../permissions/sandbox-capability.js";
+import { __resetSandboxHomesUnavailableForTest, __resetWindowsSandboxSubstrateForTest, getSandboxHomesUnavailable } from "../../../permissions/sandbox-capability.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("electron", () => ({
   ipcMain: { handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => handlers.set(channel, handler)) },
 }));
 
-const backgroundState = vi.hoisted(() => ({ release: false, noBackend: false }));
+const backgroundState = vi.hoisted(() => ({ release: false, noBackend: false, homeLost: false }));
+vi.mock("../../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/mxc-runtime-root.js")>(),
+  mxcSandboxHomesParent: () => {
+    if (backgroundState.homeLost) throw new Error("HOME parent changed identity");
+    return "C:/example/ave-runtime/homes";
+  },
+}));
 vi.mock("../../../permissions/mxc-extension-admission.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../permissions/mxc-extension-admission.js")>(),
   hasMxcReleaseGateEvidence: () => backgroundState.release,
@@ -83,10 +90,33 @@ afterEach(async () => {
   stopSettingsListener?.();
   stopSettingsListener = undefined;
   __resetWindowsSandboxSubstrateForTest();
+  __resetSandboxHomesUnavailableForTest();
   await cleanupTmpDir(userDataPath);
 });
 
 describe("session search indexing settings", () => {
+  it.each(["projection", "write"] as const)("rechecks HOME identity before the first settings %s after loss", async (operation) => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform");
+    const f = await setup();
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    backgroundState.noBackend = backgroundState.release = true;
+    try {
+      await expect(f.invoke(CHANNELS.settings.get, undefined)).resolves.toHaveProperty("features.sessionIndexingWithoutContainment", true);
+      backgroundState.homeLost = true;
+      expect(getSandboxHomesUnavailable()).toBe(false);
+      if (operation === "projection") {
+        await expect(f.invoke(CHANNELS.settings.get, undefined)).resolves.not.toHaveProperty("features.sessionIndexingWithoutContainment");
+      } else {
+        await expect(f.invoke(CHANNELS.settings.update, { features: { sessionIndexingWithoutContainment: false } }))
+          .resolves.toEqual({ ok: false, error: "invalid-input" });
+        expect(f.settingsService.get("features")?.sessionIndexingWithoutContainment).toBe(true);
+      }
+    } finally {
+      if (original) Object.defineProperty(process, "platform", original);
+      backgroundState.release = backgroundState.noBackend = backgroundState.homeLost = false;
+    }
+  });
+
   it("publishes and accepts the independent switch only on a released PC without containment", async () => {
     const original = Object.getOwnPropertyDescriptor(process, "platform");
     const f = await setup();
