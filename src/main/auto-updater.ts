@@ -103,8 +103,8 @@ const UPDATE_GUIDE_URL = "https://ave.agent-connector.ai";
 function isClientZip(file: { url: string }, arch: string): boolean {
   if (arch !== "arm64" && arch !== "x64") return false;
   const url = URL.parse(file.url, "https://localhost");
-  return url?.pathname.toLowerCase().endsWith(".zip") === true
-    && url.pathname.includes("arm64") === (arch === "arm64");
+  const filename = url?.pathname.split("/").at(-1)?.toLowerCase();
+  return filename?.match(/-(arm64|x64)(?:-mac)?\.zip$/u)?.[1] === arch;
 }
 
 function feedMatchesClientArch(files: UpdateFeed["files"], platform: NodeJS.Platform, arch: string): boolean {

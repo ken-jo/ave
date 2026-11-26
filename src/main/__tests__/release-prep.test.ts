@@ -118,6 +118,8 @@ describe("macOS update architecture", () => {
   it.each([
     ["x64", armZip, "arm64"],
     ["arm64", intelZip, "x64"],
+    ["arm64", { url: "https://updates.example/arm64-migration/Ave-2.0.0-x64-mac.zip" }, "x64"],
+    ["x64", { url: "x64-migration/Ave-2.0.0-mac-arm64.zip" }, "arm64"],
   ] as const)("does not offer %s clients a ZIP for %s", async (arch, file, otherArch) => {
     const window = fakeWindow();
     const updater = fakeUpdater();
@@ -135,14 +137,27 @@ describe("macOS update architecture", () => {
     service.stop();
   });
 
-  it.each([["arm64", armZip], ["x64", intelZip]] as const)(
+  const directoryArmZip = { url: "x64-migration/Ave-2.0.0-mac-arm64.zip" };
+  const directoryIntelZip = { url: "https://updates.example/arm64-migration/Ave-2.0.0-mac-x64.zip" };
+
+  it.each([
+    ["arm64", armZip, intelZip],
+    ["x64", intelZip, armZip],
+    ["arm64", directoryArmZip, directoryIntelZip],
+    ["x64", directoryIntelZip, directoryArmZip],
+  ] as const)(
     "offers and selects only the client ZIP from a mixed feed on %s",
-    async (arch, expected) => {
+    async (arch, expected, other) => {
       const updater = fakeUpdater();
-      const info = { version: "2.0.0", files: [armZip, intelZip] };
+      const info = { version: "2.0.0", files: [other, expected] };
+      const { MacUpdater } = createRequire(import.meta.url)("electron-updater/out/MacUpdater.js") as {
+        MacUpdater: { filterFilesForArch<T>(files: T[], isArm64Mac: boolean): T[] };
+      };
       const download = vi.spyOn(updater, "downloadUpdate").mockImplementation(async () => {
         // The download reads the same feed record the offer event delivered.
         expect(info.files).toEqual([expected]);
+        const resolved = info.files.map(info => ({ info, url: new URL(info.url, "https://updates.example") }));
+        expect(MacUpdater.filterFilesForArch(resolved, arch === "arm64")).toEqual(resolved);
       });
       const service = createTestAutoUpdater(fakeWindow().win, updater, {
         client: { platform: "darwin", arch }, getRunningVersion: () => "1.0.0",
