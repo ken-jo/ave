@@ -205,6 +205,20 @@ describe("mandatory sandbox control-file writes", () => {
     expect(filesystem.readFileSync(blocker, "utf8")).toBe("ordinary file");
   });
 
+  it("emits no drive-relative system Git file on Windows and keeps an explicit one", () => {
+    const project = join(root, "project");
+    mkdirSync(project);
+    vi.stubEnv("GIT_CONFIG_NOSYSTEM", "0");
+    vi.stubEnv("GIT_CONFIG_SYSTEM", undefined);
+    const systemRows = (entries: readonly FilesystemPathEntry[]) => entries
+      .map(entry => typeof entry === "string" ? entry : entry.path).filter(path => /[\\/]etc[\\/]gitconfig$/u.test(path));
+    expect(systemRows(withPlatform("win32", () => buildMandatorySandboxWritePolicy([project])).denyWrite)).toEqual([]);
+    expect(systemRows(withPlatform("linux", () => buildMandatorySandboxWritePolicy([project])).denyWrite)).toContain("/etc/gitconfig");
+    const explicit = join(root, "machine", "etc", "gitconfig");
+    vi.stubEnv("GIT_CONFIG_SYSTEM", explicit);
+    expect(systemRows(withPlatform("win32", () => buildMandatorySandboxWritePolicy([project])).denyWrite)).toContain(explicit);
+  });
+
   it.each(["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"] as const)("refuses an obstructed explicit %s target in a writable project", variable => {
     const project = join(root, "project");
     const blocker = join(project, "ordinary-blocker");

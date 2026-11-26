@@ -1094,6 +1094,10 @@ export const en = {
   "be_pluginUiHost.pluginUiTitle": "Extension UI",
   "be_pluginUiHost.pluginUiLoadingDesc": "Loading extension view.",
 
+  // be_policyModel
+  "be_policyModel.userDenyCoversPierce": "Your read deny {rule} covers {pierce}, which this launch needs to read; the launch is refused ({code})",
+  "be_policyModel.userDenyMayCoverPierce": "Ave cannot tell whether your read deny {rule} covers {pierce}, which this launch needs to read; the launch is refused ({code})",
+
   // be_policyStore
   "be_policyStore.managedPolicyUserCannotChange": "IT-managed policy cannot be changed by the user.",
 
@@ -3343,6 +3347,8 @@ export const en = {
   "inputActionBar.sandboxCauseWindowsSetupIncomplete": "Windows sandbox setup (srt-win) is not complete",
   "inputActionBar.sandboxCauseLinuxRuntimeProbeFailed": "bubblewrap could not run (startup check failed)",
   "inputActionBar.sandboxCauseInitFailed": "the sandbox failed to start",
+  "inputActionBar.sandboxCauseWindowsDenyUnenforceable": "a protected path is on a network location; its deny rule can't be guaranteed",
+  "inputActionBar.sandboxCauseWindowsDenyPathUnenforceable": "a protected path couldn't be resolved safely; its deny rule can't be guaranteed",
   "inputActionBar.sandboxCausePlatformUnsupported": "not supported on this platform",
   "inputActionBar.sandboxCauseWindowsShellNotContained": "Windows shells run outside the sandbox (path ACL grants are not safe)",
   "inputActionBar.sandboxCauseShellNotContained": "the active sandbox cannot contain shells, so shell commands ask for approval and run without it",
@@ -5032,6 +5038,13 @@ export const en = {
   "sandboxPolicy.scanInaccessible": "Nested repository discovery could not safely read or resolve the project",
   "sandboxPolicy.scanRouting": "A writable routing link could replace protected repository paths",
   "sandboxPolicy.noWriteRoots": "no writable project roots",
+  "sandboxPolicy.savedSessionReadWithheld": "The Windows shell sandbox blocked reading the saved-session store.",
+  "sandboxPolicy.pierceUserDenyPartMaybe": "Ave cannot tell whether your read deny {rule} applies inside {path}, which this launch reads; the launch keeps the rest of it and cannot read what the deny matches.",
+  "sandboxPolicy.pierceUserDenyPart": "Your read deny {rule} applies inside {path}, which this launch reads; the launch keeps the rest of it and cannot read what the deny matches.",
+  "sandboxPolicy.sessionReadUserDenyMaybe": "Ave cannot tell whether your read deny {rule} covers the saved-session store {path}, so shell commands cannot read it.",
+  "sandboxPolicy.sessionReadUserDenyPartMaybe": "Ave cannot tell whether your read deny {rule} applies inside the saved-session store {path}; shell commands cannot read what it matches.",
+  "sandboxPolicy.sessionReadUserDenyPart": "Your read deny {rule} applies inside the saved-session store {path}, so shell commands cannot read what it matches.",
+  "sandboxPolicy.sessionReadUserDenyWhole": "Your read deny {rule} covers the saved-session store {path}, so shell commands cannot read it.",
   "sandboxPolicy.cleanupPending": "Sandbox process termination is unconfirmed; repository quarantine is pending.",
   "sandboxPolicy.cleanupFailed": "Sandbox repository quarantine failed: {reason}. Repository entries may remain; inspect them before running independent Git.",
   "sandboxPolicy.terminalWindow": "Linux Agent terminals keep the Git protection scan from shell startup. Repositories or Git control paths created later inside its existing writable roots can remain writable until that shell exits, with no time limit; foreground commands, background jobs and raw terminal input share this window. Close and reopen the Agent shell before using those repositories. Projects outside its initial writable roots remain read-only.",
@@ -5230,6 +5243,8 @@ export const en = {
   "shellExecution.homePrivacyHelperUnavailable": "Shell commands and hooks are off: Ave could not check its home folder privacy at startup. Restart Ave; if it persists, reinstall Ave.",
   "shellExecution.boundaryUnverifiedAsk": "Ave home privacy could not be established at startup, so a shell command runs without the OS sandbox only after you approve it. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while home privacy stays unverified. Other permission checks still apply and may ask again.",
   "shellExecution.sandboxUnavailableAsk": "The OS sandbox is turned on but unavailable, so a shell command runs without it only after you approve it, or when a saved rule matches the command exactly. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while the sandbox is unavailable. Other permission checks still apply and may ask again.",
+  "shellExecution.denyUnenforceableAsk": "A protected path is on a network location; its deny rule can't be guaranteed, so the OS sandbox is unavailable and this shell command runs without it only after you approve it. Approve it once or for this session.",
+  "shellExecution.denyPathUnenforceableAsk": "A protected path couldn't be resolved safely; its deny rule can't be guaranteed, so the OS sandbox is unavailable and this shell command runs without it only after you approve it. Approve it once or for this session.",
   "shellExecution.shellNotContainedAsk": "The OS sandbox is on but cannot contain shell commands on this computer, so shell commands run without it. When asked, approve the command once or waive this sandbox approval for later shell commands and hooks in this session. Other permission checks still apply and may ask again.",
   "shellExecution.sandboxInstallHint": "To restore the OS sandbox, install {packages} on this computer and restart Ave.",
   "shellExecution.location": "Execution location: current host ({platform}).",

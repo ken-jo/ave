@@ -52,6 +52,13 @@ vi.mock("../../shared/ave-home-test-guard.js", async (original) => {
 });
 
 vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
+// A foreign host keeps its own separator, so obligations never apply to its simulated win32 process. The drive answers identities as a
+// Windows kernel does, so a test of admitted rows admits them on every host.
+const windowsAdmission = vi.hoisted(() => ({ native: false }));
+vi.mock("../admitted-obligation.js", async (original) => {
+  const actual = await original<typeof import("../admitted-obligation.js")>();
+  return { ...actual, windowsObligationsApply: () => actual.windowsObligationsApply() || (windowsAdmission.native && process.platform === "win32") };
+});
 // Keep the production vendor path composition on both hosts. Only the package location is supplied by the fixture.
 vi.mock("node:module", async (original) => {
   const actual = await original<typeof import("node:module")>();
@@ -401,18 +408,21 @@ function createPinRoot(runRoot: string): string {
 }
 const pinRoot = createPinRoot(runTmp);
 const nativeRoot = hostPlatform === "win32" ? pinRoot : null;
-const resourceRoot = hostFs.realpathSync.native(nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(hostOs.tmpdir(), "browser-download-resources-"))));
-const fixtureResources = { resourcePath: hostPath.join(resourceRoot, "resources"), isPackaged: false };
-const fixtureScripts = hostPath.join(resourceRoot, "dist", "skill-scripts");
-const fixtureRuntime = hostPath.join(resourceRoot, "host-runtime.exe");
-const fixtureSandboxPackage = hostPath.join(resourceRoot, "sandbox-runtime", "package.json");
-const fixtureVendoredSrtWin = hostPath.join(hostPath.dirname(fixtureSandboxPackage), "vendor", "srt-win");
-const fixturePrivateSrtWin = hostPath.join(resourceRoot, "srt-win-private", "bin");
-const fixtureProgramData = hostPath.join(resourceRoot, "program-data");
-const fixtureExternalKey = hostPath.join(resourceRoot, "external-key");
-const fixtureGlobalGitConfig = hostPath.join(resourceRoot, "user.gitconfig");
-const fixtureSystemGitConfig = hostPath.join(resourceRoot, "system.gitconfig");
-const srtPath = hostPath.join(fixturePrivateSrtWin, "srt-win.exe");
+const resourceScratch = hostFs.realpathSync.native(nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(hostOs.tmpdir(), "browser-download-resources-"))));
+// The checkout, its runtime and the host files it names are native paths, as on a Windows host; a foreign host puts them on the drive.
+const resourceRoot = nativeRoot === null ? String.raw`C:\ave` : resourceScratch;
+const resourcePath = nativeRoot === null ? hostPath.win32 : hostPath;
+const fixtureResources = { resourcePath: resourcePath.join(resourceRoot, "resources"), isPackaged: false };
+const fixtureScripts = resourcePath.join(resourceRoot, "dist", "skill-scripts");
+const fixtureRuntime = resourcePath.join(resourceRoot, "host-runtime.exe");
+const fixtureSandboxPackage = resourcePath.join(resourceRoot, "sandbox-runtime", "package.json");
+const fixtureVendoredSrtWin = resourcePath.join(resourcePath.dirname(fixtureSandboxPackage), "vendor", "srt-win");
+const fixturePrivateSrtWin = resourcePath.join(resourceRoot, "srt-win-private", "bin");
+const fixtureProgramData = resourcePath.join(resourceRoot, "program-data");
+const fixtureExternalKey = resourcePath.join(resourceRoot, "external-key");
+const fixtureGlobalGitConfig = resourcePath.join(resourceRoot, "user.gitconfig");
+const fixtureSystemGitConfig = resourcePath.join(resourceRoot, "system.gitconfig");
+const srtPath = resourcePath.join(fixturePrivateSrtWin, "srt-win.exe");
 const originalExecPath = Object.getOwnPropertyDescriptor(process, "execPath");
 if (originalExecPath === undefined) throw new Error("The host runtime path descriptor is missing");
 const profileRoot = nativeRoot === null ? "C:\\Users\\alice" : hostPath.join(nativeRoot, "profile");
@@ -435,7 +445,7 @@ function writeDriveFile(path: string): void {
 
 const { setProcessPlatform } = await import("../../__tests__/support/process-platform.js");
 const {
-  cleanupAsrtSandboxAfterCommand, getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths,
+  cleanupAsrtSandboxAfterCommand, getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyEntries, getDefaultSensitiveWriteDenyPaths,
   initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, wrapWorkerCommand,
 } = await import("../asrt-sandbox.js");
 const { holdWindowsFilesystemGrant } = await import("../windows-acl-grant-holder.js");
@@ -447,10 +457,11 @@ const { buildMandatorySandboxWritePolicy } = await import("../sandbox-write-poli
 const { pinWindowsPaths, windowsPathKey } = await import("../../shared/windows-path-facts.js");
 const { assertWindowsGrantGrammar, pinWindowsGrantTargets } = await import("../windows-grant-targets.js");
 const { prepareOwnedMxcShellLaunch } = await import("../../__tests__/support/contained-shell-launch.js");
-const { existsSync, mkdirSync, mkdtempSync, rmdirSync } = await import("node:fs");
+const { existsSync, mkdirSync, mkdtempSync, rmdirSync, writeFileSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const runtimeRoot = await import("../mxc-runtime-root.js");
-const { mxcStagingParentFor } = await import("../../__tests__/support/mxc-staging-parent.js");
+const { mxcStagingParentFor, removeSuiteMxcStagingParent } = await import("../../__tests__/support/mxc-staging-parent.js");
+afterAll(removeSuiteMxcStagingParent);
 const { join: hostJoin } = await vi.importActual<typeof import("node:path")>("node:path");
 
 const stagingParent = mxcStagingParentFor();
@@ -460,25 +471,30 @@ function checkCheckoutStampTargets(paths: readonly string[], checkout = original
   withProvidedContext("realAccountHome", checkout, () => checkSandboxStampTargets(paths));
 }
 
+// A foreign host's drive is emptied after each test, so its checkout is laid out again before each one.
+function createCheckout(fs: { mkdirSync: typeof hostFs.mkdirSync; writeFileSync: typeof hostFs.writeFileSync }): void {
+  for (const path of [fixtureResources.resourcePath, fixtureScripts, fixtureVendoredSrtWin, fixturePrivateSrtWin, fixtureProgramData]) {
+    fs.mkdirSync(path, { recursive: true });
+  }
+  fs.writeFileSync(fixtureSandboxPackage, "{}");
+  fs.writeFileSync(fixtureRuntime, "runtime image fixture");
+  fs.writeFileSync(fixtureExternalKey, "key path fixture");
+  fs.writeFileSync(fixtureGlobalGitConfig, "");
+  fs.writeFileSync(fixtureSystemGitConfig, "");
+}
+
 beforeAll(() => {
-  checkSandboxStampTargets([resourceRoot]);
-  hostFs.mkdirSync(fixtureResources.resourcePath, { recursive: true });
-  hostFs.mkdirSync(fixtureScripts, { recursive: true });
-  hostFs.mkdirSync(fixtureVendoredSrtWin, { recursive: true });
-  hostFs.mkdirSync(fixturePrivateSrtWin, { recursive: true });
-  hostFs.mkdirSync(fixtureProgramData, { recursive: true });
-  hostFs.writeFileSync(fixtureSandboxPackage, "{}");
-  hostFs.writeFileSync(fixtureRuntime, "runtime image fixture");
-  hostFs.writeFileSync(fixtureExternalKey, "key path fixture");
-  hostFs.writeFileSync(fixtureGlobalGitConfig, "");
-  hostFs.writeFileSync(fixtureSystemGitConfig, "");
+  checkSandboxStampTargets([resourceScratch]);
+  if (nativeRoot !== null) createCheckout(hostFs);
   if (hostPlatform === "win32") {
     const relative = hostPath.join("windows-path-kind", process.arch, "ave-path-kind.exe");
     const target = hostPath.join(fixtureResources.resourcePath, relative);
     hostFs.mkdirSync(hostPath.dirname(target), { recursive: true });
     hostFs.copyFileSync(hostPath.join(originalCwd, "resources", relative), target);
   }
-  configureHostResources(fixtureResources);
+  // The composition root checks the native resource path with the platform's own path rules.
+  setProcessPlatform("win32");
+  try { configureHostResources(fixtureResources); } finally { setProcessPlatform(hostPlatform); }
 });
 const STAGED = "0123456789abcdef0123456789abcdef";
 const RELOCATED = { name: "a relocated Ave home inside the project", project: `${profileRoot}\\work`, home: `${profileRoot}\\work\\ave` } as const;
@@ -534,6 +550,7 @@ beforeEach(() => {
   vi.stubEnv("GIT_CONFIG_SYSTEM", fixtureSystemGitConfig);
   vi.stubEnv("GIT_CONFIG_NOSYSTEM", undefined);
   mkdirSync(profileRoot, { recursive: true });
+  if (nativeRoot === null) createCheckout({ mkdirSync, writeFileSync });
 });
 
 afterEach(async () => {
@@ -551,6 +568,7 @@ afterEach(async () => {
     drive.identities.clear();
     drive.readable.clear();
     drive.pins.clear();
+    windowsAdmission.native = false;
     runtime.policyFrames.length = 0;
   }
 });
@@ -771,14 +789,16 @@ async function sessionFloor(): Promise<{ denyRead: DenyList; denyWrite: DenyList
 
 /** A deny-only worker wrap, as `spawnConfinedChild` composes it for an srt-win MCP server, hook or plugin child: the floor restated under
  * one boundary snapshot, handed to the runtime's wrap. */
-async function workerWrap(): Promise<{ denyRead: DenyList; denyWrite: DenyList }> {
+async function workerWrap(
+  compose: () => { denyRead: DenyList; denyWrite: DenyList } = () => ({ denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyEntries() }),
+): Promise<{ denyRead: DenyList; denyWrite: DenyList }> {
   const egress = openEgressInvocation(TEST_WORKER_EGRESS_OWNER);
   try {
     const boundarySnapshot = createAveHomeBoundarySnapshot();
     runtime.wrap.mockResolvedValueOnce({ argv: [srtPath, "node", "server.js"], env: {} });
     await wrapWorkerCommand("node server.js", {
       commandId: egress.token, boundarySnapshot,
-      filesystem: boundarySnapshot.run(() => ({ denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths() })),
+      filesystem: boundarySnapshot.run(compose) as Parameters<typeof wrapWorkerCommand>[1]["filesystem"],
     });
     return (lastCall(runtime.wrap)[2] as { filesystem: { denyRead: DenyList; denyWrite: DenyList } }).filesystem;
   } finally {
@@ -801,7 +821,7 @@ describe("the browser download staging folder in the srt-win session floor and w
   ])("accepts default scratch beside $checkout and refuses its scripts", ({ checkout, scratch }) => {
     // Preserve each layout's ancestry inside the run's scratch on either host.
     const project = (path: string) => hostPath.join(
-      resourceRoot, ...path.slice(hostPath.win32.parse(path).root.length).split(/[\\/]/u),
+      resourceScratch, ...path.slice(hostPath.win32.parse(path).root.length).split(/[\\/]/u),
     );
     const checkoutPath = project(checkout);
     const scratchPath = project(scratch);
@@ -901,6 +921,59 @@ describe("the browser download staging folder in the srt-win session floor and w
     expect(row).toBeDefined();
     for (const path of [staging(), stagedFile()]) expect(deniedBy(after.denyWrite, path), path).toBe(row);
     expect(deniedBy(after.denyWrite, `${aveHome()}\\logs\\main.log`)).toBeUndefined();
+  });
+
+  it("restates only the session floor's absent rows in a worker wrap, so its policy does not grow with them, while existing rows keep their deny", async () => {
+    useLayout(OUTSIDE_PROFILE, { staged: true });
+    const session = await sessionFloor();
+    const absentRows = (rows: DenyList) => spelledRows(rows)
+      .filter((row) => !/[*?]/.test(row) && !existsSync(row.replace(/[\\/]+$/, ""))).map(fold).sort();
+    const certs = `${aveHome()}\\certs`;
+    const before = await workerWrap();
+    expect(existsSync(certs)).toBe(false);
+    expect(absentRows(before.denyRead)).toEqual(absentRows(session.denyRead));
+    expect(absentRows(before.denyWrite)).toEqual(absentRows(session.denyWrite));
+    const root = directoryRow(before.denyRead, aveHome());
+    expect(root).toBeDefined();
+    expect(deniedBy(before.denyRead, certs)).toBe(root);
+    mkdirSync(certs);
+    const after = await workerWrap();
+    expect(directoryRow(after.denyWrite, certs)).toBeDefined();
+    expect(deniedBy(after.denyRead, certs)).toBeDefined();
+    expect(directoryRow(after.denyWrite, staging())).toBeDefined();
+  });
+
+  it("freezes generated floor lists, so a list derived from one keeps an added row as its own deny and never creates an absent one", async () => {
+    // Only an admitted request row is kept by its origin.
+    windowsAdmission.native = true;
+    useLayout(OUTSIDE_PROFILE, { staged: false });
+    await sessionFloor();
+    // A floor write row inside the profile that no grant reaches is dropped; the request's own row is kept.
+    const own = `${profileRoot}\\extra-own`;
+    writeDriveFile(own);
+    const absent = `${aveHome()}-extra-absent`;
+    expect(existsSync(absent)).toBe(false);
+    expect(() => (getDefaultSensitiveReadDenyPaths() as string[]).push(own)).toThrow(TypeError);
+    expect(() => (getDefaultSensitiveWriteDenyEntries() as unknown[]).push(own)).toThrow(TypeError);
+    const derived = await workerWrap(() => ({
+      denyRead: [...getDefaultSensitiveReadDenyPaths(), own, absent],
+      denyWrite: [...getDefaultSensitiveWriteDenyEntries(), own, absent],
+    }));
+    expect(deniedBy(derived.denyWrite, own)).toBeDefined();
+    // An absent row is never stamped: the stamp would create it.
+    expect(deniedBy(derived.denyRead, absent)).toBeUndefined();
+    expect(deniedBy(derived.denyWrite, absent)).toBeUndefined();
+    expect(existsSync(absent)).toBe(false);
+  });
+
+  it("restates the session floor's absent rows in a worker wrap under a profile-child Ave home", async () => {
+    useLayout(PROFILE_CHILD, { staged: false });
+    const session = await sessionFloor();
+    const absentRows = (rows: DenyList) => spelledRows(rows)
+      .filter((row) => !/[*?]/.test(row) && !existsSync(row.replace(/[\\/]+$/, ""))).map(fold).sort();
+    const wrap = await workerWrap();
+    expect(absentRows(wrap.denyRead)).toEqual(absentRows(session.denyRead));
+    expect(absentRows(wrap.denyWrite)).toEqual(absentRows(session.denyWrite));
   });
 
   it("stamps a read deny on the folder under a profile-child Ave home where its DACL would let the sandbox account read it", async () => {

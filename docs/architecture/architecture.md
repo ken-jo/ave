@@ -771,7 +771,11 @@ plan for the prompt and approval UI. The
 requires a fresh local desktop approval for foreground `executionMode: "host"`
 requests. [Saved-session read policy](permission-policy-design.md#saved-session-reads)
 separately admits the configured primary conversation store without granting
-writes or access to other protected namespaces.
+writes or access to other protected namespaces on macOS and Linux. On Windows,
+both confinement substrates keep that store read-denied by design. This
+matches external hosts, which have no per-command Windows read exception. A
+contained PowerShell command that targets the store for reading reports the
+withholding in its result.
 
 The Bash tool resolves the same Bash dialect for foreground, background, and
 sandbox execution through `src/lib/shell-resolver.ts`; discovery probes use the
@@ -3501,8 +3505,9 @@ in its directory.
 - **Filesystem.** A container working directory inside the runtime root is
   refused, except the launch's own issued HOME (matched by path and file identity).
   The per-command ASRT lists are ranked for MXC
-  (`rankMxcFilesystem`): the protected read floor drops grants not under a
-  pierce, a write grant under a `denyWrite` path becomes read-only, a deny
+  (`rankAdmittedMxcFilesystem`): the protected read floor drops grants not under a
+  pierce, a user's read deny drops every grant beneath it and refuses a launch
+  whose pierce it covers, a write grant under a `denyWrite` path becomes read-only, a deny
   strictly inside a grant becomes an explicit `denied` entry when the path
   exists, and grants that do not exist are dropped. Measured: a more specific
   grant wins over a denied parent, a missing `denied` file path still blocks its
@@ -3521,6 +3526,8 @@ in its directory.
   The three [required Windows write denies](permission-policy-design.md#os-shell-sandbox-policy)
   are exact. A missing parent for one of these rows refuses the covering
   write grant for the launch.
+  Literal denies apply throughout the command.
+  Pattern denies are enumerated at launch; a file another process creates during a command's lifetime that first matches the pattern is not covered until the next command.
   In the six installed x64 runs observed on 2026-11-11, node opens of the Ave
   home, config, browser-profile and user key-store boundaries were denied;
   PowerShell opens at the Ave home and config boundaries were denied except

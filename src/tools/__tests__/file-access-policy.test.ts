@@ -1,5 +1,6 @@
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +17,9 @@ beforeEach(async () => {
   context = { cwd: join(root, "workspace"), extraAllowedDirectories: [], metadata: {} };
 });
 afterEach(async () => { vi.restoreAllMocks(); await rm(root, { recursive: true, force: true }); });
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("shared execute-time file gate", () => {
   it("preserves read asymmetry, write confinement, and admitted extra roots", async () => {

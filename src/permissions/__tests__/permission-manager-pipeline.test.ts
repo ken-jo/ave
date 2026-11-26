@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { join, resolve } from "node:path";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PermissionManager, isIssuedShellAllowRuleDecision, type PermissionCheckContext, type ReviewerDispatchResult } from "../permission-manager.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { buildHostShellExecutionPlan, HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL } from "../host-shell-execution-plan.js";
@@ -12,11 +12,14 @@ import { UnavailableRiskClassifier, RuleBasedRiskClassifier } from "../reviewer/
 import { VerdictCache } from "../reviewer/verdict-cache.js";
 import { setReviewerForTest, wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { configureHostResources } from "../../main/host-resources.js";
 
 // The expected behavior comes from docs/architecture/permission-decision-tree.md.
 describe("permission manager pipeline integration", () => {
   let directory: string;
   let manager: PermissionManager;
+  // A Windows host cwd is pinned through the shipped path-kind helper; boot configures its resources first.
+  beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
   beforeEach(() => {
     directory = mkdtempSync(join(tmpdir(), "permission-pipeline-"));
     manager = new PermissionManager(join(directory, "permissions.json"));

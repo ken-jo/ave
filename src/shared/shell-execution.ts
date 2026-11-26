@@ -1,10 +1,11 @@
-import { accessSync, constants, statSync } from "node:fs";
 import { dirname, isAbsolute, posix, relative as pathRelative, resolve as pathResolve, sep } from "node:path";
 import { analyzeShell, literalWord, staticShellWord, validatePreparedShellAnalysis, type PreparedShellAnalysis, type ShellAnalysis, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord, type ShellWordPart } from "./shell-analysis.js";
 import { effectiveShellCommand, stripCommandPath, type EffectiveShellCommand } from "./shell-effective-command.js";
+import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "./local-path-io.js";
 import { SHELL_ANALYSIS_LIMITS } from "./shell-parser.js";
 import { resolveShellFilesystemPath } from "./shell-filesystem-path.js";
 import { modelShellPath } from "./shell-native-path.js";
+import { classifyWindowsSpelling } from "./windows-path-spelling.js";
 import { analyzeShellTestExpression, parseProvenShellInteger, type ShellTestExpression } from "./shell-test-expression.js";
 
 export interface ShellCommandEvent {
@@ -45,6 +46,7 @@ export interface ShellExecutionInspector {
   /** Evidence-only continuation invalidates execution state after an opaque operation. */
   unresolvedState?(error: ShellExecutionError): boolean | void;
   path(path: string, raw: string, cwd: string | null, effect: "read" | "write", role?: "directory"): void;
+  observeDirectory?(original: string, destination: string): "directory" | "not-directory" | "unknown";
   /** Evidence collectors may retain uncertainty and continue visiting later possible effects. */
   unresolvedPath?(raw: string, cwd: string | null, effect: "read" | "write", error?: ShellExecutionError, role?: "directory"): boolean | void;
   resolvedRedirect?(target: ShellWord, path: string, effect: "read" | "write", environment: Readonly<Record<string, string | undefined>>): void;
@@ -52,6 +54,25 @@ export interface ShellExecutionInspector {
 }
 export class ShellExecutionError extends Error {
   constructor(message: string, readonly operand?: string) { super(message); }
+}
+
+// A drive-letter path on a local volume: device, share and mapped-drive spellings are not.
+function isPlainLocalDrivePath(path: string): boolean {
+  const spelling = classifyWindowsSpelling(path);
+  if (spelling.kind !== "local-drive" || spelling.driveAlias !== undefined || !/^[A-Za-z]:\\/u.test(path)) return false;
+  try { withLocalityDecision(() => admitLocalPath(path)); return true; } catch { return false; }
+}
+
+function observePosixDirectory(original: string, destination: string): "directory" | "not-directory" {
+  try {
+    const route = admitLocalRoute(original).verdict;
+    if (!localFs.stat(route).isDirectory()) return "not-directory";
+    localFs.requireSearchAccess(route);
+    localFs.requireSearchAccess(admitLocalRoute(destination).verdict);
+    return "directory";
+  } catch {
+    return "not-directory";
+  }
 }
 
 /** Normalize a workload path without consulting the controller filesystem. */
@@ -646,15 +667,13 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       if (state.cdFault && !within(cwd, destination)) return [];
       // Logical cd collapses .., but original components must still be searchable; physical cd follows links.
       checkPath(destination, label, state, "write", "directory");
-      let observedDirectory = false;
-      try {
-        const original = process.platform === "win32" ? modeledTarget : isAbsolute(target) ? target : `${state.cwd!}/${target}`;
-        observedDirectory = statSync(original).isDirectory();
-        accessSync(original, constants.X_OK);
-        accessSync(destination, constants.X_OK);
-      } catch { observedDirectory = false; }
+      const original = process.platform === "win32" ? modeledTarget : isAbsolute(target) ? target : `${state.cwd!}/${target}`;
+      const observed = process.platform === "win32"
+        ? inspector.observeDirectory?.(original, destination) ?? "unknown"
+        : observePosixDirectory(original, destination);
       const changed = cloneState(state);
       changed.variables.set("OLDPWD", state.cwd ?? undefined); changed.cwd = destination; changed.variables.set("PWD", destination);
+      const observedDirectory = observed === "directory";
       if (facts.hostCdFaults !== true) {
         // Another process can create the destination before execution.
         return !observedDirectory || filesystemMayChange
@@ -669,12 +688,15 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         const failed: StateResult[] = state.errexit && !context.condition ? [] : [{ state, status: "failure" }];
         return state.cdFault.length === 1 ? failed : [success, ...failed];
       }
-      if (observedDirectory && state.cwd !== null && within(destination, state.cwd) || state.errexit && !context.condition) return [success];
+      // On Windows a spelling with `..` is unobserved; from a plain local-drive cwd its lexical ancestor is still the cwd's own ancestor.
+      const ancestor = state.cwd !== null && within(destination, state.cwd)
+        && (observedDirectory || process.platform === "win32" && observed === "unknown" && isPlainLocalDrivePath(state.cwd));
+      if (ancestor || state.errexit && !context.condition) return [success];
       // A fault path models one removal: it forks again only after a possible change, for a fallback cd, or where that removal can fail this cd too.
       if (state.cdFault && observedDirectory && !filesystemMayChange && !context.fallback && !state.cdFault.some((missing) => state.cwd === null || sharesRemoval(destination, missing, state.cwd))) return [success];
       if (filesystemMayChange) {
         if (++flaggedCdForks > SHELL_ANALYSIS_LIMITS.states) decline("unresolved working-directory destination", targetWord);
-      } else if (observedDirectory && ++unflaggedCdForks > UNFLAGGED_CD_FORK_LIMIT) decline("unresolved working-directory destination", targetWord);
+      } else if (observed !== "not-directory" && ++unflaggedCdForks > UNFLAGGED_CD_FORK_LIMIT) decline("unresolved working-directory destination", targetWord);
       const failure = observedDirectory ? { ...cloneState(state), cdFault: faultUnion(state.cdFault ?? [], [destination]) } : state;
       return [success, { state: failure, status: "failure" }];
     }

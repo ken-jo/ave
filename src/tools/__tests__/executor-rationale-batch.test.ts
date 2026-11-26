@@ -5,7 +5,8 @@ import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 import { HookRunner } from "../../hooks/hook-runner.js";
@@ -84,6 +85,9 @@ function rationaleOptions(runtime: RationaleHostRuntime) {
     rationaleRuntime: runtime,
   };
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("ToolExecutor rationale conversation batches", () => {
   it("retains hook context across the suspended control outcome and notifies its turn", async () => {

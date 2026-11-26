@@ -92,7 +92,7 @@ import {
 } from "../permissions/asrt-sandbox.js";
 import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
 import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
-import { MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
+import { isWindowsPathAtOrUnder, MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
 import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";
 import { createContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 import { buildMandatorySandboxWritePolicy } from "../permissions/sandbox-write-policy.js";
@@ -2342,11 +2342,12 @@ function ambientShellEgressContext(): ShellEgressContext {
 
 async function annotateSandboxCommandResult(
   commandId: string, wrapped: SandboxWrapResult, text: string, command: string, terminated: boolean,
+  policyNotices: readonly string[] = [],
 ): Promise<{ output: string; sandboxCleanupFailed: boolean }> {
   const outcome = wrapped.cleanupCompleted && !terminated
     ? { failure: t("sandboxPolicy.cleanupPending") }
     : await wrapped.cleanupCompleted;
-  const notices = [...(wrapped.notices ?? []), ...(outcome?.notice ? [outcome.notice] : []), ...(outcome?.failure ? [outcome.failure] : [])];
+  const notices = [...policyNotices, ...(wrapped.notices ?? []), ...(outcome?.notice ? [outcome.notice] : []), ...(outcome?.failure ? [outcome.failure] : [])];
   return {
     output: await annotateWithSandboxViolations(commandId, text, command, notices),
     sandboxCleanupFailed: outcome?.failure !== undefined,
@@ -2558,7 +2559,7 @@ export async function spawnWithSandbox(
   const sandboxWritePaths = [...writePaths, homePath];
   // One Ave home boundary snapshot serves this command's read policy and its wrap.
   const boundarySnapshot = createAveHomeBoundarySnapshot(sessionId);
-  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy(
+  const { allowRead, denyRead, floorPierces, policyNotices } = getBuiltinShellReadPolicy(
     [resolvedCwd, ...sandboxWritePaths, ...preparedShellExecutableReadPaths(prepared)], home, homePath, boundarySnapshot,
   );
   const abortController = new AbortController();
@@ -2595,13 +2596,13 @@ export async function spawnWithSandbox(
   const [cmd, ...args] = wrapped.argv;
   if (signal?.aborted) {
     const released = await runReleaseSteps([() => egress.release(), () => cleanupAsrtSandboxAfterCommand()]);
-    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "Shell command cancelled.", command, true);
+    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "Shell command cancelled.", command, true, policyNotices);
     const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
     return withReleaseFailures({ output: annotated.output, isError: true, metadata: { ...cleanupMetadata, aborted: true, sandboxed: false } }, released);
   }
   if (cmd === undefined) {
     const released = await runReleaseSteps([() => egress.release(), () => cleanupAsrtSandboxAfterCommand()]);
-    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "spawn failed: ASRT returned an empty argv", command, true);
+    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "spawn failed: ASRT returned an empty argv", command, true, policyNotices);
     const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
     return withReleaseFailures({
       output: annotated.output,
@@ -2648,7 +2649,7 @@ export async function spawnWithSandbox(
       observation?.finish(null, "failed");
       void (async () => {
         const released = await runReleaseSteps([() => egress.release(), () => cleanupAsrtSandboxAfterCommand()]);
-        const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${(err as Error).message}`, command, true);
+        const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${(err as Error).message}`, command, true, policyNotices);
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
         resolveResult(withReleaseFailures({
           output: annotated.output,
@@ -2699,7 +2700,7 @@ export async function spawnWithSandbox(
       // Per-command cleanup (proxy/helper state) after the wrapped command ends.
       const { output: formatted, sandboxCleanupFailed } = await annotateSandboxCommandResult(egress.token, wrapped, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
-      )), command, lifecycleCleaned);
+      )), command, lifecycleCleaned, policyNotices);
       outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || sandboxCleanupFailed ? "failed" : undefined);
       if (lifetime.timedOut) {
         resolveResult(withReleaseFailures({
@@ -2733,7 +2734,7 @@ export async function spawnWithSandbox(
         // Node can emit `error` for a failed process operation while the child
         // remains alive. The later `close` event owns ASRT/HOME finalization.
         const released = await cleanupAfterTermination();
-        const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${err.message}`, command, lifecycleCleaned);
+        const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${err.message}`, command, lifecycleCleaned, policyNotices);
         outputCollector.finishObservation(null, "failed");
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
         resolveResult(withReleaseFailures({
@@ -3483,6 +3484,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     if (structuralViolation !== null) {
       return { output: `PowerShell command blocked: ${structuralViolation}`, isError: true };
     }
+    const commandReadPaths: string[] = [];
     const commandPathViolation = findPowerShellAstPathViolation(
       commandAst,
       resolvedCwd,
@@ -3490,6 +3492,9 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       ctx.extraAllowedDirectories,
       ctx.blockReadsOutsideWorkingDirectories === true,
       input.command,
+      hostShellPlan.mode === "asrt" && hostShellPlan.platform === "win32"
+        ? (path) => { commandReadPaths.push(path); }
+        : undefined,
     );
     if (
       commandPathViolation &&
@@ -3542,7 +3547,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
           input.timeoutSeconds, ctx.abortSignal, outputCapture,
           outputProgress,
           typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
-          undefined, runtimeReads, verified, boundarySessionOf(ctx),
+          undefined, runtimeReads, verified, boundarySessionOf(ctx), commandReadPaths,
         ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
         const block = sandboxBlockForResult(checked.result);
         if (block !== undefined && block.command !== input.command) attachSandboxBlock(checked.result, issueFilesystemSandboxBlock(input.command, resolvedCwd));
@@ -3555,7 +3560,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         input.timeoutSeconds, ctx.abortSignal, outputCapture,
         outputProgress,
         typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
-        runtimeReads, verified, boundarySessionOf(ctx),
+        runtimeReads, verified, boundarySessionOf(ctx), commandReadPaths,
       ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
       const block = sandboxBlockForResult(checked.result);
       if (block !== undefined && block.command !== input.command) attachSandboxBlock(checked.result, issueFilesystemSandboxBlock(input.command, resolvedCwd));
@@ -3692,6 +3697,7 @@ export function findPowerShellAstPathViolation(
   ast: PowerShellAstSummary, cwd: string, sandboxRoot: string, extraAllowedDirectories: readonly string[],
   blockReadsOutsideWorkingDirectories: boolean,
   source?: string,
+  onReadPath?: (path: string) => void,
 ): ShellPathPolicyViolation | null {
   const cwdError = validateShellWorkingDirectory(cwd, sandboxRoot, extraAllowedDirectories);
   if (cwdError) return { kind: cwdError.startsWith("Sensitive") ? "sensitive-path" : "sandbox-boundary", reason: cwdError, path: cwd };
@@ -3712,6 +3718,7 @@ export function findPowerShellAstPathViolation(
       if (!(error instanceof Error) || !("code" in error)) throw error;
       return { kind: "invalid-path", reason: "PowerShell path cannot be resolved", candidate: argument.text };
     }
+    if (effect === "read") onReadPath?.(absolute);
     return findResolvedShellPathViolation(absolute, argument.text, sandboxRoot, extraAllowedDirectories, effect, blockReadsOutsideWorkingDirectories);
   };
   for (const redirect of ast.redirections) { const violation = inspect(redirect, "write"); if (violation) return violation; }
@@ -3778,6 +3785,12 @@ export async function findPowerShellCommandPathViolation(
   blockReadsOutsideWorkingDirectories: boolean,
 ): Promise<ShellPathPolicyViolation | null> {
   return findPowerShellAstPathViolation(await parsePowerShellAst(command), cwd, sandboxRoot, extraAllowedDirectories, blockReadsOutsideWorkingDirectories, command);
+}
+
+function savedSessionReadNotices(root: string | undefined, readPaths: readonly string[]): readonly string[] {
+  return root !== undefined && readPaths.some((path) => isWindowsPathAtOrUnder(path, root))
+    ? [t("sandboxPolicy.savedSessionReadWithheld")]
+    : [];
 }
 
 /** Parser and execution select the same verified absolute installation image. */
@@ -3912,6 +3925,7 @@ async function spawnPowerShellWithSandbox(
   runtimeReadPaths: readonly string[] = [],
   verified?: VerifiedPowerShellExecution,
   sessionId?: string,
+  commandReadPaths: readonly string[] = [],
 ): Promise<ToolExecutionResult> {
   const waitForClose = verified !== undefined && verifiedShellRequiresResultCheck(verified.handle, verified.identity);
   signal?.throwIfAborted();
@@ -3940,7 +3954,8 @@ async function spawnPowerShellWithSandbox(
   const home = getPolicyHome();
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
   const boundarySnapshot = createAveHomeBoundarySnapshot(sessionId);
-  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], home, sandboxHome.path, boundarySnapshot);
+  const { allowRead, denyRead, floorPierces, withheldSessionReadRoot, policyNotices: readNotices } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], home, sandboxHome.path, boundarySnapshot);
+  const policyNotices = [...readNotices, ...savedSessionReadNotices(withheldSessionReadRoot, commandReadPaths)];
   const abortController = new AbortController();
   const wrapAbortSignal = signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal;
   const egress = openEgressInvocation(
@@ -3976,13 +3991,13 @@ async function spawnPowerShellWithSandbox(
   const [cmd, ...args] = wrapped.argv;
   if (signal?.aborted) {
     const released = await releaseSandboxResources();
-    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "Shell command cancelled.", command, true);
+    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "Shell command cancelled.", command, true, policyNotices);
     const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
     return withReleaseFailures({ output: annotated.output, isError: true, metadata: { ...cleanupMetadata, aborted: true, sandboxed: false } }, released);
   }
   if (cmd === undefined) {
     const released = await releaseSandboxResources();
-    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "PowerShell spawn failed: ASRT returned an empty argv", command, true);
+    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "PowerShell spawn failed: ASRT returned an empty argv", command, true, policyNotices);
     const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
     return withReleaseFailures({
       output: annotated.output,
@@ -4031,7 +4046,7 @@ async function spawnPowerShellWithSandbox(
       observation?.finish(null, "failed");
       void (async () => {
         const released = await releaseSandboxResources();
-        const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `PowerShell spawn failed: ${(err as Error).message}`, command, true);
+        const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `PowerShell spawn failed: ${(err as Error).message}`, command, true, policyNotices);
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
         resolveResult(withReleaseFailures({
           output: annotated.output,
@@ -4075,7 +4090,7 @@ async function spawnPowerShellWithSandbox(
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
       const { output, sandboxCleanupFailed } = await annotateSandboxCommandResult(egress.token, wrapped, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
-      )), command, lifecycleCleaned);
+      )), command, lifecycleCleaned, policyNotices);
       outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || sandboxCleanupFailed ? "failed" : undefined);
       const result = withReleaseFailures({
         output: lifetime.timedOut
@@ -4104,7 +4119,7 @@ async function spawnPowerShellWithSandbox(
         const annotated = await annotateSandboxCommandResult(egress.token, wrapped,
           err && "code" in err && err.code === "ENOENT"
             ? `PowerShell executable not found: ${executable}`
-            : `PowerShell spawn failed: ${err.message}`, command, lifecycleCleaned);
+            : `PowerShell spawn failed: ${err.message}`, command, lifecycleCleaned, policyNotices);
         outputCollector.finishObservation(null, "failed");
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
         resolveResult(withReleaseFailures({
@@ -4146,6 +4161,7 @@ async function spawnPowerShellInMxc(
   runtimeReadPaths: readonly string[] = [],
   verified?: VerifiedPowerShellExecution,
   sessionId?: string,
+  commandReadPaths: readonly string[] = [],
 ): Promise<ToolExecutionResult> {
   if (detectMxcShellCapability() === undefined) {
     return mxcSpawnFailure("container shell route is no longer available");
@@ -4176,6 +4192,7 @@ async function spawnPowerShellInMxc(
   let token: string;
   let launch: MxcShellLaunch;
   let child: PipedChild;
+  let policyNotices: readonly string[];
   try {
     const sandboxHome = createSandboxProcessHome();
     failurePrefix = "";
@@ -4185,7 +4202,8 @@ async function spawnPowerShellInMxc(
     const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
     // One Ave home boundary snapshot serves this command's read policy and its container grants.
     const boundarySnapshot = createAveHomeBoundarySnapshot(sessionId);
-    const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path, boundarySnapshot);
+    const { allowRead, denyRead, floorPierces, withheldSessionReadRoot, policyNotices: readNotices } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path, boundarySnapshot);
+    policyNotices = [...readNotices, ...savedSessionReadNotices(withheldSessionReadRoot, commandReadPaths)];
     const egress = openEgressInvocation(
       { kind: "shell", toolName: "powershell", toolUseId, requiresListener: true, context: ambientShellEgressContext() },
       signal ? { abortSignal: signal } : {},
@@ -4372,7 +4390,7 @@ async function spawnPowerShellInMxc(
             // The refusals recorded under this call's token outlive its release.
             const text = await annotateWithSandboxViolations(egressToken, watch.output(output.format(
               watch.timedOut || watch.aborted ? undefined : { code, signal: exitSignal },
-            )));
+            )), undefined, policyNotices);
             completed = {
               output: watch.timedOut
                 ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${text}`

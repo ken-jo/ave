@@ -28,6 +28,7 @@ import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { makeWriteProbeTool } from "../../tools/__tests__/approval-memory-test-fixtures.js";
 import { userPermissionContext } from "../../tools/__tests__/tool-context-fixture.js";
+import { ReadFileTool } from "../../tools/file-tools.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { approvalSurfaceRegistry, updateApprovalSurface } from "../approval-surface-registry.js";
@@ -406,6 +407,32 @@ describe("production run construction approval ownership", () => {
     expect(f.execute).not.toHaveBeenCalled();
     const held = createRoutineConversationLoop({ ...f.deps, sessionHeldElsewhere: (id: string) => id === chat } as unknown as Parameters<typeof createRoutineConversationLoop>[0]);
     expect(await held.loadSession(chat)).toBe(false);
+  });
+
+  // A scheduled wake is the unattended route that reaches tool execution: nobody can answer the ask such a target raises.
+  describe.runIf(process.platform === "win32")("unattended device and share targets", () => {
+    it.each([
+      ["a loopback share of the Ave home settings", (home: string) => `\\\\localhost\\${home[0]}$\\${home.slice(3)}\\config\\settings.json`],
+      ["a spelling that names no local drive", (home: string) => `\\\\?\\GLOBALROOT\\??\\${home}\\config\\settings.json`],
+    ])("denies %s in a scheduled wake before execution", async (_label, spell) => {
+      const f = await setup();
+      const read = new ReadFileTool();
+      const execute = vi.spyOn(read, "execute").mockResolvedValue({ output: "stubbed", isError: false });
+      f.registry.register(read);
+      const loop = createRoutineConversationLoop(f.deps as Parameters<typeof createRoutineConversationLoop>[0]);
+      f.sessions.add(loop.sessionId);
+      expect(loop.deps.headless).toBe(true);
+      const result = await inScheduledWake(() => loop.toolExecutor.executeAll([{
+        id: randomUUID(), name: "read_file", input: { path: spell(join(f.root, "home")) },
+      }], {
+        sessionId: loop.sessionId, executionCwd: f.root,
+        permissionContext: userPermissionContext({ additionalDirectories: [f.root], headless: loop.deps.headless, approvalSurface: loop.deps.approvalSurface }),
+      }));
+      expect(result[0].is_error).toBe(true);
+      expect(result[0].content).toContain(NO_APPROVER_MESSAGE);
+      expect(execute).not.toHaveBeenCalled();
+      expect(f.owner.send).not.toHaveBeenCalled();
+    });
   });
 
   it.each([true, false])("uses the explicit parent owner for a background child, registered owner: %s", async (registered) => {

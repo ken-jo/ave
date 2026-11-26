@@ -36,9 +36,15 @@ export async function simulatedWindowsPathFacts(actual: typeof PathFacts, native
   if (nativeHost === "win32") return actual;
   const { vi } = await import("vitest");
   const { lstatSync, readFileSync } = await vi.importActual<typeof Fs>("node:fs");
+  const { win32 } = await vi.importActual<typeof Path>("node:path");
   const sid = "S-1-5-21-100-200-300-1001";
   const hex = (value: bigint, width = 16) => `0x${value.toString(16).padStart(width, "0")}`;
   const facts = (path: string): PathFacts.WindowsPathFacts => {
+    // A drive's volume root always exists on Windows, so a deny of a missing path still has an anchor to stamp.
+    if (DRIVE_ROOT.test(path)) {
+      return { exists: true, canonical: path, volumeSerial: hex(1n), fileId: hex(5n, 32), volumeSerialNumber: hex(1n), fileIndex: hex(5n),
+        fileSystemName: null, changeTime: hex(116444736000000000n), attributes: 16, reparseTag: 0, directory: true, reparseTarget: null, ancestors: [] };
+    }
     try {
       const stat = lstatSync(path, { bigint: true });
       return { exists: true, canonical: path, volumeSerial: hex(stat.dev), fileId: hex(stat.ino, 32),
@@ -53,12 +59,21 @@ export async function simulatedWindowsPathFacts(actual: typeof PathFacts, native
         directory: false, reparseTarget: null, ancestors: [] };
     }
   };
+  // Each row reports its ancestors from the volume root down, as the native walk does.
+  const walked = (path: string): PathFacts.WindowsPathFacts => {
+    const ancestors: PathFacts.WindowsPathFacts[] = [];
+    for (let parent = win32.dirname(path); ; parent = win32.dirname(parent)) {
+      ancestors.unshift(facts(parent));
+      if (parent === win32.dirname(parent)) break;
+    }
+    return { ...facts(path), ancestors };
+  };
   return { ...actual,
     pinWindowsPaths: paths => process.platform !== "win32"
-      ? actual.pinWindowsPaths(paths) : paths.map(facts),
+      ? actual.pinWindowsPaths(paths) : paths.map(walked),
     readWindowsDacls: (paths, options) => process.platform !== "win32"
       ? actual.readWindowsDacls(paths, options) : paths.map(path => {
-        const row = facts(path);
+        const row = walked(path);
         return { ...row, currentUserSid: sid, elevated: false, principals: {},
           dacl: row.exists ? { identity: { volumeSerial: row.volumeSerial!, fileId: row.fileId! },
             owner: sid, protected: true, nullDacl: false, aces: [{ type: 0, flags: 0, mask: 0x1f01ff, sid }] } : null,

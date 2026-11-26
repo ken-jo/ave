@@ -2,10 +2,11 @@ import "../../__tests__/support/trusted-powershell.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { PermissionManager } from "../permission-manager.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
@@ -63,6 +64,9 @@ function check(command: string, runsSandboxed: boolean, extra: { headless?: bool
     ...extra,
   });
 }
+
+// Windows host shell cwds are pinned through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("shell confinement and escape rules", () => {
   it("auto-allows a confined call and asks for the same plain call", () => {

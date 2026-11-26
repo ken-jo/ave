@@ -66,29 +66,38 @@ vi.mock("node:fs", async original => {
 });
 
 vi.mock("../windows-stamp-targets.js", async original => {
-  const targets = (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(await original());
-  const filesystem = await import("node:fs");
-  return { ...targets, pinWindowsFilesystemConfig: <T extends Partial<import("@anthropic-ai/sandbox-runtime").FilesystemConfig> | undefined>(config: T): T => {
-    const checked = targets.pinWindowsFilesystemConfig(config);
-    if (!driveFixture.enabled || process.platform !== "win32" || checked === undefined) return checked;
-    const pin = (entry: import("@anthropic-ai/sandbox-runtime").FilesystemPathEntry) => ({
-      path: filesystem.realpathSync.native(typeof entry === "string" ? entry : entry.path), literal: true as const,
-    });
-    return { ...checked, allowRead: checked.allowRead?.map(pin), allowWrite: checked.allowWrite?.map(pin) };
-  } };
+  const actual = await original<typeof import("../windows-stamp-targets.js")>();
+  const targets = (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(actual);
+  // The drive fixture answers every pin through its native drive, so the shipped pinner admits each grant as Windows does.
+  return { ...targets, pinWindowsFilesystemConfig: <T extends Partial<import("@anthropic-ai/sandbox-runtime").FilesystemConfig> | undefined>(config: T): T =>
+    driveFixture.enabled ? actual.pinWindowsFilesystemConfig(config) : targets.pinWindowsFilesystemConfig(config) };
+});
+// The isolation guard resolves with the host's own path and fs, where a drive spelling is a relative name under the checkout. On a
+// POSIX host it checks the backing file each drive spelling names, as a Windows host checks the drive path itself.
+vi.mock("../../shared/ave-home-test-guard.js", async original => {
+  const actual = await original<typeof import("../../shared/ave-home-test-guard.js")>();
+  return { ...actual, checkSandboxStampTargets: (paths: readonly string[]) => actual.checkSandboxStampTargets(
+    driveFixture.enabled ? paths.map(path => (/^[A-Za-z]:[\\/]/u.test(path) ? driveFixture.toHost(path) : path)) : paths) };
 });
 vi.mock("node:module", async original =>
   // The drive fixture switches every path call to win32, so a POSIX checkout path would be a rootless native spelling: the package resolves on the drive.
   (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original(), () => driveFixture.enabled));
+// A POSIX host spells the run directory without a drive, so the simulated win32 floor row is put on the simulated drive.
+vi.mock("../mxc-runtime-root.js", async original =>
+  (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedRuntimeRoot(await original(), driveFixture.nativeHost));
 vi.mock("../../shared/windows-configuration-handles.js", async original =>
   (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original(), driveFixture.nativeHost));
 vi.mock("../../shared/windows-path-facts.js", async original => {
   const facts = await (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original(), driveFixture.nativeHost);
   return { ...facts, pinWindowsPaths: (paths: readonly string[]) => {
     if (!driveFixture.enabled || process.platform !== "win32") return facts.pinWindowsPaths(paths);
-    return facts.pinWindowsPaths(paths.map(driveFixture.toHost)).map(row => ({
-      ...row, canonical: row.canonical === null ? null : driveFixture.toNative(row.canonical),
-    }));
+    const native = <T extends { canonical: string | null }>(row: T): T =>
+      ({ ...row, canonical: row.canonical === null ? null : driveFixture.toNative(row.canonical) });
+    // A native row lists its ancestors from its own volume root, never the host directories above the backing drive.
+    return facts.pinWindowsPaths(paths.map(driveFixture.toHost)).map((row, index) => {
+      const depth = (paths[index] ?? "").slice(3).split(/[\\/]+/u).filter(Boolean).length;
+      return { ...native(row), ancestors: depth === 0 ? [] : row.ancestors.slice(-depth).map(native) };
+    });
   } };
 });
 
@@ -107,6 +116,26 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js", async ori
     ? paths.win32.normalize(path) : Reflect.apply(actual.normalizePathForSandbox, undefined, [path, ...args]) };
 });
 
+// The package runs outside the module mocks and expands on the host's own fs, where a drive spelling is one over-long relative name.
+// On a POSIX host each drive-spelled row is expanded at its backing file and named back on the drive. A host-spelled row is one the
+// test spells at the backing files itself, and is expanded there as given.
+vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", async original => {
+  const actual = await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>();
+  const onDrive = (path: string): boolean => /^[A-Za-z]:[\\/]/u.test(path);
+  const expandWindowsFsPaths: typeof actual.expandWindowsFsPaths = (patterns, opts) => {
+    if (!driveFixture.enabled || driveFixture.nativeHost === "win32") return actual.expandWindowsFsPaths(patterns, opts);
+    return [...new Set([...patterns].flatMap(entry => {
+      const path = typeof entry === "string" ? entry : entry.path;
+      if (!onDrive(path)) return actual.expandWindowsFsPaths([entry], opts);
+      // An admitted row is already its final drive path and is taken without a lookup.
+      if (typeof entry !== "string" && "admitted" in entry) return actual.expandWindowsFsPaths([entry], opts);
+      const host = driveFixture.toHost(path);
+      return actual.expandWindowsFsPaths([typeof entry === "string" ? host : { ...entry, path: host }], opts).map(driveFixture.toNative);
+    }))];
+  };
+  return { ...actual, expandWindowsFsPaths };
+});
+
 import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import { join, resolve, win32 } from "node:path";
@@ -116,16 +145,29 @@ import { expandWindowsFsPaths, rankWindowsFsAccess } from "@anthropic-ai/sandbox
 import { configureHostResources } from "../../main/host-resources.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { buildPerCommandSandboxCustomConfig, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
+import { entryPaths } from "../../__tests__/support/filesystem-policy-paths.js";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 import { resetWatchedRows, watchedProtectedRows } from "../windows-watched-rows.js";
 
 const hostPlatform = process.platform;
+const hostExecPath = process.execPath;
+const hostResourcePath = resolve("resources");
+
+// Host resources and the runtime executable are a native checkout of the simulated platform. Under the drive fixture a POSIX spelling
+// in a policy built with win32 paths is a rootless native row the policy re-roots under the mocked cwd, a row no real policy carries.
+// A case whose rows all take win32 paths puts the resources on the drive for every case platform.
+function useNativeCheckout(platform: NodeJS.Platform, resourcesOnDrive = platform === "win32"): void {
+  const onDrive = hostPlatform !== "win32";
+  configureHostResources({ resourcePath: onDrive && resourcesOnDrive ? String.raw`C:\ave\resources` : hostResourcePath, isPackaged: false });
+  if (onDrive && platform === "win32") Object.defineProperty(process, "execPath", { value: String.raw`C:\ave\Ave.exe`, configurable: true });
+}
 
 describe("hosted write policy spellings", () => {
   afterEach(() => {
     resetWatchedRows();
     driveFixture.enabled = false;
     setProcessPlatform(hostPlatform);
+    Object.defineProperty(process, "execPath", { value: hostExecPath, configurable: true });
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     if (driveFixture.backing) rmSync(driveFixture.backing, { recursive: true, force: true });
@@ -133,10 +175,10 @@ describe("hosted write policy spellings", () => {
   });
 
   it.each(["darwin", "win32"] as const)("keeps the browser staging write deny in the %s backend spelling", platform => {
-    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     driveFixture.backing = realpathSync(mkdtempSync(join(os.tmpdir(), "wp-staging-")));
     if (hostPlatform !== "win32") mkdirSync(join(driveFixture.backing, "other-drives", "C"), { recursive: true });
     driveFixture.enabled = hostPlatform !== "win32";
+    useNativeCheckout(platform);
     setProcessPlatform(platform);
     const home = hostPlatform === "win32" ? driveFixture.backing : "D:\\hosted-profile";
     mkdirSync(home, { recursive: true });
@@ -172,9 +214,7 @@ describe("hosted write policy spellings", () => {
     driveFixture.backing = realpathSync(mkdtempSync(join(os.tmpdir(), "wp-")));
     if (hostPlatform !== "win32") mkdirSync(join(driveFixture.backing, "other-drives", "C"), { recursive: true });
     driveFixture.enabled = hostPlatform !== "win32";
-    // Host resources are a native checkout, as they are on a Windows host. Under the drive fixture a POSIX checkout path would be a rootless
-    // native spelling that the policy re-roots under the mocked cwd, a row no real darwin or Windows policy carries.
-    configureHostResources({ resourcePath: hostPlatform === "win32" ? resolve("resources") : String.raw`C:\ave\resources`, isPackaged: false });
+    useNativeCheckout(platform, true);
     setProcessPlatform(platform);
     const tempSegments = prefix === "native-temp" ? [".ave-test-tmp"] : ["a", "_temp"];
     const rootPrefix = hostPlatform === "win32"
@@ -218,9 +258,21 @@ describe("hosted write policy spellings", () => {
     mkdirSync(externalControl);
     symlinkSync(externalControl, linkedControl, hostPlatform === "win32" ? "junction" : "dir");
     const protectedDenies = getDefaultSensitiveWriteDenyPaths();
-    const nonCoveringDenies = ["pattern*", "pattern-files/key", "CaseRoot", "caseroot/data", "caf\u00e9", "cafe\u0301/data"]
+    // A deny pattern is denied on its static base, so this one sits below the home that holds the grants.
+    const nonCoveringDenies = ["pattern-files/k*", "pattern-files/key", "CaseRoot", "caseroot/data", "caf\u00e9", "cafe\u0301/data"]
       .map(path => join(root, ...path.split("/")));
-    nonCoveringDenies.push(linkedControl, join(literalRoot, ".vscode"));
+    if (platform === "win32") {
+      expect(() => buildPerCommandSandboxCustomConfig({ allowWrite: [], allowRead: [], denyWrite: [linkedControl] }))
+        .toThrow(expect.objectContaining({
+          code: "sandbox-obligation-unenforceable",
+          rows: [expect.objectContaining({ row: linkedControl, reason: "link-spelling" })],
+        }));
+    } else nonCoveringDenies.push(linkedControl);
+    // A bracket spelling is a pattern whose static base here is the profile root, which Windows refuses.
+    if (platform === "win32") {
+      expect(() => buildPerCommandSandboxCustomConfig({ allowWrite: ordinaryRoots, allowRead: [], denyWrite: [join(literalRoot, ".vscode")] }))
+        .toThrow(expect.objectContaining({ code: "sandbox-obligation-unenforceable", rows: [expect.objectContaining({ reason: "glob-not-subtree" })] }));
+    } else nonCoveringDenies.push(join(literalRoot, ".vscode"));
     const filesystem = buildPerCommandSandboxCustomConfig({
       allowWrite: [...protectedRoots, ...ordinaryRoots], allowRead: [...protectedRoots, ...ordinaryRoots],
       denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: [...protectedDenies, ...nonCoveringDenies, deniedParent, deniedChild],
@@ -229,8 +281,14 @@ describe("hosted write policy spellings", () => {
     const writeDenies = filesystem?.denyWrite?.map(entry => typeof entry === "string"
       ? nativeSpelling(entry) : { ...entry, path: nativeSpelling(entry.path) });
     expect(filesystem?.allowWrite).toEqual(platform === "win32" ? [] : [...protectedRoots, ...ordinaryRoots]);
-    expect(filesystem?.allowRead).toEqual([xdgRoot, ...ordinaryRoots].map(path => platform === "win32"
-      ? { path: realpathSync.native(path), literal: true } : path));
+    const expectedAllowRead = [xdgRoot, ...ordinaryRoots];
+    if (platform === "win32") {
+      expect(filesystem?.allowRead).toMatchObject(expectedAllowRead.map(path => ({
+        path: realpathSync.native(path), literal: true, admitted: { kind: "dir" },
+      })));
+    } else {
+      expect(filesystem?.allowRead).toEqual(expectedAllowRead);
+    }
     for (const path of [...protectedRoots, ...ordinaryRoots]) {
       const target = join(platform === "win32" ? realpathSync.native(path) : path, ".bash_profile");
       expect(writeDenies?.some(entry => {
@@ -254,18 +312,19 @@ describe("hosted write policy spellings", () => {
       // so the longest supported root keeps 512 bytes of headroom.
       expect(Buffer.byteLength(JSON.stringify(filesystem?.denyWrite))).toBeLessThanOrEqual(65_536 - 512);
     }
-    expect(writeDenies).toContainEqual({ path: join(literalRoot, ".vscode"), literal: true });
+    const writeDenyPaths = writeDenies?.map(entry => typeof entry === "string" ? entry : entry.path);
+    expect(writeDenyPaths).toContain(join(literalRoot, ".vscode"));
     if (platform === "win32") {
       // Absent floor rows are watched, not stamped, so the native operand stays small; the raw floor below still exceeds the budget.
       expect(Buffer.byteLength(JSON.stringify(filesystem?.denyWrite))).toBeLessThan(65_536);
       expect(realpathSync.native(workRoot)).toBe(join(root, "MiXeD", "work"));
-      expect(writeDenies).toContain(join(root, "MiXeD", "work", ".bash_profile"));
-      expect(writeDenies).toContain(deniedChild);
-      // The native expander retains the spelling of a literal.
+      expect(writeDenyPaths).toContain(join(root, "MiXeD", "work", ".bash_profile"));
+      expect(writeDenyPaths).toContain(deniedChild);
+      // The native expander retains the spelling of an absent literal.
       // Check the actual operand before mapping it to the simulated drive's backing directory.
-      expect(filesystem?.denyWrite).toContain(deniedChild);
-      const denyWrite = expandWindowsFsPaths((filesystem?.denyWrite ?? []).map(entry =>
-        typeof entry === "string" ? driveFixture.toHost(entry) : { ...entry, path: driveFixture.toHost(entry.path) }), { mode: "deny" });
+      expect(entryPaths(filesystem?.denyWrite)).toContain(deniedChild);
+      // The operand as the product built it, on the drive; the checks below read it at the backing files.
+      const denyWrite = expandWindowsFsPaths(filesystem?.denyWrite ?? [], { mode: "deny" }).map(driveFixture.toHost);
       const atOrUnder = (parent: string, path: string): boolean => {
         const relative = win32.relative(parent, path);
         return relative === "" || relative !== ".." && !relative.startsWith("..\\") && !win32.isAbsolute(relative);
@@ -285,7 +344,7 @@ describe("hosted write policy spellings", () => {
       }
       expect(ranked.denyWrite).toContain(driveFixture.toHost(interveningGrant));
       const mandatoryTargets = mandatory.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path);
-      for (const target of [...mandatoryTargets, ...protectedDenies, ...nonCoveringDenies.filter(path => !path.includes("*")), externalControl]) {
+      for (const target of [...mandatoryTargets, ...protectedDenies, ...nonCoveringDenies.filter(path => !path.includes("*"))]) {
         const physical = driveFixture.toHost(target);
         if (currentGrants.some(grant => atOrUnder(grant, physical))) {
           const denied = ranked.denyWrite.some(deny => atOrUnder(deny, physical));
@@ -301,7 +360,8 @@ describe("hosted write policy spellings", () => {
       }).grantWrite;
       const patternDeny = expandWindowsFsPaths([driveFixture.toHost(join(root, "pattern*"))], { mode: "deny" });
       expect(patternDeny.length).toBeGreaterThan(0);
-      expect(grantedWrites(join(root, "pattern-files", "key"), patternDeny)).toEqual([]);
+      const patternProbe = join(root, "pattern-files", "key");
+      expect(grantedWrites(patternProbe, patternDeny), JSON.stringify({ patternDeny, probe: driveFixture.toHost(patternProbe) })).toEqual([]);
       const literalDeny = expandWindowsFsPaths([{ path: driveFixture.toHost(join(literalRoot, ".vscode")), literal: true }], { mode: "deny" });
       expect(grantedWrites(join(literalRoot, ".vscode"), literalDeny)).toEqual([]);
       const bracketSibling = join(root, "literal1", "temp-directory", ".vscode");

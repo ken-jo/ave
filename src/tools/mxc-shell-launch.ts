@@ -2,10 +2,9 @@
 // have exited, so a surviving process can never reach a port reused by another invocation.
 import { win32 as winPath } from "node:path";
 import type { ChildProcess } from "node:child_process";
-import { lstatSync, readdirSync } from "node:fs";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
-import { appOwnedSandboxPrivateRoots, aveHomeReadBoundaryCovering, getProtectedReadDenyFloor, insideOwnWindowsSandboxHome, protectedReadDenyMatcher } from "../permissions/asrt-sandbox.js";
+import { appOwnedSandboxPrivateRoots, aveHomeReadBoundaryCovering, getProtectedReadDenyFloor, getUserReadDenies, insideOwnWindowsSandboxHome, protectedReadDenyMatcher } from "../permissions/asrt-sandbox.js";
 import { openInvocationProxyListener } from "../permissions/egress-invocation-listener.js";
 import { openHostEgressListener } from "../permissions/egress-host-listener.js";
 import { egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../permissions/egress-invocations.js";
@@ -15,7 +14,6 @@ import {
   openMxcRequestTransport,
   rankMxcFilesystem,
   resolveHostWxcExecPath,
-  type MxcDirectoryEntry,
 } from "../permissions/mxc-windows.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../permissions/policy-model.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
@@ -45,6 +43,8 @@ export interface MxcShellPolicyLists {
   readonly requiredWriteDenies?: readonly string[];
   /** The protected read floor. A grant at or beneath a row is dropped. */
   readonly protectedFloor: readonly string[];
+  /** The user's read denies. A grant at or beneath a row is dropped, and no pierce covers one. */
+  readonly userDenyRead?: readonly string[];
   /** Reads the shell holds inside the protected floor on purpose (the saved session history). */
   readonly floorPierces?: readonly string[];
 }
@@ -61,6 +61,7 @@ export function shellPolicyModel(lists: MxcShellPolicyLists): PolicyModel {
       ...lists.denyWrite.filter(path => !required.has(path)).map((path) => policyFloorRow(path, "ro", "protected-name", false)),
       ...[...required].map((path) => policyFloorRow(path, "ro", "required-write-deny", true)),
       ...lists.protectedFloor.map((path) => policyFloorRow(path, "denied", "secrets", false)),
+      ...(lists.userDenyRead ?? []).map((path) => policyFloorRow(path, "denied", "user-deny", false)),
     ],
     userGrants: [],
     extensionManifests: [],
@@ -78,31 +79,13 @@ export interface PrepareMxcShellLaunchInput {
   readonly commandLine: string;
   readonly cwd: string;
   /** What the shell computed for this command. The protected read floor is added here. */
-  readonly filesystem: Omit<MxcShellPolicyLists, "protectedFloor">;
+  readonly filesystem: Omit<MxcShellPolicyLists, "protectedFloor" | "userDenyRead">;
   /** The HOME the host created for this invocation: the one directory under the container runtime root it is granted. */
   readonly sandboxHome?: string;
   /** The child's secret-stripped environment. */
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
   readonly exists: (path: string) => boolean;
-  /** Lists a directory without following links; defaults to the real filesystem. */
-  readonly list?: (directory: string) => readonly MxcDirectoryEntry[];
-}
-
-// Listing reports every Windows reparse point as a link; lstat tells a real link (symlink, junction) from a placeholder directory such as a cloud file.
-function listDirectory(directory: string): MxcDirectoryEntry[] {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry): MxcDirectoryEntry[] => {
-    if (entry.isDirectory()) return [{ name: entry.name, kind: "directory" }];
-    if (!entry.isSymbolicLink()) return [{ name: entry.name, kind: "file" }];
-    let target: ReturnType<typeof lstatSync>;
-    try { target = lstatSync(winPath.join(directory, entry.name)); }
-    catch (error) {
-      // Removed since the listing: nothing is left to deny.
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
-    }
-    return [{ name: entry.name, kind: target.isSymbolicLink() ? "link" : target.isDirectory() ? "reparse-directory" : "file" }];
-  });
 }
 
 /** Margin MXC's own timeout keeps behind the host's lifetime watch. */
@@ -175,9 +158,9 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
   const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
   const denyRead = [...new Set([...input.filesystem.denyRead, ...privateRoots])];
-  const protectedFloor = getProtectedReadDenyFloor();
-  const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, denyRead, protectedFloor }),
-    input.exists, input.list ?? listDirectory);
+  const userDenyRead = getUserReadDenies();
+  const protectedFloor = getProtectedReadDenyFloor().filter((path) => !userDenyRead.includes(path));
+  const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, denyRead, protectedFloor, userDenyRead }));
   assertAdmission();
   const relay = await openHostEgressListener(token, admission);
   assertAdmission();

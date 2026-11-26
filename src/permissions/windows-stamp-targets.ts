@@ -1,16 +1,25 @@
 // Sandbox runtime package types stay here on purpose: this module builds or feeds a package config. They go when the package dependency goes.
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { containsGlobCharsWin, expandTilde, expandWindowsEnvRefs, globPatternBaseDir, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
-import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
+import { admittedWindowsEntry, expandWindowsFsPaths, type AdmittedWindowsEntry } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { win32 } from "node:path";
 import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { assertWindowsGrantGrammar, pinWindowsGrantTargets } from "./windows-grant-targets.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets } from "../shared/ave-home-test-guard.js";
 
 const missingWindowsGrants = new WeakSet<object>();
+const admittedWindowsGrants = new WeakMap<object, AdmittedWindowsEntry>();
 
 export function existingWindowsGrants(entries: readonly FilesystemPathEntry[]): FilesystemPathEntry[] {
   return entries.filter(entry => typeof entry === "string" || !missingWindowsGrants.has(entry));
+}
+
+export function windowsRuntimeGrants(entries: readonly FilesystemPathEntry[]): AdmittedWindowsEntry[] {
+  return existingWindowsGrants(entries).map(entry => {
+    const admitted = typeof entry === "string" ? undefined : admittedWindowsGrants.get(entry);
+    if (admitted === undefined) throw new Error("Windows runtime grant was not pinned");
+    return admitted;
+  });
 }
 
 function stampPathChain(path: string): string[] {
@@ -51,7 +60,20 @@ function guardedStampLiterals(paths: string[], pins: readonly WindowsPathFacts[]
   };
   verify();
   // The runtime reads marked paths after its async lookups; keep this check on that consumption boundary.
-  return paths.map(path => Object.freeze({ get path() { verify(); return path; }, literal: true as const }));
+  return paths.map((path, index) => {
+    const entry = Object.freeze({ get path() { verify(); return path; }, literal: true as const });
+    const pin = pins[index];
+    if (pin?.exists === true) {
+      if (pin.volumeSerial === null || pin.fileId === null) throw new Error("Windows runtime grant identity is missing");
+      const { admitted } = admittedWindowsEntry(path, {
+        kind: pin.directory ? "dir" : "file",
+        volumeSerial: pin.volumeSerial,
+        fileId: pin.fileId,
+      });
+      admittedWindowsGrants.set(entry, Object.freeze({ get path() { return entry.path; }, literal: true, admitted }));
+    }
+    return entry;
+  });
 }
 
 // Preserve identity checks when a boundary accepts string arrays instead of literal objects.
@@ -71,11 +93,14 @@ export function isPlainWindowsStampPath(path: string): boolean {
   if (match === null) return false;
   const body = match[1]!.endsWith("\\") ? match[1]!.slice(0, -1) : match[1]!;
   if (body === "") return true;
-  return body.split("\\").every(component =>
-    component !== "" && component !== "." && component !== ".." &&
+  return body.split("\\").every(isPlainWindowsPathComponent);
+}
+
+export function isPlainWindowsPathComponent(component: string): boolean {
+  return component !== "" && component !== "." && component !== ".." &&
     !/[\x00-\x1f\x7f<>:"/|?*%~]/.test(component) &&
     !/[. ]$/.test(component) &&
-    !RESERVED_DEVICE_NAME.test(component.split(".")[0]!.trimEnd()));
+    !RESERVED_DEVICE_NAME.test(component.split(".")[0]!.trimEnd());
 }
 
 function assertPlainWindowsStampPath(path: string): void {

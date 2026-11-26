@@ -195,9 +195,17 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Fixture initialization reached"));
     const guard = vi.spyOn(homeGuard, "checkSandboxStampTargets");
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    const match = join(process.env.USERPROFILE!, "match.stamp-fixture");
+    const globBase = join(process.env.USERPROFILE!, "stamp-globs");
+    mkdirSync(globBase);
+    const match = join(globBase, "match.stamp-fixture");
     writeFileSync(match, "");
-    const glob = join(process.env.USERPROFILE!, "*.stamp-fixture");
+    const glob = join(globBase, "*.stamp-fixture");
+    // A deny glob is denied on its static base: a base at the profile root, or at or above a grant, refuses before the runtime starts.
+    await expect(initializeAsrtSandbox({
+      allowWrite: ["~/.stamp-fixture"],
+      denyRead: [join(process.env.USERPROFILE!, "*.stamp-fixture")],
+    })).rejects.toMatchObject({ code: "sandbox-obligation-unenforceable", rows: [expect.objectContaining({ reason: "glob-not-subtree" })] });
+    expect(initialize).not.toHaveBeenCalled();
     await expect(initializeAsrtSandbox({
       allowWrite: ["~/.stamp-fixture", "%USERPROFILE%/.stamp-env-fixture"],
       denyRead: ["~/.stamp-fixture", "%USERPROFILE%/.stamp-env-fixture", glob],
@@ -206,7 +214,9 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const paths = guard.mock.calls.flatMap(([paths]) => paths).map((path) => resolve(path));
     expect(paths).toContain(join(process.env.HOME!, ".stamp-fixture"));
     expect(paths).toContain(join(process.env.USERPROFILE!, ".stamp-env-fixture"));
-    expect(paths).toContain(match);
+    // A deny glob is one subtree row on its static base, never its matches.
+    expect(paths).toContain(globBase);
+    expect(paths).not.toContain(match);
     expect(paths).not.toContain(glob);
   });
 
@@ -282,7 +292,8 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
     await expect(initializeAsrtSandbox({
       denyRead: [join(inject("realAccountHome"), "AppData*")],
-    })).rejects.toThrow(refusal);
+      // Admission refuses a non-subtree glob before the stamp-target guard is reached.
+    })).rejects.toThrow(new RegExp(`${refusal.source}|\\(glob-not-subtree\\)`));
     expect(initialize).not.toHaveBeenCalled();
   });
 
@@ -354,7 +365,10 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const alias = link(inject("realAccountHome"), join(scratch(), "account-link"));
     await expect(initializeAsrtSandbox({
       denyWrite: [join(alias, "*")],
-    })).rejects.toThrow(new RegExp(`${refusal.source}|not a plain drive path`));
+    })).rejects.toMatchObject({
+      code: "sandbox-obligation-unenforceable",
+      rows: expect.arrayContaining([{ row: join(alias, "*"), reason: "link-spelling" }]),
+    });
     expect(initialize).not.toHaveBeenCalled();
   });
 
@@ -460,34 +474,30 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     identity.assertPinned();
   });
 
-  it("keeps fixture junction deny lists on the deny path at initialization", async () => {
+  it("refuses confinement for a fixture junction deny at initialization", async () => {
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const target = scratch();
     const alias = link(target, join(scratch(), "alias"));
-    const initialize = vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
-      expect(config.filesystem.denyRead).toContain(alias);
-      expect(denyWriteSpellings(config.filesystem)).toContain(alias);
-    });
+    const initialize = vi.spyOn(SandboxManager, "initialize").mockResolvedValue(undefined);
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    const initialization = await initializeAsrtSandbox({ denyRead: [alias], denyWrite: [alias] });
-    expect(initialization.isCurrent()).toBe(true);
-    expect(initialization.windowsIsolation).toBeUndefined();
-    expect(initialize).toHaveBeenCalledOnce();
+    for (const rows of [{ denyRead: [alias] }, { denyWrite: [alias] }]) {
+      await expect(initializeAsrtSandbox(rows)).rejects.toMatchObject({
+        code: "sandbox-obligation-unenforceable", rows: expect.arrayContaining([{ row: alias, reason: "link-spelling" }]),
+      });
+    }
+    expect(initialize).not.toHaveBeenCalled();
   });
 
-  it("keeps a fixture junction deny on the deny path when wrapping", async () => {
+  it("refuses a fixture junction deny when wrapping", async () => {
     const { SandboxManager, sandbox } = await initializeFixtureSandbox();
     const target = scratch();
     const alias = link(target, join(scratch(), "alias"));
-    const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
-      expect(denyWriteSpellings(config?.filesystem)).toContain(alias);
-      return { argv: ["fixture"], env: {} };
-    });
+    const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockResolvedValue({ argv: ["fixture"], env: {} });
     await expect(sandbox.wrapToolCommand("echo fixture", {
       commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [alias] },
-    })).resolves.toBeDefined();
-    expect(wrap).toHaveBeenCalledOnce();
+    })).rejects.toThrow(/link-spelling/);
+    expect(wrap).not.toHaveBeenCalled();
   });
 
   it("pins fixture junction grants to the resolved identity before runtime initialization", async () => {
@@ -498,8 +508,9 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const alias = link(target, join(scratch(), "alias"));
     const identity = observeWindowsGrantIdentity(target);
     const initialize = vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
-      expect(config.filesystem.allowRead).toEqual([{ path: identity.canonical, literal: true }]);
-      expect(config.filesystem.allowWrite).toEqual([{ path: identity.canonical, literal: true }]);
+      const admitted = { path: identity.canonical, literal: true, admitted: { kind: "dir" } };
+      expect(structuredClone(config.filesystem.allowRead)).toMatchObject([admitted]);
+      expect(structuredClone(config.filesystem.allowWrite)).toMatchObject([admitted]);
       identity.assertPinned();
     });
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
@@ -650,8 +661,10 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
       expect(denyRead).toContain(presentDeny);
       expect(denyRead).not.toContain(missingDeny);
       const entries = denyWriteSpellings(filesystem);
-      expect(entries).toContain(`${presentDeny}\\`);
-      expect(entries).not.toContain(missingDeny + "\\");
+      // A present row is the admitted object's final path; its directory kind travels with the admission.
+      const present = filesystem.denyWrite.find(entry => typeof entry !== "string" && entry.path.replace(/\\$/u, "") === presentDeny);
+      expect(present).toMatchObject({ admitted: { kind: "dir" } });
+      expect(entries.map(path => path.replace(/\\$/u, ""))).not.toContain(missingDeny);
       for (const list of [filesystem.allowRead, filesystem.allowWrite]) {
         expect(list?.every(entry => typeof entry !== "string" && entry.literal === true)).toBe(true);
       }

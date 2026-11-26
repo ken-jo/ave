@@ -31,6 +31,7 @@ import {
 import { readPermissionSettings } from "../../permissions/permission-settings-store.js";
 import { buildRuntimeAllowedDirectories } from "../../permissions/allowed-directories.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { TableDocumentError } from "../../tools/table-document-error.js";
 import { readJudgedDocumentInput } from "../../tools/preview-document-input.js";
 import { installDocumentObservation } from "../../main/document-observation.js";
@@ -259,8 +260,12 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         if (request && (request.controller.signal.aborted || textRequests.get(ownerKey!) !== request)) {
           return { ok: false, error: "read-failed", message: "Preview read was superseded." };
         }
-        const binding = textDocument && input ? observation.registerView(e, sessionId, resolved, input, textDocument) : undefined;
-        if (!hasLineWindow) recordPreviewFileAccess(e, deps, resolved, sessionId);
+        // The agent's observation and the frame's open grant are judged in one decision; the recheck above stays its own.
+        const binding = withLocalityDecision(() => {
+          const view = textDocument && input ? observation.registerView(e, sessionId, resolved, input, textDocument) : undefined;
+          if (!hasLineWindow) recordPreviewFileAccess(e, deps, resolved, sessionId);
+          return view;
+        });
         return {
           ok: true,
           ...(imageFormat && input ? { image: { dataUrl: `data:${imageFormat.mimeType};base64,${input.toString("base64")}`, mimeType: imageFormat.mimeType } }

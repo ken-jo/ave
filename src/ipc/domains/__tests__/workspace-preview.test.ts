@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { EventEmitter } from "node:events";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { ISOLATED_APP_FRAME_URL } from "../../../__tests__/test-helpers.js";
@@ -132,6 +133,7 @@ const dirLinkType = process.platform === "win32" ? "junction" : "dir";
 
 let root: string;
 
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), "ave-ws-preview-"));
   mkdirSync(join(root, "docs"), { recursive: true });

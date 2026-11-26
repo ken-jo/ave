@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
+import { getHostResources } from "../../main/host-resources.js";
 import { mainDir } from "../../main/main-paths.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { GitRepositoryInputs } from "./git-repository-inputs.js";
@@ -68,7 +69,8 @@ function isMissingEntry(error: unknown): boolean {
 function residentWorker(): Worker {
   if (resident !== undefined) return resident;
   const entry = workerEntry();
-  const worker = new Worker(entry);
+  // A worker thread has its own module state; it adopts these resources or refuses to load.
+  const worker = new Worker(entry, { workerData: { hostResources: getHostResources() } });
   // An idle inspector never keeps the process alive.
   worker.unref();
   worker.on("message", (message: unknown) => {

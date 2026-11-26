@@ -1,7 +1,8 @@
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { PATH_POLICY_DECISION_MISMATCH_ERROR } from "../../permissions/execution-router.js";
 import * as executionRouter from "../../permissions/execution-router.js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -125,6 +126,9 @@ function makeExecutor(
     appendPermissionAuditEntry,
   };
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("execution route shadow metadata", () => {
   it("refuses a host decision rebuilt to a disposable route before execution", async () => {

@@ -1,5 +1,6 @@
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,6 +83,9 @@ async function authorizedContext(cwd: string, command = "touch marker", rulePatt
 
 // A bare tool rule does not admit a shell; exact Bash(...) rules cover each command.
 const COMPOUND_RULES = ["Bash(printf command-ran)", "Bash(printf C)", "Bash(exit 0)", "Bash(exit 197)"];
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("host cwd races after permit consumption", () => {
   it("preserves an ordinary exit 197 and the command's output", async () => {

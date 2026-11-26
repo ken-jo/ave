@@ -5,7 +5,8 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 import "../../__tests__/support/trusted-powershell.js";
 /** Upload signals use ordinary mode approval; protected mutations retain their forced approval boundary.
  * Mock the unavailable platform parser and execution so these tests isolate permission decisions without spawning shells. */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -77,6 +78,9 @@ async function run(toolName: "bash" | "powershell", command: string, savedGrant?
   if (!evaluated) throw new Error("The executor did not evaluate the finalized shell request");
   return { ...evaluated, execute, result, requestAndWait, classify };
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("shell signals follow modes while mutation floors remain forced", () => {
   it.each([
@@ -294,16 +298,22 @@ describe("shell signals follow modes while mutation floors remain forced", () =>
     })).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
   });
 
-  it.each([
-    String.raw`Get-Content '\\host\share\notes.txt'`,
-    String.raw`Write-Output '\\host\share\notes.txt'`,
-  ])("does not label read or printed share paths as filesystem escapes: %s", async command => {
+  it("does not label a printed share path as a filesystem escape", async () => {
     setProcessPlatform("win32");
-    const result = await run("powershell", command);
+    const result = await run("powershell", String.raw`Write-Output '\\host\share\notes.txt'`);
     expect(result.decision).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     expect(result.decision.forceModal).toBeUndefined();
     expect(result.decision.pipelineRequest?.floor).toBeUndefined();
     expect(result.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["strict", "default", "auto", "allow"] as const)("keeps an unmapped share read on the project-escape floor in %s", async mode => {
+    setProcessPlatform("win32");
+    const result = await run("powershell", String.raw`Get-Content '\\host\share\notes.txt'`, undefined, false, undefined, mode);
+    expect(result.decision).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "project-escape",
+      pipelineRequest: { floor: { code: "project-escape" } } });
+    expect(result.classify).not.toHaveBeenCalled();
+    expect(result.execute).not.toHaveBeenCalled();
   });
 
   it.each([

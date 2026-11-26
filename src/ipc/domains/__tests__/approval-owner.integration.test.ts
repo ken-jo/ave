@@ -2,9 +2,10 @@ import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-an
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { AuditLogger } from "../../../audit/audit-logger.js";
 import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
 import { PermissionTestResources } from "../../../permissions/__tests__/test-resources.js";
@@ -46,6 +47,7 @@ async function closeFixtures() {
   for (const close of cleanup.splice(0)) await close();
 }
 
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 afterEach(async () => {
   await closeFixtures();
   __resetActiveSandboxCapabilityForTest();

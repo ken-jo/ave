@@ -21,7 +21,7 @@ import { mxcSupervisorEnvironment, spawnMxcExtensionProcess, type OwnedMxcExtens
 import { mxcRequestDigest } from "../mxc-extension-protocol.js";
 import { planWindowsExtensionHolder } from "../mxc-extension-readiness.js";
 import { establishMxcRuntimeRoot } from "../mxc-runtime-root.js";
-import { rankMxcFilesystem } from "../mxc-windows.js";
+import { rankMxcRowsBySpelling } from "../mxc-windows.js";
 import * as sandboxCapability from "../sandbox-capability.js";
 
 vi.mock("../egress-host-listener.js", async (original) => ({
@@ -120,7 +120,7 @@ describe.runIf(process.platform === "win32")("native extension container filesys
         { allowRead: [protectedDirectory, shellDirectory], allowWrite: [granted, staging], denyRead: [denied], denyWrite: [], denyPluginsRoot: true, pinWriteRoots: true },
         { readRoots: [], writeRoots: [granted, staging], hostStorageRoots: [] },
       );
-      const grants = rankMxcFilesystem(admitted.model, existsSync);
+      const grants = rankMxcRowsBySpelling(admitted.model, existsSync);
       expect(grants.denied).toContain(denied);
       const request = buildMxcConfinedChildRequest({
         command: shell,
