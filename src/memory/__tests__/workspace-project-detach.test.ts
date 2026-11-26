@@ -8,6 +8,8 @@ import { SessionRepository, type SessionMetadata } from "../session-repository.j
 import { SessionSearchIndex } from "../session-search-index.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
+vi.mock("node:fs", { spy: true });
+
 const SESSION_A = "6b010d95-2319-4c22-80b1-87fbf1568da3";
 const SESSION_B = "93751cfb-3595-44b7-816f-04ec4745b7c9";
 const SESSION_OTHER = "a94ace0c-e21b-4190-864c-332f9298bf79";
@@ -418,6 +420,48 @@ describe("MemoryManager workspace project detachment", () => {
     await restarted.verifyOrRebuildSearchIndex();
     expect(restarted.searchSessions(content, { projectRoot: ROOT })).toEqual([]);
     expect(restarted.searchSessions(content)).toHaveLength(1);
+  });
+
+  it("rolls back a rebuild when scoped metadata is temporarily unreadable and repairs it on retry", async () => {
+    const otherRoot = "C:\\Work\\Beta";
+    await seed(SESSION_A, ROOT, "detached session");
+    await seed(SESSION_OTHER, otherRoot, "scoped session");
+    await memory.sessions.saveSession(SESSION_B, [{ role: "user", content: "session without metadata" }]);
+    const deferred = new SessionRepository({ aveDir: dir, getSearchIndexPolicy: () => "inactive" });
+    await expect(deferred.detachSessionsFromProject(ROOT)).resolves.toBe(1);
+    const marker = join(dir, "sessions", ".search-repair.json");
+    expect(existsSync(marker)).toBe(true);
+    const metadata = join(dir, "sessions", `${SESSION_OTHER}.meta.json`);
+    const failure = Object.assign(new Error("temporary metadata read failure"), { code: "EIO" });
+    const { readFileSync: originalReadFile } = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const read = vi.mocked(readFileSync).mockImplementation((file, options) => {
+      if (file === metadata) throw failure;
+      return originalReadFile(file, options);
+    });
+    try {
+      await new SessionRepository({ aveDir: dir }).verifyOrRebuildSearchIndex();
+      expect(read).toHaveBeenCalledWith(metadata, "utf-8");
+    } finally {
+      read.mockRestore();
+    }
+
+    expect.soft(existsSync(marker)).toBe(true);
+    const previousIndex = new SessionSearchIndex(dir);
+    expect(previousIndex.open()).toBe(true);
+    try {
+      expect.soft(previousIndex.query(`message-${SESSION_A}`, { projectRoot: ROOT })).toHaveLength(1);
+      expect.soft(previousIndex.query(`message-${SESSION_OTHER}`, { projectRoot: otherRoot })).toHaveLength(1);
+    } finally {
+      previousIndex.close();
+    }
+
+    const restarted = new SessionRepository({ aveDir: dir });
+    await restarted.verifyOrRebuildSearchIndex();
+    expect.soft(existsSync(marker)).toBe(false);
+    expect.soft(restarted.searchSessions(`message-${SESSION_A}`, { projectRoot: ROOT })).toEqual([]);
+    expect.soft(restarted.searchSessions(`message-${SESSION_A}`)).toHaveLength(1);
+    expect.soft(restarted.searchSessions(`message-${SESSION_OTHER}`, { projectRoot: otherRoot })).toHaveLength(1);
+    expect(restarted.searchSessions("session without metadata")).toHaveLength(1);
   });
 
   it("clears a deferred projection repair after authorized discard", async () => {

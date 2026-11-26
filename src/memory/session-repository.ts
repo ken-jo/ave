@@ -1047,10 +1047,10 @@ export class SessionRepository {
   }
 
   // Empty searchable content removes the index row; derive timestamps from transcript mtime, not indexing time.
-  private buildIndexInput(sessionId: string, messages: unknown[]): IndexedSessionInput | null {
+  private buildIndexInput(sessionId: string, messages: unknown[], strictMetadata = false): IndexedSessionInput | null {
     const content = extractSearchableContent(messages);
     if (!content) return null;
-    const metadata = this.loadSessionMetadata(sessionId);
+    const metadata = strictMetadata ? this.readSessionMetadataForSearchRepair(sessionId) : this.loadSessionMetadata(sessionId);
     const summary = this.deriveSessionSummary(sessionId, messages);
     const mtimeMs = getFileMtimeMs(join(this.sessionsDir, `${sessionId}.jsonl`));
     const timestamp = mtimeMs >= 0 ? new Date(mtimeMs).toISOString() : new Date().toISOString();
@@ -1157,7 +1157,7 @@ export class SessionRepository {
       if (!isValidSessionId(sessionId)) continue;
       const messages = this.loadSession(sessionId);
       if (!Array.isArray(messages)) continue;
-      const input = this.buildIndexInput(sessionId, messages);
+      const input = this.buildIndexInput(sessionId, messages, true);
       if (input) yield input;
     }
   }
@@ -1683,6 +1683,22 @@ export class SessionRepository {
     }
     const path = join(this.sessionsDir, sessionId + ".meta.json");
     return readUtf8FileIfPresent(path) !== null;
+  }
+
+  private readSessionMetadataForSearchRepair(sessionId: string): SessionMetadata | null {
+    const path = join(this.sessionsDir, `${sessionId}.meta.json`);
+    let raw: string;
+    try {
+      raw = readFileSync(path, "utf-8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    try {
+      return normalizeSessionMetadata(parseSessionMetadataObject(raw));
+    } catch {
+      throw new Error("invalid session metadata during search repair");
+    }
   }
 
   loadSessionMetadata(sessionId: string): SessionMetadata | null {
