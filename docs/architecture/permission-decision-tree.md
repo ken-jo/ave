@@ -207,6 +207,9 @@ Notes that are part of the contract:
   host floor rows, never a deny the user configured. When a user's read deny covers a path the host needs, the launch fails
   and names that user rule; the path is never opened silently. A deny whose cover cannot be decided (a character class in the
   package wrap) refuses too, and says it cannot tell; a deny that cannot reach the path leaves the launch alone.
+  A user's read deny strictly inside a pierce keeps the pierce: the launch starts, cannot read what the deny matches, and is
+  told once per session and owner, after the launch is admitted. A deny that reaches inside only through a character class
+  is named as one Ave cannot tell about.
   The macOS and Linux shell's saved-session read is the one exception: a user's deny over it, or inside it, withholds what it
   matches instead of refusing every command, and the command result names that rule once per session.
 - Local memory inference uses the Windows system directory for its working directory. The sandbox account already has read access there,
