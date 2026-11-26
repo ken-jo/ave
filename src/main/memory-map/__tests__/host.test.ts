@@ -1,6 +1,7 @@
 import * as atomicFile from '../../../lib/atomic-file.js';
 import { deferred } from '../../../__tests__/support/deferred.js';
 import { createHash } from 'node:crypto';
+import { promises as fs } from 'node:fs';
 import { lstat, mkdtemp, mkdir, open, readFile, realpath, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -306,6 +307,39 @@ describe('memory graph publication', () => {
     const stored: unknown = JSON.parse(await readFile(join(f.root, 'snapshot.json'), 'utf8')).snapshot;
     expect(stored).not.toBeNull();
     expect(await host.get(() => f.catalog)).toEqual(stored);
+  });
+  it('writes no graph candidate when admission expires during directory preparation', async () => {
+    const f = await fixture();
+    let current = true;
+    const refreshLocalAdmission = async () => () => {
+      if (!current) throw new MemoryMapHostError('local-runtime-unavailable');
+    };
+    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission, validatedModelPath: async () => 'model', runWorker: f.runWorker });
+    const saved = await host.build(() => f.catalog);
+    const destination = join(f.root, 'snapshot.json');
+    const previous = await readFile(destination, 'utf8');
+    f.namespace.childDir = async () => f.root;
+    const preparing = deferred<void>();
+    const resume = deferred<void>();
+    const mkdirSpy = vi.spyOn(fs, 'mkdir').mockImplementationOnce(async () => {
+      preparing.resolve();
+      await resume.promise;
+      return undefined;
+    });
+    const chmod = vi.spyOn(fs, 'chmod');
+    const stage = vi.spyOn(atomicFile, 'replaceUtf8FileAtomicSyncIf');
+    try {
+      const building = host.build(() => f.catalog);
+      await preparing.promise;
+      current = false;
+      resume.resolve();
+      await expect(building).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
+      expect.soft(chmod).not.toHaveBeenCalled();
+      expect.soft(stage).not.toHaveBeenCalled();
+      expect(await readFile(destination, 'utf8')).toBe(previous);
+      const reopened = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission, validatedModelPath: async () => 'model' });
+      expect(await reopened.get(() => f.catalog)).toEqual(saved);
+    } finally { mkdirSpy.mockRestore(); chmod.mockRestore(); stage.mockRestore(); }
   });
   it('refuses persisted identities outside the current authorized catalog', async () => {
     const f = await fixture(); const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model', runWorker: f.runWorker });

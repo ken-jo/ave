@@ -14,6 +14,7 @@ import {
   transientFsLockDelayMs,
 } from "../../lib/transient-fs-lock-retry.js";
 import { sleep } from "../../shared/abortable-deadline.js";
+import { commitUnderAdmission } from "../../shared/admission-commit.js";
 import { committedDirectorySyncError, guardAtomicWrite, isCommittedAtomicWriteError, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, replaceUtf8FileAtomicSyncIf, writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
 
 const log = createLogger("feature-namespace");
@@ -213,15 +214,21 @@ export function preparePrivateFileDirectory(filePath: string): Promise<void> {
   return ensureDir(dirname(filePath));
 }
 
+const ATOMIC_COMMIT_REFUSED = Symbol("atomic commit refused");
+
 /** Finish directory preparation, then check authority and commit without yielding. `onCommitted` runs in the step that
  * replaced the file, also when only the directory sync after the replacement failed, so state that mirrors the file
  * never trails it across a yield. */
 export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean, onCommitted?: () => void): Promise<boolean> {
-  await preparePrivateFileDirectory(filePath);
+  const assertCanCommit = (): void => {
+    if (!canCommit()) throw ATOMIC_COMMIT_REFUSED;
+  };
   let committed: boolean;
   try {
-    committed = replaceUtf8FileAtomicSyncIf(filePath, body, canCommit);
+    await ensureDir(dirname(filePath), assertCanCommit);
+    committed = commitUnderAdmission(assertCanCommit, () => replaceUtf8FileAtomicSyncIf(filePath, body, canCommit));
   } catch (error) {
+    if (error === ATOMIC_COMMIT_REFUSED) return false;
     if (isCommittedAtomicWriteError(error)) onCommitted?.();
     throw error;
   }

@@ -210,14 +210,14 @@ export class MemoryMapHost {
         assertLocalAdmission();
         assertLocalAdmission = await this.options.refreshLocalAdmission();
       }
-      const canPublish = () => {
-        if (!current()) return false;
+      const assertCanPublish = () => {
+        assertCurrent();
         assertLocalAdmission?.();
-        return true;
       };
-      if (!canPublish()) throw new MemoryMapHostError('request-stale');
+      assertCanPublish();
       this.validateSnapshot(result.snapshot, catalog);
-      await this.namespace.childDir('');
+      await this.namespace.childDir('', { assertStillValid: assertCanPublish });
+      const canPublish = () => { assertCanPublish(); return true; };
       // The ready state is published in the step that replaces the file, under the same check.
       const committed = await writeFileAtomicAtPathIf(join(this.namespace.dir, 'snapshot.json'), JSON.stringify(result), canPublish, () => {
         this.cache = result.cache; this.snapshot = result.snapshot; this.pending = null;
