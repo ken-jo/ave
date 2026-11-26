@@ -15,6 +15,8 @@ import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 
 // Admission projects the Ave home boundary, which pins a profile-child home natively.
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+// A simulated win32 process denies its runtime root on the simulated drive, never under the run directory this kernel spells.
+vi.mock("../mxc-runtime-root.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedRuntimeRoot(await original()));
 const identity = vi.hoisted(() => ({ valid: true }));
 vi.mock("../windows-stamp-targets.js", async original => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();
