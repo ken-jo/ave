@@ -1642,15 +1642,25 @@ check until the child closes. A helper process owns those handles and the only
 handle to a kill-on-close job. The command starts suspended through the job
 launcher and runs only after the helper has put it in that job. A helper that
 is gone refuses the launch before the command runs, and a helper that exits
-stops the whole tree through the OS. The command succeeds only when the helper
-reports the job empty after the root exits. Any other outcome exits 125 with a
-`cwd-pin-lost` diagnostic, so a lost hold is a failed execution even after
-exit code 0. Descendants still running when the root exits are stopped, as
-with background jobs. The host also refuses before spawn when the hold cannot
-be taken, no longer matches the approved identity, or has been observed lost.
-While held, rename, delete and share-checked opens that omit read sharing can
-be refused on the leaf and its ancestors. The residual is any held leaf whose
-contents can be removed: it can still become a junction in place. On the plain
+stops the whole tree through the OS. The helper admits only the launcher the
+host started, and only that launcher's own suspended child; every pipe step has
+a deadline, and neither job allows breakaway, so a wrapper (sandbox runner or
+container) and its payload stay in the job. After the root exits the helper
+stops the job, proves it empty and rechecks the held chain (the leaf reopened
+without following links must keep its file id and not be a reparse point); the
+launcher then proves its own job empty. The host reads the outcome from the
+helper, not from the exit code: a lost hold fails the run with a trusted
+`cwd-pin-lost` reason after the output (even after exit code 0, and never cut by
+output truncation), and a command's own exit 125 stays its own. Descendants
+still running when the root exits are stopped, and the result says so. Terminal
+tabs and launches without a permit are not held. The host also refuses before
+spawn when the hold cannot be taken, no longer matches the approved identity,
+or has been observed lost. While held, rename, delete and share-checked opens
+that omit read sharing can be refused on the leaf and its ancestors. Residuals:
+pins only, with no child-side proof, so a held leaf whose contents can be
+removed can still become a junction in place and be restored before the reap
+check; processes started through a system service (for example a scheduled
+task or WMI) are outside the job. On the plain
 host routes, final policy validation and native spawn share the same serial
 queue. The sandbox and container routes run their own synchronous identity and
 hold checks immediately before spawn.
