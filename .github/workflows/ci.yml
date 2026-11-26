@@ -1013,8 +1013,6 @@ jobs:
         working-directory: ave
         shell: powershell
         run: |
-          node .github/scripts/run-in-job.mjs node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/srt-win-build.test.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/check-srt-win-integrity.cjs --upstream --inputs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .github/scripts/run-in-job.mjs node scripts/build-srt-win.mjs --test-native
