@@ -1,6 +1,9 @@
 // Artifacts come from the same workflow run and contain the prebuilt helpers
-// from this checkout. Normalize their times for the local stale-build check.
-import { appendFileSync, mkdirSync, readdirSync, renameSync, statSync, utimesSync } from "node:fs";
+// from this checkout. The path helper must match the producing build's job
+// outputs before it is moved into place. Normalize times for the local
+// stale-build check.
+import { createHash } from "node:crypto";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, utimesSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -20,6 +23,14 @@ const helpers = [
     .map(file => join(vendor, arch, file))),
   ...["js", "json"].map(extension => `src/permissions/generated/srt-win-build-receipts.${extension}`),
 ];
+for (const [file, expected] of [
+  [windowsPathKindPath(process.arch), process.env.AVE_WINDOWS_PATH_KIND_SHA256],
+  [windowsPathKindReceiptPath(process.arch), process.env.AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256],
+]) {
+  if (!/^[0-9a-f]{64}$/u.test(expected ?? "")) throw new Error(`Missing the producing build's digest for ${file}`);
+  const actual = createHash("sha256").update(readFileSync(join(".windows-native-inputs", file))).digest("hex");
+  if (actual !== expected) throw new Error(`${file} is not the output of the producing build`);
+}
 for (const file of helpers) {
   const source = join(".windows-native-inputs", file);
   const stat = statSync(source);

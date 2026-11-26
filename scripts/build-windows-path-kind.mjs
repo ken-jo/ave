@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -124,5 +124,9 @@ export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({ options: { arch: { type: "string" }, fixture: { type: "boolean" } } });
-  buildWindowsPathKind(values);
+  const { binarySha256, receiptSha256 } = buildWindowsPathKind(values);
+  // CI passes these through job outputs to the jobs that restore the uploaded helper.
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `binary_sha256=${binarySha256}
+receipt_sha256=${receiptSha256}
+`);
 }
