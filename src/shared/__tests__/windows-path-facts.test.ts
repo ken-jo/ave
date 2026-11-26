@@ -283,6 +283,7 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     ["16 SID sub-authorities", `02${ace(0x00, `${mask}0110000000000001${"00000000".repeat(16)}`)}`],
     ["SID sub-authorities beyond the ACE", `02${ace(0x00, `${mask}010200000000000100000000`)}`],
     ["an object ACE without its flags", `04${ace(0x05, mask)}`],
+    ["an object ACE in a revision 2 ACL", `02${ace(0x05, `${mask}01000000${"00".repeat(16)}${everyone}`)}`],
     ["an object ACE without its declared GUID", `04${ace(0x05, `${mask}01000000${everyone}`)}`],
   ])("rejects a file DACL reply with %s", (_name, aclHex) => {
     vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([fileDacl(aclHex)])));
