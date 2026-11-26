@@ -1,3 +1,4 @@
+import type { ContainerBackend } from "../../shared/container-platform.js";
 import { describe, expect, it } from "vitest";
 import {
   _assertPosixDenyOutcomesForTest, _rankPosixContainerRowsForTest,
@@ -25,6 +26,11 @@ describe("POSIX container filesystem ranking", () => {
     const rank = () => rankPosixContainerRows(model([]), backend, lookups);
     expect(rank).toThrow(PosixContainerPolicyError);
     expect(rank).toThrow(expect.objectContaining({ code: "backend-unmeasured" }));
+  });
+
+  it.each(["constructor", "toString", "__proto__"])("refuses inherited backend name %s", (backend) => {
+    expect(() => rankPosixContainerRows(model([], read("/work")), backend as ContainerBackend, lookups))
+      .toThrow(expect.objectContaining({ code: "backend-unmeasured" }));
   });
 
   it.each([

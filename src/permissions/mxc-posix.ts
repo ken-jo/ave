@@ -129,7 +129,7 @@ function rankRows(model: PolicyModel, nestedRule: NestedGrantRule, lookups: Posi
 export function rankPosixContainerRows(
   model: PolicyModel, backend: ContainerBackend, lookups: PosixPolicyLookups,
 ): MxcFilesystemGrants {
-  const rule = NESTED_GRANT_RULE[backend];
+  const rule = Object.hasOwn(NESTED_GRANT_RULE, backend) ? NESTED_GRANT_RULE[backend] : undefined;
   if (rule === undefined) throw new PosixContainerPolicyError("backend-unmeasured", `Container precedence is unmeasured for ${backend}`);
   return rankRows(model, rule, lookups);
 }
