@@ -595,7 +595,7 @@ export function inspectPosixShellCommand(input: ShellCommandInput, cwd: string |
       const parsed = parsedWithContext(input, context);
       if (parsed.analysis.ok) budget.tokens.count += parsed.analysis.totalTokens ?? 0;
       if (budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return shellFloorBudgetSignals();
-      const evaluate = (): ShellFloorSignals => {
+      const evaluate = (): ShellFloorSignals => withLocalityDecision(() => {
         if (!parsed.analysis.ok) {
           const limited = shellFloorParserBudgetExceeded(parsed.analysis.reason);
           let sensitive: string | null = null;
@@ -618,7 +618,7 @@ export function inspectPosixShellCommand(input: ShellCommandInput, cwd: string |
         if (pass.sensitive && pass.network) pass.exfiltration ??= `sensitive path (${pass.sensitive}) with a network transport`;
         const visible = pass.sensitive !== null || pass.exfiltration !== null;
         return recordLiteralShellFlow({ outcome: visible ? "visible-floor" as const : pass.unproven ? "unproven" as const : "static-complete" as const, sensitive: pass.sensitive, exfiltration: pass.exfiltration, ...(pass.unproven ? { ordinaryAsk: pass.unproven } : {}), ...(pass.exactLiteralEvaluation ? { exactLiteralEvaluation: true as const } : {}) }, { network: pass.network, readsPath: pass.readsPath });
-      };
+      });
       if (windows) return evaluate();
       const factKey = `static-floor\0${cwd ?? ""}\0${context.inspectHostFiles}`;
       const contentInspections = context.contentInspectionCount;

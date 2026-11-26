@@ -2583,16 +2583,12 @@ function configuredLinuxWrapperPrograms(): LinuxWrapperPrograms | undefined {
 }
 
 // Build a fully-resolved SandboxRuntimeConfig from TRUSTED settings. Deny-by-default: when no `allowedDomains` are supplied the network section has an empty allow-list, which ASRT treats as "no egress". Weakening flags default to `false`/absent and are only set when explicitly present in the trusted `weakening` object. @internal Exported for unit tests only (the Windows-logic tests assert the win32 `windows.proxyPortRange` emission with `process.platform` forced). Not part of the module's runtime API — boot uses initializeAsrtSandbox.
-export function buildSandboxConfig(
-  trustedSettings: TrustedSandboxSettings,
-  readDenyEvidence?: WindowsReadDenySnapshot,
-  liveGrants: WindowsLiveGrantSnapshot = {},
-): SandboxRuntimeConfig {
-  return withSandboxWatchPublications(watches => buildSandboxConfigInDecision(watches, trustedSettings, readDenyEvidence, liveGrants));
+export function buildSandboxConfig(...args: Parameters<typeof buildSandboxConfigInDecision>): SandboxRuntimeConfig {
+  return publishSandboxConfig(withLocalityDecision(() => buildSandboxConfigInDecision(...args)));
 }
 
 function buildSharedSandboxConfig(settings: TrustedSandboxSettings, liveGrants: WindowsLiveGrantSnapshot): SandboxRuntimeConfig {
-  return withSandboxWatchPublications(watches => buildSandboxConfigInDecision(watches, settings, gatherWindowsReadDenyEvidence(settings), liveGrants));
+  return publishSandboxConfig(withLocalityDecision(() => buildSandboxConfigInDecision(settings, gatherWindowsReadDenyEvidence(settings), liveGrants)));
 }
 
 function withSandboxWatchPublications<T>(build: (watches: Array<() => void>) => T): T {
@@ -2602,12 +2598,17 @@ function withSandboxWatchPublications<T>(build: (watches: Array<() => void>) => 
   return result;
 }
 
+function publishSandboxConfig({ config, watches }: ReturnType<typeof buildSandboxConfigInDecision>): SandboxRuntimeConfig {
+  for (const publish of watches) publish();
+  return config;
+}
+
 function buildSandboxConfigInDecision(
-  watches: Array<() => void>,
   trustedSettings: TrustedSandboxSettings,
   readDenyEvidence?: WindowsReadDenySnapshot,
   liveGrants: WindowsLiveGrantSnapshot = {},
-): SandboxRuntimeConfig {
+) {
+  const watches: Array<() => void> = [];
   assertWindowsPolicyBudget(trustedSettings, true);
   trustedSettings = admitFilesystemPolicy(trustedSettings);
   const srtWinPath = process.platform === "win32" && trustedSettings.windows?.externalConfinement !== true
@@ -2767,7 +2768,7 @@ function buildSandboxConfigInDecision(
       : {}),
   };
   if (requiredWriteDenies.length > 0) requiredWindowsWriteDenies.set(config, requiredWriteDenies);
-  return config;
+  return { config, watches };
 }
 
 const requiredWindowsWriteDenies = new WeakMap<SandboxRuntimeConfig, readonly string[]>();

@@ -1297,9 +1297,7 @@ function permissionStages(pipelines: readonly PsPipeline[], program: StaticProgr
 export function inspectPowerShellPermissionPaths(
   ...args: Parameters<typeof inspectPowerShellPermissionPathsInDecision>
 ): ReturnType<typeof inspectPowerShellPermissionPathsInDecision> {
-  return process.platform === "win32"
-    ? withLocalityDecision(() => inspectPowerShellPermissionPathsInDecision(...args))
-    : inspectPowerShellPermissionPathsInDecision(...args);
+  return withLocalityDecision(() => inspectPowerShellPermissionPathsInDecision(...args));
 }
 
 function inspectPowerShellPermissionPathsInDecision(input: PowerShellCommandInput, cwd: string, environment: Readonly<Record<string, string | undefined>> = {}, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }, options: { inspectHostFiles?: boolean } = {}): {
@@ -1512,8 +1510,7 @@ function inspectPowerShellPermissionPathsInDecision(input: PowerShellCommandInpu
 }
 
 export function inspectPowerShellCommand(input: PowerShellCommandInput, cwd?: string, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }, executionPlan?: HostShellExecutionPlan, context?: ShellFloorContext): ShellFloorSignals {
-  const inspect = () => applyStartupPolicy(inspectParsed(asPowerShellCommand(input), cwd, budget, context), executionPlan);
-  return process.platform === "win32" ? withLocalityDecision(inspect) : inspect();
+  return withLocalityDecision(() => applyStartupPolicy(inspectParsed(asPowerShellCommand(input), cwd, budget, context), executionPlan));
 }
 export function inspectPowerShellVisibleText(command: string, cwd?: string): ShellFloorSignals { return inspectPowerShellCommand(command, cwd); }
 export function powerShellSensitivePathSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectPowerShellCommand(input, cwd).sensitive; }
