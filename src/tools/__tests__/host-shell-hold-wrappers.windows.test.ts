@@ -152,6 +152,25 @@ describe.runIf(process.platform === "win32")("held working directory under the c
     } finally { delete process.env.AVE_TEST_HOLD_UNCONFIRMED; }
   });
 
+  it("fails a refused pinned start and never retries the command unpinned", { timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async (testContext) => {
+    directory = await containerRoute(testContext.skip);
+    const { input, context } = await approvedPowerShell(directory, "Write-Output ('pinned' + 'run')");
+    boundary.spawns = [];
+    boundary.refuseHold = true;
+    try {
+      const result = await new PowerShellTool().execute(input, context);
+      evidence("container refused result", { isError: result.isError, output: result.output.slice(0, 600), metadata: result.metadata });
+      evidence("container refused spawns", boundary.spawns.map((argv) => argv.slice(0, 6)));
+      expect(result.isError).toBe(true);
+      expect(result.output).not.toContain("pinnedrun");
+      expect(result.metadata).toMatchObject({ cwdPinLost: true });
+      // The container's own startup probe runs before the hold; nothing starts after the refused launch.
+      const launch = boundary.spawns.findIndex((argv) => argv[1] === "--hold-pipe");
+      expect(launch).toBeGreaterThan(-1);
+      expect(boundary.spawns.slice(launch + 1)).toEqual([]);
+    } finally { boundary.refuseHold = false; }
+  });
+
   // Starts spin.cmd under the container route and returns once it has written its marker and its cmd.exe is in the hold job.
   const spinning = async (root: string, options: { abortSignal?: AbortSignal; timeoutSeconds?: number } = {}) => {
     const approved = await approvedPowerShell(root, ".\\spin.cmd", options.timeoutSeconds);
