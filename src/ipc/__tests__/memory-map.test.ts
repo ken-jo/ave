@@ -12,18 +12,21 @@ const state = vi.hoisted(() => ({
   handles: new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>>(),
   get: vi.fn(async (_readCatalog: ReadMemoryMapCatalog) => null), build: vi.fn(async () => ({ snapshotId: 'snapshot' })), cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
   status: vi.fn(async () => ({ status: 'unconfigured' })), download: vi.fn(async () => ({ status: 'ready' })), modelCancel: vi.fn(), adoptExistingFolder: vi.fn(async () => ({ status: 'ready' })),
+  readModelPath: undefined as ((signal: AbortSignal) => Promise<string>) | undefined,
+  validatedPath: vi.fn(async () => '/example/model'),
+  refreshAdmission: vi.fn<() => Promise<{ areSwitchesAvailable: () => boolean }>>(),
   dialog: vi.fn(async () => ({ canceled: true, filePaths: [] as string[] })), audit: vi.fn(), localConfined: true, releaseGateOpen: false,
 }));
 vi.mock('electron', () => ({ ipcMain: { handle: (channel: string, handler: never) => state.handles.set(channel, handler) }, dialog: { showOpenDialog: state.dialog } }));
-vi.mock('../../main/memory-map/host.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/host.js')>(), MemoryMapHost: class { get = state.get; build = state.build; cancel = state.cancel; invalidate = state.invalidate; retrieve = state.retrieve; } }));
-vi.mock('../../main/memory-map/model-manager.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/model-manager.js')>(), LocalModelManager: class { status = state.status; download = state.download; cancel = state.modelCancel; adoptExistingFolder = state.adoptExistingFolder; } }));
+vi.mock('../../main/memory-map/host.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/host.js')>(), MemoryMapHost: class { constructor(options: { validatedModelPath: (signal: AbortSignal) => Promise<string> }) { state.readModelPath = options.validatedModelPath; } get = state.get; build = state.build; cancel = state.cancel; invalidate = state.invalidate; retrieve = state.retrieve; } }));
+vi.mock('../../main/memory-map/model-manager.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/model-manager.js')>(), LocalModelManager: class { validatedPath = state.validatedPath; status = state.status; download = state.download; cancel = state.modelCancel; adoptExistingFolder = state.adoptExistingFolder; } }));
 vi.mock('../../main/memory-map/local-runtime.js', async () => {
   const { MemoryMapHostError } = await import('../../main/memory-map/errors.js');
   return {
-    refreshLocalInferenceAdmission: async () => ({ areSwitchesAvailable: () => state.releaseGateOpen }),
-    assertLocalEmbeddingRuntime: (enabled: boolean) => {
+    refreshLocalInferenceAdmission: state.refreshAdmission,
+    assertLocalEmbeddingRuntime: (enabled: boolean, admission?: { areSwitchesAvailable: () => boolean }) => {
       if (state.localConfined) return 'offline-sandbox';
-      if (!state.releaseGateOpen) throw new MemoryMapHostError('local-runtime-unavailable');
+      if (!(admission?.areSwitchesAvailable() ?? state.releaseGateOpen)) throw new MemoryMapHostError('local-runtime-unavailable');
       if (!enabled) throw new MemoryMapHostError('local-inference-disabled');
       return 'unconfined';
     },
@@ -47,6 +50,8 @@ if (!originalPlatform) throw new Error('Missing platform descriptor');
 beforeEach(() => {
   Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' });
   vi.clearAllMocks(); state.handles.clear(); state.localConfined = true; state.releaseGateOpen = false;
+  state.readModelPath = undefined;
+  state.refreshAdmission.mockReset().mockImplementation(async () => ({ areSwitchesAvailable: () => state.releaseGateOpen }));
   state.status.mockReset().mockResolvedValue({ status: 'unconfigured' });
   registerMemoryMapHandlers({ auditLogger: { log: state.audit }, settingsService: { get: () => undefined, set: vi.fn(), hasStoredSecret: vi.fn(async () => false) } } as unknown as IpcDeps,
     raw => (raw as { projectRoot?: string } | undefined)?.projectRoot === '/denied' ? { ok: false, error: 'project-not-allowed' } : { ok: true, options: {} });
@@ -104,6 +109,56 @@ describe('memory map host boundary', () => {
     await expect(invoke('settingsSet', { source: 'local' })).resolves.toMatchObject({ ok: true, value: preference });
     await expect(invoke('settingsSet', { localInferenceWithoutSandbox: true })).resolves.toMatchObject({ ok: true, value: { localInferenceWithoutSandbox: true } });
     await expect(invoke('modelStatus')).resolves.toMatchObject({ ok: true });
+  });
+
+  it.each(['build', 'modelStatus', 'modelDownload'] as const)('recovers from unknown evidence before %s', async operation => {
+    state.localConfined = false;
+    state.refreshAdmission.mockResolvedValue({ areSwitchesAvailable: () => true });
+    expect(await invoke(operation)).toMatchObject({ ok: true });
+    expect(state.refreshAdmission).toHaveBeenCalled();
+  });
+
+  it.each([
+    ['build', state.build], ['modelStatus', state.status], ['modelDownload', state.download],
+  ] as const)('refuses stale absence before %s', async (operation, effect) => {
+    state.localConfined = false;
+    state.releaseGateOpen = true;
+    state.refreshAdmission.mockResolvedValue({ areSwitchesAvailable: () => false });
+    expect(await invoke(operation)).toEqual({ ok: false, error: 'local-runtime-unavailable' });
+    expect(effect).not.toHaveBeenCalled();
+  });
+
+  it('takes a fresh decision before validating a configured model path', async () => {
+    const config: MemoryEmbeddingConfig = { source: 'local', localModelPath: '/example/model' };
+    registerMemoryMapHandlers({
+      auditLogger: { log: state.audit },
+      settingsService: { get: (key: string) => key === 'memoryEmbedding' ? config : undefined, set: vi.fn() },
+    } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
+    state.localConfined = false;
+    state.releaseGateOpen = true;
+    state.refreshAdmission.mockResolvedValue({ areSwitchesAvailable: () => false });
+    state.retrieve.mockImplementationOnce(async () => { await state.readModelPath?.(new AbortController().signal); return { queryId: 'query' }; });
+    expect(await invoke('retrieve', { question: 'Question', filters: {}, snapshotId: 's', queryId: 'q' }))
+      .toEqual({ ok: false, error: 'local-runtime-unavailable' });
+    expect(state.validatedPath).not.toHaveBeenCalled();
+  });
+
+  it('refreshes folder adoption again after the directory dialog', async () => {
+    state.localConfined = false;
+    state.releaseGateOpen = true;
+    const selection = deferred<{ canceled: boolean; filePaths: string[] }>();
+    state.dialog.mockReturnValueOnce(selection.promise);
+    state.refreshAdmission.mockResolvedValueOnce({ areSwitchesAvailable: () => true })
+      .mockResolvedValue({ areSwitchesAvailable: () => false });
+    const adoption = invoke('modelUseExisting');
+    try {
+      await vi.waitFor(() => expect(state.dialog).toHaveBeenCalledOnce());
+    } finally {
+      selection.resolve({ canceled: false, filePaths: ['/example/model'] });
+    }
+    expect(await adoption).toEqual({ ok: false, error: 'local-runtime-unavailable' });
+    expect(state.adoptExistingFolder).not.toHaveBeenCalled();
+    expect(state.refreshAdmission).toHaveBeenCalledTimes(2);
   });
 
   it('returns a distinct error for an oversized local build', async () => {

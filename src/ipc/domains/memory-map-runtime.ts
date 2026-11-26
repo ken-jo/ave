@@ -9,6 +9,7 @@ import type { MemoryMapScope, MemoryEmbeddingSettings } from '../../shared/memor
 import type { z } from 'zod';
 import type { MemoryEmbeddingSettingsSchema, MemoryRetrievalSchema } from '../../shared/memory-map-validation.js';
 import { assertLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from '../../main/memory-map/local-runtime.js';
+import type { WindowsBackgroundAdmission } from '../../permissions/windows-background-features.js';
 import { runMemoryWorker } from '../../main/memory-map/worker-client.js';
 import { LocalModelManager, MemoryModelError } from '../../main/memory-map/model-manager.js';
 import { MemoryMapHost, MemoryMapHostError } from '../../main/memory-map/host.js';
@@ -63,11 +64,18 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   const provider = new ProviderEmbeddings(deps.settingsService, send);
   const localInferencePreference = () => deps.settingsService.get('memoryEmbedding')?.localInferenceWithoutSandbox
     ?? DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX;
-  const localRuntime = () => assertLocalEmbeddingRuntime(localInferencePreference());
+  const localRuntime = (admission: WindowsBackgroundAdmission) => assertLocalEmbeddingRuntime(localInferencePreference(), admission);
+  const refreshLocalPreparation = () => refreshLocalInferenceAdmission("switches");
+  let buildGeneration = 0;
+  let modelGeneration = 0;
   let settingsGeneration = 0;
   let settingsWrite: Promise<unknown> = Promise.resolve();
   let buildEvent: IpcMainInvokeEvent | undefined; let modelEvent: IpcMainInvokeEvent | undefined;
   const model = new LocalModelManager({
+    refreshAdmission: async () => {
+      const admission = await refreshLocalPreparation();
+      return () => { localRuntime(admission); };
+    },
     readPath: () => deps.settingsService.get('memoryEmbedding')?.localModelPath,
     savePath: path => deps.settingsService.set('memoryEmbedding', { ...deps.settingsService.get('memoryEmbedding'), localModelPath: path }),
     onProgress: status => { if (modelEvent && validateHostRendererSender(modelEvent)) sendToWebContents(modelEvent.sender, CHANNELS.memoryMap.modelProgress, status); },
@@ -92,8 +100,10 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     provider,
     watchAuthority,
     runWorker: (folder, task, signal, onProgress) => runMemoryWorker(folder, task, signal, onProgress, localInferencePreference()),
-    validatedModelPath: () => {
-      localRuntime();
+    validatedModelPath: async (signal) => {
+      const admission = await refreshLocalPreparation();
+      signal.throwIfAborted();
+      localRuntime(admission);
       if (!deps.settingsService.get('memoryEmbedding')?.localModelPath) throw new MemoryMapHostError('model-unconfigured');
       return model.validatedPath();
     },
@@ -101,6 +111,19 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
       if (buildEvent && validateHostRendererSender(buildEvent)) sendToWebContents(buildEvent.sender, CHANNELS.memoryMap.progress, progress);
     },
   });
+  const cancelBuild = () => { buildGeneration += 1; host.cancel(); };
+  const cancelModel = () => { modelGeneration += 1; model.cancel(); };
+  const assertCurrentModelRequest = (generation: number) => {
+    if (generation !== modelGeneration) throw new MemoryModelError('model-cancelled');
+  };
+  const startModelOperation = async (generation: number, event: IpcMainInvokeEvent, start: () => unknown) => {
+    const admission = await refreshLocalPreparation();
+    assertCurrentModelRequest(generation);
+    localRuntime(admission);
+    cancelBuild();
+    modelEvent = event;
+    return start();
+  };
   let sourceIndex: { scopeId: string; filenames: Map<string, string> } | undefined;
   const catalog = (scope?: MemoryMapScope): ReadMemoryMapCatalog => {
     const filenames = new Map<string, string>();
@@ -134,29 +157,34 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   };
   return {
     get: scope => host.get(catalog(scope)),
-    build: (scope, event) => {
-      if (deps.settingsService.get('memoryEmbedding')?.source !== 'provider') localRuntime();
+    build: async (scope, event) => {
+      const generation = ++buildGeneration;
+      if (deps.settingsService.get('memoryEmbedding')?.source !== 'provider') {
+        const admission = await refreshLocalPreparation();
+        if (generation !== buildGeneration) throw new MemoryMapHostError('request-stale');
+        localRuntime(admission);
+      }
       buildEvent = event;
       return host.build(catalog(scope));
     },
-    cancel: () => { host.cancel(); return null; },
+    cancel: () => { cancelBuild(); return null; },
     facets: async scope => { await host.get(catalog(scope)); return memoryFacets(catalog(scope)().records); },
     retrieve: request => host.retrieve(catalog(request.scope), request),
-    modelStatus: () => {
-      localRuntime();
+    modelStatus: async () => {
+      localRuntime(await refreshLocalPreparation());
       return model.status();
     },
-    modelDownload: event => {
-      localRuntime();
-      host.cancel(); modelEvent = event;
-      return model.download();
-    },
-    modelCancel: () => { model.cancel(); return null; },
+    modelDownload: event => startModelOperation(++modelGeneration, event, () => model.download()),
+    modelCancel: () => { cancelModel(); return null; },
     modelUseExisting: async event => {
-      localRuntime();
+      const generation = ++modelGeneration;
+      const admission = await refreshLocalPreparation();
+      assertCurrentModelRequest(generation);
+      localRuntime(admission);
       const selection = await dialog.showOpenDialog({ properties: ['openDirectory'] });
-      if (selection.canceled || !selection.filePaths[0]) return null;
-      host.cancel(); modelEvent = event; return model.adoptExistingFolder(selection.filePaths[0]);
+      const folder = selection.filePaths[0];
+      if (selection.canceled || !folder) return null;
+      return startModelOperation(generation, event, () => model.adoptExistingFolder(folder));
     },
     settingsGet: settings,
     settingsSet: async input => {
@@ -172,8 +200,8 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
               if (!(error instanceof MemoryMapHostError)) throw error;
             }
             if (usingHostChild) {
-              if (previous?.source !== 'provider') host.cancel();
-              model.cancel();
+              if (previous?.source !== 'provider') cancelBuild();
+              cancelModel();
             }
           }
           await deps.settingsService.set('memoryEmbedding', { ...previous, localInferenceWithoutSandbox: enabled });
@@ -187,7 +215,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
         provider.assertCurrentEndpoint(input.providerId, input.endpointId);
       }
       const generation = ++settingsGeneration;
-      provider.suspend(); host.cancel();
+      provider.suspend(); cancelBuild();
       const pending = settingsWrite.catch(() => {}).then(async () => {
         if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
         const consent = input.source === 'provider' ? await provider.issueConsent(input.providerId, input.modelId, input.endpointId) : undefined;

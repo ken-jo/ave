@@ -16,7 +16,7 @@ import type { ProviderEmbeddings } from './provider-embeddings.js';
 const sameNamespace = (a: EmbeddingNamespace, b: EmbeddingNamespace) => a.source === b.source && a.providerId === b.providerId && a.modelId === b.modelId && a.modelRevision === b.modelRevision && a.preprocessingRevision === b.preprocessingRevision && (!b.dimensions || a.dimensions === b.dimensions);
 interface HostOptions {
   provider?: ProviderEmbeddings;
-  validatedModelPath: () => Promise<string>;
+  validatedModelPath: (signal: AbortSignal) => Promise<string>;
   namespace?: FeatureNamespaceHandle;
   runWorker?: MemoryWorkerRunner;
   watchAuthority?: (cancel: () => void) => () => void;
@@ -173,7 +173,7 @@ export class MemoryMapHost {
     try {
     let folder = '';
     if (selected.source === 'local') {
-      folder = await this.options.validatedModelPath();
+      folder = await this.options.validatedModelPath(controller.signal);
       releaseModel = registerModelBuild(folder);
     }
     if (!current()) throw new MemoryMapHostError('request-stale');
@@ -214,7 +214,7 @@ export class MemoryMapHost {
     const snapshot = await this.get(readCatalog);
     if (snapshot?.status !== 'ready' || snapshot.snapshotId !== request.snapshotId) throw new MemoryMapHostError('graph-stale');
     const selected = snapshot.model.namespace;
-    const folder = selected.source === 'local' ? await this.options.validatedModelPath() : '';
+    const folder = selected.source === 'local' ? await this.options.validatedModelPath(controller.signal) : '';
     if (queryGeneration !== this.queryGeneration) throw new MemoryMapHostError('request-stale');
     const assertAuthority = () => {
       if (controller.signal.aborted || queryGeneration !== this.queryGeneration || !(readCatalog.recordsAreCurrent

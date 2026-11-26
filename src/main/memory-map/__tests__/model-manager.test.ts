@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LocalModelManager, verifyModelFolder } from '../model-manager.js';
+import { MemoryMapHostError } from '../errors.js';
 import { LOCAL_MODEL_REVISION } from '../model-manifest.js';
 import type { FeatureNamespaceHandle } from '../../storage/feature-namespace.js';
 vi.mock('node:fs/promises', async importOriginal => {
@@ -49,6 +50,27 @@ async function linkedFixture(beforeSave?: () => void) {
   }
 }
 describe('local model lifecycle', () => {
+  it('checks admission before a model task touches storage or the network and can retry after refusal', async () => {
+    const childDir = vi.fn(async () => { throw new Error('Unexpected storage write'); });
+    const downloadFile = vi.fn(async () => new Response('unexpected'));
+    const refuse = () => { throw new MemoryMapHostError('local-runtime-unavailable'); };
+    const refreshAdmission = vi.fn(async () => refuse)
+      .mockResolvedValueOnce(refuse)
+      .mockResolvedValueOnce(() => { throw new MemoryMapHostError('local-inference-disabled'); });
+    const root = await mkdtemp(join(tmpdir(), 'memory-model-'));
+    roots.push(root);
+    const manager = new LocalModelManager({
+      namespace: { dir: root, childDir, readJson: async (_, fallback) => fallback, writeJson: async () => {},
+        createFile: name => open(join(root, name), 'wx') },
+      refreshAdmission, downloadFile, readPath: () => undefined, savePath: vi.fn(),
+    });
+
+    await expect(manager.download()).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
+    await expect(manager.adoptExistingFolder(root)).rejects.toMatchObject({ code: 'local-inference-disabled' });
+    expect(refreshAdmission).toHaveBeenCalledTimes(2);
+    expect(childDir).not.toHaveBeenCalled();
+    expect(downloadFile).not.toHaveBeenCalled();
+  });
   it('reuses a verified recovery slot when the Ave home has a linked ancestor', async () => {
     const f = await linkedFixture();
     try {

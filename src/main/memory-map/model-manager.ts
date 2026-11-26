@@ -4,6 +4,7 @@ import { lstat, readdir, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { renameDirectoryOnce } from '../../lib/transient-fs-lock-retry.js';
 import { openFeatureNamespace, type FeatureNamespaceHandle } from '../storage/feature-namespace.js';
+import { MemoryMapHostError } from './errors.js';
 import { MODEL_FILES, LOCAL_MODEL_REVISION, modelFileUrl, type ModelFile } from './model-manifest.js';
 import type { MemoryModelStatus, MemoryModelError as ModelErrorCode } from '../../shared/memory-model.js';
 
@@ -61,6 +62,7 @@ interface ModelManagerOptions {
   namespace?: FeatureNamespaceHandle;
   files?: readonly ModelFile[];
   downloadFile?: (name: string, signal: AbortSignal) => Promise<Response>;
+  refreshAdmission?: () => Promise<() => void>;
   readPath: () => string | undefined;
   savePath: (path: string) => void | Promise<void>;
   onProgress?: (status: MemoryModelStatus) => void;
@@ -122,21 +124,27 @@ export class LocalModelManager {
     const previous = this.task;
     const controller = new AbortController();
     this.controller = controller;
-    this.task = (async () => {
+    const operation = (async () => {
       await previous;
       if (generation !== this.generation) return { ...this.state };
       try {
+        const admit = await this.options.refreshAdmission?.();
+        controller.signal.throwIfAborted();
+        admit?.();
         await this.sweepModelSlots([RECOVERY_SLOT_NAME, STAGING_SLOT_NAME], sourceFolder);
         controller.signal.throwIfAborted();
+        admit?.();
         await action(controller.signal);
         controller.signal.throwIfAborted();
         return this.publish({ ...this.state, status: 'ready', error: undefined });
       } catch (error) {
+        if (!controller.signal.aborted && error instanceof MemoryMapHostError) throw error;
         const code = controller.signal.aborted ? 'model-cancelled' : error instanceof MemoryModelError ? error.code : 'model-download-failed';
         return this.publish({ ...this.state, status: 'failed', error: code });
       }
     })();
-    return this.task;
+    this.task = operation.catch(() => ({ ...this.state }));
+    return operation;
   }
   adoptExistingFolder(folder: string): Promise<MemoryModelStatus> {
     return this.run(async signal => {
