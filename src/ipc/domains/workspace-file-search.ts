@@ -9,6 +9,10 @@ const MAX_MATCHES = 50;
 const MAX_FILES_PER_ROOT = 20_000;
 const LISTING_TTL_MS = 10_000;
 
+function nativeMatchPath(path: string): string {
+  return path.replaceAll("\\", "/").replace(/^[a-z]:/u, (drive) => drive.toUpperCase());
+}
+
 export interface WorkspaceFileMatch {
   path: string;
   relativePath: string;
@@ -141,13 +145,22 @@ Promise<{ matches: WorkspaceFileMatch[]; truncated: boolean }> {
         truncated = true;
         break;
       }
-      const key = resolvePathForPolicy(match.path);
-      if (seen.has(key)) continue;
-      // The read guard decides, not the walk: same answer read_file would give.
-      const verdict = assertReadableFilePath(match.path, args.cwd, args.extraAllowed);
-      if (!verdict.ok) continue;
-      seen.add(key);
-      matches.push(match);
+      if (isWindows) {
+        const verdict = assertReadableFilePath(match.path, args.cwd, args.extraAllowed);
+        if (!verdict.ok) continue;
+        const key = nativeMatchPath(verdict.resolved);
+        if (key !== nativeMatchPath(match.path) || seen.has(key)) continue;
+        seen.add(key);
+        matches.push({ ...match, path: verdict.resolved });
+      } else {
+        const key = resolvePathForPolicy(match.path);
+        if (seen.has(key)) continue;
+        // The read guard decides, not the walk: same answer read_file would give.
+        const verdict = assertReadableFilePath(match.path, args.cwd, args.extraAllowed);
+        if (!verdict.ok) continue;
+        seen.add(key);
+        matches.push(match);
+      }
     }
     return { matches, truncated };
   });

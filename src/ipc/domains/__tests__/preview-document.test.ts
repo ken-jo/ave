@@ -482,7 +482,7 @@ describe("read-only observation sender boundary", () => {
         auditLog.mockImplementationOnce(() => {
           setWindowsDriveQueryForTest(query);
           vi.spyOn(additionalDirectories, "value", "get").mockImplementation(() =>
-            ++reads >= (kind === "text" ? 2 : 3) ? [root, drive + "\\example"] : [root]);
+            ++reads >= (kind === "text" ? 2 : 3) ? [root, `${drive}\\example`] : [root]);
         });
         const refused = await read();
         expect(refused).toMatchObject({ ok: false, error: "read-failed", message: "Late receipt drive query failed" });

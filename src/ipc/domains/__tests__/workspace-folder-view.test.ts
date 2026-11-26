@@ -615,6 +615,20 @@ describe("workspace.listDir folder-view entries", () => {
     expect(res.hidden).toBe(0);
   });
 
+  it.runIf(process.platform === "win32")("uses the checked directory and root for link containment", async () => {
+    const link = join(root, "inside-directory");
+    symlinkSync(join(root, "src"), link, "junction");
+    const realpath = vi.spyOn(fsModule.promises, "realpath").mockRejectedValue(new Error("Unexpected second path resolution"));
+    try {
+      const result = await listDir(root);
+      expect(result.entries?.find((entry) => entry.name === "inside-directory")).toMatchObject({ type: "link", outside: false });
+      expect(realpath).not.toHaveBeenCalled();
+    } finally {
+      realpath.mockRestore();
+      unlinkSync(link);
+    }
+  });
+
   it("reports a link as a link with an outside flag and never follows it", async ({ skip }) => {
     needsFileLinks(skip);
     const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), root)) as ListResult;
@@ -1087,7 +1101,7 @@ describe("workspace.listDir links to network locations", () => {
       // A `..` in a target is not judged lexically: fail closed, even when it would land inside.
       expect(outsideOf("up")).toBe(true);
       // Only the listed folder and its project root are resolved, never a link.
-      expect(realpath.mock.calls.map(([path]) => relative(root, String(path)))).toEqual(["chain", ""]);
+      expect(realpath.mock.calls.map(([path]) => relative(root, String(path)))).toEqual(process.platform === "win32" ? [] : ["chain", ""]);
     } finally {
       realpath.mockRestore();
       rmSync(dir, { recursive: true, force: true });

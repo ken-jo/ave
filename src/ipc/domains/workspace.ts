@@ -26,6 +26,7 @@ import {
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
+  foldCanonicalPathSeparators,
   resolvePathForPolicy,
   createSensitivePathCheck,
   allowKeyMaterialInspectionUnder,
@@ -248,6 +249,10 @@ function matchKey(path: string): string {
   return caseFoldForMatch(canonicalizePathForMatch(path));
 }
 
+function admittedMatchKey(path: string): string {
+  return process.platform === "win32" ? caseFoldForMatch(foldCanonicalPathSeparators(path)) : matchKey(path);
+}
+
 /** Containment between two match keys, which use "/" on every platform (`foldCanonicalPathSeparators`). */
 function keyWithin(rootKey: string, key: string): boolean {
   return key === rootKey || key.startsWith(rootKey.endsWith("/") ? rootKey : `${rootKey}/`);
@@ -257,17 +262,17 @@ function keyWithin(rootKey: string, key: string): boolean {
 function registeredRoot(projectRoot: string): WorkspaceRoot | null {
   return withLocalityDecision(() => {
     const key = matchKey(projectRoot);
-    return computeRoots().find((root) => matchKey(root.path) === key) ?? null;
+    return computeRoots().find((root) => admittedMatchKey(root.path) === key) ?? null;
   });
 }
 
 /** The innermost registered root containing `dir`; links in a folder outside every root count as outside. */
 function containingRoot(dir: string, roots?: readonly WorkspaceRoot[]): { key: string; path: string } | null {
   return withLocalityDecision(() => {
-    const dirKey = matchKey(dir);
+    const dirKey = admittedMatchKey(dir);
     let best: { key: string; path: string } | null = null;
     for (const root of roots ?? computeRoots()) {
-      const key = matchKey(root.path);
+      const key = admittedMatchKey(root.path);
       if (keyWithin(key, dirKey) && (best === null || key.length > best.key.length)) best = { key, path: root.path };
     }
     return best;
@@ -375,13 +380,15 @@ function computeRoots(): WorkspaceRoot[] {
     const defaultRoot = getDefaultWorkspaceRoot();
     const additional = readPermissionSettings().permissions.additionalDirectories;
     const canonicalAdds = sanitizeRuntimeAllowedDirectories(additional);
-    const seen = new Set<string>([matchKey(defaultRoot)]);
+    const seen = new Set<string>([admittedMatchKey(defaultRoot)]);
     const roots: WorkspaceRoot[] = [{ path: defaultRoot, isDefault: true }];
     for (const dir of canonicalAdds) {
-      const key = matchKey(dir);
+      const key = admittedMatchKey(dir);
       if (seen.has(key)) continue;
       seen.add(key);
-      roots.push({ path: resolvePathForPolicy(dir), isDefault: false });
+      const path = process.platform !== "win32" ? resolvePathForPolicy(dir)
+        : isWindowsNetworkOrDevicePath(dir) ? dir : resolvePath(dir).replace(/^[a-z]:/u, (drive) => drive.toUpperCase());
+      roots.push({ path, isDefault: false });
     }
     return roots;
   });
@@ -1031,8 +1038,8 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         const dirents = await fs.readdir(dir, { withFileTypes: true });
         const root = containingRoot(dir);
         // The listed folder's and its root's own physical paths, so link targets resolve against where the link really is.
-        const realDir = root === null ? null : await fs.realpath(dir).catch(() => null);
-        const realRoot = root === null ? null : await fs.realpath(root.path).catch(() => null);
+        const realDir = root === null ? null : process.platform === "win32" ? dir : await fs.realpath(dir).catch(() => null);
+        const realRoot = root === null ? null : process.platform === "win32" ? root.path : await fs.realpath(root.path).catch(() => null);
         // Classify from the directory entries alone, sort, then cap: the cap keeps the first rows of the sorted listing
         // (folders first), and only the kept rows cost an lstat.
         const isSensitiveEntry = createSensitivePathCheck("write", "person");
@@ -1207,13 +1214,21 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       }
       if (typeof rawPath !== "string" || rawPath.length === 0) return { ok: false, error: "invalid-path" };
       const target = withLocalityDecision(() => {
-        const rootKey = (value: string) => caseFoldForMatch(canonicalizePathForMatch(resolvePath(value)));
-        const targetKey = rootKey(rawPath);
-        if (targetKey === rootKey(getDefaultWorkspaceRoot())) return { ok: false, error: "cannot-remove-default" } as const;
+        const canonicalRoot = (value: string) => canonicalizePathForMatch(resolvePath(value));
+        const targetKey = caseFoldForMatch(canonicalRoot(rawPath));
+        const defaultRoot = getDefaultWorkspaceRoot();
+        const defaultKey = process.platform === "win32" ? admittedMatchKey(defaultRoot) : caseFoldForMatch(canonicalRoot(defaultRoot));
+        if (targetKey === defaultKey) return { ok: false, error: "cannot-remove-default" } as const;
         const active = readPermissionSettings().permissions.additionalDirectories;
-        const stored = active.find((candidate) => rootKey(candidate) === targetKey);
-        if (!stored) return { ok: false, error: "not-an-additional-root" } as const;
-        const runtimePath = canonicalizePathForMatch(resolvePath(stored));
+        let admittedPath: string | undefined;
+        const stored = active.find((candidate) => {
+          const canonical = canonicalRoot(candidate);
+          if (caseFoldForMatch(canonical) !== targetKey) return false;
+          admittedPath = canonical;
+          return true;
+        });
+        if (!stored || admittedPath === undefined) return { ok: false, error: "not-an-additional-root" } as const;
+        const runtimePath = process.platform === "win32" ? admittedPath : canonicalRoot(stored);
         // The context the removal itself hands each store and loop.
         const context = workspaceRootRemovalContext(runtimePath, active);
         return { ok: true, runtimePath, context } as const;
@@ -1383,7 +1398,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         // The root is re-read each time: removing it between the click and the hand-off withdraws the authority.
         const current = registeredRoot(rootPath);
         if (!current) return "root-not-registered";
-        return keyWithin(matchKey(current.path), matchKey(real)) ? null : "outside-project";
+        return keyWithin(admittedMatchKey(current.path), admittedMatchKey(real)) ? null : "outside-project";
       },
     };
   }

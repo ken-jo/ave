@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -8,7 +8,10 @@ const fixture = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   cwd: "",
   defaultRoot: "",
+  additionalDirectories: [] as string[],
+  reResolvedRoot: undefined as undefined | string,
   collectRealFiles: false,
+  redirectedFile: undefined as undefined | string,
   query: undefined as undefined | { mock: { calls: unknown[][] } },
   atWalk: [] as string[],
   atCollect: [] as string[],
@@ -34,8 +37,17 @@ vi.mock("../../../main/default-workspace-root.js", async (original) => {
 });
 vi.mock("../../../permissions/permission-settings-store.js", async (original) => ({
   ...await original<typeof import("../../../permissions/permission-settings-store.js")>(),
-  readPermissionSettings: () => ({ permissions: { additionalDirectories: [], pendingWorkspaceRootRemovals: [] } }),
+  readPermissionSettings: () => ({ permissions: { additionalDirectories: fixture.additionalDirectories, pendingWorkspaceRootRemovals: [] } }),
 }));
+vi.mock("../../../permissions/sensitive-paths.js", async (original) => {
+  const actual = await original<typeof import("../../../permissions/sensitive-paths.js")>();
+  return {
+    ...actual,
+    resolvePathForPolicy: (...args: Parameters<typeof actual.resolvePathForPolicy>) =>
+      resolve(args[0]).toLowerCase() === fixture.reResolvedRoot?.toLowerCase()
+        ? join(fixture.cwd, "replacement") : actual.resolvePathForPolicy(...args),
+  };
+});
 vi.mock("../workspace-file-search.js", async (original) => {
   const actual = await original<typeof import("../workspace-file-search.js")>();
   return {
@@ -52,6 +64,9 @@ vi.mock("../../../tools/file-tools.js", async (original) => {
     ...actual,
     collectFiles: vi.fn(async (...args: Parameters<typeof actual.collectFiles>) => {
       fixture.atCollect = (fixture.query?.mock.calls ?? []).map(([drive]) => String(drive).toUpperCase());
+      if (fixture.redirectedFile !== undefined) {
+        return { ok: true, value: { files: [{ path: fixture.redirectedFile, relativePath: "Redirected.txt", type: "file", size: 3 }], truncated: false } };
+      }
       if (fixture.collectRealFiles) return actual.collectFiles(...args);
       return { ok: true, value: { files: [], truncated: false } };
     }),
@@ -61,6 +76,7 @@ vi.mock("../../../tools/file-tools.js", async (original) => {
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { configureHostResources } from "../../../main/host-resources.js";
 import { setWindowsDriveQueryForTest } from "../../../shared/windows-drive-locality.js";
+import { searchWorkspaceFiles } from "../workspace-file-search.js";
 import { registerWorkspaceHandlers } from "../workspace.js";
 
 describe.runIf(process.platform === "win32")("workspace folder search judged once before the walk", () => {
@@ -104,6 +120,36 @@ describe.runIf(process.platform === "win32")("workspace folder search judged onc
     expect(fixture.atCollect.length).toBeGreaterThan(0);
     expect(fixture.atCollect).toEqual(fixture.atWalk);
     expect(fixture.atCollect).toEqual([...new Set(fixture.atCollect)]);
+  });
+
+  it("does not re-resolve a sanitized additional root for the walk", async () => {
+    const admitted = join(fixture.cwd, "AdmittedRoot");
+    mkdirSync(admitted);
+    fixture.additionalDirectories = [admitted];
+    fixture.reResolvedRoot = admitted;
+    try {
+      const handler = fixture.handlers.get(CHANNELS.workspace.searchFiles);
+      await handler?.({ sender: { id: 1 } }, "notes");
+      expect(vi.mocked(searchWorkspaceFiles).mock.lastCall?.[0].nativeRoots).toContain(admitted);
+    } finally {
+      fixture.reResolvedRoot = undefined;
+      fixture.additionalDirectories = [];
+    }
+  });
+
+  it("omits a listing whose path now resolves to another file", async () => {
+    const other = join(fixture.cwd, "other");
+    mkdirSync(other);
+    writeFileSync(join(other, "Redirected.txt"), "abc");
+    const link = join(fixture.cwd, "redirected");
+    symlinkSync(other, link, "junction");
+    fixture.redirectedFile = join(link, "Redirected.txt");
+    try {
+      const handler = fixture.handlers.get(CHANNELS.workspace.searchFiles);
+      expect(await handler?.({ sender: { id: 1 } }, "redirected")).toEqual({ ok: true, truncated: false, matches: [] });
+    } finally {
+      fixture.redirectedFile = undefined;
+    }
   });
 
   it("returns the stored spelling of the default workspace and its files", async () => {
