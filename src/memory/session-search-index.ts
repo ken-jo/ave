@@ -99,9 +99,9 @@ function ensureDirSync(dir: string): void {
   }
 }
 
-// Keep each database instance bound to its owning manager's namespace.
-export type SessionSearchIndexPolicy = "enabled" | "pending" | "paused";
+export type SessionSearchIndexPolicy = "enabled" | "enabled-with-recovery" | "pending" | "paused";
 
+// Keep each database instance bound to its owning manager's namespace.
 export class SessionSearchIndex {
   private readonly dbPath: string;
   private readonly dir: string;
@@ -183,6 +183,21 @@ export class SessionSearchIndex {
     } catch {
       return -1;
     }
+  }
+
+  writeRebuiltSessions(inputs: Iterable<IndexedSessionInput>): void {
+    if (!this.db) throw new Error("search index must be open for rebuild");
+    this.db.transaction(() => {
+      let expectedRows = 0;
+      for (const input of inputs) {
+        this.upsertSession(input);
+        expectedRows += 1;
+      }
+      const actualRows = this.rowCount();
+      if (actualRows !== expectedRows) {
+        throw new Error(`search index row count mismatch (expected ${expectedRows}, got ${actualRows})`);
+      }
+    })();
   }
 
   // Index maintenance must never block source transcript persistence.

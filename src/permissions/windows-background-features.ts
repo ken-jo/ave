@@ -21,6 +21,7 @@ export function areWindowsBackgroundSwitchesAvailable(): boolean {
 }
 
 export function sessionSearchIndexPolicy(preference: boolean | undefined): SessionSearchIndexPolicy {
-  if (isWindowsBackgroundFeatureReleaseEnabled() && isSandboxGateUndecidedAtBoot()) return "pending";
-  return preference === false && areWindowsBackgroundSwitchesAvailable() ? "paused" : "enabled";
+  if (!isWindowsBackgroundFeatureReleaseEnabled()) return "enabled";
+  if (isSandboxGateUndecidedAtBoot()) return "pending";
+  return preference === false && areWindowsBackgroundSwitchesAvailable() ? "paused" : "enabled-with-recovery";
 }

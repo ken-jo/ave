@@ -80,12 +80,12 @@ describe('Windows local inference release gate', () => {
 
   it('defaults session indexing on and stops it independently of inference on a released PC without a backend', () => {
     unregister = registerMxcReleaseGateEvidence(EVIDENCE);
-    expect(sessionSearchIndexPolicy(undefined)).toBe('enabled');
-    expect(sessionSearchIndexPolicy(true)).toBe('enabled');
+    expect(sessionSearchIndexPolicy(undefined)).toBe('enabled-with-recovery');
+    expect(sessionSearchIndexPolicy(true)).toBe('enabled-with-recovery');
     expect(sessionSearchIndexPolicy(false)).toBe('paused');
     expect(assertLocalEmbeddingRuntime()).toBe('unconfined');
     state.substrate = { mxc: { state: 'available' }, srtWinReady: false };
-    expect(sessionSearchIndexPolicy(false)).toBe('enabled');
+    expect(sessionSearchIndexPolicy(false)).toBe('enabled-with-recovery');
     setProcessPlatform('linux');
     expect(sessionSearchIndexPolicy(false)).toBe('enabled');
   });

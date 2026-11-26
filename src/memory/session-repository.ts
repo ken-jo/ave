@@ -772,6 +772,7 @@ export class SessionRepository {
   private readonly searchIndex: SessionSearchIndex;
   private readonly getSearchIndexPolicy: () => SessionSearchIndexPolicy;
   private searchIndexState: "current" | "stale" | "discarded" = "current";
+  private searchIndexChecked = false;
   // Root guards block stale writers until re-add; only newly created sessions may bind again.
   private readonly detachedProjectRoots = new Set<string>();
   // Session tombstones survive root re-add so old conversations remain detached.
@@ -1109,6 +1110,10 @@ export class SessionRepository {
         return false;
       }
       if (this.searchIndexState !== "current") this.rebuildSessionSearchRows();
+      if (policy === "enabled-with-recovery" && !this.searchIndexChecked) {
+        if (!this.hasPopulatedSearchIndex()) this.rebuildSessionSearchRows();
+        this.searchIndexChecked = true;
+      }
       return true;
     } catch (error) {
       log.warn({ error }, "could not update session search index state");
@@ -1116,35 +1121,38 @@ export class SessionRepository {
     }
   }
 
+  private hasPopulatedSearchIndex(): boolean {
+    if (statPathIfPresent(this.searchIndex.getDbPath()) === null || !this.searchIndex.open()) return false;
+    try {
+      return this.searchIndex.rowCount() > 0;
+    } finally {
+      this.searchIndex.close();
+    }
+  }
+
+  private *sessionSearchInputs(): Iterable<IndexedSessionInput> {
+    const sessionFiles = this.listSessionJsonlFiles().sort();
+    for (const file of sessionFiles) {
+      const sessionId = file.slice(0, -".jsonl".length);
+      if (!isValidSessionId(sessionId)) continue;
+      const messages = this.loadSession(sessionId);
+      if (!Array.isArray(messages)) continue;
+      const input = this.buildIndexInput(sessionId, messages);
+      if (input) yield input;
+    }
+  }
+
   private rebuildSessionSearchRows(): void {
-    if (this.searchIndexState !== "current") this.searchIndexState = "stale";
+    this.searchIndexState = "stale";
     this.discardSearchIndex();
     try {
       if (!this.searchIndex.open()) {
         throw new Error("search index could not be opened after reset");
       }
 
-      let expectedRows = 0;
-      const sessionFiles = readdirIfPresent(this.sessionsDir)
-        .filter((file) => file.endsWith(".jsonl"))
-        .sort();
-      for (const file of sessionFiles) {
-        const sessionId = file.slice(0, -".jsonl".length);
-        if (!isValidSessionId(sessionId)) continue;
-        const messages = this.loadSession(sessionId);
-        if (!Array.isArray(messages)) continue;
-        const input = this.buildIndexInput(sessionId, messages);
-        if (!input) continue;
-        this.searchIndex.upsertSession(input);
-        expectedRows += 1;
-      }
-      const actualRows = this.searchIndex.rowCount();
-      if (actualRows !== expectedRows) {
-        throw new Error(
-          `search index row count mismatch (expected ${expectedRows}, got ${actualRows})`,
-        );
-      }
+      this.searchIndex.writeRebuiltSessions(this.sessionSearchInputs());
       this.searchIndexState = "current";
+      this.searchIndexChecked = true;
     } finally {
       this.searchIndex.close();
     }
