@@ -1413,7 +1413,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     try {
       expect(() => buildSandboxConfig({
         denyRead: [absent],
-        denyWrite: [failedDrive + "\\denied", later],
+        denyWrite: [`${failedDrive}\\denied`, later],
       }, undefined, liveGrants)).toThrow(failure);
       expect(watchedProtectedRows()).toEqual(before);
       expect(vi.mocked(lstatSync).mock.calls.some(([path]) => String(path).includes("later-deny"))).toBe(false);

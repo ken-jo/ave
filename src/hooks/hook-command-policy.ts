@@ -1,4 +1,3 @@
-import { withLocalityDecision } from "../shared/local-path-io.js";
 import { randomUUID } from "node:crypto";
 import type { PermissionCheckResult, PermissionManager } from "../permissions/permission-manager.js";
 import { admitApprovalAnswer, approvalReasonFields, hostApprovalDenialReason, type AnsweredRecord, type ApprovalDecision, type ApprovalGate } from "../permissions/approval-gate.js";

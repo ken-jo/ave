@@ -59,6 +59,7 @@ export class ShellFloorContext {
   readonly isSessionReadPath: ReturnType<typeof createConfiguredSessionReadPathMatcher>;
   readonly locationUnder: ReturnType<typeof createSensitiveLocationMatcher>;
   private readonly match: ReturnType<typeof createSensitivePathMatcher>;
+  private contentInspections = { count: 0 };
 
   constructor(readonly pathDialect: ShellPathDialect = "bash", options: { inspectHostFiles?: boolean } = {}) {
     this.inspectHostFiles = options.inspectHostFiles !== false;
@@ -71,35 +72,46 @@ export class ShellFloorContext {
     });
   }
   unresolvedPath = false;
+  readonly retained: { sensitive: string | null; exfiltration: string | null } = { sensitive: null, exfiltration: null };
   readonly visits = { frames: 0, stages: 0, lexes: 0, transfers: 0, walk: 0, inventory: 0, commands: 0, feeder: 0, code: 0, coverage: 0, codeNodes: 0, codeWordLinks: 0, codeSourceChars: 0, codeTokenFacts: 0, codeTokenUses: 0, codeCoverage: 0, codeRangeSteps: 0, staticTokens: 0, staticArguments: 0, staticChars: 0, staticNodes: 0, staticViews: 0 };
   readonly facts = new Map<string, unknown>();
   readonly requiresContentInspection = createKeyMaterialPathMatcher();
   private matchNames: ReturnType<typeof createSensitivePathMatcher> | undefined;
   private matchOpaqueNames: ReturnType<typeof createSensitivePathMatcher> | undefined;
+  private readonly pathMatches = new Map<string, string | null>();
+  private readonly nameMatches = new Map<string, string | null>();
   private readonly pathMatchOwner = {};
   private readonly nameMatchOwner = {};
 
+  get contentInspectionCount(): number { return this.contentInspections.count; }
+
   createChild(dialect: ShellPathDialect): ShellFloorContext {
-    return new ShellFloorContext(dialect, { inspectHostFiles: this.inspectHostFiles });
+    const child = new ShellFloorContext(dialect, { inspectHostFiles: this.inspectHostFiles });
+    if (process.platform !== "win32") child.contentInspections = this.contentInspections;
+    return child;
   }
 
   matchPath(path: string): string | null {
-    return withLocalityDecision(() => {
-      if (this.requiresContentInspection(path)) return this.match(path);
-      const matches = decisionMemo<string | null>(this.pathMatchOwner);
+    const match = (): string | null => {
+      if (this.requiresContentInspection(path)) {
+        if (process.platform !== "win32" && this.inspectHostFiles) this.contentInspections.count += 1;
+        return this.match(path);
+      }
+      const matches = process.platform === "win32" ? decisionMemo<string | null>(this.pathMatchOwner) : this.pathMatches;
       const cached = matches.get(path);
       if (cached !== undefined) return cached;
       const hit = this.match(path);
       matches.set(path, hit);
       return hit;
-    });
+    };
+    return process.platform === "win32" ? withLocalityDecision(match) : match();
   }
 
   matchName(path: string, includeKeyMaterial = false): string | null {
-    return withLocalityDecision(() => {
+    const match = (): string | null => {
       const folded = caseFoldForMatch(foldCanonicalPathSeparators(path));
       const key = JSON.stringify([includeKeyMaterial, folded]);
-      const matches = decisionMemo<string | null>(this.nameMatchOwner);
+      const matches = process.platform === "win32" ? decisionMemo<string | null>(this.nameMatchOwner) : this.nameMatches;
       const cached = matches.get(key);
       if (cached !== undefined) return cached;
       let matcher: ReturnType<typeof createSensitivePathMatcher>;
@@ -113,7 +125,8 @@ export class ShellFloorContext {
       const hit = matcher(folded);
       matches.set(key, hit);
       return hit;
-    });
+    };
+    return process.platform === "win32" ? withLocalityDecision(match) : match();
   }
 }
 

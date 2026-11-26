@@ -142,7 +142,7 @@ describe("watched protected rows", () => {
     const failedDrive = workspace.startsWith("Z:") ? "Y:" : "Z:";
     const manifest = join(dirname(entry.quarantined), "watched-manifest.json");
     const record = JSON.parse(readFileSync(manifest, "utf8"));
-    record.entries[0].quarantined = join(failedDrive + "\\", entry.slot, basename(entry.quarantined));
+    record.entries[0].quarantined = join(`${failedDrive}\\`, entry.slot, basename(entry.quarantined));
     writeFileSync(manifest, JSON.stringify(record));
     const failure = new Error("Quarantine source drive query failed");
     const rename = vi.spyOn(restoreRename, "renameFileOnce").mockRejectedValue(new Error("Unexpected restore rename"));

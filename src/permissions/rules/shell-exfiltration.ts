@@ -16,7 +16,7 @@ import type { HostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import { proveStaticArgv } from "./shell-argument-grammar.js";
 import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
 import { SHELL_FLOOR_BUDGET_REASON, ShellFloorContext, ShellFloorLimitError, isShellFloorLiteralData, shellFloorBudgetSignals, shellFloorFallbackInputExceeded, shellFloorInputExceeded, shellFloorParserBudgetExceeded, type ShellFloorSignals } from "./shell-floor-policy.js";
-import { wrapperCommand, type ParsedShellCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
+import { shellFact, wrapperCommand, type ParsedShellCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
 import { RUNNER_COMMAND_PREFIXES, literalCommandAfterPrefix, programName as policyProgramName, runnerHasPrefix, runnerName } from "./shell-prefix-values.js";
 
 export const SHELL_EXFIL_VERDICT_REASON = "shell possible credential exfiltration";
@@ -560,6 +560,8 @@ function inspectStatement(statement: ShellStatement, cwd: string | undefined, co
   return pass;
 }
 
+const floorContexts = new WeakMap<ParsedShellCommand, ShellFloorContext>();
+
 export function parseShellFloorCommand(input: ShellCommandInput, maxInputLength = 8_000): ParsedShellCommand {
   if ((typeof input === "string" ? input : input.command).length > maxInputLength && shellFloorInputExceeded(input)) throw new ShellFloorLimitError(SHELL_FLOOR_BUDGET_REASON);
   if (typeof input !== "string" && (input.analysis.ok || input.analysis.reason !== "literal command length limit exceeded")) {
@@ -571,44 +573,59 @@ export function parseShellFloorCommand(input: ShellCommandInput, maxInputLength 
   catch (parserError) { return { command, analysis: { ok: false, reason: "shell parser failed" }, parserError, facts: new Map() }; }
 }
 function parsedWithContext(input: ShellCommandInput, context: ShellFloorContext): ParsedShellCommand {
-  if (typeof input !== "string") return input;
+  if (typeof input !== "string") {
+    if (process.platform !== "win32") floorContexts.set(input, context);
+    return input;
+  }
   const key = `bash-parse\0${input}`; let parsed = context.facts.get(key) as ParsedShellCommand | undefined;
   if (!parsed) { context.visits.lexes += 1; parsed = parseShellFloorCommand(input); context.facts.set(key, parsed); }
+  if (process.platform !== "win32") floorContexts.set(parsed, context);
   return parsed;
 }
 type PowerShellBodyInspector = (command: string, cwd: string | undefined, budget: LiteralBodyBudget, executionPlan?: HostShellExecutionPlan, context?: ShellFloorContext) => ShellFloorSignals;
 
 export function inspectPosixShellCommand(input: ShellCommandInput, cwd: string | undefined, supplied: ShellFloorContext | undefined, budget: LiteralBodyBudget, inspectPowerShellBody: PowerShellBodyInspector): ShellFloorSignals {
-  return withLocalityDecision(() => {
+  const windows = process.platform === "win32";
+  const inspect = (): ShellFloorSignals => {
     if (shellFloorInputExceeded(input)) return shellFloorBudgetSignals();
-    const context = supplied ?? new ShellFloorContext();
+    const previous = windows || typeof input === "string" ? undefined : floorContexts.get(input);
+    const context = supplied ?? previous ?? new ShellFloorContext();
     try {
       if (budget.depth >= 16) return shellFloorBudgetSignals();
       const parsed = parsedWithContext(input, context);
       if (parsed.analysis.ok) budget.tokens.count += parsed.analysis.totalTokens ?? 0;
       if (budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return shellFloorBudgetSignals();
-      if (!parsed.analysis.ok) {
-        const limited = shellFloorParserBudgetExceeded(parsed.analysis.reason);
-        let sensitive: string | null = null;
-        for (const match of parsed.command.matchAll(/"[^"\n]*"|'[^'\n]*'|[^\s;|&()<>]+/g)) {
-          sensitive ??= sensitivePathInArgumentText(match[0], cwd, context);
+      const evaluate = (): ShellFloorSignals => {
+        if (!parsed.analysis.ok) {
+          const limited = shellFloorParserBudgetExceeded(parsed.analysis.reason);
+          let sensitive: string | null = null;
+          for (const match of parsed.command.matchAll(/"[^"\n]*"|'[^'\n]*'|[^\s;|&()<>]+/g)) {
+            sensitive ??= sensitivePathInArgumentText(match[0], cwd, context);
+          }
+          const exfiltration = UNPARSED_UPLOAD.test(parsed.command) ? "curl/wget body from a file (unparsed)" : null;
+          return { ...(limited ? shellFloorBudgetSignals() : {}), outcome: sensitive || exfiltration ? "visible-floor" : "unproven", sensitive, exfiltration, ordinaryAsk: limited ? SHELL_FLOOR_BUDGET_REASON : parsed.analysis.reason };
         }
-        const exfiltration = UNPARSED_UPLOAD.test(parsed.command) ? "curl/wget body from a file (unparsed)" : null;
-        return { ...(limited ? shellFloorBudgetSignals() : {}), outcome: sensitive || exfiltration ? "visible-floor" : "unproven", sensitive, exfiltration, ordinaryAsk: limited ? SHELL_FLOOR_BUDGET_REASON : parsed.analysis.reason };
-      }
-      const root = parsed.analysis.program, single = root.kind === "command" || (root.kind === "sequence" && root.statements.length === 1 && root.statements[0]?.kind === "command");
-      const statement = root.kind === "sequence" && root.statements.length === 1 ? root.statements[0]! : root;
-      const pass = inspectStatement(statement, cwd, context, single, budget, inspectPowerShellBody);
-      if (context.unresolvedPath) {
-        pass.unproven ??= "Shell path namespace is unresolved";
-        pass.exactLiteralEvaluation = undefined;
-      }
-      const encodedReason = encodedPowerShellExecutionReason([parsed.command]);
-      if (encodedReason !== null) { pass.unproven = encodedReason; pass.exactLiteralEvaluation = undefined; }
-      if (pass.commandCount > 1 && pass.changesState) pass.unproven ??= SHELL_RUNTIME_EVALUATION_REASON;
-      if (pass.sensitive && pass.network) pass.exfiltration ??= `sensitive path (${pass.sensitive}) with a network transport`;
-      const visible = pass.sensitive !== null || pass.exfiltration !== null;
-      return recordLiteralShellFlow({ outcome: visible ? "visible-floor" as const : pass.unproven ? "unproven" as const : "static-complete" as const, sensitive: pass.sensitive, exfiltration: pass.exfiltration, ...(pass.unproven ? { ordinaryAsk: pass.unproven } : {}), ...(pass.exactLiteralEvaluation ? { exactLiteralEvaluation: true as const } : {}) }, { network: pass.network, readsPath: pass.readsPath });
+        const root = parsed.analysis.program, single = root.kind === "command" || (root.kind === "sequence" && root.statements.length === 1 && root.statements[0]?.kind === "command");
+        const statement = root.kind === "sequence" && root.statements.length === 1 ? root.statements[0]! : root;
+        const pass = inspectStatement(statement, cwd, context, single, budget, inspectPowerShellBody);
+        if (context.unresolvedPath) {
+          pass.unproven ??= "Shell path namespace is unresolved";
+          pass.exactLiteralEvaluation = undefined;
+        }
+        const encodedReason = encodedPowerShellExecutionReason([parsed.command]);
+        if (encodedReason !== null) { pass.unproven = encodedReason; pass.exactLiteralEvaluation = undefined; }
+        if (pass.commandCount > 1 && pass.changesState) pass.unproven ??= SHELL_RUNTIME_EVALUATION_REASON;
+        if (pass.sensitive && pass.network) pass.exfiltration ??= `sensitive path (${pass.sensitive}) with a network transport`;
+        const visible = pass.sensitive !== null || pass.exfiltration !== null;
+        return recordLiteralShellFlow({ outcome: visible ? "visible-floor" as const : pass.unproven ? "unproven" as const : "static-complete" as const, sensitive: pass.sensitive, exfiltration: pass.exfiltration, ...(pass.unproven ? { ordinaryAsk: pass.unproven } : {}), ...(pass.exactLiteralEvaluation ? { exactLiteralEvaluation: true as const } : {}) }, { network: pass.network, readsPath: pass.readsPath });
+      };
+      if (windows) return evaluate();
+      const factKey = `static-floor\0${cwd ?? ""}\0${context.inspectHostFiles}`;
+      const contentInspections = context.contentInspectionCount;
+      const result = shellFact(parsed, factKey, evaluate);
+      if (context.contentInspectionCount !== contentInspections) parsed.facts.delete(factKey);
+      return result;
     } catch (error) { if (error instanceof ShellFloorLimitError) return shellFloorBudgetSignals(); throw error; }
-  });
+  };
+  return windows ? withLocalityDecision(inspect) : inspect();
 }
