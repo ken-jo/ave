@@ -31,8 +31,10 @@ const runtime = vi.hoisted(() => ({
   initialize: vi.fn(), wrap: vi.fn(), update: vi.fn(), grant: vi.fn(), stamp: vi.fn(), revoke: vi.fn(), spawn: vi.fn(), nativeSpawn: vi.fn(),
   identityQuery: vi.fn(), openMxcEgressLease: vi.fn(),
   containerBackend: false,
+  aclHolderGrants: false,
   policyFrames: [] as Buffer[],
 }));
+const needsFixtureGrantPins = () => runtime.containerBackend || (hostPlatform !== "win32" && runtime.aclHolderGrants);
 
 // Faked win32 on a POSIX host: no backend state to check here; a Windows host keeps its own.
 vi.mock("../confinement-state-paths.js", async (original) => {
@@ -80,10 +82,9 @@ vi.mock("node:module", async (original) => {
 });
 vi.mock("../windows-stamp-targets.js", async (original) => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();
-  return (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(actual, () => runtime.containerBackend);
+  return (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(actual, needsFixtureGrantPins);
 });
-// Keep both overrides in one mock. Container fixtures use literal drive paths so real pinning
-// reaches the holder's missing-grant decision, and only the worker path uses the async stamp stand-in.
+// Expand literal fixture drive paths so the real pinning code can record their modeled identities.
 vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", async (original) => {
   const utils = {
     ...await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>(),
@@ -91,7 +92,7 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", a
   };
   const { win32 } = await vi.importActual<typeof import("node:path")>("node:path");
   return { ...utils, expandWindowsFsPaths: (entries: Parameters<typeof utils.expandWindowsFsPaths>[0], options: Parameters<typeof utils.expandWindowsFsPaths>[1]) => {
-    if (process.platform !== "win32" || !runtime.containerBackend) return utils.expandWindowsFsPaths(entries, options);
+    if (process.platform !== "win32" || !needsFixtureGrantPins()) return utils.expandWindowsFsPaths(entries, options);
     if (options?.mode !== "deny") throw new Error("The drive fixture requires literal deny-mode expansion");
     return entries.map((entry) => {
       const path = typeof entry === "string" ? entry : entry.path;
@@ -457,7 +458,7 @@ const { openEgressInvocation } = await import("../egress-invocations.js");
 const { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } = await import("../../shared/ave-home.js");
 const { TEST_WORKER_EGRESS_OWNER } = await import("../../__tests__/support/egress-fixture.js");
 const { buildMandatorySandboxWritePolicy } = await import("../sandbox-write-policy.js");
-const { pinWindowsPaths, windowsPathKey } = await import("../../shared/windows-path-facts.js");
+const { pinWindowsPaths, windowsObjectKey, windowsPathKey } = await import("../../shared/windows-path-facts.js");
 const { assertWindowsGrantGrammar, pinWindowsGrantTargets } = await import("../windows-grant-targets.js");
 const { prepareOwnedMxcShellLaunch } = await import("../../__tests__/support/contained-shell-launch.js");
 const { existsSync, mkdirSync, mkdtempSync, rmdirSync, writeFileSync } = await import("node:fs");
@@ -572,6 +573,7 @@ afterEach(async () => {
     drive.readable.clear();
     drive.pins.clear();
     windowsAdmission.native = false;
+    runtime.aclHolderGrants = false;
     runtime.policyFrames.length = 0;
   }
 });
@@ -998,8 +1000,17 @@ describe("the browser download staging folder in the srt-win session floor and w
 });
 
 describe("the browser download staging folder at the srt-win ACL holder's grant turn", () => {
+  const grantReleaseRows = ({ read }: { read: readonly string[] }) => pinWindowsPaths(read).map((pin, index) => ({
+    path: read[index]!,
+    status: "revoked" as const,
+    objectIdentity: windowsObjectKey(pin),
+  }));
+  let releaseRows: ReturnType<typeof grantReleaseRows>;
+
   beforeEach(() => {
+    runtime.aclHolderGrants = true;
     runtime.initialize.mockResolvedValue(undefined);
+    releaseRows = [];
     // The holder: a pinned System32 process that only has to stay alive.
     runtime.spawn.mockImplementation(() => {
       const child = Object.assign(new PassThrough(), { pid: 4321, exitCode: null, signalCode: null as NodeJS.Signals | null, stdin: new PassThrough() });
@@ -1013,7 +1024,14 @@ describe("the browser download staging folder at the srt-win ACL holder's grant 
         return true;
       } });
     });
-    runtime.revoke.mockImplementation(() => runtime.grant.mock.calls.flatMap(([request]) => (request as { read: string[] }).read.map((path) => ({ path, status: "revoked" }))));
+    runtime.grant.mockImplementation((request: Parameters<typeof grantReleaseRows>[0]) => {
+      releaseRows = grantReleaseRows(request);
+    });
+    runtime.revoke.mockImplementation(() => releaseRows.splice(0));
+  });
+  afterEach(() => {
+    runtime.grant.mockReset();
+    runtime.revoke.mockReset();
   });
 
   // The grants an MCP server, hook or plugin child asks srt-win for (`spawnWindowsBundledProcess` hands its roots to the holder as is).
@@ -1084,7 +1102,8 @@ describe("the browser download staging folder at the srt-win ACL holder's grant 
       checkSandboxStampTargets([marker]);
       hostFs.writeFileSync(marker, "fixture");
       expect(hasDeny()).toBe(false);
-      runtime.grant.mockImplementationOnce(() => {
+      runtime.grant.mockImplementationOnce((request: Parameters<typeof grantReleaseRows>[0]) => {
+        releaseRows = grantReleaseRows(request);
         opened = descriptor = hostFs.openSync(marker, "r");
         denyPending = true;
         setDeny(true);
@@ -1093,7 +1112,7 @@ describe("the browser download staging folder at the srt-win ACL holder's grant 
       });
       runtime.revoke.mockImplementationOnce(() => {
         restore();
-        return [{ path: own, status: "revoked" }];
+        return releaseRows.splice(0);
       });
       // The allowed grant makes the inner refusal assertion fail after acquisition.
       await expect(expectGrantRefused({ label: "mcp:fs", allowRead: [own], allowWrite: [] }, /protected sensitive target/))
@@ -1108,12 +1127,7 @@ describe("the browser download staging folder at the srt-win ACL holder's grant 
       hostFs.rmSync(directory, { recursive: true });
       expect(hostFs.existsSync(directory)).toBe(false);
     } finally {
-      try {
-        restore();
-      } finally {
-        runtime.grant.mockReset();
-        runtime.revoke.mockReset();
-      }
+      restore();
     }
   });
 
