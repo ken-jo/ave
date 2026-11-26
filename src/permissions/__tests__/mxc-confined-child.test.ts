@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { EventEmitter } from "node:events";
 import { win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -32,7 +31,6 @@ const state = vi.hoisted(() => ({
   issuedHome: vi.fn((cwd: string, home: string | undefined): boolean => cwd === home),
   homeInPlace: vi.fn((_home: string | undefined): void => undefined),
   // Directory watches armed for a watched carrier child: a fake watcher, or a thrown arm failure.
-  watch: vi.fn(),
 }));
 vi.mock("../mxc-runtime-root.js", async (original) => ({
   ...await original<typeof import("../mxc-runtime-root.js")>(), requireMxcContainerStartRoot: () => state.startRoot(),
@@ -81,7 +79,7 @@ vi.mock("node:fs", async (original) => {
     return { isDirectory: () => directory, isFile: () => !directory, isSymbolicLink: () => false,
       size: 8n, mtimeNs: state.executableMtime, birthtimeNs: 1n };
   };
-  return { ...actual, existsSync: () => true, realpathSync, lstatSync, watch: (...args: unknown[]) => state.watch(...args) };
+  return { ...actual, existsSync: () => true, realpathSync, lstatSync };
 });
 
 vi.mock("../../shared/windows-path-facts.js", async original => {
@@ -114,6 +112,8 @@ import { liveMxcHolderWritableRoots, spawnConfinedChild, spawnMxcConfinedChild, 
 import { MxcProcessContractError } from "../mxc-extension-errors.js";
 import { __resetWindowsSandboxSubstrateForTest, setWindowsSandboxSubstrate } from "../sandbox-capability.js";
 import { mxcShellCapability, windowsSubstrateFor, type WindowsSandboxPlanInputs } from "../../boot/steps/windows-sandbox-plan.js";
+import * as watchedRows from "../windows-watched-rows.js";
+import { sweepWatchedRows, WatchedQuarantineError, watchedProtectedRows } from "../windows-watched-rows.js";
 
 function spec(): MxcConfinedChildSpec {
   return { label: "worker:sample", command: "C:\\runtime\\runtime.exe", args: ["D:\\work\\entry.js"],
@@ -167,7 +167,6 @@ beforeEach(() => {
   unregisterReleaseGate = registerMxcReleaseGateEvidence({ ownProxySucceeded: true, otherListenerRefused: true,
     directEgressRefused: true, forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true });
   state.close.mockResolvedValue(undefined);
-  state.watch.mockImplementation(() => Object.assign(new EventEmitter(), { close: vi.fn() }));
   state.lease.mockResolvedValue({ url: "http://127.0.0.1:43210", port: 43210, close: state.close });
   state.admit.mockReturnValue({ model: mxcPolicyModel({ allowRead: ["C:\\runtime", "C:\\Windows"], allowWrite: ["D:\\work"],
     denyRead: [], denyWrite: [], protectedFloor: [] }), assertStillValid: state.validate });
@@ -700,29 +699,54 @@ describe("co-holder nesting and executable identity", () => {
     await expect(spawnMxcConfinedChild(spec())).rejects.toThrow(/does not match/);
   });
 
-  it("arms the missing carrier's watch before native creation, and refuses the start, naming the path, when it cannot be armed", async () => {
+  it.runIf(process.platform === "win32")("claims the watched names as the last check before native creation, and refuses the start, naming the path, when the parent appeared since ranking", async () => {
     const children = ["D:\\work\\.ave\\commands", "D:\\work\\.ave\\hooks"];
-    state.missing.add("D:\\work\\.ave");
-    const admitWatched = () => state.admit.mockReturnValueOnce({ model: mxcPolicyModel({ allowRead: ["C:\\runtime", "C:\\Windows"],
-      allowWrite: ["D:\\work"], denyRead: [], denyWrite: children, requiredWriteDenies: children, carrierChildWriteDenies: children, protectedFloor: [] }), assertStillValid: state.validate });
-    admitWatched();
-    let armedAtSpawn: unknown[][] = [];
-    state.spawn.mockImplementationOnce(async (request, options) => {
-      armedAtSpawn = [...state.watch.mock.calls];
+    const claimed = () => watchedProtectedRows().filter(path => children.includes(path));
+    const admitWatched = () => {
+      state.missing.add("D:\\work\\.ave");
+      state.admit.mockReturnValueOnce({ model: mxcPolicyModel({ allowRead: ["C:\\runtime", "C:\\Windows"],
+        allowWrite: ["D:\\work"], denyRead: [], denyWrite: children, requiredWriteDenies: children, protectedFloor: [] }), assertStillValid: state.validate });
+    };
+    const spawnAfter = (beforeCheck: () => void) => state.spawn.mockImplementationOnce(async (request, options) => {
       const child = { id: 47, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
         completion: new Promise(() => {}), startEvidence: started(request), dispose: vi.fn().mockResolvedValue(undefined) };
       options.onOwned(child);
+      beforeCheck();
       options.beforeSpawn();
       return child;
     });
-    const result = await spawnMxcConfinedChild(spec());
-    expect(armedAtSpawn.map(([path]) => path)).toEqual(["D:\\work"]);
-    await result.release();
-    state.spawn.mockClear();
     admitWatched();
-    state.watch.mockImplementationOnce(() => { throw Object.assign(new Error("EMFILE: too many open files, watch"), { code: "EMFILE" }); });
+    let claimedBeforeCheck: string[] | undefined;
+    spawnAfter(() => { claimedBeforeCheck = claimed(); });
+    const result = await spawnMxcConfinedChild(spec());
+    // Nothing is registered until the final check, and the claim lasts until the holder's release.
+    expect(claimedBeforeCheck).toEqual([]);
+    expect(claimed()).toEqual(children);
+    await result.release();
+    expect(claimed()).toEqual([]);
+    admitWatched();
+    spawnAfter(() => { state.missing.delete("D:\\work\\.ave"); });
     await expect(spawnMxcConfinedChild(spec())).rejects.toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: children[0] }));
-    expect(state.spawn).not.toHaveBeenCalled();
+    expect(claimed()).toEqual([]);
+  });
+
+  it.runIf(process.platform === "win32").each(["receipt", "failure"] as const)("hands a holder's quarantine %s to the next sandboxed command result", async (kind) => {
+    const children = ["D:\\work\\.ave\\commands", "D:\\work\\.ave\\hooks"];
+    state.missing.add("D:\\work\\.ave");
+    state.admit.mockReturnValueOnce({ model: mxcPolicyModel({ allowRead: ["C:\\runtime", "C:\\Windows"],
+      allowWrite: ["D:\\work"], denyRead: [], denyWrite: children, requiredWriteDenies: children, protectedFloor: [] }), assertStillValid: state.validate });
+    // A holder has no command result of its own to carry what its release moved or could not move.
+    const claim = vi.spyOn(watchedRows, "claimMxcWatchedRows").mockReturnValue({ start: vi.fn(), release: async () => {
+      if (kind === "failure") throw new WatchedQuarantineError("[fixture] holder quarantine failed");
+      return "[fixture] holder quarantine receipt";
+    } });
+    try {
+      const result = await spawnMxcConfinedChild(spec());
+      await result.release();
+    } finally {
+      claim.mockRestore();
+    }
+    await expect(sweepWatchedRows({ commandId: "next-command" })).resolves.toBe(`[fixture] holder quarantine ${kind === "failure" ? "failed" : "receipt"}`);
   });
 
   it("binds ranked write grants, HOME and temp to the captured write roots and the staging layout", async () => {

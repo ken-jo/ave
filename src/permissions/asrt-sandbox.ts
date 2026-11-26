@@ -37,7 +37,7 @@ import {
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets, testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde, leadingTildeHome } from "../shared/home-tilde.js";
-import { holdSandboxGitWrites, setHostGitWorkspaceGuard } from "../shared/host-git.js";
+import { holdSandboxGitWrites } from "../shared/host-git.js";
 import { projectLocalWindowsFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { admitObligations, consumeObligations, ObligationRefusedError, type ObligationRow, type ObligationSource, obligationWithin, POSIX_CRON_DENIES, posixOnlyDenyPaths, requireEnforceable, windowsObligationsApply } from "./admitted-obligation.js";
@@ -79,7 +79,7 @@ import { defaultHooksDir } from "../hooks/hook-discovery.js";
 import { readWindowsReadDenyEvidence, recheckWindowsReadDenyEvidence, windowsReadDenyEvidence, windowsReadDenyKey, type WindowsReadDenyEvidence, type WindowsReadDenySnapshot } from "../shared/windows-read-deny-evidence.js";
 import type { SandboxWindowsStatusInfo } from "../shared/sandbox-capability-info.js";
 import { readWindowsDenyAcls, WINDOWS_READ_DENY_MASK, WINDOWS_WRITE_DENY_MASK } from "./windows-deny-acl.js";
-import { isWatchedWorkspaceConsumable, placeholderLeftovers, pruneWatchedRows, resetWatchedRows, sweepWatchedRows, watchAbsentProtectedRow, watchedProtectedRows } from "./windows-watched-rows.js";
+import { hasWatchedWork, placeholderLeftovers, pruneWatchedRows, resetWatchedRows, sweepWatchedRows, watchAbsentProtectedRow } from "./windows-watched-rows.js";
 
 import type {
   SandboxRuntimeConfig,
@@ -347,11 +347,6 @@ async function completeBareRepositoryCleanup(pending: PendingGitCleanup): Promis
   } finally { pending.complete({ ...(notice ? { notice } : {}), ...(failure ? { failure } : {}) }); }
 }
 
-setHostGitWorkspaceGuard(workspace => {
-  try { return isWatchedWorkspaceConsumable(workspace); }
-  catch { return false; }
-});
-
 function warnWindowsPlaceholderLeftovers(filesystem: Partial<FilesystemConfig> | undefined): void {
   try {
     const leftovers = placeholderLeftovers((filesystem?.denyWrite ?? []).map(entry => typeof entry === "string" ? entry : entry.path).filter(path => isAbsolute(path) && !containsGlobCharsWin(path)));
@@ -366,7 +361,7 @@ function watchedRootsInUse(session: AsrtSandboxSession | undefined): string[] {
 
 // Command end is a detection point: a created watched row is quarantined before the result reaches its owner.
 function watchedRowsCleanup(commandId: string, command: string): PendingGitCleanup["cleanup"] | undefined {
-  if (process.platform !== "win32" || watchedProtectedRows().length === 0) return undefined;
+  if (process.platform !== "win32" || !hasWatchedWork()) return undefined;
   return () => sweepWatchedRows({ commandId, command: command.slice(0, 200) });
 }
 
@@ -943,7 +938,6 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
     ...namespaceRoots, ...(pinnedOwnership?.hostStorageRoots ?? []),
   ]);
   const requiredWrites = new Set(mandatory.windowsRequiredWriteDenies);
-  const carrierChildren = new Set(mandatory.windowsCarrierChildWriteDenies);
   // Only the mandatory floor's own copy of a required row gives way to it; sensitive and configured denies keep their outcome.
   const writeFloor = literalDenies([...sensitiveWriteDenies, ...admitted.denyWrite,
     ...mandatory.denyWrite.filter(entry => !requiredWrites.has(typeof entry === "string" ? entry : entry.path))], true);
@@ -951,7 +945,7 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
     floors: [
       ...readDenies.map((path) => policyFloorRow(path, "denied", "read-boundary", true)),
       ...writeFloor.map((path) => policyFloorRow(path, "ro", "protected-name", true)),
-      ...[...requiredWrites].map((path) => requiredWriteDenyRow(path, carrierChildren.has(path))),
+      ...[...requiredWrites].map((path) => requiredWriteDenyRow(path)),
       ...protectedFloor.map((path) => policyFloorRow(path, "denied", "secrets", true)),
       // The user's denies stay spellings: a pattern is expanded when the launch is ranked.
       ...getUserReadDenies().map((path) => policyFloorRow(path, "denied", "user-deny", false)),

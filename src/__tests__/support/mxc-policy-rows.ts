@@ -1,5 +1,5 @@
 // Container ranking fixtures state a policy as the shell's lists.
-import { admitMxcFilesystem, rankMxcFilesystem, rankMxcRowsBySpelling, type MxcDirectoryEntry, type MxcFilesystemGrants } from "../../permissions/mxc-windows.js";
+import { admitMxcFilesystem, rankMxcFilesystem, rankMxcRowsBySpelling, type MxcDirectoryEntry, type MxcFilesystemGrants, type MxcSpelledGrants } from "../../permissions/mxc-windows.js";
 import type { ObligationSet } from "../../permissions/admitted-obligation.js";
 import { shellPolicyModel, type MxcShellPolicyLists } from "../../tools/mxc-shell-launch.js";
 
@@ -8,7 +8,7 @@ export { shellPolicyModel as mxcPolicyModel };
 /** Ranks a policy stated as lists by spelling, on a simulated layout. */
 export function rankMxcLists(
   lists: MxcShellPolicyLists, exists: (path: string) => boolean, list?: (directory: string) => readonly MxcDirectoryEntry[],
-): MxcFilesystemGrants {
+): MxcSpelledGrants {
   return rankMxcRowsBySpelling(shellPolicyModel(lists), exists, list);
 }
 

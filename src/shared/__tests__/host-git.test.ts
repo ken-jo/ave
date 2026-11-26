@@ -3,11 +3,12 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { TOOL_TIMEOUT_POLICY } from "../tool-timeout-policy.js";
 import { buildHostGitArgs, holdSandboxGitWrites, isHostGitWorkspaceAvailable } from "../host-git.js";
+import * as hostWorkspaceGate from "../host-workspace-gate.js";
 
 describe("host Git configuration floor", () => {
   it("applies the mandatory floor after caller configuration without changing command arguments", () => {
@@ -51,6 +52,19 @@ describe("host Git workspace ordering", () => {
     releases.push(release);
     return release;
   }
+
+  it("refuses a workspace the host workspace gate refuses, with no hold on it", () => {
+    const project = join(root, "project");
+    mkdirSync(project);
+    const gate = vi.spyOn(hostWorkspaceGate, "isHostWorkspaceConsumable").mockImplementation(workspace => workspace !== project);
+    try {
+      expect(isHostGitWorkspaceAvailable(project)).toBe(false);
+      expect(isHostGitWorkspaceAvailable(join(root, "sibling"))).toBe(true);
+    } finally {
+      gate.mockRestore();
+    }
+    expect(isHostGitWorkspaceAvailable(project)).toBe(true);
+  });
 
   it("blocks exact, ancestor and descendant workspaces while preserving independent siblings", () => {
     const project = join(root, "project");

@@ -9,7 +9,7 @@ import { configureHostResources } from "../../main/host-resources.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { buildMxcShellRequest, mxcRequestArgs, powerShellMxcCommandLine, resolveHostWxcExecPath, type MxcFilesystemGrants } from "../mxc-windows.js";
-import { listWatchedQuarantine, resetWatchedRows, WATCHED_ROW_VIOLATION, watchMxcProtectedRows } from "../windows-watched-rows.js";
+import { claimMxcWatchedRows, listWatchedQuarantine, resetWatchedRows, WATCHED_ROW_VIOLATION } from "../windows-watched-rows.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -61,13 +61,13 @@ describe.skipIf(process.platform !== "win32")("native watched row renamed while 
     const commands = join(project, ".ave", "commands");
     const hooks = join(project, ".ave", "hooks");
     const required = [agents, commands, hooks];
-    const lists = { allowWrite: [project], allowRead: [], denyRead: [], denyWrite: required, requiredWriteDenies: required,
-      carrierChildWriteDenies: [commands, hooks], protectedFloor: [] };
+    const lists = { allowWrite: [project], allowRead: [], denyRead: [], denyWrite: required, requiredWriteDenies: required, protectedFloor: [] };
     try {
       const grantsA = rankAdmittedMxcLists(lists);
-      expect(grantsA.watched).toEqual([commands, hooks]);
+      expect(grantsA.watched?.map(row => row.path)).toEqual([commands, hooks]);
       expect(grantsA.denied).toContain(agents);
-      const sweepA = watchMxcProtectedRows(grantsA.watched ?? [], { commandId: "container-a" });
+      const claimA = claimMxcWatchedRows(grantsA.watched ?? [], { commandId: "container-a" });
+      claimA.start();
       const containerA = launch(launcher, project, grantsA, [
         '$ErrorActionPreference = "Stop"',
         "New-Item -ItemType Directory .ave | Out-Null",
@@ -102,7 +102,7 @@ describe.skipIf(process.platform !== "win32")("native watched row renamed while 
       writeFileSync(join(project, "a-go.txt"), "");
       const resultA = await containerA;
       expect(resultA.code, JSON.stringify(resultA)).toBe(0);
-      const notice = await sweepA();
+      const notice = await claimA.release();
       const swept = !existsSync(commands);
       const quarantined = listWatchedQuarantine().map(entry => entry.original);
 

@@ -8,7 +8,7 @@ import { deferred } from "../../__tests__/support/deferred.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { t } from "../../i18n/index.js";
 import { closed, echoParentProxy, openTunnel, probePort, within } from "../../__tests__/support/proxy-tunnel-probe.js";
-import { isWatchedWorkspaceConsumable, pruneWatchedRows, WATCHED_ROW_VIOLATION, watchedProtectedRows } from "../../permissions/windows-watched-rows.js";
+import { deferWatchedReceipt, isWatchedWorkspaceConsumable, listWatchedQuarantine, pruneWatchedRows, WATCHED_ROW_VIOLATION, watchedProtectedRows } from "../../permissions/windows-watched-rows.js";
 
 const h = vi.hoisted(() => ({
   openRelay: vi.fn(),
@@ -31,8 +31,6 @@ const h = vi.hoisted(() => ({
   // Stands for the issued-HOME identity check (its own suite runs it on real directories): the invocation's HOME itself.
   issuedHome: vi.fn((cwd: string, home: string | undefined): boolean => cwd === home),
   // Directory watches the launch arms; a failure stands for EMFILE.
-  watched: [] as string[],
-  watchFailure: undefined as NodeJS.ErrnoException | undefined,
 }));
 vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/mxc-runtime-root.js")>(),
@@ -74,11 +72,6 @@ vi.mock("node:fs", async (importOriginal) => {
     return resolved;
   };
   return { ...actual,
-    watch: ((path: string, ...rest: unknown[]) => {
-      if (h.watchFailure !== undefined) throw h.watchFailure;
-      h.watched.push(path);
-      return (actual.watch as (...args: unknown[]) => unknown)(path, ...rest);
-    }) as typeof actual.watch,
     existsSync: (path: unknown) => synthetic(path) ? resolve(path) !== undefined : actual.existsSync(path as string),
     accessSync: ((path: unknown, mode?: number) => synthetic(path) ? void real(path) : actual.accessSync(path as string, mode)) as typeof actual.accessSync,
     lstatSync: ((path: unknown, options?: { throwIfNoEntry?: boolean }) => {
@@ -187,8 +180,6 @@ beforeEach(() => {
   vi.stubEnv("SystemRoot", "C:\\Windows");
   h.drive.clear();
   h.listed.length = 0;
-  h.watched.length = 0;
-  h.watchFailure = undefined;
   onDrive(WS);
 });
 registerMxcShellLaunchAdmissionFixture("tok");
@@ -222,7 +213,7 @@ afterEach(() => {
 });
 
 describe("prepareMxcShellLaunch", () => {
-  it.runIf(process.platform === "win32")("sweeps only the watched project children after the shell job exits", async () => {
+  it.runIf(process.platform === "win32")("claims the watched project children at activation and quarantines only them after the shell job exits", async () => {
     relay();
     configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
     const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-shell-watch-")));
@@ -239,26 +230,30 @@ describe("prepareMxcShellLaunch", () => {
     const job = deferred<void>();
     try {
       const launch = await prepareMxcShellLaunch({ ...INPUT, cwd,
-        filesystem: { ...INPUT.filesystem, allowWrite: [cwd], denyWrite: denied, requiredWriteDenies: denied, carrierChildWriteDenies: children },
+        filesystem: { ...INPUT.filesystem, allowWrite: [cwd], denyWrite: denied, requiredWriteDenies: denied },
         exists: (path) => existsSync(path) || path.endsWith("wxc-exec.exe"),
       }, lifecycle);
       expect(decodeRequest(launch.argv).filesystem.deniedPaths).toEqual([agents]);
       expect(existsSync(carrier)).toBe(false);
+      // Nothing is claimed until the launcher is about to be spawned.
+      expect(watchedProtectedRows().some((path) => children.includes(path))).toBe(false);
+      launch.activate();
       expect(watchedProtectedRows()).toEqual(expect.arrayContaining(children));
-      // Armed before the launch is handed back for spawn.
-      expect(h.watched).toEqual([cwd]);
       pruneWatchedRows([]);
+      expect(watchedProtectedRows()).toEqual(expect.arrayContaining(children));
       lifecycle.jobStarted(job.promise);
       mkdirSync(carrier);
       for (const child of children) mkdirSync(child);
       const sibling = join(carrier, "ordinary.txt");
       writeFileSync(sibling, "keep");
-      expect(isWatchedWorkspaceConsumable(cwd)).toBe(false);
+      // A receipt no command result carried yet rides this command's result.
+      deferWatchedReceipt("[fixture] receipt from a released holder");
       const disposal = lifecycle.dispose();
       expect(children.every(existsSync)).toBe(true);
       job.resolve(undefined);
       expect(await disposal).toEqual([]);
       expect(launch.watchedNotice).toContain(WATCHED_ROW_VIOLATION);
+      expect(launch.watchedNotice).toContain("[fixture] receipt from a released holder");
       expect(children.some(existsSync)).toBe(false);
       expect(watchedProtectedRows().some((path) => children.includes(path))).toBe(false);
       expect(isWatchedWorkspaceConsumable(cwd)).toBe(true);
@@ -270,22 +265,32 @@ describe("prepareMxcShellLaunch", () => {
     }
   });
 
-  it.runIf(process.platform === "win32")("refuses the launch, naming the protected path, when the carrier watch cannot be armed", async () => {
+  it.runIf(process.platform === "win32")("refuses at activation, naming the protected path, when a watched name's parent appeared after ranking, and sweeps nothing it never started", async () => {
     relay();
     configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
-    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-shell-unarmed-")));
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-shell-late-")));
     const cwd = join(root, "project");
+    const home = join(root, "home");
     mkdirSync(cwd);
-    const children = [join(cwd, ".ave", "commands"), join(cwd, ".ave", "hooks")];
+    mkdirSync(home);
+    vi.stubEnv("AVE_HOME", home);
+    const children = [join(cwd, ".ave", "commands"), join(cwd, ".ave", "hooks")] as const;
     const lifecycle = createContainedShellLifecycle();
-    h.watchFailure = Object.assign(new Error("EMFILE: too many open files, watch"), { code: "EMFILE" });
     try {
-      await expect(prepareMxcShellLaunch({ ...INPUT, cwd,
-        filesystem: { ...INPUT.filesystem, allowWrite: [cwd], denyWrite: children, requiredWriteDenies: children, carrierChildWriteDenies: children },
+      const launch = await prepareMxcShellLaunch({ ...INPUT, cwd,
+        filesystem: { ...INPUT.filesystem, allowWrite: [cwd], denyWrite: children, requiredWriteDenies: children },
         exists: (path) => existsSync(path) || path.endsWith("wxc-exec.exe"),
-      }, lifecycle)).rejects.toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: children[0] }));
+      }, lifecycle);
+      mkdirSync(join(cwd, ".ave"));
+      expect(() => launch.activate()).toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: children[0] }));
       expect(watchedProtectedRows().some((path) => children.includes(path))).toBe(false);
+      // The host creates a name the refused launch ranked: a launch that never started moves nothing.
+      mkdirSync(children[1]);
+      expect(isWatchedWorkspaceConsumable(cwd)).toBe(true);
       expect(await lifecycle.dispose()).toEqual([]);
+      expect(launch.watchedNotice).toBeUndefined();
+      expect(existsSync(children[1])).toBe(true);
+      expect(listWatchedQuarantine()).toEqual([]);
     } finally {
       await lifecycle.dispose();
       rmSync(root, { recursive: true, force: true });

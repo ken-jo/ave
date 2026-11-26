@@ -12,7 +12,7 @@ import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "
 import { expandWindowsEnvRefs, stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { openMxcPolicyPipe } from "./mxc-policy-pipe.js";
-import { isCarrierChildSpelling, isPolicyFloorRow, userDenyCoversPierce, type PolicyModel, type PolicyRow } from "./policy-model.js";
+import { isPolicyFloorRow, userDenyCoversPierce, type PolicyModel, type PolicyRow } from "./policy-model.js";
 import {
   admitObligations, consumeObligations, obligationWithin, requireEnforceable,
   type AdmittedObligation, type ObligationRow, type ObligationSet,
@@ -274,9 +274,20 @@ export interface MxcFilesystemGrants {
   readonly readwrite: readonly string[];
   readonly readonly: readonly string[];
   readonly denied: readonly string[];
-  // Required protected children of a missing project carrier: watched for this launch, never created.
-  readonly watched?: readonly string[];
+  // Protected write denies whose parent is missing: nothing is created or denied, the name is checked after the run.
+  readonly watched?: readonly MxcWatchedRow[];
 }
+
+/** An absent protected name with the deepest existing folder above it, as admitted for this launch. */
+export interface MxcWatchedRow {
+  readonly path: string;
+  readonly anchor: string;
+  readonly volumeSerial: string;
+  readonly fileId: string;
+}
+
+/** The spelling ranker's result: it admits nothing, so its watched rows carry no identity and no launch accepts them. */
+export type MxcSpelledGrants = Omit<MxcFilesystemGrants, "watched"> & { readonly watched?: readonly string[] };
 
 function foldPath(path: string): string {
   const normalized = winPath.normalize(path).replace(/[\\/]+$/, "");
@@ -516,10 +527,6 @@ export interface MxcPolicyRows {
   // The write floor.
   readonly writeFloor: readonly string[];
   readonly requiredWriteDenies: readonly string[];
-  // The required rows the host derived as a write root's `.ave` child: the only rows watched while their carrier is missing.
-  readonly carrierChildWriteDenies: readonly string[];
-  // The write floor rows that are not required rows; one at a required row's spelling keeps its own outcome.
-  readonly protectedNames: readonly string[];
   // The protected read floor (`secrets` rows). A grant at or beneath one is dropped.
   readonly protectedFloor: readonly string[];
   // Host-minted pierces. A grant at or beneath one is not dropped by the floor.
@@ -553,8 +560,6 @@ export function mxcPolicyRows(model: PolicyModel): MxcPolicyRows {
     readDenies: paths((row) => isPolicyFloorRow(row) && row.access === "denied" && row.reason !== "secrets" && row.reason !== "user-deny"),
     writeFloor: paths((row) => isPolicyFloorRow(row) && row.access === "ro"),
     requiredWriteDenies: paths((row) => row.reason === "required-write-deny"),
-    carrierChildWriteDenies: paths((row) => row.reason === "required-write-deny" && row.carrierChild === true),
-    protectedNames: paths((row) => row.reason === "protected-name"),
     protectedFloor: paths((row) => row.reason === "secrets"),
     floorPierces: paths((row) => row.reason === "floor-pierce"),
     userDenies: paths((row) => row.reason === "user-deny"),
@@ -568,14 +573,13 @@ export function rankMxcRowsBySpelling(
   model: PolicyModel,
   exists: (path: string) => boolean,
   list?: (directory: string) => readonly MxcDirectoryEntry[],
-): MxcFilesystemGrants {
+): MxcSpelledGrants {
   const rows = mxcPolicyRows(model);
   // POSIX-rooted floor rows must not turn into current-drive paths.
   const windowsPaths = (paths: readonly string[]): readonly string[] => paths.filter((path) => !/^\/(?!\/)/.test(path));
   const protectedFloor = windowsPaths(rows.protectedFloor);
   const denyWrite = windowsPaths(rows.writeFloor);
   const requiredWriteDenies = new Set(rows.requiredWriteDenies.map(foldPath));
-  const carrierChildren = new Set(rows.carrierChildWriteDenies.map(foldPath));
   const pierces = rows.floorPierces;
   const userDenies = windowsPaths(rows.userDenies);
   // A relative row is unanchored, as a pattern is: it applies wherever the shell reads, so it is expanded rather than dropped.
@@ -601,8 +605,6 @@ export function rankMxcRowsBySpelling(
   const pierced = new Set(pierces.map(foldPath));
   const readDenies = dedupe([...windowsPaths(rows.readDenies), ...protectedFloor.filter((row) => !pierced.has(foldPath(row))), ...userDenies]);
   const literalDenies = readDenies.filter((deny) => !isPatternDeny(deny));
-  // A write floor row or a read deny at a carrier child's spelling is raised as its own row.
-  const independentDenies = new Set([...rows.protectedNames, ...literalDenies].map(foldPath));
   // Whether reads at `path` are denied: the most specific requested grant or emitted read deny at or above it is a deny (a deny wins a
   // tie). A write-floor row there must not become a read-only grant: being more specific than that deny, the grant would re-open it.
   const requestedGrants = [...readwrite, ...readGrants, ...demoted];
@@ -633,28 +635,29 @@ export function rankMxcRowsBySpelling(
   }
   // A match removed since the walk needs no deny: checked once more as the policy is handed over.
   const presentMatches = patternMatches.filter((match) => allGrants.some((grant) => strictlyUnder(match, grant) || foldPath(match) === foldPath(grant)) && exists(match));
-  const watched: string[] = [];
-  const raised = [...dedupe(denied).flatMap((deny) => {
-    if (exists(deny)) return deny;
+  const firstMissingOf = (deny: string): string => {
     let firstMissing = winPath.normalize(deny);
     for (;;) {
       const parent = winPath.dirname(firstMissing);
-      if (exists(parent)) break;
-      const folded = foldPath(deny);
-      if (requiredWriteDenies.has(folded) && !(carrierChildren.has(folded) && independentDenies.has(folded))) {
-        const root = winPath.dirname(parent);
-        // A missing project carrier cannot carry an exact deny in the launcher.
-        if (carrierChildren.has(folded) && foldPath(winPath.dirname(deny)) === foldPath(parent) && winPath.basename(parent).toLowerCase() === ".ave" &&
-            readwrite.some((grant) => foldPath(grant) === foldPath(root)) && exists(root)) {
-          watched.push(deny);
-          return [];
-        }
-        throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: deny }));
-      }
+      if (exists(parent)) return firstMissing;
       if (parent === firstMissing) throw new Error(`Windows sandbox policy cannot resolve missing deny: ${deny}`);
       firstMissing = parent;
     }
-    if (foldPath(firstMissing) === foldPath(deny)) return deny;
+  };
+  const inexact = (deny: string): boolean => !exists(deny) && foldPath(firstMissingOf(deny)) !== foldPath(deny);
+  const missingCarriers = new Set(dedupe(denied).filter((deny) => requiredWriteDenies.has(foldPath(deny)) && inexact(deny))
+    .map((deny) => foldPath(firstMissingOf(deny))));
+  const readDeniedExactly = new Set(literalDenies.map(foldPath));
+  const watched: string[] = [];
+  const raised = [...dedupe(denied).flatMap((deny) => {
+    if (!inexact(deny)) return deny;
+    const firstMissing = firstMissingOf(deny);
+    // A missing parent cannot carry an exact deny, and a deny on the parent would take its other children: the name is watched.
+    if (missingCarriers.has(foldPath(firstMissing))) {
+      if (readDeniedExactly.has(foldPath(deny))) throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: deny }));
+      watched.push(deny);
+      return [];
+    }
     if (allGrants.some((grant) => foldPath(firstMissing) === foldPath(grant)) ||
         !readwrite.some((grant) => strictlyUnder(firstMissing, grant))) {
       throw new Error(`Windows sandbox policy cannot raise missing deny within a writable grant: ${deny}`);
@@ -667,13 +670,13 @@ export function rankMxcRowsBySpelling(
     readonly: dedupe(readonlyOut).filter((path) => !readwrite.some((grant) => foldPath(grant) === foldPath(path))).map(withoutTrailingSeparator),
     denied: dedupe(raised).filter((path, index, paths) =>
       !paths.some((parent, parentIndex) => parentIndex !== index && isWindowsPathAtOrUnder(path, parent))).map(withoutTrailingSeparator),
-    ...withWatched(watched, raised),
+    ...withWatched(dedupe(watched), raised, path => path),
   };
 }
 
-// The watched children no raised deny already covers.
-function withWatched(watched: readonly string[], denied: readonly string[]): { readonly watched?: readonly string[] } {
-  const open = dedupe(watched.filter(path => !denied.some(deny => isWindowsPathAtOrUnder(path, deny))));
+// The watched rows no raised deny already covers.
+function withWatched<T>(watched: readonly T[], denied: readonly string[], pathOf: (row: T) => string): { readonly watched?: readonly T[] } {
+  const open = watched.filter(row => !denied.some(deny => isWindowsPathAtOrUnder(pathOf(row), deny)));
   return open.length > 0 ? { watched: open } : {};
 }
 
@@ -727,9 +730,8 @@ function obligationRowsOf(model: PolicyModel): {
     const spelling = { path: expandMxcPolicyPath(row.path), literal: true } as const;
     if (isPolicyFloorRow(row)) {
       if (row.access === "ro") {
-        const carrierChild = row.reason === "required-write-deny" && row.carrierChild === true;
-        rows.push({ spelling, polarity: { effect: "deny", access: "write" }, source: carrierChild ? "carrier-child" : "per-command" });
-        if (row.reason === "required-write-deny" && !carrierChild) required.add(spelling.path);
+        rows.push({ spelling, polarity: { effect: "deny", access: "write" }, source: "per-command" });
+        if (row.reason === "required-write-deny") required.add(spelling.path);
       }
       else if (isMxcReadPattern(row.path)) {
         patterns.add(stripExtendedPathPrefix(spelling.path));
@@ -803,9 +805,7 @@ export type MxcDenyException =
   // A floor row whose read grant at the same path takes its place; `grant` is that grant's row.
   | { readonly reason: "lifted-floor"; readonly row: string; readonly grant: string }
   // A host read mask the grant at its own path carves open; `grant` is that grant's row.
-  | { readonly reason: "read-mask-carve-out"; readonly row: string; readonly grant: string }
-  // A host-derived `.ave` child of a missing project carrier, watched for this launch; `grant` is the write grant at the carrier's parent.
-  | { readonly reason: "watched-carrier-child"; readonly row: string; readonly grant: string };
+  | { readonly reason: "read-mask-carve-out"; readonly row: string; readonly grant: string };
 
 export interface MxcDenyOutcomeInput {
   readonly denies: readonly AdmittedObligation[];
@@ -819,14 +819,11 @@ export interface MxcDenyOutcomeInput {
   readonly result: MxcFilesystemGrants;
 }
 
-// The write grant that lets a launch watch `deny` instead of denying it: the deny is a host-derived carrier child row, its target is
-// `<anchor>\.ave\commands` or `<anchor>\.ave\hooks` with the carrier its first missing component, and a write grant sits at the anchor.
-function carrierChildGrant(deny: AdmittedObligation, grants: readonly AdmittedObligation[]): AdmittedObligation | undefined {
-  if (deny.origin.source !== "carrier-child" || deny.polarity.effect !== "deny" || deny.polarity.access !== "write" || deny.kind !== "missing") return undefined;
-  const carrier = winPath.dirname(deny.target);
-  if (!isCarrierChildSpelling(deny.target) || foldPath(winPath.dirname(carrier)) !== foldPath(deny.anchorTarget)) return undefined;
-  return grants.find(grant => grant.polarity.effect === "allow" && grant.polarity.access === "write" && grant.kind !== "missing"
-    && foldPath(grant.target) === foldPath(deny.anchorTarget));
+// A missing write deny is watched when the result records it at the deny's own path, beneath the deny's own anchor object.
+function watchedHolds(deny: AdmittedObligation, result: MxcFilesystemGrants): boolean {
+  return deny.polarity.access === "write" && deny.kind === "missing" && (result.watched ?? []).some(row =>
+    foldPath(row.path) === foldPath(deny.target) && foldPath(row.anchor) === foldPath(deny.anchorTarget)
+    && row.volumeSerial === deny.anchor.volumeSerial && row.fileId === deny.anchor.fileId);
 }
 
 function exceptionHolds(deny: AdmittedObligation, input: MxcDenyOutcomeInput): boolean {
@@ -840,22 +837,17 @@ function exceptionHolds(deny: AdmittedObligation, input: MxcDenyOutcomeInput): b
         return deny.origin.source === "floor" && granted(exception.grant, ["read"]);
       case "read-mask-carve-out":
         return deny.origin.source === "read-mask" && granted(exception.grant, ["read", "write"]);
-      case "watched-carrier-child": {
-        const grant = carrierChildGrant(deny, input.reach);
-        return grant !== undefined && grant.origin.row === exception.grant
-          && input.result.readwrite.some(path => foldPath(path) === foldPath(grant.target))
-          && (input.result.watched ?? []).some(path => foldPath(path) === foldPath(deny.target));
-      }
       default:
         return false;
     }
   });
 }
 
-const DENY_EXCEPTION_REASONS: ReadonlySet<string> = new Set(["lifted-floor", "read-mask-carve-out", "watched-carrier-child"] satisfies MxcDenyException["reason"][]);
+const DENY_EXCEPTION_REASONS: ReadonlySet<string> = new Set(["lifted-floor", "read-mask-carve-out"] satisfies MxcDenyException["reason"][]);
 
 // Every admitted deny row and every pattern row ends stamped (denied in the result), carried (no granted path reaches it),
-// excepted (a closed reason whose evidence this launch holds), or the launch is refused.
+// excepted (a closed reason whose evidence this launch holds), watched (an absent protected name recorded with its anchor's
+// identity), or the launch is refused.
 export function assertMxcDenyOutcomes(input: MxcDenyOutcomeInput): void {
   const { denies, patterns, outcomes, reachable, result } = input;
   const unheld = (row: string) => new Error(`Windows sandbox policy left a deny without an outcome: ${row}`);
@@ -871,7 +863,7 @@ export function assertMxcDenyOutcomes(input: MxcDenyOutcomeInput): void {
     // A grant beneath the deny reaches it too, except a read-mask carve-out or the read grant a floor pierce admits.
     const beneath = deny.origin.source === "read-mask" ? [] : deny.origin.source === "floor" ? result.readwrite : grants;
     const reached = grants.some(grant => isWindowsPathAtOrUnder(deny.target, grant)) || beneath.some(grant => strictlyUnder(grant, deny.target));
-    if (!stamped && reached && !exceptionHolds(deny, input)) throw unheld(deny.origin.row);
+    if (!stamped && reached && !watchedHolds(deny, result) && !exceptionHolds(deny, input)) throw unheld(deny.origin.row);
   }
   for (const { requested, pattern, prefix } of patterns) {
     const outcome = outcomes.get(requested);
@@ -965,20 +957,21 @@ function rankAdmittedMxcFilesystem(
   for (const deny of readDenies) {
     if (!denied.includes(deny) && reads.some(grant => inside(grant, deny))) denied.push(deny);
   }
-  const watched: { readonly deny: AdmittedObligation; readonly grant: AdmittedObligation }[] = [];
+  const firstMissingOf = (deny: AdmittedObligation): string =>
+    winPath.join(deny.anchorTarget, winPath.relative(deny.anchorTarget, deny.target).split("\\")[0] ?? "");
+  const inexact = (deny: AdmittedObligation): boolean => deny.kind === "missing" && writes.some(grant => inside(grant, deny))
+    && foldPath(firstMissingOf(deny)) !== foldPath(deny.target);
+  const missingCarriers = new Set(denied.filter(deny => deny.polarity.access === "write" && required.has(deny.origin.row) && inexact(deny))
+    .map(deny => foldPath(firstMissingOf(deny))));
+  const watched: AdmittedObligation[] = [];
   const raised = denied.flatMap(deny => {
-    if (deny.kind !== "missing" || !writes.some(grant => inside(grant, deny))) return deny.target;
-    const first = winPath.relative(deny.anchorTarget, deny.target).split("\\")[0];
-    const firstMissing = winPath.join(deny.anchorTarget, first);
-    if (foldPath(firstMissing) === foldPath(deny.target)) return deny.target;
-    if (deny.polarity.access === "write" && (deny.origin.source === "carrier-child" || required.has(deny.origin.row))) {
-      // A missing project carrier cannot carry an exact deny in the launcher.
-      const grant = carrierChildGrant(deny, writes);
-      if (grant !== undefined) {
-        watched.push({ deny, grant });
-        return [];
-      }
-      throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: deny.origin.row }));
+    if (!inexact(deny)) return deny.target;
+    const firstMissing = firstMissingOf(deny);
+    // A missing parent cannot carry an exact deny, and a deny on the parent would take its other children: the name is watched.
+    if (missingCarriers.has(foldPath(firstMissing))) {
+      if (deny.polarity.access !== "write") throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: deny.origin.row }));
+      watched.push(deny);
+      return [];
     }
     if ([...writes, ...reads].some(grant => foldPath(firstMissing) === foldPath(grant.target))
       || !writes.some(grant => strictlyUnder(firstMissing, grant.target))) {
@@ -993,7 +986,8 @@ function rankAdmittedMxcFilesystem(
     denied: dedupe(raised).filter((path, index, paths) =>
       !paths.some((parent, parentIndex) => parentIndex !== index && isWindowsPathAtOrUnder(path, parent)
         && !allows.some(grant => strictlyUnder(grant.target, parent) && isWindowsPathAtOrUnder(path, grant.target)))).map(withoutTrailingSeparator),
-    ...withWatched(watched.map(({ deny }) => deny.target), raised),
+    ...withWatched(watched.map(deny => ({ path: deny.target, anchor: deny.anchorTarget, volumeSerial: deny.anchor.volumeSerial, fileId: deny.anchor.fileId }))
+      .filter((row, index, rows) => rows.findIndex(other => foldPath(other.path) === foldPath(row.path)) === index), raised, row => row.path),
   };
   const exceptions: MxcDenyException[] = [
     ...lifted.flatMap(deny => baseAllows.filter(grant => grant.polarity.access === "read" && within(deny, grant) && !inside(deny, grant))
@@ -1001,8 +995,6 @@ function rankAdmittedMxcFilesystem(
     ...allReadDenies.filter(deny => deny.origin.source === "read-mask" && !readDenies.includes(deny))
       .flatMap(deny => baseAllows.filter(grant => within(deny, grant) && !inside(deny, grant))
         .map(grant => ({ reason: "read-mask-carve-out" as const, row: deny.origin.row, grant: grant.origin.row }))),
-    ...watched.filter(({ deny }) => (result.watched ?? []).includes(deny.target))
-      .map(({ deny, grant }) => ({ reason: "watched-carrier-child" as const, row: deny.origin.row, grant: grant.origin.row })),
   ];
   assertMxcDenyOutcomes({ denies: [...allReadDenies, ...writeDenies, ...patternDenies], exceptions, patterns,
     outcomes: patternOutcomes, reachable: baseAllows, reach: allows, result });

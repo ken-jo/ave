@@ -17,7 +17,6 @@ import { projectRulesDirectory } from "./rules/project-rule-files.js";
 import { PROTECTED_ROOT_ENTRIES, canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { sandboxQuarantineRoot } from "./sandbox-quarantine.js";
 import { t } from "../i18n/index.js";
-import { isCarrierChildSpelling } from "./policy-model.js";
 
 // Git execution controls use recursive platform-specific rules and Linux rescans; exclude .git from this shared floor so objects/refs remain writable without creating absent mountpoints. Keep .gitconfig and .githooks denied.
 export function isSandboxGitMetadataEntry(entry: string): boolean {
@@ -1013,8 +1012,6 @@ export function buildMandatorySandboxWritePolicy(
 ): Pick<FilesystemConfig, "denyWrite"> & {
   allowWrite: string[];
   windowsRequiredWriteDenies: readonly string[];
-  /** The required rows that are a write root's `.ave` `commands` or `hooks` child, in both spellings. */
-  windowsCarrierChildWriteDenies: readonly string[];
   narrowedWriteRoots: readonly { root: string; reason: "entry-budget" | "path-budget" | "filesystem-access" | "routing-link" }[];
   gitControlSnapshot?: SandboxGitControlSnapshot;
 } {
@@ -1143,7 +1140,6 @@ export function buildMandatorySandboxWritePolicy(
   }
   // Preserve both the directory entry and its target when a setting is a link.
   const windowsRequiredWriteDenies = new Set<string>();
-  const windowsCarrierChildWriteDenies = new Set<string>();
   const resolvedDenyPaths = [...new Set([...paths].flatMap((path) => {
     const physical = resolvePolicyDenyPath(path);
     const name = windowsNamedEntries.get(path);
@@ -1154,7 +1150,6 @@ export function buildMandatorySandboxWritePolicy(
       }
       windowsRequiredWriteDenies.add(path);
       windowsRequiredWriteDenies.add(physical);
-      for (const spelling of [path, physical]) if (name.startsWith(".ave/") && isCarrierChildSpelling(spelling)) windowsCarrierChildWriteDenies.add(spelling);
     }
     if (mandatoryPaths.has(path)) mandatoryPaths.add(physical);
     return [path, physical];
@@ -1179,7 +1174,6 @@ export function buildMandatorySandboxWritePolicy(
   return {
     allowWrite: roots.filter(root => !revoked.has(root)), denyWrite: backendEntries,
     windowsRequiredWriteDenies: [...windowsRequiredWriteDenies].map(nativeWriteDenyPath),
-    windowsCarrierChildWriteDenies: [...windowsCarrierChildWriteDenies].map(nativeWriteDenyPath),
     narrowedWriteRoots: [...narrowed].map(([root, reason]) => ({ root, reason })),
     ...(gitDiscovery ? { gitControlSnapshot: finishGitControlSnapshot(
       new Map([...rootIdentities].filter(([root]) => !revoked.has(root))),

@@ -18,7 +18,8 @@ type PolicyAccess = "rw" | "ro" | "denied";
  * - `read-boundary`: a read deny a composer restates for this launch (sandbox private directories, other extensions' storage, a
  *   caller's own list). A more specific grant is readable beneath it.
  * - `protected-name`: the write floor (control names inside write roots, startup and persistence files, Ave's own control files).
- * - `required-write-deny`: a write floor row that must be enforced at its exact path.
+ * - `required-write-deny`: a write floor row that is never widened to a parent: denied at its exact path, or watched while its
+ *   parent is missing.
  * - `user-deny`: a read deny the user configured. Nothing may be granted at or beneath it, and no `floor-pierce` covers it: a
  *   launch whose pierce lies at or beneath one is refused, naming the rule.
  *
@@ -49,23 +50,10 @@ interface PolicyRowPath {
 export interface PolicyFloorRow extends PolicyRowPath {
   readonly access: Extract<PolicyAccess, "ro" | "denied">;
   readonly reason: PolicyFloorReason;
-  /** A `required-write-deny` row the host derived as a write root's `.ave\commands` or `.ave\hooks`: the only row a container may
-   * watch, rather than deny, while its carrier is missing. */
-  readonly carrierChild?: true;
 }
 
-/** The children of a project `.ave` carrier that a launch may watch while the carrier is missing. */
-const WATCHABLE_CARRIER_CHILDREN: readonly string[] = ["commands", "hooks"];
-
-/** Whether `path` is spelled `...\.ave\commands` or `...\.ave\hooks`. */
-export function isCarrierChildSpelling(path: string): boolean {
-  const [carrier, child] = path.replace(/[\\/]+$/u, "").split(/[\\/]+/u).slice(-2).map(name => name.toLowerCase());
-  return carrier === ".ave" && child !== undefined && WATCHABLE_CARRIER_CHILDREN.includes(child);
-}
-
-/** A required write deny row, watchable while its carrier is missing only when the host derived it as a carrier child. */
-export function requiredWriteDenyRow(path: string, carrierChild: boolean): PolicyFloorRow {
-  return { path, literal: true, access: "ro", reason: "required-write-deny", ...(carrierChild && isCarrierChildSpelling(path) ? { carrierChild: true } : {}) };
+export function requiredWriteDenyRow(path: string): PolicyFloorRow {
+  return { path, literal: true, access: "ro", reason: "required-write-deny" };
 }
 
 export interface PolicyGrantRow extends PolicyRowPath {
@@ -151,9 +139,6 @@ function checkFloor(row: PolicyFloorRow): PolicyFloorRow {
   // The write floor is the only floor a launch may still read.
   if ((row.access === "ro") !== (row.reason === "protected-name" || row.reason === "required-write-deny")) refuse(row, "floor access");
   if (row.reason === "required-write-deny" && !row.literal) refuse(row, "required write deny must be literal");
-  if (row.carrierChild !== undefined && (row.carrierChild !== true || row.reason !== "required-write-deny" || !isCarrierChildSpelling(row.path))) {
-    refuse(row, "only a required carrier child is watchable");
-  }
   return Object.freeze({ ...row });
 }
 

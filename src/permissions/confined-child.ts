@@ -39,7 +39,7 @@ import type { HostShellExecutionPlan } from "./host-shell-execution-plan.js";
 import { openMxcEgressLease } from "./egress-host-listener.js";
 import { buildMxcConfinedChildRequest } from "./mxc-confined-child-request.js";
 import { isWindowsPathAtOrUnder, rankMxcFilesystem, strictlyUnder, type MxcFilesystemGrants } from "./mxc-windows.js";
-import { watchMxcProtectedRows } from "./windows-watched-rows.js";
+import { claimMxcWatchedRows, deferWatchedReceipt, WatchedQuarantineError } from "./windows-watched-rows.js";
 import { spawnMxcExtensionProcess, type OwnedMxcExtensionProcess } from "./mxc-extension-process.js";
 import {
   MxcExtensionReadinessRefusedError,
@@ -368,7 +368,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   const egress = openEgressInvocation(spec.egressOwner, { abortSignal: signal });
   let lease: Awaited<ReturnType<typeof openMxcEgressLease>> | undefined;
   let native: OwnedMxcExtensionProcess | undefined;
-  let sweepProtectedRows: ReturnType<typeof watchMxcProtectedRows> | undefined;
+  const watchedClaim = grants.watched === undefined ? undefined : claimMxcWatchedRows(grants.watched, { commandId: egress.token });
   let binding: NativeHolderBinding | undefined;
   let starting: Promise<unknown> | undefined;
   let settleStartup!: () => void;
@@ -399,13 +399,13 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       admittedNativeHolderIdentities.delete(spec.holder);
       liveHolderFootprints.delete(ownRoots);
       if (spec.parent) nativeHolderBindings.get(spec.parent)?.children.delete(lifetime);
-      if (sweepProtectedRows !== undefined) {
-        try {
-          const notice = await sweepProtectedRows();
-          if (notice !== undefined) log.warn(notice);
-        } catch (error) {
-          log.warn(errorMessage(error));
-        }
+      // Holder release is a detection point. A holder has no command result: the next sandboxed command's result carries the receipt.
+      try {
+        const notice = await watchedClaim?.release();
+        if (notice !== undefined) deferWatchedReceipt(notice);
+      } catch (error) {
+        log.warn(errorMessage(error));
+        if (error instanceof WatchedQuarantineError) deferWatchedReceipt(error.message);
       }
     });
     admittedNativeHolderIdentities.add(spec.holder);
@@ -428,7 +428,6 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     // Readiness is this holder's own start: admitted only once its ready frame carries the start evidence for this request.
     // A refusal here can follow native creation; the catch below disposes it through the lifetime owner.
     await admitMxcExtensionStart(admission, { ...admissionInput, signal, start: (startSignal) => starting = (async () => {
-      if (grants.watched !== undefined) sweepProtectedRows = watchMxcProtectedRows(grants.watched, { commandId: egress.token });
       child = await spawnMxcExtensionProcess(request, {
         signal: startSignal,
         onOwned: (owned) => { native = owned; },
@@ -440,6 +439,8 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
           assertManagedChildProcessAdmissionOpen(spec.label);
           if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before native creation");
           assertNesting();
+          // The last synchronous check before native creation: a watched name that appeared since ranking refuses the start.
+          watchedClaim?.start();
           consumeMxcExtensionAdmission(admission, { ...admissionInput, executableIdentity: measureExecutableIdentity(spec.command) });
         },
       });

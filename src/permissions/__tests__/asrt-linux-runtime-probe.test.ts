@@ -384,7 +384,7 @@ describe("Linux wrap filesystem discovery snapshot", () => {
   it("exposes a scan budget reason and the actual retained write roots", () => {
     vi.spyOn(sandboxWritePolicy, "buildMandatorySandboxWritePolicy").mockReturnValue({
       allowWrite: ["/project/child"], denyWrite: [],
-      windowsRequiredWriteDenies: [], windowsCarrierChildWriteDenies: [],
+      windowsRequiredWriteDenies: [],
       narrowedWriteRoots: [{ root: "/project", reason: "entry-budget" }],
     });
     const notices: string[] = [];

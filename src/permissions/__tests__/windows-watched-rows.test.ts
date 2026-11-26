@@ -6,33 +6,32 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { rankAdmittedMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
+import { isHostWorkspaceConsumable } from "../../shared/host-workspace-gate.js";
 
-// Every directory watch the module arms, with an injectable arm failure.
-const fsHook = vi.hoisted(() => ({
-  fail: undefined as ((path: string) => NodeJS.ErrnoException | undefined) | undefined,
-  handles: [] as { path: string; watcher: import("node:events").EventEmitter; closed: boolean }[],
-}));
-vi.mock("node:fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs")>();
-  const watch = (path: string, ...rest: unknown[]) => {
-    const failure = fsHook.fail?.(String(path));
+// The identity helper: the real one on request, else the same folder identity read through the file system.
+const pin = vi.hoisted(() => ({ real: false, fail: undefined as ((path: string) => Error | undefined) | undefined }));
+vi.mock("../../shared/windows-path-facts.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../shared/windows-path-facts.js")>();
+  const { lstatSync: look } = await import("node:fs");
+  return { ...actual, pinWindowsPaths: (paths: readonly string[]) => pin.real ? actual.pinWindowsPaths(paths) : paths.map((path) => {
+    const failure = pin.fail?.(path);
     if (failure !== undefined) throw failure;
-    const watcher = (actual.watch as (...args: unknown[]) => import("node:fs").FSWatcher)(path, ...rest);
-    const handle = { path: String(path), watcher, closed: false };
-    const close = watcher.close.bind(watcher);
-    watcher.close = () => { handle.closed = true; close(); };
-    fsHook.handles.push(handle);
-    return watcher;
-  };
-  return { ...actual, watch };
+    const entry = look(path, { bigint: true });
+    return { volumeSerial: entry.dev.toString(16), fileId: entry.ino.toString(16) };
+  }) };
 });
-const live = () => fsHook.handles.filter(handle => !handle.closed).map(handle => handle.path);
-const emfile = () => Object.assign(new Error("EMFILE: too many open files, watch"), { code: "EMFILE" });
 
+import type { MxcWatchedRow } from "../mxc-windows.js";
 import {
-  isWatchedWorkspaceConsumable, listWatchedQuarantine, placeholderLeftovers, resetWatchedRows, restoreWatchedQuarantine,
-  pruneWatchedRows, sweepWatchedRows, WATCHED_ROW_VIOLATION, watchAbsentProtectedRow, watchedProtectedRows, watchMxcProtectedRows,
+  claimMxcWatchedRows, deferWatchedReceipt, hasWatchedWork, isWatchedWorkspaceConsumable, listWatchedQuarantine, placeholderLeftovers, resetWatchedRows,
+  restoreWatchedQuarantine, pruneWatchedRows, sweepWatchedRows, WATCHED_ROW_VIOLATION, watchAbsentProtectedRow, watchedProtectedRows,
 } from "../windows-watched-rows.js";
+
+// What the ranker records for an absent name beneath an existing folder.
+function ranked(path: string, anchor: string): MxcWatchedRow {
+  const entry = lstatSync(anchor, { bigint: true });
+  return { path, anchor, volumeSerial: entry.dev.toString(16), fileId: entry.ino.toString(16) };
+}
 
 describe("watched protected rows", () => {
   let container: string;
@@ -51,8 +50,10 @@ describe("watched protected rows", () => {
   });
 
   afterEach(async () => {
-    fsHook.fail = undefined;
-    for (const handle of fsHook.handles.splice(0)) if (!handle.closed) (handle.watcher as import("node:fs").FSWatcher).close();
+    pin.real = false;
+    pin.fail = undefined;
+    // Drain a check a host consumer started and the receipts no result took.
+    await sweepWatchedRows({ commandId: "teardown" }).catch(() => undefined);
     vi.unstubAllEnvs();
     await cleanupTmpDir(container);
     resetWatchedRows();
@@ -71,7 +72,6 @@ describe("watched protected rows", () => {
     watchAbsentProtectedRow(tasks, [workspace]);
     mkdirSync(join(workspace, ".vscode"));
     writeFileSync(tasks, "planted");
-    expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
     const notice = await sweepWatchedRows({ commandId: "fixture-command", command: "echo planted" });
     expect(notice).toContain(WATCHED_ROW_VIOLATION);
     expect(lstatSync(join(workspace, ".vscode"), { throwIfNoEntry: false })).toBeUndefined();
@@ -104,82 +104,170 @@ describe("watched protected rows", () => {
     for (const path of protectedPaths) expect(lstatSync(path, { throwIfNoEntry: false })).toBeUndefined();
   });
 
-  it("keeps a shared carrier watch until the last container releases it", async () => {
-    const hooks = join(workspace, ".ave", "hooks");
-    const first = watchMxcProtectedRows([hooks], { commandId: "first" });
-    const second = watchMxcProtectedRows([hooks], { commandId: "second" });
+  it("refuses a host consumer while a watched name exists, quarantines it, and hands the receipt to the next command result", async () => {
+    watchAbsentProtectedRow(tasks, [workspace]);
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(true);
+    mkdirSync(join(workspace, ".vscode"));
+    writeFileSync(tasks, "planted");
+    // The gate every host consumer asks is this check.
+    expect(isHostWorkspaceConsumable(workspace)).toBe(false);
+    expect(isHostWorkspaceConsumable(join(container, "elsewhere"))).toBe(true);
+    await vi.waitFor(() => expect(isWatchedWorkspaceConsumable(workspace)).toBe(true));
+    expect(listWatchedQuarantine()).toEqual([expect.objectContaining({ original: join(workspace, ".vscode"), row: tasks, commandId: "host-consumer" })]);
+    await expect(sweepWatchedRows({ commandId: "next-command" })).resolves.toContain(WATCHED_ROW_VIOLATION);
+    await expect(sweepWatchedRows({ commandId: "later-command" })).resolves.toBeUndefined();
+  });
 
-    await expect(first()).resolves.toBeUndefined();
+  it("registers nothing until the launch starts, and an unstarted claim neither fences nor sweeps", async () => {
+    const hooks = join(workspace, ".ave", "hooks");
+    const claim = claimMxcWatchedRows([ranked(hooks, workspace)], { commandId: "unstarted" });
+    expect(watchedProtectedRows()).not.toContain(hooks);
+    // The host, not a contained process, creates the name before any start.
+    mkdirSync(hooks, { recursive: true });
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(true);
+    await expect(claim.release()).resolves.toBeUndefined();
+    expect(lstatSync(hooks).isDirectory()).toBe(true);
+    expect(listWatchedQuarantine()).toEqual([]);
+    expect(() => claim.start()).toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: hooks }));
+    expect(watchedProtectedRows()).not.toContain(hooks);
+  });
+
+  it("keeps a shared name claimed until the last launch releases it", async () => {
+    const hooks = join(workspace, ".ave", "hooks");
+    const first = claimMxcWatchedRows([ranked(hooks, workspace)], { commandId: "first" });
+    const second = claimMxcWatchedRows([ranked(hooks, workspace)], { commandId: "second" });
+    first.start();
+    second.start();
+
+    await expect(first.release()).resolves.toBeUndefined();
     pruneWatchedRows([]);
     expect(watchedProtectedRows()).toContain(hooks);
     mkdirSync(hooks, { recursive: true });
 
-    await expect(second()).resolves.toContain(WATCHED_ROW_VIOLATION);
+    await expect(second.release()).resolves.toContain(WATCHED_ROW_VIOLATION);
     expect(listWatchedQuarantine()).toEqual([expect.objectContaining({ original: hooks, commandId: "second" })]);
     expect(watchedProtectedRows()).not.toContain(hooks);
   });
 
-  it("arms a live watch on the anchor before the container starts, follows a created carrier, and closes both with the run", async () => {
+  it("quarantines a started launch's created name at release without any live watch, and leaves its siblings", async () => {
     const carrier = join(workspace, ".ave");
     const hooks = join(carrier, "hooks");
-    const sweep = watchMxcProtectedRows([hooks], { commandId: "armed" });
-    expect(live()).toEqual([workspace]);
+    const claim = claimMxcWatchedRows([ranked(hooks, workspace)], { commandId: "started" });
+    claim.start();
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(true);
     mkdirSync(hooks, { recursive: true });
-    await vi.waitFor(() => expect(live()).toEqual([workspace, carrier]));
-    await expect(sweep()).resolves.toContain(WATCHED_ROW_VIOLATION);
-    expect(live()).toEqual([]);
+    writeFileSync(join(carrier, "ordinary.txt"), "keep");
+    await expect(claim.release()).resolves.toContain(WATCHED_ROW_VIOLATION);
+    expect(readFileSync(join(carrier, "ordinary.txt"), "utf8")).toBe("keep");
+    expect(listWatchedQuarantine().map(entry => entry.original)).toEqual([hooks]);
+    expect(lstatSync(hooks, { throwIfNoEntry: false })).toBeUndefined();
   });
 
-  it.runIf(process.platform === "win32")("gives the next launch exact denies once the carrier exists, while the running launch keeps its watch until it ends", async () => {
+  it.runIf(process.platform === "win32")("gives the next launch exact denies once the parent exists, while the running launch keeps its claim until it ends", async () => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    pin.real = true;
     const root = realpathSync.native(workspace);
     const carrier = join(root, ".ave");
     const [commands, hooks] = [join(carrier, "commands"), join(carrier, "hooks")];
     const children = [commands, hooks];
-    const lists = { allowWrite: [root], allowRead: [], denyRead: [], denyWrite: children, requiredWriteDenies: children, carrierChildWriteDenies: children, protectedFloor: [] };
+    const lists = { allowWrite: [root], allowRead: [], denyRead: [], denyWrite: children, requiredWriteDenies: children, protectedFloor: [] };
     const running = rankAdmittedMxcLists(lists);
-    expect(running.watched).toEqual(children);
-    const sweep = watchMxcProtectedRows(running.watched ?? [], { commandId: "running" });
+    expect(running.watched?.map(row => row.path)).toEqual(children);
+    const claim = claimMxcWatchedRows(running.watched ?? [], { commandId: "running" });
+    claim.start();
     mkdirSync(carrier);
-    await vi.waitFor(() => expect(live()).toEqual([root, carrier]));
     expect(rankAdmittedMxcLists(lists)).toEqual({ readwrite: [root], readonly: [], denied: children });
-    expect(live()).toEqual([root, carrier]);
+    // A launch ranked before the parent appeared is refused at its start instead of running on the stale ranking.
+    expect(() => claimMxcWatchedRows(running.watched ?? [], { commandId: "stale" }).start())
+      .toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: commands }));
     mkdirSync(hooks);
-    await expect(sweep()).resolves.toContain(WATCHED_ROW_VIOLATION);
+    await expect(claim.release()).resolves.toContain(WATCHED_ROW_VIOLATION);
     expect(listWatchedQuarantine().map(entry => entry.original)).toEqual([hooks]);
-    expect(live()).toEqual([]);
   });
 
-  it("refuses the grant, naming the protected path, and releases every partial registration when a watch cannot be armed", () => {
+  it("starts with every row or none: a refused row leaves no registration behind", () => {
     const other = join(container, "other");
     mkdirSync(other);
     const first = join(workspace, ".ave", "commands");
     const second = join(other, ".ave", "hooks");
-    fsHook.fail = path => path === other ? emfile() : undefined;
-    expect(() => watchMxcProtectedRows([first, second], { commandId: "unarmed" }))
-      .toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: second }));
-    expect(live()).toEqual([]);
-    expect(watchedProtectedRows()).not.toEqual(expect.arrayContaining([first]));
-    expect(watchedProtectedRows()).not.toEqual(expect.arrayContaining([second]));
+    const refused = t("sandboxPolicy.windowsProtectedWriteRefused", { path: second });
+    const unregistered = () => {
+      expect(watchedProtectedRows()).not.toEqual(expect.arrayContaining([first]));
+      expect(watchedProtectedRows()).not.toEqual(expect.arrayContaining([second]));
+      expect(hasWatchedWork()).toBe(false);
+    };
+    // The identity check cannot be made.
+    pin.fail = path => path === other ? new Error("helper unavailable") : undefined;
+    const claim = claimMxcWatchedRows([ranked(first, workspace), ranked(second, other)], { commandId: "unchecked" });
+    expect(() => claim.start()).toThrow(refused);
+    unregistered();
+    pin.fail = undefined;
+    // The second row's folder is not the object the ranker admitted.
+    const stale = { ...ranked(second, other), fileId: ranked(first, workspace).fileId };
+    expect(() => claimMxcWatchedRows([ranked(first, workspace), stale], { commandId: "other-object" }).start()).toThrow(refused);
+    unregistered();
+    // The second row's name exists.
+    mkdirSync(second, { recursive: true });
+    expect(() => claimMxcWatchedRows([ranked(first, workspace), ranked(second, other)], { commandId: "late-name" }).start()).toThrow(refused);
+    unregistered();
   });
 
-  it("refuses the grant when the carrier appeared after ranking", () => {
+  it("refuses the start when the parent appeared, or the folder was replaced, after ranking", () => {
     const hooks = join(workspace, ".ave", "hooks");
+    const row = ranked(hooks, workspace);
+    const refused = t("sandboxPolicy.windowsProtectedWriteRefused", { path: hooks });
     mkdirSync(join(workspace, ".ave"));
-    expect(() => watchMxcProtectedRows([hooks], { commandId: "late-carrier" }))
-      .toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: hooks }));
-    expect(live()).toEqual([]);
+    expect(() => claimMxcWatchedRows([row], { commandId: "late-parent" }).start()).toThrow(refused);
+    rmSync(join(workspace, ".ave"), { recursive: true });
+    renameSync(workspace, join(container, "moved"));
+    mkdirSync(workspace);
+    expect(() => claimMxcWatchedRows([row], { commandId: "replaced-folder" }).start()).toThrow(refused);
     expect(watchedProtectedRows()).not.toContain(hooks);
   });
 
-  it("refuses host consumers of the workspace until the sweep once a live watch fails", async () => {
+  it("refuses host consumers while a started launch's folder cannot be verified", async () => {
     const hooks = join(workspace, ".ave", "hooks");
-    const sweep = watchMxcProtectedRows([hooks], { commandId: "lost" });
-    expect(isWatchedWorkspaceConsumable(workspace)).toBe(true);
-    fsHook.handles[0]?.watcher.emit("error", Object.assign(new Error("EPERM"), { code: "EPERM" }));
+    const claim = claimMxcWatchedRows([ranked(hooks, workspace)], { commandId: "unverifiable" });
+    claim.start();
+    renameSync(workspace, join(container, "moved"));
+    mkdirSync(workspace);
     expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
-    await sweep();
+    await expect(claim.release()).rejects.toThrow(/changed identity/);
     expect(isWatchedWorkspaceConsumable(workspace)).toBe(true);
+  });
+
+  it("keeps the remaining launch's claim when the user restores a quarantined name", async () => {
+    const hooks = join(workspace, ".ave", "hooks");
+    const first = claimMxcWatchedRows([ranked(hooks, workspace)], { commandId: "first" });
+    const second = claimMxcWatchedRows([ranked(hooks, workspace)], { commandId: "second" });
+    first.start();
+    second.start();
+    mkdirSync(hooks, { recursive: true });
+    await expect(first.release()).resolves.toContain(WATCHED_ROW_VIOLATION);
+    const [entry] = listWatchedQuarantine();
+    if (entry === undefined) throw new Error("No quarantine entry");
+    await expect(restoreWatchedQuarantine(entry.slot, entry.index)).resolves.toEqual({ restored: hooks });
+    // The second launch is still live: its claim stays, host consumers stay refused, and no other check moves the restored entry.
+    expect(watchedProtectedRows()).toContain(hooks);
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
+    await expect(sweepWatchedRows({ commandId: "another-command" })).resolves.toBeUndefined();
+    expect(lstatSync(hooks).isDirectory()).toBe(true);
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
+    // Its release checks the name again, and its result carries both receipts.
+    const notice = await second.release();
+    expect(notice?.split(WATCHED_ROW_VIOLATION)).toHaveLength(3);
+    expect(lstatSync(hooks, { throwIfNoEntry: false })).toBeUndefined();
+    expect(listWatchedQuarantine().filter(item => item.restored === undefined)).toEqual([expect.objectContaining({ original: hooks, commandId: "second" })]);
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(true);
+    expect(watchedProtectedRows()).not.toContain(hooks);
+  });
+
+  it("carries a receipt no command result took on the next command result", async () => {
+    expect(hasWatchedWork()).toBe(false);
+    deferWatchedReceipt("receipt from a released holder");
+    expect(hasWatchedWork()).toBe(true);
+    await expect(sweepWatchedRows({ commandId: "next-command" })).resolves.toBe("receipt from a released holder");
+    expect(hasWatchedWork()).toBe(false);
   });
 
   it("refuses to move a protected child through a replacement carrier link", async () => {
@@ -215,6 +303,7 @@ describe("watched protected rows", () => {
     renameSync(workspace, join(container, "moved"));
     mkdirSync(join(workspace, ".vscode"), { recursive: true });
     writeFileSync(tasks, "planted");
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
     await expect(sweepWatchedRows({ commandId: "fixture-command" })).rejects.toThrow(/changed identity/);
     expect(readFileSync(tasks, "utf8")).toBe("planted");
     expect(listWatchedQuarantine()).toEqual([]);

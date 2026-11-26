@@ -94,6 +94,7 @@ import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-
 import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
 import { isWindowsPathAtOrUnder, MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
 import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";
+import { deferWatchedReceipt } from "../permissions/windows-watched-rows.js";
 import { createContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 import { buildMandatorySandboxWritePolicy } from "../permissions/sandbox-write-policy.js";
 import { captureEffectNoApprover, currentEffectGateContext } from "../permissions/effect-enforcement.js";
@@ -4228,7 +4229,6 @@ async function spawnPowerShellInMxc(
         denyWrite: [...new Set(mandatory.denyWrite.map((entry) => typeof entry === "string" ? entry : entry.path))],
         independentWriteDenies: sensitiveDenyWrite,
         requiredWriteDenies: mandatory.windowsRequiredWriteDenies,
-        carrierChildWriteDenies: mandatory.windowsCarrierChildWriteDenies,
         floorPierces,
       },
       sandboxHome: sandboxHome.path,
@@ -4295,7 +4295,11 @@ async function spawnPowerShellInMxc(
       }
       void lifecycle.dispose().then((released) => {
         logReleaseFailures(MXC_SHELL_LABEL, released);
-        if (launch.watchedNotice !== undefined) shellTaskLog.warn(launch.watchedNotice);
+        // A background job's result is already returned: the next sandboxed command's result carries the receipt.
+        if (launch.watchedNotice !== undefined) {
+          shellTaskLog.warn(launch.watchedNotice);
+          deferWatchedReceipt(launch.watchedNotice);
+        }
       });
       return withContainedReleaseFailures(result(), failures);
     };

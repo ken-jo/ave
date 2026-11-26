@@ -1017,17 +1017,21 @@ describe("builtin shell — Windows MXC containers", () => {
     try {
       await configureCommandLauncher(async () => ({ bindChild: vi.fn(), release: vi.fn(async () => {}) }), undefined, {
         cwd: movableRoot,
-        filesystem: { allowWrite: [blockedRoot, movableRoot], allowRead: [], denyRead: [], denyWrite: protectedPaths, requiredWriteDenies: protectedPaths,
-          carrierChildWriteDenies: protectedPaths },
+        filesystem: { allowWrite: [blockedRoot, movableRoot], allowRead: [], denyRead: [], denyWrite: protectedPaths, requiredWriteDenies: protectedPaths },
       });
       const prepare = mxcLaunchMock.prepare.getMockImplementation();
       if (prepare === undefined) throw new Error("Missing command launch fixture");
       mxcLaunchMock.prepare.mockImplementation(async (input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle) => {
         const launch = await prepare(input, lifecycle);
         if (!isParserLaunch(input)) {
-          renameSync(blockedRoot, join(root, "previous"));
-          mkdirSync(blocked, { recursive: true });
-          mkdirSync(movable, { recursive: true });
+          // What a contained process does once it runs: after the launch's last check, before its release.
+          const activate = launch.activate;
+          launch.activate = () => {
+            activate();
+            renameSync(blockedRoot, join(root, "previous"));
+            mkdirSync(blocked, { recursive: true });
+            mkdirSync(movable, { recursive: true });
+          };
         }
         return launch;
       });

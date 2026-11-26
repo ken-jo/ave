@@ -18,7 +18,7 @@ import {
 import { buildPolicyModel, policyFloorRow, policyGrantRow, requiredWriteDenyRow, type PolicyModel } from "../permissions/policy-model.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
 import { assertIssuedContainerHomeInPlace, isIssuedContainerHome } from "../permissions/sandbox-home-registry.js";
-import { WatchedQuarantineError, watchMxcProtectedRows } from "../permissions/windows-watched-rows.js";
+import { claimMxcWatchedRows, hasWatchedWork, sweepWatchedRows, WatchedQuarantineError } from "../permissions/windows-watched-rows.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 
 export interface MxcShellLaunch {
@@ -43,8 +43,6 @@ export interface MxcShellPolicyLists {
   /** Write denies stated on their own (the sensitive floor, configured rows): kept at a required row's spelling, with their own outcome. */
   readonly independentWriteDenies?: readonly string[];
   readonly requiredWriteDenies?: readonly string[];
-  /** The required rows the host derived as a write root's `.ave` `commands` or `hooks` child: only these may be watched. */
-  readonly carrierChildWriteDenies?: readonly string[];
   /** The protected read floor. A grant at or beneath a row is dropped. */
   readonly protectedFloor: readonly string[];
   /** The user's read denies. A grant at or beneath a row is dropped, and no pierce covers one. */
@@ -59,13 +57,12 @@ export interface MxcShellPolicyLists {
  */
 export function shellPolicyModel(lists: MxcShellPolicyLists): PolicyModel {
   const required = new Set(lists.requiredWriteDenies);
-  const carrierChildren = new Set(lists.carrierChildWriteDenies);
   return buildPolicyModel({
     floors: [
       ...lists.denyRead.map((path) => policyFloorRow(path, "denied", "read-boundary", false)),
       ...lists.denyWrite.filter(path => !required.has(path)).map((path) => policyFloorRow(path, "ro", "protected-name", false)),
       ...(lists.independentWriteDenies ?? []).map((path) => policyFloorRow(path, "ro", "protected-name", false)),
-      ...[...required].map((path) => requiredWriteDenyRow(path, carrierChildren.has(path))),
+      ...[...required].map((path) => requiredWriteDenyRow(path)),
       ...lists.protectedFloor.map((path) => policyFloorRow(path, "denied", "secrets", false)),
       ...(lists.userDenyRead ?? []).map((path) => policyFloorRow(path, "denied", "user-deny", false)),
     ],
@@ -194,23 +191,34 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   lifecycle.defer(() => transport.release());
   assertAdmission();
   let watchedNotice: string | undefined;
-  if (grants.watched !== undefined) {
-    const sweep = watchMxcProtectedRows(grants.watched, { commandId: token });
-    lifecycle.defer(async () => {
+  const claim = grants.watched === undefined ? undefined : claimMxcWatchedRows(grants.watched, { commandId: token });
+  // Command end is a detection point: this launch's own names first, then every watched name and the receipts no result carried yet.
+  lifecycle.defer(async () => {
+    if (!active) return;
+    const notices: string[] = [];
+    let failure: unknown;
+    for (const check of [() => claim?.release(), () => hasWatchedWork() ? sweepWatchedRows({ commandId: token }) : undefined]) {
       try {
-        watchedNotice = await sweep();
+        const notice = await check();
+        if (notice !== undefined) notices.push(notice);
       } catch (error) {
-        if (error instanceof WatchedQuarantineError) watchedNotice = error.message;
-        throw error;
+        if (error instanceof WatchedQuarantineError) notices.push(error.message);
+        failure = error;
+        // The wider check would only report the same failed move again.
+        break;
       }
-    });
-  }
+    }
+    if (notices.length > 0) watchedNotice = notices.join("\n");
+    if (failure !== undefined) throw failure;
+  });
   return {
     argv: [wxcExec, ...transport.args],
     proxyPort: listener.port,
     get watchedNotice() { return watchedNotice; },
     activate: () => {
       assertAdmission();
+      // The last synchronous check before the launcher is spawned: a watched name that appeared since ranking refuses the launch.
+      claim?.start();
       active = true;
     },
     bindChild: transport.bindChild,
