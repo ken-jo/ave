@@ -26,9 +26,9 @@ import { PERMISSIONS, WORK_APPROVALS, WORK_BOARD } from "../../../shared/ipc-cha
 import { registerWorkBoardHandlers } from "../work-board.js";
 import type { IpcDeps } from "../../types.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../../gated.js";
-import { defaultWorkspaceProject } from "../../../main/project-root-authorization.js";
+import { defaultWorkspaceProject, resolveAuthorizedWorkspaceProject } from "../../../main/project-root-authorization.js";
 import { resultHashOf } from "../../../shared/workflow-template-output.js";
-import { MAX_PLAN_NOTE_LENGTH, workBoardOriginSessionId } from "../../../shared/work-board-types.js";
+import { MAX_PLAN_NOTE_LENGTH, type WorkItemCreateResult, workBoardOriginSessionId } from "../../../shared/work-board-types.js";
 import { registeredIpcHandlers } from "./test-helpers.js";
 
 const ipc = vi.hoisted(() => {
@@ -530,8 +530,10 @@ it("scopes run progress, failure, list, get, transcript, reports, briefings, app
     await expect(handler(WORK_BOARD.list)(eventA, { projectRoot: rootA })).resolves.toMatchObject({ items: [{ id, workflowRunPins: [{ pin: h.pinOf(version) }] }] });
     await expect(handler(WORK_BOARD.list)(eventA)).resolves.toMatchObject({ items: [] });
     await expect(handler(WORK_APPROVALS.list)(eventB, { projectRoot: rootB })).resolves.toMatchObject({ ok: true, items: [] });
+    const projectA = resolveAuthorizedWorkspaceProject(rootA).project;
+    if (!projectA) throw new Error("Project A was not registered");
     await expect(handler(WORK_APPROVALS.list)(eventB, { allProjects: true })).resolves.toMatchObject({
-      ok: true, items: [{ kind: "navigation", targetKind: "stage-gate", scope: { type: "project", projectRoot: rootA } }],
+      ok: true, items: [{ kind: "navigation", targetKind: "stage-gate", scope: { type: "project", projectRoot: projectA.projectRoot } }],
     });
     expect(JSON.stringify(await handler(WORK_BOARD.list)(eventB, { projectRoot: rootA }))).not.toContain("Project A private stage result");
     expect(JSON.stringify(await handler(WORK_APPROVALS.list)(eventB, { projectRoot: rootA }))).not.toContain("Project A private stage result");
@@ -662,7 +664,9 @@ it("keeps a B stage and its descendant approval details out of the launching A w
     await handler(WORK_BOARD.setProjectScope)(eventA, rootA);
     await handler(WORK_BOARD.setProjectScope)(eventB, rootA);
     const version = await h.confirm([stageOf("a")]);
-    const id = await h.addItem(version, rootB);
+    const created = await handler(WORK_BOARD.add)(eventA, { title: "Project B work", templateId: version.templateId, projectRoot: rootB }) as WorkItemCreateResult;
+    if (created.status !== "created") throw new Error(`Project B item creation failed: ${created.status}`);
+    const id = created.itemId;
     const options = { template: { ...h.pinOf(version), projectRoot: rootB } };
     const token = await captureWorkBoardTestGesture(handler, eventA, WORK_BOARD.run, id, options);
     const started = handler(WORK_BOARD.run)(eventA, id, options, token);
