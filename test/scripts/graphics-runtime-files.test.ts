@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -22,12 +22,13 @@ const { readUpstreamSrtWinInput } = require("../../scripts/lib/srt-win-integrity
 const packageHook = require("../../scripts/electron-after-pack.cjs") as (
   context: Awaited<ReturnType<typeof createPackage>>["context"],
 ) => Promise<void>;
-async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["context"]): Promise<void> {
+async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["context"], copy?: { mapping: "file" | "directory"; substitute: boolean }): Promise<void> {
   if (context.electronPlatformName !== "win32") return packageHook(context);
   // The real hook and all verifiers run against this owned unit payload. Only
   // the fixture's architecture-dependent pins are substituted, never checks.
   const script = `
-    import { readFileSync } from 'node:fs';
+    import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+    import { dirname, join } from 'node:path';
     import { registerHooks, createRequire } from 'node:module';
     const context = JSON.parse(process.argv[1]);
     const pins = readFileSync(process.argv[2], 'utf8');
@@ -38,7 +39,7 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
       return nextLoad(url, options);
     }});
     try {
-      const require = createRequire(import.meta.url);
+      const require = createRequire(process.argv[3]);
       const verifier = require(process.argv[4]);
       const verify = verifier.assertSrtWinVendor;
       verifier.assertSrtWinVendor = (vendor, arches) => verify(vendor, arches, JSON.parse(process.env.AVE_TEST_SRT_RECEIPTS));
@@ -48,6 +49,27 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
       (await import(process.argv[5])).recordWindowsPathKindPackageBuild({
         appOutDir: context.appOutDir, arch, manifest: { windowsPathKind: { arch, imageSha256: build.imageSha256 } }, build,
       });
+      const copy = JSON.parse(process.argv[7]);
+      if (copy) {
+        require('app-builder-lib');
+        const { FileMatcher, copyFiles } = require('app-builder-lib/out/fileMatcher');
+        const { WinPackager } = require('app-builder-lib/out/winPackager');
+        const options = require('../package.json').build.win;
+        const expand = value => value.replaceAll('$' + '{arch}', arch);
+        const mapping = options.extraResources.find(({ from }) => from.endsWith('/ave-path-kind.exe'));
+        const source = join(context.appOutDir, 'staging', expand(mapping.from));
+        const target = join(context.appOutDir, 'resources', expand(mapping.to));
+        mkdirSync(dirname(source), { recursive: true });
+        writeFileSync(source, copy.substitute ? 'substituted helper' : readFileSync(target));
+        const packager = Object.assign(Object.create(WinPackager.prototype), {
+          platformSpecificBuildOptions: options,
+          signIf(file) { writeFileSync(file + '.signed', 'signer invoked'); writeFileSync(file, 'signed'); },
+        });
+        const matcher = copy.mapping === 'file'
+          ? new FileMatcher(source, target, value => value)
+          : new FileMatcher(dirname(source), dirname(target), value => value, ['ave-path-kind.exe']);
+        await copyFiles([matcher], packager.createTransformerForExtraFiles(context));
+      }
       await require(process.argv[3])(context);
       console.log(JSON.stringify({ passed: true }));
     } catch (error) {
@@ -58,7 +80,7 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, JSON.stringify(context),
     join(context.appOutDir, "resources", "fixture-sdk-pins.json"), require.resolve("../../scripts/electron-after-pack.cjs"),
     require.resolve("../../scripts/lib/srt-win-integrity.cjs"),
-    pathToFileURL(require.resolve("../../scripts/lib/windows-path-kind-package.mjs")).href, pathKindHelper(context)], {
+    pathToFileURL(require.resolve("../../scripts/lib/windows-path-kind-package.mjs")).href, pathKindHelper(context), JSON.stringify(copy ?? null)], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", AVE_TEST_SRT_RECEIPTS: JSON.stringify(SRT_WIN_BUILD_RECEIPTS) }, encoding: "utf8",
   });
   if (result.error) throw result.error;
@@ -201,6 +223,22 @@ describe("packaged graphics runtime", () => {
     rmSync(jar);
     mkdirSync(jar);
     await expect(afterPack(context)).rejects.toThrow("packaged JVM proxy agent missing or invalid");
+  });
+
+  it.each(["file", "directory"] as const)("checks exact helper bytes after the %s copy with signing enabled", async (mapping) => {
+    const { context, resources } = await createPackage("win32");
+    const signature = join(resources, "windows-path-kind", "x64", "ave-path-kind.exe.signed");
+    await expect(afterPack(context, { mapping, substitute: false })).resolves.toBeUndefined();
+    expect(existsSync(signature)).toBe(false);
+  });
+
+  it.each(["file", "directory"] as const)("refuses substituted helper bytes without sending the %s copy to the signer", async (mapping) => {
+    const { context, resources } = await createPackage("win32");
+    const signature = join(resources, "windows-path-kind", "x64", "ave-path-kind.exe.signed");
+    await expect(afterPack(context, { mapping, substitute: true })).rejects.toThrow(
+      "The packaged Windows path helper is not the before-pack build",
+    );
+    expect(existsSync(signature)).toBe(false);
   });
 
   it("rejects a mismatching win32 sandbox helper at package creation", async () => {
