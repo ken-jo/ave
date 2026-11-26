@@ -61,6 +61,7 @@ import { returnUserAbort, type UserAbortDeps,
 } from "./pipeline/invocation-context.js";
 import {
   runScriptHook,
+  scriptHookRefusal,
   type InvocationRunnerServices,
 } from "./invocation-services.js";
 import type { AuditWriter } from "./pipeline/audit-writer.js";
@@ -890,7 +891,7 @@ export async function authorizeToolInvocation(
             "permission-request hook denied the sealed action: " +
               permHook.reason,
             finalInput,
-            refusal(permHook.reason, RULE_PROVENANCE),
+            scriptHookRefusal(permHook),
             hookChainFromDispatch("perm", permHook),
           );
         }
@@ -1119,7 +1120,7 @@ export async function authorizeToolInvocation(
             msg,
             true,
             startTime,
-            refusal(permHook.reason, RULE_PROVENANCE),
+            scriptHookRefusal(permHook),
             Infinity,
             invocationPermissionContext,
             invocationCategory,

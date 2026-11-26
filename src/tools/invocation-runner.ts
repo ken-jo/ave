@@ -12,7 +12,7 @@ import { isConfinedHostShellExecution } from "../permissions/host-shell-executio
 import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { criticalDeleteTargetFor } from "../permissions/sensitive-paths.js";
 import { hookChainFromDispatch } from "./pipeline/audit-entries.js";
-import { runScriptHook } from "./invocation-services.js";
+import { runScriptHook, scriptHookRefusal } from "./invocation-services.js";
 import { HookInputMutationRequest, attachHookControlContext, hookInfluenceContext } from "../hooks/hook-influence.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
@@ -1086,11 +1086,12 @@ async function runToolInvocationAttempt(
       );
   if (abortSignal?.aborted) return withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput)));
   if (scriptPre.decision === "deny") {
+    const denied = scriptHookRefusal(scriptPre);
     if (rationaleResumeContext) {
       return returnRationaleResumeBlock(
         "script PreToolUse hook denied the sealed action: " + scriptPre.reason,
         finalInput,
-        { decision: "deny", reason: scriptPre.reason, provenance: RULE_PROVENANCE },
+        denied,
         hookChainFromDispatch("pre", scriptPre),
       );
     }
@@ -1098,7 +1099,7 @@ async function runToolInvocationAttempt(
     const durationMs = Date.now() - startTime;
     emitToolStart(callbacks, toolUse.name, finalInput, meta);
     callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-    await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { decision: "deny", reason: scriptPre.reason, provenance: RULE_PROVENANCE }, Infinity, permissionContext, invocationCategory, executionCwd, undefined, undefined, hookChainFromDispatch("pre", scriptPre));
+    await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, denied, Infinity, permissionContext, invocationCategory, executionCwd, undefined, undefined, hookChainFromDispatch("pre", scriptPre));
     return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
   }
 
@@ -1894,7 +1895,7 @@ async function runToolInvocationAttempt(
           undefined, undefined, tool.pluginGeneration !== undefined, directorySignal);
         if (permissionHook.decision === "deny") {
           const reason = permissionHook.reason;
-          const denied = refusal(reason, RULE_PROVENANCE);
+          const denied = scriptHookRefusal(permissionHook);
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true, startTime,
             denied, Infinity, invocationPermissionContext, invocationCategory, executionCwd, undefined, undefined,
             hookChainFromDispatch("perm", permissionHook));

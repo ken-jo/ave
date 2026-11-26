@@ -81,7 +81,9 @@ const TERMINAL_EGRESS_ASK_TIMEOUT_MS = 120_000;
 // What the person answered. A deny carries why (their choice, a timeout, no surface).
 export type EgressApprovalAnswer =
   | { readonly allow: true; readonly scope: EgressGrantScope; readonly oneConnection?: true }
-  | { readonly allow: false; readonly reason: string; readonly humanDenied?: true };
+  | { readonly allow: false; readonly reason: string; readonly humanDenied?: true;
+      readonly recheckRefusal?: { readonly kind: "recheck-failed" }
+        | { readonly kind: "denied"; readonly rule?: NetworkPermissionEvaluation["rule"] } };
 
 export type EgressApprovalRequester = (request: EgressApprovalRequest) => Promise<EgressApprovalAnswer>;
 
@@ -197,7 +199,10 @@ const unattributed = (): Decision =>
   ({ allow: false, basis: "policy", scope: null, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
 const revokedConnection = (): Decision => deny("policy", "remote-controller-revoked");
 
-function networkDenial(evaluation: NetworkPermissionEvaluation): Decision {
+function networkDenial(evaluation: {
+  readonly permission: Pick<NetworkPermissionEvaluation["permission"], "reason">;
+  readonly rule?: NetworkPermissionEvaluation["rule"];
+}): Decision {
   return evaluation.rule?.decision === "deny"
     ? deny("rule", `${EGRESS_DENY_REASONS.denyRule} ${evaluation.rule.pattern}`)
     : deny("policy", evaluation.permission.reason);
@@ -365,8 +370,13 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       }
       if (timedOut && !answer.allow) answer = { allow: false, reason: EGRESS_DENY_REASONS.terminalTimeout };
     }
-    if (!answer.allow) return { allow: false, decision: deny("prompt", answer.reason),
-      ...(answer.humanDenied ? { humanDenied: true as const } : {}) };
+    if (!answer.allow) {
+      const recheck = answer.recheckRefusal;
+      const decision = recheck?.kind === "denied"
+        ? networkDenial({ permission: { reason: answer.reason }, rule: recheck.rule })
+        : deny(recheck?.kind === "recheck-failed" ? "policy" : "prompt", answer.reason);
+      return { allow: false, decision, ...(answer.humanDenied ? { humanDenied: true as const } : {}) };
+    }
     // A scope the card did not offer is the requester's bug, not a grant.
     if (!scopes.includes(answer.scope)) throw new Error(`egress grant: scope ${answer.scope} was not offered`);
     if (evaluation?.permission.forceModal && answer.scope !== "once") throw new Error("Forced network approval cannot create a standing grant");

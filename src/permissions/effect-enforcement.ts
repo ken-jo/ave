@@ -1,4 +1,4 @@
-import { bindPendingAnswerRequest, openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, spendStandingAnswer, type StandingAnswer } from "./pending-answer-policy.js";
+import { bindPendingAnswerRequest, openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, spendStandingAnswer, type PendingAnswerVerdict, type StandingAnswer } from "./pending-answer-policy.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf, type RemoteControllerAuthority } from "../shared/chat-origin.js";
 // Actual host effects enter the common permission pipeline before recording and execution.
 // Authorize before recording and execution; network audit also records denied attempts. Invalid input snapshots never reach implementation.
@@ -67,6 +67,8 @@ export interface EffectGateContext {
 const gateContextStorage = new AsyncLocalStorage<EffectGateContext>();
 const authorizationRequiredLatch = new WeakMap<EffectGateContext, () => void>();
 const noApproverLatch = new WeakMap<EffectGateContext, () => void>();
+export type EffectApprovalRefusal = Extract<PendingAnswerVerdict, { kind: "recheck-failed" | "denied" }>;
+const approvalRefusalLatch = new WeakMap<EffectGateContext, (verdict: EffectApprovalRefusal) => void>();
 /** Frames whose invocation returned; work left running there keeps no once-grant. */
 const poppedFrames = new WeakSet<EffectGateContext>();
 
@@ -76,6 +78,7 @@ export function runWithEffectGateContext<T>(
   fn: () => Promise<T>,
   onAuthorizationRequired?: () => void,
   onNoApprover?: () => void,
+  onApprovalRefusal?: (verdict: EffectApprovalRefusal) => void,
 ): Promise<T> {
   const frame: EffectGateContext = { ...context, onceGrants: new Set<string>() };
   if (onAuthorizationRequired) {
@@ -83,6 +86,7 @@ export function runWithEffectGateContext<T>(
     authorizationRequiredLatch.set(frame, onAuthorizationRequired);
   }
   if (onNoApprover) noApproverLatch.set(frame, onNoApprover);
+  if (onApprovalRefusal) approvalRefusalLatch.set(frame, onApprovalRefusal);
   const pop = () => {
     poppedFrames.add(frame);
     frame.onceGrants.clear();
@@ -489,9 +493,12 @@ export async function gateMutatingEffect(params: {
   // Another conversation's or run's memory-only allow rule leaves the answer standing; any other change refuses it.
   const stands = personAnswerStands(card, decision);
   const verdict = card.verdict;
-  if (verdict?.kind === "recheck-failed") throw new Error(verdict.reason);
+  if (verdict?.kind === "recheck-failed" || verdict?.kind === "denied") {
+    approvalRefusalLatch.get(ctx)?.(verdict);
+    throw new Error(verdict.kind === "recheck-failed" ? verdict.reason : verdict.fresh.reason);
+  }
   const answer = verdict?.kind === "stands" ? verdict.proof : undefined;
-  if (!stands && (decision.choice.startsWith("allow") || verdict?.kind === "denied")) throw new Error(EFFECT_ANSWER_REFUSED);
+  if (!stands && decision.choice.startsWith("allow")) throw new Error(EFFECT_ANSWER_REFUSED);
   assertEffectPaths(paths);
   if (decision.rememberPattern === NO_APPROVER_MESSAGE) {
     noApproverLatch.get(ctx)?.();

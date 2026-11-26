@@ -32,7 +32,7 @@ import { browserApprovalCardFacts, isCanonicalBrowserTool } from "./browser-tool
 import { browserOrigin } from "../shared/browser-tools.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import { isCanonicalWebFetchTool } from "./web-fetch.js";
-import { runWithEffectGateContext } from "../permissions/effect-enforcement.js";
+import { runWithEffectGateContext, type EffectApprovalRefusal } from "../permissions/effect-enforcement.js";
 import { CHOKEPOINT_EFFECT } from "../permissions/effect-kind.js";
 import type { HostShellExecutionPermitBinding } from "../permissions/host-shell-execution-permit.js";
 import { HOST_SHELL_AUTHORIZATION_REVOKED_ERROR, mintHostShellExecutionPermit, recordHostShellPolicyAuthorization } from "../permissions/host-shell-execution-permit.js";
@@ -75,6 +75,7 @@ import {
 } from "./pipeline/rationale-resume-runner.js";
 import {
   runScriptHook,
+  scriptHookRefusal,
   type InvocationRunnerServices,
 } from "./invocation-services.js";
 import {
@@ -515,6 +516,7 @@ export async function executeAuthorizedToolInvocation(
   let authorizationRequired: AuthorizationRequiredControl | undefined;
   let effectAuthorizationRequired: AuthorizationRequiredControl | undefined;
   let effectNoApprover = false;
+  let effectApprovalRefusal: EffectApprovalRefusal | undefined;
   let latePermissionHookChain: import("../audit/audit-schema.js").HookResult[] | undefined;
   let handlerAdmissionBlocked = true;
   let outputArtifact: ToolOutputArtifactInfo | undefined;
@@ -1078,7 +1080,7 @@ export async function executeAuthorizedToolInvocation(
     latePermissionHookChain = hookChainFromDispatch("perm", permHook);
     assertLateApprovalPolicyCurrent();
     if (permHook.decision === "deny") {
-      permissionResult = refusal(permHook.reason, RULE_PROVENANCE);
+      permissionResult = scriptHookRefusal(permHook);
       throw new Error(t("be_executor.hookPermissionBlock", { reason: permHook.reason }));
     }
     await services.auditWriter.auditPermissionAsk(
@@ -1319,6 +1321,9 @@ export async function executeAuthorizedToolInvocation(
               });
             },
             () => { effectNoApprover = true; },
+            (verdict) => {
+              if (!effectApprovalRefusal || verdict.kind === "recheck-failed") effectApprovalRefusal = verdict;
+            },
           ),
         ),
       );
@@ -1419,6 +1424,9 @@ export async function executeAuthorizedToolInvocation(
     });
     indeterminateAuditPersisted = true;
   }
+  const effectPermissionRefusal = effectApprovalRefusal?.kind === "recheck-failed"
+    ? refusal(effectApprovalRefusal.reason, HOST_PROVENANCE)
+    : effectApprovalRefusal?.kind === "denied" ? refusal(effectApprovalRefusal.fresh.reason, RULE_PROVENANCE) : undefined;
   if (effectAuthorizationRequired || effectNoApprover) {
     // The host effect boundary latched this before blocking the mutation. A
     // plugin may catch that thrown denial, but it cannot clear this outer
@@ -1428,6 +1436,11 @@ export async function executeAuthorizedToolInvocation(
       ? "Authorization required: this plugin effect requires explicit approval, "
       + "but this host has no approval surface. The turn has stopped and will not retry automatically."
       : NO_APPROVER_MESSAGE;
+    isError = true;
+    terminationReason = "error";
+  } else if (effectPermissionRefusal !== undefined) {
+    permissionResult = effectPermissionRefusal;
+    content = effectPermissionRefusal.reason;
     isError = true;
     terminationReason = "error";
   } else if (outcome.ok) {

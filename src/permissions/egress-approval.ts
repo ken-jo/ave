@@ -79,6 +79,7 @@ export function createApprovalGateEgressRequester(
     let reviewerVerdict;
     let forced = false;
     let card: PendingAnswerCard | undefined;
+    let recheckedRule: NetworkPermissionEvaluation["rule"];
     if (request.origin === "shell") {
       if (!permissionManager) throw new Error("Shell egress requires a permission manager");
       const cwd = request.workspaceRoot ?? process.cwd();
@@ -109,7 +110,11 @@ export function createApprovalGateEgressRequester(
         return { allow: false, reason: permission.reason };
       }
       if (headless) { request.onNoApprover?.(); return { allow: false, reason: NO_APPROVER_MESSAGE }; }
-      const recheckDestination = () => evaluated.recheck(undefined, request.approvalSurface ?? "interactive").permission;
+      const recheckDestination = () => {
+        const current = evaluated.recheck(undefined, request.approvalSurface ?? "interactive");
+        recheckedRule = current.rule;
+        return current.permission;
+      };
       card = openPendingAnswerCard(permissionManager, evaluated.permission, recheckDestination, "stale-refused", {
         gate, requestId, action: `egress:${requestId}`, uses: ["rule-save"],
         epochs: { epoch: evaluated.policyEpoch, contextEpoch: evaluated.policyContextEpoch },
@@ -158,7 +163,13 @@ export function createApprovalGateEgressRequester(
         if (request.abortSignal?.aborted) return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected };
         if (card === undefined || !personAnswerStands(card, decision)) {
           const verdict = card?.verdict;
-          return { allow: false, reason: verdict?.kind === "recheck-failed" ? verdict.reason : "Permission policy changed during network approval." };
+          if (verdict?.kind === "recheck-failed") {
+            return { allow: false, reason: verdict.reason, recheckRefusal: { kind: verdict.kind } };
+          }
+          if (verdict?.kind === "denied") {
+            return { allow: false, reason: verdict.fresh.reason, recheckRefusal: { kind: verdict.kind, rule: recheckedRule } };
+          }
+          return { allow: false, reason: "Permission policy changed during network approval." };
         }
         const { refusal } = await saveStandingAnswerRule(card, decision);
         if (refusal !== undefined) return { allow: false, reason: refusal };

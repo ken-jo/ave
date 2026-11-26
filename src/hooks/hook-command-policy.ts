@@ -13,7 +13,7 @@ import { t } from "../i18n/index.js";
 import { shellQuote } from "../lib/shell-resolver.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import type { RunnableHook } from "./script-hook-runner.js";
-import type { ScriptHookStdin } from "./script-hook-types.js";
+import type { ScriptHookInvocationResult, ScriptHookStdin } from "./script-hook-types.js";
 import { DEFAULT_HOOK_TIMEOUT_MS } from "./script-hook-types.js";
 import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 
@@ -23,7 +23,8 @@ export type HookCommandAuthorizer = (
   cwd: string,
   projectDir?: string,
   attachWorkingDirectory?: (cwd: string, dispose: () => void) => void,
-) => Promise<{ decision: "allow" | "deny"; reason: string; plan?: HostShellExecutionPlan; assertAllowed?: () => void; refreshAllowed?: () => Promise<void> }>;
+) => Promise<{ decision: "allow" | "deny"; reason: string; plan?: HostShellExecutionPlan; assertAllowed?: () => void; refreshAllowed?: () => Promise<void> } &
+  Pick<ScriptHookInvocationResult, "commandAdmissionFailure">>;
 
 // Enrollment supplies executable identity; the shared pipeline supplies authority.
 export function createHookCommandAuthorizer(deps: {
@@ -130,7 +131,7 @@ export function createHookCommandAuthorizer(deps: {
     if (card && approval) {
       personAnswerStands(card, approval);
       const verdict = card.verdict ?? { kind: "policy-changed" as const };
-      if (verdict.kind === "recheck-failed") return { decision: "deny", reason: verdict.reason };
+      if (verdict.kind === "recheck-failed") return { decision: "deny", reason: verdict.reason, commandAdmissionFailure: verdict.kind };
       if (!("fresh" in verdict)) {
         return { decision: "deny", reason: verdict.kind === "declined" ? "user denied hook command" : "Permission policy changed while approval was pending" };
       }

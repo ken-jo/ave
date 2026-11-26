@@ -11,6 +11,7 @@ import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import * as approvals from "../../permissions/user-approval-store.js";
@@ -69,10 +70,70 @@ async function subject() {
   const approve = (card: ApprovalRequest) => gate.resolveFromDesktopRenderer(card.id, {
     requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac,
   }, sender as never);
-  return { root, storageRoot, historyFile, history, manager, classify, hooks, preHook, cards, execute, input, originalAbort, denyHeadless, approve, executor, registry, gate, surfaces, sender };
+  return { root, storageRoot, historyFile, history, manager, classify, hooks, preHook, cards, execute, input, originalAbort, denyHeadless, approve, executor, registry, gate, surfaces, sender, audit };
 }
 
 describe("executor denial history and manual rerun", () => {
+  it.each([
+    { throws: true, trustOrigin: "unknown", reason: "Permission recheck failed during approval." },
+    { throws: false, trustOrigin: "llm-tool-arg", reason: "Storage write denied by a rule." },
+  ])("audits a caught effect approval refusal with $trustOrigin origin", async ({ throws, trustOrigin, reason }) => {
+    const current = await subject();
+    current.surfaces.register(SESSION_ID, current.sender as never);
+    const pluginId = "nested-effect-provider";
+    const toolName = "nested_write_probe";
+    const target = join(current.root, "nested.txt");
+    const write = vi.fn(async (relativePath: string, contents: string) => {
+      writeFileSync(join(current.root, relativePath), contents);
+    });
+    const api = enforceMutatingEffects({ storage: { write } }, {
+      pluginId, approvalGate: current.gate, permissionManager: current.manager,
+      resolveStoragePath: (relativePath) => join(current.root, relativePath), assertActive: vi.fn(),
+    });
+    const caught = vi.fn();
+    current.registry.register(createDynamicTool({ name: toolName, source: "plugin", pluginId,
+      description: "Writes a bounded file.", category: "write", pathFields: [], jsonSchema: { type: "object" },
+      execute: async () => {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          await api.storage.write("nested.txt", "effect").catch(caught);
+        }
+        return { output: "handler caught the rejection", isError: false };
+      },
+    }));
+    await current.manager.addAlwaysAllowedPersist(toolName);
+    const save = vi.spyOn(current.gate, "commitStagedAllowSaves");
+    const pending = current.executor.executeAll([{ id: "caught-effect-recheck", name: toolName, input: {} }], {
+      sessionId: SESSION_ID, executionCwd: current.root,
+      permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg" }),
+    });
+    await vi.waitFor(() => expect(current.cards).toHaveLength(1), CARD_WAIT);
+    const recheck = vi.spyOn(current.manager, "checkDetailed").mockImplementationOnce(() => {
+      if (throws) throw new Error("internal storage check detail");
+      return { decision: "deny", provenance: RULE_PROVENANCE, reason };
+    });
+    const card = current.cards[0];
+    expect(current.gate.resolveFromDesktopRenderer(card.id, {
+      requestId: card.id, nonce: card.nonce, hmac: card.hmac, choice: "allow-session",
+    }, current.sender as never)?.choice).toBe("allow-session");
+    // The identical retry in the same invocation must still need a card.
+    await vi.waitFor(() => expect(current.cards).toHaveLength(2), CARD_WAIT);
+    const retry = current.cards[1];
+    current.gate.resolveFromDesktopRenderer(retry.id, {
+      requestId: retry.id, nonce: retry.nonce, hmac: retry.hmac, choice: "deny-once",
+    }, current.sender as never);
+    const [result] = await pending;
+    expect(recheck).toHaveBeenCalled();
+    expect(caught).toHaveBeenCalledTimes(2);
+    expect(write).not.toHaveBeenCalled();
+    expect(existsSync(target)).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+    const terminal = readFileSync(current.audit.getPermissionAuditLogFile(), "utf8").trim().split("\n")
+      .map(line => JSON.parse(line)).filter(row => row.toolUseId === "caught-effect-recheck" && row.decision !== "ask");
+    expect(terminal).toEqual([expect.objectContaining({ decision: "deny", trustOrigin,
+      denyReasons: [expect.objectContaining({ reason })] })]);
+    expect(result).toMatchObject({ content: reason, is_error: true });
+  });
+
   it.each(["headless", "owner-away-skip"] as const)("keeps a caught nested %s write denial terminal despite an enclosing allow rule", async (lane) => {
     const current = await subject();
     const pluginId = "nested-effect-provider";

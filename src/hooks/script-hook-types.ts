@@ -144,6 +144,7 @@ export interface ScriptHookInvocationResult {
   decision: "allow" | "deny";
   // Always populated.
   reason: string;
+  commandAdmissionFailure?: "recheck-failed";
   // Raw stdout (for forensics / debugging). Truncated by caller.
   rawStdout: string;
   exitCode?: number;

@@ -260,7 +260,10 @@ export async function runOneHookScript(
         disposeCommandWorkingDirectory = dispose;
       })), abortSignal);
       if (abortSignal?.aborted) return deny("Hook execution cancelled");
-      if (admission.decision !== "allow") return deny(`hook command denied: ${admission.reason}`);
+      if (admission.decision !== "allow") {
+        return deny(`hook command denied: ${admission.reason}`, admission.commandAdmissionFailure === undefined
+          ? undefined : { commandAdmissionFailure: admission.commandAdmissionFailure });
+      }
       admittedPlan = admission.plan;
       assertCommandAllowed = admission.assertAllowed;
       refreshCommandAllowed = admission.refreshAllowed;

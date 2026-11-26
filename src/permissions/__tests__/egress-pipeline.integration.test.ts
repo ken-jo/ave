@@ -11,6 +11,7 @@ import type { ShellEgressOwner } from "../egress-invocations.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { bindRemoteControllerToSession, type RemoteControllerAuthority } from "../../shared/chat-origin.js";
 import type { SandboxEgressDecisionAuditEntry } from "../../audit/sandbox-audit.js";
+import type { EgressGrantScope } from "../../shared/egress-grant-scopes.js";
 
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -55,9 +56,9 @@ function fixture(options: { headless?: boolean; forced?: boolean; askEnabled?: b
     await vi.waitFor(() => expect(sentApprovalCards(wc)).toHaveLength(count));
     return sentApprovalCards<ApprovalRequest>(wc)[count - 1]!;
   };
-  const answer = (request: ApprovalRequest, allow: boolean) => gate.resolveFromDesktopRenderer(request.id, {
+  const answer = (request: ApprovalRequest, allow: boolean, scope: EgressGrantScope = "once") => gate.resolveFromDesktopRenderer(request.id, {
     requestId: request.id, nonce: request.nonce, hmac: request.hmac, choice: allow ? "allow-once" : "deny-once",
-    ...(allow ? { egressScope: "once" as const } : {}),
+    ...(allow ? { egressScope: scope } : {}),
   }, wc as never);
   return { manager, owner, grants, wc, gate, evaluate, subject, callback, connection, card, answer, onNoApprover, audit };
 }
@@ -67,6 +68,32 @@ async function remember(f: ReturnType<typeof fixture>) {
 }
 
 describe("actual shell network pipeline authority", () => {
+  it.each([
+    { throws: true, basis: "policy", reason: "Permission recheck failed during approval." },
+    { throws: false, basis: "rule", reason: "denied by host rule Network(downloads.example.com:443)" },
+  ])("audits a network approval recheck refusal on the $basis basis", async ({ throws, basis, reason }) => {
+    const f = fixture();
+    const grant = vi.spyOn(f.grants, "grant");
+    const save = vi.spyOn(f.gate, "commitStagedAllowSaves");
+    const pending = f.callback(DESTINATION, { attributionKey: TOKEN, identity: "listener", phase: "resolved",
+      addresses: ["93.184.216.34"], resolution: "pinned" });
+    const request = await f.card(1);
+    const check = f.manager.checkLoadedNetworkPermission.bind(f.manager);
+    const recheck = vi.spyOn(f.manager, "checkLoadedNetworkPermission").mockImplementationOnce((...args) => {
+      if (throws) throw new Error("internal network check detail");
+      f.manager.setRules([{ pattern: "Network(downloads.example.com:443)", action: "deny" }]);
+      return check(...args);
+    });
+    expect(f.answer(request, true, "session")?.choice).toBe("allow-once");
+    const decision = await pending;
+    expect(recheck).toHaveBeenCalledOnce();
+    expect(grant).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(await f.grants.matchingScope(f.subject, { ...DESTINATION, network: "public" }, ["once", "session", "always"])).toBeUndefined();
+    expect(f.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ decision: "deny", basis, reason, scope: null }));
+    expect(decision).toEqual({ allow: false, reason });
+  });
+
   it.each(["desk first", "revocation first"] as const)("keeps the correct egress refusal with %s", async order => {
     let current = true;
     const remoteControllerAuthority = bindRemoteControllerToSession({
