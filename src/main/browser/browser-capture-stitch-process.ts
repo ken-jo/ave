@@ -1,0 +1,187 @@
+import { statSync } from "node:fs";
+import { join } from "node:path";
+import type { ChildProcess } from "node:child_process";
+import type { Writable } from "node:stream";
+import { crc32, inflateSync } from "node:zlib";
+import { BROWSER_CAPTURE_LIMITS } from "../../shared/browser-capture.js";
+import { hasOnlyKeys, isRecord } from "../../shared/is-record.js";
+import { mainDir } from "../main-paths.js";
+import { forceKillManagedChildProcess, spawnManaged } from "../managed-child-processes.js";
+import { buildSafeChildEnv } from "../../tools/safe-env.js";
+import { BrowserActionError } from "./browser-action-guard.js";
+import {
+  CAPTURE_STITCH_CHILD_FILE, captureStitchFrame, captureStitchFrames,
+  type CaptureStitchRequest, type CaptureTilePlacement,
+} from "./browser-capture-stitch-protocol.js";
+
+export interface CaptureStitcher {
+  decode(png: Buffer, tile: CaptureTilePlacement): Promise<void>;
+  encode(): Promise<Buffer>;
+  /** Terminates the child. A job it still owes settles when its exit is confirmed, never earlier. */
+  stop(): void;
+}
+
+interface StitchJob { expectsPayload: boolean; resolve(payload: Buffer): void; reject(error: Error): void }
+
+const PNG_SIGNATURE = Buffer.from("89504e470d0a1a0a", "hex");
+const PNG_CHUNK_OVERHEAD = 12;
+const PNG_IHDR_DATA_BYTES = 13;
+const PNG_HEADER_BYTES = PNG_SIGNATURE.length + PNG_CHUNK_OVERHEAD + PNG_IHDR_DATA_BYTES;
+const PNG_IHDR_FORMAT = Buffer.from([8, 6, 0, 0, 0]); // 8-bit RGBA, standard compression and filtering, no interlace.
+const PNG_DEFAULT_DENSITY = Buffer.from("000003e8000003e801", "hex"); // 1000 pixels per metre on each axis.
+const PNG_MAX_DEFLATE_WINDOW = 32 * 1024;
+
+function hasValidPngScanlines(compressed: Buffer, width: number, height: number): boolean {
+  const stride = 1 + width * 4;
+  const expectedLength = height * stride;
+  // The encoder only shrinks the window when the whole raster fits. Inflate may accept distances past the declared window.
+  const windowSize = 1 << (8 + (compressed[0] >>> 4));
+  if (windowSize < Math.min(expectedLength, PNG_MAX_DEFLATE_WINDOW)) return false;
+
+  // Default finish mode requires a complete stream. The declarations omit the engine returned with info.
+  const { buffer: scanlines, engine } = inflateSync(compressed, {
+    maxOutputLength: expectedLength, info: true,
+  }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
+  if (scanlines.length !== expectedLength || engine.bytesWritten !== compressed.length) return false;
+  for (let offset = 0; offset < scanlines.length; offset += stride) {
+    if (scanlines[offset] > 4) return false;
+  }
+  return true;
+}
+
+function isValidEncodedPng(png: Buffer, width: number, height: number): boolean {
+  const firstChunk = PNG_SIGNATURE.length;
+  if (png.length > BROWSER_CAPTURE_LIMITS.bytes || png.length < PNG_HEADER_BYTES
+    || !png.subarray(0, firstChunk).equals(PNG_SIGNATURE)
+    || png.readUInt32BE(firstChunk) !== PNG_IHDR_DATA_BYTES || png.toString("latin1", 12, 16) !== "IHDR"
+    || png.readUInt32BE(16) !== width || png.readUInt32BE(20) !== height
+    || !png.subarray(24, 29).equals(PNG_IHDR_FORMAT)) return false;
+
+  const compressed = Buffer.allocUnsafe(png.length);
+  let compressedLength = 0;
+  for (let offset = firstChunk; offset + PNG_CHUNK_OVERHEAD <= png.length;) {
+    const length = png.readUInt32BE(offset);
+    const end = offset + PNG_CHUNK_OVERHEAD + length;
+    const crcOffset = end - 4;
+    if (end > png.length || crc32(png.subarray(offset + 4, crcOffset)) !== png.readUInt32BE(crcOffset)) return false;
+    const type = png.toString("latin1", offset + 4, offset + 8);
+    if (offset === PNG_HEADER_BYTES) {
+      if (type !== "pHYs" || !png.subarray(offset + 8, crcOffset).equals(PNG_DEFAULT_DENSITY)) return false;
+    } else if (offset !== firstChunk) {
+      if (type === "IDAT") {
+        if (length === 0) return false;
+        compressedLength += png.copy(compressed, compressedLength, offset + 8, crcOffset);
+      } else {
+        return type === "IEND" && length === 0 && end === png.length && compressedLength > 0
+          && hasValidPngScanlines(compressed.subarray(0, compressedLength), width, height);
+      }
+    }
+    offset = end;
+  }
+  return false;
+}
+
+/**
+ * Composes one capture in a child process, so a decode that never returns is reclaimed
+ * with its memory by ending that process. A job settles on its reply or on the confirmed exit.
+ */
+export function startCaptureStitcher(
+  width: number, height: number, onProtocolFault?: (error: Error, closed: Promise<void>) => void,
+): CaptureStitcher {
+  const jobs = new Map<number, StitchJob>();
+  let nextId = 0;
+  let exited = false;
+  let stopped = false;
+  let termination: void | Promise<void>;
+  let child: ChildProcess | undefined;
+  let input: Writable | undefined;
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
+  const failure = (): Error => new BrowserActionError("screenshot-failed", "the capture decoder stopped");
+  const stop = (): void => {
+    if (stopped || exited || !child) return;
+    stopped = true;
+    termination = forceKillManagedChildProcess(child, "browser-capture-stitch");
+  };
+  const settleExit = (): void => {
+    if (exited) return;
+    exited = true;
+    for (const job of jobs.values()) job.reject(failure());
+    jobs.clear();
+    resolveClosed();
+  };
+  try {
+    // Resolve from the runtime asset root: this module may live in a split chunk.
+    const entryPath = join(mainDir, CAPTURE_STITCH_CHILD_FILE);
+    if (!statSync(entryPath).isFile()) throw new Error("the capture decoder entry is missing");
+    const spawned = spawnManaged(process.execPath, [
+      "--disallow-code-generation-from-strings", entryPath, String(width), String(height),
+    ], {
+      env: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
+      stdio: ["pipe", "pipe", "ignore"],
+      windowsHide: true,
+    }, { label: "browser-capture-stitch" });
+    child = spawned;
+    spawned.once("close", async () => {
+      // Settle only once a pending tree kill has finished with the child.
+      if (termination) await termination;
+      settleExit();
+    });
+    spawned.once("error", () => {
+      if (spawned.pid) stop();
+      else settleExit();
+    });
+    const { stdin, stdout } = spawned;
+    if (!stdin || !stdout) throw new Error("the capture decoder has no pipes");
+    input = stdin;
+    const readFrames = captureStitchFrames((message, payload) => {
+      if (!isRecord(message) || !hasOnlyKeys(message, ["id", "error"]) || typeof message.id !== "number") {
+        throw new Error("invalid capture decoder reply");
+      }
+      const { id, error } = message;
+      const job = jobs.get(id);
+      if (!job) throw new Error("unexpected capture decoder reply");
+      const expectsPayload = job.expectsPayload && error === undefined;
+      if (expectsPayload ? !isValidEncodedPng(payload, width, height) : payload.length !== 0) {
+        throw new Error("invalid capture decoder reply payload");
+      }
+      let replyError: Error | undefined;
+      if (error !== undefined) {
+        if (!isRecord(error) || !hasOnlyKeys(error, ["message", "code"]) || typeof error.message !== "string"
+          || (error.code !== undefined && typeof error.code !== "string")) {
+          throw new Error("invalid capture decoder error");
+        }
+        replyError = error.code === "screenshot-limit" || error.code === "screenshot-unavailable"
+          ? new BrowserActionError(error.code, error.message) : new Error(error.message);
+      }
+      if (replyError) job.reject(replyError);
+      else job.resolve(payload);
+      jobs.delete(id);
+    });
+    stdout.on("data", (chunk: Buffer) => {
+      if (stopped || exited) return;
+      try { readFrames(chunk); } catch {
+        stop();
+        onProtocolFault?.(failure(), closed);
+      }
+    });
+    stdin.on("error", stop);
+  } catch {
+    if (child) stop();
+    else settleExit();
+  }
+  const request = (png?: Buffer, tile?: CaptureTilePlacement): Promise<Buffer> => new Promise((resolve, reject) => {
+    if (exited || stopped || !input) {
+      reject(failure());
+      return;
+    }
+    const message: CaptureStitchRequest = { id: nextId++, ...(tile ? { tile } : {}) };
+    jobs.set(message.id, { expectsPayload: tile === undefined, resolve, reject });
+    input.write(captureStitchFrame(message, png));
+  });
+  return {
+    decode: (png, tile) => request(png, tile).then(() => undefined),
+    encode: () => request(),
+    stop,
+  };
+}

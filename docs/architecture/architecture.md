@@ -1997,6 +1997,10 @@ Preparation, readback and cleanup share one cancellation signal and capture
 deadline. Cleanup attempts to restore the original scroll position and clear any
 temporary viewport override even on cancellation; a still-pending cleanup retains
 guest capture ownership until it settles.
+Each tiled capture composes its tiles in its own supervised child process
+(`browser-capture-stitch-child.js`). A capture that ends with tile work still
+outstanding ends that process, and the guest accepts another screenshot only
+after every outstanding job has settled or the process exit is confirmed.
 Selection verifies the final native value and rejects unsupported controls.
 Native single-select uses a fixed function in an isolated action world on one
 host-resolved main-document object, with only the requested option value as data.
