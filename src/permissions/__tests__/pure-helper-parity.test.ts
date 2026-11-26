@@ -6,7 +6,7 @@ import * as runtimeAddress from "@anthropic-ai/sandbox-runtime/dist/sandbox/addr
 import * as runtimePattern from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
 import * as runtimeHost from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
 import * as runtimePath from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { egressDestinationNetwork } from "../egress-grants.js";
 import * as address from "../egress-relay/address-set.js";
 import { isLoopbackAddress } from "../egress-relay/address-set.js";
@@ -212,6 +212,37 @@ describe("path spelling", () => {
     expect(spelling.expandWindowsEnvRefs("%userprofile%\\x")).toBe(`${home}\\x`);
     expect(spelling.expandWindowsEnvRefs("%HOMEDRIVE%%HOMEPATH%")).toBe(home);
     expect(spelling.expandWindowsEnvRefs("%APPDATA%\\x")).toBe("%APPDATA%\\x");
+  });
+
+  it("strips the same extended prefixes", () => {
+    both(spelling.stripExtendedPathPrefix, runtimePath.stripExtendedPathPrefix, one([
+      "\\\\?\\unc", "\\\\?\\UNC", "\\\\?\\UNC\\\\?\\x", "\\\\?\\\\\\?\\C:\\x", "\\\\?\\UNC\\server", "//?/C:/x", "//?/UNC/server/share", "\\\\.\\C:\\x",
+      "\\\\?\\c:\\Users\\ALICE", "\\\\?\\uNc\\Server\\Share\\a", "x\\\\?\\C:\\x", " \\\\?\\C:\\x",
+    ]));
+    expect(spelling.stripExtendedPathPrefix("\\\\?\\\\\\?\\C:\\x")).toBe("\\\\?\\C:\\x");
+    expect(spelling.stripExtendedPathPrefix("\\\\?\\uNc\\Server\\Share\\a")).toBe("\\\\Server\\Share\\a");
+  });
+
+  it.each([
+    "C:\\Users\\alice", "c:\\users\\bob", "D:\\", "\\\\server\\share\\alice", "/home/alice", "C:\\Users\\a$&b", "C:\\Users\\$1$$alice", "relative",
+  ])("expands env refs alike with the home at %s", (home) => {
+    const homeVar = process.platform === "win32" ? "USERPROFILE" : "HOME";
+    vi.stubEnv(homeVar, home);
+    try {
+      expect(os.homedir()).toBe(home);
+      both(spelling.expandWindowsEnvRefs, runtimePath.expandWindowsEnvRefs, one(PATHS));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("leaves the drive empty for a home without one", () => {
+    vi.stubEnv(process.platform === "win32" ? "USERPROFILE" : "HOME", "\\\\server\\share\\alice");
+    try {
+      expect(spelling.expandWindowsEnvRefs("%HOMEDRIVE%|%HOMEPATH%")).toBe("|\\\\server\\share\\alice");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
