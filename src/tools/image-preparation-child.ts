@@ -84,11 +84,7 @@ if (!adoptParentHostResources()) {
         requireReadAccess(judged);
       }
       const bytes = await readImageInput(judged, new AbortController().signal);
-      const image = await normalizeImage(bytes, request.options);
-      if (process.platform !== "win32" && "expectedPath" in request) {
-        requireExpectedPath(await realpath(request.path));
-      }
-      process.stdout.write(JSON.stringify({ ok: true, image }));
+      process.stdout.write(JSON.stringify({ ok: true, image: await normalizeImage(bytes, request.options) }));
     }
   } catch (error) {
     process.stdout.write(JSON.stringify({ ok: false, error: `invalid-image: ${errorMessage(error).slice(0, 2048)}` }));

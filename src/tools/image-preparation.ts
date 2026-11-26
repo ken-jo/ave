@@ -125,7 +125,7 @@ function runImageChild(
 }
 
 async function prepareImageRequest(
-  prepareRequest: () => ImagePreparationChildRequest,
+  request: ImagePreparationChildRequest | (() => ImagePreparationChildRequest),
   stdinBytes: Buffer | undefined,
   callerSignal?: AbortSignal,
 ): Promise<PreparedImage> {
@@ -137,8 +137,11 @@ async function prepareImageRequest(
   let release: (() => void) | undefined;
   try {
     release = await acquireImageSlot(controller.signal);
-    controller.signal.throwIfAborted();
-    return await runImageChild(prepareRequest(), controller.signal, stdinBytes);
+    if (typeof request === "function") {
+      controller.signal.throwIfAborted();
+      request = request();
+    }
+    return await runImageChild(request, controller.signal, stdinBytes);
   } finally {
     clearTimeout(timer);
     callerSignal?.removeEventListener("abort", abort);
@@ -156,16 +159,18 @@ export async function prepareImageFile(
 ): Promise<PreparedImage> {
   // Parsing copies the scope/options before admission; callers cannot mutate a queued request.
   const request = ImagePreparationRequestSchema.omit({ expectedPath: true }).parse({ path, options: requested, scope: readScope });
-  return prepareImageRequest(() => {
-    if (process.platform !== "win32") {
-      if (seal && expectedPath === undefined) throw new TargetIdentityChangedError();
-      return expectedPath === undefined ? { ...request, source: "posix-file" } : { ...request, expectedPath };
-    }
-    return withLocalityDecision(() => {
-      seal?.verify();
-      return { ...request, expectedPath: localFs.realpathNative(admitLocalRoute(request.path).verdict) };
-    });
-  }, undefined, callerSignal);
+  if (process.platform !== "win32") {
+    if (seal && expectedPath === undefined) throw new TargetIdentityChangedError();
+    return prepareImageRequest(
+      expectedPath === undefined ? { ...request, source: "posix-file" } : { ...request, expectedPath },
+      undefined,
+      callerSignal,
+    );
+  }
+  return prepareImageRequest(() => withLocalityDecision(() => {
+    seal?.verify();
+    return { ...request, expectedPath: localFs.realpathNative(admitLocalRoute(request.path).verdict) };
+  }), undefined, callerSignal);
 }
 
 // Copy and bound broker input before queuing; pass bytes through stdin to the isolated decoder, never argv or base64.
@@ -187,5 +192,5 @@ export async function prepareImageBytes(
     inputBytes: input.byteLength,
     options: requested,
   });
-  return prepareImageRequest(() => request, input, callerSignal);
+  return prepareImageRequest(request, input, callerSignal);
 }

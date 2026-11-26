@@ -44,6 +44,27 @@ function observeNextImageChild(): Promise<ChildProcess> {
   });
 }
 
+async function executeSealedImage(path: string, abortSignal?: AbortSignal) {
+  const tool = new ViewImageTool();
+  const registry = new ToolRegistry();
+  registry.register(tool);
+  const permissions = new PermissionManager(join(directory, "image-permissions.json"));
+  permissions.setMode("allow");
+  const audit = new AuditLogger(join(directory, "image-audit"));
+  try {
+    const executor = new ToolExecutor(registry, undefined, permissions, undefined, undefined, undefined, audit);
+    const [result] = await executor.executeAll([{ id: "sealed-image", name: tool.name, input: { path } }], {
+      executionCwd: dirname(path),
+      sessionId: "sealed-image",
+      permissionContext: { trustOrigin: "llm-tool-arg", approvalSurface: "unavailable" },
+      abortSignal,
+    });
+    return result;
+  } finally {
+    await audit.close();
+  }
+}
+
 async function useStalledImageRuntime(): Promise<void> {
   const stalled = join(directory, "stalled"); await mkdir(stalled, { recursive: true });
   await writeFile(join(stalled, "image-preparation-child.js"), "process.stdin.resume(); setInterval(() => {}, 1000);\n");
@@ -286,18 +307,50 @@ describe("bounded image preparation", () => {
     expect(closed).toBe(true);
   });
 
-  it.skipIf(process.platform === "win32")("cancels a sealed image invocation during its final native lookup", async () => {
+  it.skipIf(process.platform === "win32")("returns a sealed image after its source is removed following the read", async () => {
+    const path = join(directory, "removed-after-read.png");
+    await writeFile(path, await readFile(imageFixturePath("grid.png")));
+    const canonical = realpathSync.native(path);
+    const preload = join(directory, "remove-image-after-read.mjs");
+    await writeFile(preload, `
+      import { unlinkSync } from "node:fs";
+      import fs from "node:fs/promises";
+      import { syncBuiltinESMExports } from "node:module";
+      const open = fs.open;
+      fs.open = async (path, ...args) => {
+        const handle = await open(path, ...args);
+        if (path === ${JSON.stringify(canonical)}) {
+          const close = handle.close.bind(handle);
+          handle.close = async () => {
+            await close();
+            unlinkSync(path);
+          };
+        }
+        return handle;
+      };
+      syncBuiltinESMExports();
+    `);
+    const spawn = managed.spawnManaged;
+    vi.spyOn(managed, "spawnManaged").mockImplementationOnce((program, args, ...options) =>
+      spawn(program, ["--import", pathToFileURL(preload).href, ...args], ...options));
+
+    const result = await executeSealedImage(path);
+    expect(existsSync(path)).toBe(false);
+    expect(result).toMatchObject({ image: { originalWidth: 8, originalHeight: 4, bytes: expect.any(Number) } });
+    expect(result?.is_error).not.toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32")("cancels a sealed image invocation during the decoder source lookup", async () => {
     const path = imageFixturePath("grid.png");
     const expectedPath = realpathSync.native(path);
-    const preload = join(directory, "stall-final-realpath.mjs");
+    const preload = join(directory, "stall-sealed-realpath.mjs");
     await writeFile(preload, `
       import fs from "node:fs/promises";
       import { syncBuiltinESMExports } from "node:module";
       const realpath = fs.realpath;
-      let lookups = 0;
       fs.realpath = async (path, ...args) => {
-        if (path === ${JSON.stringify(path)} && ++lookups === 2) {
-          process.stderr.write("final-lookup-stalled");
+        if (path === ${JSON.stringify(path)}) {
+          process.stderr.write("sealed-lookup-stalled");
           await new Promise(() => { setInterval(() => {}, 1000); });
         }
         return realpath(path, ...args);
@@ -317,36 +370,20 @@ describe("bounded image preparation", () => {
       const child = spawn(program, ["--import", pathToFileURL(preload).href, ...args], ...options);
       child.stderr?.on("data", (chunk: Buffer) => {
         diagnostics += chunk.toString();
-        if (diagnostics.includes("final-lookup-stalled")) controller.abort();
+        if (diagnostics.includes("sealed-lookup-stalled")) controller.abort();
       });
       child.once("close", () => { closed = true; });
       return child;
     });
 
-    const tool = new ViewImageTool();
-    const registry = new ToolRegistry();
-    registry.register(tool);
-    const permissions = new PermissionManager(join(directory, "image-permissions.json"));
-    permissions.setMode("allow");
-    const audit = new AuditLogger(join(directory, "image-audit"));
-    try {
-      const executor = new ToolExecutor(registry, undefined, permissions, undefined, undefined, undefined, audit);
-      const [result] = await executor.executeAll([{ id: "sealed-image", name: tool.name, input: { path } }], {
-        executionCwd: repositoryRoot(),
-        sessionId: "sealed-image",
-        permissionContext: { trustOrigin: "llm-tool-arg", approvalSurface: "unavailable" },
-        abortSignal: controller.signal,
-      });
+    const result = await executeSealedImage(path, controller.signal);
 
-      expect(request).toMatchObject({ path, expectedPath });
-      expect(hostLookup.mock.calls.filter(([operand]) => operand === path)).toHaveLength(lookupCountAtSpawn);
-      expect(diagnostics).toContain("final-lookup-stalled");
-      expect(result).toMatchObject({ is_error: true, content: expect.stringMatching(/cancelled/i) });
-      expect(result).not.toHaveProperty("image");
-      expect(closed).toBe(true);
-    } finally {
-      await audit.close();
-    }
+    expect(request).toMatchObject({ path, expectedPath });
+    expect(hostLookup.mock.calls.filter(([operand]) => operand === path)).toHaveLength(lookupCountAtSpawn);
+    expect(diagnostics).toContain("sealed-lookup-stalled");
+    expect(result).toMatchObject({ is_error: true, content: expect.stringMatching(/cancelled/i) });
+    expect(result).not.toHaveProperty("image");
+    expect(closed).toBe(true);
   });
 
   it("waits for child termination on cancellation, then admits a queued request", async () => {
