@@ -10,7 +10,7 @@ import { isValidPluginId } from "../plugins/public-contract.js";
 import { advanceRepeatAt, isMissedWhilePaused, isRoutineScheduleShape, scheduleIdentity } from "../routines/schedule-advance.js";
 import { projectRootEquals } from "../shared/project-identity.js";
 import { assertHostDecisionProof, type HostDecisionProof } from "./workflow-template-decision.js";
-import type { ScheduleAttachment, WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
+import type { ScheduleAttachment, WorkflowTemplate } from "../shared/workflow-template-types.js";
 import { isTemplateId, attachmentScopeMatches, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { isValidSessionId } from "../shared/session-id.js";
 const log = createLogger("ave");
@@ -389,7 +389,7 @@ type TemplateRoutineInput = Omit<AddRoutineInput, "execution" | "projectRoot"> &
 
 interface TemplateAttachmentReader {
   listByRoutine(id: string): Promise<ScheduleAttachment[]>;
-  get(id: string): Promise<Pick<WorkflowTemplateRecord, "template">>;
+  listActiveScheduleAttachments(): Promise<ReadonlyMap<string, { attachment: ScheduleAttachment; template: WorkflowTemplate }>>;
 }
 
 export class RoutinesStore {
@@ -460,17 +460,28 @@ export class RoutinesStore {
     return { routines: this.listActive(filter), invalid: this.listInvalid() };
   }
 
-  async listScheduleDisplay(filter?: { projectRoot?: string }): Promise<RoutineListResult> {
-    const result = this.listForDisplay(filter);
-    const routines = await Promise.all(result.routines.map(async (routine): Promise<RoutineRecord> => {
+  async listScheduleDisplay(filter?: { projectRoot?: string }, options?: { includeDismissed: boolean }): Promise<RoutineListResult> {
+    const candidates = options?.includeDismissed ? this.list() : this.listActive();
+    const attachments = candidates.some(routine => routine.execution === "template-run")
+      ? await this.requireTemplateAttachments().listActiveScheduleAttachments()
+      : undefined;
+    const routines = candidates.map((routine): RoutineRecord => {
       if (routine.execution !== "template-run") return routine;
-      const active = (await this.requireTemplateAttachments().listByRoutine(routine.id)).find(a => a.detachedAt === undefined);
+      const active = attachments?.get(routine.id);
       if (!active) return { ...routine, templateAttention: "attachment-missing" };
-      const { template } = await this.requireTemplateAttachments().get(active.templateId);
-      const scope = attachmentScopeMatches(active, template);
-      return { ...routine, attachmentId: active.id, ...(scope.ok ? {} : { templateAttention: scope.code }) };
-    }));
-    return { ...result, routines };
+      const { attachment, template } = active;
+      const scope = attachmentScopeMatches(attachment, template);
+      const { projectRoot: _originalProject, ...record } = routine;
+      return {
+        ...record, attachmentId: attachment.id, ...(scope.ok ? {} : { templateAttention: scope.code }),
+        ...(attachment.approvedScope.kind === "project" ? { projectRoot: attachment.approvedScope.projectRoot } : {}),
+      };
+    });
+    return { routines: routines.filter(routine => inProject(routine, filter?.projectRoot)), invalid: this.listInvalid() };
+  }
+
+  async getActiveTemplateAttachment(id: string): Promise<ScheduleAttachment | undefined> {
+    return (await this.requireTemplateAttachments().listByRoutine(id)).find(attachment => attachment.detachedAt === undefined);
   }
 
   private requireTemplateAttachments(): TemplateAttachmentReader {
@@ -612,8 +623,7 @@ export class RoutinesStore {
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
       const record = file.routines.find(r => r.id === id);
-      if (record?.execution === "template-run" &&
-        (await this.requireTemplateAttachments().listByRoutine(id)).some(a => a.detachedAt === undefined)) {
+      if (record?.execution === "template-run" && await this.getActiveTemplateAttachment(id)) {
         throw new AttachedTemplateRoutineError();
       }
       const before = file.routines.length + file.invalid.length;

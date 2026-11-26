@@ -251,7 +251,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     });
   }
 
-  ipcMain.handle(ROUTINES.listOccurrences, (e, query: unknown): RoutineOccurrencesResult | typeof UNAUTHORIZED_FRAME => {
+  ipcMain.handle(ROUTINES.listOccurrences, async (e, query: unknown): Promise<RoutineOccurrencesResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, ROUTINES.listOccurrences, e);
       return UNAUTHORIZED_FRAME;
@@ -265,7 +265,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     if (!routinesStore) return { ok: true, occurrences: [], runs: [], running: [] };
     const projectRoot = projectRootFilter(q);
     const filter = projectRoot === undefined ? undefined : { projectRoot };
-    const { routines } = filter ? routinesStore.listForDisplay(filter) : routinesStore.listForDisplay();
+    const { routines } = await routinesStore.listScheduleDisplay(filter, { includeDismissed: true });
     const runs: RoutineRun[] = [];
     const sessionAvailability = new Map<string, boolean>();
     const sessionExists = (sessionId: string): boolean => {
@@ -277,7 +277,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       return available;
     };
     // Past runs include dismissed items: a completed one-shot is dismissed by its own fire and must stay on the grid.
-    for (const routine of filter ? routinesStore.list(filter) : routinesStore.list()) {
+    for (const routine of routines) {
       const inRange = (iso: string | undefined): iso is string => {
         const t = iso ? Date.parse(iso) : Number.NaN;
         return Number.isFinite(t) && t >= from && t < to;
@@ -310,7 +310,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     runs.sort((a, b) => a.firedAt.localeCompare(b.firedAt));
     // The runs in progress now, so a view opened mid-run shows them; later changes arrive as running events.
     const running = routinesScheduler?.runningNow() ?? [];
-    return { ok: true, occurrences: listRoutineOccurrences(routines, { from, to, now: Date.now() }), runs, running };
+    return { ok: true, occurrences: listRoutineOccurrences(routines.filter(routine => !routine.dismissedAt), { from, to, now: Date.now() }), runs, running };
   });
 
 }

@@ -87,6 +87,19 @@ export class WorkflowTemplateStore {
     return structuredClone((await this.readFile()).templates.filter(r => !r.template.archivedAt).map(r => r.template));
   }
   async get(id: string): Promise<WorkflowTemplateRecord> { return structuredClone(this.find(await this.readFile(), id)); }
+  /** Read the template, its versions and the referenced attachment together after preceding writes. */
+  async readScheduleRunAuthority(templateId: string, attachmentId: string): Promise<{
+    record: WorkflowTemplateRecord | null;
+    attachment: ScheduleAttachment | null;
+  }> {
+    requireTemplate(isTemplateId(templateId) && isTemplateId(attachmentId));
+    return withInProcessFileQueue(this.filePath, async () => {
+      const { templates } = await this.readFile();
+      const record = templates.find(entry => entry.template.id === templateId) ?? null;
+      const attachment = templates.flatMap(entry => entry.scheduleAttachments ?? []).find(entry => entry.id === attachmentId) ?? null;
+      return { record, attachment };
+    });
+  }
   async getTemplate(id: string): Promise<WorkflowTemplate | null> {
     requireTemplate(isTemplateId(id));
     return structuredClone((await this.readFile()).templates.find(record => record.template.id === id)?.template ?? null);
@@ -212,6 +225,15 @@ export class WorkflowTemplateStore {
   async listByRoutine(scheduleId: string): Promise<ScheduleAttachment[]> {
     requireTemplate(isTemplateId(scheduleId));
     return structuredClone((await this.readFile()).templates.flatMap(r => r.scheduleAttachments ?? []).filter(a => a.scheduleId === scheduleId));
+  }
+  async listActiveScheduleAttachments(): Promise<Map<string, { attachment: ScheduleAttachment; template: WorkflowTemplate }>> {
+    const bySchedule = new Map<string, { attachment: ScheduleAttachment; template: WorkflowTemplate }>();
+    for (const { template, scheduleAttachments } of (await this.readFile()).templates) {
+      for (const attachment of scheduleAttachments ?? []) {
+        if (attachment.detachedAt === undefined) bySchedule.set(attachment.scheduleId, { attachment, template });
+      }
+    }
+    return bySchedule;
   }
   async detachSchedule(id: string, proof: HostDecisionProof): Promise<boolean> {
     requireTemplate(isTemplateId(id)); assertHostDecisionProof(proof);

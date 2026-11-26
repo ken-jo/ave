@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { isAbsolute, relative } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { WebContents } from "electron";
 import { hasUnsafeDirectiveControlChars } from "../../engine/parent-directive.js";
 import { exactToolScope, PARENT_ALL_TOOL_SCOPE, type SubAgentRunner, type SubAgentSpawnResult } from "../../engine/subagent-runner.js";
@@ -74,7 +75,7 @@ export interface StageRunEngineDeps {
   /** The authorised registry root of a project path, or null when the registry does not hold it. */
   resolveProjectRoot: (projectRoot: string) => string | null;
   templates: Pick<WorkflowTemplateStore, "get" | "resolveVersion">;
-  attachments: Pick<WorkflowTemplateStore, "getAttachment" | "listByTemplate" | "listByRoutine">;
+  attachments: Pick<WorkflowTemplateStore, "getAttachment" | "listByTemplate" | "listByRoutine" | "readScheduleRunAuthority">;
   getRunner: () => SubAgentRunner | undefined;
   getAgentProfile?: (name: string) => Promise<LoadedAgentProfile | null>;
   emit: (e: Omit<WorkBoardRunEvent, "at">) => void;
@@ -345,14 +346,33 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   async function verdictFor(phase: "start" | "spawn", projectRoot: string | undefined, source: RunAuthoritySource, pin: RunPin): Promise<RunAuthorityVerdict> {
-    let template = null;
-    let stored = null;
-    let storedHashMatches = true;
+    let record = null;
     try {
-      template = (await templates.get(pin.templateId)).template;
+      record = await templates.get(pin.templateId);
     } catch (error) {
       if (!(error instanceof WorkflowTemplateError) || error.code !== "template-not-found") throw error;
     }
+    if (source.kind === "schedule-attachment") {
+      const latest = await deps.attachments.readScheduleRunAuthority(pin.templateId, source.attachmentId);
+      const stored = latest.record?.versions.find(version => version.version === pin.version) ?? null;
+      const previousHash = record?.versions.find(version => version.version === pin.version)?.graphHash;
+      const previousAttachment = record?.scheduleAttachments?.find(entry => entry.id === source.attachmentId);
+      // The checked tuple and approval must have stayed current through the read. A wrong-template attachment
+      // can never authorize this pin and is left to the usual pin-mismatch check.
+      if (!isDeepStrictEqual(record?.template, latest.record?.template)
+        || record?.draft?.revision !== latest.record?.draft?.revision
+        || previousHash !== stored?.graphHash
+        || !isDeepStrictEqual(previousAttachment, latest.attachment?.templateId === pin.templateId ? latest.attachment : undefined)) {
+        return { ok: false, code: "scope-changed" };
+      }
+      return deps.authoriseRunSource({
+        phase, source, runPin: pin, template: latest.record?.template ?? null, stored,
+        storedHashMatches: stored === null || stored.graphHash === pin.graphHash,
+        attachment: latest.attachment, runProjectRoot: projectRoot, scopeAuthorised: deps.scopeAuthorised, unattendedAllowed,
+      });
+    }
+    let stored = null;
+    let storedHashMatches = true;
     try {
       stored = await templates.resolveVersion(pin);
     } catch (error) {
@@ -360,9 +380,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (fault === null) throw error;
       storedHashMatches = fault !== "graph-mismatch";
     }
-    const attachment = source.kind === "schedule-attachment" ? await deps.attachments.getAttachment(source.attachmentId) : null;
     return deps.authoriseRunSource({
-      phase, source, runPin: pin, template, stored, storedHashMatches, attachment, runProjectRoot: projectRoot,
+      phase, source, runPin: pin, template: record?.template ?? null, stored, storedHashMatches, attachment: null, runProjectRoot: projectRoot,
       scopeAuthorised: deps.scopeAuthorised, unattendedAllowed,
     });
   }

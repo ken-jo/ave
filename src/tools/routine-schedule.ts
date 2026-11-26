@@ -213,7 +213,9 @@ export function createRoutineScheduleTool(store: RoutinesStore, deps: RoutineSch
         // Only an item connected to this chat; every other item is the user's to change.
         const record = store.list().find((r) => r.id === a.routineId);
         if (record?.execution === "template-run") {
-          return errorResult(t(action === "remove" ? "reasonCodes.detach-template-schedule-first" : "reasonCodes.template-schedule-local-approval"));
+          if (action === "update") return errorResult(t("reasonCodes.template-schedule-local-approval"));
+          const attachment = await store.getActiveTemplateAttachment(record.id);
+          return errorResult(t(attachment ? "reasonCodes.detach-template-schedule-first" : "be_routineSchedule.orphanTemplateRemove"));
         }
         if (!chat || !record || record.targetSessionId !== chat) {
           return errorResult(`routine_schedule can ${action} only a schedule item connected to this chat`);

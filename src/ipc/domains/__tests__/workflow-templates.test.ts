@@ -18,6 +18,7 @@ import { validateHostRendererSender } from "../../gated.js";
 import { ChangeSignal } from "../../../lib/change-signal.js";
 import { runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
 import type { IpcDeps } from "../../types.js";
+import type { TemplateScope } from "../../../shared/workflow-template-types.js";
 type Handler = (...args: unknown[]) => Promise<unknown>;
 const h = vi.hoisted(() => new Map<string, Handler>());
 function handler(channel: string): Handler {
@@ -424,7 +425,7 @@ async function withScheduleApproval(body: (f: {
   event: ReturnType<typeof setup>["event"];
   templates: WorkflowTemplateStore;
   routines: RoutinesStore;
-  confirm: (id?: string, toolScope?: "all" | "read") => ReturnType<WorkflowTemplateStore["confirmDraft"]>;
+  confirm: (id?: string, toolScope?: "all" | "read", scope?: TemplateScope) => ReturnType<WorkflowTemplateStore["confirmDraft"]>;
 }) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), "template-approval-"));
   try {
@@ -432,8 +433,8 @@ async function withScheduleApproval(body: (f: {
     const routines = new RoutinesStore(join(dir, "routines.json"));
     routines.bindTemplateAttachments(templates);
     const { event } = setup({ workflowTemplateStore: templates, routinesStore: routines });
-    const confirm = async (id?: string, toolScope: "all" | "read" = "read") => {
-      const { template, draft } = await templates.draft(id ?? null, { ...graph, scope: allScope, stages: [{ ...graph.stages[0], toolScope, gate: { type: "human" } }] });
+    const confirm = async (id?: string, toolScope: "all" | "read" = "read", scope: TemplateScope = allScope) => {
+      const { template, draft } = await templates.draft(id ?? null, { ...graph, scope, stages: [{ ...graph.stages[0], toolScope, gate: { type: "human" } }] });
       if (!draft) throw new Error("Draft was not saved");
       return templates.confirmDraft(template.id, { expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision }, { who: "user", origin: "local-desktop" });
     };
@@ -500,4 +501,38 @@ it("when the attachment write fails the handler deletes only the routine it crea
   expect(await handler(WORK_BOARD.templateAttachSchedule)(f.event, { ...pin, scheduleId: existing.id }, gesture)).toEqual({ ok: false, error: "graph-hash-mismatch" });
   expect(f.routines.list()).toEqual([existing]);
   expect(await f.templates.listByRoutine(existing.id)).toEqual([attachment]);
+}));
+
+it("reattaching from project A to B moves the schedule and calendar entry and project B can detach it", () => withScheduleApproval(async f => {
+  const { resolveAuthorizedWorkspaceProject } = await import("../../../main/project-root-authorization.js");
+  const scopeA = { kind: "project", projectRoot: "/projects/a" } as const;
+  const scopeB = { kind: "project", projectRoot: "/projects/b" } as const;
+  const authoriseProject = (projectRoot: string) => vi.mocked(resolveAuthorizedWorkspaceProject).mockReturnValueOnce({
+    authorized: true, project: { projectRoot, projectName: projectRoot, isDefault: false },
+  });
+  const versionA = await f.confirm(undefined, "read", scopeA);
+  const request = { ...newScheduleRequest(versionA), expectedScope: scopeA };
+  authoriseProject(scopeA.projectRoot);
+  expect(await handler(WORK_BOARD.templateAttachSchedule)(f.event, request, gesture)).toMatchObject({ ok: true });
+  const [routine] = f.routines.list();
+  const versionB = await f.confirm(versionA.templateId, "read", scopeB);
+  authoriseProject(scopeB.projectRoot);
+  expect(await handler(WORK_BOARD.templateAttachSchedule)(f.event, {
+    templateId: versionB.templateId, version: versionB.version, graphHash: versionB.graphHash, expectedScope: scopeB, scheduleId: routine.id,
+  }, gesture)).toMatchObject({ ok: true });
+  const time = Date.parse(request.schedule.at);
+  const range = { from: new Date(time - 60_000).toISOString(), to: new Date(time + 60_000).toISOString() };
+  const schedulePanel = (projectRoot: string) => handler(ROUTINES.list)(f.event, { projectRoot });
+  const calendarPanel = (projectRoot: string) => handler(ROUTINES.listOccurrences)(f.event, { ...range, projectRoot });
+  const active = (await f.templates.listByRoutine(routine.id)).find(attachment => attachment.detachedAt === undefined);
+  if (!active) throw new Error("Replacement attachment missing");
+  const panels = await Promise.all([schedulePanel(scopeA.projectRoot), calendarPanel(scopeA.projectRoot), schedulePanel(scopeB.projectRoot), calendarPanel(scopeB.projectRoot)]);
+  expect(panels).toMatchObject([
+    { routines: [] }, { ok: true, occurrences: [] },
+    { routines: [{ id: routine.id, projectRoot: scopeB.projectRoot, attachmentId: active.id }] },
+    { ok: true, occurrences: [{ routineId: routine.id }] },
+  ]);
+  expect(await handler(WORK_BOARD.templateDetachSchedule)(f.event, active.id, gesture)).toEqual({ ok: true, value: true });
+  expect(await schedulePanel(scopeB.projectRoot)).toMatchObject({ routines: [] });
+  expect(await calendarPanel(scopeB.projectRoot)).toMatchObject({ ok: true, occurrences: [] });
 }));

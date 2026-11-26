@@ -102,6 +102,18 @@ it("a template-run routine with no active attachment is removed by the ordinary 
   expect(f.store.list()).toEqual([]);
 }));
 
+it("the routine tool directs an orphan schedule to desktop removal", () => fixture(async f => {
+  const routine = await f.add();
+  const removeRoutine = vi.fn((id: string) => f.store.remove(id));
+  const tool = createRoutineScheduleTool(f.store, { projectRootForSession: () => owner.projectRoot, chatForSession: () => "session", removeRoutine });
+  const context = { metadata: { sessionId: "session" } } as Parameters<typeof tool.execute>[1];
+  const denied = await tool.execute({ action: "remove", routineId: routine.id }, context);
+  expect(denied.isError).toBe(true);
+  expect(JSON.parse(denied.output)).toEqual({ error: t("be_routineSchedule.orphanTemplateRemove") });
+  expect(removeRoutine).not.toHaveBeenCalled();
+  expect(f.store.list().map(record => record.id)).toEqual([routine.id]);
+}));
+
 it("a fire starts the attachment's version while a newer one is current", () => fixture(async f => {
   const routine = await f.add(pastIso());
   const v1 = await f.h.confirm([autoStageOf("first")]);
@@ -273,3 +285,35 @@ it.each(["unattended-not-read-only", "tool-effect-unknown"] as const)("Q6 rechec
     expect(f.h.interrupts).toEqual([]);
   }, { workflow: { unattendedAllowed: () => available ? { ok: true } : code === "tool-effect-unknown" ? { ok: false, code, tool } : { ok: false, code } } });
 });
+
+it("a confirmation during the final spawn check refuses the old scope without linking another child", () => fixture(async f => {
+  const routine = await f.add();
+  const scopeA = project("/project/a");
+  const v1 = await f.h.confirm([stageOf("first"), autoStageOf("second", { inputs: ["first"] })], { scope: scopeA });
+  await f.attach(routine.id, v1, scopeA);
+  const dispatched = await f.dispatch(routine.id);
+  (await f.h.untilLive(1))[0].finish();
+  await dispatched.result;
+  const [row] = await f.rows();
+  const read = f.h.templates.get.bind(f.h.templates);
+  const confirmDuringCheck = vi.fn(async () => {
+    await f.h.confirm([autoStageOf("replacement")], { id: v1.templateId, scope: project("/project/b") });
+  });
+  const get = vi.spyOn(f.h.templates, "get").mockImplementation(async id => {
+    const snapshot = await read(id);
+    const stage = await f.h.stageRun(row.id, "second");
+    if (stage.workspace && confirmDuringCheck.mock.calls.length === 0) await confirmDuringCheck();
+    return snapshot;
+  });
+  try {
+    expect(await f.h.decide(row.id, "first", "approve")).toMatchObject({ ok: true });
+    await f.h.waitForProgress(event => event.itemId === row.id &&
+      (event.phase === "cancelled" || (event.stageId === "second" && event.runSessionId !== undefined)), "second stage authority");
+    expect(confirmDuringCheck).toHaveBeenCalledOnce();
+    expect(f.h.children).toHaveLength(1);
+    await f.h.until(row.id, item => item.runStatus === "cancelled");
+    expect(f.h.audits.at(-1)).toMatchObject({ code: "scope-changed" });
+  } finally {
+    get.mockRestore();
+  }
+}));

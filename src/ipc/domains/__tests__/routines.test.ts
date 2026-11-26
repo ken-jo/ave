@@ -24,26 +24,23 @@ function makeDeps(
   sessions: Array<{ id: string; modifiedAt?: Date; sessionKind?: string; routineId?: string; routineTitle?: string; routineFiredAt?: string; title?: string; preview: string }>,
   lastRoutineSessionId?: string,
 ) {
+  const list = vi.fn((_filter?: { projectRoot?: string }) => [
+    {
+      id: "routine-a",
+      trigger: "schedule",
+      execution: "llm-session",
+      title: "Routine A",
+      lastFiredAt: "2026-05-16T12:00:00.000Z",
+      lastResultAcknowledgedAt: "2026-05-15T12:00:00.000Z",
+      ...(lastRoutineSessionId ? { lastRoutineSessionId } : {}),
+    },
+  ]);
   return {
     routinesStore: {
-      list: vi.fn(() => [
-        {
-          id: "routine-a",
-          trigger: "schedule",
-          execution: "llm-session",
-          title: "Routine A",
-          lastFiredAt: "2026-05-16T12:00:00.000Z",
-          lastResultAcknowledgedAt: "2026-05-15T12:00:00.000Z",
-          ...(lastRoutineSessionId ? { lastRoutineSessionId } : {}),
-        },
-      ]),
+      list,
       listActive: vi.fn(() => []),
-      listScheduleDisplay: vi.fn(async () => ({
-        routines: [],
-        invalid: [{ id: "legacy", field: "scope.forcedPluginIds", value: "a_b", reason: "invalid-plugin-id" }],
-      })),
-      listForDisplay: vi.fn(() => ({
-        routines: [],
+      listScheduleDisplay: vi.fn(async (filter?: { projectRoot?: string }, options?: { includeDismissed: boolean }) => ({
+        routines: options?.includeDismissed ? list(filter) : [],
         invalid: [{ id: "legacy", field: "scope.forcedPluginIds", value: "a_b", reason: "invalid-plugin-id" }],
       })),
       update: vi.fn(),
@@ -288,12 +285,11 @@ describe("schedule panel IPC", () => {
         schedule: { at: "2026-11-05T00:00:00.000Z", repeat: { kind: "weekly" } }, lastFiredAt: "2026-11-03T00:00:00.000Z",
         lastFailure: { kind: "error", reason: "429", firedAt: "2026-11-03T00:00:00.000Z", at: "2026-11-03T00:01:00.000Z" },
       };
-    (deps.routinesStore.listForDisplay as ReturnType<typeof vi.fn>).mockReturnValue({ routines: [weekly], invalid: [] });
     (deps.routinesStore.list as ReturnType<typeof vi.fn>).mockReturnValue([weekly]);
     const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-04T02:20:00.000Z"));
     const result = await invoke(ROUTINES.listOccurrences, { projectRoot: "/p/a", from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" });
     now.mockRestore();
-    expect(deps.routinesStore.listForDisplay).toHaveBeenCalledWith({ projectRoot: "/p/a" });
+    expect(deps.routinesStore.listScheduleDisplay).toHaveBeenCalledWith({ projectRoot: "/p/a" }, { includeDismissed: true });
     expect(result).toEqual({
       ok: true,
       occurrences: [{ routineId: "routine-w", at: "2026-11-05T00:00:00.000Z", status: "scheduled" }],
@@ -322,7 +318,6 @@ describe("schedule panel IPC — review fixes", () => {
     const other = { ...done, id: "elsewhere", projectRoot: "/p/b" };
     (deps.routinesStore.list as ReturnType<typeof vi.fn>).mockImplementation((filter?: { projectRoot: string }) =>
       [done, other].filter((r) => !filter || r.projectRoot === filter.projectRoot));
-    (deps.routinesStore.listForDisplay as ReturnType<typeof vi.fn>).mockReturnValue({ routines: [], invalid: [] });
     const result = await invoke(ROUTINES.listOccurrences, { projectRoot: "/p/a", from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" });
     expect(result).toEqual({ ok: true, occurrences: [], runs: [{ routineId: "once", firedAt: "2026-11-03T00:00:00.000Z", status: "done" }], running: [] });
   });
@@ -409,8 +404,7 @@ describe("대화에 연결 IPC", () => {
   it("a connected item's runs open its chat", async () => {
     const deps = await setup([]);
     const store = deps.routinesStore as unknown as Record<string, ReturnType<typeof vi.fn>>;
-    store.list = vi.fn(() => [{ id: "routine-c", trigger: "schedule", execution: "llm-session", createdAt: "x", targetSessionId: CHAT, lastFiredAt: "2026-11-03T00:00:00.000Z" }]);
-    store.listForDisplay = vi.fn(() => ({ routines: [], invalid: [] }));
+    store.list.mockReturnValue([{ id: "routine-c", trigger: "schedule", execution: "llm-session", createdAt: "x", targetSessionId: CHAT, lastFiredAt: "2026-11-03T00:00:00.000Z" }]);
     const result = await invoke(ROUTINES.listOccurrences, { from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" });
     expect(result).toEqual({ ok: true, occurrences: [], runs: [{ routineId: "routine-c", firedAt: "2026-11-03T00:00:00.000Z", status: "done", sessionId: CHAT }], running: [] });
   });
