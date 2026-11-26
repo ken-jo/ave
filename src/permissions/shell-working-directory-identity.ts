@@ -85,8 +85,8 @@ export async function pinShellWorkingDirectory(identity: ShellWorkingDirectoryId
   const held = await holdWindowsDirectory(identity.realpath);
   if (held === undefined) return undefined;
   const { facts } = held;
-  if (!facts.directory || facts.volumeSerialNumber === null || facts.fileIndex === null ||
-    BigInt(facts.volumeSerialNumber) !== identity.dev || BigInt(facts.fileIndex) !== identity.ino) {
+  if (!facts.directory || facts.volumeSerial === null || facts.fileId === null ||
+    BigInt(facts.volumeSerial) !== identity.dev || BigInt(facts.fileId) !== identity.ino) {
     held.release();
     return undefined;
   }

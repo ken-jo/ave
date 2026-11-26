@@ -2,7 +2,7 @@
 vi.mock("../../shared/windows-path-facts.js", async original => {
   const { simulatedWindowsPathFacts } = await import("../../__tests__/support/simulated-win32-drive.js");
   const actual = await original<typeof import("../../shared/windows-path-facts.js")>();
-  return { ...await simulatedWindowsPathFacts(actual), holdWindowsDirectory: (await simulatedWindowsPathFacts(actual, "linux")).holdWindowsDirectory };
+  return simulatedWindowsPathFacts(actual, "linux");
 });
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
