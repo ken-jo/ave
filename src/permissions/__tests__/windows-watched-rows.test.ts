@@ -3,6 +3,30 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { t } from "../../i18n/index.js";
+
+// Every directory watch the module arms, with an injectable arm failure.
+const fsHook = vi.hoisted(() => ({
+  fail: undefined as ((path: string) => NodeJS.ErrnoException | undefined) | undefined,
+  handles: [] as { path: string; watcher: import("node:events").EventEmitter; closed: boolean }[],
+}));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const watch = (path: string, ...rest: unknown[]) => {
+    const failure = fsHook.fail?.(String(path));
+    if (failure !== undefined) throw failure;
+    const watcher = (actual.watch as (...args: unknown[]) => import("node:fs").FSWatcher)(path, ...rest);
+    const handle = { path: String(path), watcher, closed: false };
+    const close = watcher.close.bind(watcher);
+    watcher.close = () => { handle.closed = true; close(); };
+    fsHook.handles.push(handle);
+    return watcher;
+  };
+  return { ...actual, watch };
+});
+const live = () => fsHook.handles.filter(handle => !handle.closed).map(handle => handle.path);
+const emfile = () => Object.assign(new Error("EMFILE: too many open files, watch"), { code: "EMFILE" });
+
 import {
   isWatchedWorkspaceConsumable, listWatchedQuarantine, placeholderLeftovers, resetWatchedRows, restoreWatchedQuarantine,
   pruneWatchedRows, sweepWatchedRows, WATCHED_ROW_VIOLATION, watchAbsentProtectedRow, watchedProtectedRows, watchMxcProtectedRows,
@@ -25,6 +49,8 @@ describe("watched protected rows", () => {
   });
 
   afterEach(async () => {
+    fsHook.fail = undefined;
+    for (const handle of fsHook.handles.splice(0)) if (!handle.closed) (handle.watcher as import("node:fs").FSWatcher).close();
     vi.unstubAllEnvs();
     await cleanupTmpDir(container);
     resetWatchedRows();
@@ -89,6 +115,49 @@ describe("watched protected rows", () => {
     await expect(second()).resolves.toContain(WATCHED_ROW_VIOLATION);
     expect(listWatchedQuarantine()).toEqual([expect.objectContaining({ original: hooks, commandId: "second" })]);
     expect(watchedProtectedRows()).not.toContain(hooks);
+  });
+
+  it("arms a live watch on the anchor before the container starts, follows a created carrier, and closes both with the run", async () => {
+    const carrier = join(workspace, ".ave");
+    const hooks = join(carrier, "hooks");
+    const sweep = watchMxcProtectedRows([hooks], { commandId: "armed" });
+    expect(live()).toEqual([workspace]);
+    mkdirSync(hooks, { recursive: true });
+    await vi.waitFor(() => expect(live()).toEqual([workspace, carrier]));
+    await expect(sweep()).resolves.toContain(WATCHED_ROW_VIOLATION);
+    expect(live()).toEqual([]);
+  });
+
+  it("refuses the grant, naming the protected path, and releases every partial registration when a watch cannot be armed", () => {
+    const other = join(container, "other");
+    mkdirSync(other);
+    const first = join(workspace, ".ave", "commands");
+    const second = join(other, ".ave", "hooks");
+    fsHook.fail = path => path === other ? emfile() : undefined;
+    expect(() => watchMxcProtectedRows([first, second], { commandId: "unarmed" }))
+      .toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: second }));
+    expect(live()).toEqual([]);
+    expect(watchedProtectedRows()).not.toEqual(expect.arrayContaining([first]));
+    expect(watchedProtectedRows()).not.toEqual(expect.arrayContaining([second]));
+  });
+
+  it("refuses the grant when the carrier appeared after ranking", () => {
+    const hooks = join(workspace, ".ave", "hooks");
+    mkdirSync(join(workspace, ".ave"));
+    expect(() => watchMxcProtectedRows([hooks], { commandId: "late-carrier" }))
+      .toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: hooks }));
+    expect(live()).toEqual([]);
+    expect(watchedProtectedRows()).not.toContain(hooks);
+  });
+
+  it("refuses host consumers of the workspace until the sweep once a live watch fails", async () => {
+    const hooks = join(workspace, ".ave", "hooks");
+    const sweep = watchMxcProtectedRows([hooks], { commandId: "lost" });
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(true);
+    fsHook.handles[0]?.watcher.emit("error", Object.assign(new Error("EPERM"), { code: "EPERM" }));
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
+    await sweep();
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(true);
   });
 
   it("refuses to move a protected child through a replacement carrier link", async () => {

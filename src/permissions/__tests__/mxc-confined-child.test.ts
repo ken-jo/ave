@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -13,6 +14,7 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { drainMxcHolderLifetimes } from "../mxc-holder-lifetime.js";
 import { planWindowsExtensionHolder } from "../mxc-extension-readiness.js";
 import { mxcPolicyModel } from "../../__tests__/support/mxc-policy-rows.js";
+import { t } from "../../i18n/index.js";
 
 const state = vi.hoisted(() => ({
   plan: { selectedBackend: "mxc", readiness: "ready" },
@@ -29,6 +31,8 @@ const state = vi.hoisted(() => ({
   // Stands for the issued-HOME identity check (its own suite runs it on real directories): the launch's HOME itself.
   issuedHome: vi.fn((cwd: string, home: string | undefined): boolean => cwd === home),
   homeInPlace: vi.fn((_home: string | undefined): void => undefined),
+  // Directory watches armed for a watched carrier child: a fake watcher, or a thrown arm failure.
+  watch: vi.fn(),
 }));
 vi.mock("../mxc-runtime-root.js", async (original) => ({
   ...await original<typeof import("../mxc-runtime-root.js")>(), requireMxcContainerStartRoot: () => state.startRoot(),
@@ -77,7 +81,7 @@ vi.mock("node:fs", async (original) => {
     return { isDirectory: () => directory, isFile: () => !directory, isSymbolicLink: () => false,
       size: 8n, mtimeNs: state.executableMtime, birthtimeNs: 1n };
   };
-  return { ...actual, existsSync: () => true, realpathSync, lstatSync };
+  return { ...actual, existsSync: () => true, realpathSync, lstatSync, watch: (...args: unknown[]) => state.watch(...args) };
 });
 
 vi.mock("../../shared/windows-path-facts.js", async original => {
@@ -163,6 +167,7 @@ beforeEach(() => {
   unregisterReleaseGate = registerMxcReleaseGateEvidence({ ownProxySucceeded: true, otherListenerRefused: true,
     directEgressRefused: true, forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true });
   state.close.mockResolvedValue(undefined);
+  state.watch.mockImplementation(() => Object.assign(new EventEmitter(), { close: vi.fn() }));
   state.lease.mockResolvedValue({ url: "http://127.0.0.1:43210", port: 43210, close: state.close });
   state.admit.mockReturnValue({ model: mxcPolicyModel({ allowRead: ["C:\\runtime", "C:\\Windows"], allowWrite: ["D:\\work"],
     denyRead: [], denyWrite: [], protectedFloor: [] }), assertStillValid: state.validate });
@@ -693,6 +698,31 @@ describe("co-holder nesting and executable identity", () => {
       return child;
     });
     await expect(spawnMxcConfinedChild(spec())).rejects.toThrow(/does not match/);
+  });
+
+  it("arms the missing carrier's watch before native creation, and refuses the start, naming the path, when it cannot be armed", async () => {
+    const children = ["D:\\work\\.ave\\commands", "D:\\work\\.ave\\hooks"];
+    state.missing.add("D:\\work\\.ave");
+    const admitWatched = () => state.admit.mockReturnValueOnce({ model: mxcPolicyModel({ allowRead: ["C:\\runtime", "C:\\Windows"],
+      allowWrite: ["D:\\work"], denyRead: [], denyWrite: children, requiredWriteDenies: children, protectedFloor: [] }), assertStillValid: state.validate });
+    admitWatched();
+    let armedAtSpawn: unknown[][] = [];
+    state.spawn.mockImplementationOnce(async (request, options) => {
+      armedAtSpawn = [...state.watch.mock.calls];
+      const child = { id: 47, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+        completion: new Promise(() => {}), startEvidence: started(request), dispose: vi.fn().mockResolvedValue(undefined) };
+      options.onOwned(child);
+      options.beforeSpawn();
+      return child;
+    });
+    const result = await spawnMxcConfinedChild(spec());
+    expect(armedAtSpawn.map(([path]) => path)).toEqual(["D:\\work"]);
+    await result.release();
+    state.spawn.mockClear();
+    admitWatched();
+    state.watch.mockImplementationOnce(() => { throw Object.assign(new Error("EMFILE: too many open files, watch"), { code: "EMFILE" }); });
+    await expect(spawnMxcConfinedChild(spec())).rejects.toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: children[0] }));
+    expect(state.spawn).not.toHaveBeenCalled();
   });
 
   it("binds ranked write grants, HOME and temp to the captured write roots and the staging layout", async () => {

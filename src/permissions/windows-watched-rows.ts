@@ -1,4 +1,4 @@
-import { type BigIntStats, lstatSync, readdirSync, readFileSync, rmdirSync, type Stats, writeFileSync } from "node:fs";
+import { type BigIntStats, type FSWatcher, lstatSync, readdirSync, readFileSync, rmdirSync, type Stats, watch as fsWatch, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
@@ -123,21 +123,94 @@ function watchProtectedRow(path: string, roots: readonly string[], exact: boolea
   }
 }
 
-/** Keep exact watches for one container until its process tree has exited. */
+// One container's live watch over the anchor of its missing carriers, and over each carrier once it appears.
+interface ContainerWatch {
+  readonly watchers: Map<string, FSWatcher>;
+  // A watcher failed during the run: host consumers of these rows stay refused until the run's sweep.
+  lost: boolean;
+}
+
+const containerWatches = new Map<symbol, { readonly rows: readonly string[]; readonly watch: ContainerWatch }>();
+
+function plainDirectory(path: string): BigIntStats | undefined {
+  const entry = entryAt(path, true);
+  return entry?.isDirectory() === true && !entry.isSymbolicLink() ? entry : undefined;
+}
+
+function armDirectoryWatch(watch: ContainerWatch, directory: string, onEntry: (name: string) => void): void {
+  if (watch.watchers.has(key(directory))) return;
+  const watcher = fsWatch(directory, { persistent: false }, (_event, name) => {
+    if (typeof name === "string") onEntry(name);
+  });
+  watcher.on("error", (error) => {
+    watch.lost = true;
+    log.warn(`Watch on ${JSON.stringify(directory)} failed: ${errorMessage(error)}`);
+  });
+  watch.watchers.set(key(directory), watcher);
+}
+
+/**
+ * Keep exact watches for one container until its process tree has exited. Each path is `<anchor>\.ave\<child>` with the carrier
+ * absent: the anchor is watched before this returns, and a carrier that appears is watched in turn. A watch that cannot be armed,
+ * or a carrier already present, refuses the grant naming the protected path.
+ */
 export function watchMxcProtectedRows(paths: readonly string[], context: WatchedSweepContext): () => Promise<string | undefined> {
   const holder = Symbol();
+  const watch: ContainerWatch = { watchers: new Map(), lost: false };
+  const close = (): void => {
+    containerWatches.delete(holder);
+    for (const watcher of watch.watchers.values()) {
+      try { watcher.close(); } catch { /* already closed */ }
+    }
+    watch.watchers.clear();
+  };
   const forget = (): void => {
+    close();
     for (const path of paths) {
       const id = key(path);
       const row = watched.get(id);
       if (row?.holders.delete(holder) && row.holders.size === 0 && row.roots.size === 0 && entryAt(path) === undefined) watched.delete(id);
     }
   };
-  try {
-    for (const path of paths) watchProtectedRow(path, [], true, holder);
-  } catch (error) {
+  const refused = (path: string, cause?: unknown): Error => {
     forget();
-    throw error;
+    return new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path }), cause === undefined ? undefined : { cause });
+  };
+  const rows = paths.map(path => {
+    const target = plain(path);
+    const carrier = dirname(target);
+    return { path, target, carrier, anchor: dirname(carrier) };
+  });
+  const anchors = new Map<string, { readonly path: string; readonly identity: FileIdentity }>();
+  for (const row of rows) {
+    const anchor = plainDirectory(row.anchor);
+    if (anchor === undefined || entryAt(row.carrier) !== undefined) throw refused(row.path);
+    anchors.set(key(row.anchor), { path: row.anchor, identity: { dev: anchor.dev, ino: anchor.ino } });
+    try { watchProtectedRow(row.target, [], true, holder); }
+    catch (error) { throw refused(row.path, error); }
+  }
+  containerWatches.set(holder, { rows: rows.map(row => row.target), watch });
+  const onCarrierEntry = (carrier: string) => (name: string): void => {
+    const created = rows.find(row => key(row.carrier) === key(carrier) && basename(row.target).toLowerCase() === name.toLowerCase());
+    if (created !== undefined && entryAt(created.target) !== undefined) log.warn(`Watched protected path was created: ${JSON.stringify(created.target)}`);
+  };
+  const onAnchorEntry = (anchor: string) => (name: string): void => {
+    const carrier = join(anchor, name);
+    if (!rows.some(row => key(row.carrier) === key(carrier)) || plainDirectory(carrier) === undefined) return;
+    try { armDirectoryWatch(watch, carrier, onCarrierEntry(carrier)); }
+    catch (error) {
+      watch.lost = true;
+      log.warn(`Watch on ${JSON.stringify(carrier)} could not be armed: ${errorMessage(error)}`);
+    }
+  };
+  for (const row of rows) {
+    try { armDirectoryWatch(watch, row.anchor, onAnchorEntry(row.anchor)); }
+    catch (error) { throw refused(row.path, error); }
+  }
+  // Armed, then verified: an anchor replaced or a carrier created since ranking is not covered by this launch's grants.
+  for (const row of rows) {
+    const anchor = anchors.get(key(row.anchor));
+    if (anchor === undefined || !sameIdentity(anchor.path, anchor.identity) || entryAt(row.carrier) !== undefined) throw refused(row.path);
   }
   return async () => {
     try { return await sweepWatchedRows(context, holder); }
@@ -167,6 +240,9 @@ export function isWatchedWorkspaceConsumable(workspace: string): boolean {
   for (const [id, entry] of failClosed) {
     if (entryAt(entry.path) === undefined) { failClosed.delete(id); continue; }
     if (entry.roots.some(root => overlaps(root, workspace)) || overlaps(entry.path, workspace)) return false;
+  }
+  for (const { rows, watch } of containerWatches.values()) {
+    if (watch.lost && rows.some(row => overlaps(dirname(dirname(row)), workspace))) return false;
   }
   return !createdRows().some(row => [...row.roots].some(root => overlaps(root, workspace)) || overlaps(row.path, workspace));
 }

@@ -3527,6 +3527,9 @@ in its directory.
   are exact. A missing parent for one of these rows refuses the covering
   write grant for the launch, except a missing project `.ave` carrier: its
   `commands` and `hooks` children are watched and quarantined after creation.
+  The watch is a live directory watch on the write root, and on the carrier
+  once it appears, armed before the container starts and closed with the run;
+  a watch that cannot be armed refuses the launch, naming the protected path.
   Literal denies apply throughout the command.
   Pattern denies are enumerated at launch; a file another process creates during a command's lifetime that first matches the pattern is not covered until the next command.
   In the six installed x64 runs observed on 2026-11-11, node opens of the Ave
