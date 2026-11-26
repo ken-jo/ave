@@ -5,6 +5,8 @@ import { __resetManagedChildProcessesForTest, forceKillAndDrainManagedChildProce
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { ToolExecutionContext } from "../base.js";
 import { backgroundShellManager as manager, createBashOutputTool, MAX_OUTPUT_CHARS } from "../shell-tools.js";
+import { t } from "../../i18n/index.js";
+import type { WindowsHoldOutcome } from "../../shared/windows-path-facts.js";
 
 function register(killProcessGroup = false) {
   const child = new EventEmitter() as ChildProcess;
@@ -230,5 +232,29 @@ describe("background completion waiting", () => {
         waitMs: { minimum: 0, maximum: 30_000, default: 0 },
       },
     });
+  });
+});
+
+describe("background cwd pin outcome", () => {
+  function pinned(pin: () => Promise<WindowsHoldOutcome | undefined>) {
+    const child = new EventEmitter() as ChildProcess;
+    Object.assign(child, { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn(() => true), exitCode: null });
+    const shellId = manager.register({ child, sessionId: "owner", command: "work", startedAt: "t", cwdPin: pin });
+    return { child, shellId };
+  }
+  it("fails a background run whose pin was lost even when it exited 0", async () => {
+    const f = pinned(async () => ({ kind: "lost" }));
+    f.child.emit("close", 0);
+    await vi.waitFor(() => expect(manager.read("owner", f.shellId)).toMatchObject({ status: "failed", output: expect.stringContaining(t("shellExecution.cwdPinLost")) }));
+  });
+  it("names the background processes the pin stopped", async () => {
+    const f = pinned(async () => ({ kind: "reaped", stopped: true }));
+    f.child.emit("close", 0);
+    await vi.waitFor(() => expect(manager.read("owner", f.shellId)).toMatchObject({ status: "exited", output: expect.stringContaining(t("shellExecution.cwdPinStoppedBackground")) }));
+  });
+  it("treats a rejected pin outcome as lost", async () => {
+    const f = pinned(async () => { throw new Error("helper gone"); });
+    f.child.emit("close", 0);
+    await vi.waitFor(() => expect(manager.read("owner", f.shellId)?.status).toBe("failed"));
   });
 });
