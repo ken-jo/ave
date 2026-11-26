@@ -60,6 +60,19 @@ describe("POSIX container filesystem ranking", () => {
       .toEqual({ readwrite: [], readonly: ["/work/secret/allowed/leaf"], denied: [] });
   });
 
+  it("does not keep write access beneath a read-only floor pierce", () => {
+    const policy = model([deny("/sealed", "secrets")], write("/sealed/history"), pierce("/sealed/history"));
+    expect(rankPosixContainerRows(policy, "seatbelt", lookups))
+      .toEqual({ readwrite: [], readonly: ["/sealed/history"], denied: [] });
+  });
+
+  it("keeps a precisely pierced floor read-only under a wider write grant", () => {
+    const policy = model([deny("/work/sealed", "secrets")],
+      write("/work"), read("/work/sealed"), pierce("/work/sealed"));
+    expect(rankPosixContainerRows(policy, "seatbelt", lookups))
+      .toEqual({ readwrite: ["/work"], readonly: ["/work/sealed"], denied: [] });
+  });
+
   it("allows a pierce and a wider grant when the pierce names the secret floor exactly", () => {
     const policy = model([deny("/work/secret", "secrets")], read("/work"), read("/work/secret"), pierce("/work/secret"));
     expect(rankPosixContainerRows(policy, "seatbelt", lookups).denied).toEqual([]);

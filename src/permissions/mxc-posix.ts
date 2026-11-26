@@ -90,14 +90,16 @@ function rankRows(model: PolicyModel, nestedRule: NestedGrantRule, lookups: Posi
     ...rows.readDenies, ...rows.protectedFloor.filter((floor) => !pierces.has(key(floor))), ...rows.userDenies,
   ]);
   const readDenyKeys = new Set(readDenies.map(key));
-  const grantSurvives = (path: string) => !readDenyKeys.has(key(path))
+  const readSurvives = (path: string) => !readDenyKeys.has(key(path))
     && !coveredBy(path, rows.userDenies)
     && (!coveredBy(path, rows.protectedFloor) || coveredBy(path, rows.floorPierces))
     && lookups.exists(path);
-  const writable = dedupe(rows.writeGrants).filter(grantSurvives);
-  const readwrite = writable.filter((path) => !coveredBy(path, rows.writeFloor));
+  const writeFloorRows = [...rows.writeFloor, ...rows.protectedFloor];
+  const writeSurvives = (path: string) => !coveredBy(path, writeFloorRows);
+  const writable = dedupe(rows.writeGrants).filter(readSurvives);
+  const readwrite = writable.filter(writeSurvives);
   const requestedReadonly = [
-    ...dedupe(rows.readGrants).filter(grantSurvives), ...writable.filter((path) => coveredBy(path, rows.writeFloor)),
+    ...dedupe(rows.readGrants).filter(readSurvives), ...writable.filter((path) => !writeSurvives(path)),
   ];
   const requestedGrants = [...readwrite, ...requestedReadonly];
   const reachedDenies = readDenies.filter((deny) => requestedGrants.some((grant) => strictlyCovers(grant, deny)));
@@ -112,14 +114,14 @@ function rankRows(model: PolicyModel, nestedRule: NestedGrantRule, lookups: Posi
     }
   }
 
-  const writeFloor = rows.writeFloor.filter((path) => readwrite.some((grant) => strictlyCovers(grant, path)));
+  const writeFloor = writeFloorRows.filter((path) => readwrite.some((grant) => strictlyCovers(grant, path)));
   const writableKeys = new Set(readwrite.map(key));
   const readonly = dedupe([
     ...requestedReadonly, ...writeFloor.filter((path) => !coveredBy(path, denied)),
   ]).filter((path) => !writableKeys.has(key(path)));
 
   const result = { readwrite, readonly, denied };
-  assertDenyOutcomes(readDenies, rows.writeFloor, result, lookups.foldsCase);
+  assertDenyOutcomes(readDenies, writeFloorRows, result, lookups.foldsCase);
   return result;
 }
 
