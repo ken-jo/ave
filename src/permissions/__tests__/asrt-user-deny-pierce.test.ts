@@ -162,7 +162,8 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
     };
     // The wrap fails after its read grants are composed, the last step before it is admitted.
     const model = vi.mocked(buildPolicyModel);
-    const actual = model.getMockImplementation()!;
+    const actual = model.getMockImplementation();
+    if (actual === undefined) throw new Error("The policy model has no implementation");
     model.mockImplementation(input => {
       if (input.launchGrants.some(row => row.access === "ro")) throw new Error("wrap refused late");
       return actual(input);
