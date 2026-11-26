@@ -226,6 +226,9 @@ beforeEach(() => {
   __resetActiveWrappedWorkersForTest();
   process.env.SystemRoot = "C:\\Windows";
   process.env.WINDIR = "C:\\Windows";
+  // The faked win32 helper spawn reads the host's state location, which a POSIX host does not have.
+  vi.stubEnv("LOCALAPPDATA", "C:\\Users\\alice\\AppData\\Local");
+  vi.stubEnv("ProgramData", "C:\\ProgramData");
   spawnMock.mockReset();
   wrapWorkerCommandMock.mockReset();
   cleanupMock.mockClear();
@@ -246,6 +249,7 @@ beforeEach(() => {
 afterEach(() => {
   __resetActiveWrappedWorkersForTest();
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   if (REAL_SYSTEM_ROOT === undefined) {
     delete process.env.SystemRoot;
   } else {
