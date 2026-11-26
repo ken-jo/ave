@@ -26,15 +26,17 @@ export function isUncPath(path: string): boolean {
   return /^[\\/]{2}[?.][\\/]unc[\\/]/i.test(win32.toNamespacedPath(path));
 }
 
-export function expandWindowsEnvRefs(path: string): string {
-  const home = os.homedir();
+export function expandWindowsEnvRefs(path: string, options?: {
+  home: string;
+  onReference: (replacement: string, offset: number, length: number) => void;
+}): string {
+  const home = options?.home ?? os.homedir();
   const drive = /^[A-Za-z]:/.test(home) ? home.slice(0, 2) : "";
-  return path.replace(/%(USERPROFILE|HOMEDRIVE|HOMEPATH)%/gi, (_token, name: string) => {
-    switch (name.toUpperCase()) {
-      case "USERPROFILE": return home;
-      case "HOMEDRIVE": return drive;
-      default: return home.slice(drive.length);
-    }
+  const references = { USERPROFILE: home, HOMEDRIVE: drive, HOMEPATH: home.slice(drive.length) };
+  return path.replace(/%(USERPROFILE|HOMEDRIVE|HOMEPATH)%/gi, (token, name: string, offset: number) => {
+    const replacement = references[name.toUpperCase() as keyof typeof references];
+    options?.onReference(replacement, offset, token.length);
+    return replacement;
   });
 }
 

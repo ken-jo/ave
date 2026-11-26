@@ -3,10 +3,10 @@ import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbo
 import { admittedWindowsEntry, expandWindowsFsPaths, type AdmittedWindowsEntry } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { win32 } from "node:path";
 import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
-import { assertWindowsGrantGrammar, expandWindowsGrantPath, pinWindowsGrantTargets } from "./windows-grant-targets.js";
+import { assertWindowsGrantGrammar, expandWindowsGrantPath, pinWindowsGrantTargets, windowsGrantBase, type ExpandedWindowsGrant } from "./windows-grant-targets.js";
 import { isPlainWindowsStampPath } from "../shared/windows-path-spelling.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets } from "../shared/ave-home-test-guard.js";
-import { containsGlobCharsWin, globPatternBaseDir, stripExtendedPathPrefix, toForwardSlashes } from "./sandbox-path-spelling.js";
+import { stripExtendedPathPrefix } from "./sandbox-path-spelling.js";
 
 const missingWindowsGrants = new WeakSet<object>();
 const admittedWindowsGrants = new WeakMap<object, AdmittedWindowsEntry>();
@@ -91,11 +91,10 @@ function assertPlainWindowsStampPath(path: string): void {
 }
 
 // Check the spelling before runtime expansion can replace a link path with its final target.
-function windowsStampPrefix(path: string): string {
-  const spelling = path.replace(/\//g, "\\").replace(/^[a-z]:/, drive => drive.toUpperCase());
+function windowsStampPrefix(grant: ExpandedWindowsGrant): string {
+  const spelling = typeof grant.entry === "string" ? grant.entry : grant.entry.path;
   if (!/^[A-Z]:\\/.test(spelling)) assertWindowsGrantGrammar(spelling);
-  const prefix = containsGlobCharsWin(spelling)
-    ? globPatternBaseDir(toForwardSlashes(spelling)).replace(/\//g, "\\").replace(/^([A-Za-z]:)$/, "$1\\") : spelling;
+  const prefix = windowsGrantBase(grant);
   // Other spellings still face the strict final grammar at pinning. Do not let normalization hide a dotted component.
   if (/[. ](?:\\|$)/.test(prefix)) assertPlainWindowsStampPath(prefix);
   assertWindowsGrantGrammar(prefix);
@@ -108,9 +107,9 @@ export function pinWindowsFilesystemConfig<T extends Partial<FilesystemConfig> |
   const prefixes: string[] = [];
   // Deny rows are conservative match expressions, not targets receiving allow ACEs.
   const grants = [filesystem.allowRead, filesystem.allowWrite].map(entries => (entries ?? []).map(entry => {
-    const expanded = expandWindowsGrantPath(typeof entry === "string" ? entry : entry.path);
+    const expanded = expandWindowsGrantPath(entry);
     prefixes.push(windowsStampPrefix(expanded));
-    return typeof entry === "string" ? expanded : { ...entry, path: expanded };
+    return expanded.entry;
   }));
   if (AVE_HOME_ISOLATION_GUARD_ACTIVE) checkSandboxStampTargets(prefixes);
   const prefixPins = pinWindowsGrantTargets(prefixes, { allowMissing: true, validatePath: assertPlainWindowsStampPath });

@@ -318,6 +318,23 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
 
   const homeRefs = ["%USERPROFILE%", "%HOMEDRIVE%%HOMEPATH%"];
 
+  describe.each(["[home]", "a*b", "a?b"])("Windows profile glob characters in %s", component => {
+    it.each(homeRefs)("refuses %s before pinning or enumeration", async homeRef => {
+      const profile = join(scratch(), "alice", component);
+      vi.stubEnv("USERPROFILE", profile);
+      vi.stubEnv("HOME", profile);
+      const facts = await import("../../shared/windows-path-facts.js");
+      const { buildSandboxConfig } = await import("../asrt-sandbox.js");
+      const pin = vi.spyOn(facts, "pinWindowsPaths");
+      const enumerate = vi.mocked(expandWindowsFsPaths).mockClear();
+
+      expect(() => buildSandboxConfig({ allowWrite: [`${homeRef}\\*`] }))
+        .toThrow(/filesystem-expansion-glob/);
+      expect(pin).not.toHaveBeenCalled();
+      expect(enumerate).not.toHaveBeenCalled();
+    });
+  });
+
   describe.each(["a$&b", "$1$$data"])("literal Windows home component %s", component => {
     let profile: string;
 

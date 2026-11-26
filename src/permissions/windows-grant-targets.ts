@@ -1,18 +1,54 @@
-import { expandTilde, stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import type { FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { homedir } from "node:os";
 import { win32 } from "node:path";
 import { routeLocality, withLocalityDecision } from "../shared/local-path-io.js";
 import { admitWindowsReparse, pinWindowsPaths, type WindowsPathFacts } from "../shared/windows-path-facts.js";
-import { containsGlobCharsWin, expandWindowsEnvRefs } from "./sandbox-path-spelling.js";
+import { containsGlobChars, containsGlobCharsWin, expandWindowsEnvRefs } from "./sandbox-path-spelling.js";
 
-export function expandWindowsGrantPath(path: string): string {
-  const envExpanded = expandWindowsEnvRefs(path);
-  const expanded = expandTilde(envExpanded);
+export interface ExpandedWindowsGrant {
+  readonly original: string;
+  readonly entry: FilesystemPathEntry;
+  readonly literalPrefixLength: number;
+  readonly patternTail: string | undefined;
+}
+
+export function expandWindowsGrantPath(entry: FilesystemPathEntry): ExpandedWindowsGrant {
+  const original = typeof entry === "string" ? entry : entry.path;
+  const home = homedir();
+  const tilde = original === "~" || /^~[\\/]/.test(original);
+  let prefixEnd = tilde ? 1 : 0;
+  let shift = tilde ? home.length - 1 : 0;
+  let hasGlobInExpansion = tilde && containsGlobChars(home);
+  const envExpanded = expandWindowsEnvRefs(original, {
+    home,
+    onReference(replacement, offset, length) {
+      prefixEnd = offset + length;
+      shift += replacement.length - length;
+      hasGlobInExpansion ||= containsGlobChars(replacement);
+    },
+  });
+  const expanded = tilde ? home + envExpanded.slice(1) : envExpanded;
   if (expanded.includes("%")) throw new Error("Windows filesystem grant is not a plain drive path: percent sign after expansion");
-  if ((envExpanded !== path || expanded !== envExpanded) && containsGlobCharsWin(homedir())) {
-    throw new Error(`filesystem-expansion-glob: expanded path cannot be represented literally: ${JSON.stringify(path)}`);
+  const isPattern = typeof entry === "string" && containsGlobCharsWin(original);
+  // The grant walk has no escape for a literal prefix inside a pattern.
+  if (hasGlobInExpansion || (isPattern && containsGlobChars(original.slice(0, prefixEnd)))) {
+    throw new Error(`filesystem-expansion-glob: expanded path cannot be represented literally: ${JSON.stringify(original)}`);
   }
-  return expanded;
+  const path = expanded.replace(/\//g, "\\").replace(/^[a-z]:/, drive => drive.toUpperCase());
+  return {
+    original,
+    entry: typeof entry === "string" ? path : { ...entry, path },
+    literalPrefixLength: prefixEnd + shift,
+    patternTail: isPattern ? original.slice(prefixEnd) : undefined,
+  };
+}
+
+export function windowsGrantBase({ entry, literalPrefixLength, patternTail }: ExpandedWindowsGrant): string {
+  const path = typeof entry === "string" ? entry : entry.path;
+  if (patternTail === undefined) return path;
+  const fixed = path.slice(0, literalPrefixLength + patternTail.search(/[*?[\]]/));
+  return fixed.endsWith("\\") ? fixed : win32.dirname(fixed);
 }
 
 export function assertWindowsGrantGrammar(path: string): void {
