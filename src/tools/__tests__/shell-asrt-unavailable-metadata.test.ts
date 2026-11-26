@@ -37,7 +37,7 @@ function expectPreSpawnFailuresToBeUnavailable(
   const implementation = sourceText.slice(start, end);
   const wrapFailure = implementation.slice(implementation.indexOf("} catch (err)"), implementation.indexOf("const [cmd, ...args]"));
   const emptyArgvFailure = implementation.slice(implementation.indexOf("if (cmd === undefined)"), implementation.indexOf("const childEnv"));
-  const spawnFailure = implementation.slice(implementation.indexOf('child.on("error"'));
+  const spawnFailure = implementation.slice(implementation.indexOf("onShellEnd(child"));
   for (const failure of [wrapFailure, emptyArgvFailure, spawnFailure]) {
     expect(metadataObjects(failure).some(isUnavailableMetadata)).toBe(true);
   }

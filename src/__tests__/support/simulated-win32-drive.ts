@@ -54,7 +54,15 @@ export async function simulatedWindowsPathFacts(actual: typeof PathFacts, native
   };
   return { ...actual,
     holdWindowsDirectory: async path => process.platform !== "win32"
-      ? actual.holdWindowsDirectory(path) : { facts: facts(path), launcherArgs: [], command: (executable, args) => ({ executable, args: [...args] }), admit() {}, outcome: async () => ({ kind: "reaped", stopped: false }), isHeld: () => true, release() {} },
+      ? actual.holdWindowsDirectory(path) : { facts: facts(path), launcherArgs: [], command: (executable, args) => ({ executable, args: [...args] }), stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
+          // No launcher runs here: the stand-in's verdict is the child's own end.
+          bind: child => {
+            const verdict = new Promise<{ kind: "ok"; stopped: boolean } | { kind: "unconfirmed" }>(resolve => {
+              child.once("close", () => resolve({ kind: "ok", stopped: false }));
+              child.once("error", () => resolve({ kind: "unconfirmed" }));
+            });
+            return { verdict, stop: () => { child.kill(); return verdict; } };
+          }, isHeld: () => true, release() {} },
     pinWindowsPaths: paths => process.platform !== "win32"
       ? actual.pinWindowsPaths(paths) : paths.map(facts),
     readWindowsDacls: (paths, options) => process.platform !== "win32"

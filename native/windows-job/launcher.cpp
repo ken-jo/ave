@@ -2,6 +2,7 @@
 #define _WIN32_WINNT 0x0A00
 #include <windows.h>
 #include <cstdio>
+#include <cstring>
 #include <cwchar>
 #include <cwctype>
 #include <vector>
@@ -72,51 +73,96 @@ static bool emptyJob(HANDLE job) {
         GetLastError() != WAIT_TIMEOUT) { fail("GetQueuedCompletionStatus"); return false; }
   }
 }
-// Hold pipe I/O is overlapped so a stalled or impostor helper cannot block the launcher past `timeout`.
-static bool holdIo(HANDLE pipe, bool write, void* buffer, DWORD size, DWORD timeout) {
-  OVERLAPPED overlapped{};
-  overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  if (!overlapped.hEvent) return false;
-  DWORD count = 0;
-  BOOL done = write ? WriteFile(pipe, buffer, size, nullptr, &overlapped) : ReadFile(pipe, buffer, size, nullptr, &overlapped);
-  if (!done && GetLastError() != ERROR_IO_PENDING) {
-    CloseHandle(overlapped.hEvent);
-    return false;
-  }
-  if (!done && WaitForSingleObject(overlapped.hEvent, timeout) != WAIT_OBJECT_0) {
-    CancelIoEx(pipe, &overlapped);
-    // An operation the system does not cancel ends the launcher; closing its job stops the command.
-    if (WaitForSingleObject(overlapped.hEvent, 1000) != WAIT_OBJECT_0) ExitProcess(125);
-    CloseHandle(overlapped.hEvent);
-    return false;
-  }
-  done = GetOverlappedResult(pipe, &overlapped, &count, FALSE);
-  CloseHandle(overlapped.hEvent);
-  return done && count == size;
+// Handles the host passed beyond the three standard ones, read from the startup block.
+static HANDLE inheritedHandle(size_t fd) {
+  STARTUPINFOW startup{};
+  GetStartupInfoW(&startup);
+  int count = 0;
+  if (!startup.lpReserved2 || startup.cbReserved2 < sizeof(count)) return INVALID_HANDLE_VALUE;
+  memcpy(&count, startup.lpReserved2, sizeof(count));
+  if (count <= 0 || fd >= static_cast<size_t>(count) || startup.cbReserved2 < sizeof(count) + count * (1 + sizeof(HANDLE))) return INVALID_HANDLE_VALUE;
+  HANDLE handle = INVALID_HANDLE_VALUE;
+  memcpy(&handle, startup.lpReserved2 + sizeof(count) + count + fd * sizeof(HANDLE), sizeof(handle));
+  return handle;
 }
-static int holdLost(const char* reason) {
-  std::fprintf(stderr, "Windows job launcher: cwd-pin-lost: %s\n", reason);
-  return 125;
+static bool holdTransfer(HANDLE channel, bool write, void* target, DWORD size) {
+  auto* cursor = static_cast<char*>(target);
+  while (size) {
+    DWORD count = 0;
+    if (!(write ? WriteFile(channel, cursor, size, &count, nullptr) : ReadFile(channel, cursor, size, &count, nullptr)) || !count) return false;
+    cursor += count;
+    size -= count;
+  }
+  return true;
+}
+// One frame to the hold helper and its 9-byte reply; returns the reply kind, 0 on failure.
+static char holdAsk(HANDLE channel, DWORD kind, DWORD value, ULONGLONG* answer = nullptr) {
+  struct { DWORD kind; DWORD value; } frame{kind, value};
+  char reply[9]{};
+  if (!holdTransfer(channel, true, &frame, sizeof(frame)) || !holdTransfer(channel, false, reply, sizeof(reply))) return 0;
+  if (answer) memcpy(answer, reply + 1, sizeof(*answer));
+  return reply[0];
+}
+// A held run ends here and nowhere else: one verdict record on the host's private handle, then the
+// exit. Ending this process closes its job, which stops the command's tree.
+static HANDLE verdictPipe = INVALID_HANDLE_VALUE;
+static volatile LONG ending = 0;
+[[noreturn]] static void endHeld(const char* record, DWORD code) {
+  if (InterlockedExchange(&ending, 1) != 0) Sleep(INFINITE);
+  DWORD written = 0;
+  WriteFile(verdictPipe, record, static_cast<DWORD>(strlen(record)), &written, nullptr);
+  TerminateProcess(GetCurrentProcess(), code);
+  Sleep(INFINITE);
+}
+// A phase that outlasts its deadline ends the run with that phase's verdict, whatever is stalled.
+struct Deadline { HANDLE met; DWORD milliseconds; const char* record; };
+static DWORD WINAPI enforceDeadline(void* context) {
+  auto* deadline = static_cast<Deadline*>(context);
+  if (WaitForSingleObject(deadline->met, deadline->milliseconds) == WAIT_TIMEOUT) endHeld(deadline->record, 125);
+  return 0;
+}
+static const char kLost[] = "AVJ1 lost\n";
+static const char kUnconfirmed[] = "AVJ1 unconfirmed\n";
+// Members still running when the root exits, other than console hosts the system attaches.
+static bool jobHasDescendants(HANDLE job, DWORD root) {
+  std::vector<unsigned char> buffer(sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + 1024 * sizeof(ULONG_PTR));
+  auto* list = reinterpret_cast<JOBOBJECT_BASIC_PROCESS_ID_LIST*>(buffer.data());
+  if (!QueryInformationJobObject(job, JobObjectBasicProcessIdList, list, static_cast<DWORD>(buffer.size()), nullptr)) return true;
+  for (DWORD index = 0; index < list->NumberOfProcessIdsInList; ++index) {
+    // The exited root can still be listed while the system retires it.
+    if (list->ProcessIdList[index] == root) continue;
+    HANDLE member = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(list->ProcessIdList[index]));
+    if (!member) return true;
+    wchar_t image[MAX_PATH + 1]{};
+    DWORD size = MAX_PATH;
+    const bool named = QueryFullProcessImageNameW(member, 0, image, &size) != FALSE;
+    CloseHandle(member);
+    const std::wstring path(image, size);
+    if (!named || path.size() < 12 || _wcsicmp(path.c_str() + path.size() - 12, L"\\conhost.exe") != 0) return true;
+  }
+  return false;
 }
 int wmain(int argc, wchar_t** argv) {
   // `--receipt <absolute path>` appends "0" to an existing registered receipt only
   // after the closed job is proven empty.
   const bool contained = argc >= 2 && wcscmp(argv[1], L"--receipt") == 0;
-  // `--hold-pipe <pipe> <helper pid>`: the command also joins the job owned by that working-directory
-  // hold helper while still suspended; it succeeds only once the helper reports that job empty and
-  // this launcher has proven its own job empty.
-  const bool held = argc >= 2 && wcscmp(argv[1], L"--hold-pipe") == 0;
-  const int first = contained ? 3 : held ? 4 : 1;
+  // `--hold`: the fourth standard handle reaches a working-directory hold helper and the fifth takes
+  // the verdict. This launcher joins the helper's kill-on-close job before it starts the command, so
+  // the helper's exit stops both. It alone decides the run: `AVJ1 ok <exit code> <stopped>` once its
+  // own job is proven empty and the helper confirms the held directory, `AVJ1 lost` (exit 125) when
+  // the hold was refused or the directory changed, `AVJ1 unconfirmed` (exit 125) otherwise.
+  const bool held = argc >= 2 && wcscmp(argv[1], L"--hold") == 0;
+  const int first = contained ? 3 : held ? 2 : 1;
   if (contained && (argc < 3 || !absolutePath(argv[2]))) {
     std::fprintf(stderr, "Windows job launcher requires an absolute receipt path\n");
     return 125;
   }
-  DWORD holder = 0;
+  HANDLE hold = INVALID_HANDLE_VALUE;
   if (held) {
-    wchar_t* end = nullptr;
-    holder = argc >= 4 ? wcstoul(argv[3], &end, 10) : 0;
-    if (holder == 0 || end == nullptr || *end != L'\0' || wcsncmp(argv[2], L"\\\\.\\pipe\\ave-hold-", 18) != 0) {
-      std::fprintf(stderr, "Windows job launcher requires a hold pipe and its helper process\n");
+    hold = inheritedHandle(3);
+    verdictPipe = inheritedHandle(4);
+    if (hold == INVALID_HANDLE_VALUE || verdictPipe == INVALID_HANDLE_VALUE) {
+      std::fprintf(stderr, "Windows job launcher requires the hold and verdict handles\n");
       return 125;
     }
   }
@@ -176,46 +222,48 @@ int wmain(int argc, wchar_t** argv) {
   startup.StartupInfo.hStdOutput = inherited[1];
   startup.StartupInfo.hStdError = inherited[2];
   startup.lpAttributeList = attributes;
+  if (held) {
+    // The helper opens the process named here and proves it is this one: only this process can signal
+    // the event the helper duplicates into it. 'A' follows once this process is in the helper's job.
+    Deadline admission{CreateEventW(nullptr, TRUE, FALSE, nullptr), 10000, kLost};
+    if (!admission.met || !CreateThread(nullptr, 0, enforceDeadline, &admission, 0, nullptr)) endHeld(kLost, 125);
+    ULONGLONG proof = 0;
+    const bool admitted = holdAsk(hold, 0x32485641, GetCurrentProcessId(), &proof) == 'C' &&
+                          SetEvent(reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(proof))) &&
+                          CloseHandle(reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(proof)));
+    char reply[9]{};
+    if (!admitted || !holdTransfer(hold, false, reply, sizeof(reply)) || reply[0] != 'A') {
+      std::fprintf(stderr, "Windows job launcher: the working directory hold is not available\n");
+      endHeld(kLost, 125);
+    }
+    SetEvent(admission.met);
+  }
   PROCESS_INFORMATION child{};
   // Assignment is atomic with creation, eliminating even an abandoned suspended
   // process if this launcher is terminated between creation and assignment.
   if (!CreateProcessW(argv[first], commandLine.data(), nullptr, nullptr, TRUE,
-                      EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | (held ? CREATE_SUSPENDED : 0),
-                      nullptr, nullptr, &startup.StartupInfo, &child)) return fail("CreateProcess in job");
+                      EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+                      nullptr, nullptr, &startup.StartupInfo, &child)) {
+    fail("CreateProcess in job");
+    if (held) endHeld(kUnconfirmed, 125);
+    return 125;
+  }
   DeleteProcThreadAttributeList(attributes);
   for (HANDLE handle : inherited) CloseHandle(handle);
-  HANDLE hold = INVALID_HANDLE_VALUE;
-  if (held) {
-    // The helper must be the process the host named, alive before and after the pipe opens; a pipe
-    // recreated under the same name by anyone else is refused.
-    HANDLE helper = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, holder);
-    hold = helper ? CreateFileW(argv[2], GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
-                                FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr) : INVALID_HANDLE_VALUE;
-    ULONG server = 0;
-    struct { DWORD magic; DWORD pid; } frame{0x31485641, child.dwProcessId};
-    char reply = 0;
-    const bool assigned = hold != INVALID_HANDLE_VALUE && GetNamedPipeServerProcessId(hold, &server) && server == holder &&
-                          WaitForSingleObject(helper, 0) == WAIT_TIMEOUT && holdIo(hold, true, &frame, sizeof(frame), 10000) &&
-                          holdIo(hold, false, &reply, 1, 10000) && reply == 'A';
-    if (helper) CloseHandle(helper);
-    if (!assigned || ResumeThread(child.hThread) == static_cast<DWORD>(-1)) {
-      TerminateProcess(child.hProcess, 125);
-      return holdLost("the working directory hold is not available");
-    }
-  }
   CloseHandle(child.hThread);
   // A NUL stdin has no owner to watch; a held command is then bound to the hold helper alone.
   const bool watched = !held || GetFileType(GetStdHandle(STD_INPUT_HANDLE)) == FILE_TYPE_PIPE;
   HANDLE owner = watched ? CreateThread(nullptr, 0, watchOwner, GetStdHandle(STD_INPUT_HANDLE), 0, nullptr) : nullptr;
-  if (watched && !owner) return fail("owner watcher");
+  if (watched && !owner) {
+    fail("owner watcher");
+    if (held) endHeld(kUnconfirmed, 125);
+    return 125;
+  }
   HANDLE waits[]{child.hProcess, owner};
   DWORD result = WaitForMultipleObjects(watched ? 2 : 1, waits, FALSE, INFINITE);
   DWORD code = 125;
-  char reaped = 0;
   if (result == WAIT_OBJECT_0) {
     if (!GetExitCodeProcess(child.hProcess, &code)) code = fail("GetExitCodeProcess");
-    // The helper stops its job and rechecks the held directory before 'R'.
-    if (held && !holdIo(hold, false, &reaped, 1, 15000)) reaped = 0;
   } else if (result == WAIT_OBJECT_0 + 1) {
     code = 130;
   } else {
@@ -228,19 +276,22 @@ int wmain(int argc, wchar_t** argv) {
     CloseHandle(receipt);
   }
   if (held) {
-    // Every started command ends with this launcher's job proven empty; the hold job is nested in it.
-    const bool empty = emptyJob(job);
-    if (result != WAIT_OBJECT_0 && !holdIo(hold, false, &reaped, 1, 15000)) reaped = 0;
-    char verdict = empty && reaped == 'R' ? 'K' : 'U';
-    holdIo(hold, true, &verdict, 1, 5000);
-    if (!empty) code = holdLost("the command's processes could not be confirmed stopped");
-    else if (result == WAIT_OBJECT_0 && reaped != 'R') code = holdLost("the working directory hold ended before the command finished");
+    // Teardown is bounded as a whole; a stalled helper or job query ends the run unconfirmed.
+    Deadline teardown{CreateEventW(nullptr, TRUE, FALSE, nullptr), 10000, kUnconfirmed};
+    if (!teardown.met || !CreateThread(nullptr, 0, enforceDeadline, &teardown, 0, nullptr)) endHeld(kUnconfirmed, 125);
+    const bool stopped = result == WAIT_OBJECT_0 && jobHasDescendants(job, child.dwProcessId);
+    // Every process the command started is in this job, so its emptiness is the whole reap.
+    if (result > WAIT_OBJECT_0 + 1 || !emptyJob(job)) endHeld(kUnconfirmed, 125);
+    const char pinned = holdAsk(hold, 0x51485641, 0);
+    if (pinned != 'P') endHeld(pinned == 'X' ? kLost : kUnconfirmed, 125);
+    char record[48];
+    std::snprintf(record, sizeof(record), "AVJ1 ok %lu %d\n", code, stopped ? 1 : 0);
+    endHeld(record, code);
   }
   // A completed root command must not leave descendants retaining its pipes.
   CloseHandle(job);
   CloseHandle(child.hProcess);
   if (owner) CloseHandle(owner);
-  if (hold != INVALID_HANDLE_VALUE) CloseHandle(hold);
   // ExitProcess also stops the blocking owner reader on normal command exit.
   ExitProcess(code);
 }

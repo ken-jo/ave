@@ -67,7 +67,7 @@ afterEach(async () => {
   spawnBoundary.helperArgs = undefined;
   spawnBoundary.helperExe = undefined;
   spawnBoundary.onHelper = undefined;
-  delete process.env.AVE_TEST_HOLD_EXIT_BEFORE_REAP;
+  delete process.env.AVE_TEST_HOLD_RECHECK;
   await cleanupTmpDir(directory);
 });
 
@@ -369,20 +369,21 @@ describe.runIf(process.platform === "win32")("Windows host cwd hold at launch", 
     // The OS stops the job: nothing on the host signals the command, and the result does not wait for the descendant.
     expect(Date.now() - started).toBeLessThan(3500);
     expect(spawnBoundary.commands.filter(command => /taskkill/iu.test(command))).toEqual([]);
+    // Only the launcher can say the run was reaped, and it went with the job.
     expect(result.isError).toBe(true);
-    expect(result.output).toContain("cwd-pin-lost");
+    expect(result.output).toContain("cwd-pin-unconfirmed");
     await new Promise(resolve => setTimeout(resolve, Math.max(0, 5500 - (Date.now() - started))));
     expect(existsSync(join(directory, "current", "marker"))).toBe(false);
     expect(existsSync(join(directory, "current", "late"))).toBe(false);
   }, 15000);
 
-  it("reports a short command as failed when the hold ends before its job is confirmed empty", async () => {
+  it("reports a short command as failed when its directory no longer stands at the end of the run", async () => {
     const fixture = join(process.cwd(), "resources", "windows-path-kind", process.arch, "ave-path-kind-hold-fixture.exe");
     if (!existsSync(fixture)) throw new Error("Build the hold fixture: bun run build:windows-job -- -Helper path-kind -HoldFixture");
     mkdirSync(join(directory, "current"));
     const { input, context } = await authorizedContext("current");
     spawnBoundary.helperExe = fixture;
-    process.env.AVE_TEST_HOLD_EXIT_BEFORE_REAP = "1";
+    process.env.AVE_TEST_HOLD_RECHECK = "lost";
     const result = await new BashTool().execute(input, context);
     expect(existsSync(join(directory, "current", "marker"))).toBe(true);
     expect(result.isError).toBe(true);

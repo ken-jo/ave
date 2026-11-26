@@ -2,8 +2,7 @@
 import type { ChildProcess } from "node:child_process";
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
-import type { WindowsHoldOutcome } from "../shared/windows-path-facts.js";
-import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import type { HeldWindowsDirectory, HeldWindowsRun } from "../shared/windows-path-facts.js";
 import { captureShellWorkingDirectoryIdentity, holdShellWorkingDirectory, matchesShellWorkingDirectoryIdentity, pinShellWorkingDirectory, sameShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
 import {
   parseHostShellExecutionInput,
@@ -288,49 +287,45 @@ function isHostShellSpawnDirectoryCurrent(record: PermitRecord): boolean {
 export interface HostShellSpawnDirectoryHold {
   /** Throws HostShellDirectoryHoldError once the directory is no longer held. */
   assertHeld(): void;
-  /** The program and arguments that start `executable` inside the hold's job. */
+  /** The program and arguments that start the given executable inside the hold's job. */
   command(executable: string, args: readonly string[]): { executable: string; args: string[] };
-  /** Arguments that put a job launcher's command in the hold's job. */
+  /** Arguments that make a job launcher join the hold's job. */
   readonly launcherArgs: readonly string[];
-  /** Keep the hold until this child closes; only this child may put its command in the hold's job. */
-  bind(child: ChildProcess): void;
-  /** Settles after the bound child closes: the helper's report, "unconfirmed" when it does not report in time, undefined without a hold. */
-  outcome(): Promise<WindowsHoldOutcome | undefined>;
+  /** The standard handles a held launch needs; undefined without a hold. */
+  readonly stdio: HeldWindowsDirectory["stdio"] | undefined;
+  /** Keep the hold for this started launcher and return its run; undefined without a hold. */
+  bind(child: ChildProcess): HeldWindowsRun | undefined;
   /** Release now unless a child was bound. */
   dispose(): void;
 }
 
 const NO_DIRECTORY_HOLD: HostShellSpawnDirectoryHold = Object.freeze({
   assertHeld() {}, command: (executable: string, args: readonly string[]) => ({ executable, args: [...args] }),
-  launcherArgs: [], bind() {}, outcome: async () => undefined, dispose() {},
+  launcherArgs: [], stdio: undefined, bind: () => undefined, dispose() {},
 });
 
 /** Windows children open their cwd by path, so a permit-bearing Bash or PowerShell launch holds the approved directory chain
- * against rename and delete from before its final check until the child closes. The hold helper owns the only handle to a
- * kill-on-close job; the command starts suspended through the job launcher and runs only once it is in that job, so a
- * helper that is gone refuses the launch and a helper that exits stops the whole tree. Only the bound launcher may
- * admit its command. `outcome` is the helper's own report, so a lost or unconfirmed hold fails the run whatever the exit code.
- * Acquisition failure, an identity mismatch or an observed loss refuses before spawn. Nothing is proven inside the
- * child, and a held leaf whose contents can be removed can still become a junction in place. */
+ * against rename and delete from before its final check until the run's verdict. The hold helper owns the only handle to a
+ * kill-on-close job; the job launcher joins that job before it starts the command, so a helper that is gone refuses the
+ * launch and a helper that exits stops the whole tree. The launcher alone decides the run (see HeldWindowsRun): its record
+ * is the verdict, and every path without one is unconfirmed. Acquisition failure, an identity mismatch or an observed loss
+ * refuses before spawn. Nothing is proven inside the child, and a held leaf whose contents can be removed can still become
+ * a junction in place. */
 export async function holdHostShellSpawnDirectory(authorization: HostShellSpawnAuthorization | undefined): Promise<HostShellSpawnDirectoryHold> {
   if (authorization === undefined || process.platform !== "win32") return NO_DIRECTORY_HOLD;
   const held = await pinShellWorkingDirectory(authorization.cwdIdentity);
   if (held === undefined) throw new HostShellDirectoryHoldError();
-  let bound: Promise<WindowsHoldOutcome> | undefined;
+  let bound = false;
   return {
     assertHeld() { if (!held.isHeld()) throw new HostShellDirectoryHoldError(); },
     command: held.command,
     launcherArgs: held.launcherArgs,
+    stdio: held.stdio,
     bind(child) {
-      if (child.pid !== undefined) held.admit(child.pid);
-      bound = new Promise<void>((closed) => child.once("close", () => closed())).then(() => Promise.race([held.outcome(),
-        new Promise<WindowsHoldOutcome>((late) => setTimeout(() => late({ kind: "unconfirmed" }), TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs).unref())]))
-        .finally(held.release);
-      // A started child can report an error and keep running; only a start without a process frees the hold early.
-      child.on("error", () => { if (child.pid === undefined) held.release(); });
+      bound = true;
+      return held.bind(child);
     },
-    outcome: () => bound ?? Promise.resolve(undefined),
-    dispose() { if (bound === undefined) held.release(); },
+    dispose() { if (!bound) held.release(); },
   };
 }
 

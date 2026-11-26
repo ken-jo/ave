@@ -1,8 +1,7 @@
-import { execFileSync, spawn, type ChildProcessByStdio } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { isAbsolute, win32 } from "node:path";
 import { toUSVString } from "node:util";
-import type { Readable, Writable } from "node:stream";
+import type { Duplex } from "node:stream";
 import { resolveWindowsJobLauncher } from "../main/windows-job-launcher.js";
 import { isWindowsPathKindHelperTimeout, resolveWindowsPathKindHelper, windowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, windowsCommandLineLength } from "./windows-command-line.js";
@@ -231,77 +230,122 @@ export function pinWindowsPaths(paths: readonly string[]): readonly WindowsPathF
   return request(paths, "--pin");
 }
 
+/** The job launcher's own record of a held run. "ok": its job was proven empty and the helper confirmed the held directory
+ * (`stopped`: processes were still running when the command exited). "lost": the hold refused the launch or the directory
+ * changed. "unconfirmed": everything else, including a launcher that ended without a record. */
+export type WindowsHoldVerdict = { readonly kind: "ok"; readonly stopped: boolean } | { readonly kind: "lost" | "unconfirmed" };
+
+export interface HeldWindowsRun {
+  /** Settles once, with the launcher's record after it has exited and its output has drained, or "unconfirmed"
+   * `windowsHoldStopMs` after `stop`. The hold is released at settlement, which stops anything still in its job. */
+  readonly verdict: Promise<WindowsHoldVerdict>;
+  /** Ask the launcher to end the run and start the deadline. Idempotent; returns `verdict`. */
+  stop(): Promise<WindowsHoldVerdict>;
+}
+
 export interface HeldWindowsDirectory {
   readonly facts: WindowsPathFacts;
-  /** Job launcher arguments that put a command in the helper's kill-on-close job: it cannot start without
-   * this helper and is stopped by the OS when the helper exits. */
+  /** Job launcher arguments for a held command. */
   readonly launcherArgs: readonly string[];
   /** The job launcher invocation that starts `executable` with `launcherArgs`. */
   command(executable: string, args: readonly string[]): { executable: string; args: string[] };
-  /** Names the started job launcher; the helper admits a command from that process only. */
-  admit(launcherPid: number): void;
-  /** The helper's report on the admitted command: "reaped" once every process in the job has stopped and the directory
-   * still matches the hold; "unconfirmed" when the job was not proven empty; "lost" when the pin or the exchange failed, the helper
-   * exits or reports anything else, or the hold is released first. */
-  outcome(): Promise<WindowsHoldOutcome>;
+  /** The standard handles a held launcher is started with: owner, output, error, hold channel, verdict. */
+  readonly stdio: "pipe"[];
+  /** Connect the started launcher to the helper and return its run. One launcher per hold. */
+  bind(launcher: ChildProcess): HeldWindowsRun;
   /** False once the helper that owns the handles has exited or failed, or after `release`. */
   isHeld(): boolean;
   /** Idempotent. */
   release(): void;
 }
 
-export type WindowsHoldOutcome = { readonly kind: "reaped"; readonly stopped: boolean } | { readonly kind: "lost" | "unconfirmed" };
-const HOLD_OUTCOME_LIMIT = 256;
+const HOLD_VERDICT_LIMIT = 64;
+const HOLD_DRAIN_MS = 2_000;
 
 /** Hold a directory and every ancestor against rename and delete until `release`; undefined when the helper did not hold it.
- * The handles and the command's job live in the helper, so its exit or failure after the reply loses the hold. */
+ * The handles and the kill-on-close job live in the helper, so its exit stops the launcher and everything it started. */
 export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory | undefined> {
   if (!isAbsolute(path)) return Promise.resolve(undefined);
-  let child: ChildProcessByStdio<Writable, Readable, null>;
-  const pipe = `\\\\.\\pipe\\ave-hold-${randomUUID()}`;
+  let child: ChildProcess;
   try {
-    child = runWindowsNative(() => spawn(resolveWindowsPathKindHelper(), ["--hold", path, "--pipe", pipe], { windowsHide: true, stdio: ["pipe", "pipe", "ignore"] }));
+    child = runWindowsNative(() => spawn(resolveWindowsPathKindHelper(), ["--hold", path], { windowsHide: true, stdio: ["pipe", "pipe", "ignore", "pipe"] }));
   } catch {
     return Promise.resolve(undefined);
   }
+  const channel = child.stdio[3] as Duplex;
   let settled = false;
   let released = false;
   let lost = false;
-  let admitted = false;
-  let reportOutcome!: (outcome: WindowsHoldOutcome) => void;
-  const outcome = new Promise<WindowsHoldOutcome>((settleOutcome) => { reportOutcome = settleOutcome; });
-  let report = "";
-  const reportLine = (chunk: Buffer): void => {
-    report += chunk.toString("latin1");
-    const newline = report.indexOf("\n");
-    if (newline < 0) {
-      if (report.length > HOLD_OUTCOME_LIMIT) reportOutcome({ kind: "lost" });
-      return;
-    }
-    const line = report.slice(0, newline);
-    reportOutcome(line === '{"outcome":"reaped","stopped":true}' ? { kind: "reaped", stopped: true }
-      : line === '{"outcome":"reaped","stopped":false}' ? { kind: "reaped", stopped: false }
-      : line === '{"outcome":"unconfirmed"}' ? { kind: "unconfirmed" } : { kind: "lost" });
-  };
+  let run: HeldWindowsRun | undefined;
+  let onLost: (() => void) | undefined;
   const release = (): void => {
     if (released) return;
     released = true;
-    reportOutcome({ kind: "lost" });
-    child.stdin.destroy();
+    child.stdin?.destroy();
+    channel.destroy();
     child.kill();
+    onLost?.();
+  };
+  const bind = (launcher: ChildProcess): HeldWindowsRun => {
+    if (run !== undefined) throw new Error("The working directory hold already has a launcher");
+    let finish!: (verdict: WindowsHoldVerdict) => void;
+    let done = false;
+    let deadline: NodeJS.Timeout | undefined;
+    let record = "";
+    const verdict = new Promise<WindowsHoldVerdict>((resolve) => {
+      finish = (result) => {
+        if (done) return;
+        done = true;
+        clearTimeout(deadline);
+        for (const stream of launcher.stdio) stream?.destroy();
+        release();
+        resolve(result);
+      };
+    });
+    const stop = (): Promise<WindowsHoldVerdict> => {
+      if (!done && deadline === undefined) {
+        deadline = setTimeout(() => finish({ kind: "unconfirmed" }), TOOL_TIMEOUT_POLICY.windowsHoldStopMs);
+        launcher.stdin?.destroy();
+      }
+      return verdict;
+    };
+    run = { verdict, stop };
+    onLost = stop;
+    const [, , , relay, report] = launcher.stdio as readonly (Duplex | null | undefined)[];
+    for (const stream of [launcher.stdin, relay, report, channel]) stream?.on("error", () => {});
+    launcher.on("error", () => {
+      // A start without a process has nothing to wait for; a failed operation on a live one is a stop request.
+      if (launcher.pid === undefined) finish({ kind: "unconfirmed" });
+      else void stop();
+    });
+    if (launcher.pid === undefined || relay == null || report == null) {
+      void stop();
+      return run;
+    }
+    relay.pipe(channel);
+    channel.pipe(relay);
+    // A closed helper channel ends the launcher's read at once instead of at its admission deadline.
+    channel.once("close", () => relay.destroy());
+    report.on("data", (chunk: Buffer) => { if (record.length <= HOLD_VERDICT_LIMIT) record += chunk.toString("latin1"); });
+    launcher.once("exit", (code) => {
+      const read = (): void => {
+        clearTimeout(drain);
+        const ok = /^AVJ1 ok (\d{1,10}) ([01])\n$/.exec(record);
+        finish(ok !== null && code !== null && code >>> 0 === Number(ok[1]) ? { kind: "ok", stopped: ok[2] === "1" }
+          : record === "AVJ1 lost\n" && code === 125 ? { kind: "lost" } : { kind: "unconfirmed" });
+      };
+      const drain = setTimeout(read, HOLD_DRAIN_MS);
+      launcher.once("close", read);
+    });
+    if (lost || released) void stop();
+    return run;
   };
   const held = (facts: WindowsPathFacts): HeldWindowsDirectory => ({
     facts,
-    launcherArgs: ["--hold-pipe", pipe, String(child.pid)],
-    command: (executable, args) => ({ executable: resolveWindowsJobLauncher(), args: ["--hold-pipe", pipe, String(child.pid), executable, ...args] }),
-    admit: (launcherPid) => {
-      if (admitted || released) return;
-      admitted = true;
-      const frame = Buffer.alloc(4);
-      frame.writeUInt32LE(launcherPid);
-      child.stdin.write(frame);
-    },
-    outcome: () => outcome,
+    launcherArgs: ["--hold"],
+    command: (executable, args) => ({ executable: resolveWindowsJobLauncher(), args: ["--hold", executable, ...args] }),
+    stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
+    bind,
     isHeld: () => !released && !lost,
     release,
   });
@@ -313,26 +357,24 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
       settled = true;
       clearTimeout(timer);
       if (result === undefined) {
-        child.stdout.destroy();
+        child.stdout?.destroy();
         release();
       }
       resolve(result);
     };
     const failed = (): void => {
-      if (settled) lost = true;
-      else settle(undefined);
+      if (!settled) { settle(undefined); return; }
+      lost = true;
+      onLost?.();
     };
     const timer = setTimeout(() => settle(undefined), TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs);
     child.on("error", failed);
     child.once("exit", failed);
-    child.stdin.on("error", failed);
-    child.stdout.on("error", () => { settle(undefined); reportOutcome({ kind: "lost" }); });
-    child.stdout.once("close", () => reportOutcome({ kind: "lost" }));
-    child.stdout.on("data", (chunk: Buffer) => {
-      if (settled) {
-        reportLine(chunk);
-        return;
-      }
+    child.stdin?.on("error", failed);
+    channel.on("error", () => {});
+    child.stdout?.on("error", () => settle(undefined));
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (settled) return;
       const newline = chunk.indexOf(0x0a);
       const frameBytes = newline < 0 ? chunk.length : newline + 1;
       if (received + frameBytes > MAX_PATH_FACTS_OUTPUT_BYTES) {
@@ -342,7 +384,6 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
       received += frameBytes;
       chunks.push(newline < 0 ? chunk : chunk.subarray(0, frameBytes));
       if (newline < 0) return;
-      if (frameBytes < chunk.length) reportLine(chunk.subarray(frameBytes));
       try {
         const [facts] = decodeWindowsPathFacts(decodeWindowsNativeReply(Buffer.concat(chunks, received)), 1, "--pin");
         settle(facts === undefined || child.pid === undefined ? undefined : held(facts));

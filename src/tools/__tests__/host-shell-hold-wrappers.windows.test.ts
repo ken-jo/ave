@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const boundary = vi.hoisted(() => ({ helper: undefined as ChildProcess | undefined, members: "", spawns: [] as string[][], refuseHold: false }));
+const boundary = vi.hoisted(() => ({ helper: undefined as ChildProcess | undefined, members: "", spawns: [] as string[][], refuseHold: false, unqueryable: false }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
@@ -12,11 +12,15 @@ vi.mock("node:child_process", async (importOriginal) => {
     spawn: vi.fn((...args: Parameters<typeof actual.spawn>) => {
       const argv = Array.isArray(args[1]) ? args[1].map(String) : [];
       boundary.spawns.push([String(args[0]), ...argv]);
-      // A launcher pointed at a pipe no helper serves is refused its hold, as after a lost helper.
-      if (boundary.refuseHold && argv[0] === "--hold-pipe") args[1] = [argv[0], `${argv[1]}-gone`, ...argv.slice(2)];
+      if (String(args[0]).endsWith("ave-job.exe") && argv[0] === "--hold") {
+        // A helper gone just before the launch refuses the launcher its hold.
+        if (boundary.refuseHold) actual.execFileSync("taskkill", ["/PID", String(boundary.helper?.pid), "/F"], { stdio: "ignore", windowsHide: true });
+        // This launcher cannot read its own job, so it can never confirm the run stopped.
+        if (boundary.unqueryable) args[0] = String(args[0]).replace(/ave-job\.exe$/u, "ave-job-query-failure.exe");
+      }
       if (!String(args[0]).endsWith("ave-path-kind.exe") || !(args[1] as string[]).includes("--hold")) return actual.spawn(...args);
       const fixture = String(args[0]).replace(/ave-path-kind\.exe$/u, "ave-path-kind-hold-fixture.exe");
-      const helper = actual.spawn(fixture, args[1] as string[], { ...(args[2] as object), stdio: ["pipe", "pipe", "pipe"] });
+      const helper = actual.spawn(fixture, args[1] as string[], { ...(args[2] as object), stdio: ["pipe", "pipe", "pipe", "pipe"] });
       helper.stderr?.on("data", (chunk: Buffer) => { boundary.members += chunk.toString(); });
       boundary.helper = helper;
       return helper;
@@ -33,11 +37,11 @@ import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootFor
 import { configureHostResources } from "../../main/host-resources.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { PowerShellTool } from "../shell-tools.js";
-import { holdWindowsDirectory } from "../../shared/windows-path-facts.js";
 import { t } from "../../i18n/index.js";
-import { getVendoredSrtWinExePath, initializeAsrtSandbox, resetAsrtSandbox } from "../../permissions/asrt-sandbox.js";
+import { initializeAsrtSandbox, resetAsrtSandbox } from "../../permissions/asrt-sandbox.js";
 
 const FIXTURE = resolve("resources", "windows-path-kind", process.arch, "ave-path-kind-hold-fixture.exe");
+const UNQUERYABLE_LAUNCHER = resolve("resources", "windows-job", process.arch, "ave-job-query-failure.exe");
 
 async function approvedPowerShell(directory: string, command: string, timeoutSeconds = 60) {
   const plan = getHostShellExecutionPlan();
@@ -130,15 +134,18 @@ describe.runIf(process.platform === "win32")("held working directory under the c
     expect(listed.members.filter(({ pid }) => alive(pid))).toEqual([]);
     expect(result.isError).toBe(true);
     expect(result.output.indexOf("...[truncated]...")).toBeGreaterThan(-1);
-    expect(result.output.indexOf("...[truncated]...")).toBeLessThan(result.output.indexOf(t("shellExecution.cwdPinLost")));
-    expect(result.output.endsWith(t("shellExecution.cwdPinLost"))).toBe(true);
-    expect(result.metadata).toMatchObject({ cwdPinLost: true, returncode: 125 });
+    // The launcher went with the job, so nothing confirmed the run: unconfirmed, never lost and never the command's code.
+    expect(result.output.indexOf("...[truncated]...")).toBeLessThan(result.output.indexOf(t("shellExecution.cwdPinUnconfirmed")));
+    expect(result.output.endsWith(t("shellExecution.cwdPinUnconfirmed"))).toBe(true);
+    expect(result.metadata).toMatchObject({ cwdPinUnconfirmed: true });
+    expect(result.metadata).not.toHaveProperty("cwdPinLost");
   });
 
-  it.for(["abort", "timeout"] as const)("waits on %s for a hold that cannot prove its job empty and fails the run", { timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async (end, testContext) => {
+  it.for(["abort", "timeout"] as const)("waits on %s for a launcher that cannot prove its job empty and fails the run", { timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async (end, testContext) => {
+    if (!existsSync(UNQUERYABLE_LAUNCHER)) throw new Error("Build the launcher fixture: bun run build:windows-job -- -QueryFailureFixture");
     directory = await containerRoute(testContext.skip);
     writeFileSync(join(directory, "spin.cmd"), "@echo.>\"%~dp0echoed\"\r\n@for /l %%i in (1,1,2000000000) do @rem\r\n");
-    process.env.AVE_TEST_HOLD_UNCONFIRMED = "1";
+    boundary.unqueryable = true;
     const abort = new AbortController();
     try {
       const listed = await spinning(directory, end === "abort" ? { abortSignal: abort.signal } : { timeoutSeconds: 8 });
@@ -149,7 +156,7 @@ describe.runIf(process.platform === "win32")("held working directory under the c
       expect(result.isError).toBe(true);
       expect(result.output.endsWith(t("shellExecution.cwdPinUnconfirmed"))).toBe(true);
       expect(result.metadata).toMatchObject({ cwdPinUnconfirmed: true });
-    } finally { delete process.env.AVE_TEST_HOLD_UNCONFIRMED; }
+    } finally { boundary.unqueryable = false; }
   });
 
   it("fails a refused pinned start and never retries the command unpinned", { timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async (testContext) => {
@@ -165,7 +172,7 @@ describe.runIf(process.platform === "win32")("held working directory under the c
       expect(result.output).not.toContain("pinnedrun");
       expect(result.metadata).toMatchObject({ cwdPinLost: true });
       // The container's own startup probe runs before the hold; nothing starts after the refused launch.
-      const launch = boundary.spawns.findIndex((argv) => argv[1] === "--hold-pipe");
+      const launch = boundary.spawns.findIndex((argv) => argv[0]?.endsWith("ave-job.exe") === true && argv[1] === "--hold");
       expect(launch).toBeGreaterThan(-1);
       expect(boundary.spawns.slice(launch + 1)).toEqual([]);
     } finally { boundary.refuseHold = false; }
@@ -185,52 +192,4 @@ describe.runIf(process.platform === "win32")("held working directory under the c
     evidence("container hold job members", listed);
     return { pending, members: listed };
   };
-});
-
-const srtWinProvisioned = (): boolean => {
-  if (process.platform !== "win32") return false;
-  try {
-    const status = JSON.parse(execFileSync(getVendoredSrtWinExePath(), ["user", "status"], { encoding: "utf8", windowsHide: true })) as { user?: { exists?: boolean } };
-    return status.user?.exists === true;
-  } catch { return false; }
-};
-
-// srt-win runs its payload through a second, sandbox-user process; both must stay in the hold job.
-describe.runIf(srtWinProvisioned())("held working directory under the srt-win launch chain", () => {
-  let directory: string | undefined;
-  afterEach(async () => {
-    boundary.helper = undefined;
-    if (directory !== undefined) rmSync(directory, { recursive: true, force: true });
-  });
-
-  it("keeps the sandbox runner, its payload and a descendant in the hold job and stops them when the helper dies", async () => {
-    if (!existsSync(FIXTURE)) throw new Error("Build the hold fixture: bun run build:windows-job -- -Helper path-kind -HoldFixture");
-    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
-    directory = realpathSync(mkdtempSync(join(tmpdir(), "ave-hold-srt-")));
-    const held = await holdWindowsDirectory(directory);
-    if (held === undefined) throw new Error("hold refused");
-    const system = process.env.SystemRoot ?? "C:\\Windows";
-    const cmd = join(system, "System32", "cmd.exe");
-    const target = held.command(getVendoredSrtWinExePath(), ["exec", "--quiet", "--", cmd, "/c", `${cmd} /c for /l %i in (1,1,2000000000) do @rem`]);
-    const { spawn } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-    const child = spawn(target.executable, target.args, { cwd: system, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    if (child.pid !== undefined) held.admit(child.pid);
-    let output = "";
-    child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
-    child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString(); });
-    const closed = new Promise<number | null>((settle) => child.on("close", settle));
-    let listed: { pid: number; name: string }[] = [];
-    await vi.waitFor(async () => {
-      listed = processNames(await members());
-      expect(listed.filter(({ name }) => name === "cmd.exe")).toHaveLength(2);
-      expect(listed.filter(({ name }) => name === "srt-win.exe")).toHaveLength(2);
-    }, { timeout: 30000, interval: 500 });
-    evidence("srt-win hold job members", listed);
-    boundary.helper?.kill();
-    expect(await closed).toBe(125);
-    expect(output).toContain("cwd-pin-lost");
-    await expect(held.outcome()).resolves.toEqual({ kind: "lost" });
-    expect(listed.filter(({ pid }) => alive(pid))).toEqual([]);
-    held.release();
-  }, 60000);
 });

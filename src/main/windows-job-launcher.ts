@@ -17,13 +17,13 @@ export function spawnWindowsJobProcess(
   executable: string,
   args: string[],
   options: { cwd: string; env: NodeJS.ProcessEnv },
-  launcherArgs: readonly string[] = [],
+  hold?: { readonly launcherArgs: readonly string[]; readonly stdio: readonly "pipe"[] | undefined },
 ): ChildProcessByStdio<Writable, Readable, Readable> {
   if (process.platform !== "win32") throw new Error("Windows job launcher requires Windows");
   if (!win32.isAbsolute(executable)) throw new Error("Windows job launcher requires an absolute executable path");
-  return spawn(resolveWindowsJobLauncher(), [...launcherArgs, executable, ...args], {
+  return spawn(resolveWindowsJobLauncher(), [...hold?.launcherArgs ?? [], executable, ...args], {
     ...options,
     windowsHide: true,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+    stdio: [...hold?.stdio ?? ["pipe", "pipe", "pipe"]],
+  }) as ChildProcessByStdio<Writable, Readable, Readable>;
 }

@@ -40,7 +40,7 @@ import { z } from "zod";
 
 import { spawnWindowsJobProcess } from "../main/windows-job-launcher.js";
 import { t } from "../i18n/index.js";
-import type { WindowsHoldOutcome } from "../shared/windows-path-facts.js";
+import type { HeldWindowsRun, WindowsHoldVerdict } from "../shared/windows-path-facts.js";
 import {
   createDynamicTool,
   ZodTool,
@@ -282,22 +282,25 @@ function formatShellCompletion(output: string, empty: boolean, completion: Shell
   return empty ? `Shell command ${cause} without output.` : `Shell command ${cause}.\n${output}`;
 }
 
-/** The working-directory hold's report, kept outside the command's output: the reason a lost or unconfirmed hold fails
- * the run, or the notice that background processes were stopped when an ordinary run ended. */
-function cwdPinCompletion(pin: WindowsHoldOutcome | undefined, stoppedEarly: boolean): { text: string; metadata?: Record<string, true> } | undefined {
+/** The job launcher's verdict on a held run, kept outside the command's output: the reason a lost or unconfirmed hold
+ * fails the run, or the notice that background processes were stopped when an ordinary run ended. */
+function cwdPinCompletion(pin: WindowsHoldVerdict | undefined, stoppedEarly: boolean): { text: string; metadata?: Record<string, true> } | undefined {
   if (pin === undefined) return undefined;
   if (pin.kind === "lost") return { text: t("shellExecution.cwdPinLost"), metadata: { cwdPinLost: true } };
-  if (pin.kind !== "reaped") return { text: t("shellExecution.cwdPinUnconfirmed"), metadata: { cwdPinUnconfirmed: true } };
+  if (pin.kind !== "ok") return { text: t("shellExecution.cwdPinUnconfirmed"), metadata: { cwdPinUnconfirmed: true } };
   return pin.stopped && !stoppedEarly ? { text: t("shellExecution.cwdPinStoppedBackground") } : undefined;
 }
 
-/** `stoppedEarly`: the run was cancelled or timed out, so its own result already says it was stopped. */
-function withCwdPinOutcome<T extends { output: string; isError: boolean; metadata?: Record<string, unknown> }>(result: T, pin: WindowsHoldOutcome | undefined, stoppedEarly = false): T {
+/** The notice ends the output and is also carried as `notice`, which a reader that cuts the output keeps whole.
+ * `stoppedEarly`: the run was cancelled or timed out, so its own result already says it was stopped. */
+function withCwdPinOutcome<T extends { output: string; isError: boolean; metadata?: Record<string, unknown> }>(result: T, pin: WindowsHoldVerdict | undefined, stoppedEarly = false): T & { notice?: string } {
   const completion = cwdPinCompletion(pin, stoppedEarly);
   if (completion === undefined) return result;
-  if (completion.metadata === undefined) return { ...result, output: `${result.output}\n${completion.text}` };
-  return { ...result, output: `${result.output}\n${completion.text}`, isError: true, metadata: { ...result.metadata, ...completion.metadata } };
+  const noted = { ...result, output: `${result.output}\n${completion.text}`, notice: completion.text };
+  return completion.metadata === undefined ? noted : { ...noted, isError: true, metadata: { ...result.metadata, ...completion.metadata } };
 }
+
+const failedPin = (pin: WindowsHoldVerdict | undefined): boolean => pin !== undefined && pin.kind !== "ok";
 
 /** Keep a bounded UTF-8 prefix while continuing to drain both child pipes. */
 type BoundOutputCaptureFactory = () => ToolOutputCapture;
@@ -455,8 +458,25 @@ function createOutputCollector(child: PipedChild, options: OutputCollectorOption
 }
 
 /** Checked output cannot be validated while its child may still read metadata. */
-function checkedShellClose(child: ChildProcess, required: boolean): Promise<void> | undefined {
-  return required ? new Promise((resolve) => { child.once("close", () => resolve()); }) : undefined;
+function checkedShellClose(child: ChildProcess, required: boolean, held?: HeldWindowsRun): Promise<void> | undefined {
+  // A held run's verdict follows its close, or stands in for one that never comes.
+  return required ? new Promise((resolve) => { child.once("close", () => resolve()); void held?.verdict.then(() => resolve()); }) : undefined;
+}
+
+/** A held run publishes nothing before its launcher's verdict: stop, close and a started child's error all wait for it.
+ * Any other run settles on the first of them. */
+function onShellEnd(
+  child: ChildProcess, lifetime: { stopped: Promise<void> }, held: HeldWindowsRun | undefined,
+  finish: (code: number | null, signal: NodeJS.Signals | null, pin?: WindowsHoldVerdict) => Promise<void>,
+  failed: (err: Error) => void, fault: (err: unknown) => void,
+): void {
+  if (held !== undefined) {
+    void held.verdict.then((pin) => finish(child.exitCode, child.signalCode, pin)).catch(fault);
+    return;
+  }
+  void lifetime.stopped.then(() => finish(child.exitCode, null)).catch(fault);
+  child.once("close", (code, signal) => { void finish(code, signal).catch(fault); });
+  child.on("error", failed);
 }
 
 /** Own the deadline and cancellation subscription until the child settles. */
@@ -465,6 +485,7 @@ function watchShellLifetime(
   timeoutSeconds: number,
   signal?: AbortSignal,
   abortSandbox?: () => void,
+  held?: HeldWindowsRun,
 ) {
   let timedOut = false;
   let aborted = false;
@@ -473,11 +494,15 @@ function watchShellLifetime(
   const stopped = new Promise<void>((resolve) => { notifyStopped = resolve; });
   const stop = (): void => {
     abortSandbox?.();
-    termination = forceKillManagedChildProcess(child, timedOut ? "shell-timeout" : "shell-cancelled");
-    // An exited root can leave inherited pipes open in a detached descendant.
-    // Interruption releases our pipe ends and settles without waiting for close.
-    child.stdout?.destroy();
-    child.stderr?.destroy();
+    // A held run is asked to stop and answers with its verdict within the stop deadline; a kill would end its launcher unheard.
+    if (held !== undefined) termination = held.stop().then(() => {});
+    else {
+      termination = forceKillManagedChildProcess(child, timedOut ? "shell-timeout" : "shell-cancelled");
+      // An exited root can leave inherited pipes open in a detached descendant.
+      // Interruption releases our pipe ends and settles without waiting for close.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    }
     if (termination) void termination.then(() => notifyStopped());
     else notifyStopped();
   };
@@ -571,10 +596,14 @@ interface BackgroundShellEntry {
   terminate: () => void;
   waiters: Set<() => void>;
   observation?: AgentTerminalObservationLease;
-  /** A held run stays running until its working-directory hold reports; the report is kept outside the output. */
-  pinned: boolean;
+  /** A held run stays running until its launcher's verdict, which is kept here, outside the output. */
+  held?: HeldWindowsRun;
   stopRequested: boolean;
-  pin?: WindowsHoldOutcome;
+  pin?: WindowsHoldVerdict;
+  /** Resolves when the entry leaves "running". */
+  settled: Promise<void>;
+  /** A reader has been given the terminal state, and with it the verdict's notice. */
+  delivered: boolean;
 }
 
 interface BackgroundShellReadResult {
@@ -591,6 +620,8 @@ interface BackgroundShellReadResult {
   completion?: string;
   isError?: boolean;
   metadata?: Record<string, unknown>;
+  /** Set by `kill` on a held run that is still stopping: its state once the launcher's verdict is in. */
+  final?: Promise<BackgroundShellReadResult>;
 }
 
 interface BrokerBackgroundShellEntry {
@@ -657,7 +688,7 @@ export interface BackgroundShellManager {
     initialOutputTruncated?: boolean;
     observation?: AgentTerminalObservationLease;
     /** The working-directory hold's report, read once the child closes. */
-    cwdPin?: () => Promise<WindowsHoldOutcome | undefined>;
+    held?: HeldWindowsRun;
   }): string;
   registerBroker(input: {
     sessionId: string;
@@ -1056,6 +1087,7 @@ function createManager(): BackgroundShellManager {
     const output = entry.output.slice(entry.readCursor);
     entry.readCursor = entry.output.length;
     const pin = entry.status === "running" ? undefined : cwdPinCompletion(entry.pin, entry.stopRequested);
+    entry.delivered ||= entry.status !== "running";
     return {
       shellId: entry.shellId,
       status: entry.status,
@@ -1086,7 +1118,7 @@ function createManager(): BackgroundShellManager {
   const stopOwned = (sessionId: string, shellId: string): BackgroundShellEntry | undefined => {
     const entry = owned(sessionId, shellId);
     if (!entry) return undefined;
-    if (entry.pinned) entry.stopRequested ||= entry.status === "running";
+    if (entry.held !== undefined) entry.stopRequested ||= entry.status === "running";
     else if (entry.status === "running") entry.status = "killed";
     entry.terminate();
     notify(entry);
@@ -1113,7 +1145,7 @@ function createManager(): BackgroundShellManager {
   };
 
   return {
-    register({ sessionId, command, child, startedAt, killProcessGroup = false, captureOutput = true, initialOutput = "", initialOutputTruncated = false, observation, cwdPin }): string {
+    register({ sessionId, command, child, startedAt, killProcessGroup = false, captureOutput = true, initialOutput = "", initialOutputTruncated = false, observation, held }): string {
       // Keep the registry lean within a long-lived session: drop this session's
       // already-finished shells whose output has been fully read before adding a
       // new one. Never-read terminal shells are preserved (the model may still
@@ -1125,7 +1157,9 @@ function createManager(): BackgroundShellManager {
           e.sessionId === sessionId &&
           e.status !== "running" &&
           e.readCursor > 0 &&
-          e.readCursor >= e.output.length
+          e.readCursor >= e.output.length &&
+          // Output read while a held run was still running does not carry its verdict.
+          (e.held === undefined || e.delivered)
         ) {
           e.terminate();
           shells.delete(e.shellId);
@@ -1137,11 +1171,13 @@ function createManager(): BackgroundShellManager {
         killProcessGroup,
       });
       let terminationRequested = false;
+      let settled!: () => void;
       const terminate = (): void => {
         // Never re-signal a released handle: its numeric PID may be reused.
         if (terminationRequested) return;
         terminationRequested = true;
-        const termination = forceKillManagedChildProcess(child, "background-shell-ended");
+        // A held run is asked to stop and answers with its verdict; a kill would end its launcher unheard.
+        const termination = held === undefined ? forceKillManagedChildProcess(child, "background-shell-ended") : held.stop().then(() => {});
         if (termination) {
           const pending = localCleanup.get(sessionId) ?? new Set<Promise<void>>();
           localCleanup.set(sessionId, pending);
@@ -1168,8 +1204,10 @@ function createManager(): BackgroundShellManager {
         terminate,
         waiters: new Set(),
         observation,
-        pinned: cwdPin !== undefined,
+        held,
         stopRequested: false,
+        settled: new Promise((resolve) => { settled = resolve; }),
+        delivered: false,
       };
       shells.set(shellId, entry);
 
@@ -1183,24 +1221,28 @@ function createManager(): BackgroundShellManager {
       // A descendant may retain the output pipes after its parent exits, so
       // close is too late to own cleanup. End the owned group at root exit.
       child.once("exit", () => {
-        if (killProcessGroup) terminate();
+        if (killProcessGroup && held === undefined) terminate();
         else terminationRequested = true;
       });
-      child.on("close", (code, signal: NodeJS.Signals | null = null) => {
+      const settle = (code: number | null, signal: NodeJS.Signals | null, pin?: WindowsHoldVerdict): void => {
         if (captureOutput) append(entry, decoders.stdout.end() + decoders.stderr.end());
-        const settle = (pin: WindowsHoldOutcome | undefined): void => {
-          entry.exitCode = code;
-          entry.signal = signal;
-          entry.pin = pin;
-          if (pin !== undefined && pin.kind !== "reaped") entry.status = "failed";
-          else if (entry.status === "running") entry.status = signal === null && !entry.stopRequested ? "exited" : "killed";
-          observation?.finish(code, entry.status === "killed" ? "cancelled" : entry.status === "failed" || code !== 0 ? "failed" : "completed");
-          notify(entry);
-        };
-        if (cwdPin === undefined) settle(undefined);
-        else void cwdPin().then(settle, () => settle({ kind: "lost" }));
-      });
+        entry.exitCode = code;
+        entry.signal = signal;
+        entry.pin = pin;
+        if (failedPin(pin)) entry.status = "failed";
+        else if (entry.status === "running") entry.status = signal === null && !entry.stopRequested ? "exited" : "killed";
+        observation?.finish(code, entry.status === "killed" ? "cancelled" : entry.status === "failed" || code !== 0 ? "failed" : "completed");
+        settled();
+        notify(entry);
+      };
+      // A held run has one end, its verdict: close, a started child's error and a stop all wait for it.
+      if (held !== undefined) {
+        void held.verdict.then((pin) => settle(child.exitCode, child.signalCode, pin));
+        return shellId;
+      }
+      child.on("close", (code, signal: NodeJS.Signals | null = null) => settle(code, signal));
       child.on("error", (err) => {
+        settled();
         if (entry.status === "running") {
           entry.status = "failed";
           append(entry, `\n[spawn error] ${err.message}\n`);
@@ -1383,7 +1425,10 @@ function createManager(): BackgroundShellManager {
 
     kill(sessionId, shellId): BackgroundShellReadResult | undefined {
       const entry = stopOwned(sessionId, shellId);
-      return entry ? snapshot(entry) : undefined;
+      if (!entry) return undefined;
+      const result = snapshot(entry);
+      // The stopped entry itself answers, so the verdict reaches this caller whatever happens to the registry meanwhile.
+      return result.status === "running" ? { ...result, final: entry.settled.then(() => snapshot(entry)) } : result;
     },
 
     stop(sessionId, shellId): boolean { return stopOwned(sessionId, shellId) !== undefined; },
@@ -2232,10 +2277,10 @@ async function spawnBackground(command: string, cwd: string, sessionId: string, 
   assertManagedChildProcessAdmissionOpen("tool:bash:background");
   const observation = startShellObservation(command, cwd, sandbox);
   let child: ChildProcess;
-  let launchHold: HostShellSpawnDirectoryHold | undefined;
+  let held: HeldWindowsRun | undefined;
   try {
     const launch = (hold?: HostShellSpawnDirectoryHold) => process.platform === "win32"
-      ? spawnWindowsJobProcess(shell.cmd, [...argv], { cwd, env }, hold?.launcherArgs)
+      ? spawnWindowsJobProcess(shell.cmd, [...argv], { cwd, env }, hold)
       : spawn(shell.cmd, [...argv], {
         cwd,
         stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
@@ -2249,20 +2294,20 @@ async function spawnBackground(command: string, cwd: string, sessionId: string, 
           signal?.throwIfAborted();
           assertShellRemoteAuthority();
           const started = launch(hold);
-          hold.bind(started);
-          launchHold = hold;
+          held = hold.bind(started);
           return started;
         }, refreshShellRemoteAuthority);
     if (launched === undefined) throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
     child = launched;
   } catch (error) { observation?.finish(null, "failed"); throw error; }
   const cleanup = transferPreparedShellInvocation(prepared);
-  child.once("close", cleanup);
+  if (held === undefined) child.once("close", cleanup);
+  else void held.verdict.then(cleanup);
   const shellId = backgroundShellManager.register({
     sessionId,
     command,
     child,
-    cwdPin: launchHold?.outcome,
+    held,
     startedAt: new Date().toISOString(),
     killProcessGroup: process.platform !== "win32",
     observation,
@@ -2318,6 +2363,7 @@ interface SpawnResult {
   output: string;
   isError: boolean;
   metadata: Record<string, unknown>;
+  notice?: string;
   /**
    * Host path of the directory a completed foreground command ended in, from
    * the cwd probe. Absent after a timeout, cancellation, spawn failure, or a
@@ -2571,11 +2617,14 @@ function logReleaseFailures(label: string, failures: readonly unknown[]): void {
 }
 
 // A fault inside finalization still settles the spawn, as an error result.
-function finalizationFault(label: string, settle: (result: SpawnResult) => void, prefix = ""): (err: unknown) => void {
+function finalizationFault(label: string, settle: (result: SpawnResult) => void, prefix = "", held?: () => HeldWindowsRun | undefined): (err: unknown) => void {
   return (err) => {
     const details = shellFailureText([err]);
     shellTaskLog.error({ label, err: details }, "shell finalization failed");
-    settle({ output: `${prefix}spawn failed: ${details}`, isError: true, metadata: {} });
+    const result = { output: `${prefix}spawn failed: ${details}`, isError: true, metadata: {} };
+    const run = held?.();
+    if (run === undefined) settle(result);
+    else void run.stop().then((pin) => settle(withCwdPinOutcome(result, pin, true)));
   };
 }
 
@@ -2705,6 +2754,7 @@ export async function spawnWithSandbox(
     // CRITICAL: shell:false — the wrapper argv is the literal program+args; a
     // shell here would re-parse and break quoting / inject a second shell.
     let child: PipedChild;
+    let held: HeldWindowsRun | undefined;
     try {
       if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
       assertManagedChildProcessAdmissionOpen("tool:bash:asrt");
@@ -2716,11 +2766,11 @@ export async function spawnWithSandbox(
         windowsHide: true,
         detached: process.platform !== "win32",
         cwd: resolvedCwd,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: directoryHold.stdio ?? ["ignore", "pipe", "pipe"],
         shell: false,
         env: childEnv,
-      });
-      directoryHold.bind(child);
+      }) as PipedChild;
+      held = directoryHold.bind(child);
     } catch (err) {
       observation?.finish(null, "failed");
       void (async () => {
@@ -2735,7 +2785,7 @@ export async function spawnWithSandbox(
       })().catch(finalizationFault("tool:bash:asrt", resolveResult));
       return;
     }
-    const closed = checkedShellClose(child, waitForClose);
+    const closed = checkedShellClose(child, waitForClose, held);
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash:asrt" });
     // Detached, the child leads its own process group: the sandbox keeps the
@@ -2756,13 +2806,14 @@ export async function spawnWithSandbox(
     let lifecycleCleaned = false;
     const cleanupAfterTermination = async (): Promise<unknown[]> => {
       if (lifecycleCleaned) return [];
-      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return [];
+      // A verdict means the hold was released, which leaves nothing of the run alive.
+      if (held === undefined && child.pid !== undefined && child.exitCode === null && child.signalCode === null) return [];
       lifecycleCleaned = true;
       return await runReleaseSteps([() => egress.release(), cleanupPreparedAfterTermination, () => cleanupAsrtSandboxAfterCommand()]);
     };
-    const lifetime = watchShellLifetime(child, timeoutSeconds, signal, () => abortController.abort());
+    const lifetime = watchShellLifetime(child, timeoutSeconds, signal, () => abortController.abort(), held);
 
-    const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+    const finish = async (code: number | null, signal: NodeJS.Signals | null = null, pin?: WindowsHoldVerdict): Promise<void> => {
       if (closed !== undefined) await closed;
       if (lifetime.termination) await lifetime.termination;
       const released = await cleanupAfterTermination();
@@ -2777,14 +2828,14 @@ export async function spawnWithSandbox(
       const { output: formatted, sandboxCleanupFailed } = await annotateSandboxCommandResult(egress.token, wrapped, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
       )), command, lifecycleCleaned);
-      outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || sandboxCleanupFailed ? "failed" : undefined);
+      outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || sandboxCleanupFailed || failedPin(pin) ? "failed" : undefined);
       if (lifetime.timedOut) {
         resolveResult(withCwdPinOutcome(withReleaseFailures({
           output: formatTimeoutOutput(formatted, command, timeoutSeconds),
           isError: true,
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: true, sandboxed: true,
             ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
-        }, released), await directoryHold.outcome(), true));
+        }, released), pin, true));
       } else {
         const result = withCwdPinOutcome(withReleaseFailures({
           output: formatted,
@@ -2792,16 +2843,14 @@ export async function spawnWithSandbox(
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, sandboxed: true,
             ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
           ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
-        }, released), await directoryHold.outcome(), lifetime.aborted);
+        }, released), pin, lifetime.aborted);
         resolveResult(!lifetime.aborted && code !== null && code !== 0
           ? await attachFilesystemBlock(result, egress.token, command, resolvedCwd) : result);
       }
     };
-    const fault = finalizationFault("tool:bash:asrt", resolveResult);
+    const fault = finalizationFault("tool:bash:asrt", resolveResult, "", () => held);
 
-    void lifetime.stopped.then(() => finish(child.exitCode)).catch(fault);
-    child.once("close", (code, signal) => { void finish(code, signal).catch(fault); });
-    child.on("error", (err) => {
+    onShellEnd(child, lifetime, held, finish, (err) => {
       void (async () => {
         if (closed !== undefined) await closed;
         if (settled) return;
@@ -2819,7 +2868,7 @@ export async function spawnWithSandbox(
           metadata: { ...artifactMetadata, ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
         }, released));
       })().catch(fault);
-    });
+    }, fault);
   });
   } finally { releaseClaim(); cwdHold?.dispose(); }
 }
@@ -2863,15 +2912,15 @@ async function spawnWithTimeout(
         windowsHide: true,
         detached: process.platform !== "win32",
         cwd,
-        stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
+        stdio: launchHold?.stdio ?? (prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"]),
         // Only generic shell and locale variables pass through.
         env: { ...environment },
         shell: false,
       }) as PipedChild;
     }
     catch (error) { observation?.finish(null, "failed"); throw error; }
-    launchHold?.bind(child);
-    const closed = checkedShellClose(child, waitForClose);
+    const held = launchHold?.bind(child);
+    const closed = checkedShellClose(child, waitForClose, held);
     const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
     // Detached from the result, so a failure is logged.
@@ -2879,7 +2928,8 @@ async function spawnWithTimeout(
       if (lifetime.termination) await lifetime.termination;
       logReleaseFailures("tool:bash", await runReleaseSteps([cleanupPreparedAfterTermination]));
     };
-    child.once("close", () => { void releaseAfterClose(); });
+    if (held === undefined) child.once("close", () => { void releaseAfterClose(); });
+    else void held.verdict.then(releaseAfterClose);
     const stopTracking = trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash" });
 
     const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, cwdProbe: probe, progress,
@@ -2889,7 +2939,7 @@ async function spawnWithTimeout(
 
     let settled = false;
 
-    const lifetime = watchShellLifetime(child, timeoutSeconds, signal);
+    const lifetime = watchShellLifetime(child, timeoutSeconds, signal, undefined, held);
     let backgrounded = false;
     const taskId = randomUUID();
     const startedAt = new Date().toISOString();
@@ -2908,7 +2958,7 @@ async function spawnWithTimeout(
         try {
           assertManagedChildProcessAdmissionOpen("tool:bash:background");
           shellId = backgroundShellManager.register({
-            sessionId, command, child, startedAt, killProcessGroup: true, captureOutput: false, cwdPin: launchHold?.outcome,
+            sessionId, command, child, startedAt, killProcessGroup: true, captureOutput: false, held,
             initialOutput: initialOutput.output, initialOutputTruncated: initialOutput.truncated,
           });
         } catch (err) {
@@ -2934,19 +2984,20 @@ async function spawnWithTimeout(
       },
     });
 
-    const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+    const finish = async (code: number | null, signal: NodeJS.Signals | null = null, pin?: WindowsHoldVerdict): Promise<void> => {
       if (closed !== undefined) await closed;
       if (lifetime.termination) await lifetime.termination;
       lifetime.dispose();
       foregroundShellTasks.delete(taskId);
+      const observed = lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || failedPin(pin) ? "failed" : undefined;
       if (backgrounded) outputCollector.finishBackground();
-      if (backgrounded) outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null ? "failed" : undefined);
+      if (backgrounded) outputCollector.finishObservation(code, observed);
       if (settled) return;
       settled = true;
       const rejected = control?.rejected === true;
       control?.dispose();
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
-      outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null ? "failed" : undefined);
+      outputCollector.finishObservation(code, observed);
       const formatted = lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
       ));
@@ -2955,7 +3006,7 @@ async function spawnWithTimeout(
           output: formatTimeoutOutput(formatted, command, timeoutSeconds),
           isError: true,
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: true },
-        }, await launchHold?.outcome(), true));
+        }, pin, true));
       } else {
         resolve(withCwdPinOutcome({
           output: rejected
@@ -2963,14 +3014,12 @@ async function spawnWithTimeout(
           isError: rejected || lifetime.aborted || code !== 0,
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code },
           ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
-        }, await launchHold?.outcome(), lifetime.aborted));
+        }, pin, lifetime.aborted));
       }
     };
 
-    const fault = finalizationFault("tool:bash", resolve);
-    void lifetime.stopped.then(() => finish(child.exitCode)).catch(fault);
-    child.once("close", (code, signal) => { void finish(code, signal).catch(fault); });
-    child.on("error", (err) => {
+    const fault = finalizationFault("tool:bash", resolve, "", () => held);
+    onShellEnd(child, lifetime, held, finish, (err) => {
       void (async () => {
         if (closed !== undefined) await closed;
         if (settled) return;
@@ -2986,7 +3035,7 @@ async function spawnWithTimeout(
           metadata: { ...artifactMetadata },
         });
       })().catch(fault);
-    });
+    }, fault);
   });
   if (spawnAuthorization !== undefined && prelude === undefined) {
     // Keep listener registration in the synchronous handoff, without holding
@@ -3089,6 +3138,7 @@ function present(result: BackgroundShellReadResult): ToolExecutionResult {
     }),
     isError: result.isError ?? false,
     ...(result.metadata === undefined ? {} : { metadata: result.metadata }),
+    ...(result.completion === undefined ? {} : { notice: result.completion }),
   };
 }
 
@@ -3272,11 +3322,10 @@ export function createBashKillTool(
         return { output: `bash_kill: ${NOT_FOUND}.`, isError: true };
       }
       await manager.waitForLocalCleanup(sessionIdOf(ctx));
-      // A held run reports stopped only once its working-directory hold has proven its processes gone.
-      if (result.status !== "running") return present(result);
-      await manager.waitForOutput(sessionIdOf(ctx), shellId, 2 * TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs, undefined, "completion");
-      const settled = manager.read(sessionIdOf(ctx), shellId);
-      return present(settled === undefined ? result : { ...settled, output: result.output + settled.output });
+      // A held run reports stopped only with its launcher's verdict, which the stop deadline bounds.
+      if (result.final === undefined) return present(result);
+      const final = await result.final;
+      return present({ ...final, output: result.output + final.output });
     },
   });
   canonicalBrokerLifecycleTools.add(tool);
@@ -4112,6 +4161,7 @@ async function spawnPowerShellWithSandbox(
 
   return await new Promise<ToolExecutionResult>((resolveResult) => {
     let child: PipedChild;
+    let held: HeldWindowsRun | undefined;
     try {
       if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
       assertManagedChildProcessAdmissionOpen("tool:powershell:asrt");
@@ -4123,11 +4173,11 @@ async function spawnPowerShellWithSandbox(
         windowsHide: true,
         detached: process.platform !== "win32",
         cwd,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: cwdHold.stdio ?? ["ignore", "pipe", "pipe"],
         shell: false,
         env: childEnv,
-      });
-      cwdHold.bind(child);
+      }) as PipedChild;
+      held = cwdHold.bind(child);
     } catch (err) {
       observation?.finish(null, "failed");
       void (async () => {
@@ -4142,7 +4192,7 @@ async function spawnPowerShellWithSandbox(
       })().catch(finalizationFault("tool:powershell:asrt", resolveResult, "PowerShell "));
       return;
     }
-    const closed = checkedShellClose(child, waitForClose);
+    const closed = checkedShellClose(child, waitForClose, held);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell:asrt" });
     // Detached, the child leads its own process group: the sandbox keeps the
     // ended invocation's listener port while anything in that group lives.
@@ -4157,13 +4207,14 @@ async function spawnPowerShellWithSandbox(
     let lifecycleCleaned = false;
     const cleanupAfterTermination = async (): Promise<unknown[]> => {
       if (lifecycleCleaned) return [];
-      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return [];
+      // A verdict means the hold was released, which leaves nothing of the run alive.
+      if (held === undefined && child.pid !== undefined && child.exitCode === null && child.signalCode === null) return [];
       lifecycleCleaned = true;
       return await releaseSandboxResources();
     };
-    const lifetime = watchShellLifetime(child, timeoutSeconds, signal, () => abortController.abort());
+    const lifetime = watchShellLifetime(child, timeoutSeconds, signal, () => abortController.abort(), held);
 
-    const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+    const finish = async (code: number | null, signal: NodeJS.Signals | null = null, pin?: WindowsHoldVerdict): Promise<void> => {
       if (closed !== undefined) await closed;
       if (lifetime.termination) await lifetime.termination;
       const released = await cleanupAfterTermination();
@@ -4177,7 +4228,7 @@ async function spawnPowerShellWithSandbox(
       const { output, sandboxCleanupFailed } = await annotateSandboxCommandResult(egress.token, wrapped, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
       )), command, lifecycleCleaned);
-      outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || sandboxCleanupFailed ? "failed" : undefined);
+      outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || sandboxCleanupFailed || failedPin(pin) ? "failed" : undefined);
       const result = withReleaseFailures({
         output: lifetime.timedOut
           ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
@@ -4186,15 +4237,13 @@ async function spawnPowerShellWithSandbox(
         metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut, sandboxed: true,
           ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
       }, released);
-      const pinned = withCwdPinOutcome(result, await cwdHold.outcome(), lifetime.aborted || lifetime.timedOut);
+      const pinned = withCwdPinOutcome(result, pin, lifetime.aborted || lifetime.timedOut);
       resolveResult(!lifetime.aborted && !lifetime.timedOut && code !== null && code !== 0
         ? await attachFilesystemBlock(pinned, egress.token, command, cwd) : pinned);
     };
-    const fault = finalizationFault("tool:powershell:asrt", resolveResult, "PowerShell ");
+    const fault = finalizationFault("tool:powershell:asrt", resolveResult, "PowerShell ", () => held);
 
-    void lifetime.stopped.then(() => finish(child.exitCode)).catch(fault);
-    child.once("close", (code, signal) => { void finish(code, signal).catch(fault); });
-    child.on("error", (err) => {
+    onShellEnd(child, lifetime, held, finish, (err) => {
       void (async () => {
         if (closed !== undefined) await closed;
         if (settled) return;
@@ -4215,7 +4264,7 @@ async function spawnPowerShellWithSandbox(
           metadata: { ...artifactMetadata, ...cleanupMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
         }, released));
       })().catch(fault);
-    });
+    }, fault);
   });
   } finally { cwdHold.dispose(); }
 }
@@ -4280,13 +4329,12 @@ async function spawnPowerShellInMxc(
   let token: string;
   let launch: MxcShellLaunch;
   let child: PipedChild;
-  let launchHold: HostShellSpawnDirectoryHold | undefined;
+  let held: HeldWindowsRun | undefined;
   try {
     const sandboxHome = createSandboxProcessHome();
     failurePrefix = "";
     lifecycle.defer(() => sandboxHome.cleanup());
     const cwdHold = await holdHostShellSpawnDirectory(spawnAuthorization);
-    launchHold = cwdHold;
     lifecycle.defer(() => cwdHold.dispose());
     const powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome);
     const sandboxWritePaths = [...writePaths, sandboxHome.path];
@@ -4345,13 +4393,13 @@ async function spawnPowerShellInMxc(
         // nothing in the workspace sits beside it; the container's working
         // directory travels in the request.
         cwd: win32Path.dirname(cmd),
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: cwdHold.stdio ?? ["ignore", "pipe", "pipe"],
         shell: false,
         windowsHide: true,
         // The launcher's own environment: the container's is in the request.
         env: buildSafeChildEnv({}),
-      });
-      cwdHold.bind(child);
+      }) as PipedChild;
+      held = cwdHold.bind(child);
     } catch (error) {
       throw error instanceof HostShellDirectoryHoldError ? error : launcherError(error);
     }
@@ -4373,10 +4421,14 @@ async function spawnPowerShellInMxc(
   }
   const spawned = child;
   const egressToken = token;
+  const run = held;
 
   return await new Promise<ToolExecutionResult>((resolveResult) => {
-    // The launcher's exit ends the container job, and with it everything the command started.
-    const jobLive = (): boolean => spawned.pid !== undefined && spawned.exitCode === null && spawned.signalCode === null;
+    let verdict: WindowsHoldVerdict | undefined;
+    // The launcher's exit ends the container job, and with it everything the command started. A held
+    // launcher is over only at its verdict, which also covers one that never exits.
+    const jobLive = (): boolean => run !== undefined ? verdict === undefined
+      : spawned.pid !== undefined && spawned.exitCode === null && spawned.signalCode === null;
     // The job's exit revokes the invocation and starts disposal; a result formatted after the job exited
     // joins that disposal, while one that settles first carries generic details and the outcome is logged.
     const release = async (result: () => ToolExecutionResult, failures: readonly unknown[]): Promise<ToolExecutionResult> => {
@@ -4400,8 +4452,12 @@ async function spawnPowerShellInMxc(
     };
     // A fault inside finalization still settles, ends the observation, and still disposes.
     const fault = (error: unknown): void => {
-      void runReleaseSteps([() => endObservation(null, "failed")])
-        .then((failures) => release(() => spawnFailure(error), failures)).then(resolveResult);
+      void (async () => {
+        verdict = await run?.stop();
+        const pin = verdict;
+        const failures = await runReleaseSteps([() => endObservation(null, "failed")]);
+        resolveResult(await release(() => withCwdPinOutcome(spawnFailure(error), pin, true), failures));
+      })();
     };
     let settled = false;
     const settle = (produce: () => Promise<ToolExecutionResult>): void => {
@@ -4412,6 +4468,11 @@ async function spawnPowerShellInMxc(
     let lifetime: ReturnType<typeof watchShellLifetime> | undefined;
     let closed: Promise<void> | undefined;
     spawned.on("error", (err) => {
+      if (run !== undefined) {
+        // A held run's error is a stop request to its launcher; the result is the verdict's.
+        shellTaskLog.error({ label: MXC_SHELL_LABEL, err: shellFailureText([launcherError(err)]) }, "held contained shell reported an error");
+        return;
+      }
       void (async () => {
         if (closed !== undefined) await closed;
         // A spawn that fails (no pid) may never emit "close". A running child keeps its
@@ -4434,10 +4495,14 @@ async function spawnPowerShellInMxc(
       // A confirmed exit, or a spawn that failed with no pid, revokes the invocation and starts its disposal
       // at once; output finalization never holds its authority.
       lifecycle.jobStarted(new Promise<void>((resolve) => {
-        spawned.once("exit", () => { resolve(); void lifecycle.dispose(); });
-        spawned.once("error", () => { if (spawned.pid === undefined) { resolve(); void lifecycle.dispose(); } });
+        const ended = (): void => { resolve(); void lifecycle.dispose(); };
+        if (run !== undefined) void run.verdict.then(ended);
+        else {
+          spawned.once("exit", ended);
+          spawned.once("error", () => { if (spawned.pid === undefined) ended(); });
+        }
       }));
-      closed = checkedShellClose(spawned, waitForClose);
+      closed = checkedShellClose(spawned, waitForClose, run);
       trackManagedChildProcess(spawned, { killProcessGroup: false, label: MXC_SHELL_LABEL });
       launch.bindChild(spawned);
       collector = createOutputCollector(spawned, { captureFactory: outputCaptureFactory, progress, observation });
@@ -4445,22 +4510,24 @@ async function spawnPowerShellInMxc(
       // The parser's stderr is drained, never kept.
       spawned.stderr.on("data", parserResponse === undefined ? collector.collectStderr : () => {});
       // Timeout and cancellation revoke the invocation before the kill starts.
-      lifetime = watchShellLifetime(spawned, timeoutSeconds, signal, () => lifecycle.revoke());
+      lifetime = watchShellLifetime(spawned, timeoutSeconds, signal, () => lifecycle.revoke(), run);
     } catch (error) {
       lifecycle.revoke();
-      const termination = forceKillManagedChildProcess(spawned, "shell-spawn-failed");
+      const termination = run?.stop() ?? forceKillManagedChildProcess(spawned, "shell-spawn-failed");
       spawned.stdout.destroy();
       spawned.stderr.destroy();
       settle(async () => {
-        await termination;
-        return release(() => spawnFailure(error), await runReleaseSteps([() => endObservation(null, "failed")]));
+        verdict = await termination ?? undefined;
+        const pin = verdict;
+        return release(() => withCwdPinOutcome(spawnFailure(error), pin, true), await runReleaseSteps([() => endObservation(null, "failed")]));
       });
       return;
     }
     const output = collector;
     const watch = lifetime;
 
-    const finish = async (code: number | null, exitSignal: NodeJS.Signals | null = null): Promise<void> => {
+    const finish = async (code: number | null, exitSignal: NodeJS.Signals | null = null, pin?: WindowsHoldVerdict): Promise<void> => {
+      verdict = pin;
       if (closed !== undefined) await closed;
       watch.dispose();
       settle(async () => {
@@ -4486,16 +4553,19 @@ async function spawnPowerShellInMxc(
               metadata: { ...artifactMetadata, ...metadata },
             };
           },
-          () => endObservation(code, watch.aborted ? "cancelled" : watch.timedOut || exitSignal !== null ? "failed" : undefined),
+          () => endObservation(code, watch.aborted ? "cancelled" : watch.timedOut || exitSignal !== null || failedPin(pin) ? "failed" : undefined),
         ]);
-        const pinned = withCwdPinOutcome(completed, await launchHold?.outcome(), watch.aborted || watch.timedOut);
+        const pinned = withCwdPinOutcome(completed, pin, watch.aborted || watch.timedOut);
         const result = parserResponse === undefined && !watch.aborted && !watch.timedOut && code !== null && code !== 0
           ? await attachFilesystemBlock(pinned, egressToken, command, cwd) : pinned;
         return release(() => result, failures);
       });
     };
-    void watch.stopped.then(() => finish(spawned.exitCode)).catch(fault);
-    spawned.once("close", (code, exitSignal) => { void finish(code, exitSignal).catch(fault); });
+    if (run !== undefined) void run.verdict.then((pin) => finish(spawned.exitCode, spawned.signalCode, pin)).catch(fault);
+    else {
+      void watch.stopped.then(() => finish(spawned.exitCode)).catch(fault);
+      spawned.once("close", (code, exitSignal) => { void finish(code, exitSignal).catch(fault); });
+    }
   });
 }
 
@@ -4527,14 +4597,14 @@ async function spawnPowerShell(
         windowsHide: true,
         detached: process.platform !== "win32",
         cwd,
-        stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
+        stdio: launchHold?.stdio ?? (prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"]),
         env: powerShellExecutionEnvironment(verified, buildHostShellChildEnv()),
         shell: false,
       }, verified, launchHold,
     ) as PipedChild; }
     catch (error) { observation?.finish(null, "failed"); throw error; }
-    launchHold?.bind(child);
-    const closed = checkedShellClose(child, waitForClose);
+    const held = launchHold?.bind(child);
+    const closed = checkedShellClose(child, waitForClose, held);
     const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell" });
 
@@ -4544,9 +4614,9 @@ async function spawnPowerShell(
 
     let settled = false;
 
-    const lifetime = watchShellLifetime(child, timeoutSeconds, signal);
+    const lifetime = watchShellLifetime(child, timeoutSeconds, signal, undefined, held);
 
-    const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+    const finish = async (code: number | null, signal: NodeJS.Signals | null = null, pin?: WindowsHoldVerdict): Promise<void> => {
       if (closed !== undefined) await closed;
       if (lifetime.termination) await lifetime.termination;
       lifetime.dispose();
@@ -4555,7 +4625,7 @@ async function spawnPowerShell(
       const rejected = control?.rejected === true;
       control?.dispose();
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
-      outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null ? "failed" : undefined);
+      outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || failedPin(pin) ? "failed" : undefined);
       const output = lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
       ));
@@ -4566,13 +4636,11 @@ async function spawnPowerShell(
             ? `PowerShell spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}` : output,
         isError: rejected || lifetime.aborted || lifetime.timedOut || code !== 0,
         metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut },
-      }, await launchHold?.outcome(), lifetime.aborted || lifetime.timedOut));
+      }, pin, lifetime.aborted || lifetime.timedOut));
     };
 
-    const fault = finalizationFault("tool:powershell", resolve, "PowerShell ");
-    void lifetime.stopped.then(() => finish(child.exitCode)).catch(fault);
-    child.once("close", (code, signal) => { void finish(code, signal).catch(fault); });
-    child.on("error", (err) => {
+    const fault = finalizationFault("tool:powershell", resolve, "PowerShell ", () => held);
+    onShellEnd(child, lifetime, held, finish, (err) => {
       void (async () => {
         if (closed !== undefined) await closed;
         if (settled) return;
@@ -4588,7 +4656,7 @@ async function spawnPowerShell(
           metadata: { ...artifactMetadata },
         });
       })().catch(fault);
-    });
+    }, fault);
   });
   if (spawnAuthorization !== undefined && prelude === undefined) {
     const handoff = await withHostShellExecutionHandoff(spawnAuthorization, (hold) => { launchHold = hold; return { result: launch() }; }, refreshShellRemoteAuthority)
