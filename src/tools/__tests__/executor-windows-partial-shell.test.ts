@@ -7,7 +7,7 @@ import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
@@ -25,6 +25,9 @@ import { createDynamicTool, type Tool } from "../base.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
 import { ToolExecutor, type ToolCallMeta } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
+import { cardGate, defined, sessionGate } from "../../__tests__/support/forced-shell-card.js";
+import { shellExecutionEnvironmentLines } from "../../shared/shell-execution-environment.js";
+import { t } from "../../i18n/runtime.js";
 import { preparedShellFacts } from "../prepared-shell-invocation.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
@@ -48,7 +51,7 @@ import {
   setWindowsSandboxSubstrate,
 } from "../../permissions/sandbox-capability.js";
 import { windowsSubstrateFor } from "../../boot/steps/windows-sandbox-plan.js";
-import { _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
+import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import {
@@ -394,151 +397,167 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     );
   });
 
-  it.each(["default", "auto", "allow"] as const)("honors prefix and tool allows for a partial-plan host shell in %s mode", async (mode) => {
-    partialWindowsAsrt();
-    const execute = vi.fn();
-    const registry = shellProbeRegistry(execute);
-    const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b.json");
+  // A capability that does not contain shells leaves the shell uncontained, so it takes the no-confinement ask: once or this session, never saved.
+  const partialManager = (mode: "strict" | "default" | "auto" | "allow", rules: readonly string[] = []) => {
+    const pm = new PermissionManager(join(testRoot, `partial-${mode}.json`));
     pm.setMode(mode);
-    pm.setRules([{ pattern: "Bash(echo *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }, { pattern: "bash", action: "allow" }]);
-    setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, recentlyDenied: makeRecentlyDeniedStore(join(testRoot, "recently-denied.json")) });
-    pm.dispatchReviewer = vi.fn() as never;
-    const requestAndWait = vi.fn();
-    const result = await new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never).executeAll(
-      [{ id: "partial-shell-rule", name: "bash", input: { command: "echo no-run" } }],
-      { sessionId: "partial-shell", permissionContext: permissionContext() },
-    );
-    expect(pm.dispatchReviewer).not.toHaveBeenCalled();
-    expect(requestAndWait).not.toHaveBeenCalled();
-    expect(execute).toHaveBeenCalledOnce();
-    expect(execute.mock.calls[0][0].hostShellExecutionPermit).toBeDefined();
-    expect(result[0]?.is_error).toBeUndefined();
-  });
-
-  it.each(["default", "auto", "allow"] as const)("uses the ordinary %s policy for a partial-plan host shell without a rule", async (mode) => {
-    partialWindowsAsrt();
-    const execute = vi.fn();
-    const registry = shellProbeRegistry(execute);
-    const pm = new PermissionManager("/tmp/nonexistent-windows-partial-mode.json");
-    pm.setMode(mode);
+    pm.setRules(rules.map(pattern => pattern.includes("(")
+      ? { pattern, action: "allow" as const, shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }
+      : { pattern, action: "allow" as const }));
     setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, recentlyDenied: makeRecentlyDeniedStore(join(testRoot, "recently-denied.json")) });
     pm.dispatchReviewer = vi.fn(async () => ({ verdict: { level: "low" as const, reason: "Bounded host effect" }, cacheReason: "miss-not-found" as const,
       outcome: "fresh" as const, judge: reviewerJudgeOutcomeForTest("allow", "Bounded host effect") })) as never;
-    const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" as const }));
-    const result = await new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never).executeAll(
-      [{ id: "partial-shell-mode", name: "bash", input: { command: "echo no-run" } }],
-      { sessionId: "partial-shell", permissionContext: permissionContext() },
+    return pm;
+  };
+  const partialRun = (pm: PermissionManager, gate: ApprovalGate, registry: ToolRegistry, options: { sessionId?: string; command?: string; host?: boolean; headless?: boolean; auditLogger?: AuditLogger } = {}) => {
+    const command = options.command ?? "echo no-run";
+    return new ToolExecutor(registry, undefined, pm, undefined, gate, undefined, options.auditLogger).executeAll(
+      [{ id: "partial-shell-floor", name: "bash", input: options.host ? { command, executionMode: "host", justification: "Retry outside the OS sandbox" } : { command } }],
+      { sessionId: options.sessionId ?? "partial-shell", permissionContext: { ...permissionContext(), ...(options.headless ? { headless: true } : {}) } },
     );
-    expect(pm.dispatchReviewer).toHaveBeenCalledTimes(mode === "auto" ? 1 : 0);
-    expect(requestAndWait).toHaveBeenCalledTimes(mode === "default" ? 1 : 0);
-    expect(execute).toHaveBeenCalledTimes(mode === "default" ? 0 : 1);
-    if (mode === "default") {
-      expect(result[0]?.is_error).toBe(true);
-      expect(requestAndWait.mock.calls[0]?.[0]).toMatchObject({ executionPlan: { fallbackReason: "windows-partial-shell-acl-unsafe" } });
-      expect((requestAndWait.mock.calls[0]?.[0] as ApprovalRequest).allowedChoices).toBeUndefined();
-    } else {
-      expect(execute.mock.calls[0][0].hostShellExecutionPermit).toBeDefined();
-      expect(result[0]?.is_error).toBeUndefined();
-    }
-  });
+  };
+  const FLOOR_BYPASSES = [
+    { label: "saved prefix and tool allow rules", mode: "default" as const, rules: ["Bash(echo *)", "bash"] },
+    { label: "its exact Bash(<command>) rule", mode: "default" as const, rules: ["Bash(echo no-run)"] },
+    { label: "its exact rule in allow mode", mode: "allow" as const, rules: ["Bash(echo no-run)"] },
+    { label: "strict mode", mode: "strict" as const, rules: [] },
+    { label: "allow mode", mode: "allow" as const, rules: [] },
+    { label: "auto review", mode: "auto" as const, rules: [] },
+  ];
 
-  // The card a Plan B shell raises, as the host sends it to the renderer: Deny, Allow once, This session, This project
-  // and Always, the three saves all naming the one exact Bash(<command>) rule the host derived.
-  it.each(["strict", "default"] as const)("sends a Plan B shell card that offers the session, project and always saves in %s mode", async (mode) => {
+  it.each(["default", "explicit-host"] as const)("checks a pending floor answer against policy changes on the %s route", async (route) => {
     partialWindowsAsrt();
     const execute = vi.fn();
     const registry = shellProbeRegistry(execute);
-    const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-card.json");
-    pm.setMode(mode);
-    let gate: ApprovalGate;
-    const send = vi.fn((channel: string, request: ApprovalRequest) => {
-      if (channel !== "ave:approval:request") return;
-      gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, nativeWebContents as never);
-    });
-    const nativeWebContents = { isDestroyed: () => false, send };
-    gate = new ApprovalGate(nativeWebContents as never);
-    const result = await new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
-      [{ id: "partial-shell-card", name: "bash", input: { command: "echo plan-b" } }],
-      { sessionId: "partial-shell-card", permissionContext: permissionContext() },
-    );
+    const pm = partialManager("default", []);
+    const options = { host: route === "explicit-host" };
 
-    const cards = sentApprovalCards<ApprovalRequest>({ send } as never);
-    expect(cards).toHaveLength(1);
-    const card = cards[0]!;
-    expect(card.executionPlan).toMatchObject({ fallbackReason: "windows-partial-shell-acl-unsafe", requiresExplicitUserApproval: true });
-    // No once/deny narrowing: the renderer shows the full grid.
-    expect(card.allowedChoices).toBeUndefined();
-    expect(card.reviewerVerdict).toBeUndefined();
-    // Allow for session (the conversation is known), this project and everywhere (persistent saves allowed), and Always deny, all for the exact rule.
-    expect(card.shellRule).toEqual({
-      dialect: "bash",
-      exactRule: "Bash(echo plan-b)",
-      denyRule: "Bash(echo plan-b)",
-      denyAllowed: true,
-      projectCwd: expect.any(String),
-      projectRoot: expect.any(String),
-      sessionAllowed: true,
-      persistentAllowed: true,
-    });
-    expect(card.persistentAllowAllowed).toBe(true);
-    expect(card.sessionId).toBe("partial-shell-card");
+    const memory = cardGate("allow-once", () => pm.addSessionRule("other-session", "Bash(printf ready)"));
+    const allowed = await partialRun(pm, memory.gate, registry, options);
+    expect(memory.cards()).toEqual([expect.objectContaining({ allowedChoices: ["allow-once", "deny-once"] })]);
+    expect(allowed[0]?.is_error, String(allowed[0]?.content)).toBeFalsy();
     expect(execute).toHaveBeenCalledOnce();
-    expect(result[0]?.is_error).toBeUndefined();
+
+    const changed = cardGate("allow-once", () => pm.setMode("allow"));
+    const denied = await partialRun(pm, changed.gate, registry, options);
+    expect(changed.cards()).toHaveLength(1);
+    expect(denied[0]?.is_error).toBe(true);
+    expect(denied[0]?.content).toContain("Permission policy changed while approval was pending");
+    expect(execute).toHaveBeenCalledOnce();
   });
 
-  // Explicit matching rules authorize the action before mode review; the native permit stays action-bound.
-  it.each(["default", "allow"] as const)("runs a Plan B shell on its exact Bash(<command>) rule in %s mode without a card", async (mode) => {
-    partialWindowsAsrt();
-    let observedPermit: unknown;
-    const execute = vi.fn((ctx: import("../types.js").ToolExecutionContext) => { observedPermit = ctx.hostShellExecutionPermit; });
-    const registry = shellProbeRegistry(execute);
-    const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-rule.json");
-    pm.setMode(mode);
-    pm.setRules([{ pattern: "Bash(echo no-run)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
-    setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, recentlyDenied: makeRecentlyDeniedStore(join(testRoot, "recently-denied.json")) });
-    pm.dispatchReviewer = vi.fn() as never;
-    const requestAndWait = vi.fn();
-    const result = await new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never).executeAll(
-      [{ id: "partial-shell-exact-rule", name: "bash", input: { command: "echo no-run" } }],
-      { sessionId: "partial-shell", permissionContext: permissionContext() },
-    );
+  it.each(FLOOR_BYPASSES.flatMap(entry => [{ ...entry, host: false, route: "default" }, { ...entry, host: true, route: "explicit-host" }]))(
+    "asks on the no-confinement card for a partial-plan shell ($route) with $label", async ({ mode, rules, host }) => {
+      partialWindowsAsrt();
+      const execute = vi.fn();
+      const registry = shellProbeRegistry(execute);
+      const pm = partialManager(mode, rules);
 
-    expect(pm.dispatchReviewer).not.toHaveBeenCalled();
-    expect(requestAndWait).not.toHaveBeenCalled();
-    expect(execute).toHaveBeenCalledOnce();
-    expect(observedPermit).toBeDefined();
-    expect(result[0]?.is_error).toBeUndefined();
-  });
+      const denied = cardGate("deny-once");
+      const refused = await partialRun(pm, denied.gate, registry, { host });
+      expect(denied.cards()).toHaveLength(1);
+      const card = defined(denied.cards()[0], "approval card");
+      expect(card.executionPlan).toMatchObject(host
+        ? { mode: "plain", executionRequest: "host", requiresExplicitUserApproval: true }
+        : { mode: "plain", fallbackReason: "active-sandbox-not-shell-contained", requiresExplicitUserApproval: true });
+      expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
+      expect(card.reviewerVerdict).toBeUndefined();
+      expect(card.shellRule).toMatchObject({ exactRule: null, sessionAllowed: true, persistentAllowed: false, denyAllowed: false, floorSessionOnly: true });
+      if (!host) expect(shellExecutionEnvironmentLines(defined(card.executionPlan, "card execution plan"))).toContain(t("shellExecution.shellNotContainedAsk"));
+      expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(refused[0]?.is_error).toBe(true);
 
-  // Headless default mode honors a prefix rule and denies unmatched actions without a human.
-  it.each([true, false])("runs a headless partial-plan shell only when its default-mode rule covers it (rule %s)", async (withRule) => {
-    partialWindowsAsrt();
-    let observedPermit: unknown;
-    const execute = vi.fn((ctx: import("../types.js").ToolExecutionContext) => { observedPermit = ctx.hostShellExecutionPermit; });
-    const registry = shellProbeRegistry(execute);
-    const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-headless.json");
-    pm.setMode("default");
-    pm.setRules(withRule ? [{ pattern: "Bash(echo *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }] : []);
-    pm.setReviewer({ classifier: {} as never, cache: {} as never, recentlyDenied: makeRecentlyDeniedStore(join(testRoot, "recently-denied.json")) });
-    pm.dispatchReviewer = vi.fn() as never;
-    const requestAndWait = vi.fn();
-    const audit = recordingAuditLogger();
-    const result = await new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never, undefined, audit.auditLogger).executeAll(
-      [{ id: "partial-shell-headless", name: "bash", input: { command: "echo no-run" } }],
-      { sessionId: "partial-shell", permissionContext: { ...permissionContext(), headless: true } },
-    );
-
-    expect(pm.dispatchReviewer).not.toHaveBeenCalled();
-    expect(requestAndWait).not.toHaveBeenCalled();
-    if (withRule) {
+      const approved = cardGate("allow-once");
+      const ran = await partialRun(pm, approved.gate, registry, { host });
+      expect(approved.cards()).toHaveLength(1);
       expect(execute).toHaveBeenCalledOnce();
-      expect(observedPermit).toBeDefined();
+      expect(execute.mock.calls[0][0].hostShellExecutionPermit).toBeDefined();
+      expect(ran[0]?.is_error).toBeUndefined();
+
+      // Once is once: the same command asks again.
+      const again = cardGate("deny-once");
+      await partialRun(pm, again.gate, registry, { host });
+      expect(again.cards()).toHaveLength(1);
+      expect(execute).toHaveBeenCalledOnce();
+    });
+
+  it.each([{ host: false, route: "default" }, { host: true, route: "explicit-host" }])(
+    "runs on a saved exact rule with verified boot home privacy ($route)", async ({ host }) => {
+      partialWindowsAsrt();
+      const execute = vi.fn();
+      const registry = shellProbeRegistry(execute);
+      const pm = partialManager("default");
+      await pm.addRulePersist({ pattern: "Bash(echo no-run)", action: "allow" }, { kind: "user" });
+      const unverified = cardGate("deny-once");
+      await partialRun(pm, unverified.gate, registry, { host });
+      expect(unverified.cards()).toHaveLength(1);
+      expect(execute).not.toHaveBeenCalled();
+
+      setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: testRoot, sid: "S-1-5-21-1" });
+      const approvals = cardGate("deny-once");
+
+      const result = await partialRun(pm, approvals.gate, registry, { host });
+      expect(approvals.cards()).toHaveLength(0);
+      expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+      expect(execute).toHaveBeenCalledOnce();
+      expect(execute.mock.calls[0][0].hostShellExecutionPermit).toBeDefined();
       expect(result[0]?.is_error).toBeUndefined();
-      // The tool-call audit retains the exact rule that permitted execution.
-      const call = audit.telemetryEntries.find((entry) => entry.type === "tool_call");
-      expect(call?.toolCalls?.[0]).toMatchObject({ permissionDecision: "allow" });
-      expect(call?.toolCalls?.[0]?.permissionReason).toContain("Bash(echo *)");
-    } else {
+
+      const headless = await partialRun(pm, approvals.gate, registry, { host, headless: true });
+      expect(headless[0]?.content).toContain(NO_APPROVER_MESSAGE);
+      expect(approvals.cards()).toHaveLength(0);
+      expect(execute).toHaveBeenCalledOnce();
+    });
+
+  it.each([{ host: false, route: "default" }, { host: true, route: "explicit-host" }])(
+    "waives the partial-plan ask for the session, then the ordinary policy decides ($route)", async ({ host }) => {
+      partialWindowsAsrt();
+      const execute = vi.fn();
+      const registry = shellProbeRegistry(execute);
+      const pm = partialManager("default", ["Bash(echo *)"]);
+
+      const session = sessionGate(pm);
+      const first = await partialRun(pm, session.gate, registry, { host });
+      expect(session.cards()).toHaveLength(1);
+      expect(session.saves).toEqual([expect.objectContaining({ ok: true })]);
+      expect(first[0]?.is_error).toBeUndefined();
+      expect(execute).toHaveBeenCalledOnce();
+      // Nothing was saved as a rule.
+      expect(existsSync(join(testRoot, "partial-default.json"))).toBe(false);
+
+      // The same session: the floor is passed, and the saved prefix rule now answers, on either route.
+      const later = cardGate("deny-once");
+      await partialRun(pm, later.gate, registry, { command: "echo later" });
+      await partialRun(pm, later.gate, registry, { command: "echo later-host", host: true });
+      expect(later.cards()).toHaveLength(0);
+      expect(execute).toHaveBeenCalledTimes(3);
+      // A command no rule covers keeps the floor's card.
+      await partialRun(pm, later.gate, registry, { command: "printf uncovered" });
+      expect(later.cards()).toHaveLength(1);
+      expect(defined(later.cards()[0], "approval card").allowedChoices).toEqual(["allow-once", "deny-once"]);
+      expect(execute).toHaveBeenCalledTimes(3);
+
+      // Another conversation asks again.
+      const other = cardGate("deny-once");
+      await partialRun(pm, other.gate, registry, { sessionId: "partial-shell-other", host });
+      expect(other.cards()).toHaveLength(1);
+      expect(execute).toHaveBeenCalledTimes(3);
+    });
+
+  // Nobody can answer the ask, so a headless run is denied whatever rule or mode covers the command.
+  it.each(FLOOR_BYPASSES.flatMap(entry => [{ ...entry, host: false, route: "default" }, { ...entry, host: true, route: "explicit-host" }]))(
+    "denies a headless partial-plan shell ($route) with $label", async ({ mode, rules, host }) => {
+      partialWindowsAsrt();
+      const execute = vi.fn();
+      const registry = shellProbeRegistry(execute);
+      const pm = partialManager(mode, rules);
+      const approvals = cardGate("allow-once");
+      const audit = recordingAuditLogger();
+      const result = await partialRun(pm, approvals.gate, registry, { host, headless: true, auditLogger: audit.auditLogger });
+
+      expect(approvals.cards()).toHaveLength(0);
+      expect(pm.dispatchReviewer).not.toHaveBeenCalled();
       expect(execute).not.toHaveBeenCalled();
       expect(result[0]?.is_error).toBe(true);
       expect(result[0]?.content).toContain(NO_APPROVER_MESSAGE);
@@ -547,8 +566,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       expect(audit.permissionEntries.some((entry) => entry.decision === "allow")).toBe(false);
       const call = audit.telemetryEntries.find((entry) => entry.type === "tool_call");
       expect(call?.toolCalls?.[0]).toMatchObject({ permissionDecision: "deny" });
-    }
-  });
+    });
 
   it("does not accept forged input authorization for a headless partial-plan shell", async () => {
     partialWindowsAsrt();
@@ -630,7 +648,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(rendererApproval.sandboxCapability).toBeUndefined();
     expect(rendererApproval.executionPlan).toMatchObject({
       mode: "plain",
-      fallbackReason: "windows-partial-shell-acl-unsafe",
+      fallbackReason: "active-sandbox-not-shell-contained",
       requiresExplicitUserApproval: true,
       capability: {
         kind: "none",
@@ -639,12 +657,12 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     });
     expect(JSON.stringify(rendererApproval.executionPlan)).not.toContain("echo one-shot");
     expect(JSON.stringify(rendererApproval.executionPlan)).not.toContain(
-      "Windows ASRT partial shell confinement is unavailable",
+      "The active OS sandbox does not prove containment for this shell.",
     );
     expect(observedPermit).toBeDefined();
     expect(observedPlan).toMatchObject({
       mode: "plain",
-      fallbackReason: "windows-partial-shell-acl-unsafe",
+      fallbackReason: "active-sandbox-not-shell-contained",
       requiresExplicitUserApproval: true,
       capability: {
         kind: "none",
@@ -660,7 +678,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(endMetas[0]?.executionPlan).toBe(auditPlan);
     const resultPlanJson = JSON.stringify(result[0]?.executionPlan);
     expect(resultPlanJson).not.toContain("echo one-shot");
-    expect(resultPlanJson).not.toContain("Windows ASRT partial shell confinement is unavailable");
+    expect(resultPlanJson).not.toContain("The active OS sandbox does not prove containment for this shell.");
     expect(resultPlanJson).not.toContain("hostShellExecutionPermit");
     const ask = audit.permissionEntries.find((entry) => entry.decision === "ask");
     const terminal = audit.permissionEntries.find((entry) => entry.decision === "allow");
@@ -725,7 +743,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(endMetas[0]?.executionPlan).toBe(expectedPlan);
     const deniedResultPlanJson = JSON.stringify(result[0]?.executionPlan);
     expect(deniedResultPlanJson).not.toContain("echo denied");
-    expect(deniedResultPlanJson).not.toContain("Windows ASRT partial shell confinement is unavailable");
+    expect(deniedResultPlanJson).not.toContain("The active OS sandbox does not prove containment for this shell.");
     expect(deniedResultPlanJson).not.toContain("hostShellExecutionPermit");
     for (const surface of [ask, terminal, telemetry]) {
       expect(surface).toBeDefined();
@@ -776,7 +794,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(endMetas).toHaveLength(1);
     expect(endMetas[0]?.executionPlan).toBe(request!.executionPlan);
     const permitlessResultPlanJson = JSON.stringify(result[0]?.executionPlan);
-    expect(permitlessResultPlanJson).not.toContain("Windows ASRT partial shell confinement is unavailable");
+    expect(permitlessResultPlanJson).not.toContain("The active OS sandbox does not prove containment for this shell.");
     expect(permitlessResultPlanJson).not.toContain("hostShellExecutionPermit");
     expect(permitlessResultPlanJson).not.toContain('"reason"');
   });

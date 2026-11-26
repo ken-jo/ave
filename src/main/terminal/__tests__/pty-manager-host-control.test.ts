@@ -408,6 +408,20 @@ describe.runIf(process.platform !== "win32")("host terminal control periods", ()
     expect(shell.pty.written).not.toContain("\r");
   });
 
+  it.each(["before paste", "after paste"] as const)("releases the host lease when the write fence refuses %s", async (when) => {
+    const shell = await hostShell();
+    const ready = "\u001b[200~echo approved\u001b[201~";
+    const typed = await typeHostTerminalCommand(shell.session, WINDOW, typing("echo approved", () => true, {
+      writeFence: () => shell.pty.written.includes(when === "before paste" ? TERMINAL_EDIT_LINE_QUERY : ready)
+        ? "permission changed" : undefined,
+    }));
+    expect(typed).toMatchObject({ ok: false, reason: "effect-refused", message: "permission changed" });
+    expect(shell.pty.written).not.toContain("\r");
+    expect(shell.pty.written.includes(ready)).toBe(when === "after paste");
+    if (when === "after paste") expect(shell.pty.written.at(-1)).toBe("\u0003");
+    expect(controlTerminal(shell.session, WINDOW, "get")).toMatchObject({ ok: true, control: { mode: "available" } });
+  });
+
   it("interrupts once when a Stop pressed between Enter and the command's start sees the command start", async () => {
     const shell = await hostShell();
     const typed = await typeHostTerminalCommand(shell.session, WINDOW, typing("sleep 30"));

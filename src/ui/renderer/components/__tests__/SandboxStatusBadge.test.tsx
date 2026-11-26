@@ -191,7 +191,7 @@ describe("SandboxStatusBadge — Windows MXC check settling after boot", () => {
   }
 
   it("shows the check as in progress rather than as the sandbox being off", () => {
-    expect(checking.shellExecutionPlan?.fallbackReason).toBe("windows-partial-shell-acl-unsafe");
+    expect(checking.shellExecutionPlan?.fallbackReason).toBe("active-sandbox-not-shell-contained");
     render(<SandboxStatusBadge capability={checking} />);
     expect(screen.queryByTestId("sandbox-off-status")).toBeNull();
     expect(screen.getByTestId("sandbox-checking-status").textContent)

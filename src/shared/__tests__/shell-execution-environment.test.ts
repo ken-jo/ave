@@ -22,6 +22,10 @@ function plan(sandbox: boolean) {
   });
 }
 
+function environmentPrompt(defaultPlan: ReturnType<typeof plan>, interactive: boolean, hostPlan = defaultPlan) {
+  return shellExecutionEnvironmentPrompt(defaultPlan, interactive, hostPlan);
+}
+
 describe("shell execution environment", () => {
   it("tells the model that a helper-unavailable boot denies shells until a restart", () => {
     const denied = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: false,
@@ -44,10 +48,40 @@ describe("shell execution environment", () => {
   });
 
   it("offers no host-execution request while the helper-unavailable plan blocks every shell", () => {
-    const prompt = shellExecutionEnvironmentPrompt(helperUnavailablePlan(), true);
+    const prompt = environmentPrompt(helperUnavailablePlan(), true);
     expect(prompt).toContain(t("shellExecution.homePrivacyHelperUnavailable"));
     expect(prompt).not.toContain(t("shellExecution.hostRequest"));
-    expect(shellExecutionEnvironmentPrompt(plan(false), true)).toContain(t("shellExecution.hostRequest"));
+    expect(environmentPrompt(plan(false), true)).toContain(t("shellExecution.hostRequest"));
+  });
+
+  it.each(["en", "ko"] as const)("describes an explicit host request on the floor in %s", (locale) => {
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      const input = {
+        platform: "win32", requestedSandbox: true, executionMode: "host",
+        activeCapability: {
+          kind: "asrt", platform: "win32", confidence: "verified", reason: "Fixture",
+          confines: { filesystem: true, process: false, network: true },
+        },
+      } as const;
+      const partial = buildHostShellExecutionPlan(input);
+      const partialVerified = buildHostShellExecutionPlan({ ...input, homePrivacyVerified: true });
+      const privacy = buildHostShellExecutionPlan({ ...input, requestedSandbox: false, unavailableSandboxRequiresAsk: true });
+      const missingInput = { ...input, activeCapability: { ...input.activeCapability, kind: "none" as const } };
+      const missing = buildHostShellExecutionPlan({ ...missingInput, homePrivacyVerified: true });
+      const missingAndPrivacyUnverified = buildHostShellExecutionPlan({ ...missingInput, unavailableSandboxRequiresAsk: true });
+
+      for (const hostPlan of [partial, partialVerified, privacy, missing, missingAndPrivacyUnverified]) {
+        const prompt = environmentPrompt(plan(true), true, hostPlan);
+        expect(prompt).toContain(t("shellExecution.hostRequestFloor"));
+        expect(prompt).not.toContain(t("shellExecution.hostRequest"));
+        expect(prompt.includes(t("shellExecution.hostRequestExactRule"))).toBe(hostPlan === missing || hostPlan === partialVerified);
+        expect(environmentPrompt(plan(true), false, hostPlan)).not.toContain(t("shellExecution.hostRequestFloor"));
+      }
+    } finally {
+      setLocale(previous);
+    }
   });
 
   it("separates the host location from the temporary home and authentication boundary", () => {
@@ -74,7 +108,7 @@ describe("shell execution environment", () => {
       activeCapability: { reason: "Fixture sandbox unavailable", kind: "none", confidence: "verified", platform: "linux" },
     });
     expect(shellExecutionEnvironmentLines(fallback)[0]).toBe(t("shellExecution.sandboxUnavailableAsk"));
-    expect(shellExecutionEnvironmentPrompt(fallback, true)).toContain(t("shellExecution.sandboxUnavailableAsk"));
+    expect(environmentPrompt(fallback, true)).toContain(t("shellExecution.sandboxUnavailableAsk"));
     expect(shellExecutionEnvironmentLines(plan(false))).not.toContain(t("shellExecution.sandboxUnavailableAsk"));
     expect(shellExecutionEnvironmentLines(plan(true))).not.toContain(t("shellExecution.sandboxUnavailableAsk"));
   });
@@ -89,21 +123,21 @@ describe("shell execution environment", () => {
     expect(hint).not.toContain("{packages}");
     const hinted = unavailable(["missing-bwrap", "missing-socat"]);
     expect(shellExecutionEnvironmentLines(hinted).slice(0, 2)).toEqual([t("shellExecution.sandboxUnavailableAsk"), hint]);
-    expect(shellExecutionEnvironmentPrompt(hinted, true)).toContain(hint);
+    expect(environmentPrompt(hinted, true)).toContain(hint);
     expect(shellExecutionEnvironmentLines(unavailable(["missing-ripgrep"]))[1]).toBe(t("shellExecution.sandboxInstallHint", { packages: "ripgrep (rg)" }));
     expect(shellExecutionEnvironmentLines(unavailable(["linux-runtime-probe-failed"]))[1]).toBe(t("shellExecution.location", { platform: "linux" }));
     expect(shellExecutionEnvironmentLines(unavailable([]))[1]).toBe(t("shellExecution.location", { platform: "linux" }));
   });
 
   it("does not promise an interactive approval surface to a headless turn", () => {
-    const prompt = shellExecutionEnvironmentPrompt(plan(true), false);
+    const prompt = environmentPrompt(plan(true), false);
     expect(prompt).toContain(t("shellExecution.noInteractiveApproval"));
     expect(prompt).not.toContain(t("shellExecution.hostRequest"));
     expect(prompt).toContain(t("shellExecution.pipelineStatus"));
   });
 
   it("does not project arbitrary host environment values", () => {
-    const projected = shellExecutionEnvironmentPrompt({
+    const projected = environmentPrompt({
       ...plan(false),
       ...{ environment: { HOME: "/private-user-home", GH_TOKEN: "private-test-value" } },
     }, true);
@@ -125,8 +159,8 @@ describe("shell execution environment", () => {
         confines: { filesystem: true, process: true, network: true },
       },
     });
-    expect(shellExecutionEnvironmentPrompt(mxc, true)).toContain(t("shellExecution.mxcBashUnavailable"));
-    expect(shellExecutionEnvironmentPrompt(plan(true), true)).not.toContain(t("shellExecution.mxcBashUnavailable"));
-    expect(shellExecutionEnvironmentPrompt(plan(false), true)).not.toContain(t("shellExecution.mxcBashUnavailable"));
+    expect(environmentPrompt(mxc, true)).toContain(t("shellExecution.mxcBashUnavailable"));
+    expect(environmentPrompt(plan(true), true)).not.toContain(t("shellExecution.mxcBashUnavailable"));
+    expect(environmentPrompt(plan(false), true)).not.toContain(t("shellExecution.mxcBashUnavailable"));
   });
 });

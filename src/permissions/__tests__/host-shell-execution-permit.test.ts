@@ -311,9 +311,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     expect(mintHostShellExecutionPermit({
       plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision("echo one-shot", directory), permissionManager: pm, binding,
     })).toBeUndefined();
-    // This rule-proof path serves only an explicit host retry. A Windows Plan B shell that an exact Bash(<command>) rule
-    // allows gets its permit from the policy lane, which invocation authorization records for that exact action
-    // (see executor-windows-partial-shell.test.ts), so a bare rule decision never mints a Plan B permit here.
+    // An ordinary host-request rule decision cannot mint a permit for a default shell under the floor.
     const planB = windowsPlan();
     const planBBinding = hostBinding(planB);
     expect(mintHostShellExecutionPermit({
@@ -336,13 +334,17 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     })).toBeUndefined();
   });
 
-  // Tree T:128, T:259 (owner decision 2026-11-25): the one saved rule that passes the no-backend ask.
-  it.each(["default", "host"] as const)("lets only an exact saved rule pass the %s no-backend ask, and only with verified boot home privacy", async (executionMode) => {
-    const noBackend = (boot: { homePrivacyVerified?: boolean; unavailableSandboxRequiresAsk?: boolean }) => buildHostShellExecutionPlan({
-      platform: "linux", requestedSandbox: true, executionMode, ...boot,
-      activeCapability: { kind: "none", confidence: "verified", platform: "linux", reason: "fixture unavailable sandbox" },
+  const floorCases = [
+    { label: "no backend", activeCapability: { kind: "none", confidence: "verified", platform: "linux", reason: "fixture unavailable sandbox" } },
+    { label: "backend without shell containment", activeCapability: { kind: "asrt", confidence: "verified", platform: "win32", reason: "fixture partial containment",
+      confines: { filesystem: true, process: false, network: true } } },
+  ] as const;
+  it.each(floorCases.flatMap(entry => (["default", "host"] as const).map(executionMode => ({ ...entry, executionMode }))))(
+    "lets only an exact saved rule pass the $executionMode ask with $label and verified boot home privacy", async ({ activeCapability, executionMode }) => {
+    const build = (boot: { homePrivacyVerified?: boolean; unavailableSandboxRequiresAsk?: boolean }) => buildHostShellExecutionPlan({
+      platform: activeCapability.platform, requestedSandbox: true, executionMode, activeCapability, ...boot,
     });
-    const verified = noBackend({ homePrivacyVerified: true });
+    const verified = build({ homePrivacyVerified: true });
     const cwd = join(directory, "subdir");
     const decide = (command = "echo one-shot", plan = verified, extra: Record<string, unknown> = {}): PermissionCheckResult => pm.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: "bash", command, cwd }, hostShellExecutionPlan: plan, shellExecution: HOST_ROUTE_ON_SANDBOX_HOST, sessionId: "exact-rule", ...extra,
@@ -407,7 +409,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     await pm.loadRulesFromFile();
 
     // Boot home privacy unverified or unpublished: the boot floor governs and no saved rule passes.
-    for (const plan of [noBackend({}), noBackend({ unavailableSandboxRequiresAsk: true })]) {
+    for (const plan of [build({}), build({ unavailableSandboxRequiresAsk: true })]) {
       const asked = decide("echo one-shot", plan);
       asks(asked);
       expect(asked.reasonCode).toBe("sandbox-unavailable");
