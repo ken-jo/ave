@@ -11,7 +11,7 @@ import {
   createCallLlmForPlugin,
 } from "../conversation.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
-import type { SessionSearchIndexPolicy } from "../../memory/session-search-index.js";
+import type { SessionSearchIndexPolicySource } from "../../memory/session-search-index.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { readPermissionSettings } from "../../permissions/permission-settings-store.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
@@ -161,15 +161,15 @@ export function createLoopRationaleBindings(input: {
   };
 }
 
-export function createIsolatedConversationMemoryManagers(getSearchIndexPolicy?: () => SessionSearchIndexPolicy): IsolatedConversationMemoryManagers {
+export function createIsolatedConversationMemoryManagers(searchIndexPolicy?: SessionSearchIndexPolicySource): IsolatedConversationMemoryManagers {
   const sideChatMemoryManager = new MemoryManager({
     aveDir: openFeatureNamespace("side-chat").dir,
-    getSearchIndexPolicy,
+    ...searchIndexPolicy,
   });
   sideChatMemoryManager.load();
   const subAgentMemoryManager = new MemoryManager({
     aveDir: openFeatureNamespace("subagent").dir,
-    getSearchIndexPolicy,
+    ...searchIndexPolicy,
   });
   subAgentMemoryManager.load();
   return { sideChatMemoryManager, subAgentMemoryManager };

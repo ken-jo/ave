@@ -31,6 +31,7 @@ import { isAveHomeTrustPendingAtBoot } from "../../shared/ave-home-trust.js";
 import type { ProcessRunStateProbe } from "../../permissions/windows-process-start-time.js";
 import type { AsrtSandboxInitialization } from "../../permissions/asrt-sandbox.js";
 import { isWindowsBackgroundFeatureReleaseEnabled } from "../../permissions/windows-background-features.js";
+import { isWindowsAccountBackendAbsent } from "../../permissions/windows-confinement-evidence.js";
 
 const log = createLogger("ave");
 
@@ -690,8 +691,7 @@ async function detectWindowsBootInputs(
     state: "unavailable", reason: "probe-failed", windowsBuild: null, detail: errorMessage(error),
   }));
   const accountProbeSucceeded = dependencies.errors.length === 0 && dependencies.dependencyFailure === undefined;
-  const accountBackendAbsent = dependencies.accountBackendAbsent === true && accountProbeSucceeded
-    && dependencies.warnings.length === 0;
+  const accountBackendAbsent = isWindowsAccountBackendAbsent(dependencies);
   if (runtimeRootUnproved) logMxcUnavailable("runtime-root-unproved", mxc.windowsBuild, "the container runtime root was not proved at start-up");
   else if (mxc.state === "unavailable") logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
   return {

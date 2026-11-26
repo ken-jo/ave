@@ -33,7 +33,7 @@ import {
   type FileSnapshot,
   type SessionNamespace,
 } from "./session-repository.js";
-import type { SessionSearchIndexPolicy } from "./session-search-index.js";
+import type { SessionSearchIndexPolicySource } from "./session-search-index.js";
 
 
 const log = createLogger("memory");
@@ -75,9 +75,8 @@ function readUtf8FileSnapshotIfPresent(path: string, maxBytes = Number.POSITIVE_
   }
 }
 
-export interface MemoryManagerOptions {
+export interface MemoryManagerOptions extends SessionSearchIndexPolicySource {
   aveDir?: string;
-  getSearchIndexPolicy?: () => SessionSearchIndexPolicy;
 }
 
 export interface NoteEntry {
@@ -462,7 +461,7 @@ export class MemoryManager implements PromptMemorySource {
     mkdirSync(this.aveDir, { recursive: true });
     this.migrateLegacyDirectory("memory", "memories");
     mkdirSync(this.memoryDir, { recursive: true });
-    this.sessions = new SessionRepository({ aveDir: this.aveDir, getSearchIndexPolicy: options?.getSearchIndexPolicy });
+    this.sessions = new SessionRepository({ aveDir: this.aveDir, getSearchIndexPolicy: options?.getSearchIndexPolicy, refreshSearchIndexPolicy: options?.refreshSearchIndexPolicy });
     this.ensureStructure();
   }
 

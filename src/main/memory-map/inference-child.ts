@@ -18,7 +18,7 @@ import { mainDir } from '../main-paths.js';
 import { spawnManaged } from '../managed-child-processes.js';
 import { MemoryMapHostError } from './errors.js';
 import { checkedInferenceFrameBytes, INFERENCE_FILES, INFERENCE_PREFIX_BYTES } from './inference-request.js';
-import { assertLocalEmbeddingRuntime, type LocalInferenceRoute } from './local-runtime.js';
+import { assertLocalEmbeddingRuntime, refreshLocalInferenceAdmission, type LocalInferenceRoute } from './local-runtime.js';
 import type { ModelFile } from './model-manifest.js';
 import type { MemoryInferenceTask } from './worker-client.js';
 
@@ -173,7 +173,7 @@ async function spawnInferenceChild(route: LocalInferenceRoute, signal: AbortSign
 export async function runInferenceChild<T>(folder: string, task: MemoryInferenceTask, signal: AbortSignal,
   onProgress?: (progress: MemoryMapProgress) => void, localInferenceWithoutSandbox?: boolean): Promise<T> {
   signal.throwIfAborted();
-  const route = assertLocalEmbeddingRuntime(localInferenceWithoutSandbox);
+  const route = assertLocalEmbeddingRuntime(localInferenceWithoutSandbox, await refreshLocalInferenceAdmission());
   const taskJson = JSON.stringify(task);
   const lengths = [Buffer.byteLength(taskJson, 'utf8'), ...INFERENCE_FILES.map(file => file.bytes)];
   checkedInferenceFrameBytes(lengths);

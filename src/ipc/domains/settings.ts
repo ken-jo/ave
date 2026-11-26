@@ -3,7 +3,7 @@ import { hasUserKeyboardIntent, USER_KEYBOARD_REQUIRED } from "../../shared/chat
 import { isSubAgentMaxRounds } from "../../shared/subagent-policy.js";
 import { telemetryPatchError } from "../../shared/telemetry-policy.js";
 import { containsSecuritySettings } from "../../shared/security-settings.js";
-import { areWindowsBackgroundSwitchesAvailable } from "../../permissions/windows-background-features.js";
+import { refreshWindowsBackgroundAdmission } from "../../permissions/windows-background-features.js";
 import { isWebSearchProvider } from "../../data/settings-normalization.js";
 /** Settings domain IPC handlers. Covers: ave:settings:*, ave:shell:open-external */
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
@@ -110,7 +110,7 @@ export async function rendererSettingsSnapshot(
   // `upstreamProxy` has its own channels (permissions upstreamProxyGet/Set).
   const { a2aRemote: _mainOnly, upstreamProxy: _ownChannel, memoryEmbedding: _embeddingConfig, ...projected } = structuredClone(snapshot);
   const activeChatModel = await resolveMainActiveChatModel(settingsService);
-  if (!areWindowsBackgroundSwitchesAvailable()) delete projected.features?.sessionIndexingWithoutContainment;
+  if (!(await refreshWindowsBackgroundAdmission("switches")).areSwitchesAvailable()) delete projected.features?.sessionIndexingWithoutContainment;
   return { ...projected, activeChatModel };
 }
 
@@ -739,6 +739,12 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         return { ok: false, error: "invalid-foundry-endpoint", message: (err as Error).message };
       }
     }
+    // The last await before the patch: the admission is decided here and nothing below yields until the merge is applied.
+    const features = partial?.features;
+    if (features && typeof features === "object" && Object.hasOwn(features, "sessionIndexingWithoutContainment")
+      && (typeof features.sessionIndexingWithoutContainment !== "boolean" || !(await refreshWindowsBackgroundAdmission("switches")).areSwitchesAvailable())) {
+      return { ok: false, error: "invalid-input" };
+    }
     // Reviewer LLM follows the active chat provider/model. Capture the active identity before patching
     // so provider/model/baseUrl/Vertex changes can refresh reviewer wiring and cache scope immediately.
     const prevLlm = settingsService.get("llm");
@@ -756,11 +762,6 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       settingsService.get("shortcuts"),
       settingsService.get("system"),
     );
-    const features = partial?.features;
-    if (features && typeof features === "object" && Object.hasOwn(features, "sessionIndexingWithoutContainment")
-      && (typeof features.sessionIndexingWithoutContainment !== "boolean" || !areWindowsBackgroundSwitchesAvailable())) {
-      return { ok: false, error: "invalid-input" };
-    }
     const layoutPatch = partial?.system?.mainLayout;
     if (layoutPatch !== undefined) {
       const window = mainWindowForContents(e.sender);

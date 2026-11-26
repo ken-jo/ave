@@ -1917,11 +1917,11 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (!project.ok) return [];
     return memoryManager.sessions.listSessionEntries(50, project.options);
   });
-  ipcMain.handle(CHANNELS.memory.sessionsSearch, (e, query: string, opts?: unknown) => {
+  ipcMain.handle(CHANNELS.memory.sessionsSearch, async (e, query: string, opts?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.sessionsSearch, e); return UNAUTHORIZED_FRAME; }
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return [];
-    return memoryManager.sessions.searchSessions(query, project.options);
+    return await memoryManager.sessions.searchSessionsWithCurrentPolicy(query, project.options);
   });
   ipcMain.handle(CHANNELS.memory.agentsMdGet, (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.agentsMdGet, e); return UNAUTHORIZED_FRAME; }

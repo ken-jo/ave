@@ -8,7 +8,7 @@ import type { IpcDeps } from '../types.js';
 import type { MemoryMapScope, MemoryEmbeddingSettings } from '../../shared/memory-map.js';
 import type { z } from 'zod';
 import type { MemoryEmbeddingSettingsSchema, MemoryRetrievalSchema } from '../../shared/memory-map-validation.js';
-import { assertLocalEmbeddingRuntime, isLocalInferenceSwitchAvailable } from '../../main/memory-map/local-runtime.js';
+import { assertLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from '../../main/memory-map/local-runtime.js';
 import { runMemoryWorker } from '../../main/memory-map/worker-client.js';
 import { LocalModelManager, MemoryModelError } from '../../main/memory-map/model-manager.js';
 import { MemoryMapHost, MemoryMapHostError } from '../../main/memory-map/host.js';
@@ -129,7 +129,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     return {
       source: namespace.source, namespace, providers, providerAvailable: providers.some(value => value.models.length > 0),
       ...(consent ? { consent } : {}),
-      ...(isLocalInferenceSwitchAvailable() ? { localInferenceWithoutSandbox: localInferencePreference() } : {}),
+      ...((await refreshLocalInferenceAdmission("switches")).areSwitchesAvailable() ? { localInferenceWithoutSandbox: localInferencePreference() } : {}),
     };
   };
   return {
@@ -162,12 +162,13 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     settingsSet: async input => {
       if ('localInferenceWithoutSandbox' in input) {
         const pending = settingsWrite.catch(() => {}).then(async () => {
-          if (!isLocalInferenceSwitchAvailable()) throw new MemoryMapHostError('local-runtime-unavailable');
+          const admission = await refreshLocalInferenceAdmission();
+          if (!admission.areSwitchesAvailable()) throw new MemoryMapHostError('local-runtime-unavailable');
           const previous = deps.settingsService.get('memoryEmbedding');
           const enabled = input.localInferenceWithoutSandbox;
           if (!enabled && previous?.localInferenceWithoutSandbox !== false) {
             let usingHostChild = false;
-            try { usingHostChild = localRuntime() === 'unconfined'; } catch (error) {
+            try { usingHostChild = assertLocalEmbeddingRuntime(localInferencePreference(), admission) === 'unconfined'; } catch (error) {
               if (!(error instanceof MemoryMapHostError)) throw error;
             }
             if (usingHostChild) {

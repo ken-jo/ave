@@ -101,6 +101,12 @@ function ensureDirSync(dir: string): void {
 
 export type SessionSearchIndexPolicy = "enabled" | "enabled-with-recovery" | "inactive" | "paused";
 
+/** With `refreshSearchIndexPolicy`, database work needs the policy a refresh returns for that operation; the synchronous read then only decides whether a skipped write is recorded for repair. */
+export interface SessionSearchIndexPolicySource {
+  readonly getSearchIndexPolicy?: () => SessionSearchIndexPolicy;
+  readonly refreshSearchIndexPolicy?: () => Promise<() => SessionSearchIndexPolicy>;
+}
+
 const INSERT_SESSION_ROW = `INSERT INTO sessions_fts
   (sessionId, content, timestamp, sessionKind, routineId, projectRoot, title)
   VALUES (?, ?, ?, ?, ?, ?, ?)`;

@@ -10,7 +10,7 @@ import { installBootModelCatalog } from "../core/model-catalog/bundled.js";
 import { DEFAULT_LOCALE, normalizeLocale, setLocale, tryLoadLocaleMessages,
 } from "../i18n/index.js";
 import { MemoryManager } from "../memory/memory-manager.js";
-import { isWindowsBackgroundFeatureReleaseEnabled, sessionSearchIndexPolicy } from "../permissions/windows-background-features.js";
+import { isWindowsBackgroundFeatureReleaseEnabled, sessionSearchIndexPolicySource } from "../permissions/windows-background-features.js";
 import { registerShutdownHook } from "../main/app-shutdown.js";
 import { MemoryCaptureService } from "../memory/memory-capture-service.js";
 import { execTurnRequested } from "../main/exec-mode.js";
@@ -141,9 +141,9 @@ export async function bootstrapCoreServices(mainWindow: MainWindow | null, host:
     /* non-fatal */
   }
 
-  const memoryManager = new MemoryManager({
-    getSearchIndexPolicy: () => sessionSearchIndexPolicy(settingsService.get("features")?.sessionIndexingWithoutContainment),
-  });
+  const memoryManager = new MemoryManager(
+    sessionSearchIndexPolicySource(() => settingsService.get("features")?.sessionIndexingWithoutContainment),
+  );
   memoryManager.load();
   memoryManager.startPersistentContextWatcher();
   registerShutdownHook("memory-manager", () => {

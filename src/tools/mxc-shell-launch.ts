@@ -9,6 +9,7 @@ import { openInvocationProxyListener } from "../permissions/egress-invocation-li
 import { openHostEgressListener } from "../permissions/egress-host-listener.js";
 import { egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../permissions/egress-invocations.js";
 import { detectMxcShellCapability, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
+import { invalidateWindowsBackendEvidence } from "../permissions/windows-confinement-evidence.js";
 import {
   buildMxcShellRequest,
   openMxcRequestTransport,
@@ -134,10 +135,12 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   try {
     wxcExec = await resolveHostWxcExecPath();
   } catch {
+    invalidateWindowsBackendEvidence();
     // The resolver's failures name the launcher's absolute path.
     throw new Error("Contained shell launcher could not be verified on this installation");
   }
   if (!input.exists(wxcExec)) {
+    invalidateWindowsBackendEvidence();
     throw new Error("Contained shell launcher is missing from this installation");
   }
   // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.

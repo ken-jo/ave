@@ -413,11 +413,12 @@ interface WindowsWrapDenies {
 }
 
 type WindowsDocumentsQuery = (signal?: AbortSignal) => Promise<string>;
-type WindowsAccountRuntime = Pick<typeof import("@anthropic-ai/sandbox-runtime"), "getWindowsSandboxUserStatus" | "resolveSrtWin">;
+type WindowsAccountRuntime = Pick<typeof import("@anthropic-ai/sandbox-runtime"), "getWindowsSandboxUserStatus" | "getWindowsSandboxUserStatusAsync" | "resolveSrtWin" | "verifyWindowsWfpEgress">;
 
 interface AsrtSandboxSession {
   readonly linuxWrapperPrograms?: LinuxWrapperPrograms;
   readonly windowsAccountRuntime?: WindowsAccountRuntime;
+  windowsAccountHelperPath?: string;
   readonly queryWindowsDocumentsPath?: WindowsDocumentsQuery;
   sharedWindowsDocumentsPath?: () => string;
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
@@ -1371,15 +1372,24 @@ function requireWindowsSandboxUserSid(user: ReturnType<WindowsAccountRuntime["ge
   return user.sid;
 }
 
-/** The active account runtime can have lost its account or credential since startup. */
-export function isWindowsAccountConfinementOperational(): boolean {
-  const runtime = sandboxSession?.windowsAccountRuntime;
-  if (process.platform !== "win32" || !isOfflineProcessConfinementActive() || runtime === undefined) return false;
+/** Identities that every piece of Windows confinement evidence is bound to: the session, its liveness and its deny protection. */
+export function getWindowsConfinementRoute(): readonly unknown[] {
+  return [sandboxSession, active, sandboxSession?.windowsDenyFailure];
+}
+
+/** Asks the helper, off the event loop, whether the live session still has its account, credential, identity and egress enforcement. */
+export async function isWindowsAccountConfinementOperational(): Promise<boolean> {
+  const session = sandboxSession;
+  const runtime = session?.windowsAccountRuntime;
+  if (process.platform !== "win32" || session === undefined || runtime === undefined || !isOfflineProcessConfinementActive()) return false;
   try {
     assertWindowsDenyProtection();
-    const srtWin = runtime.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
-    requireWindowsSandboxUserSid(runtime.getWindowsSandboxUserStatus({ srtWin }));
-    return true;
+    session.windowsAccountHelperPath ??= getVerifiedSrtWinExePath();
+    const srtWin = runtime.resolveSrtWin({ path: session.windowsAccountHelperPath });
+    requireWindowsSandboxUserSid(await runtime.getWindowsSandboxUserStatusAsync({ srtWin }));
+    await runtime.verifyWindowsWfpEgress({ proxyPortRange: [...getWindowsProxyPortRange()], srtWin });
+    assertWindowsSession(session);
+    return isOfflineProcessConfinementActive();
   } catch {
     return false;
   }

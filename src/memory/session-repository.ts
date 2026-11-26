@@ -36,7 +36,7 @@ import {
   isToolResultStubContent,
   type ToolResultTruncatedInfo,
 } from "../shared/tool-result-stub.js";
-import { SessionSearchIndex, type IndexedSessionInput, type SessionSearchIndexPolicy } from "./session-search-index.js";
+import { SessionSearchIndex, type IndexedSessionInput, type SessionSearchIndexPolicy, type SessionSearchIndexPolicySource } from "./session-search-index.js";
 import { isRecord } from "../shared/is-record.js";
 import { parseStrictJsonText } from "../shared/strict-json.js";
 import { dlpSafeCandidate, isSafeStructuralId } from "../shared/dlp-safe-id.js";
@@ -789,6 +789,7 @@ export class SessionRepository {
   // Keep one search index per manager namespace, never a global singleton.
   private readonly searchIndex: SessionSearchIndex;
   private readonly getSearchIndexPolicy: () => SessionSearchIndexPolicy;
+  private readonly refreshSearchIndexPolicy: (() => Promise<() => SessionSearchIndexPolicy>) | undefined;
   private readonly sessionNamespace: ReturnType<typeof openFeatureNamespace>;
   private searchIndexState: "current" | "stale" | "discarded" = "current";
   private searchIndexChecked = false;
@@ -808,13 +809,14 @@ export class SessionRepository {
 
   private readonly aveDir: string;
 
-  constructor(options?: { aveDir?: string; getSearchIndexPolicy?: () => SessionSearchIndexPolicy }) {
+  constructor(options?: { aveDir?: string } & SessionSearchIndexPolicySource) {
     this.aveDir = resolve(options?.aveDir ?? aveHome());
     this.sessionNamespace = openFeatureNamespace("sessions", this.aveDir);
     this.sessionsDir = this.sessionNamespace.dir;
     this.toolOutputArtifacts = new ToolOutputArtifactStore(this.sessionsDir);
     this.searchIndex = new SessionSearchIndex(this.aveDir);
     this.getSearchIndexPolicy = options?.getSearchIndexPolicy ?? (() => "enabled");
+    this.refreshSearchIndexPolicy = options?.refreshSearchIndexPolicy;
     mkdirSync(this.sessionsDir, { recursive: true });
     this.restrictSessionsDirWrites();
     const captureOwnerKey = realpathSync(this.sessionsDir);
@@ -871,10 +873,27 @@ export class SessionRepository {
     this.searchIndex.close();
   }
 
+  /** The policy for one operation's database work. The caller uses it synchronously: no await may separate it from the action. */
+  private admitSearchIndex(): (() => SessionSearchIndexPolicy) | Promise<() => SessionSearchIndexPolicy> {
+    if (this.refreshSearchIndexPolicy === undefined) return this.getSearchIndexPolicy;
+    return this.refreshSearchIndexPolicy().catch(() => () => "inactive");
+  }
+
+  /** Searches with the policy refreshed for this call. */
+  async searchSessionsWithCurrentPolicy(query: string, options: Pick<ListSessionsOptions, "kind" | "routineId" | "projectRoot" | "includeUnscoped"> = {}): Promise<SessionSearchEntry[]> {
+    return this.querySearchIndex(query, options, await this.admitSearchIndex());
+  }
+
+  /** A synchronous search cannot refresh the policy, so a repository that requires a refresh answers nothing. */
   searchSessions(query: string, options: Pick<ListSessionsOptions, "kind" | "routineId" | "projectRoot" | "includeUnscoped"> = {}): SessionSearchEntry[] {
+    return this.querySearchIndex(query, options, this.refreshSearchIndexPolicy === undefined ? this.getSearchIndexPolicy : () => "inactive");
+  }
+
+  private querySearchIndex(query: string, options: Pick<ListSessionsOptions, "kind" | "routineId" | "projectRoot" | "includeUnscoped">,
+    admit: () => SessionSearchIndexPolicy): SessionSearchEntry[] {
     // Require two code points; exactly two use LIKE because trigram MATCH requires three.
     if ([...query.trim()].length < 2) return [];
-    if (!this.canUseSearchIndex() || !this.searchIndex.open()) return [];
+    if (!this.canUseSearchIndex("read", admit) || !this.searchIndex.open()) return [];
     try {
       // The index has no schema version to trigger a rebuild, so rows indexed before staged titles were unwrapped are repaired on read.
       // This only repairs a stored title whose 80-code-point cut kept the whole envelope header; a longer header stays raw until the session is saved again.
@@ -919,7 +938,7 @@ export class SessionRepository {
     if (!this.isTurnJournalLive(sessionId)) {
       removeTurnInflightRecord(turnInflightPath(this.sessionsDir, sessionId));
     }
-    this.indexSessionForSearch(sessionId, messages);
+    this.indexSessionForSearch(sessionId, messages, await this.admitSearchIndex());
   }
 
   // Rewrite through temp, fsync, and rename so crashes retain a complete prior transcript.
@@ -1081,8 +1100,8 @@ export class SessionRepository {
   }
 
   // Open and close the index per operation so persistence leaves no database handle blocking directory cleanup.
-  private indexSessionForSearch(sessionId: string, messages: unknown[]): void {
-    if (!this.canUseSearchIndex("write")) return;
+  private indexSessionForSearch(sessionId: string, messages: unknown[], admit: () => SessionSearchIndexPolicy): void {
+    if (!this.canUseSearchIndex("write", admit)) return;
     let metadata: SessionMetadata | null;
     try {
       metadata = this.readSessionMetadataForSearch(sessionId);
@@ -1100,8 +1119,8 @@ export class SessionRepository {
       this.searchIndex.close();
     }
   }
-  private deleteSessionFromSearchIndex(sessionId: string): void {
-    if (!this.canUseSearchIndex("write") || !this.searchIndex.open()) return;
+  private deleteSessionFromSearchIndex(sessionId: string, admit: () => SessionSearchIndexPolicy): void {
+    if (!this.canUseSearchIndex("write", admit) || !this.searchIndex.open()) return;
     try {
       this.searchIndex.deleteSession(sessionId);
     } finally {
@@ -1142,9 +1161,9 @@ export class SessionRepository {
     this.searchIndexState = "discarded";
   }
 
-  private canUseSearchIndex(operation: "read" | "write" = "read"): boolean {
+  private canUseSearchIndex(operation: "read" | "write", admit: () => SessionSearchIndexPolicy): boolean {
     try {
-      const policy = this.getSearchIndexPolicy();
+      const policy = admit();
       if (policy === "inactive") {
         if (operation === "write") this.recordSearchRepairIntent();
         return false;
@@ -1203,9 +1222,9 @@ export class SessionRepository {
   }
 
   // Rebuild the complete search projection after detach so retries repair partial metadata/index updates.
-  private repairAllSessionSearchRowsForProjectDetach(): void {
+  private repairAllSessionSearchRowsForProjectDetach(admit: () => SessionSearchIndexPolicy): void {
     try {
-      const policy = this.getSearchIndexPolicy();
+      const policy = admit();
       if (policy === "inactive") return;
       if (policy === "paused") this.pauseSearchIndex();
       else this.rebuildSessionSearchRows();
@@ -1219,7 +1238,7 @@ export class SessionRepository {
 
   // Boot integrity repair rebuilds missing or corrupt indexes from JSONL; search never scans as a fallback.
   async verifyOrRebuildSearchIndex(): Promise<void> {
-    if (!this.canUseSearchIndex()) return;
+    if (!this.canUseSearchIndex("read", await this.admitSearchIndex())) return;
     const opened = this.searchIndex.open();
     if (opened) {
       try {
@@ -1553,12 +1572,13 @@ export class SessionRepository {
       this.notePaneSession(sessionId, safe);
     });
     // Reindex metadata-only updates too because project, kind, routine, and title fields are denormalized.
-    if (!this.canUseSearchIndex("write")) return;
+    const admit = await this.admitSearchIndex();
+    if (!this.canUseSearchIndex("write", admit)) return;
     const messages = this.loadSession(sessionId);
     if (Array.isArray(messages)) {
-      this.indexSessionForSearch(sessionId, messages);
+      this.indexSessionForSearch(sessionId, messages, admit);
     } else {
-      this.deleteSessionFromSearchIndex(sessionId);
+      this.deleteSessionFromSearchIndex(sessionId, admit);
     }
   }
 
@@ -1670,7 +1690,7 @@ export class SessionRepository {
       }
     });
 
-    this.repairAllSessionSearchRowsForProjectDetach();
+    this.repairAllSessionSearchRowsForProjectDetach(await this.admitSearchIndex());
     return detachedCount;
   }
 
@@ -2076,7 +2096,7 @@ export class SessionRepository {
       } catch (err) {
         log.warn(`deleteSession: failed to remove diff cache dir ${diffCacheDir}: ${(err as Error).message}`);
       }
-      this.deleteSessionFromSearchIndex(sessionId);
+      this.deleteSessionFromSearchIndex(sessionId, await this.admitSearchIndex());
     });
   }
 

@@ -67,7 +67,7 @@ import { registerBootMcpDisconnect, registerShutdownHook, configureAppShutdownHo
 import { type AppServices, emitEvent as emitHostEvent, onEvent } from "./boot/types.js";
 import { startWatcherTelemetryCollector } from "./boot/steps/watcher-telemetry-collector.js";
 import { bootstrapCoreServices, verifySessionSearchIndex } from "./boot/services.js";
-import { isWindowsBackgroundFeatureReleaseEnabled, sessionSearchIndexPolicy } from "./permissions/windows-background-features.js";
+import { isWindowsBackgroundFeatureReleaseEnabled, sessionSearchIndexPolicySource } from "./permissions/windows-background-features.js";
 import { RoutinesStore } from "./main/routines-store.js";
 import { RoutinesScheduler } from "./main/routines-scheduler.js";
 import {
@@ -593,8 +593,8 @@ export async function bootstrap(
   // instances are wired into the live loops below, preserving root tombstones
   // against late writes in this process.
   const isolatedConversationMemoryManagers =
-    createIsolatedConversationMemoryManagers(() => sessionSearchIndexPolicy(
-      settingsService.get("features")?.sessionIndexingWithoutContainment,
+    createIsolatedConversationMemoryManagers(sessionSearchIndexPolicySource(
+      () => settingsService.get("features")?.sessionIndexingWithoutContainment,
     ));
   const workspaceSessionStores = [
     memoryManager,
@@ -858,7 +858,8 @@ export async function bootstrap(
   await initSandboxGate(ctx, startupSignal);
   recordBootPhase("sandbox-gate");
   if (isWindowsBackgroundFeatureReleaseEnabled()) {
-    for (const manager of workspaceSessionStores) await verifySessionSearchIndex(manager);
+    // Started together so the stores share one evidence refresh.
+    await Promise.all(workspaceSessionStores.map((manager) => verifySessionSearchIndex(manager)));
   }
 
   // §9.5: MCP servers + signed marketplace artifact stores.
