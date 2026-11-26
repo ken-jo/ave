@@ -10,7 +10,7 @@ component here does not change its license, nor relicense Ave.
 
 ## @anthropic-ai/sandbox-runtime
 
-- **Version:** 0.0.59 (pinned, exact)
+- **Version:** 0.0.80 (pinned, exact)
 - **License:** Apache License, Version 2.0
 - **Copyright:** © Anthropic PBC
 - **Repository:** https://github.com/anthropic-experimental/sandbox-runtime
