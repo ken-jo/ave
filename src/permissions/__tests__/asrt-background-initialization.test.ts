@@ -110,8 +110,11 @@ function wrapWriteDenies(wrap: typeof wrapToolCommand, denyWrite: string[]) {
 }
 
 // A write deny outside every write grant restricts nothing and is no policy row, so budget rows lie inside one.
+// A present loader file under the grant is a mandatory row on every host. The app-owned rows outside every grant are
+// retained only by admitted origin, which a simulated layout on a POSIX host does not have.
 function grantedFixture(): string[] {
   mkdirSync(fixtureRoot, { recursive: true });
+  present([win32.join(fixtureRoot, ".npmrc")]);
   return [fixtureRoot];
 }
 
