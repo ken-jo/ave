@@ -120,6 +120,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "workflowSchedule.noProject": "프로젝트 없음",
   "workflowSchedule.firstFire": "첫 실행",
   "workflowSchedule.approveAttach": "승인하고 연결",
+  "workflowSchedule.keyboardRequired": "‘승인하고 연결’ 버튼에 포커스를 두고 Enter 또는 Space 키를 누르세요.",
   "workflowSchedule.reattach": "다시 연결",
   "workflowSchedule.detach": "분리하고 삭제",
   "workflowSchedule.attachmentUnavailable": "연결 정보를 읽을 수 없습니다.",

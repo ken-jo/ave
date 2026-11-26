@@ -79,7 +79,9 @@ export function registerWorkflowTemplateHandlers(
     const { templateId, version, graphHash, expectedScope, scheduleId, schedule } = raw;
     requireTemplate(scheduleId === undefined ? isAttachmentSchedule(schedule) : isTemplateId(scheduleId) && schedule === undefined);
     requireOwnerFrame(event, WORK_BOARD.templateAttachSchedule);
-    if (!securitySettingsGestures.consume(event.sender, { channel: WORK_BOARD.templateAttachSchedule, payload: raw })) throw new TemplateGestureError();
+    if (!securitySettingsGestures.consume(event.sender, { channel: WORK_BOARD.templateAttachSchedule, payload: raw }, "keyboard")) {
+      throw new TemplateGestureError("user-keyboard-required");
+    }
     const routines = deps.routinesStore;
     if (!routines) throw new TemplateStoreUnavailableError();
     const record = await store.get(templateId);
@@ -150,7 +152,11 @@ export function registerWorkflowTemplateHandlers(
   });
   handle(WORK_BOARD.templateArchive, async (store, _event, id, ...args) => { requireTemplate(args.length === 0); const record = await load(id); await store.archive(record.template.id); return null; });
 }
-class TemplateGestureError extends Error { readonly code = "user-gesture-required"; }
+class TemplateGestureError extends Error {
+  constructor(readonly code: "user-gesture-required" | "user-keyboard-required" = "user-gesture-required") {
+    super(code === "user-keyboard-required" ? "A desktop keyboard gesture is required" : "A desktop user gesture is required");
+  }
+}
 class TemplateFrameError extends Error { readonly code = "unauthorized-frame"; }
 class TemplateStoreUnavailableError extends Error { readonly code = "no-store"; }
 

@@ -1,4 +1,4 @@
-import { captureWorkBoardTestGesture, invokeWithWorkBoardTestKey, workBoardTestSender } from "../../../__tests__/support/work-board-ipc.js";
+import { captureWorkBoardTestGesture, invokeWithWorkBoardTestKey, pressWorkBoardTestKey, workBoardTestSender } from "../../../__tests__/support/work-board-ipc.js";
 import { beforeEach, expect, it, vi } from "vitest";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -293,7 +293,7 @@ it("rejects malformed input and renderer supplied hashes or versions", async () 
   expect(await handler(WORK_BOARD.templateConfirm)(event, "t", { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision", origin: "tailnet-surface" }, gesture)).toEqual({ ok: false, error: "invalid-input" });
   expect(store.draft).not.toHaveBeenCalled(); expect(store.confirmDraft).not.toHaveBeenCalled();
 });
-it("requires a fresh local owner gesture for confirmation", async () => {
+it("requires a fresh local owner gesture for confirmation and accepts a pointer", async () => {
   const { event, store } = setup(); const request = { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" };
   expect(await handler(WORK_BOARD.templateConfirm)(event, "t", request)).toEqual({ ok: false, error: "user-gesture-required" });
   expect(await handler(WORK_BOARD.templateConfirm)({ ...event, senderFrame: {} }, "t", request, gesture)).toEqual({ ok: false, error: "unauthorized-frame" });
@@ -335,17 +335,31 @@ it("revalidates a draft project before confirmation", async () => {
   expect(store.confirmDraft).not.toHaveBeenCalled();
 });
 
-it("requires local gesture and owner frame for schedule attachments and rejects remote origin", async () => {
+it("requires a local keyboard gesture and owner frame for schedule attachments and rejects remote origin", async () => {
   const { event, store } = setup(); const request = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily", expectedScope: allScope };
-  expect(await handler(WORK_BOARD.templateAttachSchedule)(event, request)).toEqual({ ok: false, error: "user-gesture-required" });
+  expect(await handler(WORK_BOARD.templateAttachSchedule)(event, request)).toEqual({ ok: false, error: "user-keyboard-required" });
   expect(await handler(WORK_BOARD.templateAttachSchedule)(event, request, gesture)).toEqual({ ok: false, error: "invalid-input" });
   expect(await handler(WORK_BOARD.templateAttachSchedule)(event, { ...request, origin: "tailnet-surface" }, gesture)).toEqual({ ok: false, error: "invalid-input" });
   expect(await handler(WORK_BOARD.templateAttachSchedule)({ ...event, senderFrame: {} }, request)).toEqual({ ok: false, error: "unauthorized-frame" });
   expect(store.attachSchedule).not.toHaveBeenCalled();
   expect(await invokeWithWorkBoardTestKey(handler, WORK_BOARD.templateAttachSchedule, event, request)).toEqual({ ok: true, value: {} });
   expect(store.attachSchedule).toHaveBeenCalledWith({ templateId: "t", version: 1, graphHash: request.graphHash, scheduleId: "daily" }, expect.objectContaining({ origin: "local-desktop", auditId: expect.any(String), decidedAt: expect.any(String) }), allScope, { requireCurrent: true });
-  expect(await handler(WORK_BOARD.templateAttachSchedule)(event, request)).toEqual({ ok: false, error: "user-gesture-required" });
+  expect(await handler(WORK_BOARD.templateAttachSchedule)(event, request)).toEqual({ ok: false, error: "user-keyboard-required" });
   expect(store.attachSchedule).toHaveBeenCalledOnce();
+});
+
+it.each(["mouseDown", "mouseUp"])("refuses a schedule attachment authorized only by %s", async (type) => {
+  const { event, store } = setup();
+  const request = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily", expectedScope: allScope };
+  const attach = handler(WORK_BOARD.templateAttachSchedule);
+
+  event.sender.emit("before-mouse-event", {}, { type });
+  expect(await attach(event, request)).toEqual({ ok: false, error: "user-keyboard-required" });
+
+  pressWorkBoardTestKey(event);
+  event.sender.emit("before-mouse-event", {}, { type });
+  expect(await attach(event, request)).toEqual({ ok: false, error: "user-keyboard-required" });
+  expect(store.attachSchedule).not.toHaveBeenCalled();
 });
 
 it("revalidates attachment project access and does not write on refusal", async () => {
@@ -491,7 +505,7 @@ it("attach refuses a non-read-only version", () => withScheduleApproval(async f 
 it("attach creates the routine and attachment together, plain panel removal names detach, and explicit detach removes it", () => withScheduleApproval(async f => {
   const version = await f.confirm();
   const request = newScheduleRequest(version);
-  expect(await handler(WORK_BOARD.templateAttachSchedule)(f.event, request)).toMatchObject({ ok: false, error: "user-gesture-required" });
+  expect(await handler(WORK_BOARD.templateAttachSchedule)(f.event, request)).toMatchObject({ ok: false, error: "user-keyboard-required" });
   expect(await handler(WORK_BOARD.templateAttachSchedule)(f.event, { ...request, proof: mintHostDecisionProof("local-desktop") }, gesture)).toMatchObject({ ok: false, error: "invalid-input" });
   expect(await invokeWithWorkBoardTestKey(handler, WORK_BOARD.templateAttachSchedule, f.event, request)).toMatchObject({ ok: true });
   const [routine] = f.routines.list();

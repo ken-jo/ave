@@ -118,6 +118,7 @@ export const en = {
   "workflowSchedule.noProject": "No project",
   "workflowSchedule.firstFire": "First run",
   "workflowSchedule.approveAttach": "Approve and attach",
+  "workflowSchedule.keyboardRequired": "Focus the Approve and attach button and press Enter or Space.",
   "workflowSchedule.reattach": "Reattach",
   "workflowSchedule.detach": "Detach and remove",
   "workflowSchedule.attachmentUnavailable": "Attachment unavailable",

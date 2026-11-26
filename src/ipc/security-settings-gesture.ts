@@ -16,7 +16,10 @@ export interface SecuritySettingsGestureProof {
   readonly payloadDigest: string;
 }
 
+type NativeInputKind = "keyboard" | "pointer";
+
 interface NativeInputReceipt {
+  kind: NativeInputKind;
   sequence: number;
   receivedAt: number;
   spent: boolean;
@@ -36,25 +39,27 @@ function createSecuritySettingsGestureTracker() {
   const observed = new WeakSet<WebContents>();
   const latest = new WeakMap<WebContents, NativeInputReceipt>();
   let sequence = 0;
-  const record = (contents: WebContents) => { latest.set(contents, { sequence: ++sequence, receivedAt: now(), spent: false }); };
+  const record = (contents: WebContents, kind: NativeInputKind) => {
+    latest.set(contents, { kind, sequence: ++sequence, receivedAt: now(), spent: false });
+  };
   return {
     observe(contents: WebContents): void {
       if (observed.has(contents)) return;
       observed.add(contents);
       contents.on("before-input-event", (_event, input) => {
-        if (input.type === "keyDown" && !input.isAutoRepeat) record(contents);
+        if (input.type === "keyDown" && !input.isAutoRepeat) record(contents, "keyboard");
       });
       contents.on("before-mouse-event", (_event, input) => {
-        if (input.type === "mouseDown" || input.type === "mouseUp") record(contents);
+        if (input.type === "mouseDown" || input.type === "mouseUp") record(contents, "pointer");
       });
       contents.on("blur", () => latest.delete(contents));
       contents.on("did-start-navigation", () => latest.delete(contents));
       contents.on("destroyed", () => latest.delete(contents));
     },
-    /** Spend the latest native input on `operation`: a proof once, null for no input, a lapsed input or a spent one. */
-    consume(contents: WebContents, operation: SecuritySettingsOperation): SecuritySettingsGestureProof | null {
+    /** Spend the latest native input on `operation` if it is fresh, unspent and of the required kind. */
+    consume(contents: WebContents, operation: SecuritySettingsOperation, requiredKind?: NativeInputKind): SecuritySettingsGestureProof | null {
       const receipt = latest.get(contents);
-      if (!receipt || receipt.spent) return null;
+      if (!receipt || receipt.spent || (requiredKind !== undefined && receipt.kind !== requiredKind)) return null;
       receipt.spent = true;
       const age = now() - receipt.receivedAt;
       if (age < 0 || age > USER_GESTURE_LIFETIME_MS) return null;
