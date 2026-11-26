@@ -80,7 +80,8 @@ describe("confined native shell startup decisions", () => {
   ] as const)("keeps writes unproven on the %s route", (_name, plan) => {
     expect(isPowerShellStartupPinned("win32", plan)).toBe(false);
     for (const command of WRITES) {
-      expect(check(command, plan)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
+      // A capability that does not contain shells takes the no-confinement ask instead of the ordinary one.
+      expect(check(command, plan)).toMatchObject({ decision: "ask", reasonCode: _name === "partial sandbox" ? "sandbox-unavailable" : "shell-approval" });
       expect(inspectPowerShellCommand(command, project, undefined, plan).outcome).toBe("unproven");
     }
   });

@@ -148,6 +148,7 @@ export interface AuthorizationStageContext {
   shellEscalated?: boolean;
   directoryAuthorization?: { permission: PermissionCheckResult; humanApproved: boolean; pendingRationale?: true; requestHumanApproval?: (input: { requestId: string; abortSignal?: AbortSignal }) => Promise<import("../permissions/approval-gate.js").ApprovalDecision> };
   permissionResult: PermissionCheckResult | undefined;
+  hostTerminalReapproval?: boolean;
   reviewedPermissionForCard?: PermissionCheckResult;
   cardRequestId?: string;
   onHumanDecision?: (decision: import("../permissions/approval-gate.js").ApprovalDecision) => void;
@@ -161,6 +162,7 @@ export interface AuthorizedInvocation {
   humanApproved: boolean;
   approvedPolicyEpoch?: string;
   permissionRecheckResult?: PermissionCheckResult;
+  checkCurrentHostTerminalPermission?: () => PermissionCheckResult;
   permissionResult: PermissionCheckResult | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
   /** Host-issued allow-rule decision that authorized an explicit host shell. */
@@ -325,7 +327,10 @@ export async function authorizeToolInvocation(
     code: "other-principal" as const,
     reason: "another principal's request requires local allow-once approval",
   } : undefined);
-  if (context.directoryAuthorization === undefined || context.directoryAuthorization.pendingRationale) {
+  let checkCurrentHostTerminalPermission: AuthorizedInvocation["checkCurrentHostTerminalPermission"];
+  let checkCurrentPermission: (() => PermissionCheckResult) | undefined;
+  const needsCentralDecision = context.directoryAuthorization === undefined || context.directoryAuthorization.pendingRationale === true;
+  if (needsCentralDecision || hostTerminalScope) {
     const shellDialect = isCanonicalBashTool(tool)
       ? "bash" as const
       : isCanonicalPowerShellTool(tool) ? "powershell" as const : undefined;
@@ -371,9 +376,10 @@ export async function authorizeToolInvocation(
       ? undefined : scopedSubjectCandidate;
     const projectRulesCwd = shellRuleSubject !== undefined ? shellRuleSubject.cwd : executionCwd;
     if (services.permissionManager && projectRulesCwd !== undefined) {
-      await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
+      if (hostTerminalScope) await services.permissionManager.ensurePermissionRulesLoaded(projectRulesCwd);
+      else await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     }
-    const checkCurrentPermission = (): PermissionCheckResult => services.permissionManager
+    const readPermission = (requireHuman?: true): PermissionCheckResult => services.permissionManager
       ? services.permissionManager.checkDetailed(
           toolUse.name,
           source,
@@ -381,6 +387,7 @@ export async function authorizeToolInvocation(
           overlayTriggerOrigin,
           {
             ...invocationPermissionContext,
+            ...(requireHuman ? { manualRerun: true as const } : {}),
             decisionOverride: metaOverride,
             fileWritePolicy: context.fileWritePolicy,
             floor,
@@ -408,6 +415,22 @@ export async function authorizeToolInvocation(
           reason: "Permission manager is unavailable",
           forceModal: true,
         };
+    const checkPermission = (): PermissionCheckResult => {
+      const current = readPermission();
+      return context.hostTerminalReapproval && current.decision === "allow" ? readPermission(true) : current;
+    };
+    checkCurrentPermission = checkPermission;
+    if (hostTerminalScope && services.permissionManager) {
+      const manager = services.permissionManager;
+      checkCurrentHostTerminalPermission = () => {
+        if (!manager.areLoadedPermissionRulesCurrent(projectRulesCwd)) {
+          return { decision: "deny", reason: "Permission rules changed before typing." };
+        }
+        return checkPermission();
+      };
+    }
+  }
+  if (needsCentralDecision && checkCurrentPermission) {
     permissionResult = context.reviewedPermissionForCard !== undefined && services.permissionManager !== undefined
       ? services.permissionManager.recheckPermission(context.reviewedPermissionForCard)
       : context.directoryAuthorization?.pendingRationale
@@ -438,7 +461,7 @@ export async function authorizeToolInvocation(
     const ordinaryRequest = permissionResult.pipelineRequest;
     if (permissionResult.decision !== "allow" && ordinaryRequest !== undefined && !ordinaryRequest.admissionDenial &&
         !ordinaryRequest.floor && ordinaryRequest.rules?.deny === undefined && ordinaryRequest.rules?.ask === undefined &&
-        ordinaryRequest.manualRerun !== true && context.reviewedPermissionForCard === undefined && rationaleResumeContext === undefined &&
+        ordinaryRequest.manualRerun !== true && !context.hostTerminalReapproval && context.reviewedPermissionForCard === undefined && rationaleResumeContext === undefined &&
         rationaleBatchContext === undefined && services.permissionManager !== undefined) {
       const memorySkip = await services.tryUserApprovalMemorySkip(
         toolUse.name,
@@ -465,7 +488,7 @@ export async function authorizeToolInvocation(
       }
     }
     if (
-      permissionResult.decision === "ask" && rationaleResumeContext === undefined && permissionResult.reviewer?.verdict === undefined &&
+      permissionResult.decision === "ask" && !context.hostTerminalReapproval && rationaleResumeContext === undefined && permissionResult.reviewer?.verdict === undefined &&
       (permissionResult.reviewer?.route === "foreground-auto" ||
         rationaleBatchContext !== undefined && permissionResult.reviewer?.route === "headless")
     ) {
@@ -919,8 +942,8 @@ export async function authorizeToolInvocation(
           });
         const approvalRuleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true && !permissionResult.pipelineRequest?.userOwnedSurface
           ? classifyCurrentRule() : undefined;
-        const approvalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
         const approvalAnswerEpochs = services.permissionManager ? answerEpochsOf(services.permissionManager) : undefined;
+        const approvalPolicyEpoch = approvalAnswerEpochs?.epoch;
         const readjudicationAssessment = source === "plugin" && context.pluginRuntimeInstance !== undefined &&
           permissionResult.forceModal !== true && !evaluationContext.headless &&
           !permissionResult.pipelineRequest?.userOwnedSurface &&
@@ -943,7 +966,9 @@ export async function authorizeToolInvocation(
                 allowedChoices: ["allow-once", "deny-once"] as const,
                 durableApprovalRecordAllowed: false as const,
                 forceExplicit: true as const,
-                ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}),
+                ...(approvalPolicyEpoch !== undefined && offersFloorSessionAllow(permissionResult) &&
+                    !(context.hostTerminalReapproval && permissionResult.pipelineRequest?.manualRerun)
+                  ? { floorSessionAllowed: true as const, floorSessionPolicyEpoch: approvalPolicyEpoch } : {}),
               }
             : {}),
           ...(hostShellExecutionPermitBinding === undefined ? {} : { hostShellExecutionPermitBinding }),
@@ -1019,6 +1044,9 @@ export async function authorizeToolInvocation(
             : {}),
           ...hostTerminalFacts,
           ...userOwnedSurfaceCardFacts(permissionResult),
+          ...(context.hostTerminalReapproval && !permissionResult.forceModal &&
+              permissionResult.pipelineRequest?.userOwnedSurface?.kind === "host-terminal"
+            ? { userOwnedSurfaceReviewFallback: true as const, reasonCode: undefined } : {}),
           evaluationContext,
         };
 
@@ -1183,7 +1211,10 @@ export async function authorizeToolInvocation(
         // Any other change while the card was open is judged by the one rule for answered cards (pending-answer-policy.ts): a sibling
         // stage's "Allow for this run" or a run that ended leaves the answer standing; everything else refuses it.
         const answerOutdated = policyChanged && !sameCardPolicyTransition && !(services.permissionManager !== undefined && approvalAnswerEpochs !== undefined
-          && personAnswerStands(services.permissionManager, approvalAnswerEpochs, permissionResult.forceModal === true, checkCurrentPermission));
+          && personAnswerStands(services.permissionManager, approvalAnswerEpochs, permissionResult.forceModal === true, () => {
+            permissionResult = checkCurrentPermission();
+            return permissionResult;
+          }));
         const approvalInvalidationReason = answerOutdated
           ? "Permission policy changed while approval was pending"
           : !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)
@@ -1369,6 +1400,7 @@ export async function authorizeToolInvocation(
     humanApproved,
     approvedPolicyEpoch,
     permissionRecheckResult,
+    checkCurrentHostTerminalPermission,
     permissionResult,
     hostShellApprovalDecision,
     // Only while no later lane replaced the rule decision: a reviewer, hook or
