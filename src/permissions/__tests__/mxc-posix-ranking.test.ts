@@ -8,6 +8,7 @@ import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyFloorRow, 
 
 const lookups: PosixPolicyLookups = {
   home: "/users/example", foldsCase: false,
+  children: () => [],
   exists: (path) => !path.includes("/missing"),
   canonical: (path) => path.replace(/^\/tmp(?=\/|$)/u, "/private/tmp"),
 };
@@ -115,13 +116,62 @@ describe("POSIX container filesystem ranking", () => {
       .toEqual({ readwrite: [], readonly: [], denied: [] });
   });
 
-  it("refuses a surviving grant nested beneath an emitted deny on a deny-wins backend", () => {
+  it("opens a narrower grant without emitting its enclosing deny", () => {
     const policy = model([deny("/work/private", "ave-home")], read("/work"), read("/work/private/allowed"));
-    expect(() => rankPosixContainerRows(policy, "seatbelt", lookups))
-      .toThrow(expect.objectContaining({
-        code: "nested-grant-under-deny",
-        message: expect.stringMatching(/\/work\/private\/allowed.*\/work\/private/u),
-      }));
+    expect(rankPosixContainerRows(policy, "seatbelt", {
+      ...lookups, children: (path) => path === "/work" ? ["private", "public"] : [],
+    })).toEqual({ readwrite: [], readonly: ["/work/private/allowed", "/work/public"], denied: [] });
+  });
+
+  it("carves broad reads and writes around private roots and resolves aliases before granting children", () => {
+    const home = "/private/tmp/home";
+    const ave = `${home}/.ave`;
+    const folders: Record<string, string[]> = {
+      "/": ["bin", "dev", "tmp", "dangling", "private", "work"],
+      "/private": ["tmp", "var"],
+      "/private/tmp": ["home", "alias", "notes"],
+      [home]: [".ave", ".ssh", "Documents", "public.txt"],
+    };
+    const policy = model([
+      deny(ave, "ave-home"), deny(`${home}/.ssh`, "secrets"),
+      deny(`${ave}/sessions`, "secrets"), deny("/work/blocked", "user-deny"),
+      protect("/work/.git/hooks"),
+    ], read("/"), write(home), write("/work"), write(`${ave}/sandbox/own`),
+    read(`${ave}/plugin`), read(`${ave}/sessions/access`), pierce(`${ave}/sessions/access`));
+    const result = rankPosixContainerRows(policy, "seatbelt", {
+      ...lookups,
+      children: (path) => {
+        if (path === ave || path.startsWith(`${ave}/`)) throw new Error("Do not enumerate the denied subtree");
+        return folders[path] ?? [];
+      },
+      canonical: (path) => {
+        if (path === "/dangling") throw Object.assign(new Error("Dangling link"), { code: "ENOENT" });
+        if (path === "/private/tmp/alias") return home;
+        return lookups.canonical(path);
+      },
+    });
+    expect(result).toEqual({
+      readwrite: ["/work", `${ave}/sandbox/own`, `${home}/Documents`, `${home}/public.txt`],
+      readonly: [
+        `${ave}/plugin`, `${ave}/sessions/access`, "/bin", "/private/var", "/private/tmp/notes",
+        "/work/.git/hooks",
+      ],
+      denied: ["/work/blocked"],
+    });
+  });
+
+  it.each([401, 2001])("withholds the whole folder that exceeds the carve budget with %i entries", (count) => {
+    const result = rankPosixContainerRows(model([], read("/"), write("/work")), "seatbelt", {
+      ...lookups, children: () => Array.from({ length: count }, (_, index) => `entry-${index}`),
+    });
+    expect(result).toEqual({ readwrite: ["/work"], readonly: [], denied: [], carvedReadLimitedAt: ["/"] });
+  });
+
+  it("refuses an unreadable chain by name", () => {
+    const policy = model([deny("/work/private", "ave-home")], read("/work"), read("/work/private/open"));
+    expect(() => rankPosixContainerRows(policy, "seatbelt", {
+      ...lookups, children: () => { throw new Error("Cannot enumerate directory"); },
+    })).toThrow(expect.objectContaining({ code: "chain-unreadable", message: expect.stringContaining("/work") }));
   });
 
   it("keeps both rows when the backend gives precedence to the most specific rule", () => {
