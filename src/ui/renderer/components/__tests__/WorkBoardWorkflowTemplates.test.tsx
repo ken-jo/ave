@@ -52,6 +52,7 @@ function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [
     })),
     confirmWorkflowTemplate: vi.fn(async () => ({ ok: true, value: { ...version, version: 3 } })),
     addWorkBoardItem: vi.fn(async () => ({ status: "created", itemId: 8, item: { ...item, ...project } })),
+    completeWorkBoardItem: vi.fn(async () => ({ status: "completed", itemId: 8, item: { ...item, status: "completed" } })),
     runWorkBoardItem: vi.fn(async () => ({ status: "completed" })),
     captureUserKeyboardIntent: vi.fn(() => ({ inputOrigin: "user-keyboard", token: "click" })),
     decideWorkStage: vi.fn(),
@@ -116,6 +117,9 @@ it("creates and launches a board item with the displayed template pin and the cl
   fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.createAndRun") }));
   await vi.waitFor(() => expect(api.runWorkBoardItem).toHaveBeenCalledExactlyOnceWith(8, { template: { ...pin, projectRoot: project.projectRoot } }, { inputOrigin: "user-keyboard", token: "click" }));
   expect(api.addWorkBoardItem).toHaveBeenCalledExactlyOnceWith({ templateId: template.id, title: "Wednesday report", ...project });
+  const run = within(await screen.findByRole("dialog", { name: "Wednesday report" }));
+  expect(run.getByText(t("workflowTemplates.requestedVersion", { version: 2 }))).toBeVisible();
+  expect(run.getByRole("list", { name: t("workflowTemplates.stageGraph") })).toHaveTextContent("Gather sources");
 });
 
 it("shows parked work and labels only the model decisions reported by the live host", async () => {
@@ -150,6 +154,19 @@ it("retries only the failed stage observed for the displayed run", async () => {
   await vi.waitFor(() => expect(retry).toBeDisabled());
   emit({ ...failed, attempt: 2, phase: "executing", runSessionId: "second-attempt" });
   expect(screen.queryByRole("button", { name: t("workflowTemplates.retryStage") })).toBeNull();
+});
+
+it("shows the host's completed output and marks the item complete only on user action", async () => {
+  const revision = "d".repeat(64);
+  const output = "The source digest is ready.";
+  const { api } = mount([{ ...item, templateRunState: undefined, runStatus: "completed", output, mutationRevision: revision }]);
+  await screen.findByText(item.title);
+  fireEvent.click(screen.getByRole("button", { name: t("workflowTemplates.openRun") }));
+  const run = within(screen.getByRole("dialog", { name: item.title }));
+  expect(run.getByText(output)).toBeVisible();
+  expect(api.completeWorkBoardItem).not.toHaveBeenCalled();
+  await act(async () => { fireEvent.click(run.getByRole("button", { name: t("workBoard.completeButton") })); });
+  expect(api.completeWorkBoardItem).toHaveBeenCalledExactlyOnceWith(item.id, revision);
 });
 
 it("shows separate stage approval lanes in the run view and answers through the shared approval surface", async () => {
