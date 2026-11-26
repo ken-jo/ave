@@ -30,12 +30,16 @@ export interface PermissionQuestion {
   readonly sessionEligible: boolean;
   /** The floor the sandbox-unavailable floor stands in front of. */
   readonly competingFloor?: string;
+  /** Path details the card shows beside the reason. */
+  readonly protectedEntry?: string;
+  readonly secretPattern?: string;
 }
 
 export function permissionQuestionOf(result: Pick<PermissionCheckResult, "forceModal" | "reasonCode" | "pipelineRequest">): PermissionQuestion {
   const request = result.pipelineRequest;
   const floor = request?.floor;
   const competing = request?.competingFloor;
+  const facts = request?.pathFacts;
   return Object.freeze({
     ...(floor === undefined ? {} : { floor: floor.code, floorReason: floor.reason }),
     // Derived from the request, which a person's allow keeps; the result's own reason text is replaced by the approval.
@@ -43,13 +47,15 @@ export function permissionQuestionOf(result: Pick<PermissionCheckResult, "forceM
     shellAnalysisLimited: request?.shellAnalysisLimited === true,
     sessionEligible: request?.floorSessionEligible === true,
     ...(competing === undefined ? {} : { competingFloor: `${competing.code}: ${competing.reason}` }),
+    ...(facts?.protectedEntry === undefined ? {} : { protectedEntry: facts.protectedEntry }),
+    ...(facts?.secretPattern === undefined ? {} : { secretPattern: facts.secretPattern }),
   });
 }
 
 /** One line per question for the audit: what the card asked and what the call now asks. */
 export function describePermissionQuestion(question: PermissionQuestion): string {
   return JSON.stringify([question.floor ?? null, question.floorReason ?? null, question.ask ?? null, question.shellAnalysisLimited,
-    question.sessionEligible, question.competingFloor ?? null]);
+    question.sessionEligible, question.competingFloor ?? null, question.protectedEntry ?? null, question.secretPattern ?? null]);
 }
 
 export function samePermissionQuestion(a: PermissionQuestion, b: PermissionQuestion): boolean {

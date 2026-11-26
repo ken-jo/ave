@@ -361,7 +361,7 @@ describe("live native approval ownership", () => {
         expect(fresh.shellRule?.sessionAllowed).not.toBe(true);
         const stale = f.auditLog.mock.calls.map(([entry]) => entry.output ?? "").filter(output => output.startsWith("[approval:answer-stale]"));
         expect(stale).toEqual([expect.stringContaining(`[approval:answer-stale] ${card.id} `)]);
-        expect(stale[0]).toMatch(/ choice=allow-once outcome=stale-reasked authority=none question=\[.*,true,null\] -> \[.*,false,"protected-path: /);
+        expect(stale[0]).toMatch(/ choice=allow-once outcome=stale-reasked authority=none question=\[.*,true,null,null,null\] -> \[.*,false,"protected-path: /);
         const decided = f.auditLog.mock.calls.map(([entry]) => entry.output ?? "").filter(output => output.startsWith(`[approval:decided] ${card.id} `));
         expect(decided).toEqual([expect.stringContaining(" choice=allow-once ")]);
         expect(invoke(PERMISSIONS.approvalPending, frame)).toEqual([fresh]);
@@ -415,7 +415,7 @@ describe("live native approval ownership", () => {
     if (choice === "allow-once") {
       expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(t("be_executor.answerQuestionChanged")) });
       expect(stale).toEqual([expect.stringContaining(`[approval:answer-stale] ${card.id} `)]);
-      expect(stale[0]).toMatch(/ choice=allow-once outcome=stale-refused authority=none question=\[.*,true,null\] -> \[.*,false,"protected-path: /);
+      expect(stale[0]).toMatch(/ choice=allow-once outcome=stale-refused authority=none question=\[.*,true,null,null,null\] -> \[.*,false,"protected-path: /);
       const decided = f.auditLog.mock.calls.map(([entry]) => entry.output ?? "").filter(output => output.startsWith(`[approval:decided] ${card.id} `));
       expect(decided).toEqual([expect.stringContaining(" choice=allow-once ")]);
     } else {

@@ -193,6 +193,28 @@ describe("the question a card puts", () => {
     expect(personAnswerStands(manager, card, { gate: {}, decision: { requestId: "card", choice: "allow-once" } })).toBe(false);
     expect(card.verdict?.kind).toBe("stale");
   });
+
+  // The card renders these beside the reason; the floor and its reason stay fixed.
+  const pathAsk = (pathFacts: Record<string, string>) => ({
+    decision: "ask" as const, forceModal: true, reason: "shown", reasonCode: "protected-path",
+    pipelineRequest: { tool: { name: "write_file", source: "builtin" as const, kind: "write" as const }, mode: "default" as const, headless: false,
+      floor: { code: "protected-path" as const, reason: "Protected." }, pathFacts },
+  }) as unknown as PermissionCheckResult;
+
+  it.each([
+    ["only the secret pattern changed", pathAsk({ protectedEntry: ".git", secretPattern: "*.pem" })],
+    ["only the protected entry changed", pathAsk({ protectedEntry: ".husky", secretPattern: ".env" })],
+    ["a secret pattern is no longer shown", pathAsk({ protectedEntry: ".git" })],
+  ] as const)("is another question when %s", (_name, changed) => {
+    const opened = pathAsk({ protectedEntry: ".git", secretPattern: ".env" });
+    expect(permissionQuestionOf(opened)).toMatchObject({ protectedEntry: ".git", secretPattern: ".env" });
+    expect(samePermissionQuestion(permissionQuestionOf(opened), permissionQuestionOf(changed))).toBe(false);
+    expect(samePermissionQuestion(permissionQuestionOf(opened), permissionQuestionOf(pathAsk({ protectedEntry: ".git", secretPattern: ".env" })))).toBe(true);
+    const manager = policy();
+    const card = openPendingAnswerCard(manager, opened, () => changed, "stale-refused");
+    expect(personAnswerStands(manager, card, { gate: {}, decision: { requestId: "card", choice: "allow-once" } })).toBe(false);
+    expect(card.verdict?.kind).toBe("stale");
+  });
 });
 
 it.each([
