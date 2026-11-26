@@ -202,7 +202,7 @@ users, and preserve package registration across updates. See the
 ### All-profile toast cleanup
 
 **Release limit — per-profile toast registration.** An unpackaged NSIS build
-always writes HKCU per user who runs Ave, so uninstall can clean only the
+always writes HKCU per user who runs Ave, so uninstall can only clean the
 current user's entries. With runtime v45.3.4, the NSIS build runs
 `EnsureShortcut();` and `EnsureCLSIDRegistry();` under
 `if (!is_packaged)` whenever the activator is registered. That condition uses

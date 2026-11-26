@@ -45,7 +45,7 @@ notification surface is per-user by design:
      (`build/uninstall-windows-notification-artifacts.ps1:186-223`).
 
 **Release limit — per-profile toast registration.** An unpackaged NSIS build
-always writes HKCU per user who runs Ave, so uninstall can clean only the
+always writes HKCU per user who runs Ave, so uninstall can only clean the
 current user's entries. When the notification presenter initializes, the
 unpackaged branch runs
 `if (!is_packaged) { EnsureShortcut(); EnsureCLSIDRegistry(); }`.
