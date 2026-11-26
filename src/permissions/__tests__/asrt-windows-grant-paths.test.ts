@@ -72,11 +72,14 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     vi.spyOn(os, "userInfo").mockReturnValue({ ...os.userInfo(), homedir: profile });
     vi.spyOn(integrity, "prepareSrtWinExecutable").mockImplementation(source => source);
     vi.spyOn(runtime, "getWindowsSandboxUserStatus").mockReturnValue({ provisioned: true, credPresent: true, sid: "S-1-5-21-1001" } as ReturnType<typeof runtime.getWindowsSandboxUserStatus>);
-    vi.spyOn(runtime, "grantWindowsAcl").mockImplementation(() => {});
-    vi.spyOn(runtime, "revokeWindowsAcl").mockImplementation(({ holderPid }) =>
-      [...new Set(vi.mocked(runtime.grantWindowsAcl).mock.calls
-        .filter(([call]) => call.holderPid === holderPid).flatMap(([call]) => call.read ?? []))]
-        .map(path => releaseEvidence(path)));
+    const grantAcl = vi.spyOn(runtime, "grantWindowsAcl").mockImplementation(() => {});
+    const releasedThrough = new Map<number | undefined, number>();
+    vi.spyOn(runtime, "revokeWindowsAcl").mockImplementation(({ holderPid }) => {
+      const calls = grantAcl.mock.calls.slice(releasedThrough.get(holderPid) ?? 0);
+      releasedThrough.set(holderPid, grantAcl.mock.calls.length);
+      const paths = new Set(calls.filter(([call]) => call.holderPid === holderPid).flatMap(([call]) => call.read ?? []));
+      return [...paths].map(path => releaseEvidence(path));
+    });
     vi.mocked(stampWindowsAclAsync).mockReset().mockResolvedValue(undefined);
     vi.spyOn(runtime, "restoreWindowsAcl").mockReturnValue([]);
     vi.spyOn(runtime.SandboxManager, "initialize").mockImplementation(async next => { config = next; });
