@@ -104,6 +104,7 @@ int wmain(int argc, wchar_t** argv) {
   }
   if (argc == 2 && std::wstring(argv[1]) == L"--documents-directory") return print_documents_directory();
   if (argc >= 2 && (std::wstring(argv[1]) == L"--pin" || std::wstring(argv[1]) == L"--dacl")) return print_path_facts(argc, argv);
+  if (argc >= 2 && std::wstring(argv[1]) == L"--hold") return hold_path(argc, argv);
   if (argc >= 2 && std::wstring(argv[1]) == L"--deny-acls") return print_deny_acls(argc, argv);
   if (argc >= 2 && std::wstring(argv[1]).rfind(L"--dir-", 0) == 0) return dir_ops::run(argc, argv);
   if (argc != 2 || !is_drive(argv[1])) {

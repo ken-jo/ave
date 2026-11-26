@@ -93,7 +93,7 @@ bool handle_facts(HANDLE handle, PathFacts& facts) {
 }
 
 // Child names are resolved by the pinned directory object, never by its pathname.
-HANDLE open_child(HANDLE parent, const std::wstring& name, DWORD access) {
+HANDLE open_child(HANDLE parent, const std::wstring& name, DWORD access, DWORD share = FILE_SHARE_READ) {
   const HMODULE module = GetModuleHandleW(L"ntdll.dll");
   if (module == nullptr || name.empty() || name.size() > 32767
       || name.find_first_of(L"\\/:") != std::wstring::npos) { SetLastError(ERROR_INVALID_NAME); return INVALID_HANDLE_VALUE; }
@@ -115,7 +115,7 @@ HANDLE open_child(HANDLE parent, const std::wstring& name, DWORD access) {
   HANDLE handle = INVALID_HANDLE_VALUE;
   // FILE_OPEN_REPARSE_POINT | FILE_OPEN_FOR_BACKUP_INTENT | FILE_SYNCHRONOUS_IO_NONALERT.
   const NTSTATUS result = create(&handle, access | SYNCHRONIZE, &attributes, &status, nullptr,
-    0, FILE_SHARE_READ, FILE_OPEN, 0x00204020, nullptr, 0);
+    0, share, FILE_OPEN, 0x00204020, nullptr, 0);
   if (result < 0) {
     SetLastError(result == static_cast<NTSTATUS>(0xc0000034) ? ERROR_FILE_NOT_FOUND
       : result == static_cast<NTSTATUS>(0xc000003a) ? ERROR_PATH_NOT_FOUND : ERROR_OPEN_FAILED);
@@ -166,7 +166,9 @@ bool verify_pinned_path(const PinnedPath& pinned) {
   return true;
 }
 
-bool pin_path(const wchar_t* input, PinnedPath& pinned, bool content = false) {
+// `hold` adds traverse access and shares writes but not deletes, so the chain resists rename and delete while held.
+bool pin_path(const wchar_t* input, PinnedPath& pinned, bool content = false, bool hold = false) {
+  const DWORD share = hold ? FILE_SHARE_READ | FILE_SHARE_WRITE : FILE_SHARE_READ;
   if (!path_components(input, pinned.components)) return false;
   bool blocked = false;
   bool missing = false;
@@ -177,13 +179,13 @@ bool pin_path(const wchar_t* input, PinnedPath& pinned, bool content = false) {
     const auto& component = pinned.components[index];
     const std::wstring extended = component.compare(0, 2, L"\\\\") == 0
       ? L"\\\\?\\UNC\\" + component.substr(2) : L"\\\\?\\" + component;
-    DWORD access = FILE_READ_ATTRIBUTES | READ_CONTROL;
+    DWORD access = FILE_READ_ATTRIBUTES | READ_CONTROL | (hold ? FILE_TRAVERSE : 0);
     if (content && index + 1 == pinned.components.size()) access |= FILE_READ_DATA;
     HANDLE handle = index == 0
-      ? CreateFileW(extended.c_str(), access, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+      ? CreateFileW(extended.c_str(), access, share, nullptr, OPEN_EXISTING,
           FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr)
       : open_child(pinned.handles.back().value, component.substr(pinned.components[index - 1].size()
-          + (pinned.components[index - 1].back() == L'\\' ? 0 : 1)), access);
+          + (pinned.components[index - 1].back() == L'\\' ? 0 : 1)), access, share);
     if (handle == INVALID_HANDLE_VALUE) {
       const DWORD error = GetLastError();
       if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) return false;

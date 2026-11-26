@@ -260,4 +260,27 @@ int print_path_facts(int argc, wchar_t** argv) {
   return std::fwrite(output.data(), 1, output.size(), stdout) == output.size() && std::fflush(stdout) == 0 ? 0 : 3;
 }
 
+// `--hold <directory>`: report the --pin row, then keep every component held until stdin closes.
+int hold_path(int argc, wchar_t** argv) {
+  if (argc != 3) return 2;
+  PinnedPath pinned;
+  if (!pin_path(argv[2], pinned, false, true) || pinned.handles.size() != pinned.components.size()
+      || (pinned.facts.back().tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+    std::fputs("could not hold the directory\n", stderr);
+    return 4;
+  }
+  std::string row = facts_json(pinned.facts.back()); row.pop_back();
+  row += ",\"ancestors\":[";
+  for (size_t ancestor = 0; ancestor + 1 < pinned.facts.size(); ++ancestor) {
+    if (ancestor != 0) row += ",";
+    row += facts_json(pinned.facts[ancestor]);
+  }
+  const std::string output = "[" + row + "]}]\n";
+  if (std::fwrite(output.data(), 1, output.size(), stdout) != output.size() || std::fflush(stdout) != 0) return 3;
+  char byte;
+  DWORD count;
+  while (ReadFile(GetStdHandle(STD_INPUT_HANDLE), &byte, 1, &count, nullptr) && count) {}
+  return 0;
+}
+
 }  // namespace
