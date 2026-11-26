@@ -2,11 +2,12 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConversationHistory } from "../../conversation-history.js";
 import { MemoryManager } from "../../../memory/memory-manager.js";
+import { turnInflightPath } from "../../../memory/session-turn-journal.js";
 import { TurnJournal, interruptRunningTurnsForExit, isHostExitAbort, registerRunningTurn } from "../turn-journal.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
@@ -17,7 +18,7 @@ vi.mock("node:fs", async (importOriginal) => {
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, open: vi.fn(actual.open) };
+  return { ...actual, open: vi.fn(actual.open), rename: vi.fn(actual.rename) };
 });
 
 const SESSION = "7a7a7a7a-1111-2222-3333-444444444444";
@@ -139,75 +140,142 @@ describe("running turns on quit", () => {
   });
 
   it("gives up at the deadline rather than holding the quit", async () => {
+    vi.useFakeTimers();
     const stuck = registerRunningTurn(() => undefined);
-    const started = Date.now();
-    await expect(interruptRunningTurnsForExit(50)).resolves.toEqual({ turns: 1, settled: false });
-    expect(Date.now() - started).toBeLessThan(1_000);
-    stuck.settle();
+    try {
+      const quit = interruptRunningTurnsForExit(50);
+      const settled = vi.fn();
+      void quit.then(settled);
+      await vi.advanceTimersByTimeAsync(49);
+      expect(settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(quit).resolves.toEqual({ turns: 1, settled: false });
+    } finally {
+      stuck.settle();
+    }
   });
 });
 
 describe("append cost on a 60-round turn", () => {
-  it("keeps each round's append far below a whole-session save and within a frame budget", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ave-journal-bench-"));
+  it("appends only new rows and writes one durable sidecar per snapshot", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-journal-cost-"));
+    const mm = new MemoryManager({ aveDir: dir });
+    const history = new ConversationHistory();
+    const sessionsDir = join(dir, "sessions");
+    const transcript = join(sessionsDir, `${SESSION}.jsonl`);
+    const snapshot = turnInflightPath(sessionsDir, SESSION);
+    const actualAsync = await vi.importActual<typeof fsPromises>("node:fs/promises");
+    const open = vi.mocked(fsPromises.open);
+    const rename = vi.mocked(fsPromises.rename);
+    const syncFsync = vi.mocked(fs.fsyncSync);
+    const syncWrite = vi.mocked(fs.writeFileSync);
+    const appendBytes: number[] = [];
+    const snapshotBytes: number[] = [];
+    let appendSyncs = 0;
+    let snapshotSyncs = 0;
+    let snapshotDirectorySyncs = 0;
+
     try {
-      const mm = new MemoryManager({ aveDir: dir });
-      const history = new ConversationHistory();
       for (let i = 0; i < 200; i += 1) {
         history.append({ role: i % 2 === 0 ? "user" : "assistant", content: `prior ${i} ${"y".repeat(2_000)}` });
       }
       history.append({ role: "user", content: "60 라운드 작업" });
       await mm.sessions.saveSession(SESSION, history.getMessages());
+      const initial = readFileSync(transcript);
+      syncFsync.mockClear();
+      syncWrite.mockClear();
+      rename.mockClear();
+      open.mockImplementation(async (...args) => {
+        const handle = await actualAsync.open(...args);
+        const [path, flags] = args;
+        if (path === transcript) {
+          const append = handle.appendFile.bind(handle);
+          handle.appendFile = async (data, options) => {
+            if (typeof data !== "string") throw new TypeError("Expected transcript text");
+            await append(data, options);
+            appendBytes.push(Buffer.byteLength(data));
+          };
+          const datasync = handle.datasync.bind(handle);
+          handle.datasync = async () => {
+            await datasync();
+            appendSyncs++;
+          };
+        } else if (path === dirname(snapshot) && flags === "r") {
+          const sync = handle.sync.bind(handle);
+          handle.sync = async () => {
+            await sync();
+            snapshotDirectorySyncs++;
+          };
+        } else if (typeof path === "string" && dirname(path) === dirname(snapshot) && flags === "wx") {
+          const write = handle.writeFile.bind(handle);
+          handle.writeFile = async (data, options) => {
+            if (typeof data !== "string") throw new TypeError("Expected snapshot text");
+            await write(data, options);
+            snapshotBytes.push(Buffer.byteLength(data));
+          };
+          const sync = handle.sync.bind(handle);
+          handle.sync = async () => {
+            await sync();
+            snapshotSyncs++;
+          };
+        }
+        return handle;
+      });
 
-      const appendMs: number[] = [];
-      const loopDelay = monitorEventLoopDelay({ resolution: 1 });
-      loopDelay.enable();
+      const outcomes = [];
+      const expectedRows = [];
       for (let round = 0; round < 60; round += 1) {
-        history.append({
+        const assistant = history.append({
           role: "assistant",
           content: `round ${round} ${"z".repeat(1_500)}`,
           toolCalls: [{ id: `call-${round}`, name: "bash", input: { command: "ls" } }],
         });
-        history.append({ role: "tool_result", toolUseId: `call-${round}`, toolName: "bash", content: "o".repeat(4_000) });
-        const started = performance.now();
-        await mm.sessions.appendSessionProgress(SESSION, history.getMessages());
-        appendMs.push(performance.now() - started);
+        const result = history.append({ role: "tool_result", toolUseId: `call-${round}`, toolName: "bash", content: "o".repeat(4_000) });
+        expectedRows.push(assistant, result);
+        outcomes.push(await mm.sessions.appendSessionProgress(SESSION, history.getMessages()));
       }
-      loopDelay.disable();
-      const loopMaxMs = loopDelay.max / 1e6;
-      process.stderr.write(
-        `[turn-journal bench] event-loop delay during the 60 appends: max=${loopMaxMs.toFixed(2)}ms `
-        + `p99=${(loopDelay.percentile(99) / 1e6).toFixed(2)}ms\n`,
-      );
-
-      // Snapshot disk latency runs asynchronously and is not main-thread blocking time.
-      const partialMs: number[] = [];
+      const partialContent = "w".repeat(20_000);
       for (let i = 0; i < 20; i += 1) {
-        const started = performance.now();
-        await mm.sessions.writeTurnPartial(SESSION, 1, { messageId: "p", content: "w".repeat(20_000), updatedAt: i });
-        partialMs.push(performance.now() - started);
+        await mm.sessions.writeTurnPartial(SESSION, 1, { messageId: "p", content: partialContent, updatedAt: i });
       }
-      const partialMedian = [...partialMs].sort((x, y) => x - y)[10];
-      process.stderr.write(`[turn-journal bench] partial snapshot (20 KB) median=${partialMedian.toFixed(2)}ms\n`);
-      expect(partialMedian).toBeLessThan(100);
 
-      const saveStarted = performance.now();
+      expect(outcomes).toEqual(Array(60).fill("appended"));
+      expect(appendBytes).toHaveLength(60);
+      expect(appendSyncs).toBe(60);
+      expect(snapshotBytes).toHaveLength(20);
+      expect(snapshotSyncs).toBe(20);
+      expect(snapshotDirectorySyncs).toBe(process.platform === "win32" ? 0 : 20);
+      expect(rename.mock.calls.map(([, destination]) => destination)).toEqual(Array(20).fill(snapshot));
+      expect(syncWrite).not.toHaveBeenCalled();
+      expect(syncFsync).not.toHaveBeenCalled();
+
+      const current = readFileSync(transcript);
+      expect(current.subarray(0, initial.length)).toEqual(initial);
+      const added = current.subarray(initial.length).toString("utf8").trimEnd().split("\n");
+      expect(added).toHaveLength(expectedRows.length);
+      for (const [index, row] of added.entries()) {
+        const expected = expectedRows[index];
+        expect(JSON.parse(row)).toMatchObject({
+          role: expected.role,
+          content: expected.content,
+          meta: { messageId: expected.meta.messageId },
+        });
+        expect(Buffer.byteLength(row) + 1).toBeLessThanOrEqual(Buffer.byteLength(String(expected.content)) + 512);
+      }
+      expect(appendBytes.reduce((sum, bytes) => sum + bytes, 0)).toBe(current.length - initial.length);
+      for (const bytes of snapshotBytes) {
+        expect(bytes).toBeLessThanOrEqual(Buffer.byteLength(partialContent) + 256);
+      }
+
+      expect(mm.sessions.loadSession(SESSION)?.at(-1)).toMatchObject({
+        content: partialContent,
+        meta: { interrupted: true, interruptedBy: "host-exit" },
+      });
       await mm.sessions.saveSession(SESSION, history.getMessages());
-      const fullSaveMs = performance.now() - saveStarted;
-
-      const sorted = [...appendMs].sort((x, y) => x - y);
-      const median = sorted[Math.floor(sorted.length / 2)];
-      const p95 = sorted[Math.floor(sorted.length * 0.95)];
-      // Keep timing assertions broad enough to measure loaded hosts without flakes.
-      process.stderr.write(
-        `[turn-journal bench] 60 rounds: append median=${median.toFixed(2)}ms p95=${p95.toFixed(2)}ms `
-        + `max=${sorted.at(-1)!.toFixed(2)}ms total=${appendMs.reduce((s, v) => s + v, 0).toFixed(1)}ms; `
-        + `one full save at the end=${fullSaveMs.toFixed(2)}ms (${history.length} rows)\n`,
-      );
-      expect(median).toBeLessThan(50);
       expect(new Set((mm.sessions.loadSession(SESSION) as Array<{ meta: { messageId: string } }>).map((m) => m.meta.messageId)).size)
         .toBe(history.length);
     } finally {
+      open.mockRestore();
       await cleanupTmpDir(dir);
     }
   });
