@@ -72,7 +72,7 @@ vi.mock("../windows-stamp-targets.js", async original => {
   return { ...targets, pinWindowsFilesystemConfig: <T extends Partial<import("@anthropic-ai/sandbox-runtime").FilesystemConfig> | undefined>(config: T): T =>
     driveFixture.enabled ? actual.pinWindowsFilesystemConfig(config) : targets.pinWindowsFilesystemConfig(config) };
 });
-vi.mock("node:module", async original =>
+/vi.mock("node:module", async original =>
   // The drive fixture switches every path call to win32, so a POSIX checkout path would be a rootless native spelling: the package resolves on the drive.
   (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original(), () => driveFixture.enabled));
 // A POSIX host spells the run directory without a drive, so the simulated win32 floor row is put on the simulated drive.
@@ -124,12 +124,14 @@ import { resetWatchedRows, watchedProtectedRows } from "../windows-watched-rows.
 
 const hostPlatform = process.platform;
 const hostExecPath = process.execPath;
+const hostResourcePath = resolve("resources");
 
-// Host resources and the runtime executable are a native checkout, as on a Windows host. Under the drive fixture a POSIX spelling is a
-// rootless native row the policy re-roots under the mocked cwd, a row no real darwin or Windows policy carries.
-function useNativeCheckout(): void {
-  configureHostResources({ resourcePath: hostPlatform === "win32" ? resolve("resources") : String.raw`C:\ave\resources`, isPackaged: false });
-  if (hostPlatform !== "win32") Object.defineProperty(process, "execPath", { value: String.raw`C:\ave\Ave.exe`, configurable: true });
+// Host resources and the runtime executable are a native checkout of the simulated platform. Under the drive fixture a POSIX spelling
+// in a win32 policy is a rootless native row the policy re-roots under the mocked cwd, a row no real Windows policy carries.
+function useNativeCheckout(platform: NodeJS.Platform): void {
+  const onDrive = platform === "win32" && hostPlatform !== "win32";
+  configureHostResources({ resourcePath: onDrive ? String.raw`C:\ave\resources` : hostResourcePath, isPackaged: false });
+  if (onDrive) Object.defineProperty(process, "execPath", { value: String.raw`C:\ave\Ave.exe`, configurable: true });
 }
 
 describe("hosted write policy spellings", () => {
@@ -145,10 +147,10 @@ describe("hosted write policy spellings", () => {
   });
 
   it.each(["darwin", "win32"] as const)("keeps the browser staging write deny in the %s backend spelling", platform => {
-    useNativeCheckout();
     driveFixture.backing = realpathSync(mkdtempSync(join(os.tmpdir(), "wp-staging-")));
     if (hostPlatform !== "win32") mkdirSync(join(driveFixture.backing, "other-drives", "C"), { recursive: true });
     driveFixture.enabled = hostPlatform !== "win32";
+    useNativeCheckout(platform);
     setProcessPlatform(platform);
     const home = hostPlatform === "win32" ? driveFixture.backing : "D:\\hosted-profile";
     mkdirSync(home, { recursive: true });
@@ -184,7 +186,7 @@ describe("hosted write policy spellings", () => {
     driveFixture.backing = realpathSync(mkdtempSync(join(os.tmpdir(), "wp-")));
     if (hostPlatform !== "win32") mkdirSync(join(driveFixture.backing, "other-drives", "C"), { recursive: true });
     driveFixture.enabled = hostPlatform !== "win32";
-    useNativeCheckout();
+    useNativeCheckout(platform);
     setProcessPlatform(platform);
     const tempSegments = prefix === "native-temp" ? [".ave-test-tmp"] : ["a", "_temp"];
     const rootPrefix = hostPlatform === "win32"
