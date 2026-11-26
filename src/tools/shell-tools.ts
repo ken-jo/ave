@@ -125,7 +125,7 @@ import {
 } from "../permissions/host-shell-execution-permit.js";
 import { hostShellWorkingDirectoryPrelude } from "./host-shell-cwd-guard.js";
 import { attachHostShellControlChannel } from "./host-shell-control-channel.js";
-import { deriveSandboxWritePaths } from "../permissions/sandbox-write-jail.js";
+import { containerShellAllowedDirectories, deriveSandboxWritePaths } from "../permissions/sandbox-write-jail.js";
 import { resolveShellTimeoutMs, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
   assertManagedChildProcessAdmissionOpen,
@@ -3521,12 +3521,15 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     }
     if (hostShellPlan.mode === "asrt") {
       // Namespace-scoped write-jail (owner plugin sandbox root ∪ allowed
-      // directories), not the bare cwd. cwd stays readable.
+      // directories), not the bare cwd. cwd stays readable. A container shell's
+      // roots leave out the host temp directory.
       const writePaths = deriveSandboxWritePaths({
         ...(ctx.ownerPluginSandboxRoot !== undefined
           ? { ownerPluginSandboxRoot: ctx.ownerPluginSandboxRoot }
           : {}),
-        allowedDirectories: [resolvedCwd, ...ctx.extraAllowedDirectories],
+        allowedDirectories: hostShellPlan.substrate === "mxc"
+          ? containerShellAllowedDirectories(resolvedCwd, ctx.extraAllowedDirectories)
+          : [resolvedCwd, ...ctx.extraAllowedDirectories],
       });
       const runtimeReads = powerShellHostScriptReadPaths(commandAst, input.command);
       const command = runtimeReads.length > 0 ? awaitedHostScriptCommand(input.command, commandAst.commands[0]!) : input.command;
@@ -3790,7 +3793,7 @@ async function parsePowerShellAstInMxc(command: string, cwd: string, ctx: ToolEx
   const parserScript = POWER_SHELL_AST_PARSER.replace("[Console]::In.ReadToEnd()", `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${input}'))`);
   const writePaths = deriveSandboxWritePaths({
     ...(ctx.ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot: ctx.ownerPluginSandboxRoot } : {}),
-    allowedDirectories: [cwd, ...ctx.extraAllowedDirectories],
+    allowedDirectories: containerShellAllowedDirectories(cwd, ctx.extraAllowedDirectories),
   });
   const response = createPowerShellParserResponse();
   const result = await spawnPowerShellInMxc(parserScript, cwd, writePaths, timeoutSeconds, ctx.abortSignal, undefined, undefined,
@@ -4210,6 +4213,7 @@ async function spawnPowerShellInMxc(
         ])],
         floorPierces,
       },
+      sandboxHome: sandboxHome.path,
       env: powerShellExecutionEnvironment(verified, powerShellLaunch.env),
       timeoutMs: resolveShellTimeoutMs(timeoutSeconds),
       exists: existsSync,

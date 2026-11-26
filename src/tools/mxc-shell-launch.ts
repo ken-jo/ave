@@ -5,7 +5,7 @@ import type { ChildProcess } from "node:child_process";
 import { lstatSync, readdirSync } from "node:fs";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
-import { aveHomeReadBoundaryCovering, getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
+import { appOwnedSandboxPrivateRoots, aveHomeReadBoundaryCovering, getProtectedReadDenyFloor, insideOwnWindowsSandboxHome, protectedReadDenyMatcher } from "../permissions/asrt-sandbox.js";
 import { openInvocationProxyListener } from "../permissions/egress-invocation-listener.js";
 import { openHostEgressListener } from "../permissions/egress-host-listener.js";
 import { egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../permissions/egress-invocations.js";
@@ -18,6 +18,8 @@ import {
   type MxcDirectoryEntry,
 } from "../permissions/mxc-windows.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../permissions/policy-model.js";
+import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
+import { assertIssuedContainerHomeInPlace, isIssuedContainerHome } from "../permissions/sandbox-home-registry.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 
 export interface MxcShellLaunch {
@@ -72,6 +74,8 @@ export interface PrepareMxcShellLaunchInput {
   readonly cwd: string;
   /** What the shell computed for this command. The protected read floor is added here. */
   readonly filesystem: Omit<MxcShellPolicyLists, "protectedFloor">;
+  /** The HOME the host created for this invocation: the one directory under the container runtime root it is granted. */
+  readonly sandboxHome?: string;
   /** The child's secret-stripped environment. */
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
@@ -107,6 +111,8 @@ const MXC_TIMEOUT_MARGIN_MS = 30_000;
 export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle): Promise<MxcShellLaunch> {
   const capability = detectMxcShellCapability();
   if (capability === undefined) throw new Error("Container shell route is unavailable");
+  // Before anything is allocated: a runtime root that was not proved private refuses every container start.
+  requireMxcContainerStartRoot();
   const token = input.egressToken;
   const owner = egressInvocationOwner(token);
   if (owner?.kind !== "shell" || owner.requiresListener !== true) {
@@ -153,10 +159,19 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   }
   // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.
   const insideBoundary = (path: string): boolean => aveHomeReadBoundaryCovering(path) !== undefined;
-  const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path));
-  const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path));
+  // The container runtime root is closed to reads and writes alike: a grant inside it would outrank its deny. Only this invocation's own HOME is granted there, and the deny is restated so it holds beneath a granted ancestor.
+  const privateRoots = appOwnedSandboxPrivateRoots();
+  const privateRootCovering = protectedReadDenyMatcher(privateRoots);
+  const insideClosedRoot = (path: string): boolean =>
+    privateRootCovering(path) !== undefined && !insideOwnWindowsSandboxHome(path, input.sandboxHome);
+  assertIssuedContainerHomeInPlace(input.sandboxHome);
+  // No working directory inside the root except the invocation's own issued HOME itself, by identity.
+  if (privateRootCovering(input.cwd) !== undefined && !isIssuedContainerHome(input.cwd, input.sandboxHome)) throw new Error("Container shell working directory is inside the sandbox runtime root");
+  const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
+  const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
+  const denyRead = [...new Set([...input.filesystem.denyRead, ...privateRoots])];
   const protectedFloor = getProtectedReadDenyFloor();
-  const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, protectedFloor }),
+  const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, denyRead, protectedFloor }),
     input.exists, input.list ?? listDirectory);
   assertAdmission();
   const relay = await openHostEgressListener(token, admission);
