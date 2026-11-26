@@ -1,6 +1,9 @@
 import type { WebContents } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApprovalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
+import { setWorkBoardProjectScope } from "../../ipc/work-board-project-scope.js";
+import { getDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
+import type { MainWindow } from "../../main/main-window-host.js";
+import { ApprovalSurfaceRegistry, updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import { ApprovalGate, isHostApprovalRejectedDecision, isHostApprovalTimeoutDecision, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { approvalSurfaceResolver } from "../approval-surface.js";
 import { makeTestPolicy } from "../../permissions/__tests__/test-helpers.js";
@@ -8,7 +11,7 @@ import { createExtensionStartAsker } from "../../permissions/extension-start-ask
 
 function surfaceFixture() {
   const state = { destroyed: false };
-  const contents = { isDestroyed: () => state.destroyed, send: vi.fn() } as unknown as WebContents;
+  const contents = { isDestroyed: () => state.destroyed, send: vi.fn(), on: vi.fn(), mainFrame: {} } as unknown as WebContents;
   return { state, contents };
 }
 
@@ -82,6 +85,38 @@ describe("registered approval surface resolution", () => {
     expect(isHostApprovalRejectedDecision(decision)).toBe(true);
     expect(gate.pendingCount).toBe(0);
     expect(owner.contents.send).not.toHaveBeenCalled();
+  });
+
+  it("delivers a pending project card with the originally registered root", async () => {
+    vi.useFakeTimers();
+    const owner = surfaceFixture();
+    const window = { webContents: owner.contents, isDestroyed: () => owner.state.destroyed } as MainWindow;
+    const gate = new ApprovalGate(approvalSurfaceResolver(undefined, () => [window]), makeTestPolicy());
+    const sessionId = "pending-project-snapshot";
+    const projectRoot = getDefaultWorkspaceRoot();
+    const project = { itemId: 1, projectRoot };
+    updateApprovalSurface({ kind: "attach-project", sessionId, project });
+    try {
+      const pending = gate.requestAndWait({ ...request("parked-project"), sessionId });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(gate.pendingCount).toBe(1);
+      expect(owner.contents.send).not.toHaveBeenCalled();
+
+      project.projectRoot = `${projectRoot}/another-project`;
+      expect(setWorkBoardProjectScope(owner.contents, projectRoot)).toBe(true);
+      gate.reconcileWorkBoardProjectApprovals();
+
+      const [card] = gate.listPendingRendererRequests(owner.contents);
+      expect(card?.workBoardProjectApproval).toEqual({ itemId: 1, projectRoot, parked: true });
+      expect(owner.contents.send).toHaveBeenCalledWith("ave:approval:request", card);
+      gate.resolveFromDesktopRenderer(card.id, {
+        requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac,
+      }, owner.contents);
+      await expect(pending).resolves.toMatchObject({ choice: "allow-once" });
+    } finally {
+      gate.disposeAll();
+      updateApprovalSurface({ kind: "release", sessionId });
+    }
   });
 
   it("reports an extension start card nobody answered as unanswered, never as a person's no", async () => {

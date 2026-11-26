@@ -63,7 +63,8 @@ export class ApprovalSurfaceRegistry {
 
   registerProject(sessionId: string, project: WorkBoardApprovalProject): void {
     requireIdentity(sessionId);
-    this.sessions.set(sessionId, { project });
+    const snapshot = Object.freeze({ itemId: project.itemId, projectRoot: project.projectRoot });
+    this.sessions.set(sessionId, { project: snapshot });
   }
 
   /** Keep a live parent link so children follow ownership transfers immediately. */
