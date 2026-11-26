@@ -210,7 +210,7 @@ async function settledRow(probe: Probe, id = "denied-call"): Promise<Record<stri
   return probe.rows(id)[0] as Record<string, unknown>;
 }
 
-async function expectOneDenial(probe: Probe, reason: string | RegExp, invocationOrigin = "user-keyboard"): Promise<void> {
+async function expectOneDenial(probe: Probe, reason: string | RegExp, invocationOrigin = "user-keyboard"): Promise<Record<string, unknown>> {
   const row = await settledRow(probe);
   await vi.waitFor(() => expect(probe.denials()).toHaveLength(1));
   expect(row).toMatchObject({ decision: "deny", terminalKind: "denied" });
@@ -218,6 +218,7 @@ async function expectOneDenial(probe: Probe, reason: string | RegExp, invocation
   expect(firstReason(row)).toMatch(reason);
   expect(probe.denials()).toEqual([["PermissionDenied", "denial-session", invocationOrigin,
     expect.objectContaining({ toolName: expect.stringMatching(/_probe$/), denyReason: expect.objectContaining({ source: "tool-executor" }) }), expect.anything()]]);
+  return row;
 }
 
 async function expectNoDenial(probe: Probe, reason: string | RegExp): Promise<void> {
@@ -321,7 +322,7 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
     ["host", /^the invocation failed: approval: the answer to .* does not settle this allow of denial_probe$/],
     ["integrity", /^the invocation failed: approval: the answer to .* does not settle this deny of denial_probe$/],
   ] as const)("deny source %s: one row, one event", async (source, reason) => {
-    await run(source, (probe) => expectOneDenial(probe, reason));
+    await run(source, async (probe) => { await expectOneDenial(probe, reason); });
   });
 
   it("cancels a directory hook when only the inherited signal stops", async () => {
@@ -473,9 +474,8 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
   it("keeps a settled headless refusal when Stop lands before its row", async () => {
     await run("headless-then-abort", async (probe) => {
       expect(probe.controller.signal.aborted).toBe(true);
-      const row = await settledRow(probe);
-      expect(row).toMatchObject({ decision: "deny", terminalKind: "denied", trustOrigin: "unknown" });
-      expect(firstReason(row)).toBe("approval rejected by host");
+      const row = await expectOneDenial(probe, /^approval rejected by host$/);
+      expect(row).toMatchObject({ trustOrigin: "unknown" });
     });
   });
 
@@ -492,9 +492,8 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
     await run("dir-host-deny-then-abort", async (probe) => {
       expect(probe.requestAndWait).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: "out-of-allowed-dir" }));
       expect(probe.controller.signal.aborted).toBe(true);
-      const row = await settledRow(probe);
-      expect(row).toMatchObject({ decision: "deny", terminalKind: "denied", trustOrigin: "unknown" });
-      expect(firstReason(row)).toBe("approval rejected by host");
+      const row = await expectOneDenial(probe, /^approval rejected by host$/, "llm-tool-arg");
+      expect(row).toMatchObject({ trustOrigin: "unknown" });
     });
   });
 
