@@ -561,11 +561,9 @@ FunctionEnd
     Goto ave_skip_genuine_uninstall
   ${endif}
 
-  ; Electron 43 creates a current-user notification shortcut and HKCU toast
-  ; activator registration even for a per-machine app. Genuine uninstall must
-  ; remove only the exact invoking-user artifacts. In the normal alternate-
-  ; admin UAC path, execute synchronously in electron-builder's retained outer
-  ; user process; an already-elevated invocation runs as its current identity.
+  ; The notification shortcut and HKCU toast activator belong to a user.
+  ; Run cleanup in the retained outer process after alternate-credential UAC.
+  ; An already-elevated invocation uses its own process account.
   StrCpy $R0 "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
   StrCpy $R1 "${PRODUCT_NAME}"
   StrCpy $R2 "${APP_ID}"

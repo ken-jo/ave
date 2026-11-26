@@ -904,9 +904,9 @@ async function toastActivatorRegistrations(toastClsid) {
       queryRegistryDefault("HKCU", `${path}\\LocalServer32`, view),
     ]);
     if (
-      rootDefault.keyExists ||
-      customActivator.keyExists ||
-      localServer.keyExists
+      rootDefault.valueExists ||
+      customActivator.valueExists ||
+      localServer.valueExists
     ) {
       registrations.push({ view, rootDefault, customActivator, localServer });
     }

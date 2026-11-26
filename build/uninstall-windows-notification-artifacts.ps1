@@ -36,10 +36,11 @@ function Get-NormalizedPath {
 
 function Test-SamePath {
   param(
-    [Parameter(Mandatory = $true)][string]$Left,
+    [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Left,
     [Parameter(Mandatory = $true)][string]$Right
   )
 
+  if ([string]::IsNullOrWhiteSpace($Left)) { return $false }
   try {
     return [string]::Equals(
       (Get-NormalizedPath $Left),
@@ -49,6 +50,17 @@ function Test-SamePath {
   }
   catch {
     return $false
+  }
+}
+
+function Get-ShortcutAttributes {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  try {
+    return [System.IO.File]::GetAttributes($Path)
+  }
+  catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] {
+    return $null
   }
 }
 
@@ -159,7 +171,10 @@ function Get-ShortcutOwnershipMismatches {
     $mismatches += "appUserModelId"
   }
   $parsedClsid = [System.Guid]::Empty
-  if (-not [System.Guid]::TryParse($Record.ToastClsid, [ref]$parsedClsid)) {
+  if (
+    -not [System.Guid]::TryParse($Record.ToastClsid, [ref]$parsedClsid) -or
+    $parsedClsid -eq [System.Guid]::Empty
+  ) {
     $mismatches += "toastClsid"
   }
   return @($mismatches)
@@ -275,47 +290,15 @@ function Remove-ExactToastRegistration {
     $server = $root.OpenSubKey("LocalServer32", $true)
     if ($null -eq $server) { return $false }
 
-    # Recheck exact types and data on writable handles immediately before
-    # deleting only Electron's known values.
+    # Recheck exact types and data on writable handles. Keep the keys so a
+    # concurrent writer's values cannot be removed by key deletion.
     if (-not (Test-ExactToastRegistrationHandles $root $server $ExpectedExecutable)) {
       return $false
     }
 
     $server.DeleteValue("", $false)
-    $server.Dispose()
-    $server = $null
-    $serverCheck = $root.OpenSubKey("LocalServer32", $false)
-    if ($null -ne $serverCheck) {
-      try {
-        if ($serverCheck.ValueCount -eq 0 -and $serverCheck.SubKeyCount -eq 0) {
-          $serverCheck.Dispose()
-          $serverCheck = $null
-          $root.DeleteSubKey("LocalServer32", $false)
-        }
-      }
-      finally {
-        if ($null -ne $serverCheck) { $serverCheck.Dispose() }
-      }
-    }
-
     $root.DeleteValue("CustomActivator", $false)
     $root.DeleteValue("", $false)
-    $root.Dispose()
-    $root = $null
-
-    $rootCheck = $base.OpenSubKey("Software\Classes\CLSID\$Clsid", $false)
-    if ($null -ne $rootCheck) {
-      try {
-        if ($rootCheck.ValueCount -eq 0 -and $rootCheck.SubKeyCount -eq 0) {
-          $rootCheck.Dispose()
-          $rootCheck = $null
-          $base.DeleteSubKey("Software\Classes\CLSID\$Clsid", $false)
-        }
-      }
-      finally {
-        if ($null -ne $rootCheck) { $rootCheck.Dispose() }
-      }
-    }
     return $true
   }
   finally {
@@ -326,35 +309,23 @@ function Remove-ExactToastRegistration {
 }
 
 function Find-ExactToastRegistrations {
-  param([Parameter(Mandatory = $true)][string]$ExpectedExecutable)
+  param(
+    [Parameter(Mandatory = $true)][string]$ExpectedExecutable,
+    [Parameter(Mandatory = $true)][string[]]$CandidateClsids
+  )
 
   $matches = @()
   foreach ($view in (Get-RegistryViews)) {
-    $base = $null
-    $clsidRoot = $null
-    try {
-      $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
-        [Microsoft.Win32.RegistryHive]::CurrentUser,
-        $view
-      )
-      $clsidRoot = $base.OpenSubKey("Software\Classes\CLSID", $false)
-      if ($null -eq $clsidRoot) { continue }
-      foreach ($name in $clsidRoot.GetSubKeyNames()) {
-        $parsed = [System.Guid]::Empty
-        if (-not [System.Guid]::TryParse($name, [ref]$parsed)) { continue }
-        if (Test-ExactToastRegistration $view $name $ExpectedExecutable) {
-          $matches += [PSCustomObject]@{ View = $view; Clsid = $name }
-        }
+    foreach ($clsid in $CandidateClsids) {
+      if (Test-ExactToastRegistration $view $clsid $ExpectedExecutable) {
+        $matches += [PSCustomObject]@{ View = $view; Clsid = $clsid }
       }
-    }
-    finally {
-      if ($null -ne $clsidRoot) { $clsidRoot.Dispose() }
-      if ($null -ne $base) { $base.Dispose() }
     }
   }
   return @($matches)
 }
 
+$shortcutMoved = $false
 try {
   if (-not [System.IO.Path]::IsPathRooted($InstalledExecutable)) {
     throw "InstalledExecutable must be an absolute path"
@@ -385,105 +356,85 @@ try {
   ) {
     throw "the exact zero-byte regular NSIS marker contract is unavailable: $expectedMarker"
   }
-  $programs = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)
+  $programs = [Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::Programs,
+    [Environment+SpecialFolderOption]::DoNotVerify
+  )
   if ([string]::IsNullOrWhiteSpace($programs)) {
     throw "the current user's Programs known folder is unavailable"
   }
   $shortcutPath = Join-Path $programs ($ShortcutName + ".lnk")
+  $nonRegularAttributes = [System.IO.FileAttributes]::Directory -bor [System.IO.FileAttributes]::ReparsePoint
+  $productClsid = "{62FD3EFB-B3D2-4235-9402-6979F52C0286}"
+  $candidateClsids = @($productClsid)
 
-  $shortcutItem = Get-Item -LiteralPath $shortcutPath -Force -ErrorAction SilentlyContinue
-  if ($null -ne $shortcutItem) {
-    if (
-      $shortcutItem.PSIsContainer -or
-      (($shortcutItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
-    ) {
-      Write-CleanupEvent "foreign-preserved" "shortcut" (
-        "preserved non-regular or reparse-point candidate: $shortcutPath"
-      )
-    }
-    else {
-      $record = Get-ShortcutRecord $shortcutPath
-      if (-not (Test-SamePath $record.Target $installedExe)) {
-        Write-CleanupEvent "foreign-preserved" "shortcut" (
-          "preserved different-target shortcut: $shortcutPath"
-        )
-      }
-      else {
-        $mismatches = @(
-          Get-ShortcutOwnershipMismatches $record $installedExe $installDir $ShortcutName $AppUserModelId
-        )
-        if ($mismatches.Count -ne 0) {
-          Write-CleanupEvent "foreign-preserved" "shortcut" (
-            "preserved same-target partial-owned shortcut; mismatched fields: {0}" -f
-            ($mismatches -join ",")
-          )
-        }
-        else {
-
-          # Move within the same directory first, then recheck the moved identity.
-          # A path swap before Move is quarantined and preserved after mismatch;
-          # a path created after Move is never the object we delete.
-          $quarantinePath = Join-Path $programs (
-            ".{0}.ave-uninstall-{1}.lnk" -f
-            $ShortcutName,
-            [System.Guid]::NewGuid().ToString("N")
-          )
-          [System.IO.File]::Move($shortcutPath, $quarantinePath)
-          try {
-            $quarantinedItem = Get-Item -LiteralPath $quarantinePath -Force
-            if (
-              $quarantinedItem.PSIsContainer -or
-              (($quarantinedItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
-            ) {
-              throw "the shortcut changed to a non-regular or reparse-point object before quarantine"
-            }
-            $quarantinedRecord = Get-ShortcutRecord $quarantinePath
-            $quarantinedMismatches = @(
-              Get-ShortcutOwnershipMismatches $quarantinedRecord $installedExe $installDir $ShortcutName $AppUserModelId
-            )
-            if ($quarantinedMismatches.Count -ne 0) {
-              throw (
-                "the shortcut changed before atomic quarantine; mismatched fields: {0}" -f
-                ($quarantinedMismatches -join ",")
-              )
-            }
-
-            [System.IO.File]::Delete($quarantinePath)
-            if (Test-Path -LiteralPath $quarantinePath) {
-              throw "the quarantined owned shortcut survived cleanup"
-            }
-          }
-          catch {
-            $quarantineFailure = $_
-            if (Test-Path -LiteralPath $quarantinePath) {
-              if (-not (Test-Path -LiteralPath $shortcutPath)) {
-                [System.IO.File]::Move($quarantinePath, $shortcutPath)
-                Write-CleanupEvent "foreign-preserved" "shortcut" (
-                  "restored the quarantined shortcut after ownership changed"
-                )
-              }
-              else {
-                Write-CleanupEvent "contract-failed" "shortcut-quarantine" (
-                  "preserved the changed candidate at $quarantinePath because the original path was reoccupied"
-                )
-              }
-            }
-            throw $quarantineFailure
-          }
-          Write-CleanupEvent "removed" "shortcut" (
-            "removed exact current-user Ave notification shortcut: $shortcutPath"
-          )
-        }
-      }
-    }
-  }
-  else {
+  $shortcutAttributes = Get-ShortcutAttributes $shortcutPath
+  if ($null -eq $shortcutAttributes) {
     Write-CleanupEvent "verified-absent" "shortcut" (
       "current-user Ave notification shortcut was already absent: $shortcutPath"
     )
   }
+  elseif (($shortcutAttributes -band $nonRegularAttributes) -ne 0) {
+    Write-CleanupEvent "foreign-preserved" "shortcut" (
+      "preserved non-regular or reparse-point candidate: $shortcutPath"
+    )
+  }
+  else {
+    $record = Get-ShortcutRecord $shortcutPath
+    if (-not (Test-SamePath $record.Target $installedExe)) {
+      Write-CleanupEvent "foreign-preserved" "shortcut" (
+        "preserved different-target shortcut: $shortcutPath"
+      )
+    }
+    else {
+      $mismatches = @(
+        Get-ShortcutOwnershipMismatches $record $installedExe $installDir $ShortcutName $AppUserModelId
+      )
+      if ($mismatches.Count -ne 0) {
+        Write-CleanupEvent "foreign-preserved" "shortcut" (
+          "preserved same-target partial-owned shortcut; mismatched fields: {0}" -f
+          ($mismatches -join ",")
+        )
+      }
+      else {
+        # Keep the verified shortcut in quarantine until registry cleanup
+        # finishes, so it can be restored on failure as legacy CLSID evidence.
+        $quarantinePath = Join-Path $programs (
+          ".{0}.ave-uninstall-{1}.lnk" -f
+          $ShortcutName,
+          [System.Guid]::NewGuid().ToString("N")
+        )
+        [System.IO.File]::Move($shortcutPath, $quarantinePath)
+        $shortcutMoved = $true
+        $quarantinedAttributes = Get-ShortcutAttributes $quarantinePath
+        if (
+          $null -eq $quarantinedAttributes -or
+          ($quarantinedAttributes -band $nonRegularAttributes) -ne 0
+        ) {
+          throw "the quarantined shortcut is missing or is no longer a regular file"
+        }
+        $quarantinedRecord = Get-ShortcutRecord $quarantinePath
+        $quarantinedMismatches = @(
+          Get-ShortcutOwnershipMismatches $quarantinedRecord $installedExe $installDir $ShortcutName $AppUserModelId
+        )
+        if ($quarantinedMismatches.Count -ne 0) {
+          throw (
+            "the shortcut changed before atomic quarantine; mismatched fields: {0}" -f
+            ($quarantinedMismatches -join ",")
+          )
+        }
+        $verifiedClsid = ([guid]$quarantinedRecord.ToastClsid).ToString("B")
+        if ($verifiedClsid -ne ([guid]$record.ToastClsid).ToString("B")) {
+          throw "the shortcut toast activator CLSID changed before atomic quarantine"
+        }
+        if ($verifiedClsid -ne $productClsid) {
+          $candidateClsids += $verifiedClsid
+        }
+      }
+    }
+  }
 
-  foreach ($registration in @(Find-ExactToastRegistrations $installedExe)) {
+  foreach ($registration in @(Find-ExactToastRegistrations $installedExe $candidateClsids)) {
     if (Remove-ExactToastRegistration $registration.View $registration.Clsid $installedExe) {
       Write-CleanupEvent "removed" "toast-registration" (
         "Removed exact current-user Ave toast registration {0} ({1})." -f
@@ -493,7 +444,7 @@ try {
     }
   }
 
-  $remaining = @(Find-ExactToastRegistrations $installedExe)
+  $remaining = @(Find-ExactToastRegistrations $installedExe $candidateClsids)
   if ($remaining.Count -ne 0) {
     throw "one or more exact Ave toast registrations survived cleanup"
   }
@@ -501,11 +452,10 @@ try {
     "no exact current-user Ave toast registrations remain"
   )
 
-  $shortcutResidue = Get-Item -LiteralPath $shortcutPath -Force -ErrorAction SilentlyContinue
+  $shortcutResidue = Get-ShortcutAttributes $shortcutPath
   if (
     $null -ne $shortcutResidue -and
-    -not $shortcutResidue.PSIsContainer -and
-    (($shortcutResidue.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)
+    ($shortcutResidue -band $nonRegularAttributes) -eq 0
   ) {
     $residueRecord = Get-ShortcutRecord $shortcutPath
     if (Test-SamePath $residueRecord.Target $installedExe) {
@@ -521,10 +471,50 @@ try {
       )
     }
   }
+
+  if ($shortcutMoved) {
+    $quarantinedAttributes = Get-ShortcutAttributes $quarantinePath
+    if (
+      $null -eq $quarantinedAttributes -or
+      ($quarantinedAttributes -band $nonRegularAttributes) -ne 0
+    ) {
+      throw "the quarantined shortcut is missing or is no longer a regular file"
+    }
+    $lastQuarantinedRecord = Get-ShortcutRecord $quarantinePath
+    if (
+      @(Get-ShortcutOwnershipMismatches $lastQuarantinedRecord $installedExe $installDir $ShortcutName $AppUserModelId).Count -ne 0 -or
+      ([guid]$lastQuarantinedRecord.ToastClsid).ToString("B") -ne $verifiedClsid
+    ) {
+      throw "the quarantined shortcut changed during cleanup"
+    }
+    [System.IO.File]::Delete($quarantinePath)
+    if ($null -ne (Get-ShortcutAttributes $quarantinePath)) {
+      throw "the quarantined owned shortcut survived cleanup"
+    }
+    Write-CleanupEvent "removed" "shortcut" (
+      "removed exact current-user Ave notification shortcut: $shortcutPath"
+    )
+  }
   exit 0
 }
 catch {
   $failureMessage = $_.Exception.Message
+  if ($shortcutMoved) {
+    try {
+      if ($null -ne (Get-ShortcutAttributes $quarantinePath)) {
+        if ($null -ne (Get-ShortcutAttributes $shortcutPath)) {
+          throw "the original shortcut path was reoccupied"
+        }
+        [System.IO.File]::Move($quarantinePath, $shortcutPath)
+        Write-CleanupEvent "foreign-preserved" "shortcut" "restored the quarantined shortcut after cleanup failed"
+      }
+    }
+    catch {
+      Write-CleanupEvent "contract-failed" "shortcut-quarantine" (
+        "could not restore the candidate at {0}: {1}" -f $quarantinePath, $_.Exception.Message
+      )
+    }
+  }
   Write-CleanupEvent "contract-failed" "notification-artifacts" $failureMessage
   [Console]::Error.WriteLine(
     "Ave current-user notification artifact cleanup failed: {0}",

@@ -201,28 +201,35 @@ HKCU for these calls. The AUMID and CLSID setters select identifiers only.
 Machine entries alone would leave the runtime-created copies in each profile.
 [v45.3.4 `shell/browser/notifications/win/windows_toast_activator.cc:310–321`](https://github.com/electron/electron/blob/v45.3.4/shell/browser/notifications/win/windows_toast_activator.cc#L310-L321)
 
-Genuine uninstall verifies owned toast artifacts only for the invoking user.
-Other signed-in and signed-out profiles can retain both the per-user Start Menu
-notification shortcut and the HKCU toast activator CLSID after a per-machine
-uninstall. The uninstaller has no trusted record of which profiles created this
-pair. `ProfileList` entries identify profile directories, but provide no proof of
-artifact ownership. Using a loaded hive would still require resolving the owning
-user's Programs known folder. Mounting offline hives and using guessed folder
-paths falls outside the [toast lifecycle design](../architecture/all-profile-windows-toast-lifecycle-adr.md).
+Genuine uninstall verifies owned toast artifacts in the retained initiating
+user's profile after normal alternate-credential UAC. An already-elevated launch
+uses the process account's profile. Other signed-in and signed-out profiles can
+retain both the per-user Start Menu notification shortcut and the HKCU toast
+activator CLSID after a per-machine uninstall.
+See the [toast lifecycle design](../architecture/all-profile-windows-toast-lifecycle-adr.md)
+for the ownership boundary and migration and rollback outline.
 
 Keep the all-profile cleanup gate open for signed candidates and unsigned
 exceptions. Record the limitation in the release evidence and withhold any claim
 of all-profile cleanup until the following checks pass on the release candidate:
 
-- [ ] On a clean per-machine install and a supported migration from an existing
-      install, verify the owned toast artifacts before uninstall as two distinct
-      users. From the initiating standard user's session, run genuine uninstall
-      and supply a distinct administrator's credentials. Verify both artifacts
-      are absent for each user before launching Ave again, and verify foreign
-      shortcuts and registry values remain unchanged. Repeat from a fresh
-      fixture with the second user signed in, then signed out.
-- [ ] On a separate run, verify updater uninstall preserves activation for both
-      users. Record the candidate identity, session states, and results.
+- [ ] Document the supported migration and rollback for the candidate and record
+      the package identity, actual cleanup account, profile session states, and
+      results.
+- [ ] For both a clean per-machine install and a supported migration from an
+      existing install, run genuine uninstall with the second user signed in
+      and again from a fresh fixture with that user signed out. Start from the
+      initiating standard user's session and supply a distinct administrator's
+      credentials. In every run, capture both users' owned shortcuts and
+      registration values before uninstall and verify their absence after
+      uninstall before either user relaunches Ave. Empty registry keys may
+      remain after the owned values are removed. Capture before and after
+      evidence that foreign shortcuts, registry values, and subkeys are unchanged.
+- [ ] In a separate updater run, capture the shortcut and registration values in
+      both profiles before updater uninstall and again after it completes,
+      before either profile relaunches Ave. Prevent automatic relaunch or capture
+      the post-uninstall state before it occurs. Verify both artifacts survived
+      unchanged in each profile, then verify toast activation for both users.
 
 ## Smoke-Test Checklist
 
