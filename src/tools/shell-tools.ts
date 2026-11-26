@@ -3759,7 +3759,7 @@ export function awaitedHostScriptCommand(source: string, invocation: PowerShellA
     `${source.slice(end).trimEnd()} | Microsoft.PowerShell.Core\\Out-Default; if ($null -eq $LASTEXITCODE) { exit 1 }; exit $LASTEXITCODE`;
 }
 
-function powerShellHostScriptReadPaths(ast: PowerShellAstSummary, source?: string): readonly string[] {
+export function powerShellHostScriptReadPaths(ast: PowerShellAstSummary, source?: string): readonly string[] {
   if (ast.commands.length !== 1 || source === undefined) return [];
   const command = ast.commands[0]!;
   const text = source.trim();

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -17,8 +17,12 @@ import { rankMxcFilesystem } from "../../src/permissions/mxc-windows.js";
 import { PermissionManager } from "../../src/permissions/permission-manager.js";
 import { shellQuote } from "../../src/lib/shell-resolver.js";
 import { shellPolicyModel } from "../../src/tools/mxc-shell-launch.js";
+import { normalizePowerShellAstSummary, POWER_SHELL_AST_PARSER } from "../../src/tools/powershell-ast.js";
+import { preparePowerShellLaunch } from "../../src/tools/powershell-launch.js";
+import { buildSafeChildEnv } from "../../src/tools/safe-env.js";
 import { findShellPathPolicyViolation } from "../../src/tools/shell-path-policy.js";
-import { fileSystemIo, type FixtureBuildIo, prepareWorkbookPublicationBuild } from "../e2e/ui/xlsx-publication-barrier.js";
+import { awaitedHostScriptCommand, findPowerShellAstPathViolation, powerShellHostScriptReadPaths, resolvePowerShellExecutable } from "../../src/tools/shell-tools.js";
+import { fileSystemIo, type FixtureBuildIo, prepareWorkbookPublicationBuild, renderWorkbookCommand } from "../e2e/ui/xlsx-publication-barrier.js";
 
 let root: string;
 let checkout: string;
@@ -179,5 +183,30 @@ describe("workbook publication build", () => {
     expectSharedBuildUsable();
     fileSystemIo.remove(abandoned.root);
     expect(leftoverBuilds()).toEqual([]);
+  });
+
+  it.runIf(process.platform === "win32")("keeps the exact helper grant through the parsed PowerShell command the E2E sends", () => {
+    const workspace = mkdtempSync(join(root, "alice's workspace "));
+    const fixture = prepareWorkbookPublicationBuild(checkout, workspace);
+    try {
+      configureHostResources({ resourcePath: join(fixture.root, "resources"), isPackaged: false });
+      const source = renderWorkbookCommand("win32", fixture.argv(process.execPath, join(workspace, "alice's book.xlsx"), join(workspace, "edits.json")));
+      const launch = preparePowerShellLaunch(POWER_SHELL_AST_PARSER, buildSafeChildEnv(), undefined, { hostShell: true });
+      let reply: ReturnType<typeof spawnSync>;
+      try {
+        reply = spawnSync(resolvePowerShellExecutable(), launch.args, { input: source, env: launch.env, encoding: "utf8", windowsHide: true });
+      } finally {
+        launch.cleanup();
+      }
+      expect(reply.status, String(reply.stderr)).toBe(0);
+      const ast = normalizePowerShellAstSummary(JSON.parse(String(reply.stdout)));
+      const reads = powerShellHostScriptReadPaths(ast, source);
+      expect(reads).toContain(fixture.scriptPath);
+      expect(reads).toContain(windowsPathKindHelperIn(join(fixture.root, "resources")));
+      expect(awaitedHostScriptCommand(source, ast.commands[0]!)).not.toBeNull();
+      expect(findPowerShellAstPathViolation(ast, workspace, workspace, [], true, source)).toBeNull();
+    } finally {
+      fixture.dispose();
+    }
   });
 });
