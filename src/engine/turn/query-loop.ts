@@ -56,7 +56,7 @@ import { planReasoning } from "../llm/reasoning-plan.js";
 import { activeModelCatalog } from "../../shared/model-catalog/active.js";
 import type { ContextWindowSource } from "../../shared/context-budget.js";
 import type { RunModelSettings } from "../../shared/run-model-settings.js";
-import { resolveModelPricing, type ModelPricingRoute } from "../../shared/model-pricing.js";
+import { resolveModelPricing, type ModelPricingRoute, type ResolvedModelPricing } from "../../shared/model-pricing.js";
 import { resolvePricingOverrides, type PricingOverride } from "../../shared/pricing-overrides.js";
 import { isA2AQuestionInputRequiredControl } from "../../tools/agent-send.js";
 import {
@@ -212,6 +212,8 @@ export async function queryLoop(
       ? []
       : withoutDroppedTools(self.rebuildToolSchemas(scope), droppedToolSchemaNames);
     let toolSchemas: ToolSchema[] = rebuildTurnToolSchemas();
+    // Where the primary route's model list was read, and what it reported. Each request's
+    // recorded address decides whether these apply to it.
     const primaryPricingRoute = subscriptionRuntime
       ? undefined
       : {
@@ -316,7 +318,8 @@ export async function queryLoop(
         cacheReadTokens: (turnUsage?.cacheReadTokens ?? 0) + cacheRead,
         cacheWriteTokens: (turnUsage?.cacheWriteTokens ?? 0) + cacheWrite,
       };
-      appendUsageForServingModel(
+      const servedByPrimaryLabel = servingVendorProvider === llmSettings.provider && servingVendorModel === model;
+      const requestPricing = appendUsageForServingModel(
         usageByModel,
         servingVendorProvider,
         servingVendorModel,
@@ -328,8 +331,17 @@ export async function queryLoop(
           ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
         },
         turnPricingOverrides,
-        primaryPricingRoute ? { vendor: llmSettings.provider, model, ...primaryPricingRoute } : undefined,
+        {
+          // A fallback that keeps the primary's vendor and model still has to be served
+          // by the endpoint that listed the report before the report prices it.
+          ...(servedByPrimaryLabel ? primaryPricingRoute : {}),
+          ...(usage.servedRequestUrl !== undefined ? { servedRequestUrl: usage.servedRequestUrl } : {}),
+        },
       );
+      // The turn's primary-route price is what its last primary request was priced at.
+      if (requestPricing !== undefined && servedByPrimaryLabel && turnModelSettings !== undefined) {
+        turnModelSettings = { ...turnModelSettings, pricing: requestPricing };
+      }
       self.cumulativeUsage.inputTokens += adjustedInput;
       self.cumulativeUsage.outputTokens += usage.outputTokens;
       self.cumulativeUsage.cacheReadTokens =
@@ -2135,20 +2147,16 @@ function appendUsageForServingModel(
   vendorModel: string | undefined,
   usage: TokenUsage,
   pricingOverrides: readonly PricingOverride[],
-  primaryRoute?: { vendor: string; model: string } & ModelPricingRoute,
-): void {
+  route: ModelPricingRoute,
+): ResolvedModelPricing | undefined {
   if (vendorProvider === undefined || vendorModel === undefined) {
-    return;
+    return undefined;
   }
+  const pricing = resolveModelPricing(vendorProvider, vendorModel, pricingOverrides, route);
   usageByModel.push({
     vendorProvider,
     vendorModel,
-    pricing: resolveModelPricing(
-      vendorProvider,
-      vendorModel,
-      pricingOverrides,
-      primaryRoute?.vendor === vendorProvider && primaryRoute.model === vendorModel ? primaryRoute : undefined,
-    ),
+    pricing,
     tokenUsage: {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
@@ -2157,6 +2165,7 @@ function appendUsageForServingModel(
       ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
     },
   });
+  return pricing;
 }
 
 // At round exhaustion, make one output-bounded, tool-free handoff call; it cannot extend the work.

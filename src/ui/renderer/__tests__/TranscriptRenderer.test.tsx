@@ -318,6 +318,61 @@ describe("TranscriptRenderer — minimal (required-only) contract", () => {
     expect(getByTestId("work-group").textContent).toContain("x");
   });
 
+  it("shows the missing-route reason for a label-only transcript summary", () => {
+    const summary = completedTurnSummary();
+    const current = summary.get(0);
+    if (!current) throw new Error("test turn summary missing");
+    current.vendorProvider = "openai";
+    current.vendorModel = "gpt-5.4";
+
+    const { getByTestId } = renderCore(
+      <TranscriptRenderer
+        entries={[userEntry("q"), assistant("a")]}
+        streaming={false}
+        currentSessionId="s1"
+        turnSummaryByTurnStart={summary}
+      />,
+    );
+
+    const badge = getByTestId("token-cost-badge");
+    expect(badge).toHaveAttribute("aria-disabled", "true");
+    expect(badge).toHaveAttribute("aria-description", "이 요청에 사용된 경로가 기록되지 않았습니다.");
+    expect(badge).not.toHaveTextContent("$");
+  });
+
+  it("reuses the recorded primary price for a matching historical segment", () => {
+    const entries = historyToEntries([
+      serializeHistoryMessage({ role: "user", content: "q" }, 0),
+      serializeHistoryMessage({
+        role: "assistant", content: "a",
+        meta: { turnSummary: {
+          endedByEndTurn: true, turnDurationMs: 100, toolCount: 0, cumulativeToolMs: 0,
+          tokensIn: 1_000, freshInputTokens: 1_000, tokensOut: 0,
+          vendorProvider: "openai", vendorModel: "gpt-5.4",
+          modelSettings: {
+            modelCatalogSha256: "fixture",
+            contextWindow: { tokens: 128_000, source: "fallback" },
+            output: { requested: 32_000, requestedSource: "host-default", effective: 32_000, effectiveSource: "host-default" },
+            pricing: { source: "user", rates: { inputPer1M: 2, outputPer1M: 0 } },
+          },
+          usageByModel: [{
+            vendorProvider: "openai", vendorModel: "gpt-5.4", tokenUsage: { inputTokens: 1_000, outputTokens: 0 },
+          }],
+        } },
+      }, 1),
+    ]);
+    const summary = entries.find((entry) => entry.kind === "turn_summary");
+    if (!summary) throw new Error("Historical turn summary missing");
+    const { getByTestId } = renderCore(
+      <TranscriptRenderer entries={entries} streaming={false} currentSessionId="s1"
+        turnSummaryByTurnStart={new Map([[0, summary]])} />,
+    );
+    const badge = getByTestId("token-cost-badge");
+    expect(badge).toHaveAttribute("aria-disabled", "false");
+    fireEvent.click(badge);
+    expect(badge).toHaveTextContent("$0.0020");
+  });
+
   it("hides token and cost estimates when the active runtime has no verified usage contract", () => {
     const { queryByTestId } = renderCore(
       <TranscriptRenderer

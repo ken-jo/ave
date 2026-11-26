@@ -3,6 +3,8 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { makeMockAveApi } from "./mock-ave-api.js";
 import { t } from "../../src/i18n/runtime.js";
+import type { UsageSummaryShape } from "../../src/ui/renderer/types.js";
+import { computeUsageSummary } from "../../src/engine/usage-stats.js";
 import { shortSessionId } from "../../src/shared/session-lookup.js";
 
 afterEach(() => {
@@ -28,10 +30,11 @@ const MOCK_SUMMARY = {
     { sessionId: "sess-abc123", turns: 5, firstInput: "안녕", inputTokens: 10000, outputTokens: 5000, cacheReadTokens: 1000, cacheWriteTokens: 200, totalTokens: 16200, cost: 0.10 },
     { sessionId: "sess-def456", turns: 2, firstInput: "질문", inputTokens: 5000, outputTokens: 2500, cacheReadTokens: 500, cacheWriteTokens: 100, totalTokens: 8100, cost: 0.05 },
   ],
+  topConversationsByTokens: [],
   generatedAt: new Date().toISOString(),
 };
 
-const MOCK_SUBSCRIPTION = {
+const MOCK_SUBSCRIPTION: NonNullable<UsageSummaryShape["subscription"]> = {
   today: { inputTokens: 140, outputTokens: 25, cacheReadTokens: 30, cacheWriteTokens: 4, reasoningOutputTokens: 10, totalTokens: 209, segments: 2 },
   thisWeek: { inputTokens: 140, outputTokens: 25, cacheReadTokens: 30, cacheWriteTokens: 4, reasoningOutputTokens: 10, totalTokens: 209, segments: 2 },
   thisMonth: { inputTokens: 140, outputTokens: 25, cacheReadTokens: 30, cacheWriteTokens: 4, reasoningOutputTokens: 10, totalTokens: 209, segments: 2 },
@@ -52,7 +55,7 @@ const MOCK_SUBSCRIPTION = {
   },
 };
 
-type DashboardSummary = typeof MOCK_SUMMARY & { subscription?: typeof MOCK_SUBSCRIPTION };
+type DashboardSummary = UsageSummaryShape;
 
 function usageDashboardApi(overrides: Partial<DashboardSummary> = {}) {
   const summary: DashboardSummary = { ...MOCK_SUMMARY, ...overrides };
@@ -141,6 +144,86 @@ describe("UsageDashboard — workspace stats section", () => {
 });
 
 describe("UsageDashboard", () => {
+  it("ranks sessions by priced spend and counts unpriced requests outside the top five", async () => {
+    const timestamp = new Date().toISOString();
+    const summary = computeUsageSummary([
+      ...Array.from({ length: 5 }, (_, index) => ({
+        timestamp, sessionId: `priced-${index}`, type: "turn", route: "openai/gpt-5.4",
+        tokenUsage: { inputTokens: 1_000, outputTokens: 0 },
+        modelSettings: { pricing: { source: "user" as const, rates: { inputPer1M: index + 1, outputPer1M: 0 } } },
+      })),
+      {
+        timestamp, sessionId: "unpriced-outside-list", type: "turn", route: "openai/gpt-5.4",
+        tokenUsage: { inputTokens: 1_000_000, outputTokens: 0 },
+        modelSettings: { pricing: { source: "unknown" as const, reason: "endpoint-price-unavailable" as const } },
+      },
+    ], new Date());
+    expect(summary.topConversations.map((row) => row.sessionId))
+      .toEqual(["priced-4", "priced-3", "priced-2", "priced-1", "priced-0"]);
+    await renderDashboard(usageDashboardApi(summary));
+    expect(await screen.findByText("가격이 확인된 지출 기준 상위 세션 5개")).toBeVisible();
+    expect(await screen.findByText("이 순위에서 가격 미정 요청 1건이 제외되었습니다.")).toBeVisible();
+  });
+
+  it("uses only priced activity to qualify and break ties for zero-spend sessions", () => {
+    const now = new Date();
+    const request = (sessionId: string, inputTokens: number, priced: boolean) => ({
+      timestamp: now.toISOString(), sessionId, type: "turn" as const, route: "openai/gpt-5.4",
+      tokenUsage: { inputTokens, outputTokens: 0 },
+      ...(priced ? { modelSettings: { pricing: { source: "user" as const, rates: { inputPer1M: 0, outputPer1M: 0 } } } } : {}),
+    });
+    const summary = computeUsageSummary([
+      request("mixed", 10, true),
+      request("mixed", 1_000_000, false),
+      ...Array.from({ length: 5 }, (_, index) => request(`unpriced-${index}`, 100_000, false)),
+      request("priced", 20, true),
+    ], now);
+    expect(summary.topConversations.map((row) => row.sessionId)).toEqual(["priced", "mixed"]);
+    expect(summary.topConversations[1]).toMatchObject({ totalTokens: 10, turns: 1, cost: 0 });
+    expect(summary.topConversationsByTokens[0]).toMatchObject({ sessionId: "mixed", totalTokens: 1_000_010, turns: 2 });
+    expect(summary.today.unknownCostTurns).toBe(6);
+  });
+
+  it.each([false, true])("shows unknown costs for an incomplete audit with readable pricing %s", async (readable) => {
+    const now = new Date();
+    const summary = computeUsageSummary(readable ? [{
+      timestamp: now.toISOString(), sessionId: "readable", type: "turn", route: "openai/gpt-5.4",
+      tokenUsage: { inputTokens: 1_000, outputTokens: 0 },
+      modelSettings: { pricing: { source: "user", rates: { inputPer1M: 3, outputPer1M: 0 } } },
+    }] : [], now);
+    const api = usageDashboardApi({ ...summary, auditIncomplete: true });
+    await renderDashboard(api);
+    for (const title of [t("usageDashboard.today"), t("usageDashboard.monthlyProjection")]) {
+      const heading = await screen.findByText(title);
+      const card = heading.parentElement?.parentElement;
+      expect(card).toHaveTextContent(t("be_costEstimator.costUnknown"));
+      expect(card).not.toHaveTextContent("$");
+    }
+    if (readable) {
+      fireEvent.click(screen.getByRole("button", { name: t("usageDashboard.exportCsv") }));
+      await waitFor(() => expect(api.exportUsageCsv).toHaveBeenCalledWith([
+        expect.objectContaining({ cost: "", totalTokens: 1_000, auditIncomplete: 1 }),
+        expect.objectContaining({ date: "range-total", cost: "", totalTokens: 1_000, auditIncomplete: 1 }),
+      ]));
+    }
+  });
+
+  it("shows an unknown spending projection when a serving route has no endpoint price", async () => {
+    const [firstDay, secondDay] = MOCK_SUMMARY.trend;
+    if (!firstDay || !secondDay) throw new Error("Expected a two-day usage fixture");
+    const point = { ...firstDay, cost: 0, unknownCostTurns: 1, endpointPriceUnavailableTurns: 1 };
+    const api = usageDashboardApi({ today: point, trend: [point, secondDay] });
+    await renderDashboard(api);
+    const heading = await screen.findByText(t("usageDashboard.monthlyProjection"));
+    const card = heading.parentElement?.parentElement;
+    expect(card).toHaveTextContent("이 경로의 엔드포인트가 사용 가능한 가격을 제공하지 않았습니다.");
+    expect(card).not.toHaveTextContent("$");
+    fireEvent.click(screen.getByRole("button", { name: t("usageDashboard.exportCsv") }));
+    await waitFor(() => expect(api.exportUsageCsv).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ cost: "", unknownCostTurns: 1, endpointPriceUnavailableTurns: 1 }),
+    ])));
+  });
+
   it("builds preset ranges from the host's calendar day, not a fixed zone's", async () => {
     const { presetToDates } = await import("../../src/ui/renderer/components/UsageDashboard.js");
     // Derive date expectations from the host calendar; runtime timezone reassignment does not affect this environment.
@@ -230,8 +313,8 @@ describe("UsageDashboard", () => {
     });
     const { container } = await renderDashboard(api);
     await waitFor(() => {
-      expect(container.textContent).toContain("월 약 $0 + 미정 포함");
-      expect(container.textContent).toContain("일평균 $0 + 미정 포함 × 30일");
+      expect(container.textContent).toContain("월 약 비용 미정");
+      expect(container.textContent).toContain("일평균 비용 미정 × 30일");
     });
   });
 

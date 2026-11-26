@@ -1,4 +1,5 @@
 /** Rates come from the bundled snapshot; review fixtures when it changes. */
+import { formatCost } from "../../lib/cost-format.js";
 import { describe, expect, it } from "vitest";
 import { knownModelPricing, parseResolvedModelPricing, resolveModelPricing } from "../model-pricing.js";
 import { computeCost, promptTokensForTier, ratesForPrompt, type TokenRates } from "../pricing-data.js";
@@ -59,6 +60,21 @@ describe("parseResolvedModelPricing", () => {
 });
 
 describe("resolveModelPricing — source order and provenance", () => {
+  it("records why a name-matched proxy route without its own price is unknown", () => {
+    const proxy = { baseUrl: "https://proxy.example.test/v1" };
+    const expected = { source: "unknown", reason: "endpoint-price-unavailable" };
+    expect(resolveModelPricing("openai", "gpt-5.4", [], proxy)).toEqual(expected);
+    expect(resolveModelPricing("openai", "gpt-5.4", [], {
+      ...proxy, reported: { prompt: "-1", completion: "0" },
+    })).toEqual(expected);
+    expect(parseResolvedModelPricing(expected)).toEqual(expected);
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { baseUrl: "https://api.openai.com/v1" }).source)
+      .toBe("model-catalog");
+    expect(resolveModelPricing("openai", "gpt-5.4", [], {
+      ...proxy, reported: { prompt: "0.000003", completion: "0.000004" },
+    })).toEqual({ source: "endpoint-report", rates: { inputPer1M: 3, outputPer1M: 4 } });
+  });
+
   it("prices a model the catalog knows from its entry, and names the entry", () => {
     expect(resolveModelPricing("gemini", "gemini-2.5-pro")).toEqual({
       source: "model-catalog",
@@ -147,6 +163,20 @@ describe("resolveModelPricing — source order and provenance", () => {
 });
 
 describe("computeCost — prompt-size tiers", () => {
+  it("selects each threshold of the bundled gateway catalog's multi-tier entry", () => {
+    const price = rates("openrouter", "qwen/qwen3-coder-flash");
+    expect(ratesForPrompt(price, 32_000)).toMatchObject({
+      inputPer1M: 0.195, outputPer1M: 0.975, cacheReadPer1M: 0.039, cacheWritePer1M: 0.24375,
+    });
+    expect(ratesForPrompt(price, 32_001)).toMatchObject({
+      inputPer1M: 0.325, outputPer1M: 1.625, cacheReadPer1M: 0.065, cacheWritePer1M: 0.40625,
+    });
+    expect(ratesForPrompt(price, 128_000).inputPer1M).toBe(0.325);
+    expect(ratesForPrompt(price, 128_001)).toMatchObject({
+      inputPer1M: 0.52, outputPer1M: 2.6, cacheReadPer1M: 0.104, cacheWritePer1M: 0.65,
+    });
+  });
+
   it("uses base rates through 100,000 prompt tokens and the tier above", () => {
     const haiku = rates("claude", "claude-haiku-5-5");
     // Tier size includes cached input even when usage reports fresh input separately.
@@ -257,6 +287,12 @@ describe("resolveModelPricing — the endpoint's own price report", () => {
     });
   });
 
+  it("requires endpoint pricing for a deployment alias on a native resource host", () => {
+    expect(resolveModelPricing("azure-foundry", "gpt-5.4-mini", [], {
+      baseUrl: "https://fixture.openai.azure.com/openai/v1",
+    })).toEqual({ source: "unknown", reason: "endpoint-price-unavailable" });
+  });
+
   it("prices a route that does not establish the catalog's model from its report, not the name match", () => {
     expect(resolveModelPricing("azure-foundry", "gpt-4o", [], { reported: report })).toMatchObject({ source: "endpoint-report" });
     expect(resolveModelPricing("openai", "gpt-5.4", [], { baseUrl: "https://proxy.invalid/v1", reported: report }))
@@ -283,6 +319,26 @@ describe("resolveModelPricing — the endpoint's own price report", () => {
     expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [], { reported })).toEqual({ source: "unknown" });
   });
 
+  it("rejects non-finite endpoint rates and rates that overflow during scaling", () => {
+    for (const prompt of ["1e309", "1e308", "1.8e302"]) {
+      expect(resolveModelPricing("openai", "gpt-5.4", [], {
+        baseUrl: "https://proxy.invalid/v1",
+        reported: { prompt, completion: "0.000001" },
+      })).toEqual({ source: "unknown", reason: "endpoint-price-unavailable" });
+    }
+  });
+
+  it("parses a recorded unknown price with missing route provenance", () => {
+    const snapshot = { source: "unknown", reason: "legacy-route-unrecorded" };
+    expect(parseResolvedModelPricing(snapshot)).toEqual(snapshot);
+  });
+
+  it("formats a non-finite cost as unknown", () => {
+    for (const amount of [Infinity, -Infinity, NaN]) {
+      expect(formatCost(amount)).not.toContain("$");
+    }
+  });
+
   it("drops an extra price that does not parse instead of the whole report", () => {
     expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [], { reported: { prompt: "1e-6", completion: "0.000002", inputCacheRead: "n/a" } }))
       .toEqual({ source: "endpoint-report", rates: { inputPer1M: 1, outputPer1M: 2 } });
@@ -295,5 +351,85 @@ describe("resolveModelPricing — the endpoint's own price report", () => {
       .toEqual({ source: "pricing-catalog", rates: { inputPer1M: 1, outputPer1M: 2 } });
     expect(parseResolvedModelPricing({ source: "model-catalog", rates: { inputPer1M: 1, outputPer1M: 2 }, catalogEntry: "openai/x" }))
       .toMatchObject({ source: "model-catalog" });
+  });
+});
+
+describe("resolveModelPricing — the request's recorded address decides the route", () => {
+  const report = { prompt: "0.000003", completion: "0.000004" };
+  const unavailable = { source: "unknown", reason: "endpoint-price-unavailable" };
+
+  it("does not price a request an SDK environment override sent to a proxy, whatever the settings say", () => {
+    // Settings leave the endpoint unset; the transport saw the request go elsewhere.
+    const served = { servedRequestUrl: "https://proxy.invalid/v1/responses" };
+    expect(resolveModelPricing("openai", "gpt-5.4", [], served)).toEqual(unavailable);
+    expect(resolveModelPricing("claude", "claude-sonnet-4-6", [], { servedRequestUrl: "https://proxy.invalid/v1/messages" }))
+      .toEqual(unavailable);
+    // The cached report was listed by the vendor's default endpoint, not by the proxy that served the request.
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { ...served, reported: report })).toEqual(unavailable);
+    // The configured endpoint is native, the request was not: the evidence wins.
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { ...served, baseUrl: "https://api.openai.com/v1", reported: report }))
+      .toEqual(unavailable);
+  });
+
+  it.each([
+    ["openai", "gpt-5.4", "https://api.openai.com/v1/responses"],
+    ["openai", "gpt-5.4", "https://eu.api.openai.com/v1/chat/completions"],
+    ["claude", "claude-sonnet-4-6", "https://api.anthropic.com/v1/messages"],
+    ["gemini", "gemini-2.5-pro", "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent"],
+    ["vertex-ai", "gemini-2.5-pro", "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent"],
+    ["vertex-ai", "gemini-2.5-pro", "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/publishers/google/models/gemini-2.5-pro:streamGenerateContent"],
+    ["openrouter", "qwen/qwen3-coder-flash", "https://openrouter.ai/api/v1/chat/completions"],
+    ["deepseek", "deepseek-flash", "https://api.deepseek.com/v1/chat/completions"],
+    ["zai", "glm-4.6", "https://api.z.ai/api/paas/v4/chat/completions"],
+    ["mistral", "codestral-latest", "https://api.mistral.ai/v1/chat/completions"],
+  ] as const)("keeps the catalog price for %s %s served on its own route (%s)", (vendor, model, servedRequestUrl) => {
+    const projected = resolveModelPricing(vendor, model);
+    expect(projected.source).toBe("model-catalog");
+    expect(resolveModelPricing(vendor, model, [], { servedRequestUrl })).toEqual(projected);
+  });
+
+  it("does not let one product path of a shared host stand for another", () => {
+    expect(resolveModelPricing("zai", "glm-4.6", [], {
+      servedRequestUrl: "https://api.z.ai/api/coding/paas/v4/chat/completions",
+    })).toEqual(unavailable);
+    // A path that only starts with the same characters is a different base.
+    expect(resolveModelPricing("zai", "glm-4.6", [], {
+      servedRequestUrl: "https://api.z.ai/api/paas/v4-preview/chat/completions",
+    })).toEqual(unavailable);
+  });
+
+  it("uses the route's report only when the endpoint that listed it served the request", () => {
+    const priced = { source: "endpoint-report", rates: { inputPer1M: 3, outputPer1M: 4 } };
+    const route = { baseUrl: "https://proxy.invalid/v1", reported: report };
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { ...route, servedRequestUrl: "https://proxy.invalid/v1/responses" }))
+      .toEqual(priced);
+    // Origins are compared: the SDK appends versions and operations to the configured address.
+    expect(resolveModelPricing("claude", "claude-sonnet-4-6", [], {
+      baseUrl: "https://proxy.invalid", reported: report, servedRequestUrl: "https://proxy.invalid/v1/messages",
+    })).toEqual(priced);
+    expect(resolveModelPricing("azure-foundry", "gpt-5.4-mini", [], {
+      baseUrl: "https://fixture.openai.azure.com/openai/deployments/fixture/chat/completions?api-version=2024-10-21",
+      reported: report,
+      servedRequestUrl: "https://fixture.openai.azure.com/openai/v1/responses",
+    })).toEqual(priced);
+    // A same-name request another endpoint served never borrows this report.
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { ...route, servedRequestUrl: "https://other.invalid/v1/responses" }))
+      .toEqual(unavailable);
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { ...route, servedRequestUrl: "http://proxy.invalid/v1/responses" }))
+      .toEqual(unavailable);
+  });
+
+  it("leaves a deployment alias unknown without its endpoint's report, and an unreadable address unpriced", () => {
+    expect(resolveModelPricing("azure-foundry", "gpt-5.4-mini", [], {
+      servedRequestUrl: "https://fixture.openai.azure.com/openai/v1/responses",
+    })).toEqual(unavailable);
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { servedRequestUrl: "not a url" })).toEqual(unavailable);
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { servedRequestUrl: "" })).toEqual(unavailable);
+  });
+
+  it("still applies a user correction for the vendor and model on any route", () => {
+    expect(resolveModelPricing("openai", "gpt-5.4", [{ vendor: "openai", model: "gpt-5.4", inputPer1M: 1, outputPer1M: 2 }], {
+      servedRequestUrl: "https://proxy.invalid/v1/responses",
+    })).toEqual({ source: "user", rates: { inputPer1M: 1, outputPer1M: 2 } });
   });
 });

@@ -6,11 +6,10 @@ import {
   normalizeAiSdkUsageForCost,
   type TokenRates,
 } from "../../../shared/pricing-data.js";
-import { knownModelPricing, parseResolvedModelPricing, resolveModelPricing, type ModelUsageSegment } from "../../../shared/model-pricing.js";
-import { usePricingOverrides } from "../hooks/use-pricing-overrides.js";
+import { LEGACY_ROUTE_UNRECORDED, parseResolvedModelPricing, type ModelUsageSegment, type UnknownModelPricingReason } from "../../../shared/model-pricing.js";
 import type { LLMVendor } from "../../../shared/llm-vendor-defaults.js";
 import type { SubscriptionUsageTelemetry } from "../../../shared/subscription-runtime.js";
-import { formatCost, formatTokens, formatTokensExact } from "../../../lib/cost-format.js";
+import { formatCost, PRICING_REASON_LABELS, formatTokens, formatTokensExact } from "../../../lib/cost-format.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 
 /** The turn's rates, resolved by the caller through `resolveModelPricing`. */
@@ -60,7 +59,6 @@ function TokenCostBadgeImpl({
   // Default = tokens. 사용자 요청: 청구액보다 토큰 수치가 더 직관적. 클릭으로 cost 토글 가능 (pricing 이 있을 때만).
   const { t } = useTranslation();
   const [mode, setMode] = useState<"tokens" | "cost">("tokens");
-  const pricingOverrides = usePricingOverrides();
   const hasSubscriptionUsage = (subscriptionUsage?.length ?? 0) > 0;
 
   // Subscription telemetry has no per-call price. Keep it entirely out of the API-key pricing branch: even a caller
@@ -123,20 +121,26 @@ function TokenCostBadgeImpl({
     : freshInputTokens + cacheReadTokens + cacheWriteTokens;
   // Each provider request is priced on its own: a price tier is chosen by one request's prompt, and a turn's rounds summed
   // are not one prompt.
-  const segmentCost = usageByModel && usageByModel.length > 0
-    ? usageByModel.reduce<number | null>((sum, segment) => {
-        if (sum === null) return null;
-        const segmentPricing = knownModelPricing(parseResolvedModelPricing(segment.pricing)
-          ?? resolveModelPricing(segment.vendorProvider, segment.vendorModel, pricingOverrides));
-        if (!segmentPricing) return null;
-        return sum + computeCost(
+  const unknownReasons = new Set<UnknownModelPricingReason>();
+  let segmentCost: number | null | undefined;
+  if (usageByModel?.length) {
+    segmentCost = 0;
+    for (const segment of usageByModel) {
+      const segmentPricing = parseResolvedModelPricing(segment.pricing)
+        ?? LEGACY_ROUTE_UNRECORDED;
+      if (segmentPricing.source === "unknown") {
+        segmentCost = null;
+        if (segmentPricing.reason) unknownReasons.add(segmentPricing.reason);
+      } else if (segmentCost !== null) {
+        segmentCost += computeCost(
           normalizeAiSdkUsageForCost(segment.tokenUsage, segment.vendorProvider),
           segmentPricing.rates,
           segment.vendorProvider,
         );
-      }, 0)
-    : undefined;
-  const cost = segmentCost !== undefined
+      }
+    }
+  }
+  const computedCost = segmentCost !== undefined
     ? segmentCost
     : pricing
     ? computeCost(
@@ -151,7 +155,10 @@ function TokenCostBadgeImpl({
       )
     : null;
 
+  if (segmentCost === undefined && !pricing) unknownReasons.add(LEGACY_ROUTE_UNRECORDED.reason);
+  const cost = computedCost !== null && Number.isFinite(computedCost) ? computedCost : null;
   const showCostMode = mode === "cost" && cost !== null;
+  const unknownPricingDescription = Array.from(unknownReasons, (reason) => t(PRICING_REASON_LABELS[reason])).join(" · ") || undefined;
 
   return (
     <Tooltip>
@@ -165,6 +172,7 @@ function TokenCostBadgeImpl({
           }}
           className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-border/(--opacity-medium) bg-muted/(--opacity-muted) px-1.5 py-0.5 text-tiny tabular-nums ${cost !== null ? "cursor-pointer hover:bg-muted/(--opacity-strong)" : "cursor-default"}`}
           aria-disabled={cost === null}
+          aria-description={unknownPricingDescription}
           aria-label={
             cost === null
               ? t("tokenCostBadge.ariaLabelNoPricing")
@@ -229,6 +237,7 @@ function TokenCostBadgeImpl({
               <span>{t("tokenCostBadge.pricingUnknownLabel")}</span>
             </div>
           )}
+          {unknownPricingDescription && <div>{unknownPricingDescription}</div>}
         </div>
       </TooltipContent>
     </Tooltip>

@@ -1,17 +1,67 @@
-/** User corrections are whole prices; otherwise prefer endpoint reports where public identity is unproven, then catalog rates. Unknown and catalog-listed zero never imply free usage. */
+/** User corrections are whole prices. A route that does not establish the catalog model needs its own endpoint report; a recorded request URL decides the route. */
 import type { TokenRateTier, TokenRates, UsageForCost } from "./pricing-data.js";
 import { isPricingOverrideRate, type PricingOverride } from "./pricing-overrides.js";
 import { activeModelCatalog } from "./model-catalog/active.js";
 import { allowsImplicitModelLimits, resolveCatalogKey } from "./model-catalog/resolve.js";
+import { vendorHasCatalogProvider } from "./model-catalog/vendor-models.js";
 import type { CatalogModelCost } from "./model-catalog/types.js";
 import type { LlmModelListPricing } from "./llm-model-list.js";
+import { isLLMVendor, isOpenAICompatiblePresetVendor, OPENAI_COMPATIBLE_VENDOR_PRESETS } from "./llm-vendor-defaults.js";
 
 export type ModelPricingSource = "user" | "endpoint-report" | "model-catalog";
+export type UnknownModelPricingReason = "endpoint-price-unavailable" | "legacy-route-unrecorded";
 
 export interface ModelPricingRoute {
-  /** Implicit catalog pricing requires established route identity. */
+  /** The configured endpoint the route's model list was read from; absent on a vendor's default route. */
   readonly baseUrl?: string;
   readonly reported?: LlmModelListPricing;
+  /**
+   * Dispatch evidence: the URL a provider request was sent to, as the transport saw it.
+   * When present it decides the route; the settings only say where `reported` was listed.
+   * Absent before dispatch (the pre-send estimate), where the configured endpoint is the projection.
+   */
+  readonly servedRequestUrl?: string;
+}
+
+function parsedUrl(value: string): URL | undefined {
+  try {
+    return new URL(value.trim());
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether a recorded request URL is on the vendor's own route. The identity rule stays
+ * `allowsImplicitModelLimits`; a request under a preset's base is judged as that base,
+ * because the rule compares base addresses and some presets select a product by path.
+ */
+function servedOnCatalogRoute(vendor: string, servedRequestUrl: string): boolean {
+  const served = parsedUrl(servedRequestUrl);
+  if (served === undefined) return false;
+  if (isLLMVendor(vendor) && isOpenAICompatiblePresetVendor(vendor)) {
+    const presetBaseUrl = OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].baseUrl;
+    const preset = parsedUrl(presetBaseUrl);
+    const prefix = preset?.pathname.replace(/\/+$/u, "");
+    if (preset !== undefined && prefix !== undefined && served.origin === preset.origin
+      && (served.pathname === prefix || served.pathname.startsWith(`${prefix}/`))) {
+      return allowsImplicitModelLimits(vendor, presetBaseUrl);
+    }
+  }
+  return allowsImplicitModelLimits(vendor, served.href);
+}
+
+/**
+ * A model-list report prices only the endpoint that listed it. Origins are compared, not
+ * paths: SDKs append versions and operations to a base address. With no configured
+ * endpoint the list came from the vendor's default, so the request must be on that route.
+ */
+function reportListedByServedEndpoint(vendor: string, route: ModelPricingRoute, servedRequestUrl: string): boolean {
+  const configured = route.baseUrl?.trim();
+  if (!configured) return servedOnCatalogRoute(vendor, servedRequestUrl);
+  const listed = parsedUrl(configured);
+  const served = parsedUrl(servedRequestUrl);
+  return listed !== undefined && served !== undefined && listed.origin === served.origin;
 }
 
 /** Read persisted legacy price provenance unchanged; new resolution never emits that source. */
@@ -26,11 +76,14 @@ export type ResolvedModelPricing<Source extends RecordedModelPricingSource = Mod
     }
   | {
       readonly source: "unknown";
+      readonly reason?: UnknownModelPricingReason;
       /** The catalog entry that lists the model at zero, when one does: listed, not free. */
       readonly catalogListsZero?: string;
     };
 
 export type RecordedModelPricing = ResolvedModelPricing<RecordedModelPricingSource>;
+
+export const LEGACY_ROUTE_UNRECORDED = { source: "unknown", reason: "legacy-route-unrecorded" } as const;
 
 export type KnownModelPricing = Extract<RecordedModelPricing, { rates: TokenRates }>;
 
@@ -40,6 +93,18 @@ export interface ModelUsageSegment<Vendor extends string = string> {
   tokenUsage: UsageForCost;
   /** Absent only for records predating captured request prices. */
   pricing?: RecordedModelPricing;
+}
+
+/** Older segments can use the primary snapshot when both recorded route labels match. */
+export function recordedUsageSegmentPricing(
+  segment: Pick<ModelUsageSegment, "vendorProvider" | "vendorModel" | "pricing">,
+  primary: { vendorProvider?: string; vendorModel?: string; pricing?: RecordedModelPricing },
+): RecordedModelPricing | undefined {
+  if (segment.pricing !== undefined) return parseResolvedModelPricing(segment.pricing);
+  if (primary.vendorProvider === segment.vendorProvider && primary.vendorModel === segment.vendorModel) {
+    return primary.pricing;
+  }
+  return undefined;
 }
 
 const OPTIONAL_TOKEN_RATE_FIELDS = ["cacheReadPer1M", "cacheWritePer1M", "reasoningPer1M"] as const;
@@ -54,13 +119,14 @@ function recordedSurchargeTier(raw: Record<string, unknown>, rates: TokenRates):
   if (threshold === undefined) return undefined;
   if (!isPricingOverrideRate(threshold) || !isPricingOverrideRate(inputMultiplier) || !isPricingOverrideRate(outputMultiplier)) return null;
   if (rates.reasoningPer1M !== undefined && outputMultiplier !== 1) return null;
-  return {
+  const tier = {
     afterInputTokens: threshold,
     inputPer1M: rates.inputPer1M * inputMultiplier,
     outputPer1M: rates.outputPer1M * outputMultiplier,
     cacheReadPer1M: (rates.cacheReadPer1M ?? rates.inputPer1M) * inputMultiplier,
     cacheWritePer1M: (rates.cacheWritePer1M ?? rates.inputPer1M) * inputMultiplier,
   };
+  return OPTIONAL_TIER_RATE_FIELDS.every((key) => isPricingOverrideRate(tier[key])) ? tier : null;
 }
 
 /** Validate every numeric field before copying IPC or persisted price snapshots. */
@@ -70,6 +136,8 @@ export function parseResolvedModelPricing(value: unknown): RecordedModelPricing 
   if (obj.source === "unknown") {
     return {
       source: "unknown",
+      ...(obj.reason === "endpoint-price-unavailable" || obj.reason === "legacy-route-unrecorded"
+        ? { reason: obj.reason } : {}),
       ...(typeof obj.catalogListsZero === "string" ? { catalogListsZero: obj.catalogListsZero } : {}),
     };
   }
@@ -137,18 +205,29 @@ export function resolveModelPricing(
       },
     };
   }
+  const served = route?.servedRequestUrl;
+  const routeEstablishesModel = served !== undefined
+    ? servedOnCatalogRoute(vendor, served)
+    : allowsImplicitModelLimits(vendor, route?.baseUrl);
+  const needsEndpointPrice = !routeEstablishesModel
+    || (route !== undefined && (!isLLMVendor(vendor) || !vendorHasCatalogProvider(vendor)));
+  const reportedRates = route?.reported !== undefined
+    && (served === undefined || reportListedByServedEndpoint(vendor, route, served))
+    ? endpointTokenRates(route.reported)
+    : undefined;
+  if (needsEndpointPrice) {
+    return reportedRates !== undefined
+      ? { source: "endpoint-report", rates: reportedRates }
+      : { source: "unknown", reason: "endpoint-price-unavailable" };
+  }
   const hit = resolveCatalogKey(activeModelCatalog(), vendor, model);
   const catalogEntry = hit ? `${hit.provider}/${hit.id}` : undefined;
   const catalogRates = hit?.model.cost ? catalogTokenRates(hit.model.cost, hit.provider) : undefined;
   const catalogPrices = catalogEntry !== undefined && catalogRates !== undefined && listsAPrice(catalogRates);
-  const reportedRates = route?.reported ? endpointTokenRates(route.reported) : undefined;
-  // Use endpoint prices when catalog identity or catalog rates are absent.
-  if (reportedRates !== undefined && (!catalogPrices || !allowsImplicitModelLimits(vendor, route?.baseUrl))) {
-    return { source: "endpoint-report", rates: reportedRates };
-  }
   if (catalogPrices) {
     return { source: "model-catalog", rates: catalogRates, catalogEntry };
   }
+  if (reportedRates !== undefined) return { source: "endpoint-report", rates: reportedRates };
   return catalogEntry !== undefined && catalogRates !== undefined
     ? { source: "unknown", catalogListsZero: catalogEntry }
     : { source: "unknown" };
@@ -204,10 +283,9 @@ function endpointTokenRates(pricing: LlmModelListPricing): TokenRates | undefine
 /** Convert per-token decimal strings to per-million rates. */
 function perMillion(value: string | undefined): number | undefined {
   if (value === undefined || !/^\d+(?:\.\d+)?(?:[eE][-+]?\d+)?$/u.test(value.trim())) return undefined;
-  const perToken = Number(value.trim());
-  if (!Number.isFinite(perToken) || perToken < 0) return undefined;
-  // Strip the binary-float noise of the scaling ("0.0000004" × 1e6).
-  return Number((perToken * 1_000_000).toPrecision(12));
+  // Strip binary-float noise and validate after both scaling and rounding.
+  const rate = Number((Number(value.trim()) * 1_000_000).toPrecision(12));
+  return isPricingOverrideRate(rate) ? rate : undefined;
 }
 
 /** Catalog-listed zero rates remain source data, not a displayed free price. */

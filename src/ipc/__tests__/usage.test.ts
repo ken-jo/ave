@@ -31,10 +31,6 @@ vi.mock("../../engine/usage-stats.js", () => ({
   getUsageRange: vi.fn(async (opts: unknown) => ({ range: opts, rows: [] })),
 }));
 
-// Usage aggregation reads corrections per call; tests isolate the requested day/options arguments.
-const ANY_CLOCK = expect.any(Date);
-const NO_OVERRIDES: readonly never[] = [];
-
 function invoke(channel: string, event: unknown, ...args: unknown[]): unknown {
   return invokeRegisteredHandlerWithEvent(handlers, channel, event, ...args);
 }
@@ -70,7 +66,7 @@ describe("ave:usage:summary", () => {
   it("calls getUsageSummary with provided days", async () => {
     const { getUsageSummary } = await import("../../engine/usage-stats.js");
     const result = await invoke("ave:usage:summary", hostFrameEvent(), 30) as { days: number };
-    expect(getUsageSummary).toHaveBeenCalledWith(30, ANY_CLOCK, NO_OVERRIDES);
+    expect(getUsageSummary).toHaveBeenCalledWith(30);
     expect(result.days).toBe(30);
   });
 
@@ -88,27 +84,15 @@ describe("ave:usage:summary", () => {
     await pending;
 
     expect(mockAuditLogger.flush).toHaveBeenCalledTimes(1);
-    expect(getUsageSummary).toHaveBeenCalledWith(30, ANY_CLOCK, NO_OVERRIDES);
+    expect(getUsageSummary).toHaveBeenCalledWith(30);
   });
 
   it("defaults to 60 days when no argument", async () => {
     const { getUsageSummary } = await import("../../engine/usage-stats.js");
     await invoke("ave:usage:summary", hostFrameEvent());
-    expect(getUsageSummary).toHaveBeenCalledWith(60, ANY_CLOCK, NO_OVERRIDES);
+    expect(getUsageSummary).toHaveBeenCalledWith(60);
   });
 
-  it("carries the price corrections stored right now, not the ones at boot", async () => {
-    const { getUsageSummary } = await import("../../engine/usage-stats.js");
-    const correction = [
-      { vendor: "claude", model: "claude-sonnet-4-6", inputPer1M: 2, outputPer1M: 9 },
-    ];
-    mockSettingsGet.mockImplementation((key: string) =>
-      key === "llm" ? { pricingOverrides: correction } : undefined);
-
-    await invoke("ave:usage:summary", hostFrameEvent(), 30);
-
-    expect(getUsageSummary).toHaveBeenCalledWith(30, ANY_CLOCK, correction);
-  });
 });
 
 describe("ave:usage:range", () => {
@@ -127,7 +111,7 @@ describe("ave:usage:range", () => {
     const opts = { dateFrom: "2026-01-01", dateTo: "2026-01-31" };
     await invoke("ave:usage:range", hostFrameEvent(), opts);
     expect(mockAuditLogger.flush).toHaveBeenCalledTimes(1);
-    expect(getUsageRange).toHaveBeenCalledWith(opts, ANY_CLOCK, NO_OVERRIDES);
+    expect(getUsageRange).toHaveBeenCalledWith(opts);
   });
 });
 
@@ -166,6 +150,38 @@ describe("ave:usage:daily-summary", () => {
       expect.stringContaining("\"totalTokens\":120"),
       expect.any(String),
     );
+  });
+
+  it("sends both unknown-price reasons to the daily summary", async () => {
+    await invoke("ave:usage:daily-summary", hostFrameEvent(), {
+      date: "2026-07-04",
+      usage: { cost: 0.01, unknownCostTurns: 2, endpointPriceUnavailableTurns: 1, legacyRouteUnrecordedTurns: 1 },
+    });
+    const [prompt] = (mockGenerateText.mock.lastCall ?? []) as readonly unknown[];
+    expect(JSON.parse(String(prompt).split("\n").at(-1) ?? "")).toMatchObject({
+      usage: {
+        cost: null,
+        unknownCostTurns: 2,
+        pricingUnavailableReasons: ["endpoint-price-unavailable", "legacy-route-unrecorded"],
+      },
+    });
+  });
+
+  it("serializes unavailable daily cost as null", async () => {
+    await invoke("ave:usage:daily-summary", hostFrameEvent(), { date: "2026-07-04", usage: null });
+    const [prompt] = (mockGenerateText.mock.lastCall ?? []) as readonly unknown[];
+    expect(JSON.parse(String(prompt).split("\n").at(-1) ?? "")).toMatchObject({ usage: { cost: null } });
+  });
+
+  it("serializes incomplete audit cost as null while retaining readable tokens", async () => {
+    await invoke("ave:usage:daily-summary", hostFrameEvent(), {
+      date: "2026-07-04",
+      usage: { auditIncomplete: true, inputTokens: 100, outputTokens: 20, totalTokens: 120, cost: 0.001 },
+    });
+    const [prompt] = (mockGenerateText.mock.lastCall ?? []) as readonly unknown[];
+    expect(JSON.parse(String(prompt).split("\n").at(-1) ?? "")).toMatchObject({
+      usage: { auditIncomplete: true, inputTokens: 100, outputTokens: 20, totalTokens: 120, cost: null },
+    });
   });
 
   it("redacts sensitive renderer text before sending the daily summary prompt to the LLM", async () => {
@@ -222,7 +238,7 @@ describe("ave:usage:export-csv", () => {
     expect(result.canceled).toBe(true);
   });
 
-  it("writes unknownCostTurns to successful CSV exports", async () => {
+  it("saves blank incomplete cost and the endpoint reason count in the CSV file", async () => {
     const { dialog } = await import("electron");
     const root = mkdtempSync(join(tmpdir(), "ave-usage-csv-"));
     try {
@@ -239,17 +255,21 @@ describe("ave:usage:export-csv", () => {
           cacheReadTokens: 20,
           cacheWriteTokens: 5,
           totalTokens: 110,
-          cost: 0,
+          cost: "",
           unknownCostTurns: 1,
+          endpointPriceUnavailableTurns: 1,
+          legacyRouteUnrecordedTurns: 0,
         },
+        { date: "range-total", vendor: "openai", model: "gpt-4o", cost: 0.25, unknownCostTurns: 1, endpointPriceUnavailableTurns: 0, legacyRouteUnrecordedTurns: 1, auditIncomplete: 1 },
       ]) as { ok: boolean; filePath?: string };
 
       expect(result).toEqual({ ok: true, filePath });
       const csv = readFileSync(filePath, "utf-8");
-      expect(csv.split("\r\n")[0]).toBe("date,vendor,model,inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens,totalTokens,cost,unknownCostTurns");
-      expect(csv).toContain('"gpt-4o"');
-      expect(csv).toContain(",20,5,");
-      expect(csv).toContain(",1");
+      expect(csv.split("\r\n")).toEqual([
+        "date,vendor,model,inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens,totalTokens,cost,unknownCostTurns,endpointPriceUnavailableTurns,legacyRouteUnrecordedTurns,auditIncomplete",
+        '"2026-05-22","openai","gpt-4o",100,10,20,5,110,"",1,1,0,""',
+        '"range-total","openai","gpt-4o","","","","","","",1,0,1,1',
+      ]);
     } finally {
       await cleanupTmpDir(root);
     }

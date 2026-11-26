@@ -112,7 +112,7 @@ export type { PluginPerfStats, PluginContributionTrustRow, PluginBackgroundEffec
 
 // Usage aggregates come from the engine/IPC owners; only the renderer-side
 // derived shapes (UsagePerX, UsageTrendPt, UsageConv) are declared here.
-import type { UsageTotals } from "../../engine/usage-stats.js";
+import type { UsageSummary, UsageTotals } from "../../engine/usage-stats.js";
 import type { UsageDailySummaryInput, UsageDailySummaryResult } from "../../ipc/handlers/usage.js";
 import type { WorkspacePreviewRemoveRootResult } from "../../ipc/domains/workspace.js";
 
@@ -304,7 +304,7 @@ type SubscriptionUsageSummaryShape = {
   sources: Record<SubscriptionUsageSource, SubscriptionUsageTotals>;
 };
 
-export type UsageSummaryShape = {
+export type UsageSummaryShape = Pick<UsageSummary, "auditIncomplete" | "topConversationsByTokens"> & {
   today: UsageTotals;
   thisWeek: UsageTotals;
   thisMonth: UsageTotals;

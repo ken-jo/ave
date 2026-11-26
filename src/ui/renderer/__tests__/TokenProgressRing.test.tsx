@@ -1,9 +1,10 @@
 import "../../../../test/renderer/setup.js";
 import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { TokenProgressRing } from "../components/TokenProgressRing.js";
 import { TooltipProvider } from "../../../components/ui/tooltip.js";
 import { setLocale, t } from "../../../i18n/runtime.js";
+import { useCostEstimate } from "../hooks/use-cost-estimate.js";
 
 function renderRing(used: number, budget: number) {
   return render(
@@ -77,6 +78,20 @@ describe("TokenProgressRing output limit source", () => {
 describe("TokenProgressRing price source", () => {
   const base = { inputTokens: 1_000, outputTokens: 1_000, inputCost: 0.001, outputCost: 0.01, total: 0.011 };
 
+  it("shows why a name-matched proxy price is unknown and omits dollar values", async () => {
+    const { result } = renderHook(() => useCostEstimate({
+      entries: [], draft: { text: "hello" }, llmVendor: "openai", llmModel: "gpt-5.4",
+      pricingRoute: { baseUrl: "https://proxy.example.test/v1" }, maxOutputTokens: 1_000,
+    }));
+    const { costEstimate } = result.current;
+    expect(costEstimate.total).toBeUndefined();
+    render(<TooltipProvider><TokenProgressRing used={1_000} budget={64_000} costEstimate={costEstimate} /></TooltipProvider>);
+    fireEvent.click(screen.getByTestId("token-progress-ring"));
+    expect(await screen.findByTestId("token-progress-ring-cost-unknown"))
+      .toHaveTextContent("이 경로의 엔드포인트가 사용 가능한 가격을 제공하지 않았습니다.");
+    expect(screen.getByTestId("token-progress-ring-cost")).not.toHaveTextContent("$");
+  });
+
   it("names who stated the rates the estimate uses", async () => {
     const { fireEvent } = await import("@testing-library/react");
     render(
@@ -117,7 +132,7 @@ describe("TokenProgressRing price source", () => {
         <TokenProgressRing
           used={1_000}
           budget={64_000}
-          costEstimate={{ ...base, inputCost: 0, outputCost: 0, total: 0, pricingKnown: false, catalogListsZero: "zai/glm-4.7-flash" }}
+          costEstimate={{ inputTokens: 1_000, outputTokens: 1_000, pricingKnown: false, catalogListsZero: "zai/glm-4.7-flash" }}
         />
       </TooltipProvider>,
     );

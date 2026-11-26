@@ -1,42 +1,26 @@
 import { redactForLLM } from "../../audit/dlp-filter.js";
-import {
-  resolvePricingOverrides,
-  type PricingOverride,
-} from "../../shared/pricing-overrides.js";
+import type { UsageSummary, UsageTotals } from "../../engine/usage-stats.js";
 
 export interface UsageAuditFlushBoundary {
   flush(): Promise<void>;
 }
 
-// Resolve pricing corrections once per call so cached aggregation and engine values cannot diverge mid-query.
-function pricingOverridesFor(
-  settingOverrides?: readonly PricingOverride[],
-): readonly PricingOverride[] {
-  return resolvePricingOverrides(settingOverrides);
-}
-
 export async function handleUsageSummary(
   days?: number,
   auditLogger?: UsageAuditFlushBoundary,
-  settingOverrides?: readonly PricingOverride[],
 ) {
   await auditLogger?.flush();
   const { getUsageSummary } = await import("../../engine/usage-stats.js");
-  return getUsageSummary(
-    typeof days === "number" ? days : 60,
-    new Date(),
-    pricingOverridesFor(settingOverrides),
-  );
+  return getUsageSummary(typeof days === "number" ? days : 60);
 }
 
 export async function handleUsageRange(
   opts: { dateFrom: string; dateTo: string },
   auditLogger?: UsageAuditFlushBoundary,
-  settingOverrides?: readonly PricingOverride[],
 ) {
   await auditLogger?.flush();
   const { getUsageRange } = await import("../../engine/usage-stats.js");
-  return getUsageRange(opts, new Date(), pricingOverridesFor(settingOverrides));
+  return getUsageRange(opts);
 }
 
 interface UsageDailySummaryItem {
@@ -52,12 +36,7 @@ export interface UsageDailySummaryInput {
   locale?: string;
   sessions?: UsageDailySummaryItem[];
   starred?: UsageDailySummaryItem[];
-  usage?: {
-    inputTokens?: number;
-    outputTokens?: number;
-    totalTokens?: number;
-    cost?: number;
-  } | null;
+  usage?: Partial<UsageTotals> & Pick<UsageSummary, "auditIncomplete"> | null;
 }
 
 export type UsageDailySummaryResult =
@@ -116,6 +95,8 @@ function buildDailySummaryPrompt(input: unknown): string {
   const sessions = cleanItems(normalized.sessions);
   const starred = cleanItems(normalized.starred);
   const usage = normalized.usage && typeof normalized.usage === "object" ? normalized.usage : {};
+  const unknownCostTurns = cleanNumber(usage.unknownCostTurns);
+  const auditIncomplete = usage.auditIncomplete === true;
   const payload = {
     date: /^\d{4}-\d{2}-\d{2}$/.test(normalized.date) ? normalized.date : "unknown",
     locale: cleanText(normalized.locale, 32) ?? "ko-KR",
@@ -125,7 +106,13 @@ function buildDailySummaryPrompt(input: unknown): string {
       inputTokens: cleanNumber(usage.inputTokens),
       outputTokens: cleanNumber(usage.outputTokens),
       totalTokens: cleanNumber(usage.totalTokens),
-      cost: cleanNumber(usage.cost),
+      cost: auditIncomplete || unknownCostTurns > 0 || !Number.isFinite(usage.cost) ? null : cleanNumber(usage.cost),
+      ...(auditIncomplete ? { auditIncomplete } : {}),
+      ...(unknownCostTurns > 0 ? { unknownCostTurns } : {}),
+      pricingUnavailableReasons: [
+        ...(cleanNumber(usage.endpointPriceUnavailableTurns) > 0 ? ["endpoint-price-unavailable"] : []),
+        ...(cleanNumber(usage.legacyRouteUnrecordedTurns) > 0 ? ["legacy-route-unrecorded"] : []),
+      ],
     },
   };
   return [

@@ -80,7 +80,7 @@ describe("useCostEstimate", () => {
     });
 
     expect(result.current.costEstimate.inputTokens).toBeGreaterThan(0);
-    expect(result.current.costEstimate.total).toBe(0);
+    expect(result.current.costEstimate.total).toBeUndefined();
     expect(result.current.costEstimate.pricingKnown).toBe(false);
     expect(result.current.costBadgeClass).toBe("text-muted-foreground");
   });
@@ -117,6 +117,7 @@ describe("useCostEstimate — the output limit is the range's upper end, not the
     ["openai", "gpt-5.4-mini", 0.1455, "text-warning"],
   ] as const)("%s %s: shows up to $%f, and tiers on the input before any turn has completed", (vendor, model, most, before) => {
     const { costEstimate, costBadgeClass } = estimate(vendor, model, []);
+    if (costEstimate.pricingKnown === false) throw new Error("Expected a priced estimate");
     expect(costEstimate.total).toBeCloseTo(most, 3);
     // The tier the maximum alone would give, which colored every draft.
     expect(costTierClassFor(costEstimate.total)).toBe(before);
@@ -131,6 +132,7 @@ describe("useCostEstimate — the output limit is the range's upper end, not the
     ["openai", "gpt-5.4-mini", 0.0082, "text-muted-foreground"],
   ] as const)("%s %s: tiers on the output this conversation's turns produced", (vendor, model, expectedTotal, tier) => {
     const { costEstimate, costBadgeClass } = estimate(vendor, model, [1_000, 2_000]);
+    if (costEstimate.pricingKnown === false) throw new Error("Expected a priced estimate");
     expect(costEstimate.expected).toMatchObject({ tokens: 1_500, basis: "recent-turns" });
     expect(costEstimate.expected!.total).toBeCloseTo(expectedTotal, 3);
     expect(costBadgeClass).toBe(tier);

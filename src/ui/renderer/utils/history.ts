@@ -10,6 +10,7 @@ import {
 } from "../../../lib/chat-stream-state.js";
 import { detectFromStream } from "../../../lib/stream-markers.js";
 import type { SerializedHistoryMessage } from "../../../shared/chat-history.js";
+import { parseResolvedModelPricing, recordedUsageSegmentPricing } from "../../../shared/model-pricing.js";
 import {
   isStagedTurnSource,
   STAGED_CARD_SUMMARY_CAP,
@@ -192,6 +193,17 @@ export function historyToEntries(
         !isPreservedPreCompactTurn(m, latestCheckpointCreatedAt)
       ) {
         const subscriptionUsage = normalizeSubscriptionUsageList(m.turnSummary.subscriptionUsage);
+        const primary = {
+          vendorProvider: m.turnSummary.vendorProvider,
+          vendorModel: m.turnSummary.vendorModel,
+          pricing: parseResolvedModelPricing(m.turnSummary.modelSettings?.pricing),
+        };
+        const usageByModel = primary.pricing === undefined ? m.turnSummary.usageByModel
+          : m.turnSummary.usageByModel?.map((segment) => {
+              if (segment.pricing !== undefined) return segment;
+              const pricing = recordedUsageSegmentPricing(segment, primary);
+              return pricing === undefined ? segment : { ...segment, pricing };
+            });
         out.push({
           kind: "turn_summary",
           ...(m.turnSummary.endedByEndTurn === true ? { endedByEndTurn: true as const } : {}),
@@ -213,8 +225,8 @@ export function historyToEntries(
           ...(m.turnSummary.vendorModel !== undefined
             ? { vendorModel: m.turnSummary.vendorModel }
             : {}),
-          ...(m.turnSummary.usageByModel !== undefined
-            ? { usageByModel: m.turnSummary.usageByModel }
+          ...(usageByModel !== undefined
+            ? { usageByModel }
             : {}),
           ...(subscriptionUsage !== undefined ? { subscriptionUsage } : {}),
           ...(m.turnSummary.breakdown

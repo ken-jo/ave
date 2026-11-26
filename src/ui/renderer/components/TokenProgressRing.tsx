@@ -3,7 +3,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatCostBadge, formatCostRange, type EstimateBreakdown } from "../../../lib/cost-estimator.js";
-import { formatTokensExact } from "../../../lib/cost-format.js";
+import { PRICING_REASON_LABELS, formatTokensExact } from "../../../lib/cost-format.js";
 
 /** Who set the output limit the estimate assumes, as the tooltip names it. */
 const OUTPUT_LIMIT_SOURCE_KEYS = {
@@ -206,7 +206,9 @@ export function TokenProgressRing({
             )}
             {costEstimate.pricingKnown === false ? (
               <div className="font-semibold" data-testid="token-progress-ring-cost-unknown">
-                {costEstimate.catalogListsZero !== undefined
+                {costEstimate.reason
+                  ? t(PRICING_REASON_LABELS[costEstimate.reason])
+                  : costEstimate.catalogListsZero !== undefined
                   ? t("chatView.costCatalogListsZero", { entry: costEstimate.catalogListsZero })
                   : t("chatView.costUnknownModel")}
               </div>

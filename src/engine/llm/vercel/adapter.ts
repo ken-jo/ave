@@ -227,6 +227,32 @@ function observeRequestControls(
   };
 }
 
+/**
+ * Dispatch evidence for pricing: the address a provider request is sent to, as the
+ * transport receives it from the SDK. It already reflects whatever chose the address
+ * (a configured base URL, an SDK environment variable, the SDK default and its own
+ * normalization). Query and credentials are dropped; the address is never persisted.
+ */
+function requestAddress(input: Parameters<typeof fetch>[0]): string | undefined {
+  try {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A request without a caller-supplied transport still goes to the runtime's fetch, resolved when it is sent. */
+function observeServedRequest(
+  fetchImpl: typeof fetch | undefined,
+  onServedRequest: (servedRequestUrl: string | undefined) => void,
+): typeof fetch {
+  return async (input, init) => {
+    onServedRequest(requestAddress(input));
+    return (fetchImpl ?? globalThis.fetch)(input, init);
+  };
+}
+
 function routelessModelCapabilities(params: {
   vendor: string;
   model: string;
@@ -435,6 +461,8 @@ export class VercelUnifiedProvider implements LLMProvider {
         : undefined;
       const interleavedNumericThinking = numericThinking && hasTools
         && claudeShape?.interleavedNumericThinking === true;
+      // Per call, so concurrent turns on one provider never share evidence.
+      let servedRequestUrl: string | undefined;
       const model = this.resolveModel(
         params.model,
         useOpenAIResponsesAliases,
@@ -443,6 +471,7 @@ export class VercelUnifiedProvider implements LLMProvider {
           ? { outputTokenLimit, interleavedThinking: interleavedNumericThinking, numericThinking, reportedCeiling }
           : undefined,
         params.onRequestControls,
+        (address) => { servedRequestUrl = address; },
       );
       const reasoningEffort = reasoningPlan?.kind === "openai-effort" ? reasoningPlan.effort : undefined;
       const useReasoning = params.enableThinking === true && reasoningEffort !== undefined;
@@ -698,7 +727,9 @@ export class VercelUnifiedProvider implements LLMProvider {
         for await (const event of restoredEvents) {
           if (params.abortSignal?.aborted) return;
           idleController.signal.throwIfAborted();
-          yield event;
+          yield event.type === "message_complete" && event.usage !== undefined && servedRequestUrl !== undefined
+            ? { ...event, usage: { ...event.usage, servedRequestUrl } }
+            : event;
         }
         if (params.abortSignal?.aborted) return;
         idleController.signal.throwIfAborted();
@@ -741,6 +772,7 @@ export class VercelUnifiedProvider implements LLMProvider {
     openAIResponsesWire: boolean,
     outputProjection?: NativeOutputProjection,
     onRequestControls?: StreamTurnParams["onRequestControls"],
+    onServedRequest?: (servedRequestUrl: string | undefined) => void,
   ) {
     const slot = this.protocolVendor();
     if (this.vendorSlot === "openai-compatible" && !this.providerMetadata && !this.baseUrl) {
@@ -749,11 +781,13 @@ export class VercelUnifiedProvider implements LLMProvider {
     assertCredentialedBaseUrlUsesHttps(
       slot, this.providerMetadata?.baseUrl ?? this.baseUrl, this.apiKey, this.customFetch,
     );
+    // The transport policy above judges the caller's transport; the SDK receives the observed one.
+    const transport = onServedRequest ? observeServedRequest(this.customFetch, onServedRequest) : this.customFetch;
 
     if (slot === "claude") {
       const nativeFetch = onRequestControls
-        ? observeRequestControls(this.customFetch ?? globalThis.fetch, onRequestControls)
-        : this.customFetch;
+        ? observeRequestControls(transport ?? globalThis.fetch, onRequestControls)
+        : transport;
       const fetchImpl = outputProjection
         ? projectNativeOutput(nativeFetch ?? globalThis.fetch, outputProjection)
         : nativeFetch;
@@ -769,7 +803,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       const google = createGoogleGenerativeAI({
         apiKey: this.apiKey,
         ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
-        ...(this.customFetch ? { fetch: this.customFetch } : {}),
+        ...(transport ? { fetch: transport } : {}),
       });
       return google(modelId);
     }
@@ -778,7 +812,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       const openai = createOpenAI({
         apiKey: this.apiKey,
         ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
-        ...(this.customFetch ? { fetch: this.customFetch } : {}),
+        ...(transport ? { fetch: transport } : {}),
       });
       // Responses API for every model the catalog says reasons, or for every
       // model when the connection pins `openaiWire: "responses"`; Chat
@@ -806,7 +840,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         // fields below): `stream_options` is part of the OpenAI Chat
         // Completions schema itself, not a server extension.
         includeUsage: true,
-        ...(this.customFetch ? { fetch: this.customFetch } : {}),
+        ...(transport ? { fetch: transport } : {}),
       });
       return compat(modelId);
     }
@@ -825,7 +859,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       const azure = createAzure({
         baseURL: normalizeAzureFoundryBaseURL(this.baseUrl),
         apiKey: this.apiKey,
-        ...(this.customFetch ? { fetch: this.customFetch } : {}),
+        ...(transport ? { fetch: transport } : {}),
       });
       return azure.responses(modelId);
     }
@@ -848,7 +882,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       const vertex = createVertex({
         project,
         location,
-        ...(this.customFetch ? { fetch: this.customFetch } : {}),
+        ...(transport ? { fetch: transport } : {}),
       });
       return vertex(modelId);
     }

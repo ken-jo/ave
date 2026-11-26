@@ -476,7 +476,7 @@ Slice 4 is implemented.
     is omitted when the last request used a fallback (§5), so a primary model's
     omission is never recorded as the fallback's capability.
 
-**Pricing (slice 5) is implemented.** `resolveModelPricing(vendor, model, overrides)`
+**Pricing.** `resolveModelPricing(vendor, model, overrides, route)`
 (`src/shared/model-pricing.ts`) is the one place the price sources are ordered, and
 answers the rates with their source:
 
@@ -491,14 +491,58 @@ answers the rates with their source:
    id). The report follows OpenRouter's convention: USD per token as decimal strings
    (`"0.0000025"` is $2.50 per million); `prompt`, `completion`, `input_cache_read`,
    `input_cache_write` and `internal_reasoning` map to the input, output, cache and
-   reasoning rates. Both prompt and completion must parse as non-negative numbers
+   reasoning rates. Both prompt and completion must convert to finite, non-negative per-million rates
    (OpenRouter's `-1` for a router is not a price), a zero for both is not a price, and
-   an extra rate that does not parse is dropped. OpenRouter's `overrides` tiers are not
-   read. The engine prices the primary route's requests with it; a fallback model is
-   priced without the primary's report. The estimate's tooltip names it ("the provider's
-   model list"). Records without the source read as before.
+   an extra rate that does not parse is dropped. A report prices only requests served
+   by the endpoint that listed it (below). The estimate's tooltip names the provider's
+   model list. Endpoint reports carry flat rates: the bundled catalog input and the
+   model-list fixtures contain no OpenRouter `overrides` field, so there is no shape to
+   parse one from; prompt-size tiers come from the catalog's `cost.tiers` (§2).
 3. `model-catalog` — the entry `resolveCatalogKey` finds (§4), with `catalogEntry`.
-4. `unknown` — shown as unknown, never as $0.
+   The serving route must establish catalog identity. A deployment alias on a native
+   resource host, including an alias that matches a catalog model, needs its own
+   report or a user correction because the alias does not establish the served model.
+4. `unknown` — a route without catalog identity and without a usable report records
+   `endpoint-price-unavailable`. Estimates and completed requests retain this reason
+   without a dollar value; it is never shown as $0 and never borrows another route's
+   price.
+
+**The route a request is priced on is the one it was sent to.** The adapter observes
+the address of each provider request where the SDK hands it to the transport
+(`servedRequestUrl` on the request's usage: origin and path, no query or credentials).
+That address already reflects whatever chose it — a configured `baseUrl`, an SDK
+environment variable (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`), the SDK default and the
+SDK's own normalization — so the host predicts none of them. `resolveModelPricing`
+then decides from the recorded address:
+
+- **Catalog identity** is `allowsImplicitModelLimits` applied to the served address. A
+  request under a preset's base address is judged as that base, because the rule
+  compares base addresses and some presets select a product by path.
+- **A report applies** when the served origin equals the origin of the configured
+  endpoint its model list was read from; with no configured endpoint the list came from
+  the vendor's default, so the request must be on the vendor's own route. Origins are
+  compared, not paths: SDKs append versions and operations to a base address.
+- A fallback that keeps the primary's vendor and model is priced by the same two
+  checks, so it uses the primary's report only when the same endpoint served it. A
+  fallback's own cached report is not looked up; off its vendor's own route it is
+  `endpoint-price-unavailable`.
+
+The address prices the request and is not stored: the audit row and the turn summary
+keep the resolved price and its reason. The turn's `modelSettings.pricing` is the price
+of its last primary request, so it agrees with the request snapshots.
+
+Nothing else reads this evidence. Discovery, the model-list cache keys, protocol
+selection, retirement, the context window and Settings identify a route by its
+configured endpoint as before. Two limits follow and are accepted:
+
+- A request an SDK environment variable sends to a proxy is `endpoint-price-unavailable`
+  even when that proxy lists prices, because the model list is read from the configured
+  endpoint, not from the environment's.
+- The pre-send estimate has no request yet. It projects the route from the configured
+  endpoint (`allowsImplicitModelLimits(vendor, baseUrl)`), so under an environment
+  override it can show the vendor's catalog price until the first request records
+  otherwise. A provider that reports usage without an address is priced by the same
+  projection.
 
 Until slice 7 the hand-kept row answered as `pricing-catalog` between the catalog and
 `unknown`. A price snapshot an earlier build recorded with that source is still read back
@@ -535,27 +579,27 @@ endpoint costs.
   zero does not establish free reasoning. Without a reported split, all output uses
   the output rate.
 
-The pre-send estimate (`use-cost-estimate.ts`) resolves current prices. Each completed
-provider request records its resolved `pricing` in `usageByModel`; the per-turn badge,
-usage dashboard and CSV use that snapshot, including an unknown or explicit free
-price. For an older audit record without a request snapshot, the recorded primary-route
-price applies only to a segment matching the audit route; otherwise current prices
-apply. Older transcript segments without snapshots resolve current prices. The
-dashboard's cache key includes the catalog's `sha256` for those older records. The run's
-`modelSettings.pricing` records the primary route's answer; request snapshots also
-cover mixed-model turns. The renderer
-applies the corrections main resolves (`ave:usage:pricing-overrides`, fetched on each
-settings snapshot; `src/ui/renderer/hooks/use-pricing-overrides.ts`) instead of reading
-the setting raw, so an environment-forced list prices the estimate and the badge as it
-prices the dashboard. Before, the renderer applied no correction at all. The estimate's
-tooltip names who stated the rates, or that the catalog listed the model at zero.
+The pre-send estimate uses the current route and the corrections resolved by main.
+Each completed provider request records its price in `usageByModel`, including an
+unknown price or an explicit zero. The badge, usage dashboard, Insights and CSV use
+the recorded price. For a historical segment without a request snapshot, a recorded
+primary price applies only to a segment matching the primary route. Historical
+usage with only a vendor and model label counts as `legacy-route-unrecorded`.
+
+Usage totals retain the priced subtotal and count unpriced requests by reason.
+The session ranking uses priced spend, breaks ties by priced tokens, and shows
+how many requests it excludes.
+Spending projections are unknown when the selected period includes an unpriced
+request. CSV leaves incomplete costs blank and includes the reason counts.
+Insights shows loading while it fetches daily usage. An incomplete audit read
+preserves the tokens that were read, shows unknown cost, and sends a null cost to
+the daily summary generator.
 
 Prices the snapshot of 2026-10-12 changed against the table: models the table listed
 at zero or not at all are now priced — Gemini 2.5 Pro, Flash and Flash-Lite, GPT-5.1,
 5.2 and 5.3 Codex, GPT-4o and 4o mini, GPT-4.1 nano, o1, o3, o4-mini, Claude Haiku 5.5 (with
 its 100K tier) and Vertex AI models among them; GPT-5 mini drops from $1.25/$10 to the
-listed $0.25/$2; Azure deployments named for a model the catalog's `azure` provider
-lists are priced at that entry (before, Azure was unpriced without a correction).
+listed $0.25/$2.
 Claude's dated ids the catalog does not list (`claude-sonnet-4-20250514`,
 `claude-opus-4-20250514`, `claude-3-*`) priced from the table until slice 7 and are
 unknown since (§8).

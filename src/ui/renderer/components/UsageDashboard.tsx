@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card.js";
 import { Input } from "../../../components/ui/input.js";
-import { formatCost, formatTokens } from "../../../lib/cost-format.js";
+import { formatCost, formatTokens, formatUsageCost } from "../../../lib/cost-format.js";
 import type { AveApi, UsageSummaryShape, UsageTrendPt } from "../types.js";
 import { Sparkline } from "./Sparkline.js";
 import { SettingsPageHeader } from "./PageShell.js";
@@ -12,6 +12,7 @@ import { t } from "../../../i18n/runtime.js";
 import type { SettingsTab } from "../../../shared/settings-tabs.js";
 import { localDateKey, shiftLocalDateKey } from "../../../shared/local-date.js";
 import { shortSessionId } from "../../../shared/session-lookup.js";
+import { averageDailyCost } from "../../../shared/pricing-data.js";
 
 type Preset = "7d" | "30d" | "90d" | "all" | "custom";
 
@@ -29,29 +30,6 @@ export function presetToDates(preset: Preset, now = new Date()): { dateFrom: str
   if (preset === "30d") return { dateFrom: daysAgoKey(29, now), dateTo: to };
   if (preset === "90d") return { dateFrom: daysAgoKey(89, now), dateTo: to };
   return { dateFrom: daysAgoKey(365 * 5, now), dateTo: to };
-}
-
-function sumUnknownCostTurns(rows: Array<{ unknownCostTurns?: number }>): number {
-  return rows.reduce((sum, row) => sum + (row.unknownCostTurns ?? 0), 0);
-}
-
-function computeMonthlyProjection(trend: UsageTrendPt[]): { cost: number; hasUnknownCost: boolean } {
-  if (trend.length === 0) return { cost: 0, hasUnknownCost: false };
-  const total = trend.reduce((s, p) => s + p.cost, 0);
-  return {
-    cost: (total / trend.length) * 30,
-    hasUnknownCost: sumUnknownCostTurns(trend) > 0,
-  };
-}
-
-function formatCostWithUnknown(v: { cost: number; unknownCostTurns?: number }): string {
-  const base = formatCost(v.cost);
-  return v.unknownCostTurns ? t("usageDashboard.unknownCostTurns", { base, turns: String(v.unknownCostTurns) }) : base;
-}
-
-function formatProjectedCost(v: { cost: number; hasUnknownCost: boolean }): string {
-  const base = formatCost(v.cost);
-  return v.hasUnknownCost ? t("usageDashboard.unknownCostIncluded", { base }) : base;
 }
 
 function formatCacheBreakdown(v: { cacheReadTokens?: number; cacheWriteTokens?: number }): string {
@@ -85,8 +63,11 @@ function buildCsvRows(summary: UsageSummaryShape): Array<Record<string, string |
     cacheReadTokens: usage.cacheReadTokens ?? 0,
     cacheWriteTokens: usage.cacheWriteTokens ?? 0,
     totalTokens: usage.totalTokens,
-    cost: usage.cost,
+    cost: summary.auditIncomplete || usage.unknownCostTurns || !Number.isFinite(usage.cost) ? "" : usage.cost,
+    ...(summary.auditIncomplete ? { auditIncomplete: 1 } : {}),
     unknownCostTurns: usage.unknownCostTurns ?? 0,
+    endpointPriceUnavailableTurns: usage.endpointPriceUnavailableTurns ?? 0,
+    legacyRouteUnrecordedTurns: usage.legacyRouteUnrecordedTurns ?? 0,
   });
   return [
     ...summary.trend.map((pt) => row(pt, pt.date, "all", "all")),
@@ -212,14 +193,12 @@ export function UsageDashboard({
 
   const subscription = summary.subscription;
   const sparkPoints = summary.trend.map((p) => p.totalTokens);
-  const projection = computeMonthlyProjection(summary.trend);
-  const averageDailyKnownCost = summary.trend.length
-    ? summary.trend.reduce((s, p) => s + p.cost, 0) / summary.trend.length
-    : 0;
-  const averageDailyCost = {
-    cost: averageDailyKnownCost,
-    hasUnknownCost: sumUnknownCostTurns(summary.trend) > 0,
-  };
+  const projectionEndpointPriceUnavailable = summary.trend.some((point) => point.endpointPriceUnavailableTurns);
+  const projectionLegacyRouteUnrecorded = summary.trend.some((point) => point.legacyRouteUnrecordedTurns);
+  const unpricedRequests = summary.trend.reduce((total, point) => total + (point.unknownCostTurns ?? 0), 0);
+  const dailyCost = summary.auditIncomplete ? undefined : averageDailyCost(summary.trend);
+  const displayCost = (usage: Parameters<typeof formatUsageCost>[0]) =>
+    summary.auditIncomplete ? t("be_costEstimator.costUnknown") : formatUsageCost(usage);
 
   return (
     <div className="space-y-5" data-testid="usage-dashboard">
@@ -245,7 +224,7 @@ export function UsageDashboard({
                 })}
               </div>
               <div className="text-xs text-muted-foreground">{formatCacheBreakdown(v)}</div>
-              <div className="text-xs font-medium">{formatCostWithUnknown(v)}</div>
+              <div className="text-xs font-medium">{displayCost(v)}</div>
             </CardContent>
           </Card>
         ))}
@@ -259,9 +238,13 @@ export function UsageDashboard({
       <Card>
         <CardHeader className="pb-1 pt-3 px-3"><CardTitle className="text-xs text-muted-foreground">{t("usageDashboard.monthlyProjection")}</CardTitle></CardHeader>
         <CardContent className="px-3 pb-3">
-          <div className="text-sm">{t("usageDashboard.projectionRate")} <span className="font-semibold">{formatProjectedCost(projection)}</span></div>
+          <div className="text-sm">{t("usageDashboard.projectionRate")} <span className="font-semibold">
+            {dailyCost === undefined ? t("be_costEstimator.costUnknown") : formatCost(dailyCost * 30)}
+          </span></div>
           <div className="text-xs text-muted-foreground mt-0.5">
-            {t("usageDashboard.dailyAverage", { cost: formatProjectedCost(averageDailyCost) })}
+            {t("usageDashboard.dailyAverage", { cost: dailyCost === undefined ? t("be_costEstimator.costUnknown") : formatCost(dailyCost) })}
+            {projectionEndpointPriceUnavailable && <div>{t("pricing.endpointPriceUnavailable")}</div>}
+            {projectionLegacyRouteUnrecorded && <div>{t("pricing.legacyRouteUnrecorded")}</div>}
           </div>
         </CardContent>
       </Card>
@@ -278,7 +261,7 @@ export function UsageDashboard({
                     <td className="py-1 font-mono">{v.vendor}</td>
                     <td>{formatTokens(v.totalTokens)}</td>
                     <td className="text-muted-foreground">{formatCacheBreakdown(v)}</td>
-                    <td>{formatCostWithUnknown(v)}</td>
+                    <td>{displayCost(v)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -301,7 +284,7 @@ export function UsageDashboard({
                     </td>
                     <td>{formatTokens(m.totalTokens)}</td>
                     <td className="text-muted-foreground">{formatCacheBreakdown(m)}</td>
-                    <td>{formatCostWithUnknown(m)}</td>
+                    <td>{displayCost(m)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -313,6 +296,11 @@ export function UsageDashboard({
       <Card>
         <CardHeader className="pb-1 pt-3 px-3"><CardTitle className="text-xs text-muted-foreground">{t("usageDashboard.topConversations")}</CardTitle></CardHeader>
         <CardContent className="px-3 pb-3">
+          {unpricedRequests > 0 && (
+            <p className="mb-2 text-xs text-muted-foreground">
+              {t("usageDashboard.unpricedRequestsExcluded", { count: unpricedRequests })}
+            </p>
+          )}
           {summary.topConversations.length === 0 ? <div className="text-xs text-muted-foreground">{t("usageDashboard.noData")}</div> : (
             <table className="w-full text-xs">
               <thead><tr className="text-left text-muted-foreground"><th className="py-1">{t("usageDashboard.colSession")}</th><th>{t("usageDashboard.colTurns")}</th><th>{t("usageDashboard.colTokens")}</th><th>{t("usageDashboard.colCache")}</th><th>{t("usageDashboard.colCost")}</th></tr></thead>
@@ -323,7 +311,7 @@ export function UsageDashboard({
                     <td>{c.turns}</td>
                     <td>{formatTokens(c.totalTokens)}</td>
                     <td className="text-muted-foreground">{formatCacheBreakdown(c)}</td>
-                    <td>{formatCostWithUnknown(c)}</td>
+                    <td>{displayCost(c)}</td>
                   </tr>
                 ))}
               </tbody>

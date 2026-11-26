@@ -36,6 +36,7 @@ vi.mock("../../shared/abortable-deadline.js", async (importOriginal) => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
 
 const CODEX_USAGE_SUBSCRIPTION = {
@@ -458,6 +459,161 @@ describe("ConversationLoop onTurnSummary", () => {
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
     expect(body).not.toHaveProperty("tools");
     expect(summary?.modelSettings?.tools).toEqual({ sent: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" });
+  });
+
+  describe("request prices follow the address each request was sent to", () => {
+    const unavailable = { source: "unknown", reason: "endpoint-price-unavailable" };
+    const sse = (events: readonly unknown[], done: boolean): Response => new Response(
+      `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}${done ? "data: [DONE]\n\n" : ""}`,
+      { headers: { "content-type": "text/event-stream" } },
+    );
+    const chatAnswer = (model: string): Response => sse([{
+      id: "fixture-response", object: "chat.completion.chunk", created: 0, model,
+      choices: [{ index: 0, delta: { role: "assistant", content: "answer" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 60, completion_tokens: 10, total_tokens: 70 },
+    }], true);
+    const messagesAnswer = (model: string): Response => sse([
+      { type: "message_start", message: { id: "fixture-response", model, role: "assistant", usage: { input_tokens: 60 } } },
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "answer" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 10 } },
+      { type: "message_stop" },
+    ], false);
+    const responsesAnswer = (model: string): Response => sse([
+      { type: "response.created", response: { id: "fixture-response", created_at: 1, model } },
+      { type: "response.output_item.added", output_index: 0, item: { id: "fixture-message", type: "message", role: "assistant" } },
+      { type: "response.output_text.delta", item_id: "fixture-message", output_index: 0, delta: "answer" },
+      { type: "response.completed", response: { usage: { input_tokens: 60, output_tokens: 10, total_tokens: 70 } } },
+    ], false);
+    const runOn = async (provider: LLMProvider, settings: ReturnType<typeof fakeLlmSettings>) => {
+      const auditLogger = new AuditLogger();
+      const logTurn = vi.spyOn(auditLogger, "logTurn");
+      const loop = createLoopWithRegistry(provider, new ToolRegistry(), {
+        settingsService: { get: () => settings, getSecret: () => "test-key" }, auditLogger,
+      } as never);
+      let summary: TurnSummary | undefined;
+      try {
+        const result = await loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { ...userKeyboardTurn() });
+        expect(result.text).toBe("answer");
+      } finally {
+        await auditLogger.close();
+      }
+      return { summary, logTurn };
+    };
+
+    it.each([
+      { vendor: "openai", model: "gpt-3.5-turbo", env: "OPENAI_BASE_URL", path: "/chat/completions", respond: chatAnswer },
+      { vendor: "claude", model: "claude-sonnet-4-6", env: "ANTHROPIC_BASE_URL", path: "/messages", respond: messagesAnswer },
+    ] as const)("records an unknown price when an SDK environment override serves $vendor through a proxy", async ({ vendor, model, env, path, respond }) => {
+      const settings = fakeLlmSettings({ provider: vendor, model });
+      expect(settings.vendors[vendor].baseUrl).toBeUndefined();
+      vi.stubEnv(env, "https://proxy.invalid/v1");
+      const transport = vi.fn<typeof fetch>(async () => respond(model));
+      const { summary, logTurn } = await runOn(new VercelUnifiedProvider(vendor, "fixture-key", undefined, transport), settings);
+      expect(String(transport.mock.calls[0]?.[0])).toBe(`https://proxy.invalid/v1${path}`);
+      // The turn's primary-route price and the request's own price agree: neither names the catalog.
+      expect(summary?.modelSettings?.pricing).toEqual(unavailable);
+      expect(summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([unavailable]);
+      // The address prices the request and stops there: it is not part of the turn record.
+      expect(JSON.stringify(summary)).not.toContain("proxy.invalid");
+      expect(JSON.stringify(logTurn.mock.calls)).not.toContain("proxy.invalid");
+      expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({
+        modelSettings: expect.objectContaining({ pricing: unavailable }),
+        usageByModel: [expect.objectContaining({ pricing: unavailable })],
+      }));
+    });
+
+    it("keeps the Responses wire under an environment proxy, even with that proxy's report in the model-list cache", async () => {
+      const model = "gpt-5.4";
+      const proxy = "https://proxy.invalid/v1";
+      const settings = fakeLlmSettings({ provider: "openai", model });
+      expect(settings.vendors.openai.baseUrl).toBeUndefined();
+      // A listing stored under the proxy's own address is not the configured route's listing:
+      // it selects no wire and prices nothing here.
+      settings.modelListCache = {
+        [llmModelListCacheKey("openai", proxy)]: {
+          vendor: "openai", baseUrl: proxy, endpoint: `${proxy}/models`, models: [model],
+          modelEntries: [{ id: model, supportedParameters: ["reasoning_effort"], pricing: { prompt: "0.000003", completion: "0.000004" } }],
+          fetchedAt: "2026-10-13T00:00:00.000Z",
+        },
+      };
+      vi.stubEnv("OPENAI_BASE_URL", proxy);
+      const transport = vi.fn<typeof fetch>(async () => responsesAnswer(model));
+      const { summary } = await runOn(new VercelUnifiedProvider("openai", "fixture-key", undefined, transport), settings);
+      expect(String(transport.mock.calls[0]?.[0])).toBe(`${proxy}/responses`);
+      expect(summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([unavailable]);
+    });
+
+    it.each([
+      {
+        route: "the vendor's default endpoint", baseUrl: undefined, model: "gpt-3.5-turbo",
+        sentTo: "https://api.openai.com/v1/chat/completions",
+        expected: expect.objectContaining({ source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" }),
+      },
+      {
+        route: "a configured proxy that lists a price", baseUrl: "https://proxy.invalid/v1", model: "gpt-3.5-turbo",
+        sentTo: "https://proxy.invalid/v1/chat/completions",
+        expected: { source: "endpoint-report", rates: { inputPer1M: 3, outputPer1M: 4 } },
+      },
+    ])("prices a request served by $route", async ({ baseUrl, model, sentTo, expected }) => {
+      const settings = fakeLlmSettings({ provider: "openai", model });
+      if (baseUrl !== undefined) {
+        settings.vendors.openai.baseUrl = baseUrl;
+        settings.modelListCache = {
+          [llmModelListCacheKey("openai", baseUrl)]: {
+            vendor: "openai", baseUrl, endpoint: `${baseUrl}/models`, models: [model],
+            modelEntries: [{ id: model, pricing: { prompt: "0.000003", completion: "0.000004" } }],
+            fetchedAt: "2026-10-13T00:00:00.000Z",
+          },
+        };
+      }
+      const transport = vi.fn<typeof fetch>(async () => chatAnswer(model));
+      const { summary } = await runOn(new VercelUnifiedProvider("openai", "fixture-key", baseUrl, transport), settings);
+      expect(String(transport.mock.calls[0]?.[0])).toBe(sentTo);
+      expect(summary?.modelSettings?.pricing).toEqual(expected);
+      expect(summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([expected]);
+    });
+
+    it.each([
+      { served: "another endpoint", fallbackUrl: "https://fallback.invalid/v1", expected: unavailable },
+      { served: "the endpoint that listed the price", fallbackUrl: "https://primary.invalid/v1", expected: { source: "endpoint-report", rates: { inputPer1M: 1, outputPer1M: 2 } } },
+    ])("prices a fallback that keeps the primary's vendor and model by $served", async ({ fallbackUrl, expected }) => {
+      vi.useFakeTimers();
+      let signalPrimaryStarted!: () => void;
+      const primaryStarted = new Promise<void>((resolve) => { signalPrimaryStarted = resolve; });
+      const model = "gpt-3.5-turbo";
+      const primaryUrl = "https://primary.invalid/v1";
+      const settings = fakeLlmSettings({ provider: "openai", model });
+      settings.vendors.openai.baseUrl = primaryUrl;
+      settings.modelListCache = {
+        [llmModelListCacheKey("openai", primaryUrl)]: {
+          vendor: "openai", baseUrl: primaryUrl, endpoint: `${primaryUrl}/models`, models: [model],
+          modelEntries: [{ id: model, pricing: { prompt: "0.000001", completion: "0.000002" } }],
+          fetchedAt: "2026-10-13T00:00:00.000Z",
+        },
+      };
+      const primary: LLMProvider = {
+        vendor: "openai",
+        async *streamTurn() { signalPrimaryStarted(); yield { type: "error", error: "503 fixture unavailable", classification: "network" }; },
+      };
+      const transport = vi.fn<typeof fetch>(async () => chatAnswer(model));
+      const provider = new FallbackProvider(
+        primary, [{ provider: "openai", model, baseUrl: fallbackUrl }], () => "fixture-key",
+        (config) => new VercelUnifiedProvider(config.vendor, config.apiKey, config.baseUrl, transport),
+      );
+      const loop = createLoopWithRegistry(provider, new ToolRegistry(), {
+        settingsService: { get: () => settings, getSecret: () => "test-key" },
+      } as never);
+      let summary: TurnSummary | undefined;
+      const turn = loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { ...userKeyboardTurn() });
+      await Promise.race([primaryStarted, turn]);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect((await turn).text).toBe("answer");
+      expect(String(transport.mock.calls[0]?.[0])).toBe(`${fallbackUrl}/chat/completions`);
+      expect(summary).toMatchObject({ vendorProvider: "openai", vendorModel: model });
+      expect(summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([expected]);
+    });
   });
 
   it("omits primary route settings when a fallback keeps the same vendor and model", async () => {

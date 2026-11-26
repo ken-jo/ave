@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.ts";
 import { describe, it, expect, vi } from "vitest";
-import { fireEvent, render, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { StarredView } from "../StarredView.js";
 import { sessionRow } from "../../../../../test/renderer/mock-ave-api.js";
 
@@ -59,6 +59,52 @@ describe("StarredView", () => {
     expect(await findByText("일반 대화")).toBeTruthy();
     expect(queryByText("shared")).toBeNull();
     expect(queryByText("stale-general")).toBeNull();
+  });
+
+  it("shows loading then unknown cost when daily usage fails", async () => {
+    const now = new Date().toISOString();
+    let failDaily: (error: Error) => void = () => { throw new Error("Daily usage was not requested"); };
+    const getUsageRange = vi.fn(({ dateFrom, dateTo }: { dateFrom: string; dateTo: string }) =>
+      dateFrom === dateTo
+        ? new Promise((_resolve, reject) => { failDaily = reject; })
+        : Promise.resolve({ trend: [] }));
+    const getUsageDailySummary = vi.fn(async () => ({ ok: true, summary: "Summary" }));
+    const api = { getUsageRange, getUsageDailySummary } as unknown as Parameters<typeof StarredView>[0]["api"];
+    const { container, findByText } = render(
+      <StarredView api={api} starred={[]}
+        sessions={[sessionRow({ id: "active", modifiedAt: now, title: "Active conversation" })]}
+        currentSessionId="active" refreshStarred={vi.fn()} onJumpToSession={vi.fn()} onActivateHome={vi.fn()} />,
+    );
+
+    expect(container).not.toHaveTextContent("$0");
+    expect(await findByText(/로딩 중/)).toBeVisible();
+    expect(getUsageDailySummary).not.toHaveBeenCalled();
+    await act(async () => failDaily(new Error("offline")));
+    expect(await findByText(/비용 미정/)).toBeVisible();
+    expect(container).not.toHaveTextContent("$0");
+    await waitFor(() => expect(getUsageDailySummary).toHaveBeenCalledWith(expect.objectContaining({ usage: null })));
+  });
+
+  it.each([0, 120])("shows unknown cost for an incomplete range with %i readable tokens", async (totalTokens) => {
+    const now = new Date();
+    const today = { inputTokens: totalTokens, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens, cost: 0 };
+    const getUsageRange = vi.fn(async () => ({
+      today,
+      trend: totalTokens ? [{ date: hostDateKey(now), ...today }] : [],
+      auditIncomplete: true,
+    }));
+    const getUsageDailySummary = vi.fn(async () => ({ ok: true, summary: "Summary" }));
+    const api = { getUsageRange, getUsageDailySummary } as unknown as Parameters<typeof StarredView>[0]["api"];
+    const { container, findByText } = render(
+      <StarredView api={api} starred={[]}
+        sessions={[sessionRow({ id: "active", modifiedAt: now.toISOString(), title: "Active conversation" })]}
+        currentSessionId="active" refreshStarred={vi.fn()} onJumpToSession={vi.fn()} onActivateHome={vi.fn()} />,
+    );
+    expect(await findByText(new RegExp(`${totalTokens} / 0 · 비용 미정`))).toBeVisible();
+    expect(container).not.toHaveTextContent("$0");
+    await waitFor(() => expect(getUsageDailySummary).toHaveBeenCalledWith(expect.objectContaining({
+      usage: expect.objectContaining({ totalTokens, auditIncomplete: true }),
+    })));
   });
 
   it("renders an LLM-generated daily summary when the usage summary API is available", async () => {
@@ -143,7 +189,7 @@ describe("StarredView", () => {
           totalTokens: 1_000,
           cost: 0.01,
         }],
-        topConversations: range.dateFrom === range.dateTo
+        topConversationsByTokens: range.dateFrom === range.dateTo
           ? [{
               sessionId: "audit-only-session",
               turns: 2,

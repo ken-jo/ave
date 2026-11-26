@@ -67,7 +67,18 @@ function summaryWithInput(inputTokens = 100): ReturnType<typeof computeUsageSumm
   ], new Date("2026-07-04T12:00:00Z"));
 }
 
-it("uses recorded request prices after a pricing correction changes", () => {
+it("classifies label-only usage as unpriced in totals and projections", () => {
+  const summary = computeUsageSummary([turn({
+    route: "openai/gpt-5.4",
+    tokenUsage: { inputTokens: 100_000, outputTokens: 0 },
+  })], new Date());
+  for (const totals of [summary.today, summary.thisWeek, summary.thisMonth, ...summary.perModel, ...summary.perVendor, ...summary.trend, ...summary.topConversations]) {
+    expect(totals).toMatchObject({ cost: 0, unknownCostTurns: 1, legacyRouteUnrecordedTurns: 1 });
+  }
+  expect(computeMonthlyProjection(summary.trend)).toBeUndefined();
+});
+
+it("uses recorded request prices for historical usage", () => {
   const entries = [turn({
     route: "openai/gpt-5.4",
     usageByModel: [{
@@ -76,22 +87,22 @@ it("uses recorded request prices after a pricing correction changes", () => {
       pricing: { source: "user", rates: { inputPer1M: 1, outputPer1M: 0 } },
     }],
   })];
-  const summary = computeUsageSummary(entries, new Date(), [
-    { vendor: "openai", model: "gpt-5.4", inputPer1M: 10, outputPer1M: 0 },
-  ]);
+  const summary = computeUsageSummary(entries, new Date());
   expect(summary.today.cost).toBeCloseTo(0.1, 9);
   expect(summary.perModel[0].cost).toBeCloseTo(0.1, 9);
 });
 
-it("keeps a request recorded as unpriced unknown when the current catalog prices it", () => {
+it("keeps the recorded endpoint-price reason when the current catalog prices the model", () => {
   const summary = computeUsageSummary([turn({
     usageByModel: [{
       vendorProvider: "openai", vendorModel: "gpt-5.4",
       tokenUsage: { inputTokens: 100_000, outputTokens: 0 },
-      pricing: { source: "unknown" },
+      pricing: { source: "unknown", reason: "endpoint-price-unavailable" },
     }],
   })], new Date());
   expect(summary.today.unknownCostTurns).toBe(1);
+  expect(summary.today.endpointPriceUnavailableTurns).toBe(1);
+  expect(computeMonthlyProjection(summary.trend)).toBeUndefined();
 });
 
 it("uses the recorded primary price only for matching older request segments", () => {
@@ -102,8 +113,9 @@ it("uses the recorded primary price only for matching older request segments", (
       { vendorProvider: "openai", vendorModel: "gpt-5.4", tokenUsage: { inputTokens: 100_000, outputTokens: 0 } },
       { vendorProvider: "claude", vendorModel: "claude-sonnet-4-6", tokenUsage: { inputTokens: 100_000, outputTokens: 0 } },
     ],
-  })], new Date(), [{ vendor: "openai", model: "gpt-5.4", inputPer1M: 10, outputPer1M: 0 }]);
-  expect(summary.today.cost).toBeCloseTo(0.1 + 0.3, 9);
+  })], new Date());
+  expect(summary.today.cost).toBeCloseTo(0.1, 9);
+  expect(summary.today.legacyRouteUnrecordedTurns).toBe(1);
 });
 
 // Pin the timezone at module scope: every suite uses host-midnight bucket boundaries.
@@ -314,21 +326,24 @@ describe("usage-stats", () => {
     ]);
   });
 
-  it("computes cost using pricing table — Claude Sonnet $3/$15 per 1M", () => {
-    const entries = [turn({ tokenUsage: { inputTokens: 1_000_000, outputTokens: 1_000_000 } }),
-    ];
+  it("computes cost using the recorded primary price", () => {
+    const entries = [turn({
+      tokenUsage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
+      modelSettings: { pricing: { source: "model-catalog", rates: { inputPer1M: 3, outputPer1M: 15 } } },
+    })];
     const summary = computeUsageSummary(entries, new Date());
     expect(summary.perVendor[0].cost).toBeCloseTo(18, 5);
     expect(summary.perVendor[0].vendor).toBe("claude");
   });
 
-  it("groups by model and session, ranks topConversations by cost", () => {
+  it("groups by model and session and ranks by recorded spend", () => {
+    const modelSettings = { pricing: { source: "user" as const, rates: { inputPer1M: 3, outputPer1M: 15 } } };
     const entries: AuditTurnEntry[] = [
-      turn({ sessionId: "expensive", tokenUsage: { inputTokens: 2_000_000, outputTokens: 1_000_000 },
+      turn({ sessionId: "expensive", modelSettings, tokenUsage: { inputTokens: 2_000_000, outputTokens: 1_000_000 },
       }),
-      turn({ sessionId: "cheap", tokenUsage: { inputTokens: 1000, outputTokens: 500 },
+      turn({ sessionId: "cheap", modelSettings, tokenUsage: { inputTokens: 1000, outputTokens: 500 },
       }),
-      turn({ sessionId: "expensive", tokenUsage: { inputTokens: 500_000, outputTokens: 200_000 },
+      turn({ sessionId: "expensive", modelSettings, tokenUsage: { inputTokens: 500_000, outputTokens: 200_000 },
       }),
     ];
     const summary = computeUsageSummary(entries, new Date());
@@ -506,7 +521,7 @@ describe("usage-stats", () => {
     expect(summary.today.unknownCostTurns).toBe(1);
   });
 
-  it("prices an Azure deployment named for a model from the catalog's Azure entry", () => {
+  it("keeps label-only deployment usage unpriced", () => {
     const entries: AuditTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
@@ -522,8 +537,9 @@ describe("usage-stats", () => {
     ];
     const summary = computeUsageSummary(entries, new Date());
     expect(summary.perVendor[0].vendor).toBe("azure-foundry");
-    expect(summary.perVendor[0].cost).toBeCloseTo(0.008625, 9);
-    expect(summary.perVendor[0].unknownCostTurns ?? 0).toBe(0);
+    expect(summary.perVendor[0].unknownCostTurns).toBe(1);
+    expect(summary.perVendor[0].legacyRouteUnrecordedTurns).toBe(1);
+    expect(summary.perVendor[0].cost).toBe(0);
   });
 
   it("does not lend OpenAI's table price to an Azure deployment alias", () => {
@@ -627,7 +643,8 @@ describe("usage-stats", () => {
     ];
 
     const summary = computeUsageSummary(entries, new Date());
-    expect(summary.topConversations[0].turns).toBe(1);
+    expect(summary.topConversations).toEqual([]);
+    expect(summary.topConversationsByTokens[0].turns).toBe(1);
     expect(summary.perVendor.map((row) => row.vendor).sort()).toEqual(["claude", "openai",
     ]);
     expect(summary.perModel.map((row) => `${row.vendor}/${row.model}`).sort(),
@@ -640,7 +657,8 @@ describe("usage-stats", () => {
     ).toBe(11_000);
   });
 
-  it("prices OpenAI's long-context tier per provider request segment, not per Ave turn aggregate", () => {
+  it("selects a recorded long-context tier per request segment", () => {
+    const pricing = resolveModelPricing("openai", "gpt-5.4");
     const entries: AuditTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
@@ -655,11 +673,13 @@ describe("usage-stats", () => {
           {
             vendorProvider: "openai",
             vendorModel: "gpt-5.4",
+            pricing,
             tokenUsage: { inputTokens: 200_000, outputTokens: 0 },
           },
           {
             vendorProvider: "openai",
             vendorModel: "gpt-5.4",
+            pricing,
             tokenUsage: { inputTokens: 200_000, outputTokens: 0 },
           },
         ],
@@ -677,6 +697,7 @@ describe("usage-stats", () => {
         sessionId: "claude-cache-hot",
         type: "turn",
         route: "claude/claude-sonnet-4-6",
+        modelSettings: { pricing: { source: "model-catalog", rates: { inputPer1M: 3, outputPer1M: 15 } } },
         tokenUsage: {
           inputTokens: 1_700_000,
           outputTokens: 100_000,
@@ -720,7 +741,7 @@ describe("usage-stats", () => {
     const summary = computeUsageSummary(entries, new Date());
     expect(summary.perVendor[0].inputTokens).toBe(1_000_000);
     expect(summary.perVendor[0].totalTokens).toBe(1_800_000);
-    expect(summary.perVendor[0].cost).toBeCloseTo(5.4, 5);
+    expect(summary.perVendor[0]).toMatchObject({ cost: 0, unknownCostTurns: 1, legacyRouteUnrecordedTurns: 1 });
   });
 
   it("Anthropic billing-contract: cache reduces total cost vs uncached input", () => {
@@ -1124,7 +1145,7 @@ describe("usage summary cache wiring", () => {
     }
   });
 
-  it("recovers a usage summary after a corrupt archive is repaired", async () => {
+  it("marks a range with a corrupt archive incomplete and preserves readable usage", async () => {
     const home = mkdtempSync(join(tmpdir(), "usage-summary-cache-repair-"));
     const originalHome = process.env.AVE_HOME;
     try {
@@ -1141,14 +1162,20 @@ describe("usage summary cache wiring", () => {
         archive,
         gzipSync(Buffer.from(validRows, "utf-8")).subarray(0, -8),
       );
+      const readableRow = turn({
+        timestamp: "2026-07-04T02:00:00Z",
+        tokenUsage: { inputTokens: 200, outputTokens: 20 },
+      });
+      writeFileSync(join(auditDir, "2026-07-04.jsonl"), `${JSON.stringify(readableRow)}\n`, "utf-8");
 
-      const corrupt = await getUsageSummary(60, now);
+      const range = { dateFrom: "2026-07-04", dateTo: "2026-07-04" };
+      const corrupt = await getUsageRange(range, now);
       writeFileSync(archive, gzipSync(Buffer.from(validRows, "utf-8")));
-      const repaired = await getUsageSummary(60, now);
+      const repaired = await getUsageRange(range, now);
 
-      expect(corrupt.today.inputTokens).toBe(0);
-      expect(repaired.today.inputTokens).toBe(100);
-      expect(repaired.today.outputTokens).toBe(10);
+      expect(corrupt).toMatchObject({ auditIncomplete: true, today: { inputTokens: 200, outputTokens: 20 } });
+      expect(repaired).not.toHaveProperty("auditIncomplete");
+      expect(repaired.today).toMatchObject({ inputTokens: 300, outputTokens: 30 });
     } finally {
       if (originalHome === undefined) {
         delete process.env.AVE_HOME;
@@ -1196,7 +1223,7 @@ describe("usage summary cache wiring", () => {
     }
   });
 
-  it("recomputes a cached summary when the pricing override changes", async () => {
+  it("keeps cached legacy usage unpriced after a price correction", async () => {
     const home = mkdtempSync(join(tmpdir(), "usage-summary-cache-pricing-"));
     const originalHome = process.env.AVE_HOME;
     try {
@@ -1213,25 +1240,14 @@ describe("usage summary cache wiring", () => {
       );
       const now = new Date("2026-07-04T12:00:00Z");
 
-      const defaultPricing = await getUsageSummary(60, now);
-      const overrides = resolvePricingOverrides(undefined, {
-        AVE_PRICING_OVERRIDE: JSON.stringify({
-          claude: {
-            "claude-sonnet-4-6": {
-              inputPer1M: 100,
-              outputPer1M: 100,
-              contextWindow: 1_000_000,
-            },
-          },
-        }),
-      });
-      const overriddenPricing = await getUsageSummary(60, now, overrides);
-      const restoredPricing = await getUsageSummary(60, now);
+      const first = await getUsageSummary(60, now);
+      vi.stubEnv("AVE_PRICING_OVERRIDE", '{"claude":{"claude-sonnet-4-6":{"inputPer1M":100,"outputPer1M":100}}}');
+      const afterOverride = await getUsageSummary(60, now);
 
-      expect(overriddenPricing.today.cost).toBeGreaterThan(defaultPricing.today.cost);
-      expect(restoredPricing.today.cost).toBeCloseTo(defaultPricing.today.cost, 12);
+      expect(afterOverride.today).toEqual(first.today);
+      expect(afterOverride.today).toMatchObject({ cost: 0, legacyRouteUnrecordedTurns: 1 });
     } finally {
-      delete process.env.AVE_PRICING_OVERRIDE;
+      vi.unstubAllEnvs();
       if (originalHome === undefined) {
         delete process.env.AVE_HOME;
       } else {

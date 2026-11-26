@@ -11,7 +11,7 @@ import type { ProjectIdentity } from "../../../shared/project-identity.js";
 import { projectLabelForSession } from "../utils/insights-project-groups.js";
 import { CalendarFallback, LazyCalendar } from "./LazyCalendar.js";
 import { localDateKey, localDayStart, utcDateKey } from "../../../shared/local-date.js";
-import { formatCost, formatTokensExact } from "../../../lib/cost-format.js";
+import { formatTokensExact, formatUsageCost } from "../../../lib/cost-format.js";
 import { formatHhMm, formatMediumDateTime, formatMonthYear } from "../../../shared/format-time.js";
 import { InsightsUsageBreakdown } from "./InsightsUsageBreakdown.js";
 import { shortSessionId } from "../../../shared/session-lookup.js";
@@ -38,14 +38,7 @@ export interface StarredViewProps {
   onActivateHome: () => void;
 }
 
-interface UsageTotals {
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
-  totalTokens?: number;
-  cost?: number;
-}
+type UsageTotals = Partial<UsageSummaryShape["today"]> & Pick<UsageSummaryShape, "auditIncomplete">;
 
 interface DailyUsageResult {
   source: Partial<AveApi>["getUsageRange"];
@@ -122,10 +115,11 @@ function monthRange(date: Date): { monthKey: string; dateFrom: string; dateTo: s
   };
 }
 
-function usageForDate(summary: unknown, dateKey: string): UsageTotals | null {
-  const shaped = summary as { today?: UsageTotals; trend?: Array<UsageTotals & { date?: string }> } | null | undefined;
-  const trendForDate = shaped?.trend?.find((point) => point.date === dateKey);
-  return trendForDate ?? shaped?.today ?? null;
+function usageForDate(summary: UsageSummaryShape, dateKey: string): UsageTotals | null {
+  const trendForDate = summary?.trend?.find((point) => point.date === dateKey);
+  const usage = trendForDate ?? (dateKey === localDateKey(new Date()) ? summary?.today : undefined);
+  if (summary?.auditIncomplete) return { ...usage, auditIncomplete: true, cost: undefined };
+  return usage ?? null;
 }
 
 function usageTrendByDate(summary: unknown, year: number): Map<string, number> {
@@ -139,9 +133,8 @@ function usageTrendByDate(summary: unknown, year: number): Map<string, number> {
   return next;
 }
 
-function usageConversations(summary: unknown): UsageConversation[] {
-  const shaped = summary as { topConversations?: UsageConversation[] } | null | undefined;
-  return (shaped?.topConversations ?? []).filter((conversation) => Boolean(conversation.sessionId));
+function usageConversations(summary: UsageSummaryShape): UsageConversation[] {
+  return (summary?.topConversationsByTokens ?? []).filter((conversation) => Boolean(conversation.sessionId));
 }
 
 function buildYearHeatmap(year: number, usageByDate: Map<string, number>): HeatmapCell[] {
@@ -514,9 +507,12 @@ export function StarredView({
           </section>
           <section className="rounded-md border bg-background p-3">
             <h3 className="text-sm font-semibold text-foreground">{t("starredView.tokensTitle")}</h3>
-            <p className="mt-3 text-2xl font-semibold text-foreground">{formatTokensExact(dailyUsage?.totalTokens)}</p>
+            <p className="mt-3 text-2xl font-semibold text-foreground">
+              {dailyUsage ? formatTokensExact(dailyUsage.totalTokens) : "—"}
+            </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              {formatTokensExact(dailyUsage?.inputTokens)} / {formatTokensExact(dailyUsage?.outputTokens)} · {formatCost(dailyUsage?.cost ?? 0)}
+              {dailyUsage && `${formatTokensExact(dailyUsage.inputTokens)} / ${formatTokensExact(dailyUsage.outputTokens)} · `}
+              {dailyUsageReady ? formatUsageCost(dailyUsage ?? {}) : t("usageDashboard.loading")}
             </p>
           </section>
         </div>

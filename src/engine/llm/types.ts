@@ -451,6 +451,12 @@ export interface TokenUsage {
    * Priced apart only where the model's rates state a reasoning price.
    */
   reasoningTokens?: number;
+  /**
+   * Dispatch evidence for pricing: the address this request was sent to (origin and
+   * path, no query), set by the transport that sent it. Engine-internal: the request's
+   * recorded price is resolved from it, and it is never persisted or sent to a window.
+   */
+  servedRequestUrl?: string;
 }
 
 export type TokenUsageByModel = ModelUsageSegment<LLMVendor>;

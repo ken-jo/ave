@@ -31,6 +31,7 @@ function writeUsageAudit(aveHome: string): void {
         {
           vendorProvider: "claude",
           vendorModel: "claude-sonnet-4-6",
+          pricing: { source: "model-catalog", rates: { inputPer1M: 3, outputPer1M: 15 } },
           tokenUsage: {
             inputTokens: 30_000,
             outputTokens: 5000,
@@ -41,6 +42,7 @@ function writeUsageAudit(aveHome: string): void {
         {
           vendorProvider: "openai",
           vendorModel: "gpt-5.4-mini",
+          pricing: { source: "model-catalog", rates: { inputPer1M: 0.75, outputPer1M: 4.5 } },
           tokenUsage: {
             inputTokens: 23_000,
             outputTokens: 1300,
@@ -178,18 +180,10 @@ test.describe("usage dashboard token cost e2e", () => {
 
         await expect(unknownRow).toContainText("unknown");
         await expect(unknownRow).toContainText(
-          t("usageDashboard.unknownCostTurns", { base: "$0", turns: "1" }),
+          t("usageDashboard.unknownCostTurns", { base: t("be_costEstimator.costUnknown"), turns: "1" }),
         );
-        // Match the catalog suffix after the dynamic base-cost placeholder.
-        const unknownIncludedSuffix = t("usageDashboard.unknownCostIncluded", {
-          base: "",
-        })
-          .split("+")
-          .pop()!
-          .trim();
-        await expect(
-          settingsPage.getByText(unknownIncludedSuffix).first(),
-        ).toBeVisible();
+        await expect(unknownRow).toContainText(t("pricing.legacyRouteUnrecorded"));
+        await expect(settingsPage.getByText(t("usageDashboard.unpricedRequestsExcluded", { count: 1 }))).toBeVisible();
 
         await expect(
           settingsPage.getByText("claude-sonnet-4-6"),
