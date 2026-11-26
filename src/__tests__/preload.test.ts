@@ -803,14 +803,14 @@ describe("preload — plugin webview asset URLs", () => {
   it("forwards workflow starts and confirmations without sampled activation when no action was captured", async () => {
     const api = await loadAveApi();
     const run = api.runWorkBoardItem as AveApi["runWorkBoardItem"];
-    const confirm = api.confirmWorkflowTemplate as AveApi["confirmWorkflowTemplate"];
+    const confirmTemplate = api.confirmWorkflowTemplate as AveApi["confirmWorkflowTemplate"];
     const options = { template: { templateId: "report", version: 2, graphHash: "a".repeat(64) } };
     const review = { expectedGraphHash: options.template.graphHash, expectedDraftRevision: "draft" };
     mockUserActivation.isActive = true;
     try {
       await run(8, options);
       expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.run, 8, options);
-      await confirm("report", review);
+      await confirmTemplate("report", review);
       expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "report", review);
     } finally {
       mockUserActivation.isActive = false;

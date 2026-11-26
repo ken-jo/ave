@@ -27,7 +27,7 @@ vi.mock("../../window-fanout.js", () => ({ broadcastToAppWindows: vi.fn() }));
 import { broadcastToAppWindows } from "../../window-fanout.js";
 const graph = { name: "Template", scope: { kind: "all" }, stages: [{ id: "a", name: "A", goal: "Read", inputs: [], toolScope: "read", allowSubAgents: false, gate: { type: "human" } }], edges: [] };
 const gesture = { inputOrigin: "user-keyboard", userActivation: true };
-const confirm = async (event: ReturnType<typeof setup>["event"], id: string, request: unknown) =>
+const confirmTemplateWithGesture = async (event: ReturnType<typeof setup>["event"], id: string, request: unknown) =>
   handler(WORK_BOARD.templateConfirm)(event, id, request, await captureWorkBoardTestGesture(handler, event, WORK_BOARD.templateConfirm, id, request));
 function setup(extra: Partial<IpcDeps> = {}) {
   const sender = workBoardTestSender(); const window = { isDestroyed: () => false, webContents: sender };
@@ -124,7 +124,7 @@ it("saves a new version only through a matching user confirmation", async () => 
     const { proposalId, graphHash } = JSON.parse((await propose(reportWithEnvelope)).output);
     const decision = { expectedGraphHash: graphHash, expectedDraftRevision: proposalId };
     const confirmProposal = handler(WORK_BOARD.templateConfirm);
-    expect(await confirm(event, proposalId, { ...decision, expectedGraphHash: "a".repeat(64) }))
+    expect(await confirmTemplateWithGesture(event, proposalId, { ...decision, expectedGraphHash: "a".repeat(64) }))
       .toEqual({ ok: false, error: "stale-draft" });
     expect(await store.list()).toEqual([]);
     expect(await confirmProposal(event, proposalId, decision)).toEqual({ ok: false, error: "user-gesture-required" });
@@ -231,7 +231,7 @@ it("evicts the oldest proposal upon exceeding 16 in one session", async () => {
     for (const { proposalId } of retained) {
       expect(await get(event, proposalId)).toMatchObject({ ok: true, value: { id: proposalId } });
     }
-    expect(await confirm(event, oldest.proposalId, {
+    expect(await confirmTemplateWithGesture(event, oldest.proposalId, {
       expectedGraphHash: oldest.graphHash, expectedDraftRevision: oldest.proposalId,
     })).toEqual({ ok: false, error: "no-draft" });
     await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
@@ -246,7 +246,7 @@ it("keeps an open proposal confirmable when another session exceeds its cap", as
     for (let index = 0; index < 17; index++) {
       expect((await propose(reportDraft, { sessionId: "another-session" })).isError).toBe(false);
     }
-    expect(await confirm(event, proposalId, {
+    expect(await confirmTemplateWithGesture(event, proposalId, {
       expectedGraphHash: graphHash, expectedDraftRevision: proposalId,
     })).toMatchObject({ ok: true, value: { version: 1, graphHash } });
   });
@@ -258,7 +258,7 @@ it("returns no-draft when confirming a proposal cleared by a restart", async () 
     expect(result.isError).toBe(false);
     const { proposalId, graphHash } = JSON.parse(result.output);
     const { event } = setup({ workflowTemplateStore: new WorkflowTemplateStore(path) });
-    expect(await confirm(event, proposalId, {
+    expect(await confirmTemplateWithGesture(event, proposalId, {
       expectedGraphHash: graphHash, expectedDraftRevision: proposalId,
     })).toEqual({ ok: false, error: "no-draft" });
     await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
@@ -285,13 +285,13 @@ it("requires a fresh local owner gesture for confirmation", async () => {
   expect(await handler(WORK_BOARD.templateConfirm)({ ...event, senderFrame: {} }, "t", request, gesture)).toEqual({ ok: false, error: "unauthorized-frame" });
   expect(await handler(WORK_BOARD.templateConfirm)(event, "t", request, gesture)).toEqual({ ok: false, error: "user-gesture-required" });
   expect(store.confirmDraft).not.toHaveBeenCalled();
-  expect(await confirm(event, "t", request)).toEqual({ ok: true, value: {} });
+  expect(await confirmTemplateWithGesture(event, "t", request)).toEqual({ ok: true, value: {} });
   expect(store.confirmDraft).toHaveBeenCalledWith("t", request, { who: "user", origin: "local-desktop" });
 });
 it("broadcasts changed for successful draft, confirmation and archive writes", async () => {
   const { event } = setup();
   await handler(WORK_BOARD.templateDraft)(event, null, graph);
-  await confirm(event, "t", { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" });
+  await confirmTemplateWithGesture(event, "t", { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" });
   await handler(WORK_BOARD.templateArchive)(event, "t");
   expect(vi.mocked(broadcastToAppWindows).mock.calls.map(c => c[1])).toEqual([WORK_BOARD.templatesChanged, WORK_BOARD.templatesChanged, WORK_BOARD.templatesChanged]);
 });
@@ -317,7 +317,7 @@ it("hides unauthorized project templates and refuses project drafts", async () =
 it("revalidates a draft project before confirmation", async () => {
   const { event, store } = setup();
   store.get.mockResolvedValueOnce({ template: { id: "t", scope: { kind: "all" } }, draft: { scope: { kind: "project", projectRoot: "/private" } } } as never);
-  expect(await confirm(event, "t", { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" })).toEqual({ ok: false, error: "scope-not-authorised" });
+  expect(await confirmTemplateWithGesture(event, "t", { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" })).toEqual({ ok: false, error: "scope-not-authorised" });
   expect(store.confirmDraft).not.toHaveBeenCalled();
 });
 
@@ -352,7 +352,7 @@ it("requires detach gesture and refuses renderer-supplied host proofs", async ()
 
 it("returns the typed confirmation refusal list over IPC", async () => {
   const { WorkflowTemplateError } = await import("../../../work-board/template-graph.js"); const { store, event } = setup(); store.confirmDraft.mockRejectedValueOnce(new WorkflowTemplateError("envelope-refused", "Stage confirmation refused", ["outputs-need-human-gate"]));
-  expect(await confirm(event, "t", { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" })).toEqual({ ok: false, error: "envelope-refused", refusals: ["outputs-need-human-gate"] });
+  expect(await confirmTemplateWithGesture(event, "t", { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" })).toEqual({ ok: false, error: "envelope-refused", refusals: ["outputs-need-human-gate"] });
 });
 
 it("stores the authorized project root instead of its renderer alias", async () => {
