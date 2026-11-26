@@ -503,6 +503,36 @@ export function answeredRecordForAction(
   return record;
 }
 
+/** A decision returned for a card it does not answer. The host refuses the call; nobody's answer is recorded. */
+export class ApprovalReceiptError extends Error {
+  override readonly name = "ApprovalReceiptError";
+}
+
+/** The card a returned decision has to answer: its exact request, the action it names and the call it is bound to. */
+export interface ExpectedApprovalAnswer {
+  readonly requestId: string;
+  readonly toolName: string;
+  readonly toolUseId: string | undefined;
+}
+
+/** Admit the decision a card's ask returned, before anything judges, saves or acts on it. An answer the gate recorded must be
+ * the answer to this request, for this action and this call, in the direction the decision states. A deny without a record is
+ * the host's own refusal and passes; an allow without one breaks the gate's contract. */
+export function admitApprovalAnswer(decision: ApprovalDecision, expected: ExpectedApprovalAnswer): void {
+  const handle = answeredDecisionHandles.get(decision);
+  if (handle === undefined) {
+    if (decision.choice.startsWith("allow")) throw new ApprovalReceiptError("approval: an answered decision carries no record of who answered");
+    return;
+  }
+  const record = answeredProvenanceRecord(handle);
+  if (record.toolName !== expected.toolName || record.toolUseId !== expected.toolUseId) {
+    throw new ApprovalReceiptError(`approval: the answer to ${record.requestId} does not settle this ${record.decision} of ${expected.toolName}`);
+  }
+  if (record.requestId !== expected.requestId || decision.requestId !== expected.requestId || record.choice !== decision.choice) {
+    throw new ApprovalReceiptError("Approval answer does not match the pending request");
+  }
+}
+
 /** The gate's handle for a decision a caller is treating as answered. A missing handle breaks the gate's contract. */
 export function answeredApprovalProvenance(decision: ApprovalDecision): AnsweredProvenance {
   const handle = answeredDecisionHandles.get(decision);

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
+import { answeredApprovalDecision } from "../../__tests__/support/answering-approval-gate.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
@@ -689,6 +690,43 @@ describe("one terminal row per surface invocation", () => {
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
       expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
+    });
+  });
+
+  // The gate's own record for this very call, of an answer to a card it never raised for it.
+  const foreignAnswer = (choice: "allow-once" | "deny-once") => () => answeredApprovalDecision({ choice }, "desk", "terminal_run", "late-terminal-command");
+  const hostIntegrityRow = [expect.objectContaining({ decision: "deny", trustOrigin: "unknown",
+    denyReasons: [expect.objectContaining({ reason: expect.stringContaining("Approval answer does not match the pending request") })] })];
+
+  it.each(["allow-once", "deny-once"] as const)("refuses a review fallback %s the gate settled for another card as the host's", async choice => {
+    const f = await fixture({ exactRule: false, holdFinalizer: false, surfaceChoice: "auto", logicalReview: inconsistent });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "fallback-foreign-turn" }, async () => {
+      const pending = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      f.request.mockImplementationOnce(foreignAnswer(choice));
+      f.approve(f.cards[0], true);
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(f.cards).toHaveLength(1);
+      expect(terminalRows(f.audit)).toEqual(hostIntegrityRow);
+    });
+  });
+
+  it.each(["allow-once", "deny-once"] as const)("refuses a late %s the gate settled for another card as the host's", async choice => {
+    const f = await fixture({ surfaceChoice: "auto" });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "late-foreign-turn" }, async () => {
+      const pending = f.run();
+      await f.reached;
+      await f.pause();
+      f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "ask");
+      f.request.mockImplementationOnce(foreignAnswer(choice));
+      f.release();
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(f.cards).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual(hostIntegrityRow);
     });
   });
 

@@ -1,7 +1,7 @@
 // Actual effects retain descriptor scope, common policy ordering and effect-before-execution enforcement.
 import { registerRunSession, __resetRunGrantsForTest } from "../run-grants.js";
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { randomUUID } from "node:crypto";
 import { AsyncResource } from "node:async_hooks";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
@@ -1672,7 +1672,8 @@ describe("an effect card's answer is judged by the owner", () => {
     const cards: Array<{ request: ApprovalRequestInput; answer: (choice: ApprovalChoice, requestId?: string) => void }> = [];
     const recordStaleAnswer = vi.fn();
     const gate = { recordStaleAnswer, requestAndWait: (request: ApprovalRequestInput) => new Promise<ApprovalDecision>((resolve) => {
-      cards.push({ request, answer: (choice, requestId = request.id) => resolve({ requestId, choice }) });
+      cards.push({ request, answer: (choice, requestId = request.id) =>
+        void answeredApprovalDecision({ requestId, choice }, "desk", request.toolName, request.invocationToolUseId).then(resolve) });
     }) } as unknown as ApprovalGate;
     return { gate, cards, recordStaleAnswer };
   }
@@ -1724,7 +1725,7 @@ describe("an effect card's answer is judged by the owner", () => {
     void first.catch(() => undefined);
     await vi.waitFor(() => expect(cards).toHaveLength(2));
     cards[0].answer("allow-always", cards[1].request.id);
-    await expect(first).rejects.toThrow("Permission policy changed during effect approval");
+    await expect(first).rejects.toThrow("Approval answer does not match the pending request");
     expect(log).toEqual([]);
     cards[1].answer("allow-once");
     await second;

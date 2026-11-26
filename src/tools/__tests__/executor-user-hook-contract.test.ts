@@ -47,7 +47,7 @@ function setup(event: string, errored = false, denied = false, targetAsks = fals
   const parsed = parseHookConfig({ hooks: { [event]: [{ hooks: [{ type: "command", command: options?.command ?? ["node", COMMAND, hookAction] }] }] } });
   bindHookConfigPaths(parsed.entries, dirname(COMMAND));
   manager.setTrustedRegistry([], parsed.entries);
-  const targetRequestAndWait = answeringRequestAndWait(() => ({ requestId: "target", choice: "deny-once" as const }));
+  const targetRequestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" as const }));
   const gate = { requestAndWait: targetRequestAndWait } as unknown as ApprovalGate;
   const executor = new ToolExecutor(registry, undefined, permissions, undefined, gate, manager, options?.audit);
   return { execute, authorizeCommand, requestAndWait, targetRequestAndWait, permissions, commitStagedAllowSaves,

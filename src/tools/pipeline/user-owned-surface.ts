@@ -2,7 +2,7 @@ import { t } from "../../i18n/runtime.js";
 import { bindPendingAnswerRequest, openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, type StandingAnswer, type StandingAnswerUse } from "../../permissions/pending-answer-policy.js";
 import { randomUUID } from "node:crypto";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
-import { HOST_PROVENANCE, isHostApprovalRejectedDecision, isHostApprovalTimeoutDecision, RULE_PROVENANCE, type HostProvenance, type RuleProvenance } from "../../permissions/approval-gate.js";
+import { admitApprovalAnswer, HOST_PROVENANCE, isHostApprovalRejectedDecision, isHostApprovalTimeoutDecision, RULE_PROVENANCE, type HostProvenance, type RuleProvenance } from "../../permissions/approval-gate.js";
 import type { PermissionCheckResult, PermissionManager } from "../../permissions/permission-manager.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { abortSupersedesApprovalDecision, isSettledRefusal, refusal } from "./approval-outcome.js";
@@ -99,6 +99,8 @@ async function resolveSurface(input: SurfaceInput): Promise<SurfaceResolution> {
     ...(permission.forceModal ? { forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false } : {}),
   };
   decision = await gate.requestAndWait(bindPendingAnswerRequest(fallback, card));
+  // A refused answer ends as the caller's host failure, under the first card's decision.
+  admitApprovalAnswer(decision, { requestId: fallbackId, toolName: fallback.toolName, toolUseId: fallback.invocationToolUseId });
   if (abortSupersedesApprovalDecision(request.abortSignal, decision)) return { permission, decision, answer: undefined };
   if (isSettledRefusal(decision)) {
     return isHostApprovalRejectedDecision(decision) || isHostApprovalTimeoutDecision(decision)

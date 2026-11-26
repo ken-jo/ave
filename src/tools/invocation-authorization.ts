@@ -12,7 +12,7 @@ import {
   type PermissionCheckContext,
   type PermissionCheckResult,
 } from "../permissions/permission-manager.js";
-import { answeredApprovalProvenance, answeredRecordForAction, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalRejectedDecision, RULE_PROVENANCE, type ApprovalDecision, type LinkedApprovalTarget } from "../permissions/approval-gate.js";
+import { admitApprovalAnswer, answeredApprovalProvenance, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalRejectedDecision, RULE_PROVENANCE, type ApprovalDecision, type LinkedApprovalTarget } from "../permissions/approval-gate.js";
 import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import type {
   HostShellExecutionPlan,
@@ -1210,7 +1210,8 @@ export async function authorizeToolInvocation(
             durationMs,
           });
         }
-
+        // Outside the gate-error handling above: an answer to another card ends this call as the host's own failure.
+        admitApprovalAnswer(decision, { requestId: approvalRequestId, toolName: toolUse.name, toolUseId: toolUse.id });
 
         // A turn the user stopped did not deny anything. The gate answers
         // deny-once when it unparks on the abort, which is the correct
@@ -1222,11 +1223,6 @@ export async function authorizeToolInvocation(
           return withHostShellExecutionPlan(
             await returnUserAbort(abortDeps(finalInput)),
           );
-        }
-
-        if (!isSettledRefusal(decision)) {
-          const receipt = answeredRecordForAction(answeredApprovalProvenance(decision), "allow", toolUse.name, toolUse.id);
-          if (receipt.requestId !== approvalRequestId) throw new Error("Approval answer does not match the pending request");
         }
 
         // This is intentionally immediately after the local decision. A P2

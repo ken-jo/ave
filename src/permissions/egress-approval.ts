@@ -5,10 +5,12 @@ import type { EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
 import { remoteControllerOriginOf } from "../shared/chat-origin.js";
+import { errorMessage } from "../shared/error-message.js";
 import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { canonicalRuleSpecifier } from "./rules/rule-specifier.js";
 import {
+  admitApprovalAnswer,
   isHostApprovalRejectedDecision,
   isHostApprovalTimeoutDecision,
   type ApprovalGate,
@@ -156,6 +158,11 @@ export function createApprovalGateEgressRequester(
       ...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
       ...(request.abortSignal === undefined ? {} : { abortSignal: request.abortSignal }),
     }, card));
+    try {
+      admitApprovalAnswer(decision, { requestId, toolName, toolUseId: undefined });
+    } catch (error) {
+      return { allow: false, reason: errorMessage(error), recheckRefusal: { kind: "recheck-failed" } };
+    }
     if (!terminal && decision.rememberPattern === NO_APPROVER_MESSAGE) { request.onNoApprover?.(); return { allow: false, reason: NO_APPROVER_MESSAGE }; }
     if (decision.choice === "allow-once" && decision.egressScope !== undefined && request.scopes.includes(decision.egressScope)) {
       if (forced && decision.egressScope !== "once") return { allow: false, reason: "A forced network approval is valid for one connection only." };

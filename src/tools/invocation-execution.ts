@@ -7,7 +7,7 @@ import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pi
 import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
 import { checkReplayRootBinding, type ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { attachSandboxBlock, sandboxBlockForResult, type SandboxBlock } from "../shared/sandbox-block.js";
-import { answeredApprovalProvenance, answeredRecordForAction, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalRejectedDecision, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision } from "../permissions/approval-gate.js";
+import { admitApprovalAnswer, answeredApprovalProvenance, answeredRecordForAction, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalRejectedDecision, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision } from "../permissions/approval-gate.js";
 import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
@@ -1195,6 +1195,7 @@ export async function executeAuthorizedToolInvocation(
       () => context.checkCurrentPermission?.() ?? refusal(policyChanged, RULE_PROVENANCE), "stale-reasked",
       { gate: services.approvalGate!, requestId: liveRequest.id, action: cardAction, uses: ["rule-save", ...answerUses] }) : undefined;
     let decision = await services.approvalGate!.requestAndWait(bindPendingAnswerRequest(liveRequest, card));
+    admitApprovalAnswer(decision, { requestId: liveRequest.id, toolName: toolUse.name, toolUseId: toolUse.id });
     lateApprovalDecision = decision;
     if (abortSupersedesApprovalDecision(abortSignal, decision)) abortSignal?.throwIfAborted();
     // A settled refusal is terminal before the refreshed policy is consulted.

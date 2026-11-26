@@ -2,9 +2,10 @@ import { bindPendingAnswerRequest, openPendingAnswerCard, personAnswerStands, sa
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf, type RemoteControllerAuthority } from "../shared/chat-origin.js";
 // Actual host effects enter the common permission pipeline before recording and execution.
 // Authorize before recording and execution; network audit also records denied attempts. Invalid input snapshots never reach implementation.
+import { errorMessage } from "../shared/error-message.js";
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { ApprovalGate, ApprovalChoice } from "./approval-gate.js";
+import { admitApprovalAnswer, type ApprovalGate, type ApprovalChoice } from "./approval-gate.js";
 import type { PermissionCheckContext, PermissionCheckResult, PermissionManager } from "./permission-manager.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
@@ -487,6 +488,12 @@ export async function gateMutatingEffect(params: {
     ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
     ...(permission.reviewer?.verdict ? { reviewerVerdict: permission.reviewer.verdict } : {}),
   }, card));
+  try {
+    admitApprovalAnswer(decision, { requestId, toolName: ctx.toolName, toolUseId: undefined });
+  } catch (error) {
+    approvalRefusalLatch.get(ctx)?.({ kind: "recheck-failed", reason: errorMessage(error) });
+    throw error;
+  }
 
   ctx.abortSignal?.throwIfAborted();
   if (!await refreshRemoteControllerBoundToSession(ctx.permissionContext?.remoteControllerAuthority, ctx.sessionId)) throw new Error("remote-controller-revoked");

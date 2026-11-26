@@ -253,11 +253,11 @@ describe("terminal tool telemetry", () => {
     const probe = await setup(source, { disarmChain: true });
     try {
       probe.ledger.beginToolInvocationAuditShutdown();
-      const error = source === "rule" ? "permission audit chain is not initialized" : /does not settle this deny/;
-      await expect(probe.run()).rejects.toThrow(error);
+      const sealLost = "permission audit chain is not initialized";
+      await expect(probe.run()).rejects.toThrow(source === "rule" ? sealLost : /does not settle this deny/);
       await expect(probe.ledger.closeToolInvocationAudit(() => probe.audit.close())).rejects.toMatchObject({
         message: "shutdown invocation audit failed",
-        cause: expect.objectContaining({ message: expect.stringMatching(error) }),
+        cause: expect.objectContaining({ message: sealLost }),
       });
       expect(probe.rows()).toEqual([]);
       expect(probe.denials()).toEqual([]);
@@ -265,7 +265,7 @@ describe("terminal tool telemetry", () => {
       const calls = existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean)
         .map((line) => JSON.parse(line) as AuditEntry).filter((entry) => entry.type === "tool_call") : [];
       expect(calls).toEqual([expect.objectContaining({
-        output: expect.stringMatching(source === "rule" ? /denial_probe/ : /the terminal row failed its integrity check/),
+        output: expect.stringMatching(source === "rule" ? /denial_probe/ : /does not settle this deny/),
         toolCalls: [expect.objectContaining({ toolUseId: "denied-call", isError: true, permissionDecision: "deny", permissionAuditChainUnavailable: true })],
       })]);
     } finally {
@@ -289,7 +289,7 @@ describe("terminal tool telemetry", () => {
       });
       if (source === "rule") await expect(probe.run()).resolves.toMatchObject([{ is_error: true }]);
       else await expect(probe.run()).rejects.toThrow(/does not settle this deny/);
-      await expectOneDenial(probe, source === "rule" ? TOOL : /the terminal row failed its integrity check/);
+      await expectOneDenial(probe, source === "rule" ? TOOL : /does not settle this deny/);
       expect(order).toEqual(["general", "permission"]);
     } finally {
       await probe.audit.close();
@@ -318,7 +318,7 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
     ["human", "user denied approval request"],
     ["hook-mutation", "Hook input mutation could not safely restart permission classification"],
     ["host", /^the invocation failed: approval: the answer to .* does not settle this allow of denial_probe$/],
-    ["integrity", /^the terminal row failed its integrity check: approval: the answer to .* does not settle this deny of denial_probe$/],
+    ["integrity", /^the invocation failed: approval: the answer to .* does not settle this deny of denial_probe$/],
   ] as const)("deny source %s: one row, one event", async (source, reason) => {
     await run(source, (probe) => expectOneDenial(probe, reason));
   });

@@ -8,7 +8,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, unlinkSync } from "
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { t } from "../../i18n/runtime.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -182,6 +182,15 @@ describe("hook command permission admission", () => {
     }));
     expect(await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand }))
       .toMatchObject({ decision: "deny", rawStdout: "", reason: expect.stringContaining("hook command denied") });
+  });
+
+  it.each(["allow-once", "deny-once"] as const)("refuses a %s the gate settled for another card as the host's failure", async (choice) => {
+    const p = policy("allow-once");
+    p.permissionManager.setMode("strict");
+    p.requestAndWait.mockImplementationOnce(async () => answeredApprovalDecision({ choice }, "desk", "bash"));
+    expect(await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand })).toMatchObject({
+      decision: "deny", rawStdout: "", reason: "hook command denied: Approval answer does not match the pending request", commandAdmissionFailure: "recheck-failed",
+    });
   });
 
   it.each([true, false])("honors eligible prefix rules on the actual shell route (sandboxed %s)", async (active) => {

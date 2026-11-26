@@ -73,7 +73,7 @@ import {
   refreshApprovalPersistence,
 } from "../permissions/approval-persistence-guard.js";
 import { isRationaleEligible, RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
-import { answeredApprovalProvenance, approvalReasonFields, approvalTargetFor, HOST_PROVENANCE, isAnsweredApprovalDenial, isHostApprovalCancelledDecision, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision, type DecisionProvenance } from "../permissions/approval-gate.js";
+import { admitApprovalAnswer, answeredApprovalProvenance, approvalReasonFields, approvalTargetFor, HOST_PROVENANCE, isAnsweredApprovalDenial, isHostApprovalCancelledDecision, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision, type DecisionProvenance } from "../permissions/approval-gate.js";
 import { answeredPermission, approvalFailureOutcome as getApprovalFailureOutcome, hostRefusalOfApproval, hostShutdownDenial, isSelectedRefusal, refusal, userAbortRefusal } from "./pipeline/approval-outcome.js";
 import {
   buildPermissionEvaluationContext,
@@ -1956,7 +1956,7 @@ async function runToolInvocationAttempt(
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, dirLayerResult, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
         }
-
+        admitApprovalAnswer(decision, { requestId: approvalRequest.id, toolName: toolUse.name, toolUseId: toolUse.id });
 
         // Keep a settled refusal even if Stop overtakes the runner's continuation.
         if (decision.choice.startsWith("deny")) return finishDirectoryDenial(decision);

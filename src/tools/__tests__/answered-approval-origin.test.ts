@@ -205,18 +205,41 @@ describe("the answerer contract", () => {
     })]);
   });
 
-  it("ends a selected deny whose record fails its integrity check with the host's own refusal row", async () => {
-    const requestAndWait = vi.fn(async (request: ApprovalRequestInput) =>
-      answeredApprovalDecision({ requestId: request.id, choice: "deny-once" }, "desk", request.toolName, "other-invocation"));
+  it.each([
+    { substitution: "another invocation", choice: "deny-once", foreignToolUseId: "other-invocation", reason: "does not settle this deny of write_file" },
+    { substitution: "another invocation", choice: "deny-always", foreignToolUseId: "other-invocation", reason: "does not settle this deny of write_file" },
+    { substitution: "another card", choice: "deny-always", foreignToolUseId: "foreign-deny", reason: "Approval answer does not match the pending request" },
+  ] as const)("refuses a $choice the gate settled for $substitution before it is selected or remembered", async ({ choice, foreignToolUseId, reason }) => {
+    const requestAndWait = vi.fn(async () => answeredApprovalDecision({ choice }, "desk", "write_file", foreignToolUseId));
+    const remembered = vi.spyOn(manager, "addAlwaysDeniedPersist");
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
-    await executor.executeAll([{ id: "integrity-deny", name: "write_file", input: { path: join(project, "integrity.txt"), content: "x" } }], {
+    await executor.executeAll([{ id: "foreign-deny", name: "write_file", input: { path: join(project, "foreign-deny.txt"), content: "x" } }], {
       sessionId: randomUUID(), executionCwd: project,
       permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
     }).catch(() => undefined);
-    await vi.waitFor(async () => expect(await ledger("integrity-deny")).toEqual([expect.objectContaining({
-      decision: "deny", trustOrigin: "unknown",
-      denyReasons: [expect.objectContaining({ reason: expect.stringContaining("the terminal row failed its integrity check") })],
+    await vi.waitFor(async () => expect(await ledger("foreign-deny")).toEqual([expect.objectContaining({
+      decision: "deny", trustOrigin: "unknown", denyReasons: [expect.objectContaining({ reason: expect.stringContaining(reason) })],
     })]));
+    expect(remembered).not.toHaveBeenCalled();
+  });
+
+  it.each(["allow-session", "deny-once"] as const)("refuses an outside-directory %s the gate settled for another card before a grant or the person's row", async choice => {
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    const requestAndWait = vi.fn(async () => answeredApprovalDecision({ choice }, "desk", "write_file", "foreign-directory"));
+    const [onTurnDirectoryGrant, onSessionDirectoryGrant] = [vi.fn(), vi.fn()];
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    await executor.executeAll([{ id: "foreign-directory", name: "write_file", input: { path: join(outside, "foreign.txt"), content: "x" } }], {
+      sessionId: randomUUID(), executionCwd: project,
+      permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project], onTurnDirectoryGrant, onSessionDirectoryGrant },
+    }).catch(() => undefined);
+    expect(requestAndWait.mock.calls.map(([request]) => (request as ApprovalRequestInput).kind)).toEqual(["out-of-allowed-dir"]);
+    await vi.waitFor(async () => expect((await auditRows()).filter(row => row.toolUseId === "foreign-directory" && row.decision !== "ask")).toEqual([expect.objectContaining({
+      decision: "deny", trustOrigin: "unknown",
+      denyReasons: [expect.objectContaining({ reason: expect.stringContaining("Approval answer does not match the pending request") })],
+    })]));
+    expect(existsSync(join(outside, "foreign.txt"))).toBe(false);
+    expect([onTurnDirectoryGrant, onSessionDirectoryGrant].flatMap(grant => grant.mock.calls)).toEqual([]);
   });
 
   it("tells a host refusal from an allow without a record", () => {

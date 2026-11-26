@@ -1,7 +1,7 @@
 // The egress ask on the approval dock: the `egress-host` request shape the gate accepts, the answers it honours (desktop window, allow-once, a scope the card offered) and how the requester maps them back (egress-approval.ts).
 import { registerRunSession, __resetRunGrantsForTest } from "../run-grants.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -433,6 +433,14 @@ describe("shell egress human fallback termination", () => {
     }) };
     await expect(createRequester(gate, permissionManager)(egressRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied, humanDenied: true });
     expect(permissionManager.getPolicyEpoch()).not.toBe(before);
+  });
+
+  it.each(["allow-once", "deny-once"] as const)("refuses a %s the gate settled for another card as a host failure, never as the person's answer", async (choice) => {
+    const request = egressRequest();
+    const gate = { requestAndWait: vi.fn(async () => answeredApprovalDecision({ choice, ...(choice === "allow-once" ? { egressScope: "once" as const } : {}) }, "desk", request.toolName)) };
+    await expect(createRequester(gate, permissionManager)(request)).resolves.toEqual({
+      allow: false, reason: "Approval answer does not match the pending request", recheckRefusal: { kind: "recheck-failed" },
+    });
   });
 
   it("reports a card cancelled after the policy changed as cancelled, not as a policy change", async () => {

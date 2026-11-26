@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { PermissionCheckResult, PermissionManager } from "../permissions/permission-manager.js";
-import { approvalReasonFields, isHostApprovalRejectedDecision, type ApprovalDecision, type ApprovalGate } from "../permissions/approval-gate.js";
+import { admitApprovalAnswer, approvalReasonFields, isHostApprovalRejectedDecision, type ApprovalDecision, type ApprovalGate } from "../permissions/approval-gate.js";
+import { errorMessage } from "../shared/error-message.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
 import { getHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
 import { getHostShellExecutionPlanAuditProjection, type HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
@@ -119,6 +120,11 @@ export function createHookCommandAuthorizer(deps: {
         processCwd: { directory },
         ...(plan.requiresExplicitUserApproval ? { hostShellExecutionPermitBinding: binding } : {}),
       }, card));
+      try {
+        admitApprovalAnswer(approval, { requestId: id, toolName: "bash", toolUseId: undefined });
+      } catch (error) {
+        return { decision: "deny", reason: errorMessage(error), commandAdmissionFailure: "recheck-failed" };
+      }
       if (abortSignal?.aborted) return { decision: "deny", reason: "Hook command was cancelled" };
       if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId) || !controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
       const rejected = Boolean(isHostApprovalRejectedDecision(approval));
