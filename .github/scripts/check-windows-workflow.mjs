@@ -321,7 +321,8 @@ function checkPreparationCache(job) {
   const key = find("Generate the Windows preparation input manifest");
   const restore = find("Restore Windows preparation outputs");
   const verify = find("Verify Windows preparation outputs or rebuild");
-  const build = find("Build Windows launcher and classification helpers");
+  const build = find("Build Windows job launcher and fixtures");
+  const pathKind = find("Build Windows path helper and fixture");
   const seal = find("Seal Windows preparation outputs");
   const cleanup = find("Remove isolated system-volume job directory");
   const publication = find("Verify sealed Windows preparation outputs");
@@ -344,14 +345,18 @@ function checkPreparationCache(job) {
     || verify["working-directory"] !== "ave" || verify.env?.AVE_WINDOWS_PREP_KEY !== PREPARATION_CACHE_KEY
     || verify.env?.AVE_WINDOWS_PREP_EXACT_HIT !== "${{ steps.windows-preparation-restore.outputs.cache-hit }}"
     || !before(restore, verify) || !before(verify, build)
-    || build.if !== REGRESSION_CONDITION + " && env.AVE_WINDOWS_PREP_VERIFIED != 'true'"
-    || !build.run?.split(/\r?\n/u).includes(X64_PATH_KIND_BUILD)) {
+    || build.if !== REGRESSION_CONDITION + " && env.AVE_WINDOWS_PREP_VERIFIED != 'true'") {
     throw new Error("Windows preparation cache must verify or rebuild before any output is used");
+  }
+  if (!before(build, pathKind) || pathKind.if !== REGRESSION_CONDITION || pathKind["working-directory"] !== "ave"
+    || pathKind.shell !== "powershell"
+    || pathKind.run?.trim() !== `${X64_PATH_KIND_BUILD}\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`) {
+    throw new Error("Windows preparation must build the Windows path helper on every run");
   }
   for (const name of ["Verify native background process ownership", "Verify both Windows native payload packages",
     "Verify Windows folder classification", "Build and test patched Windows sandbox helper"]) {
     const step = find(name);
-    if (!before(build, step) || step.if !== REGRESSION_CONDITION || !before(step, seal)) {
+    if (!before(pathKind, step) || step.if !== REGRESSION_CONDITION || !before(step, seal)) {
       throw new Error("Windows preparation must run its checks on both cold and warm paths: " + name);
     }
   }

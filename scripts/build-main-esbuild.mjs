@@ -26,6 +26,7 @@ import { readBuildSourceIdentity } from "./lib/build-source-identity.mjs";
 import { MAIN_BUNDLE_EXTERNALS } from "./lib/main-bundle-externals.mjs";
 import { mxcVerificationBuild, mxcVerificationEntries } from "./lib/mxc-verification-build.mjs";
 import { buildSkillScripts } from "./build-skill-scripts.mjs";
+import { buildWindowsPathKind } from "./build-windows-path-kind.mjs";
 import { assertBundledDocumentInputs, assertPackagedDocumentInputs } from "./lib/document-consumer-guard.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -37,7 +38,9 @@ const manifestPath = resolve(outdir, "bundle-manifest.json");
 const watchMode = process.argv.includes("--watch");
 const require = createRequire(import.meta.url);
 require("./prepare-srt-win-receipts.cjs").prepareSrtWinReceipts();
+let pathKindSha256 = null;
 if (process.platform === "win32") {
+  pathKindSha256 = buildWindowsPathKind({ root: repoRoot });
   execFileSync(process.execPath, [resolve(repoRoot, "scripts/build-srt-win.mjs")], { stdio: "inherit" });
 }
 await buildSkillScripts();
@@ -63,6 +66,7 @@ const buildOptions = {
   preserveSymlinks: true,
   platform: "node",
   target: ["node22"],
+  define: { __AVE_WINDOWS_PATH_KIND_SHA256__: JSON.stringify(pathKindSha256) },
   legalComments: "none",
   // Keep function/class names stable for runtime diagnostics while allowing
   // esbuild to shorten private local bindings as well as fold equivalent

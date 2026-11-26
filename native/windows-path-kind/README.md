@@ -25,12 +25,11 @@ mapping for the drive (the call failed, an unknown drive among them), with the
 Windows error on stderr; `2` the argument is not a drive letter and colon; `3`
 the mapping could not be written. Only `1` is an answer about the drive.
 
-`src/main/windows-path-kind-launcher.ts` runs it, as
-`src/main/windows-job-launcher.ts` runs the job helper. The build uses the
-same script as the job helper and downloads nothing:
+`src/main/windows-path-kind-launcher.ts` runs it. Development builds compile
+the helper offline and embed its digest in the main bundle. The native test
+builds a fresh helper and pin fixture before running:
 
 ```powershell
-bun run build:windows-path-kind -- --fixture
 node scripts/test-windows-path-kind.mjs
 ```
 

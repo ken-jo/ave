@@ -7,7 +7,7 @@ import { createLogger } from "../../lib/logger.js";
 import { getSystemErrorName } from "node:util";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../managed-child-processes.js";
-import { windowsPathKindHelperIn } from "../windows-path-kind-launcher.js";
+import { resolveWindowsPathKindHelper, windowsPathKindHelperIn } from "../windows-path-kind-launcher.js";
 
 const log = createLogger("browser-download-files");
 
@@ -247,9 +247,19 @@ const HELPER_BUILD: Partial<Record<NodeJS.Platform, string>> = {
 export function heldFileOperations(resourcePath: string, platform: NodeJS.Platform = process.platform): HeldFileOperations {
   if (platform === "linux") return descriptorFileOperations();
   if (platform !== "darwin" && platform !== "win32") throw new Error(`held directory file operations are not available on ${platform}`);
-  const helper = platform === "win32" ? windowsPathKindHelperIn(resourcePath) : join(resourcePath, "macos-dir-ops", process.arch, "ave-dir-ops");
+  if (platform === "win32") {
+    const resolveHelper = () => {
+      try {
+        return resolveWindowsPathKindHelper(resourcePath);
+      } catch (error) {
+        throw new HeldFileHelperUnavailableError(windowsPathKindHelperIn(resourcePath), error instanceof Error ? error.message : String(error));
+      }
+    };
+    return helperFileOperations(resolveHelper, true);
+  }
+  const helper = join(resourcePath, "macos-dir-ops", process.arch, "ave-dir-ops");
   if (!existsSync(helper)) throw new HeldFileHelperUnavailableError(helper);
-  return helperFileOperations(helper, platform === "win32");
+  return helperFileOperations(() => helper, false);
 }
 
 // The answers a directory check can get when the directory is missing, unreadable, not a directory, or a link: it cannot be verified.
@@ -1381,14 +1391,15 @@ function oneOf<T extends string>(helper: string, outcome: string, allowed: reado
  * (scripts/build-macos-dir-ops.mjs) and stand-ins for a helper that hangs.
  */
 export function _helperFileOperationsForTest(helper: string, bounds?: HelperBounds, windowsFileIds = false): HeldFileOperations {
-  return helperFileOperations(helper, windowsFileIds, bounds);
+  return helperFileOperations(() => helper, windowsFileIds, bounds);
 }
 
-function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: HelperBounds = POLICY_BOUNDS): HeldFileOperations {
+function helperFileOperations(resolveHelper: () => string, windowsFileIds: boolean, bounds: HelperBounds = POLICY_BOUNDS): HeldFileOperations {
+  const helper = resolveHelper();
   const parseInode = windowsFileIds ? parseWindowsInode : parseUnsigned;
-  const run = (args: readonly string[], proceed: Proceed, stop: AbortSignal, onWriting?: (file: FileIdentity) => void,
+  const run = async (args: readonly string[], proceed: Proceed, stop: AbortSignal, onWriting?: (file: FileIdentity) => void,
     journal?: DownloadTargetJournal): Promise<string> =>
-    runHelper(helper, args, proceed, stop, bounds, parseInode, onWriting, journal);
+    runHelper(resolveHelper(), args, proceed, stop, bounds, parseInode, onWriting, journal);
   const go = (): boolean => true;
   const recover: HeldFileOperations["recover"] = async (folder, name, original, identity) => {
     const left: OwnFileResult = { outcome: "left", at: { name, identity } };
@@ -1503,7 +1514,7 @@ function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: H
     readRecord: async (directory, name, max, sweep) => {
       if (sweep !== undefined) {
         let bytes: Buffer | null = null;
-        const answer = await runHelper(helper, ["--dir-sweep-record", ...directoryArguments(directory), name, String(max)],
+        const answer = await runHelper(resolveHelper(), ["--dir-sweep-record", ...directoryArguments(directory), name, String(max)],
           go, UNSTOPPED, bounds, parseInode, undefined, undefined, (body, file) => {
             bytes = body;
             return sweep.reject(body, recordStamp(file, body));

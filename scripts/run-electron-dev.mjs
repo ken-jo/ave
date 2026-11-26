@@ -10,6 +10,7 @@ import { waitForAllFirstBuilds } from "./lib/dev-watcher-gate.mjs";
 import { shouldRelaunchDevChild } from "./lib/dev-relaunch-policy.mjs";
 import { resolveBuildAssets } from "./lib/build-assets.mjs";
 import { ensureElectronNativeModules } from "./lib/electron-native-modules.mjs";
+import { windowsPathKindSourceDigest } from "./lib/windows-path-kind-build.mjs";
 import {
   extractUserDataDir,
   prepareElectronLaunchArgs,
@@ -467,8 +468,15 @@ async function stopChildProcess(proc, { forceTree = false } = {}) {
   });
 }
 
+let pathKindSource;
+
 function launchElectron() {
   if (electronProc) return;
+  if (pathKindSource && windowsPathKindSourceDigest(repoRoot) !== pathKindSource) {
+    log("electron", "Windows path helper sources changed. Restart the development launcher to rebuild it.");
+    void shutdown(1);
+    return;
+  }
   const launchEnv = (() => {
     const e = {
       ...process.env,
@@ -633,7 +641,8 @@ async function main() {
     );
   }
 
-  // Use the shipped bundle recipe so development and production share the same entry path.
+  // The first main bundle builds and pins the Windows path helper before launch.
+  if (process.platform === "win32") pathKindSource = windowsPathKindSourceDigest(repoRoot);
   spawnWatcher("main", process.execPath, [resolve(repoRoot, "scripts/build-main-esbuild.mjs"), "--watch"]);
 
   // Emit the exact .cjs filename the runtime loads or development can retain a stale preload.

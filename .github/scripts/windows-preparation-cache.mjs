@@ -4,7 +4,6 @@ import {
   realpathSync, renameSync, rmSync, utimesSync, writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { verifyWindowsPathKindReceipt, windowsPathKindCompiler } from "../../scripts/lib/windows-path-kind-build.mjs";
@@ -30,8 +29,6 @@ function installedSrtInputs(root) {
 function nativeFiles(arch) {
   return [
     ...["ave-job", "ave-job-failure", "ave-job-query-failure"].map(name => `resources/windows-job/${arch}/${name}.exe`),
-    `resources/windows-path-kind/${arch}/ave-path-kind.exe`,
-    "resources/windows-path-kind/" + arch + "/ave-path-kind.exe.build.json",
     ...ARCHES.flatMap(target => ["upstream-srt-win.exe", "srt-win.exe", "build-receipt.json"]
       .map(name => `${VENDOR}/srt-win/${target}/${name}`)),
     `${RECEIPTS}.js`,
@@ -84,11 +81,7 @@ async function main(operation, root, env) {
   }
   if (key && !/^ave-windows-native-helpers-v3-[a-f0-9]{64}$/u.test(key)) throw new Error("Invalid Windows preparation key");
   const native = nativeFiles(process.arch);
-  const pinTest = "ave-path-pin-test.exe";
-  const destinations = Object.fromEntries([
-    ...native.map(file => [`native/${file}`, join(root, file)]),
-    [`native/${pinTest}`, join(tmpdir(), pinTest)],
-  ]);
+  const destinations = Object.fromEntries(native.map(file => [`native/${file}`, join(root, file)]));
   const required = Object.keys(destinations);
   if (operation === "verify-installed") {
     if (env.AVE_WINDOWS_PREP_VERIFIED === "true") {
@@ -139,7 +132,6 @@ async function main(operation, root, env) {
   if (operation !== "seal") throw new Error("Unknown Windows preparation command");
   verifyWindowsPathKindReceipt(root, process.arch);
   for (const file of native) copyOutput(join(root, file), join(store, "native", file));
-  copyOutput(join(tmpdir(), pinTest), join(store, "native", pinTest));
   const digest = await sealWindowsPreparation(store, key, required);
   appendFileSync(outputs, `digest=${digest}\n`);
 }

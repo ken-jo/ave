@@ -96,6 +96,7 @@ export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture
     } finally {
       for (const file of staged) rmSync(file, { force: true });
     }
+    return receipt.binarySha256;
   } finally {
     rmSync(buildDir, { recursive: true, force: true });
   }

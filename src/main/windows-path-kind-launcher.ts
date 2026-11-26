@@ -1,10 +1,13 @@
 import { execFile, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { access } from "node:fs/promises";
-import { dirname, join, win32 } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { access, readFile } from "node:fs/promises";
+import { dirname, join, resolve, win32 } from "node:path";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
-import { getHostResources } from "./host-resources.js";
+import { getConfiguredHostResources, getHostResources } from "./host-resources.js";
+
+declare const __AVE_WINDOWS_PATH_KIND_SHA256__: string | null;
 
 // The helper's one answer about a drive: the OS has no mapping for it (native/windows-path-kind/README.md).
 const EXIT_NO_MAPPING = 1;
@@ -24,7 +27,32 @@ export function resolveWindowsPathKindHelper(resourcePath = getHostResources().r
   if (!existsSync(binary)) {
     throw missingWindowsPathKindHelper();
   }
+  if (requiresCheckoutBuild(resourcePath)) verifyCheckoutWindowsPathKindHelper(resourcePath);
   return binary;
+}
+
+function requiresCheckoutBuild(resourcePath: string): boolean {
+  if (typeof __AVE_WINDOWS_PATH_KIND_SHA256__ === "undefined") return false; // Source modules used by unit tests.
+  const host = getConfiguredHostResources();
+  return !(host?.isPackaged && host.resourcePath === resourcePath
+    && resolve(resourcePath) === resolve(dirname(process.execPath), "resources"));
+}
+
+function assertBuiltHelper(bytes: Uint8Array): void {
+  if (typeof __AVE_WINDOWS_PATH_KIND_SHA256__ === "undefined"
+    || createHash("sha256").update(bytes).digest("hex") !== __AVE_WINDOWS_PATH_KIND_SHA256__) {
+    throw windowsPathKindHelperUnavailable("Windows folder classifier does not match the development build. Rebuild the main bundle.");
+  }
+}
+
+export function verifyCheckoutWindowsPathKindHelper(resourcePath: string): void {
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(windowsPathKindHelperIn(resourcePath));
+  } catch {
+    throw missingWindowsPathKindHelper();
+  }
+  assertBuiltHelper(bytes);
 }
 
 function missingWindowsPathKindHelper(): Error {
@@ -132,12 +160,17 @@ export function queryDosDevice(drive: string): Promise<string | null> {
 // The packaged helper asks the OS directly; environment variables cannot choose a system verifier.
 export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT_POLICY.globalCeilingMs, deadline?: number): Promise<string> {
   if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
-  const helper = windowsPathKindHelperIn(getHostResources().resourcePath);
+  const { resourcePath } = getHostResources();
+  const helper = windowsPathKindHelperIn(resourcePath);
+  const checkout = requiresCheckoutBuild(resourcePath);
+  let bytes: Buffer | undefined;
   try {
-    await access(helper);
+    if (checkout) bytes = await readFile(helper);
+    else await access(helper);
   } catch {
     throw missingWindowsPathKindHelper();
   }
+  if (bytes) assertBuiltHelper(bytes);
   return new Promise((resolve, reject) => {
     const options = windowsSystemDirectorySpawnOptions(helper);
     const remaining = deadline === undefined ? timeout : Math.min(timeout, deadline - performance.now());

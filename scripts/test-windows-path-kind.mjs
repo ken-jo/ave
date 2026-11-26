@@ -8,9 +8,14 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdt
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { buildWindowsPathKind } from "./build-windows-path-kind.mjs";
+import { windowsPathKindPath } from "./lib/windows-path-kind-build.mjs";
 
 if (process.platform !== "win32") throw new Error("This test requires Windows");
-const helper = resolve(`resources/windows-path-kind/${process.arch}/ave-path-kind.exe`);
+const root = fileURLToPath(new URL("../", import.meta.url));
+buildWindowsPathKind({ root, fixture: true });
+const helper = resolve(root, windowsPathKindPath(process.arch));
 const replyDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function runWithInput(args, input) {

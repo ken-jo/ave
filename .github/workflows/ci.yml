@@ -936,7 +936,7 @@ jobs:
           AVE_WINDOWS_PREP_KEY: ${{ steps.windows-preparation-key.outputs.key }}
           AVE_WINDOWS_PREP_EXACT_HIT: ${{ steps.windows-preparation-restore.outputs.cache-hit }}
         run: node .github/scripts/windows-preparation-cache.mjs restore
-      - name: Build Windows launcher and classification helpers
+      - name: Build Windows job launcher and fixtures
         if: steps.docs-impact.outputs.docs_only != 'true' && env.AVE_WINDOWS_PREP_VERIFIED != 'true'
         working-directory: ave
         shell: powershell
@@ -947,6 +947,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build Windows path helper and fixture
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        shell: powershell
+        run: |
           node scripts/build-windows-path-kind.mjs --arch x64 --fixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify native background process ownership

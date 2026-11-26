@@ -604,6 +604,15 @@ it("rehashes the installed helpers before the first launcher command", () => {
   }
 });
 
+it("builds the Windows path helper even after a preparation cache hit", () => {
+  const name = "Build Windows path helper and fixture";
+  const steps = parse(workflow).jobs["windows-native-preparation"].steps;
+  assert.ok(steps.find(step => step.name === name), "missing fresh build step");
+  assert.throws(() => checkWindowsWorkflow(changedWorkflow((_steps, get) => {
+    get(name).if += " && env.AVE_WINDOWS_PREP_VERIFIED != 'true'";
+  }), parsedLines), /must build the Windows path helper on every run/);
+});
+
 it("runs every restored or cached binary after the job's trust point", () => {
   const { jobs } = parse(workflow);
   for (const job of ["windows-native-preparation", "windows-permission-tests"]) checkHelperExecutionOrder(job, jobs[job].steps);
@@ -630,9 +639,9 @@ for (const [name, job, change, expected, workflowExpected] of [
     provision.run = provision.run.replace("node scripts/check-srt-win-integrity.cjs\n", "");
   }, /runs the sandbox helper before this job replaced the cached node_modules copy and checked its integrity/],
   ["a launcher fixture run before the rehash", "windows-native-preparation", (_steps, get) => {
-    const build = get("Build Windows launcher and classification helpers");
+    const build = get("Build Windows job launcher and fixtures");
     build.run += "& './resources/windows-job/x64/ave-job-failure.exe' --probe\n";
-  }, /Build Windows launcher and classification helpers: executes a restored or cached binary before rehashing/,
+  }, /Build Windows job launcher and fixtures: executes a restored or cached binary before rehashing/,
   // The command allowlist also refuses this uncontained helper call.
   /command runs outside the job containment launcher: & '\.\/resources\/windows-job\/x64\/ave-job-failure\.exe' --probe/],
   ["the shard provisioning above the artifact restore", "windows-permission-tests", (steps, get) => {

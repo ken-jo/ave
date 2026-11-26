@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { win32 } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +7,7 @@ import type { HostResources } from "../host-resources.js";
 
 const io = vi.hoisted(() => ({
   helperExists: vi.fn(),
+  helperBytes: vi.fn(),
   spawnHelper: vi.fn(),
   lstat: vi.fn(),
   realpath: vi.fn(),
@@ -20,12 +22,18 @@ vi.mock("node:path", async (importOriginal) => {
   return { ...simulatedDrivePath(actual), sep: actual.win32.sep };
 });
 vi.mock("../../permissions/generated/srt-win-build-receipts.js", () => ({ default: {} }));
-vi.mock("node:fs", async (importOriginal) => ({
-  ...await importOriginal<typeof import("node:fs")>(),
-  existsSync: io.helperExists,
-  lstatSync: io.lstat,
-  realpathSync: Object.assign(vi.fn(), { native: io.realpath }),
-}));
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...fs,
+    existsSync: io.helperExists,
+    readFileSync: (file: Parameters<typeof fs.readFileSync>[0], options?: Parameters<typeof fs.readFileSync>[1]) => (
+      typeof file === "string" && file.endsWith("ave-path-kind.exe") ? io.helperBytes(file) : Reflect.apply(fs.readFileSync, fs, [file, options])
+    ),
+    lstatSync: io.lstat,
+    realpathSync: Object.assign(vi.fn(), { native: io.realpath }),
+  };
+});
 vi.mock("node:child_process", () => ({ execFile: vi.fn(), spawnSync: io.spawnHelper }));
 vi.mock("electron", () => ({
   app: {
@@ -68,6 +76,8 @@ vi.mock("../../data/settings-store.js", () => ({
 
 const PROJECT_ROOT = "C:\\project";
 const PACKAGED_RESOURCES = "C:\\bundle\\resources";
+const BUILT_HELPER = Buffer.from("fresh build output");
+const BUILT_HELPER_SHA256 = createHash("sha256").update(BUILT_HELPER).digest("hex");
 
 beforeEach(() => {
   vi.resetModules();
@@ -82,6 +92,7 @@ beforeEach(() => {
     resourcesPath: { value: PACKAGED_RESOURCES },
   }));
   io.helperExists.mockReturnValue(true);
+  io.helperBytes.mockReturnValue(BUILT_HELPER);
   io.spawnHelper.mockReturnValue({ status: 0, stdout: Buffer.from("\\Device\\HarddiskVolume1") });
   io.lstat.mockReturnValue({ isSymbolicLink: () => false });
   io.realpath.mockImplementation((path: string) => path);
@@ -97,7 +108,23 @@ afterEach(() => {
 });
 
 describe("desktop host resource startup", () => {
+  it("refuses independently supplied checkout bytes before starting the unpackaged host", async () => {
+    const { app } = await import("electron");
+    Object.defineProperty(app, "isPackaged", { value: false });
+    const { createDesktopBootHost } = await import("../../boot/desktop-host-runtime.js");
+    vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
+    io.helperBytes.mockReturnValue(Buffer.from("independently supplied executable"));
+    io.lstat.mockClear();
+
+    const start = vi.fn(() => createDesktopBootHost(PROJECT_ROOT));
+    const boot = async () => (await start()).close();
+    await expect(boot()).rejects.toThrow(/Windows folder classifier/u);
+    expect(io.spawnHelper).not.toHaveBeenCalled();
+    expect(io.lstat).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("configures resources before early boot and host construction (packaged: %s)", async (isPackaged) => {
+    if (!isPackaged) vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
     const { app } = await import("electron");
     const { desktopResourcePath } = await import("../desktop-resource-path.js");
     const { configureHostResources, getConfiguredHostResources } = await import("../host-resources.js");
@@ -131,6 +158,7 @@ describe("desktop host resource startup", () => {
   });
 
   it.each([false, true])("builds the desktop host without global resources (packaged: %s)", async (isPackaged) => {
+    if (!isPackaged) vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
     const { app } = await import("electron");
     const { createDesktopBootHost } = await import("../../boot/desktop-host-runtime.js");
     const { protectedControlEntryFor } = await import("../../permissions/sensitive-paths.js");

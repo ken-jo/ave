@@ -306,6 +306,26 @@ describe("Windows path helper build", () => {
     verifyWindowsPathKindReceipt(root, process.arch);
   }, 60_000);
 
+  it.skipIf(process.platform !== "win32")("binds the main bundle to fresh output instead of staged executable bytes", () => {
+    const { root, runScript } = pathKindBuildFixture();
+    const executable = join(root, windowsPathKindPath(process.arch));
+    mkdirSync(dirname(executable), { recursive: true });
+    const supplied = pathKindPe();
+    writeFileSync(executable, supplied);
+    const result = runScript("scripts/build-windows-path-kind.mjs",
+      'const {buildWindowsPathKind} = await import(process.argv[1]); console.log(buildWindowsPathKind({root: process.argv[2]}));');
+    expect(result.status, result.stderr).toBe(0);
+    const built = readFileSync(executable);
+    expect(built.equals(supplied)).toBe(false);
+    expect(result.stdout.trim()).toBe(createHash("sha256").update(built).digest("hex"));
+
+    const dev = readFileSync(resolve("scripts/run-electron-dev.mjs"), "utf8");
+    const bundle = readFileSync(resolve("scripts/build-main-esbuild.mjs"), "utf8");
+    expect(dev).toContain('spawnWatcher("main", process.execPath, [resolve(repoRoot, "scripts/build-main-esbuild.mjs"), "--watch"])');
+    expect(bundle).toContain("pathKindSha256 = buildWindowsPathKind({ root: repoRoot })");
+    expect(bundle).toContain("__AVE_WINDOWS_PATH_KIND_SHA256__: JSON.stringify(pathKindSha256)");
+  }, 60_000);
+
   it.each([
     ["VCRUNTIME140.dll", false],
     ["api-ms-win-crt-runtime-l1-1-0.dll", true],
