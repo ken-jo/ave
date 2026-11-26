@@ -91,6 +91,13 @@ function currentReadScope(): { cwd: string; extraAllowed: string[] } {
   return { cwd, extraAllowed: buildRuntimeAllowedDirectories(additional) };
 }
 
+function checkPreviewReadPath(path: string, audience?: Parameters<typeof assertReadableFilePath>[3]): ReturnType<typeof assertReadableFilePath> {
+  return withLocalityDecision(() => {
+    const { cwd, extraAllowed } = currentReadScope();
+    return assertReadableFilePath(path, cwd, extraAllowed, audience);
+  });
+}
+
 function observeDocumentOwner(sender: WebContents, frame: WebFrameMain, abort: () => void): () => void {
   const hasLostFrame = (): boolean => sender.isDestroyed() || frame.isDestroyed() || frame.detached;
   const checkFrame = (): void => { if (hasLostFrame()) abort(); };
@@ -177,11 +184,10 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         hasLineWindow = window.offset !== undefined || window.limit !== undefined;
       }
 
-      const { cwd, extraAllowed } = currentReadScope();
       const requestedPath = workspaceRoot === undefined ? rawPath : resolve(workspaceRoot, rawPath);
       // This read is drawn on the person's own screen: a key-extension file is refused here only when it holds a key.
       // Handing the document to the agent's observation is judged separately, as the agent's read.
-      const verdict = assertReadableFilePath(requestedPath, cwd, extraAllowed, "person");
+      const verdict = checkPreviewReadPath(requestedPath, "person");
       if (!verdict.ok) {
         // "not-a-file" here means glob/argument, never a concrete file.
         return { ok: false, error: verdict.error, message: `read guard rejected: ${verdict.error}` };
@@ -237,8 +243,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         const window = imageFormat ? undefined : textDocument
           ? { content: textDocument.content, lines: textDocument.lines, truncated: textDocument.truncated }
           : await readTextFileWindow(resolved, offset, limit);
-        const liveScope = currentReadScope();
-        const currentVerdict = assertReadableFilePath(requestedPath, liveScope.cwd, liveScope.extraAllowed, "person");
+        const currentVerdict = checkPreviewReadPath(requestedPath, "person");
         if (!currentVerdict.ok || currentVerdict.resolved !== resolved) {
           return { ok: false, error: currentVerdict.ok ? "read-failed" : currentVerdict.error, message: "Preview read scope changed" };
         }
@@ -308,8 +313,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         return { ok: false, error: "invalid-index", message: "sheetIndex must be a non-negative integer" };
       }
 
-      const { cwd, extraAllowed } = currentReadScope();
-      const verdict = assertReadableFilePath(rawPath, cwd, extraAllowed);
+      const verdict = checkPreviewReadPath(rawPath);
       if (!verdict.ok) {
         return { ok: false, error: verdict.error, message: `read guard rejected: ${verdict.error}` };
       }
@@ -365,13 +369,15 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
                 sheetIndex,
               }),
             });
-            const scope = currentReadScope();
-            const currentVerdict = assertReadableFilePath(resolved, scope.cwd, scope.extraAllowed);
+            const currentVerdict = checkPreviewReadPath(resolved);
             if (!currentVerdict.ok || currentVerdict.resolved !== resolved) {
               return { ok: false, error: "path-not-allowed", message: "Preview read scope changed" };
             }
-            const binding = observation.registerView(e, sessionId, resolved, bytes, document);
-            recordPreviewFileAccess(e, deps, resolved, sessionId);
+            const binding = withLocalityDecision(() => {
+              const view = observation.registerView(e, sessionId, resolved, bytes, document);
+              recordPreviewFileAccess(e, deps, resolved, sessionId);
+              return view;
+            });
             return { ok: true, path: resolved, bytes: bytes.length, document, ...(binding ? { observation: binding } : {}) };
           } catch (err) {
             slot.signal.throwIfAborted();

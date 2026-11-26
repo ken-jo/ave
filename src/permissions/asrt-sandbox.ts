@@ -40,7 +40,7 @@ import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets, testSandboxP
 import { expandLeadingTilde, leadingTildeHome } from "../shared/home-tilde.js";
 import { holdSandboxGitWrites, setHostGitWorkspaceGuard } from "../shared/host-git.js";
 import { projectLocalWindowsFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
-import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
+import { admitLocalRoute, decisionMemo, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { admitObligations, consumeObligations, ObligationRefusedError, type ObligationRow, type ObligationSource, obligationWithin, POSIX_CRON_DENIES, posixOnlyDenyPaths, requireEnforceable, windowsObligationsApply } from "./admitted-obligation.js";
 import { compileGlobMatcher, globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
@@ -867,7 +867,7 @@ function finishFilesystemPolicy(
 export function admitMxcExtensionFilesystem(
   ...args: Parameters<typeof admitMxcExtensionFilesystemInSnapshot>
 ): ReturnType<typeof admitMxcExtensionFilesystemInSnapshot> {
-  return inAveHomeBoundarySnapshot(undefined, () => admitMxcExtensionFilesystemInSnapshot(...args));
+  return withLocalityDecision(() => inAveHomeBoundarySnapshot(undefined, () => admitMxcExtensionFilesystemInSnapshot(...args)));
 }
 
 function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem, ownership?: MxcExtensionFilesystemOwnership,
@@ -984,7 +984,7 @@ export function buildPerCommandSandboxCustomConfig(
   liveGrants: WindowsLiveGrantSnapshot = {},
 ): Partial<SandboxRuntimeConfig> | undefined {
   // One boundary snapshot for the whole per-command composition: the enclosing one, else a new one.
-  return inAveHomeBoundarySnapshot(undefined, () => {
+  return inAveHomeBoundarySnapshot(undefined, () => withLocalityDecision(() => {
     const hasOverrides = hasConfiguredDenies(filesystem) || hasConfiguredDenies(_baseTrustedSettings);
     const requestedReadDenies = filesystem?.denyRead;
     const composedUserDenies = requestedReadDenies === undefined ? undefined : composedShellReadDenies.get(requestedReadDenies)?.user;
@@ -1165,7 +1165,7 @@ export function buildPerCommandSandboxCustomConfig(
       filesystem: finished,
       ...(windowsObligationsApply() ? { windows: { admittedEntriesOnly: true } } : {}),
     };
-  });
+  }));
 }
 
 // Remembered exclusion answers per invocation; past it, answers are recomputed.
@@ -1559,7 +1559,7 @@ function aveHomeReadBoundaryMasks(): string[] {
 
 // The Ave home root covering `path` when `path` is that root or lies outside every re-allowed child.
 export function aveHomeReadBoundaryCovering(path: string): string | undefined {
-  return aveHomeReadBoundaryMatcher()(canonicalizePathForMatch(path));
+  return withLocalityDecision(() => aveHomeReadBoundaryMatcher()(canonicalizePathForMatch(path)));
 }
 
 function aveHomeReadBoundaryMatcher(): (canonicalPath: string) => string | undefined {
@@ -1584,7 +1584,7 @@ function aveHomeReadBoundaryMatcher(): (canonicalPath: string) => string | undef
 export function getBuiltinShellSessionReadPolicy(
   ...args: Parameters<typeof getBuiltinShellSessionReadPolicyInSnapshot>
 ): ReturnType<typeof getBuiltinShellSessionReadPolicyInSnapshot> {
-  return inAveHomeBoundarySnapshot(undefined, () => getBuiltinShellSessionReadPolicyInSnapshot(...args));
+  return withLocalityDecision(() => inAveHomeBoundarySnapshot(undefined, () => getBuiltinShellSessionReadPolicyInSnapshot(...args)));
 }
 
 function getBuiltinShellSessionReadPolicyInSnapshot(userDataDir = _baseTrustedSettings?.userDataDir): {
@@ -1671,17 +1671,19 @@ function sessionReadUserDenyNotices(root: string | undefined, denies: readonly {
 /** The user's read denies inside a host pierce (plugin certs, hooks, workers, host API): the pierce stays and only what each
  * matches is withheld. Each is named once per session and `owner` (a plugin, or the wrap itself); the saved-session root has its own notice. */
 export function userDenyInsidePierceNotices(pierces: readonly string[], owner = ""): string[] {
-  const sessionRoot = getConfiguredSessionReadPolicy().allowRead[0];
-  const userDenies = getUserReadDenies();
-  return pierces
-    .filter((pierce) => sessionRoot === undefined || canonicalizePathForMatch(pierce) !== canonicalizePathForMatch(sessionRoot))
-    // A deny that covers the pierce refuses the launch instead.
-    .flatMap((pierce) => userDenies.flatMap((rule) => {
-      const inside = userDenyInside(rule, pierce);
-      if (inside === undefined || userReadDenyCovering([rule])(canonicalizePathForMatch(pierce)) !== undefined) return [];
-      if (!firstUserDenyNotice(`${owner}\u0000${pierce}`, rule)) return [];
-      return [t(inside === "certain" ? "sandboxPolicy.pierceUserDenyPart" : "sandboxPolicy.pierceUserDenyPartMaybe", { rule, path: pierce })];
-    }));
+  return withLocalityDecision(() => {
+    const sessionRoot = getConfiguredSessionReadPolicy().allowRead[0];
+    const userDenies = getUserReadDenies();
+    return pierces
+      .filter((pierce) => sessionRoot === undefined || canonicalizePathForMatch(pierce) !== canonicalizePathForMatch(sessionRoot))
+      // A deny that covers the pierce refuses the launch instead.
+      .flatMap((pierce) => userDenies.flatMap((rule) => {
+        const inside = userDenyInside(rule, pierce);
+        if (inside === undefined || userReadDenyCovering([rule])(canonicalizePathForMatch(pierce)) !== undefined) return [];
+        if (!firstUserDenyNotice(`${owner}\u0000${pierce}`, rule)) return [];
+        return [t(inside === "certain" ? "sandboxPolicy.pierceUserDenyPart" : "sandboxPolicy.pierceUserDenyPartMaybe", { rule, path: pierce })];
+      }));
+  });
 }
 
 // Compose broad invocation reads while retaining protected host/private paths. `sandboxHome` is the invocation's own sandbox HOME. The sandbox private roots are read-denied like the rest of the floor, and a read grant under them is dropped — a working directory there must not reopen another process's HOME — except the invocation's own HOME and what is inside it.
@@ -1700,7 +1702,7 @@ export function getBuiltinShellReadPolicy(
   readonly policyNotices: readonly string[];
 } {
   void hostHome;
-  return inAveHomeBoundarySnapshot(boundarySnapshot, () => composeBuiltinShellReadPolicy(readPaths, sandboxHome));
+  return withLocalityDecision(() => inAveHomeBoundarySnapshot(boundarySnapshot, () => composeBuiltinShellReadPolicy(readPaths, sandboxHome)));
 }
 
 function composeBuiltinShellReadPolicy(readPaths: readonly string[], sandboxHome: string | undefined): ReturnType<typeof getBuiltinShellReadPolicy> {
@@ -1771,7 +1773,7 @@ export function protectedReadDenyCovering(path: string, floor: readonly Filesyst
 // protectedReadDenyCovering for many paths against one floor: each entry compiles once, not once per path and ancestor.
 export function protectedReadDenyMatcher(floor: readonly FilesystemPathEntry[] = getProtectedReadDenyPaths()): (path: string) => string | undefined {
   const covering = readDenyCovering(floor);
-  return (path) => covering(canonicalizePathForMatch(path));
+  return (path) => withLocalityDecision(() => covering(canonicalizePathForMatch(path)));
 }
 
 // Keep write roots from reopening reads the floor denies. Seatbelt keeps a write grant write-only, but bubblewrap grants a write by binding the host directory read-write over the deny's tmpfs mask, which exposes everything under it. So on Linux a write root covered by the floor is not granted, for every wrap: the user's shell, plugin children and workers, bundled hooks, MCP stdio servers and the terminal all reach ASRT through buildPerCommandSandboxCustomConfig, and the shared config through buildSandboxConfig. macOS keeps the root, since the grant stays write-only there. Ordinary working trees remain writable.
@@ -1878,9 +1880,11 @@ function withholdUnder(
 // readDenyCoversPath over a fixed list: the first entry, in list order, that covers a path. Each entry is canonicalized and compiled once per call of this function instead of once per tested path and ancestor, so a check of P paths against D entries costs D compiles, not P x D x depth.
 function readDenyCovering(denied: readonly FilesystemPathEntry[]): (canonicalPath: string) => string | undefined {
   // Compiled on first use, as readDenyCoversPath reaches an entry only when no earlier one covered the path.
-  const matchers = new Map<number, (candidate: string) => boolean>();
+  const matcherOwner = {};
   const matcher = (index: number, entry: FilesystemPathEntry): (candidate: string) => boolean => {
-    let match = matchers.get(index);
+    const matchers = decisionMemo<(candidate: string) => boolean>(matcherOwner);
+    const key = String(index);
+    let match = matchers.get(key);
     if (match === undefined) {
       if (typeof entry === "string") {
         match = compileGlobMatcher(canonicalizePathForMatch(expandLeadingTilde(entry)));
@@ -1888,11 +1892,11 @@ function readDenyCovering(denied: readonly FilesystemPathEntry[]): (canonicalPat
         const literal = canonicalizePathForMatch(entry.path).replace(/\/+$/, "");
         match = candidate => candidate === literal;
       }
-      matchers.set(index, match);
+      matchers.set(key, match);
     }
     return match;
   };
-  return (canonicalPath) => {
+  return (canonicalPath) => withLocalityDecision(() => {
     const candidates: string[] = [];
     for (let candidate = canonicalPath; ; candidate = dirname(candidate)) {
       candidates.push(candidate);
@@ -1905,7 +1909,7 @@ function readDenyCovering(denied: readonly FilesystemPathEntry[]): (canonicalPat
       if (candidates.some((candidate) => match(candidate) || match(`${candidate}/`))) return typeof entry === "string" ? entry : entry.path;
     }
     return undefined;
-  };
+  });
 }
 
 // Use the shared policy grammar; unrepresented runtime patterns keep the deny.
@@ -2402,33 +2406,35 @@ function getDefaultSensitiveDenyPaths(
 const WINDOWS_PROFILE_WRITE_FLOOR_ERROR = "Windows profile write floor could not establish all profile paths";
 
 function windowsProfileWriteDenies(homes: readonly string[], resolveDocumentsPath: (() => string) | undefined) {
-  const roots = homes.map(home => win32.join(home, "Documents"));
-  let bounded = true;
-  if (resolveDocumentsPath !== undefined) {
-    try {
-      const path = stripExtendedPathPrefix(resolveDocumentsPath());
-      if (/^[a-z]:[\\/]/i.test(path) && !/[\0\r\n*?:]/.test(path.slice(2))) roots.push(win32.normalize(path));
-      // Direct UNC paths cannot be reached by local filesystem grants.
-      else if (!isUncPath(path)) bounded = false;
-    } catch {
-      bounded = false;
-    }
-  }
-  const paths = roots.flatMap(root => ["WindowsPowerShell", "PowerShell"].flatMap(engine =>
-    ["profile.ps1", "Microsoft.PowerShell_profile.ps1"].flatMap(name => {
-      const path = win32.join(root, engine, name);
-      // A share spelling is no local identity to deny, and a local grant cannot reach it.
-      if (isUncPath(path)) return [];
+  return withLocalityDecision(() => {
+    const roots = homes.map(home => win32.join(home, "Documents"));
+    let bounded = true;
+    if (resolveDocumentsPath !== undefined) {
       try {
-        const physical = HOST_PLATFORM === "win32" ? projectLocalWindowsFilesystemPath(path, MAX_WALK_UP) : resolvePathForPolicy(path);
-        return [path, stripExtendedPathPrefix(physical)];
+        const path = stripExtendedPathPrefix(resolveDocumentsPath());
+        if (/^[a-z]:[\\/]/i.test(path) && !/[\0\r\n*?:]/.test(path.slice(2))) roots.push(win32.normalize(path));
+        // Direct UNC paths cannot be reached by local filesystem grants.
+        else if (!isUncPath(path)) bounded = false;
       } catch {
-        // An unproven spelling never becomes a deny row; an unbounded floor leaves the config no write authority instead.
         bounded = false;
-        return [];
       }
-    })));
-  return { paths, bounded };
+    }
+    const paths = roots.flatMap(root => ["WindowsPowerShell", "PowerShell"].flatMap(engine =>
+      ["profile.ps1", "Microsoft.PowerShell_profile.ps1"].flatMap(name => {
+        const path = win32.join(root, engine, name);
+        // A share spelling is no local identity to deny, and a local grant cannot reach it.
+        if (isUncPath(path)) return [];
+        try {
+          const physical = HOST_PLATFORM === "win32" ? projectLocalWindowsFilesystemPath(path, MAX_WALK_UP) : resolvePathForPolicy(path);
+          return [path, stripExtendedPathPrefix(physical)];
+        } catch {
+          // An unproven spelling never becomes a deny row; an unbounded floor leaves the config no write authority instead.
+          bounded = false;
+          return [];
+        }
+      })));
+    return { paths, bounded };
+  });
 }
 
 // The write floor overrides write grants and includes sensitive stores, saved conversations and persistence/re-exec paths, including config, shell startup and scheduler files; reading secrets alone does not prevent sandbox escape through later execution.
@@ -2529,7 +2535,11 @@ function configuredLinuxWrapperPrograms(): LinuxWrapperPrograms | undefined {
 }
 
 // Build a fully-resolved SandboxRuntimeConfig from TRUSTED settings. Deny-by-default: when no `allowedDomains` are supplied the network section has an empty allow-list, which ASRT treats as "no egress". Weakening flags default to `false`/absent and are only set when explicitly present in the trusted `weakening` object. @internal Exported for unit tests only (the Windows-logic tests assert the win32 `windows.proxyPortRange` emission with `process.platform` forced). Not part of the module's runtime API — boot uses initializeAsrtSandbox.
-export function buildSandboxConfig(
+export function buildSandboxConfig(...args: Parameters<typeof buildSandboxConfigInDecision>): SandboxRuntimeConfig {
+  return withLocalityDecision(() => buildSandboxConfigInDecision(...args));
+}
+
+function buildSandboxConfigInDecision(
   trustedSettings: TrustedSandboxSettings,
   readDenyEvidence?: WindowsReadDenySnapshot,
   liveGrants: WindowsLiveGrantSnapshot = {},

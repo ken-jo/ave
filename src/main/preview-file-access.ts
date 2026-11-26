@@ -6,6 +6,7 @@ import { assertReadableFilePath } from "../tools/file-read-core.js";
 import { readPermissionSettings } from "../permissions/permission-settings-store.js";
 import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directories.js";
 import { getProtectedReadDenyFloor, protectedReadDenyMatcher } from "../permissions/asrt-sandbox.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { OBSERVATION_LIMITS } from "../shared/agent-observation.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { previewSupportsExternalOpen } from "../shared/preview-external-open.js";
@@ -45,7 +46,7 @@ function principalIsCurrent(event: IpcMainInvokeEvent, deps: WindowRegistry, pat
   return validateAppWindowMainFrameSender(event, deps)
     && previewSupportsExternalOpen(path)
     && (sessionId === undefined || findSessionMainWindowContents(sessionId) === event.sender)
-    && currentScopeCovers(path, scope());
+    && withLocalityDecision(() => currentScopeCovers(path, scope()));
 }
 
 function isCurrent(receipt: PreviewFileReceipt, deps = receipt.owner.deps, scope?: () => ReadScope): boolean {
@@ -73,17 +74,25 @@ function ownerFor(event: IpcMainInvokeEvent, deps: WindowRegistry): PreviewFileO
     isMainFrame: boolean): void => { if (isMainFrame) release(); };
   const handleNavigationStart = (_event: unknown, _url: string, _inPlace: boolean,
     isMainFrame: boolean): void => { if (isMainFrame) release(); };
-  const timer = setInterval(() => {
-    let snapshot: ReadScope | undefined;
-    const scope = (): ReadScope => snapshot ??= currentReadScope();
-    for (const key of [...owner.keys]) {
-      const receipt = receipts.get(key);
-      if (receipt && !isCurrent(receipt, receipt.owner.deps, scope)) revoke(key);
-    }
-  }, PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs);
-  timer.unref();
+  let timer: ReturnType<typeof setTimeout>;
+  const recheck = (): void => {
+    withLocalityDecision(() => {
+      let snapshot: ReadScope | undefined;
+      const scope = (): ReadScope => snapshot ??= currentReadScope();
+      for (const key of [...owner.keys]) {
+        const receipt = receipts.get(key);
+        if (receipt && !isCurrent(receipt, receipt.owner.deps, scope)) revoke(key);
+      }
+    });
+    // Leave time for IPC when checking the receipts takes longer than the polling delay.
+    if (owner.keys.size > 0) scheduleRecheck();
+  };
+  const scheduleRecheck = (): void => {
+    timer = setTimeout(recheck, PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs);
+    timer.unref();
+  };
   const owner: PreviewFileOwner = { event, deps, keys: new Set(), stop: () => {
-    clearInterval(timer);
+    clearTimeout(timer);
     event.sender.removeListener("destroyed", release);
     event.sender.removeListener("render-process-gone", release);
     event.sender.removeListener("did-frame-navigate", handleNavigation);
@@ -94,6 +103,7 @@ function ownerFor(event: IpcMainInvokeEvent, deps: WindowRegistry): PreviewFileO
   event.sender.on("did-frame-navigate", handleNavigation);
   event.sender.on("did-start-navigation", handleNavigationStart);
   owners.set(frame, owner);
+  scheduleRecheck();
   return owner;
 }
 

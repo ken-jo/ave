@@ -796,17 +796,19 @@ export function policyMatchPaths(filePath: string): readonly string[] {
 
 // Resolve only the primary session namespace, without materializing it.
 export function getConfiguredSessionReadRoot(): string | undefined {
-  const home = canonicalizePathForMatch(aveHome());
-  const lexicalRoot = foldCanonicalPathSeparators(sessionStorePath(home));
-  const canonicalRoot = canonicalizePathForMatch(lexicalRoot);
-  // A relocated application root is valid. A sessions-directory link must not turn that single namespace into a grant for some other host directory.
-  if (caseFoldForMatch(canonicalRoot) !== caseFoldForMatch(lexicalRoot)) return undefined;
-  // The native filesystem policy interprets these as patterns, not literals.
-  if (/[\0\r\n*?\[\]]/.test(canonicalRoot)) return undefined;
-  // A configured application root inside a credential store cannot turn that store into an allowed native read subtree.
-  if (policyMatchPaths(caseFoldForMatch(canonicalRoot)).some((candidate) =>
-    SENSITIVE_PATH_PATTERNS.some((pattern) => !READ_ONLY_NAMESPACE_PATTERNS.has(pattern) && globMatch(candidate, pattern)))) return undefined;
-  return canonicalRoot;
+  return withLocalityDecision(() => {
+    const home = canonicalizePathForMatch(aveHome());
+    const lexicalRoot = foldCanonicalPathSeparators(sessionStorePath(home));
+    const canonicalRoot = canonicalizePathForMatch(lexicalRoot);
+    // A relocated application root is valid. A sessions-directory link must not turn that single namespace into a grant for some other host directory.
+    if (caseFoldForMatch(canonicalRoot) !== caseFoldForMatch(lexicalRoot)) return undefined;
+    // The native filesystem policy interprets these as patterns, not literals.
+    if (/[\0\r\n*?\[\]]/.test(canonicalRoot)) return undefined;
+    // A configured application root inside a credential store cannot turn that store into an allowed native read subtree.
+    if (policyMatchPaths(caseFoldForMatch(canonicalRoot)).some((candidate) =>
+      SENSITIVE_PATH_PATTERNS.some((pattern) => !READ_ONLY_NAMESPACE_PATTERNS.has(pattern) && globMatch(candidate, pattern)))) return undefined;
+    return canonicalRoot;
+  });
 }
 
 // Membership only: callers must still apply every other sensitive-path rule.
@@ -862,7 +864,7 @@ function sensitiveSearchAnchors(canonicalize: (path: string) => string = canonic
     paths.push(pathResolve(home, ...segments));
   }
   paths.push("/proc");
-  return paths.map((path) => caseFoldForMatch(canonicalize(path)));
+  return withLocalityDecision(() => paths.map((path) => caseFoldForMatch(canonicalize(path))));
 }
 
 // Cache the secret-holding location reached by each recursive-search root in one request.
@@ -1430,11 +1432,11 @@ function createPathSensitivityMatcher(
     return null;
   };
   // A stream names data of its file, and a device or loopback share alias the drive path, which are judged as well.
-  return (absPath) => {
+  return (absPath) => withLocalityDecision(() => {
     if (!absPath) return null;
     const named = withoutStreamSuffixes(localDriveAlias(absPath) ?? absPath);
     return matchSpelling(absPath, absPath) ?? (named === absPath ? null : matchSpelling(named, absPath));
-  };
+  });
 }
 
 // Internal glob matcher
