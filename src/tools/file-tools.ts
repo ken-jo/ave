@@ -85,6 +85,7 @@ import { readJudgedDocumentInput } from "./preview-document-input.js";
 import { TableDocumentError } from "./table-document-error.js";
 import { DOCUMENT_PARSE_MESSAGES } from "./preview-document-protocol.js";
 import { RENAME_FILE_LOCK_CODES, transientFsLockDelayMs } from "../lib/transient-fs-lock-retry.js";
+import { openWindowsStagedWrite } from "./windows-staged-write.js";
 import { trimOversizedToolResult } from "../shared/tool-result-trim.js";
 import {
   applyPatchChunks,
@@ -2179,28 +2180,37 @@ async function writeTextAtomically(target: string, content: string, seal?: Targe
       : join(resolvePhysicalFilesystemPath(dirname(target), process.cwd(), 64), basename(target));
     return temporaryWritePath(stableTarget);
   });
+  const windowsStage = process.platform === "win32" && seal !== undefined ? openWindowsStagedWrite(temp) : undefined;
+  const handle = windowsStage ? undefined : await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o666);
+  let identity: WrittenFileIdentity | undefined;
   try {
-    // The descriptor that wrote the bytes names the file; the rename moves that inode to the target. Anything that
-    // replaces the temporary path or the target in between is a different inode, which the evidence then refuses.
-    const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o666);
-    let identity: WrittenFileIdentity | undefined;
     try {
       seal?.verify();
-      await handle.writeFile(content, "utf8");
-      identity = writtenFileIdentity(await handle.stat({ bigint: true }));
-    } finally { await handle.close(); }
+      if (windowsStage) {
+        await windowsStage.write(content);
+        identity = writtenFileIdentity(await windowsStage.stat());
+      } else if (handle) {
+        await handle.writeFile(content, "utf8");
+        identity = writtenFileIdentity(await handle.stat({ bigint: true }));
+      }
+    } finally { await handle?.close(); }
     await renameWithTransientRetry(temp, target, seal);
-    noteOwnedWrite(target, identity);
-    return identity;
-  } catch (err) {
-    rethrowLocalityFailure(err);
+  } catch (error) {
     try {
-      await unlink(temp);
-    } catch {
-      // Best effort cleanup: preserve the original write/rename failure.
+      if (windowsStage) windowsStage.discard();
+      else {
+        rethrowLocalityFailure(error);
+        await unlink(temp);
+      }
+    } catch (cleanupError) {
+      if (cleanupError !== error) log.warn("Staged file cleanup failed: %s", errorMessage(cleanupError));
     }
-    throw err;
+    throw error;
+  } finally {
+    await windowsStage?.close().catch((error: unknown) => log.warn("Staged file close failed: %s", errorMessage(error)));
   }
+  noteOwnedWrite(target, identity);
+  return identity;
 }
 
 // Tool writes use the shared asynchronous retry policy, distinct from synchronous and unattended budgets.
@@ -2213,6 +2223,7 @@ async function renameWithTransientRetry(source: string, target: string, seal?: T
       await rename(source, target);
       return;
     } catch (err) {
+      rethrowLocalityFailure(err);
       const code = (err as NodeJS.ErrnoException | null)?.code;
       const retryable = code !== undefined
         && RENAME_FILE_LOCK_CODES.has(code)

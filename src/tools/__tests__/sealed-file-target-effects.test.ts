@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const hooks = vi.hoisted(() => ({
   onExecutionRefresh: undefined as (() => void) | undefined,
   beforeRename: undefined as ((source: string, target: string) => void) | undefined,
+  unlinks: [] as string[],
   opens: [] as string[],
 }));
 vi.mock("node:fs/promises", async (original) => {
@@ -19,6 +20,10 @@ vi.mock("node:fs/promises", async (original) => {
     rename: async (source: string, target: string) => {
       hooks.beforeRename?.(source, target);
       await actual.rename(source, target);
+    },
+    unlink: (...args: Parameters<typeof actual.unlink>) => {
+      hooks.unlinks.push(String(args[0]));
+      return actual.unlink(...args);
     },
   };
 });
@@ -35,6 +40,8 @@ vi.mock("../../shared/chat-origin.js", async (original) => {
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { sealTargets } from "../../permissions/target-seal.js";
+import { resolvePhysicalFilesystemPath } from "../../shared/shell-filesystem-path.js";
 import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { ToolExecutor } from "../executor.js";
@@ -68,6 +75,7 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
   afterEach(async () => {
     hooks.onExecutionRefresh = undefined;
     hooks.beforeRename = undefined;
+    hooks.unlinks.length = 0;
     hooks.opens.length = 0;
     await audit.close();
     vi.restoreAllMocks();
@@ -163,6 +171,44 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     expect(result?.is_error).toBe(true);
     expect(renames, JSON.stringify(result)).toEqual([target]);
     expect(existsSync(join(replacement, "new.txt"))).toBe(false);
+    expect(readdirSync(original)).toEqual(["note.txt"]);
+  });
+
+  it.each([false, true])("disposes its staging file when a drive query fails (after writing: %s)", async (afterWriting) => {
+    const parent = join(project, "sub");
+    const path = join(parent, "new.txt");
+    const stagingFiles = () => readdirSync(parent).filter((name) => name.startsWith("new.txt.ave-tmp-"));
+    const seal = sealTargets(() => resolvePhysicalFilesystemPath(path, project, 64));
+    const error = new Error("Drive query failed");
+    const rename = vi.fn();
+    hooks.beforeRename = rename;
+    setWindowsDriveQueryForTest(() => {
+      const [staged] = stagingFiles();
+      if (staged && (!afterWriting || statSync(join(parent, staged)).size > 0)) throw error;
+      return LOCAL_DRIVE;
+    });
+    const tool = new WriteFileTool();
+    await expect(tool.execute({ path, content: "new" }, {
+      cwd: project, extraAllowedDirectories: [], metadata: {}, fileTargetSeal: seal,
+    })).rejects.toBe(error);
+    expect(rename).not.toHaveBeenCalled();
+    expect(existsSync(path)).toBe(false);
+    expect(stagingFiles()).toEqual([]);
+    expect(hooks.unlinks.filter((name) => name.includes(".ave-tmp-"))).toEqual([]);
+  });
+
+  it("publishes a sealed write and closes the staging handle without deleting the destination", async () => {
+    const parent = join(project, "sub");
+    const path = join(parent, "new.txt");
+    const seal = sealTargets(() => resolvePhysicalFilesystemPath(path, project, 64));
+    const tool = new WriteFileTool();
+    const result = await tool.execute({ path, content: "new" }, {
+      cwd: project, extraAllowedDirectories: [], metadata: {}, fileTargetSeal: seal,
+    });
+    expect(result.isError).toBe(false);
+    expect(readFileSync(path, "utf8")).toBe("new");
+    expect(readdirSync(parent).sort()).toEqual(["new.txt", "note.txt"]);
+    unlinkSync(path);
   });
 
   it.each([false, true])("runs the handler only on the sealed directory (moved during the final wait: %s)", async (moved) => {

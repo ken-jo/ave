@@ -1095,7 +1095,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         return { ok: false, error: "invalid-query" };
       }
       // The scope, the roots and the folder's readability and membership are one judgment before the walk.
-      let judged: { scope: { cwd: string; extraAllowed: string[] }; roots: WorkspaceRoot[]; folder?: { path: string; root: string } } | "invalid-query" | "folder-not-allowed";
+      let judged: { scope: { cwd: string; extraAllowed: string[] }; nativeRoots: string[]; folder?: { path: string; root: string } } | "invalid-query" | "folder-not-allowed";
       try {
         judged = withLocalityDecision(() => {
           const scope = currentScope();
