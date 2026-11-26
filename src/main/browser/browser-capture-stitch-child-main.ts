@@ -1,5 +1,6 @@
 import "../bare-program-lookup.js";
 import { BROWSER_CAPTURE_LIMITS } from "../../shared/browser-capture.js";
+import { errorMessage } from "../../shared/error-message.js";
 import { createCaptureStitch } from "./browser-capture-stitch.js";
 import { captureStitchFrame, captureStitchFrames, type CaptureStitchReply, type CaptureStitchRequest } from "./browser-capture-stitch-protocol.js";
 
@@ -17,7 +18,7 @@ process.stdin.on("data", captureStitchFrames((message, payload) => {
     (png) => reply({ id }, png),
     (error: unknown) => {
       const code = (error as { code?: unknown } | null)?.code;
-      reply({ id, error: { message: error instanceof Error ? error.message : String(error), ...(typeof code === "string" ? { code } : {}) } });
+      reply({ id, error: { message: errorMessage(error), ...(typeof code === "string" ? { code } : {}) } });
     },
   );
 }));
