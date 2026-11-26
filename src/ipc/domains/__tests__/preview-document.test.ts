@@ -136,10 +136,14 @@ describe("preview:read-document handler", () => {
     const clearedWatches = vi.spyOn(globalThis, "clearInterval");
     const timeouts = vi.spyOn(globalThis, "setTimeout");
     const clearedPolls = vi.spyOn(globalThis, "clearTimeout");
-    const watchTimers = (): ReturnType<typeof setInterval>[] => intervals.mock.calls.flatMap(([, delay], index) =>
-      delay === PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs ? [intervals.mock.results[index]!.value] : []);
-    const receiptPolls = (): ReturnType<typeof setTimeout>[] => timeouts.mock.calls.flatMap(([, delay], index) =>
-      delay === PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs ? [timeouts.mock.results[index]!.value] : []);
+    const watchTimers = (): ReturnType<typeof setInterval>[] => intervals.mock.calls.flatMap(([, delay], index) => {
+      const result = intervals.mock.results[index];
+      return delay === PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs && result?.type === "return" ? [result.value] : [];
+    });
+    const receiptPolls = (): ReturnType<typeof setTimeout>[] => timeouts.mock.calls.flatMap(([, delay], index) => {
+      const result = timeouts.mock.results[index];
+      return delay === PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs && result?.type === "return" ? [result.value] : [];
+    });
     const event = documentEvent(OK_FRAME);
     try {
       const pending = readFromSender(event, join(root, "data", outcome === "abort" ? "cyclic.xls" : "people.csv"));
