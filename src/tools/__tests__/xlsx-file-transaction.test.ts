@@ -217,6 +217,8 @@ describe("workbook file transaction", () => {
       { damage: "cut header", aceCount: 1, aclHex: "0200", large: false },
       { damage: "cut body", aceCount: 1, aclHex: "020000140089001200", large: true },
       { damage: "missing whole ACE", aceCount: 2, aclHex: "020000140089001200010100000000000100000000", large: false },
+      { damage: "header-only ACE", aceCount: 1, aclHex: "0200000400", large: false },
+      { damage: "mask without a SID", aceCount: 1, aclHex: "020000080089001200", large: true },
     ])("refuses a native DACL reply with a $damage before writing", async ({ aceCount, aclHex, large }) => {
       const { path, before, output } = await workbook(large);
       const snapshot = readWorkbookSnapshot(path);

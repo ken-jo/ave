@@ -250,6 +250,29 @@ const DACL_PRESENT = 0x0004;
 const FILE_DACL_CONTROL_MASK = 0x1500 | DACL_PRESENT;
 
 const ACE_HEADER_BYTES = 4;
+const SID_HEADER_BYTES = 8;
+const SID_MAX_SUB_AUTHORITIES = 15;
+
+// SID offset in each DACL ACE layout: allow/deny and their callback forms, then the object forms with optional GUIDs.
+// Other types never qualify. Like the native validator, a SID only has to fit; callback data may follow it.
+function aceSidOffset(ace: Buffer): number | undefined {
+  switch (ace[0]) {
+    case 0x00: case 0x01: case 0x09: case 0x0a: return 8;
+    case 0x05: case 0x06: case 0x0b: case 0x0c: {
+      if (ace.length < 12) return undefined;
+      const flags = ace.readUInt32LE(8);
+      return 12 + (flags & 1 ? 16 : 0) + (flags & 2 ? 16 : 0);
+    }
+    default: return undefined;
+  }
+}
+
+function isCompleteAce(ace: Buffer): boolean {
+  const sid = aceSidOffset(ace);
+  if (sid === undefined || sid + SID_HEADER_BYTES > ace.length || ace[sid] !== 1) return false;
+  const subAuthorities = ace[sid + 1]!;
+  return subAuthorities <= SID_MAX_SUB_AUTHORITIES && sid + SID_HEADER_BYTES + 4 * subAuthorities <= ace.length;
+}
 
 function isCompleteFileAcl(aclHex: unknown, aceCount: number): boolean {
   if (aclHex === null) return aceCount === 0;
@@ -262,7 +285,8 @@ function isCompleteFileAcl(aclHex: unknown, aceCount: number): boolean {
   for (let index = 0; index < aceCount; index++) {
     if (offset + ACE_HEADER_BYTES > bytes.length) return false;
     const size = bytes.readUInt16LE(offset + 2);
-    if (size < ACE_HEADER_BYTES || size % 4 !== 0 || size > bytes.length - offset) return false;
+    if (size < ACE_HEADER_BYTES || size % 4 !== 0 || size > bytes.length - offset
+      || !isCompleteAce(bytes.subarray(offset, offset + size))) return false;
     offset += size;
   }
   return offset === bytes.length;
