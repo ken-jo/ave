@@ -46,6 +46,7 @@ export interface WindowsPathKindBuild {
 
 export const WINDOWS_PATH_KIND_PROFILE: string;
 export const WINDOWS_PATH_KIND_PROFILE_SETTINGS: WindowsPathKindProfileSettings;
+export function windowsPathKindRustupRoot(): string;
 export function windowsPathKindToolPaths(rustupRoot: string, toolchain: string, host: string): WindowsPathKindToolPaths;
 export function windowsPathKindSystemEnvironment(systemRoot: string): NodeJS.ProcessEnv;
 export function windowsPathKindRustflags(linker: string, inputs: WindowsPathKindInputs): string[];

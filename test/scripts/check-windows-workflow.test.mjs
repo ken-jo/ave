@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import childProcess, { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { fileURLToPath } from "node:url";
+import { userInfo } from "node:os";
+import { join } from "node:path";
 import { it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { parse, stringify } from "yaml";
 import { windowsTestCommands } from "../../scripts/run-windows-test-list.mjs";
 import { COMMAND_LINE_BUDGET_CHARS, commandLineLength } from "../../scripts/hooks/spawn-command.mjs";
@@ -348,6 +350,29 @@ it("rejects a second bare test command on a contained line", () => {
 
 const ARM64_JOB = "windows-arm64-path-kind";
 const ARM64_RESULT_STEP = "Require the build and every Vitest shard";
+
+it("installs the pinned path helper toolchain in the account store under job home isolation", async t => {
+  const originalEnv = process.env;
+  const originalArgv = process.argv;
+  const install = t.mock.method(childProcess, "execFileSync", () => {});
+  syncBuiltinESMExports();
+  const home = "C:\\ave-ci-a1b2c3\\home";
+  process.env = { ...originalEnv, HOME: home, USERPROFILE: home, RUSTUP_HOME: `${home}\\.rustup` };
+  process.argv = [process.execPath, "install-windows-path-kind-rust.mjs", "x64"];
+  try {
+    await import("../../.github/scripts/install-windows-path-kind-rust.mjs");
+    assert.equal(install.mock.callCount(), 1);
+    const [command, , options] = install.mock.calls[0].arguments;
+    assert.equal(command, "rustup");
+    assert.equal(options.env?.RUSTUP_HOME, join(userInfo().homedir, ".rustup"));
+    assert.equal(options.env?.USERPROFILE, home);
+  } finally {
+    process.argv = originalArgv;
+    process.env = originalEnv;
+    install.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
 
 it("runs path classification with the arm64 runtime and native job launcher", () => {
   const { jobs } = parse(workflow);

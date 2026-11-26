@@ -44,6 +44,10 @@ export const WINDOWS_PATH_KIND_PROFILE_SETTINGS = Object.freeze({
   rpath: false,
 });
 
+export function windowsPathKindRustupRoot() {
+  return join(userInfo().homedir, ".rustup");
+}
+
 export function windowsPathKindToolPaths(rustupRoot, toolchain, host) {
   const installation = win32.join(rustupRoot, "toolchains", [toolchain, host].join("-"));
   return {
@@ -166,7 +170,7 @@ export function windowsPathKindCompiler(root, arch) {
   const toolchain = windowsPathKindToolchain(root);
   const target = windowsPathKindTarget(arch);
   const host = windowsPathKindTarget(process.arch);
-  const rustupRoot = realpathSync(join(userInfo().homedir, ".rustup"));
+  const rustupRoot = realpathSync(windowsPathKindRustupRoot());
   const tools = windowsPathKindToolPaths(rustupRoot, toolchain, host);
   const env = windowsPathKindSystemEnvironment(windowsSystemRoot());
   const inputs = windowsPathKindInputs(arch, tools, target, env);
