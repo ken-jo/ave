@@ -1,25 +1,52 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { sealTargets, TargetIdentityChangedError } from "../../permissions/target-seal.js";
 import { resolvePhysicalFilesystemPath } from "../../shared/shell-filesystem-path.js";
 import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
-import { MoveFileTool, WriteFileTool } from "../../tools/file-tools.js";
+import { CopyPathTool, MoveFileTool, WriteFileTool } from "../../tools/file-tools.js";
 import { checkpointFileMutation, restoreCodeCheckpoint, withCodeCheckpoint } from "../code-checkpoints.js";
 
 const probe = vi.hoisted(() => vi.fn<(path: unknown) => void>());
-const copy = vi.hoisted(() => ({ afterCopy: undefined as (() => void) | undefined }));
+const copy = vi.hoisted(() => ({
+  afterCopy: undefined as (() => void) | undefined,
+  afterOpen: undefined as ((path: unknown, handle: FileHandle) => void) | undefined,
+}));
 vi.unmock("../../shared/windows-drive-locality.js");
+vi.mock("node:fs", async (original) => {
+  const actual = await original<typeof import("node:fs")>();
+  return {
+    ...actual,
+    existsSync: (...args: Parameters<typeof actual.existsSync>) => { probe(args[0]); return actual.existsSync(...args); },
+    lstatSync: (...args: Parameters<typeof actual.lstatSync>) => { probe(args[0]); return actual.lstatSync(...args); },
+    openSync: (...args: Parameters<typeof actual.openSync>) => { probe(args[0]); return actual.openSync(...args); },
+    readlinkSync: (...args: Parameters<typeof actual.readlinkSync>) => { probe(args[0]); return actual.readlinkSync(...args); },
+    statSync: (...args: Parameters<typeof actual.statSync>) => { probe(args[0]); return actual.statSync(...args); },
+    realpathSync: Object.assign(
+      (...args: Parameters<typeof actual.realpathSync>) => { probe(args[0]); return actual.realpathSync(...args); },
+      { native: (...args: Parameters<typeof actual.realpathSync.native>) => { probe(args[0]); return actual.realpathSync.native(...args); } },
+    ),
+  };
+});
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
   return { ...actual,
-    open: (...args: Parameters<typeof actual.open>) => { probe(args[0]); return actual.open(...args); },
+    open: async (...args: Parameters<typeof actual.open>) => {
+      probe(args[0]);
+      const handle = await actual.open(...args);
+      copy.afterOpen?.(args[0], handle);
+      return handle;
+    },
     lstat: (...args: Parameters<typeof actual.lstat>) => { probe(args[0]); return actual.lstat(...args); },
+    mkdir: (...args: Parameters<typeof actual.mkdir>) => { probe(args[0]); return actual.mkdir(...args); },
+    opendir: (...args: Parameters<typeof actual.opendir>) => { probe(args[0]); return actual.opendir(...args); },
     realpath: (...args: Parameters<typeof actual.realpath>) => { probe(args[0]); return actual.realpath(...args); },
+    rmdir: (...args: Parameters<typeof actual.rmdir>) => { probe(args[0]); return actual.rmdir(...args); },
+    unlink: (...args: Parameters<typeof actual.unlink>) => { probe(args[0]); return actual.unlink(...args); },
     copyFile: async (...args: Parameters<typeof actual.copyFile>) => {
       await actual.copyFile(...args);
       copy.afterCopy?.();
@@ -50,6 +77,7 @@ describe("checkpoint mutation locality", () => {
     vi.unstubAllEnvs();
     probe.mockClear();
     copy.afterCopy = undefined;
+    copy.afterOpen = undefined;
     await rm(root, { recursive: true, force: true });
   });
 
@@ -195,5 +223,55 @@ describe("checkpoint mutation locality", () => {
     expect(await restoreCodeCheckpoint(sessionId, "mutation", context)).toEqual({ ok: true });
     expect(await readFile(first, "utf8")).toBe("first");
     await expect(readFile(destination)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.runIf(process.platform === "win32").each(["created", "written"])("stops workspace IO when copy loses locality after the destination is %s", async (stage) => {
+    const sessionId = randomUUID();
+    const destination = join(root, "copied.txt");
+    const state = join(root, "state");
+    const context = { cwd: root, extraAllowedDirectories: [], metadata: {} };
+    const unavailable = new Error("Drive query failed");
+    const seal = sealTargets(() => resolvePhysicalFilesystemPath(first, root, 64));
+    const query = vi.fn(() => LOCAL_DRIVE).mockImplementationOnce(() => {
+      probe.mockClear();
+      throw unavailable;
+    });
+    copy.afterOpen = (path, handle) => {
+      if (path !== destination) return;
+      if (stage === "created") {
+        setWindowsDriveQueryForTest(query);
+      } else {
+        const chmod = handle.chmod.bind(handle);
+        vi.spyOn(handle, "chmod").mockImplementationOnce(async (mode) => {
+          await chmod(mode);
+          setWindowsDriveQueryForTest(query);
+        });
+      }
+    };
+
+    await withCodeCheckpoint({ sessionId, messageId: "mutation" }, async () => {
+      const failure = await new CopyPathTool().execute(
+        { sourcePath: first, destinationPath: destination }, { ...context, fileTargetSeal: seal },
+      ).catch((error: unknown) => error);
+      const workspaceOperations = probe.mock.calls.flatMap(([path]) => {
+        if (typeof path !== "string" || path === state || path.startsWith(state + sep)) return [];
+        return path === root || path.startsWith(root + sep) || root.startsWith(path.endsWith(sep) ? path : path + sep) ? [path] : [];
+      });
+      expect(workspaceOperations).toEqual([]);
+      expect(query).toHaveBeenCalledOnce();
+      expect(failure).toBe(unavailable);
+      setWindowsDriveQueryForTest(() => LOCAL_DRIVE);
+    });
+
+    expect(await readFile(first, "utf8")).toBe("first");
+    expect(await readFile(destination, "utf8")).toBe(stage === "created" ? "" : "first");
+    const result = await restoreCodeCheckpoint(sessionId, "mutation", context);
+    if (stage === "created") {
+      expect(result).toMatchObject({ ok: false, conflictingFiles: [destination] });
+      expect(await readFile(destination, "utf8")).toBe("");
+    } else {
+      expect(result).toEqual({ ok: true });
+      await expect(readFile(destination)).rejects.toMatchObject({ code: "ENOENT" });
+    }
   });
 });
