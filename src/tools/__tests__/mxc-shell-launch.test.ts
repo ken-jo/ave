@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmdirSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { win32 as winPath } from "node:path";
@@ -66,6 +66,7 @@ import { srtWinConfinementStatePaths } from "../../permissions/srt-win-integrity
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "../../permissions/egress-invocations.js";
 import * as policyPipe from "../../permissions/mxc-policy-pipe.js";
 import * as sandboxCapability from "../../permissions/sandbox-capability.js";
+import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../../permissions/sandbox-home-registry.js";
 
 // The container route goes away: no capability, announced as a status change.
 function endRoute(): () => void {
@@ -243,28 +244,60 @@ describe("prepareMxcShellLaunch", () => {
       }
     });
 
-    it("passes this invocation's own issued HOME under the runtime root and refuses another HOME there", async () => {
-      const own = winPath.join(runtimeRoot(), "homes", "ave-sandbox-home-own");
-      const sibling = winPath.join(runtimeRoot(), "homes", "ave-sandbox-home-sibling");
-      h.liveHomes.add(own);
-      relay();
-      try {
-        const launch = async (allowWrite: string[]) => {
-          const lifecycle = createContainedShellLifecycle();
-          try {
-            return decodeRequest((await prepareMxcShellLaunch({ ...INPUT, sandboxHome: own,
-              filesystem: { ...INPUT.filesystem, allowWrite } }, lifecycle)).argv).filesystem.readwritePaths;
-          } finally {
-            expect(await lifecycle.dispose()).toEqual([]);
-          }
-        };
-        expect(await launch([WS, own])).toEqual([WS, own]);
-        await expect(launch([WS, own, sibling])).rejects.toMatchObject({ code: "confinement-state-write-grant", path: sibling, reason: "container-runtime" });
-        h.issuedHome.mockReturnValueOnce(false);
-        await expect(launch([WS, own])).rejects.toMatchObject({ code: "confinement-state-write-grant", path: own, reason: "container-runtime" });
-      } finally {
+    describe("this invocation's own issued HOME under the runtime root", () => {
+      let base = "";
+      let own = "";
+      beforeEach(() => {
+        base = realpathSync.native(mkdtempSync(winPath.join(tmpdir(), "shell-own-home-")));
+        vi.stubEnv("AVE_TEST_SANDBOX_BASE", base);
+        own = winPath.join(runtimeRoot(), "homes", "ave-sandbox-home-own");
+        mkdirSync(winPath.join(own, "AppData"), { recursive: true });
+        recordIssuedContainerHome(own, runtimeRoot());
+        h.liveHomes.add(own);
+        relay();
+      });
+      afterEach(() => {
         h.liveHomes.delete(own);
-      }
+        forgetIssuedContainerHome(own);
+        sandboxCapability.__resetSandboxHomesUnavailableForTest();
+        rmSync(base, { recursive: true, force: true });
+      });
+      const launch = async (allowWrite: string[]) => {
+        const lifecycle = createContainedShellLifecycle();
+        try {
+          return decodeRequest((await prepareMxcShellLaunch({ ...INPUT, sandboxHome: own,
+            filesystem: { ...INPUT.filesystem, allowWrite } }, lifecycle)).argv).filesystem.readwritePaths;
+        } finally {
+          expect(await lifecycle.dispose()).toEqual([]);
+        }
+      };
+      // Runs `change` while the launch waits for its relay, after the first state check.
+      const duringPreparation = (change: () => void): void => {
+        const open = h.openRelay.getMockImplementation();
+        h.openRelay.mockImplementationOnce(async (...args: unknown[]) => { change(); return open?.(...args); });
+      };
+
+      it("passes it and refuses another HOME there", async () => {
+        const sibling = winPath.join(runtimeRoot(), "homes", "ave-sandbox-home-sibling");
+        expect(await launch([WS, own, winPath.join(own, "AppData")])).toEqual([WS, own, winPath.join(own, "AppData")]);
+        await expect(launch([WS, own, sibling])).rejects.toMatchObject({ code: "confinement-state-write-grant", path: sibling, reason: "container-runtime" });
+        forgetIssuedContainerHome(own);
+        await expect(launch([WS, own])).rejects.toMatchObject({ code: "confinement-state-write-grant", path: own, reason: "container-runtime" });
+      });
+
+      it.each([
+        ["forgotten", () => forgetIssuedContainerHome(own)],
+        ["issued again at the same name", () => { forgetIssuedContainerHome(own); recordIssuedContainerHome(own, runtimeRoot()); }],
+      ])("no longer passes it once it is %s while the launch prepares", async (_case, change) => {
+        duringPreparation(change);
+        await expect(launch([WS, own])).rejects.toMatchObject({ code: "confinement-state-write-grant", path: own, reason: "container-runtime" });
+        expect(h.openRelay).toHaveBeenCalledOnce();
+      });
+
+      it("refuses with the named reason once it is replaced while the launch prepares", async () => {
+        duringPreparation(() => { renameSync(own, `${own}.old`); mkdirSync(own); });
+        await expect(launch([WS, own])).rejects.toMatchObject({ code: "sandbox-home-unavailable" });
+      });
     });
   });
 

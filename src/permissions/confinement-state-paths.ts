@@ -76,7 +76,8 @@ const enclosingRuntime = (state: ResolvedStatePath, inner: string): boolean => s
  * its own state. Each grant is compared as spelled and as the identity it resolves to, which an alias or a link on its
  * path would otherwise hide. A declaration that is missing or does not resolve refuses every write; a grant that does
  * not resolve is refused. `stagingRoot` is the one host-minted holder root inside a backend's state the route grants
- * itself; `ownHome` is the invocation's own sandbox HOME, which the caller has verified as issued and in place. A grant
+ * itself; `ownHome` is the resolved path of the invocation's own sandbox HOME, from the one observation that found its
+ * issuance live and in place (`liveIssuedContainerHome`), so it is not resolved again here. A grant
  * resolving to exactly the staging root, or at or under the HOME, is passed by the container runtime declaration that
  * encloses that root or HOME only; every other declaration, including one inside either, still refuses it.
  */
@@ -92,7 +93,7 @@ export function assertWriteGrantsOutsideConfinementState(
   // Nothing declared (no backend that grants on this host): there is nothing to resolve a grant against.
   if (states.length === 0) return;
   const staging = stagingRoot === undefined ? undefined : strictlyResolved(stagingRoot);
-  const home = ownHome === undefined ? undefined : strictlyResolved(ownHome);
+  const home = ownHome === undefined ? undefined : winPath.normalize(ownHome);
   for (const grant of write) {
     const real = strictlyResolved(grant);
     if (real === undefined) throw new ConfinementStateWriteGrantError(grant, "grant-unresolved");

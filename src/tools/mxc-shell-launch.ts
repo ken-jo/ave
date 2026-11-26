@@ -20,7 +20,7 @@ import {
 } from "../permissions/mxc-windows.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../permissions/policy-model.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
-import { assertIssuedContainerHomeInPlace, isIssuedContainerHome } from "../permissions/sandbox-home-registry.js";
+import { assertIssuedContainerHomeInPlace, isIssuedContainerHome, issuedContainerHome, liveIssuedContainerHome } from "../permissions/sandbox-home-registry.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 
 export interface MxcShellLaunch {
@@ -110,6 +110,8 @@ const MXC_TIMEOUT_MARGIN_MS = 30_000;
  * change) revokes the lifecycle, which stops all forwarding at once.
  */
 export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle): Promise<MxcShellLaunch> {
+  // The HOME issuance this launch holds through every wait below.
+  const issuedHome = issuedContainerHome(input.sandboxHome);
   const capability = detectMxcShellCapability();
   if (capability === undefined) throw new Error("Container shell route is unavailable");
   // Before anything is allocated: a runtime root that was not proved private refuses every container start.
@@ -168,11 +170,11 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   assertIssuedContainerHomeInPlace(input.sandboxHome);
   // No working directory inside the root except the invocation's own issued HOME itself, by identity.
   if (privateRootCovering(input.cwd) !== undefined && !isIssuedContainerHome(input.cwd, input.sandboxHome)) throw new Error("Container shell working directory is inside the sandbox runtime root");
-  // The invocation's own HOME lies in the runtime root's state; it is passed only while live and issued, by identity.
-  const ownHome = input.sandboxHome !== undefined && insideOwnWindowsSandboxHome(input.sandboxHome, input.sandboxHome)
-    && isIssuedContainerHome(input.sandboxHome, input.sandboxHome) ? input.sandboxHome : undefined;
+  // The invocation's own HOME lies in the runtime root's state; it is passed only while live and still the issuance held.
+  const ownHome = (): string | undefined => input.sandboxHome !== undefined
+    && insideOwnWindowsSandboxHome(input.sandboxHome, input.sandboxHome) ? liveIssuedContainerHome(issuedHome) : undefined;
   // Before ranking: the runtime root is only an ordinary read deny there, which an equal or enclosing write survives.
-  assertWriteGrantsOutsideConfinementState(input.filesystem.allowWrite, declaredConfinementStatePaths(), undefined, ownHome);
+  assertWriteGrantsOutsideConfinementState(input.filesystem.allowWrite, declaredConfinementStatePaths(), undefined, ownHome());
   const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
   const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
   const denyRead = [...new Set([...input.filesystem.denyRead, ...privateRoots])];
@@ -193,7 +195,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   relay.registerPort(listener.port);
   // Again on what the request grants, after the waits above: no pin holds a shell root, so this is the last check.
   assertIssuedContainerHomeInPlace(input.sandboxHome);
-  assertWriteGrantsOutsideConfinementState(grants.readwrite, declaredConfinementStatePaths(), undefined, ownHome);
+  assertWriteGrantsOutsideConfinementState(grants.readwrite, declaredConfinementStatePaths(), undefined, ownHome());
   const systemRoot = windowsSystemRoot();
   const env: Record<string, string> = { ...input.env };
   if (!Object.keys(env).some((key) => key.toUpperCase() === "SYSTEMROOT")) env["SYSTEMROOT"] = systemRoot;

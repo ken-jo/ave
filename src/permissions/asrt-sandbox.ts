@@ -4,7 +4,7 @@ import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProc
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { mxcRuntimeRootFloorPath } from "./mxc-runtime-root.js";
 import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "./confinement-state-paths.js";
-import { isIssuedContainerHome, liveSandboxProcessHomes } from "./sandbox-home-registry.js";
+import { issuedContainerHome, liveIssuedContainerHome, liveSandboxProcessHomes, type IssuedContainerHome } from "./sandbox-home-registry.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyFloorRow, type PolicyGrantRow, type PolicyModel } from "./policy-model.js";
 import { srtWriteFloorRow, toSrtConfig } from "./srt-policy-adapter.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
@@ -3326,6 +3326,8 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
 ): Promise<WindowsWorkerFilesystemGrant> {
   const { timeStep } = timing;
   const { assertStillValid, holderPid: requestedHolderPid, sandboxHome, ...opts } = request;
+  // The HOME issuance this grant holds through its waits.
+  const issuedHome = issuedContainerHome(sandboxHome);
   timeStep("preflightMs", () => assertStillValid?.());
   if (process.platform === "win32") {
     for (const path of [...(opts.allowRead ?? []), ...(opts.allowWrite ?? [])]) {
@@ -3387,7 +3389,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   const requests = pins.map(pin => ({ path: stripExtendedPathPrefix(pin.canonical!), identity: windowsObjectKey(pin) }));
   const allowRead = requests.map(request => request.path);
   const allowWrite = requests.slice(requestedRead.length - requestedWrite.length).map(request => request.path);
-  timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome));
+  timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome, issuedHome));
   timeStep("preflightMs", () => checkWindowsSandboxStampTargets(pinned));
 
   const resolveDocumentsPath = scopedWindowsDocumentsPath();
@@ -3469,7 +3471,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   if (_baseTrustedSettings !== baseTrustedSettings || session.windowsLiveGrantRevision !== grantRevision) {
     throw new Error("Windows sandbox policy changed while stamping the worker grant");
   }
-  timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome));
+  timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome, issuedHome));
   timeStep("preflightMs", () => assertStillValid?.());
   if (stampFailure !== undefined) throw stampFailure;
   // Resolved after every refusal above, so a refused turn starts no holder.
@@ -3605,7 +3607,7 @@ export function insideOwnWindowsSandboxHome(path: string, sandboxHome: string | 
   return resolved === home || resolved.startsWith(home + win32.sep);
 }
 
-function assertWindowsGrantBoundaries(read: readonly string[], write: readonly string[], sandboxHome?: string): void {
+function assertWindowsGrantBoundaries(read: readonly string[], write: readonly string[], sandboxHome?: string, issuedHome?: IssuedContainerHome): void {
   assertPrivateHelperGrants(read, write);
   assertWindowsMachineRootWriteGrants(write);
   for (const path of read) {
@@ -3631,9 +3633,9 @@ function assertWindowsGrantBoundaries(read: readonly string[], write: readonly s
       throw new Error(`Windows filesystem write grant is inside a protected sensitive target: ${path}`);
     }
   }
-  // The caller's own HOME lies in the runtime root's state; it is passed only while live and issued, by identity.
+  // The caller's own HOME lies in the runtime root's state; it is passed only while live and still the issuance held.
   const ownHome = sandboxHome !== undefined && insideOwnWindowsSandboxHome(sandboxHome, sandboxHome)
-    && isIssuedContainerHome(sandboxHome, sandboxHome) ? sandboxHome : undefined;
+    ? liveIssuedContainerHome(issuedHome) : undefined;
   assertWriteGrantsOutsideConfinementState(write, declaredConfinementStatePaths(), undefined, ownHome);
 }
 
