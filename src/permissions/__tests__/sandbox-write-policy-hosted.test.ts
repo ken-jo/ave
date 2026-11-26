@@ -116,6 +116,23 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js", async ori
     ? paths.win32.normalize(path) : Reflect.apply(actual.normalizePathForSandbox, undefined, [path, ...args]) };
 });
 
+// The package runs outside the module mocks and expands on the host's own fs, where a drive spelling is one over-long relative name.
+// On a POSIX host each drive-spelled row is expanded at its backing file and named back on the drive.
+vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", async original => {
+  const actual = await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>();
+  const onDrive = (path: string): boolean => /^[A-Za-z]:[\\/]/u.test(path);
+  const expandWindowsFsPaths: typeof actual.expandWindowsFsPaths = (patterns, opts) => {
+    if (!driveFixture.enabled || driveFixture.nativeHost === "win32") return actual.expandWindowsFsPaths(patterns, opts);
+    return [...new Set([...patterns].flatMap(entry => {
+      const path = typeof entry === "string" ? entry : entry.path;
+      if (!onDrive(path)) return actual.expandWindowsFsPaths([entry], opts);
+      const host = driveFixture.toHost(path);
+      return actual.expandWindowsFsPaths([typeof entry === "string" ? host : { ...entry, path: host }], opts).map(driveFixture.toNative);
+    }))];
+  };
+  return { ...actual, expandWindowsFsPaths };
+});
+
 import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import { join, resolve, win32 } from "node:path";
@@ -134,11 +151,12 @@ const hostExecPath = process.execPath;
 const hostResourcePath = resolve("resources");
 
 // Host resources and the runtime executable are a native checkout of the simulated platform. Under the drive fixture a POSIX spelling
-// in a win32 policy is a rootless native row the policy re-roots under the mocked cwd, a row no real Windows policy carries.
-function useNativeCheckout(platform: NodeJS.Platform): void {
-  const onDrive = platform === "win32" && hostPlatform !== "win32";
-  configureHostResources({ resourcePath: onDrive ? String.raw`C:\ave\resources` : hostResourcePath, isPackaged: false });
-  if (onDrive) Object.defineProperty(process, "execPath", { value: String.raw`C:\ave\Ave.exe`, configurable: true });
+// in a policy built with win32 paths is a rootless native row the policy re-roots under the mocked cwd, a row no real policy carries.
+// A case whose rows all take win32 paths puts the resources on the drive for every case platform.
+function useNativeCheckout(platform: NodeJS.Platform, resourcesOnDrive = platform === "win32"): void {
+  const onDrive = hostPlatform !== "win32";
+  configureHostResources({ resourcePath: onDrive && resourcesOnDrive ? String.raw`C:\ave\resources` : hostResourcePath, isPackaged: false });
+  if (onDrive && platform === "win32") Object.defineProperty(process, "execPath", { value: String.raw`C:\ave\Ave.exe`, configurable: true });
 }
 
 describe("hosted write policy spellings", () => {
@@ -193,7 +211,7 @@ describe("hosted write policy spellings", () => {
     driveFixture.backing = realpathSync(mkdtempSync(join(os.tmpdir(), "wp-")));
     if (hostPlatform !== "win32") mkdirSync(join(driveFixture.backing, "other-drives", "C"), { recursive: true });
     driveFixture.enabled = hostPlatform !== "win32";
-    useNativeCheckout(platform);
+    useNativeCheckout(platform, true);
     setProcessPlatform(platform);
     const tempSegments = prefix === "native-temp" ? [".ave-test-tmp"] : ["a", "_temp"];
     const rootPrefix = hostPlatform === "win32"
