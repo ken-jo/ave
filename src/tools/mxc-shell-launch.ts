@@ -5,6 +5,7 @@ import { resolvePathForPolicy } from "../permissions/sensitive-paths.js";
 import { captureShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { win32 as winPath } from "node:path";
 import type { ChildProcess } from "node:child_process";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
 import { appOwnedSandboxPrivateRoots, aveHomeReadBoundaryCovering, getProtectedReadDenyFloor, getUserReadDenies, insideOwnWindowsSandboxHome, protectedReadDenyMatcher } from "../permissions/asrt-sandbox.js";
@@ -32,7 +33,7 @@ export interface MxcShellLaunch {
   readonly proxyPort: number;
   readonly watchedNotice?: string | undefined;
   /** Admit connections after the final shell admission checks, immediately before spawn. */
-  activate(): void;
+  activate(assertSpawnDirectory?: () => void): void;
   /** Bind policy delivery immediately after spawning the launcher. */
   bindChild(child: ChildProcess): void;
 }
@@ -245,11 +246,14 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     argv: [wxcExec, ...transport.args],
     proxyPort: listener.port,
     get watchedNotice() { return watchedNotice; },
-    activate: () => {
+    activate: (assertSpawnDirectory) => {
       assertAdmission();
-      // Check watched names and the sealed grant together before publishing the claim.
-      if (claim === undefined) seal.verify();
-      else claim.start(seal.verify);
+      const assertStillValid = (): void => {
+        seal.verify();
+        assertSpawnDirectory?.();
+      };
+      if (claim === undefined) withLocalityDecision(assertStillValid);
+      else claim.start(assertStillValid);
       active = true;
     },
     bindChild: transport.bindChild,

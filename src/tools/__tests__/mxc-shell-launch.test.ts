@@ -393,6 +393,46 @@ describe("prepareMxcShellLaunch", () => {
     }
   });
 
+  it.runIf(process.platform === "win32")("publishes no watched claim and sweeps nothing when the final cwd check fails", async () => {
+    relay();
+    configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-shell-check-")));
+    const cwd = join(root, "project");
+    const home = join(root, "home");
+    mkdirSync(cwd);
+    mkdirSync(home);
+    vi.stubEnv("AVE_HOME", home);
+    const watched = join(cwd, ".ave", "commands");
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const launch = await prepareMxcShellLaunch({ ...INPUT, cwd,
+        filesystem: { ...INPUT.filesystem, allowWrite: [cwd], denyWrite: [watched], requiredWriteDenies: [watched] },
+        exists: (path) => existsSync(path) || path.endsWith("wxc-exec.exe"),
+      }, lifecycle);
+      const before = watchedProtectedRows();
+      const failure = new Error("Final shell cwd check failed");
+      let refused: unknown;
+      try {
+        launch.activate(() => { throw failure; });
+      } catch (error) {
+        refused = error;
+      }
+      const after = watchedProtectedRows();
+      const active = h.openRelay.mock.calls[0]?.[1].acceptsConnections();
+      mkdirSync(watched, { recursive: true });
+
+      expect(await lifecycle.dispose()).toEqual([]);
+      expect(existsSync(watched)).toBe(true);
+      expect(launch.watchedNotice).toBeUndefined();
+      expect(after).toEqual(before);
+      expect(active).toBe(false);
+      expect(refused).toBe(failure);
+    } finally {
+      await lifecycle.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.runIf(process.platform === "win32")("refuses at activation, naming the protected path, when a watched name's parent appeared after ranking, and sweeps nothing it never started", async () => {
     relay();
     configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
