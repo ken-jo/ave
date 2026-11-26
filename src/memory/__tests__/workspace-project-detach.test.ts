@@ -422,7 +422,7 @@ describe("MemoryManager workspace project detachment", () => {
     expect(restarted.searchSessions(content)).toHaveLength(1);
   });
 
-  it("rolls back a rebuild when scoped metadata is temporarily unreadable and repairs it on retry", async () => {
+  it.each(["EIO", "ENOENT"])("rolls back a rebuild when scoped metadata is temporarily unreadable (%s) and repairs it on retry", async (code) => {
     const otherRoot = "C:\\Work\\Beta";
     await seed(SESSION_A, ROOT, "detached session");
     await seed(SESSION_OTHER, otherRoot, "scoped session");
@@ -432,7 +432,7 @@ describe("MemoryManager workspace project detachment", () => {
     const marker = join(dir, "sessions", ".search-repair.json");
     expect(existsSync(marker)).toBe(true);
     const metadata = join(dir, "sessions", `${SESSION_OTHER}.meta.json`);
-    const failure = Object.assign(new Error("temporary metadata read failure"), { code: "EIO" });
+    const failure = Object.assign(new Error("temporary metadata read failure"), { code });
     const { readFileSync: originalReadFile } = await vi.importActual<typeof import("node:fs")>("node:fs");
     const read = vi.mocked(readFileSync).mockImplementation((file, options) => {
       if (file === metadata) throw failure;
@@ -462,6 +462,42 @@ describe("MemoryManager workspace project detachment", () => {
     expect.soft(restarted.searchSessions(`message-${SESSION_A}`)).toHaveLength(1);
     expect.soft(restarted.searchSessions(`message-${SESSION_OTHER}`, { projectRoot: otherRoot })).toHaveLength(1);
     expect(restarted.searchSessions("session without metadata")).toHaveLength(1);
+  });
+
+  it.each([
+    { projectRoot: true },
+    { projectRoot: "  " },
+    { sessionKind: "unknown" },
+    { routineId: null },
+  ])("rolls back a rebuild when supplied search metadata is invalid (%j)", async (invalidMetadata) => {
+    const otherRoot = "C:\\Work\\Beta";
+    await seed(SESSION_A, ROOT, "detached session");
+    await seed(SESSION_OTHER, otherRoot, "scoped session");
+    const deferred = new SessionRepository({ aveDir: dir, getSearchIndexPolicy: () => "inactive" });
+    await expect(deferred.detachSessionsFromProject(ROOT)).resolves.toBe(1);
+    const marker = join(dir, "sessions", ".search-repair.json");
+    expect(existsSync(marker)).toBe(true);
+    const metadata = join(dir, "sessions", `${SESSION_OTHER}.meta.json`);
+    writeFileSync(metadata, JSON.stringify({ projectRoot: otherRoot, ...invalidMetadata }));
+
+    const restarted = new SessionRepository({ aveDir: dir });
+    await restarted.verifyOrRebuildSearchIndex();
+    expect.soft(existsSync(marker)).toBe(true);
+    const previousIndex = new SessionSearchIndex(dir);
+    expect(previousIndex.open()).toBe(true);
+    try {
+      expect.soft(previousIndex.query(`message-${SESSION_A}`, { projectRoot: ROOT })).toHaveLength(1);
+      expect.soft(previousIndex.query(`message-${SESSION_OTHER}`, { projectRoot: otherRoot })).toHaveLength(1);
+    } finally {
+      previousIndex.close();
+    }
+
+    writeFileSync(metadata, JSON.stringify({ projectRoot: otherRoot }));
+    await restarted.verifyOrRebuildSearchIndex();
+    expect.soft(existsSync(marker)).toBe(false);
+    expect.soft(restarted.searchSessions(`message-${SESSION_A}`, { projectRoot: ROOT })).toEqual([]);
+    expect.soft(restarted.searchSessions(`message-${SESSION_A}`)).toHaveLength(1);
+    expect(restarted.searchSessions(`message-${SESSION_OTHER}`, { projectRoot: otherRoot })).toHaveLength(1);
   });
 
   it("clears a deferred projection repair after authorized discard", async () => {

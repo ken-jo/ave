@@ -1049,8 +1049,9 @@ export class SessionRepository {
   // Empty searchable content removes the index row; derive timestamps from transcript mtime, not indexing time.
   private buildIndexInput(sessionId: string, messages: unknown[], strictMetadata = false): IndexedSessionInput | null {
     const content = extractSearchableContent(messages);
-    if (!content) return null;
+    if (!content && !strictMetadata) return null;
     const metadata = strictMetadata ? this.readSessionMetadataForSearchRepair(sessionId) : this.loadSessionMetadata(sessionId);
+    if (!content) return null;
     const summary = this.deriveSessionSummary(sessionId, messages);
     const mtimeMs = getFileMtimeMs(join(this.sessionsDir, `${sessionId}.jsonl`));
     const timestamp = mtimeMs >= 0 ? new Date(mtimeMs).toISOString() : new Date().toISOString();
@@ -1691,11 +1692,21 @@ export class SessionRepository {
     try {
       raw = readFileSync(path, "utf-8");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && lstatSync(path, { throwIfNoEntry: false }) === undefined) return null;
       throw error;
     }
     try {
-      return normalizeSessionMetadata(parseSessionMetadataObject(raw));
+      const metadata = parseSessionMetadataObject(raw);
+      const { sessionKind, routineId, projectRoot } = metadata;
+      if (sessionKind !== undefined && sessionKind !== normalizeSessionKind(sessionKind)
+        || routineId !== undefined && (typeof routineId !== "string" || routineId.trim().length === 0)
+        || projectRoot !== undefined && (
+          typeof projectRoot !== "string" || projectRoot.includes("\0")
+          || projectRoot.trim().length === 0 || projectRoot.trim().length > MAX_PROJECT_ROOT_CHARS
+        )) {
+        throw new TypeError("invalid search scope");
+      }
+      return normalizeSessionMetadata(metadata);
     } catch {
       throw new Error("invalid session metadata during search repair");
     }
