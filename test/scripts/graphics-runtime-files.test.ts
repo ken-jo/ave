@@ -50,14 +50,15 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
       // The before-pack record of the fixture's helper, as the packager process holds it for after-pack.
       const arch = { 1: 'x64', 3: 'arm64' }[context.arch];
       const build = { binarySha256: process.argv[6], imageSha256: process.argv[6] };
-      const bundleDir = join(context.appOutDir, 'fixture-bundle');
+      const bundleDir = join(context.appOutDir, 'staging', 'dist', 'main');
       const bundle = process.argv[8];
-      mkdirSync(bundleDir);
+      mkdirSync(bundleDir, { recursive: true });
       writeFileSync(join(bundleDir, 'main.js'), bundle);
       const bundleSha256 = { 'main.js': createHash('sha256').update(bundle).digest('hex') };
+      const receiptPath = join(context.appOutDir, 'bundle-receipt.json');
+      writeFileSync(receiptPath, JSON.stringify({ arch, imageSha256: build.imageSha256, bundleSha256 }));
       (await import(process.argv[5])).recordWindowsPathKindPackageBuild({
-        appOutDir: context.appOutDir, arch, bundleDir, build,
-        manifest: { windowsPathKind: { arch, imageSha256: build.imageSha256, bundleSha256 } },
+        appOutDir: context.appOutDir, arch, bundleDir, build, receiptPath,
       });
       const copy = JSON.parse(process.argv[7]);
       if (copy) {
