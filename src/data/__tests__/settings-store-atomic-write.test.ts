@@ -270,6 +270,7 @@ describe("settings persistence", () => {
   });
 
   it("keeps a switch that lost its admission while its save waited out of the file, and saves the changes around it", async () => {
+    await service.set("memoryEmbedding", { source: "local", localInferenceWithoutSandbox: true });
     const save = vi.spyOn(service as unknown as { saveSettings(settings: unknown): Promise<void> }, "saveSettings");
     const real = (settings: unknown) => (SettingsService.prototype as unknown as { saveSettings(settings: unknown): Promise<void> }).saveSettings.call(service, settings);
     save.mockImplementationOnce((settings) => new Promise((resolve, reject) => setTimeout(() => real(settings).then(resolve, reject), 20)));
@@ -281,8 +282,14 @@ describe("settings persistence", () => {
       .catch((error: unknown) => error);
     const inference = service.set("memoryEmbedding", { source: "local", localInferenceWithoutSandbox: false }, { field: ["memoryEmbedding", "localInferenceWithoutSandbox"], canCommit })
       .catch((error: unknown) => error);
+    const path = service.set("memoryEmbedding", { source: "local", localModelPath: "example-model" }, { field: ["memoryEmbedding", "localModelPath"], canCommit })
+      .catch((error: unknown) => error);
+    const changed = vi.fn();
+    service.onChanged("memoryEmbedding", changed);
     const around = service.setPluginConfig("sample", { mode: "fast" });
     admitted = false;
+    expect.soft(service.get("features")?.sessionIndexingWithoutContainment).toBe(true);
+    expect.soft(service.getAll().memoryEmbedding).toEqual({ source: "local", localInferenceWithoutSandbox: true });
 
     await Promise.all([first, around]);
     const saved = JSON.parse(readFileSync(settingsFilePath(root), "utf8"));
@@ -292,8 +299,31 @@ describe("settings persistence", () => {
     expect(saved.pluginConfigs.sample).toEqual({ mode: "fast" });
     expect(await indexing).toBeInstanceOf(SettingsWriteRefusedError);
     expect(await inference).toBeInstanceOf(SettingsWriteRefusedError);
+    expect(await path).toBeInstanceOf(SettingsWriteRefusedError);
+    expect(changed).not.toHaveBeenCalled();
     expect(service.get("features")?.sessionIndexingWithoutContainment).toBe(true);
     expect(service.get("memoryEmbedding")).toEqual({ source: "local", localInferenceWithoutSandbox: true });
+  });
+
+  it("keeps a superseded provider selection and its consent out of readers and disk", async () => {
+    await service.set("memoryEmbedding", { source: "local", localInferenceWithoutSandbox: true });
+    const save = vi.spyOn(service as unknown as { saveSettings(settings: unknown): Promise<void> }, "saveSettings");
+    const real = (settings: unknown) => (SettingsService.prototype as unknown as { saveSettings(settings: unknown): Promise<void> }).saveSettings.call(service, settings);
+    let release!: () => void;
+    save.mockImplementationOnce(settings => new Promise<void>(resolve => { release = resolve; }).then(() => real(settings)));
+    const first = service.setPluginConfig("sample", { mode: "fast" });
+    let current = true;
+    const field = ["memoryEmbedding", "source", "providerId", "modelId", "consent"] as const;
+    const next = service.set("memoryEmbedding", {
+      source: "provider", providerId: "example", modelId: "example-model",
+      consent: { version: 2, providerId: "example", modelId: "example-model", endpointId: "example", timestamp: "2026-01-01T00:00:00.000Z" },
+    }, { ...{ field }, canCommit: () => current }).catch((error: unknown) => error);
+    current = false;
+    expect.soft(service.get("memoryEmbedding").source).toBe("local");
+    release();
+    await first;
+    expect(await next).toBeInstanceOf(SettingsWriteRefusedError);
+    expect(JSON.parse(readFileSync(settingsFilePath(root), "utf8")).memoryEmbedding).toEqual({ source: "local", localInferenceWithoutSandbox: true });
   });
 
   it("saves a switch whose admission still holds in the step that writes it", async () => {

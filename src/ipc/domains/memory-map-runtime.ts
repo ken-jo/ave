@@ -253,19 +253,25 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
         if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
         if (input.source === 'provider') provider.assertCurrentEndpoint(input.providerId, input.endpointId);
         const previous = deps.settingsService.get('memoryEmbedding');
-        await deps.settingsService.set('memoryEmbedding', {
-          ...(previous?.localModelPath ? { localModelPath: previous.localModelPath } : {}),
-          ...(previous?.localInferenceWithoutSandbox !== undefined ? { localInferenceWithoutSandbox: previous.localInferenceWithoutSandbox } : {}),
-          ...input.source === 'local' ? { source: 'local' as const } : {
-            source: 'provider' as const, providerId: input.providerId, modelId: input.modelId,
-            consent,
-          },
-        });
+        try {
+          await deps.settingsService.set('memoryEmbedding', {
+            localModelPath: previous?.localModelPath,
+            localInferenceWithoutSandbox: previous?.localInferenceWithoutSandbox,
+            ...(input.source === 'local' ? { source: 'local' as const } : { source: 'provider' as const, providerId: input.providerId, modelId: input.modelId, consent }),
+          }, { field: ['memoryEmbedding', 'source', 'providerId', 'modelId', 'consent'], canCommit: () => {
+            if (generation !== settingsGeneration) return false;
+            if (input.source === 'provider') provider.assertCurrentEndpoint(input.providerId, input.endpointId);
+            return true;
+          } });
+        } catch (error) {
+          if (error instanceof SettingsWriteRefusedError) throw new MemoryMapHostError('request-stale');
+          throw error;
+        }
         if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
         await host.invalidate();
         if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
         provider.resume(); return settings();
-      });
+      }).finally(() => { if (generation === settingsGeneration) provider.resume(); });
       settingsWrite = pending;
       return pending;
     },
