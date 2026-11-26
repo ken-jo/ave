@@ -26,7 +26,8 @@ const NATIVE_RULES: readonly (readonly [string, RegExp])[] = [
   ["raw mutation call", /\b(?:unlink(?:at)?|rename(?:at2?|atx_np|x_np)?|DeleteFile\w*|MoveFile\w*|RemoveDirectory\w*|ReplaceFile\w*|NtDeleteFile|ZwDeleteFile)\s*\(/gu],
   ["CRT or library name change", /(?:\b_w?(?:unlink|remove|rename)\b|\bremove\s*\(|std::filesystem::|\bfilesystem::)/gu],
   ["mutation name taken as a value", /(?:&\s*(?:::)?|=\s*(?:::)?)(?:_w?)?(?:unlink(?:at)?|rename(?:at2?|atx_np|x_np)?|remove|DeleteFile\w*|MoveFile\w*|RemoveDirectory\w*)\b(?!\s*\()/gu],
-  ["set-information capability", /\b\w*Set\w*Information\w*\b/gu],
+  // The job-object limit call configures process lifetime and takes no file handle.
+  ["set-information capability", /\b(?!SetInformationJobObject\b)\w*Set\w*Information\w*\b/gu],
   ["information class type or numeric class", /\b(?:FILE_INFORMATION_CLASS|FILE_INFO_BY_HANDLE_CLASS)\b|\bFile(?:Disposition|Rename)Info\w*|\bFILE_(?:DISPOSITION|RENAME)_INFO\w*/gu],
   ["delete on close", /\b(?:FILE_DELETE_ON_CLOSE|FILE_FLAG_DELETE_ON_CLOSE)\b|\b0x0*1000\b|\b0x0*4000000\b|\b4096u?\b|\b1u?\s*<<\s*12\b/gu],
   ["truncating or superseding open", /\bFILE_(?:SUPERSEDE|OVERWRITE(?:_IF)?)\b|\b(?:CREATE_ALWAYS|TRUNCATE_EXISTING|O_TRUNC)\b/gu],

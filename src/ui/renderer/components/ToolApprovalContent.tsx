@@ -69,6 +69,7 @@ import {
   allowRefusalKey,
   exactDecisionModel,
   oneShotDecisionModel,
+  offersFloorSessionWaiver,
   FOLDER_ALLOW_LABEL_KEY,
   pathGrantDecisionModel,
   ruleSaveErrorText,
@@ -125,6 +126,7 @@ function approvalAskReason(
     case "project-escape": return translate(request.target?.canonicalPath ? "toolApprovalDialog.reasonProjectEscape" : "toolApprovalDialog.reasonProjectEscapeOperand");
     case "secret-read": return translate("toolApprovalDialog.reasonSecretRead");
     case "file-write": return translate("toolApprovalDialog.reasonFileWrite");
+    case "shell-analysis-limit": return translate("toolApprovalDialog.reasonShellAnalysisLimit");
     case "protected-path": {
       const entry = request.reasonDetail?.protectedEntry;
       if (entry === undefined) return translate("toolApprovalDialog.reasonProtectedPathGeneric");
@@ -781,7 +783,9 @@ export function ToolApprovalContent({
           approvalNotice?.(tHook(record.decision === "deny" ? "toolApprovalDialog.homeFolderRefusedDeniedOnce" : "toolApprovalDialog.homeFolderRefusedOnce"));
           answer = respondOnce;
         } else if (!result?.ok) {
-          if (activeRequestIdRef.current === request.id) {
+          if (result?.error === "project-scope-changed" && approvalNotice) {
+            approvalNotice(ruleSaveErrorText(result, tHook(failureKey)));
+          } else if (activeRequestIdRef.current === request.id) {
             setRecordError(record.readjudicate && result?.error === "readjudication-unavailable"
               ? tHook("formatIpcError.readjudicationUnavailable")
               // The run ended, or the session left it, while the card was open: the run allow is gone and the card says so.
@@ -978,7 +982,10 @@ export function ToolApprovalContent({
     && request.executionPlan.executionRequest === "host";
   const requiresHostConsent = request.executionPlan?.mode === "plain"
     && request.executionPlan.requiresExplicitUserApproval;
-  const argsTruncated = !requiresHostConsent && argsStr.length > 500 && !expanded;
+  const isShellAnalysisLimit = request.shellAnalysisLimited === true;
+  const showFullArgsByDefault = requiresHostConsent || isShellAnalysisLimit;
+  const canToggleArgs = !showFullArgsByDefault && argsStr.length > 500;
+  const argsTruncated = canToggleArgs && !expanded;
   // JSON escapes C0 controls only; bidi overrides and other invisibles would still reorder the shown input.
   const argsDisplay = revealHiddenCharacters(argsTruncated ? argsStr.slice(0, 500) + "\n…" : argsStr, { lineBreaks: false });
   const shownCandidatePath = revealHiddenCharacters(outOfDirCandidatePath, { lineBreaks: true });
@@ -1005,8 +1012,9 @@ export function ToolApprovalContent({
   const categoryImpact = approvalActionSummary(request, tHook);
   const specificReviewerReason = request.reviewerVerdict?.reason.trim() ?? "";
   // A coded reason is worded below in the user's language; its host text is an English literal kept for audit rows and tool results.
-  const specificHostReason = request.reasonCode ? "" : request.reason.trim();
-  const askReason = approvalAskReason(request, tHook);
+  const specificHostReason = request.reasonCode || isShellAnalysisLimit ? "" : request.reason.trim();
+  const askReason = approvalAskReason(request, tHook) ?? (isShellAnalysisLimit
+    ? revealHiddenCharacters(request.reason, { lineBreaks: true }) : null);
   const shownSecretPattern = request.reasonDetail?.secretPattern
     ? revealHiddenCharacters(request.reasonDetail.secretPattern, { lineBreaks: true }) : null;
   // The path-grant reason is host-derived and localized here; the raw request.reason for this kind is an internal English marker.
@@ -1133,6 +1141,11 @@ export function ToolApprovalContent({
                       {askReason}
                     </p>
                   ) : null}
+                  {isShellAnalysisLimit && request.reasonCode !== "shell-analysis-limit" ? (
+                    <p className="mt-1 break-words text-xs leading-relaxed">
+                      {tHook("toolApprovalDialog.reasonShellAnalysisLimit")}
+                    </p>
+                  ) : null}
                   {shownSecretPattern ? (
                     <p className="mt-0.5 break-all text-tiny" data-testid="approval-secret-pattern">
                       {tHook("toolApprovalDialog.secretPattern")}{" "}
@@ -1164,7 +1177,7 @@ export function ToolApprovalContent({
                   ) : null}
                   {request.executionPlan ? (
                     <div className="mt-1 space-y-0.5 text-xs text-muted-foreground" data-testid="tool-approval-shell-environment">
-                      {shellExecutionEnvironmentLines(request.executionPlan).map((line) => <p key={line}>{line}</p>)}
+                      {shellExecutionEnvironmentLines(request.executionPlan, { sessionOffered: offersFloorSessionWaiver(request.shellRule) }).map((line) => <p key={line}>{line}</p>)}
                     </div>
                   ) : null}
                   {requiresHostConsent ? (
@@ -1194,7 +1207,7 @@ export function ToolApprovalContent({
             <details
               className="group min-w-0 overflow-hidden rounded-lg border border-border-strong bg-muted/(--opacity-light)"
               data-testid={TEST_IDS.approvalReviewDetails}
-              open={requiresHostConsent || undefined}
+              open={showFullArgsByDefault || undefined}
             >
               <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
                 <span className="min-w-0 flex-1">
@@ -1283,7 +1296,7 @@ export function ToolApprovalContent({
                     <pre className="max-h-56 max-w-full overflow-auto px-3 py-2 whitespace-pre-wrap break-all font-mono text-dense leading-relaxed">
                       {argsDisplay}
                     </pre>
-                    {argsStr.length > 500 && (
+                    {canToggleArgs && (
                       <Button
                         type="button"
                         variant="ghost"

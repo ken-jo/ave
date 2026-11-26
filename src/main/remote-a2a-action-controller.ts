@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { A2ARemoteSettings, A2ARemoteTargetSettings } from "../data/settings-store.js";
 import { isValidRemoteA2ATargetAgentId, isValidRemoteA2ATaskHandle } from "../shared/a2a-remote-input.js";
 import { A2AJsonRpcMethod, type A2AJsonObject } from "../shared/a2a-wire.js";
+import type { A2ARemoteClientResult } from "../api/a2a-remote-client.js";
 import type { A2ARemoteRuntime } from "./a2a-remote-runtime.js";
 import { maskA2AMessage } from "../engine/a2a-subagent-message-codec.js";
 import { isA2ATerminalTaskState, type A2AMessage, type A2ATaskState } from "../shared/a2a.js";
@@ -34,6 +35,11 @@ function replyOf(projection: { reply?: A2ARemoteReply } | null | undefined): { r
 
 // A reply that came back as a direct Message rather than a Task (A2A v1.0 SendMessage may answer either): nothing is stored for it, so it is projected
 // here from the result, through the same masking and cap.
+function statusOutcome(result: A2ARemoteClientResult): string {
+  if (result.ok) return "success";
+  return result.approvalOutcome === undefined ? result.outcome : `approval-${result.approvalOutcome}`;
+}
+
 function directReply(result: unknown): { reply?: A2ARemoteReply } {
   if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true) return {};
   const body = (result as { result?: unknown }).result;
@@ -209,7 +215,7 @@ export function createRemoteA2AActionController(
         ...replyOf(projection),
         targetAgentId: route.targetAgentId,
         targetLabel: route.targetLabel,
-        outcome: result.ok ? "success" : result.outcome,
+        outcome: statusOutcome(result),
         updatedAt: now().toISOString(),
       });
     } catch {
@@ -254,7 +260,7 @@ export function createRemoteA2AActionController(
         messageId: recovery.messageId,
       });
       const projection = await options.runtime.getTaskProjection(input.taskHandle, ownerId);
-      latest = Object.freeze({ state: result.ok ? "sent" : "failed", operationId: recovery.operationId, taskHandle: input.taskHandle, ...(projection ? { taskState: projection.state } : {}), taskAvailable: Boolean(projection), ...replyOf(projection), targetAgentId: recovery.targetAgentId, targetLabel: recovery.targetLabel, recoveryEligible: !result.ok && (result.outcome === "reconciling" || result.outcome === "unknown-manual-reconciliation-required"), outcome: result.ok ? "success" : result.outcome, updatedAt: now().toISOString() });
+      latest = Object.freeze({ state: result.ok ? "sent" : "failed", operationId: recovery.operationId, taskHandle: input.taskHandle, ...(projection ? { taskState: projection.state } : {}), taskAvailable: Boolean(projection), ...replyOf(projection), targetAgentId: recovery.targetAgentId, targetLabel: recovery.targetLabel, recoveryEligible: !result.ok && (result.outcome === "reconciling" || result.outcome === "unknown-manual-reconciliation-required"), outcome: statusOutcome(result), updatedAt: now().toISOString() });
     } catch {
       // Same Task fields as every other failure path: a replay that threw says nothing about whether the Task exists, so what the store still projects keeps
       // Get/Cancel reachable. An unreadable projection is reported as no Task rather than guessed at.
@@ -345,7 +351,7 @@ export function createRemoteA2AActionController(
           recoveryEligible: !result.ok && (result.outcome === "reconciling" || result.outcome === "unknown-manual-reconciliation-required"),
           targetAgentId: target.targetAgentId,
           targetLabel: target.label,
-          outcome: result.ok ? "success" : result.outcome,
+          outcome: statusOutcome(result),
           updatedAt: now().toISOString(),
         });
       } catch {

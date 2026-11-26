@@ -1,7 +1,8 @@
-import { realpathSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, realpathSync, statSync } from "node:fs";
 import { win32 } from "node:path";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../shared/shell-analysis-limits.js";
 import { inspectShellExecution, ShellExecutionError, type ShellExecutionFacts } from "../shared/shell-execution.js";
+import { holdWindowsDirectory, type HeldWindowsDirectory } from "../shared/windows-path-facts.js";
 import { admitWindowsLookupPaths, observeWindowsShellDirectories, windowsObligationsApply } from "./admitted-obligation.js";
 
 export interface ShellWorkingDirectoryIdentity {
@@ -70,8 +71,47 @@ export function matchesShellWorkingDirectoryIdentity(
   expected: ShellWorkingDirectoryIdentity,
 ): boolean {
   const actual = captureShellWorkingDirectoryIdentity(cwd);
-  return actual !== undefined &&
-    actual.realpath === expected.realpath &&
+  return actual !== undefined && sameShellWorkingDirectoryIdentity(actual, expected);
+}
+
+export function sameShellWorkingDirectoryIdentity(actual: ShellWorkingDirectoryIdentity, expected: ShellWorkingDirectoryIdentity): boolean {
+  return actual.realpath === expected.realpath &&
     actual.dev === expected.dev &&
     actual.ino === expected.ino;
+}
+
+/** Windows: hold the approved directory and its ancestors against rename and delete. The child still opens its cwd by path, so this proves nothing inside the child. */
+export async function pinShellWorkingDirectory(identity: ShellWorkingDirectoryIdentity): Promise<HeldWindowsDirectory | undefined> {
+  const held = await holdWindowsDirectory(identity.realpath);
+  if (held === undefined) return undefined;
+  const { facts } = held;
+  if (!facts.directory || facts.volumeSerial === null || facts.fileId === null ||
+    BigInt(facts.volumeSerial) !== identity.dev || BigInt(facts.fileId) !== identity.ino) {
+    await held.release();
+    return undefined;
+  }
+  return held;
+}
+
+/** Keep the approved directory object alive until the invocation finishes its launch. */
+export function holdShellWorkingDirectory(cwd: string, identity: ShellWorkingDirectoryIdentity): (() => void) | undefined {
+  if (process.platform === "win32") {
+    return matchesShellWorkingDirectoryIdentity(cwd, identity) ? () => {} : undefined;
+  }
+  let fd: number | undefined;
+  try {
+    fd = openSync(identity.realpath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const opened = fstatSync(fd, { bigint: true });
+    if (opened.isDirectory() && opened.dev === identity.dev && opened.ino === identity.ino &&
+      matchesShellWorkingDirectoryIdentity(cwd, identity)) {
+      const held = fd;
+      fd = undefined;
+      return () => closeSync(held);
+    }
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  return undefined;
 }

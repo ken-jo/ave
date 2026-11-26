@@ -549,11 +549,6 @@
     },
     {
       "type": "types",
-      "file": "src/permissions/permission-manager.ts",
-      "name": "PermissionDecision"
-    },
-    {
-      "type": "types",
       "file": "src/permissions/permission-slash.ts",
       "name": "PermissionAuditVerb"
     },

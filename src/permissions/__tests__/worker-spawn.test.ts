@@ -30,7 +30,8 @@ const chmodSyncMock = vi.fn<(path: unknown, mode: unknown) => void>(() => undefi
 const lstatSyncMock = vi.fn<(path: unknown) => { isSymbolicLink: () => boolean }>(() => ({
   isSymbolicLink: () => false,
 }));
-vi.mock("node:fs/promises", () => ({
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs/promises")>()),
   mkdir: (path: unknown, opts?: unknown) => mkdirMock(path, opts),
 }));
 vi.mock("node:fs", async (importOriginal) => ({

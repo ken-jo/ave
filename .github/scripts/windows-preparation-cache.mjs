@@ -29,7 +29,7 @@ function installedSrtInputs(root) {
 function nativeFiles(arch) {
   return [
     ...["ave-job", "ave-job-failure", "ave-job-query-failure"].map(name => `resources/windows-job/${arch}/${name}.exe`),
-    `resources/windows-path-kind/${arch}/ave-path-kind.exe`,
+    ...["ave-path-kind", "ave-path-kind-hold-fixture"].map(name => `resources/windows-path-kind/${arch}/${name}.exe`),
     ...ARCHES.flatMap(target => ["upstream-srt-win.exe", "srt-win.exe", "build-receipt.json"]
       .map(name => `${VENDOR}/srt-win/${target}/${name}`)),
     `${RECEIPTS}.js`,

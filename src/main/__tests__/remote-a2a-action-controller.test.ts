@@ -50,6 +50,14 @@ describe("production remote A2A action controller", () => {
     expect(JSON.stringify(input.request)).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
   });
 
+  it.each(["denied", "rejected", "expired", "cancelled", "unavailable"] as const)("projects a %s approval to the local action status", async (approvalOutcome) => {
+    const value = runtime({ execute: vi.fn(async () => ({ ok: false, outcome: "not-sent", approvalOutcome })) });
+    const controller = createRemoteA2AActionController({ runtime: value as never, config, projectRoot: "/project", makeId: ids() });
+    const expected = { state: "failed", outcome: `approval-${approvalOutcome}` };
+    await expect.soft(controller.send({ targetAgentId: 1, intent: "Send the update" })).resolves.toMatchObject(expected);
+    await expect.soft(controller.resume({ taskHandle: "task_handle_123456", intent: "Continue the update" })).resolves.toMatchObject(expected);
+  });
+
   it("runs prompt-free GetTask with historyLength 0 and the fresh configured same-route revision", async () => {
     const value = runtime();
     const controller = createRemoteA2AActionController({ runtime: value as never, config, projectRoot: "/project", makeId: ids() });

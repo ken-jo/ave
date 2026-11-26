@@ -1,4 +1,5 @@
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
+import { answeredApprovalDecision } from "../../__tests__/support/answering-approval-gate.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemorySecretStore } from "../../audit/hmac-chain.js";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
@@ -266,7 +267,8 @@ describe("Telegram bridge lifecycle (owner-driven connection)", () => {
         observers.push(observer);
         return () => {};
       },
-      resolveWithFreshIdentity: vi.fn((_requestId, decision) => decision),
+      resolveWithFreshIdentity: vi.fn((requestId, decision) =>
+        answeredApprovalDecision({ requestId, choice: decision.choice }, "platform-bridge", "list_files")),
     };
     const f = await connectionFixture({
       receiptStore: {

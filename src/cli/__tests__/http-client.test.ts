@@ -231,6 +231,7 @@ describe("permission:set-mode over the real transport (approval-mediated externa
       auditLogger: {
         isPermissionAuditChainReady: () => true,
         appendPermissionAuditEntry: async () => undefined,
+        log: vi.fn(),
       },
       getMainWindow: () => ({ isDestroyed: () => false, webContents: { isDestroyed: () => false, send: () => {} } }),
     } as unknown as IpcDeps;
@@ -241,7 +242,7 @@ describe("permission:set-mode over the real transport (approval-mediated externa
       createLocalApi({
         ipc: mutationIpc(),
         conversationCommandPort: inertConversationCommandPort,
-        externalMutationApprover: async () => true,
+        externalMutationApprover: async () => ({ approved: true }),
       }),
     );
     const client = createAveClient(createHttpLocalApi(conn), "cli");
@@ -260,7 +261,7 @@ describe("permission:set-mode over the real transport (approval-mediated externa
       createLocalApi({
         ipc: mutationIpc(),
         conversationCommandPort: inertConversationCommandPort,
-        externalMutationApprover: async () => false,
+        externalMutationApprover: async () => ({ approved: false, outcome: "denied" }),
       }),
     );
     const httpApi = createHttpLocalApi(conn);
@@ -280,7 +281,7 @@ describe("permission:set-mode over the real transport (approval-mediated externa
       createLocalApi({
         ipc: mutationIpc(),
         conversationCommandPort: inertConversationCommandPort,
-        externalMutationApprover: async () => false,
+        externalMutationApprover: async () => ({ approved: false, outcome: "denied" }),
       }),
     );
     const client = createAveClient(createHttpLocalApi(conn), "cli");

@@ -40,7 +40,7 @@ let directory: string;
 beforeEach(() => { directory = realpathSync(mkdtempSync(join(tmpdir(), "ave-app-approval-"))); });
 afterEach(async () => { await resources.cleanup(); await cleanupTmpDir(directory); });
 
-async function harness(options: { readOnly?: boolean; raisingPolicy?: boolean; origin?: "ui" | "mcp-app"; mode?: "strict" | "auto"; reviewLevel?: "low" | "high"; mainWindow?: boolean; effect?: "storage.write" | "hostFetch" | "spawnWorker" } = {}) {
+async function harness(options: { readOnly?: boolean; raisingPolicy?: boolean; origin?: "ui" | "mcp-app"; mode?: "strict" | "auto"; reviewLevel?: "low" | "high"; mainWindow?: boolean; catchEffectDenial?: boolean; effect?: "storage.write" | "hostFetch" | "spawnWorker" } = {}) {
   const operationPolicy = options.raisingPolicy ? {
     discriminant: "operation" as const,
     operations: { status: { kind: "read" as const, minimumRisk: "write" as const, appVisible: true } },
@@ -53,6 +53,7 @@ async function harness(options: { readOnly?: boolean; raisingPolicy?: boolean; o
   };
   const runtime = new TestPluginRuntime({ hostRoot: directory, manifestPaths: [] });
   const performEffect = vi.fn();
+  const caughtEffect = vi.fn();
   const handler = vi.fn(async () => {
     if (options.effect) {
       await gateMutatingEffect({
@@ -60,8 +61,10 @@ async function harness(options: { readOnly?: boolean; raisingPolicy?: boolean; o
         input: options.effect === "hostFetch" ? ["https://example.com", { method: "POST", body: "data" }]
           : options.effect === "spawnWorker" ? [{ command: "sh", args: ["-c", "touch output"] }] : ["output", "data"],
         resolveStoragePath: (path) => join(directory, path),
+      }).then(performEffect, (error: unknown) => {
+        if (!options.catchEffectDenial) throw error;
+        caughtEffect(error);
       });
-      performEffect();
     }
     return "panel result";
   });
@@ -90,9 +93,10 @@ async function harness(options: { readOnly?: boolean; raisingPolicy?: boolean; o
     recentlyDenied: makeRecentlyDeniedStore(join(directory, "recently-denied.jsonl")),
   });
   const review = vi.spyOn(manager, "dispatchReviewer");
+  const audit = resources.trackFlushable(new AuditLogger(join(directory, "audit")));
   const context = {
     toolRegistry: registry, permissionManager: manager, approvalGate: gate,
-    bootAuditLogger: resources.trackFlushable(new AuditLogger(join(directory, "audit"))),
+    bootAuditLogger: audit,
     settingsService: { get: () => ({}) },
     pluginRuntime: runtime, pluginBundleLifecycle: runtime.getGenerationAccess(),
     lateBinding: { pluginToolInvokerRef: {} },
@@ -105,7 +109,7 @@ async function harness(options: { readOnly?: boolean; raisingPolicy?: boolean; o
     const card = cards.at(-1)!;
     expect(gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac }, main)?.choice).toBe("allow-once");
   };
-  return { call, handler, cards, allow, surfaces, main, gate, performEffect, manager, classify, review, runtime };
+  return { call, handler, cards, allow, surfaces, main, gate, performEffect, caughtEffect, manager, classify, review, runtime, audit };
 }
 
 describe("app tool approvals through production executor wiring", () => {
@@ -143,6 +147,27 @@ describe("app tool approvals through production executor wiring", () => {
     expect(h.performEffect).not.toHaveBeenCalled();
     h.gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac }, h.main);
     expect(await pending).toBeInstanceOf(Error);
+    expect(h.performEffect).not.toHaveBeenCalled();
+  });
+  it.each([
+    { caught: true, changePolicy: false }, { caught: false, changePolicy: false },
+    { caught: true, changePolicy: true }, { caught: false, changePolicy: true },
+  ])("retains a person’s effect denial in the tool result and audit ($caught, $changePolicy)", async ({ caught, changePolicy }) => {
+    const h = await harness({ readOnly: true, effect: "storage.write", catchEffectDenial: caught });
+    await h.audit.setupPermissionAuditChain("aa".repeat(32));
+    const audit = vi.spyOn(h.audit, "appendPermissionAuditEntry");
+    const pending = h.call().catch((error: unknown) => error);
+    await vi.waitFor(() => expect(h.cards).toHaveLength(1));
+    const [card] = h.cards;
+    const recheck = vi.spyOn(h.manager, "checkDetailed");
+    expect(h.gate.resolveFromDesktopRenderer(card.id, {
+      requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac,
+    }, h.main)?.choice).toBe("deny-once");
+    if (changePolicy) recheck.mockImplementation(() => { throw new Error("policy recheck must not replace the answer"); });
+    expect.soft(await pending).toMatchObject({ message: expect.stringContaining("the user denied the effect approval") });
+    if (caught) expect.soft(h.caughtEffect).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("the user denied the effect approval") }));
+    expect.soft(audit).toHaveBeenLastCalledWith(expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard",
+      denyReasons: [expect.objectContaining({ reason: "the user denied the effect approval" })] }));
     expect(h.performEffect).not.toHaveBeenCalled();
   });
   it.each(["second-main", "floating-dock"])("rejects %s answers to a panel request", async (kind) => {

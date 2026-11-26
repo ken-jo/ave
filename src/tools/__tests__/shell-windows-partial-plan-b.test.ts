@@ -1,4 +1,9 @@
-vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+// The spawn mock answers every child, so the directory hold is simulated on every host.
+vi.mock("../../shared/windows-path-facts.js", async original => {
+  const { simulatedWindowsPathFacts } = await import("../../__tests__/support/simulated-win32-drive.js");
+  const actual = await original<typeof import("../../shared/windows-path-facts.js")>();
+  return simulatedWindowsPathFacts(actual, "linux");
+});
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
@@ -160,7 +165,7 @@ describe("builtin shell - Windows partial Plan-B native execution", () => {
         _args: readonly string[],
         options?: { stdio?: unknown },
       ) => {
-        const parser = Array.isArray(options?.stdio) && options.stdio[0] === "pipe";
+        const parser = Array.isArray(options?.stdio) && options.stdio.length === 3 && options.stdio[0] === "pipe";
         return fakeChild(parser);
       },
     );
@@ -220,7 +225,7 @@ describe("builtin shell - Windows partial Plan-B native execution", () => {
 
       const nativeCall = childProcessMock.spawn.mock.calls.find((call) => {
         const options = call[2] as { stdio?: unknown } | undefined;
-        return Array.isArray(options?.stdio) && options.stdio[0] === "ignore";
+        return Array.isArray(options?.stdio) && options.stdio.length === 5;
       });
       if (nativeCall === undefined) throw new Error("native child spawn was not observed");
       const nativeArgs = nativeCall[1] as readonly string[];
@@ -240,7 +245,8 @@ describe("builtin shell - Windows partial Plan-B native execution", () => {
       expect(nativeOptions).toMatchObject({
         cwd: baseContext.cwd,
         shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
+        // A held launch: the launcher's stop request, its output, the hold channel and its verdict.
+        stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
       });
 
       // The same opaque permit is irreversibly consumed before the first spawn.
@@ -276,7 +282,7 @@ describe.each(["darwin", "linux", "win32"] as const)(
           _args: readonly string[],
           options?: { stdio?: unknown },
         ) => {
-          const parser = Array.isArray(options?.stdio) && options.stdio[0] === "pipe";
+          const parser = Array.isArray(options?.stdio) && options.stdio.length === 3 && options.stdio[0] === "pipe";
           return fakeChild(parser, Array.isArray(options?.stdio) && options.stdio.length === 4);
         },
       );

@@ -16,8 +16,13 @@ import {
   GATED_EFFECT_PATHS,
   pathReadEffectPaths,
   runWithEffectGateContext,
+  runUnattributedEffectRequest,
   sameEffectAuthority,
 } from "../../permissions/effect-enforcement.js";
+import type { AuditLogger } from "../../audit/audit-logger.js";
+import { pathEffectClass } from "../../permissions/effect-kind.js";
+import { createEffectLedger, currentEffectLedger, runWithEffectLedger } from "../../permissions/effect-ledger.js";
+import { emitEffectShadowLog } from "../../permissions/reviewer/risk-shadow-log.js";
 import { ManifestIntegrityError } from "../../permissions/manifest-integrity.js";
 import { PluginRuntimeDetachedOperationError } from "../runtime/detached-operation.js";
 import { currentInvocationOrigin } from "../runtime/origin-chain.js";
@@ -1351,6 +1356,7 @@ export interface HostApiDispatcherOptions {
   readonly reportUnknownField: (report: UnknownFieldReport) => void;
   /** Host-owned, coalesced diagnostics. The callback must not include caller payloads. */
   readonly reportBudgetAudit?: (entry: HostApiBudgetAudit) => void;
+  readonly effectAudit?: Pick<AuditLogger, "logShadow">;
   readonly table?: Record<HostApiPath, HostApiPathHandler>;
   /** Connections without invocation tracking must refuse tokens rather than fabricate authority. */
   readonly invocations?: HostInvocationTable;
@@ -1454,13 +1460,18 @@ export class HostApiDispatcher {
   /** A request without a token takes the standalone policy, whether or not a tool call is live. */
   private runTokenless(path: HostApiPath, signal: AbortSignal, invoke: () => Promise<unknown>): Promise<unknown> {
     return runOutsideInvocation(() => {
-      if (!readsEffectFrame(path)) return invoke();
-      return runWithEffectGateContext({ headless: false, standalone: true, toolName: path, abortSignal: signal }, invoke);
+      const run = () => readsEffectFrame(path)
+        ? runWithEffectGateContext({ headless: false, standalone: true, toolName: path, abortSignal: signal }, invoke)
+        : invoke();
+      const effect = pathEffectClass(path);
+      return effect === "write" || effect === "verb-derived"
+        ? this.runWithIndependentObservation(path, this.options.invocations?.live() ?? [], run)
+        : run();
     });
   }
 
   /** A named invocation must resolve; a gated effect also needs that call to be live. */
-  private runInInvocation<R>(path: HostApiPath, token: string, invoke: () => R): R {
+  private async runInInvocation(path: HostApiPath, token: string, invoke: () => Promise<unknown>): Promise<unknown> {
     const invocation = this.options.invocations?.resolve(token);
     if (invocation === undefined) {
       throw new HostApiBoundaryError(
@@ -1468,21 +1479,22 @@ export class HostApiDispatcher {
         `[host-api-dispatcher] '${path}' names an invocation this connection does not hold`,
       );
     }
-    if (!invocation.live && readsEffectFrame(path)) {
+    const gated = readsEffectFrame(path);
+    if (!invocation.live && gated) {
       throw new HostApiBoundaryError(
         "argument-marshalling-rejected",
         `[host-api-dispatcher] '${path}' names a tool call that has already settled`,
         { reason: SETTLED_INVOCATION_TOKEN },
       );
     }
-    if (invocation.live && readsEffectFrame(path)) {
-      // The child picks the token, so a gated effect runs only when every live call would authorize it alike.
-      // Any live call without an effect-gate frame imposes no gate (gateMutatingEffect and the enforced wrapper pass through
-      // without a frame; app-only calls such as a panel's long poll are the usual case), so naming a gated call is never weaker than it;
-      // naming the frameless call while a gated one is live still refuses, or the child could escape that call's gate.
-      const named = invocation.run(currentEffectGateContext);
-      for (const other of this.options.invocations?.live() ?? []) {
+    if (!invocation.live) return invocation.run(invoke);
+    const siblings = [...this.options.invocations?.live() ?? []].filter((other) => other !== invocation.run);
+    if (siblings.length === 0) return invocation.run(invoke);
+    const named = invocation.run(currentEffectGateContext);
+    if (gated) {
+      for (const other of siblings) {
         const otherFrame = other(currentEffectGateContext);
+        // A frameless call cannot weaken the named call's gate.
         if (named !== undefined && otherFrame === undefined) continue;
         if (!sameEffectAuthority(named, otherFrame)) {
           throw new HostApiBoundaryError(
@@ -1493,7 +1505,32 @@ export class HostApiDispatcher {
         }
       }
     }
-    return invocation.run(invoke);
+
+    return invocation.run(() => this.runWithIndependentObservation(path, [invocation.run, ...siblings],
+      () => named === undefined ? invoke() : runUnattributedEffectRequest(named, invoke)));
+  }
+
+  private async runWithIndependentObservation(
+    path: HostApiPath,
+    candidates: Iterable<InvocationContextRunner>,
+    invoke: () => Promise<unknown>,
+  ): Promise<unknown> {
+    // Mark every possible owner before the request yields and a candidate can finish.
+    for (const candidate of candidates) {
+      candidate(currentEffectLedger)?.markObservationIncomplete();
+    }
+    const ledger = createEffectLedger();
+    try {
+      return await runWithEffectLedger(ledger, invoke);
+    } finally {
+      const summary = ledger.summary();
+      if (this.options.effectAudit && summary.effects.length > 0) {
+        emitEffectShadowLog({
+          hostApiPath: path, source: "plugin", pluginId: this.options.pluginId,
+          hostObservable: true, hostObservedEffect: summary,
+        }, this.options.effectAudit);
+      }
+    }
   }
 
   /** Accept only declared child notification kinds; dispatch release, cancellation and logs through their owners. */

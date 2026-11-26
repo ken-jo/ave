@@ -12,6 +12,10 @@ import { evaluateShellRules } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";
+import { requestBoundShellCard } from "../../__tests__/support/host-shell-approval.js";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
+
+withSourceHostResources();
 
 // A drive-less "/" is an unresolved-namespace protected path on win32, so the
 // protected-path floor fires before the critical-delete heuristic. Same gate
@@ -150,11 +154,11 @@ describe("missing shell route", () => {
       if (channel === "ave:approval:request") displayed = request;
     } };
     const gate = new ApprovalGate(nativeWebContents as never);
-    const pending = gate.requestAndWait({
+    const pending = requestBoundShellCard(gate, {
       id: "missing-route", sessionId: "conversation", category: "tool", toolName: "bash", toolCategory: "shell", source: "builtin",
       args: { command: "printf ready" }, reason: "Approval required", createdAt: Date.now(), trustOrigin: "user-keyboard", ruleVerdict: { level: "medium", reason: "Bounded command" },
       evaluationContext: buildPermissionEvaluationContext({ policyMode: "default", headless: false, source: "builtin", category: "shell", trustOrigin: "user-keyboard", executionCwd: project, allowedDirectories: [project], pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [] }),
-    });
+    }, project);
     expect(displayed?.shellRule).toMatchObject({ exactRule: "Bash(printf ready)", sessionAllowed: true, persistentAllowed: true });
     gate.resolveFromDesktopRenderer("missing-route", { requestId: "missing-route", choice: "deny-once", nonce: displayed!.nonce, hmac: displayed!.hmac }, nativeWebContents as never);
     await pending;

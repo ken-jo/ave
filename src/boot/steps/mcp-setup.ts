@@ -16,7 +16,13 @@ export async function setupMcp(ctx: BootContext): Promise<void> {
 
   const mcpGovernance = new McpGovernance();
   // Route server elicitation through the host approval gate.
-  const mcpInputResolverFactory = createElicitationResolverFactory({ approvalGate });
+  const mcpInputResolverFactory = createElicitationResolverFactory({
+    approvalGate,
+    onApprovalFailure: (requestId, outcome) => bootAuditLogger.log({
+      timestamp: new Date().toISOString(), sessionId: "mcp-elicitation", type: "approval",
+      input: `[mcp-elicitation] request=${requestId}`, output: `approval=${outcome}`,
+    }),
+  });
   const mcpManager = new McpManager(
     mcpGovernance,
     toolRegistry,

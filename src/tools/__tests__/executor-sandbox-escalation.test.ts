@@ -9,8 +9,8 @@ import { InMemoryHostInvocationStartCasStore } from "../pipeline/rationale-ticke
 import { captureRationalePolicySnapshot } from "../pipeline/rationale-policy-epoch.js";
 import { LlmRationaleScopeReviewer } from "../../permissions/reviewer/rationale-scope-reviewer.js";
 import { createRationaleHostRuntime } from "../../__tests__/support/rationale-host-runtime.js";
-import { beforeAll, afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
-import { configureHostResources } from "../../main/host-resources.js";
+import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
@@ -35,6 +35,8 @@ import type { PermissionAuditEntryInput } from "../../audit/audit-schema.js";
 import { emitSandboxAudit, flushSandboxAudit } from "../../audit/sandbox-audit-sink.js";
 import { buildSandboxAuditEntry } from "../../audit/sandbox-audit.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+
+withSourceHostResources();
 
 const processProbe = vi.hoisted(() => ({
   execFileSync: vi.fn(),
@@ -140,8 +142,6 @@ function invoke(executor: ToolExecutor, id: string, name = "bash", input: Record
   }));
 }
 
-// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
-beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 it("re-enters normal permission policy before one exact host retry and retains the original result id", async () => {
   const command = "mkdir ordinary";

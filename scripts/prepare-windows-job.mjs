@@ -1,4 +1,4 @@
-// Prepare the native helpers tests load, without the failure-fixture executable.
+// Prepare the native helpers tests load, including the hold fixture but not the failure fixtures.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
@@ -10,6 +10,7 @@ const MSVC_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64";
 const WINDOWS_HELPERS = [
   { directory: "windows-job", executable: "ave-job.exe", args: [] },
   { directory: "windows-path-kind", executable: "ave-path-kind.exe", args: ["--", "-Helper", "path-kind"] },
+  { directory: "windows-path-kind", executable: "ave-path-kind-hold-fixture.exe", args: ["--", "-Helper", "path-kind", "-HoldFixture"] },
 ];
 
 export function windowsJobLauncherPath(arch = process.arch) {

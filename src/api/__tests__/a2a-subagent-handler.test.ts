@@ -31,6 +31,9 @@ import { A2ATaskStore } from "../a2a-task-store.js";
 import { UUID_PATTERN } from "../../shared/uuid.js";
 import { monotonicIsoClock as clock } from "./a2a-test-helpers.js";
 
+const APPROVED = { approved: true } as const;
+const DENIED = { approved: false, outcome: "denied" } as const;
+
 const HANDLER_ID = "profile-a";
 const TASK_ID = "sub-7bc35644-8737bb97-eb8b-4e75-85c9-1e9b9abd3671";
 
@@ -154,7 +157,7 @@ function makeHarness(
     })),
   };
   const authorizeOperation = vi.fn<A2AWireAuthorizer>(
-    options.authorizeOperation ?? (async () => true),
+    options.authorizeOperation ?? (async () => APPROVED),
   );
   let id = 0;
   const handlerOptions = {
@@ -263,7 +266,7 @@ describe("A2ASubAgentHandler", () => {
   });
 
   it("fails closed before the initial runner/store mutation when consent is denied", async () => {
-    const authorizeOperation = vi.fn(async () => false);
+    const authorizeOperation = vi.fn(async () => DENIED);
     const { handler, runner, store, audit } = makeHarness(HANDLER_ID, {
       authorizeOperation,
     });
@@ -322,8 +325,8 @@ describe("A2ASubAgentHandler", () => {
 
   it("releases an initial admission after denial so later work can be approved", async () => {
     const authorizeOperation = vi.fn()
-      .mockResolvedValueOnce(false)
-      .mockResolvedValueOnce(true);
+      .mockResolvedValueOnce(DENIED)
+      .mockResolvedValueOnce(APPROVED);
     const { handler, runner } = makeHarness(HANDLER_ID, { authorizeOperation });
 
     await expect(handler.handle(A2AJsonRpcMethod.SEND_MESSAGE, {
@@ -339,7 +342,7 @@ describe("A2ASubAgentHandler", () => {
   });
 
   it("keeps the fixed rejection when the audit sink throws", async () => {
-    const authorizeOperation = vi.fn(async () => false);
+    const authorizeOperation = vi.fn(async () => DENIED);
     const { handler, runner, store, audit } = makeHarness(HANDLER_ID, {
       authorizeOperation,
     });
@@ -522,7 +525,7 @@ describe("A2ASubAgentHandler", () => {
   });
 
   it("reconciles detached cancellation while continuation consent is pending", async () => {
-    const approval = deferred<boolean>();
+    const approval = deferred<typeof APPROVED | typeof DENIED>();
     const authorizeOperation = vi.fn(async () => await approval.promise);
     const { handler, runner, store } = makeHarness(HANDLER_ID, { authorizeOperation });
     await seedInputRequiredTask(
@@ -548,7 +551,7 @@ describe("A2ASubAgentHandler", () => {
       title: "wire profile",
       taskState: A2ATaskState.CANCELED,
     });
-    approval.resolve(true);
+    approval.resolve(APPROVED);
 
     await rejection;
     expect(runner.resumeFromA2AWire).not.toHaveBeenCalled();
@@ -558,7 +561,7 @@ describe("A2ASubAgentHandler", () => {
   });
 
   it("preflights a continuation before consent and leaves it waiting when denied", async () => {
-    const authorizeOperation = vi.fn(async () => false);
+    const authorizeOperation = vi.fn(async () => DENIED);
     const { handler, runner, store, audit } = makeHarness(HANDLER_ID, {
       authorizeOperation,
     });
@@ -610,7 +613,7 @@ describe("A2ASubAgentHandler", () => {
   });
 
   it("coalesces identical concurrent continuation denial without another prompt", async () => {
-    const approval = deferred<boolean>();
+    const approval = deferred<typeof APPROVED | typeof DENIED>();
     const authorizeOperation = vi.fn(async () => await approval.promise);
     const { handler, runner, store } = makeHarness(HANDLER_ID, { authorizeOperation });
     await seedWorkingTask(
@@ -636,7 +639,7 @@ describe("A2ASubAgentHandler", () => {
     const first = handler.handle(A2AJsonRpcMethod.SEND_MESSAGE, request);
     const second = handler.handle(A2AJsonRpcMethod.SEND_MESSAGE, request);
     await vi.waitFor(() => expect(authorizeOperation).toHaveBeenCalledOnce());
-    approval.resolve(false);
+    approval.resolve(DENIED);
 
     await Promise.all([
       expect(first).rejects.toMatchObject({ definition: { code: -32010 } }),
@@ -654,7 +657,7 @@ describe("A2ASubAgentHandler", () => {
   });
 
   it("starts one resume for identical concurrent approved continuations", async () => {
-    const approval = deferred<boolean>();
+    const approval = deferred<typeof APPROVED | typeof DENIED>();
     const resume = deferred<SubAgentSpawnResult>();
     const authorizeOperation = vi.fn(async () => await approval.promise);
     const { handler, runner, store } = makeHarness(HANDLER_ID, { authorizeOperation });
@@ -683,7 +686,7 @@ describe("A2ASubAgentHandler", () => {
     const first = handler.handle(A2AJsonRpcMethod.SEND_MESSAGE, request);
     const second = handler.handle(A2AJsonRpcMethod.SEND_MESSAGE, request);
     await vi.waitFor(() => expect(authorizeOperation).toHaveBeenCalledOnce());
-    approval.resolve(true);
+    approval.resolve(APPROVED);
     const tasks = (await Promise.all([first, second])).map(taskFrom);
 
     expect(tasks.map((task) => task.status.state)).toEqual([
@@ -699,10 +702,10 @@ describe("A2ASubAgentHandler", () => {
   });
 
   it("rejects a distinct concurrent continuation before the task FIFO or authorizer", async () => {
-    const approval = deferred<boolean>();
+    const approval = deferred<typeof APPROVED | typeof DENIED>();
     // Approve reads separately so the pending mutation isolates the per-task FIFO.
     const authorizeOperation = vi.fn(async (descriptor: A2AWireAuthorizationDescriptor) =>
-      descriptor.operation === "send-message" ? await approval.promise : true);
+      descriptor.operation === "send-message" ? await approval.promise : APPROVED);
     const { handler, runner, store } = makeHarness(HANDLER_ID, { authorizeOperation });
     await seedWorkingTask(
       store,
@@ -742,13 +745,13 @@ describe("A2ASubAgentHandler", () => {
     expect(authorizeOperation.mock.calls
       .filter(([descriptor]) => descriptor.operation === "send-message")).toHaveLength(1);
 
-    approval.resolve(false);
+    approval.resolve(DENIED);
     await firstRejection;
     expect(runner.resumeFromA2AWire).not.toHaveBeenCalled();
   });
 
   it("revalidates a continuation after approval before history or runner mutation", async () => {
-    const approval = deferred<boolean>();
+    const approval = deferred<typeof APPROVED | typeof DENIED>();
     const authorizeOperation = vi.fn(async () => await approval.promise);
     const { handler, runner, store } = makeHarness(HANDLER_ID, { authorizeOperation });
     await seedWorkingTask(
@@ -778,7 +781,7 @@ describe("A2ASubAgentHandler", () => {
       taskId: TASK_ID,
       state: A2ATaskState.CANCELED,
     });
-    approval.resolve(true);
+    approval.resolve(APPROVED);
 
     await rejection;
     expect(runner.resumeFromA2AWire).not.toHaveBeenCalled();
@@ -1026,7 +1029,7 @@ describe("A2ASubAgentHandler", () => {
   });
 
   it("rejects conflicting concurrent initial bodies with the same message id", async () => {
-    const approval = deferred<boolean>();
+    const approval = deferred<typeof APPROVED | typeof DENIED>();
     const authorizeOperation = vi.fn(async () => await approval.promise);
     const { handler, runner, store } = makeHarness(HANDLER_ID, { authorizeOperation });
 
@@ -1048,7 +1051,7 @@ describe("A2ASubAgentHandler", () => {
     expect(authorizeOperation).toHaveBeenCalledOnce();
     expect(runner.spawnFromA2AWire).not.toHaveBeenCalled();
 
-    approval.resolve(false);
+    approval.resolve(DENIED);
     await firstRejection;
     await expect(store.list(HANDLER_ID)).resolves.toEqual([]);
   });
@@ -1141,7 +1144,7 @@ describe("A2ASubAgentHandler", () => {
   });
 
   it("denies refused task reads and discloses nothing", async () => {
-    const authorizeOperation = vi.fn(async () => false);
+    const authorizeOperation = vi.fn(async () => DENIED);
     const { handler, store, audit } = makeHarness(HANDLER_ID, { authorizeOperation });
     await seedWorkingTask(
       store,
@@ -1307,7 +1310,7 @@ describe("A2ASubAgentHandler", () => {
   });
 
   it("preflights cancel before consent and preserves a live task when denied", async () => {
-    const authorizeOperation = vi.fn(async () => false);
+    const authorizeOperation = vi.fn(async () => DENIED);
     const { handler, runner, store, audit } = makeHarness(HANDLER_ID, {
       authorizeOperation,
     });
@@ -1339,7 +1342,7 @@ describe("A2ASubAgentHandler", () => {
   });
 
   it("coalesces identical concurrent cancel denial", async () => {
-    const approval = deferred<boolean>();
+    const approval = deferred<typeof APPROVED | typeof DENIED>();
     const authorizeOperation = vi.fn(async () => await approval.promise);
     const { handler, runner, store } = makeHarness(HANDLER_ID, { authorizeOperation });
     await seedWorkingTask(
@@ -1353,7 +1356,7 @@ describe("A2ASubAgentHandler", () => {
     const first = handler.handle(A2AJsonRpcMethod.CANCEL_TASK, { id: TASK_ID });
     const second = handler.handle(A2AJsonRpcMethod.CANCEL_TASK, { id: TASK_ID });
     await vi.waitFor(() => expect(authorizeOperation).toHaveBeenCalledOnce());
-    approval.resolve(false);
+    approval.resolve(DENIED);
 
     await Promise.all([
       expect(first).rejects.toMatchObject({ definition: { code: -32010 } }),
@@ -1366,7 +1369,7 @@ describe("A2ASubAgentHandler", () => {
   });
 
   it("runs one cancel mutation for identical concurrent approval", async () => {
-    const approval = deferred<boolean>();
+    const approval = deferred<typeof APPROVED | typeof DENIED>();
     const authorizeOperation = vi.fn(async () => await approval.promise);
     const { handler, runner, store } = makeHarness(HANDLER_ID, { authorizeOperation });
     await seedWorkingTask(
@@ -1380,7 +1383,7 @@ describe("A2ASubAgentHandler", () => {
     const first = handler.handle(A2AJsonRpcMethod.CANCEL_TASK, { id: TASK_ID });
     const second = handler.handle(A2AJsonRpcMethod.CANCEL_TASK, { id: TASK_ID });
     await vi.waitFor(() => expect(authorizeOperation).toHaveBeenCalledOnce());
-    approval.resolve(true);
+    approval.resolve(APPROVED);
     const tasks = await Promise.all([first, second]) as A2ATask[];
 
     expect(tasks.map((task) => task.status.state)).toEqual([
@@ -1411,7 +1414,7 @@ describe("A2ASubAgentHandler", () => {
   });
 
   it("revalidates cancel after approval before the runner mutation", async () => {
-    const approval = deferred<boolean>();
+    const approval = deferred<typeof APPROVED | typeof DENIED>();
     const authorizeOperation = vi.fn(async () => await approval.promise);
     const { handler, runner, store } = makeHarness(HANDLER_ID, { authorizeOperation });
     await seedWorkingTask(
@@ -1432,7 +1435,7 @@ describe("A2ASubAgentHandler", () => {
       taskId: TASK_ID,
       state: A2ATaskState.COMPLETED,
     });
-    approval.resolve(true);
+    approval.resolve(APPROVED);
 
     await rejection;
     expect(runner.cancelA2AWireRun).not.toHaveBeenCalled();
@@ -1442,7 +1445,7 @@ describe("A2ASubAgentHandler", () => {
   });
 
   it("rejects cancel immediately while a distinct continuation consent is pending", async () => {
-    const approval = deferred<boolean>();
+    const approval = deferred<typeof APPROVED | typeof DENIED>();
     const authorizeOperation = vi.fn(async () => await approval.promise);
     const { handler, runner, store } = makeHarness(HANDLER_ID, { authorizeOperation });
     await seedWorkingTask(
@@ -1473,7 +1476,7 @@ describe("A2ASubAgentHandler", () => {
     expect(authorizeOperation).toHaveBeenCalledOnce();
     expect(runner.cancelA2AWireRun).not.toHaveBeenCalled();
 
-    approval.resolve(false);
+    approval.resolve(DENIED);
     await continuationRejection;
     expect(runner.resumeFromA2AWire).not.toHaveBeenCalled();
   });
@@ -1508,7 +1511,7 @@ describe("A2ASubAgentHandler", () => {
   });
 
   it("reconciles detached cancellation while cancel consent is pending", async () => {
-    const approval = deferred<boolean>();
+    const approval = deferred<typeof APPROVED | typeof DENIED>();
     const authorizeOperation = vi.fn(async () => await approval.promise);
     const { handler, runner, store } = makeHarness(HANDLER_ID, { authorizeOperation });
     await seedInputRequiredTask(
@@ -1525,7 +1528,7 @@ describe("A2ASubAgentHandler", () => {
       title: "wire profile",
       taskState: A2ATaskState.CANCELED,
     });
-    approval.resolve(true);
+    approval.resolve(APPROVED);
 
     await expect(pending).resolves.toMatchObject({ status: { state: A2ATaskState.CANCELED } });
     expect(runner.cancelA2AWireRun).not.toHaveBeenCalled();
@@ -1653,7 +1656,7 @@ describe("A2ASubAgentHandler", () => {
       getA2AWireRunSnapshot: vi.fn(),
       cancelA2AWireRun: vi.fn(),
     };
-    const authorizeOperation = vi.fn(async () => true);
+    const authorizeOperation = vi.fn(async () => APPROVED);
     const other = new A2ASubAgentHandler({
       id: "profile-b",
       card: card(),
@@ -1714,7 +1717,7 @@ describe("A2ASubAgentHandler", () => {
         binding: binding("profile-b"),
         runner: runner as unknown as A2ASubAgentLifecycleRunner,
         store: first.store,
-        authorizeOperation: vi.fn(async () => true),
+        authorizeOperation: vi.fn(async () => APPROVED),
         audit,
       });
 

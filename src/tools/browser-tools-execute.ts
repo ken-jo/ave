@@ -1,5 +1,6 @@
 // Lazy-loaded browser actions re-resolve tabs within the caller's window and recheck approved page scope at execution.
 // Frame every page read as untrusted web data.
+import { browserApprovalErrorOf } from "./pipeline/approval-outcome.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { authorizedApprovalMemoryScope } from "./approval-memory-context.js";
 import { observeAgentBrowserCommand } from "./agent-browser-observation.js";
@@ -270,6 +271,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     try {
       return await work();
     } catch (err) {
+      if (browserApprovalErrorOf(err)) throw err;
       const error = err as { name?: string; message?: string };
       if (error?.name === "BrowserActionError") return failure(error.message ?? "the browser action failed");
       return failure(`the browser action failed: ${error?.message ?? String(err)}`);

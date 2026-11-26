@@ -119,7 +119,7 @@ describe("agent workbook editing authority", () => {
     expect(PUBLIC_CHANNELS as readonly string[]).not.toContain(CHANNELS.preview.observationAck);
     expect(EXTERNAL_MUTATION_CHANNELS as readonly string[]).not.toContain(CHANNELS.preview.observationAck);
     expect(isPublicChannel(CHANNELS.preview.observationAck)).toBe(false);
-    const approve = vi.fn(async () => true);
+    const approve = vi.fn(async () => ({ approved: true as const }));
     const execute = vi.fn();
     const api = createLocalApi({ ipc: {} as never,
       conversationCommandPort: { execute } as never, externalMutationApprover: approve });

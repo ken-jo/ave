@@ -269,6 +269,7 @@ describe("instrumentEffectsByPath — fail-closed default + purity", () => {
       record() {
         throw new Error("ledger exploded");
       },
+      markObservationIncomplete() {},
       summary() {
         return { correlationId: "boom", hasMutatingEffect: false, effects: [] };
       },

@@ -1,9 +1,10 @@
 import { registerRunSession, __resetRunGrantsForTest } from "../../permissions/run-grants.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { t } from "../../i18n/index.js";
 import { join } from "node:path";
-import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
-import { configureHostResources } from "../../main/host-resources.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { verifyChain } from "../../audit/hmac-chain.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
@@ -37,6 +38,8 @@ import { tryUserApprovalMemorySkip } from "../pipeline/approval-memory-skip.js";
 import { ToolRegistry } from "../registry.js";
 import { makeWriteProbeTool } from "./approval-memory-test-fixtures.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+
+withSourceHostResources();
 
 const SESSION_ID = "automatic-pause-session";
 const resources = new PermissionTestResources();
@@ -184,7 +187,7 @@ function manualGate() {
   }, nativeWebContents as never);
   const approve = (card: ApprovalRequest) => answer(card, "allow-once");
   const deny = (card: ApprovalRequest) => answer(card, "deny-once");
-  return { gate, cards, approve, deny, parkedAt };
+  return { gate, cards, approve, deny, parkedAt, nativeWebContents };
 }
 
 function heldHandlerFinalizers(toolUseId: string, count: number) {
@@ -259,8 +262,6 @@ function memoryReview(current: Awaited<ReturnType<typeof subject>>, input: Recor
   );
 }
 
-// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
-beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("executor automated approval pause", () => {
   it("denies a late hook replacement without replaying an earlier completed hook effect", async () => {
@@ -301,25 +302,43 @@ describe("executor automated approval pause", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it.each(["caller", "quit"] as const)("cancels a pending late native card without entering the handler (%s)", async (by) => {
+  it.each(["caller", "quit", "project-scope-changed", "scope-before-stop", "stop-before-scope", "timeout-before-stop", "refusal-before-quit"] as const)("cancels a pending late native card without entering the handler (%s)", async (by) => {
     const f = await subject();
     const controller = new AbortController();
     const execute = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();
     registry.register(makeWriteProbeTool(execute));
     const { hooks, reached, release } = heldPreToolUse();
-    const { gate, cards, approve } = manualGate();
+    const { gate, cards, approve, nativeWebContents } = manualGate();
     const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const auditLog = vi.spyOn(f.audit, "log");
     const pending = executor.executeAll([{ id: "cancel-late-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root, abortSignal: controller.signal,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
     });
     await reached;
     await f.pause();
+    if (by === "timeout-before-stop") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     release();
     await vi.waitFor(() => expect(cards).toHaveLength(1));
     expect(gate.pendingCount).toBe(1);
-    controller.abort(by === "quit" ? new HostExitAbortError() : new Error("caller cancelled pending late card"));
+    if (by === "timeout-before-stop") vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs);
+    if (by === "refusal-before-quit") {
+      const [card] = cards;
+      expect(gate.resolveFromDesktopRenderer(card.id, {
+        requestId: card.id, choice: "allow-once", nonce: "invalid", hmac: card.hmac,
+      }, nativeWebContents as never)?.choice).toBe("deny-once");
+    }
+    const cancelScope = () => gate.cancelPendingRequest(cards[0].id, SESSION_ID, "project-scope-changed");
+    const scopeSettles = by === "project-scope-changed" || by === "scope-before-stop";
+    if (scopeSettles) {
+      expect(cancelScope()).toBe(true);
+      expect(controller.signal.aborted).toBe(false);
+    }
+    if (by !== "project-scope-changed") {
+      controller.abort(by === "quit" || by === "refusal-before-quit" ? new HostExitAbortError() : new Error("caller cancelled pending late card"));
+    }
+    if (by === "stop-before-scope") expect(cancelScope()).toBe(false);
     let settled = false;
     void pending.then(() => { settled = true; });
     await vi.waitFor(() => expect(settled).toBe(true), { timeout: 1_000 });
@@ -329,9 +348,24 @@ describe("executor automated approval pause", () => {
     expect(gate.pendingCount).toBe(0);
     expect(approve(cards[0])).toBeNull();
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
+    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
     if (by === "quit") {
-      const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
       expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "cancel-late-card", denyReasons: [{ reason: "host-shutdown" }], trustOrigin: "unknown" });
+    } else if (by === "timeout-before-stop" || by === "refusal-before-quit") {
+      const reason = by === "timeout-before-stop" ? "approval request expired" : "approval rejected by host";
+      expect.soft(result.content).toBe(by === "timeout-before-stop" ? t("be_executor.approvalExpired", { name: "write_probe" })
+        : t("be_executor.approvalRejectedByHost", { name: "write_probe", reason: "approval integrity check failed" }));
+      expect(rows.at(-1)).toMatchObject({ decision: "deny", terminalKind: "denied", trustOrigin: "unknown", denyReasons: [{ reason, source: "approval-gate" }] });
+    } else if (scopeSettles) {
+      const detail = "project-scope-changed";
+      expect.soft(result.content).toContain(detail);
+      expect.soft(rows.at(-1)).toMatchObject({ decision: "deny", terminalKind: "cancelled", toolUseId: "cancel-late-card",
+        denyReasons: [expect.objectContaining({ reason: expect.stringContaining(detail) })], trustOrigin: "unknown" });
+      expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({ type: "tool_call", output: expect.stringContaining(detail),
+        toolCalls: [expect.objectContaining({ permissionDecision: "cancelled", permissionReason: expect.stringContaining(detail) })] }));
+    } else {
+      expect(result.content).toBe(t("be_executor.toolExecutionCancelled"));
+      expect(rows.at(-1)).toMatchObject({ decision: "deny", terminalKind: "cancelled", toolUseId: "cancel-late-card" });
     }
   });
 
@@ -958,13 +992,12 @@ describe("executor automated approval pause", () => {
       await vi.waitFor(() => expect(cards).toHaveLength(1));
       registerRunSession("work-board:7#run-a", "sibling-stage-session", { stageId: "build", stageName: "Build", lane: "attended" });
       f.manager.addRunRule("sibling-stage-session", "Bash(npm test)");
-      // What the policy says of the pending call when it is judged again.
-      const original = f.manager.recheckPermission.bind(f.manager);
-      vi.spyOn(f.manager, "recheckPermission").mockImplementation((result, options) => {
-        const rechecked = original(result, options);
-        if (options?.acrossMemoryRuleChanges !== true) return rechecked;
+      // What the card's bound check says of the pending call when it is judged.
+      const original = f.manager.checkDetailed.bind(f.manager);
+      vi.spyOn(f.manager, "checkDetailed").mockImplementation((...args) => {
+        const rechecked = original(...args);
         if (recheck === "allow") rechecked.decision = "allow";
-        if (recheck === "deny") rechecked.decision = "deny";
+        if (recheck === "deny") Object.assign(rechecked, { decision: "deny", reason: "Denied now." });
         if (recheck === "forced ask") rechecked.forceModal = true;
         return rechecked;
       });
@@ -972,6 +1005,14 @@ describe("executor automated approval pause", () => {
       if (expected === "runs") {
         await held.waits[1].reached;
         held.waits[1].release();
+      }
+      // An Allow whose question changed is asked again on a new card; its Deny ends the call.
+      const reasked = recheck === "forced ask" && answer === "approve";
+      if (reasked) {
+        await held.waits[1].reached;
+        held.waits[1].release();
+        await vi.waitFor(() => expect(cards).toHaveLength(2));
+        deny(cards[1]);
       }
       const [result] = await pending;
       if (expected === "runs") {
@@ -981,11 +1022,11 @@ describe("executor automated approval pause", () => {
       } else {
         expect(result.is_error).toBe(true);
         expect(execute).not.toHaveBeenCalled();
-        // A Deny is refused as the person's own answer, by the card's reason; a changed question is refused as a changed policy.
-        if (answer === "deny") expect(result.content).toBe(cards[0].reason);
-        else expect(result.content).toBe("Permission policy changed before execution.");
+        // A Deny is refused as the person's own answer, by its card's reason; an Allow of a call now denied, by the policy's reason.
+        if (answer === "deny" || reasked) expect(result.content).toBe(cards.at(-1)?.reason);
+        else expect(result.content).toBe("Denied now.");
       }
-      expect(cards).toHaveLength(1);
+      expect(cards).toHaveLength(reasked ? 2 : 1);
     } finally {
       __resetRunGrantsForTest();
     }

@@ -1,17 +1,20 @@
 // Egress scopes must be among those offered by the gate; terminal asks stay in the owning window/tab. Grants belong to the egress store, never user-decision memory.
-import { type AnswerEpochs, personAnswerStands } from "./pending-answer-policy.js";
+import { bindPendingAnswerRequest, openPendingAnswerCard, type PendingAnswerCard, personAnswerStands, saveStandingAnswerRule } from "./pending-answer-policy.js";
 import type { NetworkPermissionEvaluation, NetworkRuleScope, PermissionManager } from "./permission-manager.js";
 import type { EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
 import { remoteControllerOriginOf } from "../shared/chat-origin.js";
+import { errorMessage } from "../shared/error-message.js";
 import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { canonicalRuleSpecifier } from "./rules/rule-specifier.js";
 import {
-  isHostApprovalRejectedDecision,
-  isHostApprovalTimeoutDecision,
+  admitApprovalAnswer,
+  type AnsweredRecord,
+  approvalFailureKind,
   type ApprovalGate,
+  isHostApprovalControllerRevoked,
 } from "./approval-gate.js";
 import type { EgressApprovalAnswer, EgressApprovalRequester, ShellNetworkPermissionEvaluator } from "./egress-ask.js";
 
@@ -28,6 +31,7 @@ export const EGRESS_APPROVAL_DENY_REASONS = {
   denied: "denied by the user",
   timeout: "network approval timed out",
   rejected: "network approval answer was rejected",
+  cancelled: "network approval was cancelled",
 } as const;
 
 export function createShellNetworkPermissionEvaluator(manager?: PermissionManager): ShellNetworkPermissionEvaluator {
@@ -66,7 +70,7 @@ export function createShellNetworkPermissionEvaluator(manager?: PermissionManage
 }
 
 export function createApprovalGateEgressRequester(
-  gate: Pick<ApprovalGate, "requestAndWait">,
+  gate: Pick<ApprovalGate, "requestAndWait"> & Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer" | "commitStagedAllowSaves">>,
   permissionManager?: PermissionManager,
 ): EgressApprovalRequester {
   const evaluateShellPermission = createShellNetworkPermissionEvaluator(permissionManager);
@@ -78,9 +82,8 @@ export function createApprovalGateEgressRequester(
     const toolName = terminal ? TERMINAL_EGRESS_TOOL_NAME : request.toolName;
     let reviewerVerdict;
     let forced = false;
-    // What the card is asked under, and the destination judged again by the policy as it is now (pending-answer-policy.ts).
-    let opened: AnswerEpochs | undefined;
-    let recheckDestination: (() => { decision: "allow" | "ask" | "deny"; forceModal?: boolean }) | undefined;
+    let card: PendingAnswerCard | undefined;
+    let recheckedRule: NetworkPermissionEvaluation["rule"];
     if (request.origin === "shell") {
       if (!permissionManager) throw new Error("Shell egress requires a permission manager");
       const cwd = request.workspaceRoot ?? process.cwd();
@@ -92,8 +95,6 @@ export function createApprovalGateEgressRequester(
       if (evaluated.destination.host !== host || evaluated.destination.port !== port) throw new Error("Network permission destination changed");
       let permission = evaluated.permission;
       forced = permission.forceModal === true;
-      opened = { epoch: evaluated.policyEpoch, contextEpoch: evaluated.policyContextEpoch };
-      recheckDestination = () => evaluated.recheck(undefined, request.approvalSurface ?? (headless ? "unavailable" : "interactive")).permission;
       if (permission.reviewer && permission.decision === "ask" && !permission.forceModal) {
         const review = await permissionManager.dispatchReviewer("sandbox_network", {
           permissionDecision: permission,
@@ -113,9 +114,18 @@ export function createApprovalGateEgressRequester(
         return { allow: false, reason: permission.reason };
       }
       if (headless) { request.onNoApprover?.(); return { allow: false, reason: NO_APPROVER_MESSAGE }; }
+      const recheckDestination = () => {
+        const current = evaluated.recheck(undefined, request.approvalSurface ?? "interactive");
+        recheckedRule = current.rule;
+        return current.permission;
+      };
+      card = openPendingAnswerCard(permissionManager, evaluated.permission, recheckDestination, "stale-refused", {
+        gate, requestId, action: `egress:${requestId}`, uses: ["rule-save"],
+        epochs: { epoch: evaluated.policyEpoch, contextEpoch: evaluated.policyContextEpoch },
+      });
     }
     const remoteControllerAuthority = terminal ? undefined : request.permissionContext?.remoteControllerAuthority;
-    const decision = await gate.requestAndWait({
+    const decision = await gate.requestAndWait(bindPendingAnswerRequest({
       id: requestId,
       category: "tool",
       kind: "egress-host",
@@ -149,27 +159,46 @@ export function createApprovalGateEgressRequester(
       },
       ...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
       ...(request.abortSignal === undefined ? {} : { abortSignal: request.abortSignal }),
-    });
-    if (!terminal && decision.rememberPattern === NO_APPROVER_MESSAGE) { request.onNoApprover?.(); return { allow: false, reason: NO_APPROVER_MESSAGE }; }
-    if (decision.choice === "allow-once" && decision.egressScope !== undefined && request.scopes.includes(decision.egressScope)) {
-      // Only an allow depends on the policy it was asked under. A deny stands, so the rule a "deny always" answer saves is not read as an outside change.
-      // A sibling stage's "Allow for this run", or a run that ended, leaves the answer standing; every other change refuses it.
-      if (!terminal && !(opened !== undefined && recheckDestination !== undefined && personAnswerStands(permissionManager!, opened, forced, recheckDestination))) {
-        return { allow: false, reason: "Permission policy changed during network approval." };
-      }
+    }, card));
+    let answer: AnsweredRecord | undefined;
+    try {
+      answer = admitApprovalAnswer(decision, { requestId, toolName, toolUseId: undefined });
+    } catch (error) {
+      return { allow: false, reason: errorMessage(error), recheckRefusal: { kind: "recheck-failed" } };
+    }
+    if (isHostApprovalControllerRevoked(decision)) {
+      return { allow: false, outcome: "controller-revoked" };
+    }
+    const outcome = approvalFailureKind(decision);
+    if (outcome === "unavailable") {
+      if (!terminal) request.onNoApprover?.();
+      return { allow: false, reason: NO_APPROVER_MESSAGE, settledRefusal: true };
+    }
+    if (answer?.choice === "allow-once" && decision.egressScope !== undefined && request.scopes.includes(decision.egressScope)) {
       if (forced && decision.egressScope !== "once") return { allow: false, reason: "A forced network approval is valid for one connection only." };
+      if (!terminal) {
+        if (request.abortSignal?.aborted) return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.cancelled };
+        if (card === undefined || !personAnswerStands(card, decision)) {
+          const verdict = card?.verdict;
+          if (verdict?.kind === "recheck-failed") {
+            return { allow: false, reason: verdict.reason, recheckRefusal: { kind: verdict.kind } };
+          }
+          if (verdict?.kind === "denied") {
+            return { allow: false, reason: verdict.fresh.reason, recheckRefusal: { kind: verdict.kind, rule: recheckedRule } };
+          }
+          return { allow: false, reason: "Permission policy changed during network approval." };
+        }
+        const { refusal } = await saveStandingAnswerRule(card, decision);
+        if (refusal !== undefined) return { allow: false, reason: refusal };
+      }
       return { allow: true, scope: decision.egressScope, ...(forced ? { oneConnection: true as const } : {}) };
     }
-    const timedOut = Boolean(isHostApprovalTimeoutDecision(decision));
-    const rejected = Boolean(isHostApprovalRejectedDecision(decision));
-    return {
-      allow: false,
-      reason: timedOut
-        ? EGRESS_APPROVAL_DENY_REASONS.timeout
-        : rejected
-          ? EGRESS_APPROVAL_DENY_REASONS.rejected
-          : EGRESS_APPROVAL_DENY_REASONS.denied,
-      ...(!timedOut && !rejected && decision.choice.startsWith("deny") ? { humanDenied: true as const } : {}),
-    };
+    if (outcome === "expired") return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.timeout, settledRefusal: true };
+    if (outcome === "cancelled") {
+      const interrupted = request.abortSignal?.aborted && decision.rememberPattern === undefined;
+      return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.cancelled, ...(interrupted ? {} : { settledRefusal: true }) };
+    }
+    if (outcome === "denied") return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied, humanDenied: true };
+    return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected, ...(outcome === "rejected" ? { settledRefusal: true } : {}) };
   };
 }

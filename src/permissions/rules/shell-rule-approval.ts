@@ -78,6 +78,8 @@ export interface HostTerminalApprovalBinding {
   readonly shell: "zsh" | "bash";
   /** Canonical physical directory of the shell. */
   readonly physicalCwd: string;
+  readonly cwdDevice: string;
+  readonly cwdInode: string;
   readonly command: string;
   /** Tool results reached the model earlier in this turn: the card offers no lasting allow and says saved rules do not apply. */
   readonly afterExternalContent?: true;

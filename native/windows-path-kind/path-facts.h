@@ -260,4 +260,191 @@ int print_path_facts(int argc, wchar_t** argv) {
   return std::fwrite(output.data(), 1, output.size(), stdout) == output.size() && std::fflush(stdout) == 0 ? 0 : 3;
 }
 
+struct HoldJob {
+  HANDLE job;
+  HANDLE channel;
+  const PinnedPath* pinned;
+};
+
+// Launcher frames are {kind, value}; replies are one kind byte and an 8-byte value.
+constexpr DWORD kHoldHello = 0x32485641;    // "AVH2", value: the launcher's process id
+constexpr DWORD kHoldRecheck = 0x51485641;  // "AVHQ"
+struct HoldFrame { DWORD kind; DWORD value; };
+
+// Handles the host passed beyond the three standard ones, read from the startup block.
+HANDLE inherited_handle(size_t fd) {
+  STARTUPINFOW startup{};
+  GetStartupInfoW(&startup);
+  int count = 0;
+  if (startup.lpReserved2 == nullptr || startup.cbReserved2 < sizeof(count)) return INVALID_HANDLE_VALUE;
+  std::memcpy(&count, startup.lpReserved2, sizeof(count));
+  if (count <= 0 || fd >= static_cast<size_t>(count) || startup.cbReserved2 < sizeof(count) + count * (1 + sizeof(HANDLE))) return INVALID_HANDLE_VALUE;
+  HANDLE handle = INVALID_HANDLE_VALUE;
+  std::memcpy(&handle, startup.lpReserved2 + sizeof(count) + count + fd * sizeof(HANDLE), sizeof(handle));
+  return handle;
+}
+
+bool hold_transfer(HANDLE channel, bool write, void* target, DWORD size) {
+  auto* cursor = static_cast<char*>(target);
+  while (size) {
+    DWORD count = 0;
+    if (!(write ? WriteFile(channel, cursor, size, &count, nullptr) : ReadFile(channel, cursor, size, &count, nullptr)) || !count) return false;
+    cursor += count;
+    size -= count;
+  }
+  return true;
+}
+
+bool hold_reply(HANDLE channel, char kind, ULONGLONG value = 0) {
+  char reply[9]{kind};
+  std::memcpy(reply + 1, &value, sizeof(value));
+  return hold_transfer(channel, true, reply, sizeof(reply));
+}
+
+// Reopens the leaf by name without following links: it must still be the directory issued at hold time.
+bool leaf_still_pinned(const PinnedPath& pinned) {
+#ifdef AVE_TEST_HOLD_FIXTURE
+  wchar_t recheck[8]{};
+  GetEnvironmentVariableW(L"AVE_TEST_HOLD_RECHECK", recheck, 8);
+  if (std::wstring(recheck) == L"lost") return false;
+  if (std::wstring(recheck) == L"stall") Sleep(INFINITE);
+#endif
+  if (!verify_pinned_path(pinned)) return false;
+  const std::wstring& leaf = pinned.components.back();
+  const std::wstring extended = leaf.compare(0, 2, L"\\\\") == 0 ? L"\\\\?\\UNC\\" + leaf.substr(2) : L"\\\\?\\" + leaf;
+  HANDLE handle = CreateFileW(extended.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                              OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return false;
+  PathFacts current;
+  const bool read = handle_facts(handle, current);
+  CloseHandle(handle);
+  const auto& issued = pinned.facts.back();
+  return read && current.id.VolumeSerialNumber == issued.id.VolumeSerialNumber
+    && std::memcmp(&current.id.FileId, &issued.id.FileId, sizeof(FILE_ID_128)) == 0
+    && (current.tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+}
+
+// The binding rests on the private channel relayed by the host. The process named by the launcher
+// joins the job after it signals the event duplicated into it. The plain route has a pins-only
+// residual: a same-user command can duplicate the event or verdict handle out of the launcher.
+// Container payloads are denied access to the launcher process. Once its own job is empty, the
+// launcher asks whether the held chain still stands.
+// This helper stops nothing and reports nothing else: its exit closes the job, which stops every member.
+DWORD WINAPI serve_hold_job(void* context) {
+  auto* hold = static_cast<HoldJob*>(context);
+  HoldFrame frame{};
+  HANDLE launcher = nullptr, remote = nullptr;
+  HANDLE proof = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  bool admitted = proof != nullptr && hold_transfer(hold->channel, false, &frame, sizeof(frame)) && frame.kind == kHoldHello
+    && (launcher = OpenProcess(PROCESS_DUP_HANDLE | PROCESS_SET_QUOTA | PROCESS_TERMINATE | SYNCHRONIZE, FALSE, frame.value)) != nullptr
+    && DuplicateHandle(GetCurrentProcess(), proof, launcher, &remote, EVENT_MODIFY_STATE, FALSE, 0);
+  if (admitted) {
+    // The wait ends with the launcher, which bounds its own admission.
+    HANDLE waits[]{proof, launcher};
+    admitted = hold_reply(hold->channel, 'C', reinterpret_cast<ULONG_PTR>(remote))
+      && WaitForMultipleObjects(2, waits, FALSE, INFINITE) == WAIT_OBJECT_0
+      && AssignProcessToJobObject(hold->job, launcher);
+    if (!admitted) DuplicateHandle(launcher, remote, nullptr, nullptr, 0, FALSE, DUPLICATE_CLOSE_SOURCE);
+  }
+  hold_reply(hold->channel, admitted ? 'A' : 'F');
+  while (admitted && hold_transfer(hold->channel, false, &frame, sizeof(frame)) && frame.kind == kHoldRecheck) {
+    // A leaf replaced in place (for example made into a junction) no longer matches the facts reported at hold time.
+    if (!hold_reply(hold->channel, leaf_still_pinned(*hold->pinned) ? 'P' : 'X')) break;
+  }
+  return 0;
+}
+
+#ifdef AVE_TEST_HOLD_FIXTURE
+// Test-only build: a smaller reply limit, a recheck that fails or stalls, and the job's member list.
+size_t hold_reply_limit() {
+  wchar_t value[32];
+  const DWORD length = GetEnvironmentVariableW(L"AVE_TEST_HOLD_REPLY_LIMIT", value, 32);
+  return length != 0 && length < 32 ? static_cast<size_t>(wcstoull(value, nullptr, 10)) : MAX_PATH_FACTS_OUTPUT_BYTES;
+}
+
+// 'L' asks for the job's member process ids as one JSON line on stderr.
+void report_hold_members(HANDLE job) {
+  std::vector<unsigned char> buffer(sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + 1024 * sizeof(ULONG_PTR));
+  auto* list = reinterpret_cast<JOBOBJECT_BASIC_PROCESS_ID_LIST*>(buffer.data());
+  std::string line = "[";
+  if (QueryInformationJobObject(job, JobObjectBasicProcessIdList, list, static_cast<DWORD>(buffer.size()), nullptr)) {
+    for (DWORD index = 0; index < list->NumberOfProcessIdsInList; ++index)
+      line += (index ? "," : "") + std::to_string(list->ProcessIdList[index]);
+  }
+  line += "]\n";
+  std::fwrite(line.data(), 1, line.size(), stderr);
+  std::fflush(stderr);
+}
+
+// `--breakaway <executable>`: try to start a process outside every job; prints whether the system refused.
+int try_breakaway(int argc, wchar_t** argv) {
+  if (argc != 3) return 2;
+  STARTUPINFOW startup{sizeof(startup)};
+  PROCESS_INFORMATION process{};
+  std::wstring command = L"\"" + std::wstring(argv[2]) + L"\"";
+  if (CreateProcessW(argv[2], command.data(), nullptr, nullptr, FALSE, CREATE_BREAKAWAY_FROM_JOB | CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                     nullptr, nullptr, &startup, &process)) {
+    TerminateProcess(process.hProcess, 1);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    std::fputs("breakaway allowed\n", stdout);
+    return 1;
+  }
+  std::fprintf(stdout, "breakaway refused %lu\n", GetLastError());
+  return 0;
+}
+#else
+size_t hold_reply_limit() { return MAX_PATH_FACTS_OUTPUT_BYTES; }
+#endif
+
+// `--hold <directory>`: report the --pin row, then keep every component held until stdin closes. The
+// helper owns the only handle to a kill-on-close job; the launcher on the fourth standard handle joins
+// that job before it starts its command, so neither can outlive the hold.
+int hold_path(int argc, wchar_t** argv) {
+  if (argc != 3) return 2;
+  PinnedPath pinned;
+  if (!pin_path(argv[2], pinned, false, true) || pinned.handles.size() != pinned.components.size()
+      || (pinned.facts.back().tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+    std::fputs("could not hold the directory\n", stderr);
+    return 4;
+  }
+  // Binary stdout keeps the wire length equal to the length checked here.
+  if (_setmode(_fileno(stdout), _O_BINARY) == -1) return 3;
+  const size_t limit = hold_reply_limit();
+  constexpr size_t kFraming = 5;  // "[" + row + "]}]\n"
+  std::string row = facts_json(pinned.facts.back()); row.pop_back();
+  row += ",\"ancestors\":[";
+  for (size_t ancestor = 0; ancestor + 1 < pinned.facts.size(); ++ancestor) {
+    if (ancestor != 0) row += ",";
+    row += facts_json(pinned.facts[ancestor]);
+    if (row.size() + kFraming > limit) break;
+  }
+  if (row.size() + kFraming > limit) { std::fputs("held directory reply exceeds the limit\n", stderr); return 3; }
+  const std::string output = "[" + row + "]}]\n";
+  HoldJob hold{CreateJobObjectW(nullptr, nullptr), inherited_handle(3), &pinned};
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (hold.job == nullptr || !SetInformationJobObject(hold.job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+    std::fputs("could not create the hold job\n", stderr);
+    return 3;
+  }
+  if (hold.channel == INVALID_HANDLE_VALUE || hold.channel == nullptr) {
+    std::fputs("the hold channel is missing\n", stderr);
+    return 3;
+  }
+  if (std::fwrite(output.data(), 1, output.size(), stdout) != output.size() || std::fflush(stdout) != 0) return 3;
+  if (CreateThread(nullptr, 0, serve_hold_job, &hold, 0, nullptr) == nullptr) return 3;
+  HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+  char byte;
+  DWORD count;
+  while (ReadFile(input, &byte, 1, &count, nullptr) && count) {
+#ifdef AVE_TEST_HOLD_FIXTURE
+    if (byte == 'L') report_hold_members(hold.job);
+#endif
+  }
+  // Ending the process closes the job handle, which stops everything in it.
+  TerminateProcess(GetCurrentProcess(), 0);
+  return 0;
+}
+
 }  // namespace

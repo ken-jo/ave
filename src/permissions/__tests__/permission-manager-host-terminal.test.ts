@@ -112,6 +112,33 @@ describe("host terminal admission before directory authorization", () => {
     });
   });
 
+  it.each([true, false])("drops the sandbox floor's session eligibility and the floor behind it on promotion to other-principal (external content %s)", async (external) => {
+    type Evidence = import("../decision-pipeline.js").PermissionDecisionRequest;
+    const pipelineResult = (manager as unknown as { pipelineResult(evidence: Evidence, context?: unknown): import("../permission-manager.js").PermissionCheckResult }).pipelineResult.bind(manager);
+    const sandbox: Evidence = {
+      tool: { name: "terminal_run", source: "builtin", kind: "shell" }, mode: "default", headless: false, sessionId: "pane",
+      floor: { code: "sandbox-unavailable", reason: "No sandbox." }, floorSessionEligible: true,
+    };
+    await runWithHostTerminalTurn({ sessionId: "pane", turnId: "typed-turn" }, async () => {
+      if (external) noteToolResultsReturnedToModel();
+      const context = { sessionId: "pane", trustOrigin: "llm-tool-arg", hostTerminalTurn: scope };
+      const eligible = pipelineResult(sandbox, context);
+      const behind = pipelineResult({ ...sandbox, floorSessionEligible: undefined, competingFloor: { code: "protected-path", reason: "Protected." } }, context);
+      if (external) {
+        for (const result of [eligible, behind]) {
+          expect(result.pipelineRequest?.floor?.code).toBe("other-principal");
+          expect(result.pipelineRequest).not.toHaveProperty("floorSessionEligible");
+          expect(result.pipelineRequest).not.toHaveProperty("competingFloor");
+        }
+      } else {
+        expect(eligible.pipelineRequest).toMatchObject({ floor: { code: "sandbox-unavailable" }, floorSessionEligible: true });
+        expect(behind.pipelineRequest).toMatchObject({ floor: { code: "sandbox-unavailable" }, competingFloor: { code: "protected-path" } });
+        expect(behind.pipelineRequest).not.toHaveProperty("floorSessionEligible");
+        expect(Object.isFrozen(behind.pipelineRequest?.competingFloor)).toBe(true);
+      }
+    });
+  });
+
   it("keeps external content as a mandatory principal floor ahead of directory and remembered grants", async () => {
     await runWithHostTerminalTurn({ sessionId: "pane", turnId: "typed-turn" }, async () => {
       noteToolResultsReturnedToModel();

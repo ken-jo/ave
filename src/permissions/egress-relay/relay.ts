@@ -294,7 +294,7 @@ async function askCallback(current: Service, lane: Lane, host: string, port: num
     ? answer as { reason?: unknown; unattributed?: unknown }
     : undefined;
   const reason = typeof declared?.reason === "string" ? oneLine(declared.reason) : "";
-  throw deny(lane, host, port, reason === "" ? "user denied" : reason, declared?.unattributed === true);
+  throw deny(lane, host, port, reason === "" ? "permission prompt refused" : reason, declared?.unattributed === true);
 }
 
 function normalizeRoute(entry: EgressRelayRoute): Route | undefined {
