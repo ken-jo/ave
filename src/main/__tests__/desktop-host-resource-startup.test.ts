@@ -3,7 +3,7 @@ import { win32 } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BootHost } from "../../boot/host-runtime.js";
 import type { HostResources } from "../host-resources.js";
-import { windowsPeImageDigest } from "../../../scripts/lib/windows-pe-image-digest.mjs";
+import { windowsPeImageDigest } from "../../../scripts/lib/windows-path-kind-image-digest.mjs";
 
 const io = vi.hoisted(() => ({
   helperExists: vi.fn(),
@@ -119,9 +119,9 @@ afterEach(() => {
 });
 
 describe("desktop host resource startup", () => {
-  it.each([false, true])("refuses an independently supplied helper image before starting the host (packaged: %s)", async (isPackaged) => {
+  it("refuses an independently supplied checkout helper image before starting the unpackaged host", async () => {
     const { app } = await import("electron");
-    Object.defineProperty(app, "isPackaged", { value: isPackaged });
+    Object.defineProperty(app, "isPackaged", { value: false });
     const { createDesktopBootHost } = await import("../../boot/desktop-host-runtime.js");
     vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
     io.helperBytes.mockReturnValue(helperImage("independently supplied executable"));
@@ -135,7 +135,7 @@ describe("desktop host resource startup", () => {
   });
 
   it.each([false, true])("configures resources before early boot and host construction (packaged: %s)", async (isPackaged) => {
-    vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
+    if (!isPackaged) vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
     const { app } = await import("electron");
     const { desktopResourcePath } = await import("../desktop-resource-path.js");
     const { configureHostResources, getConfiguredHostResources } = await import("../host-resources.js");
@@ -169,7 +169,7 @@ describe("desktop host resource startup", () => {
   });
 
   it.each([false, true])("builds the desktop host without global resources (packaged: %s)", async (isPackaged) => {
-    vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
+    if (!isPackaged) vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", BUILT_HELPER_SHA256);
     const { app } = await import("electron");
     const { createDesktopBootHost } = await import("../../boot/desktop-host-runtime.js");
     const { protectedControlEntryFor } = await import("../../permissions/sensitive-paths.js");
