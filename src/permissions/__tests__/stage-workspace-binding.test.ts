@@ -1,6 +1,6 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +11,7 @@ import { createAveHomeBoundarySnapshot } from "../ave-home-boundary-snapshot.js"
 import { aveHomeReadBoundaryCovering, getBuiltinShellReadPolicy } from "../asrt-sandbox.js";
 import { decidePermission } from "../decision-pipeline.js";
 import { PermissionManager } from "../permission-manager.js";
-import { bindStageWorkspace, boundStageWorkspace, createStageWorkspacesMatcher, isOwnStageWorkspacePath, unbindStageWorkspace } from "../stage-workspace-binding.js";
+import { bindStageWorkspace, boundStageWorkspace, createStageWorkspacesMatcher, isBoundStageWorkspacePath, isOwnStageWorkspacePath, unbindStageWorkspace } from "../stage-workspace-binding.js";
 
 installVerifiedAveHomePrivacy();
 
@@ -103,6 +103,11 @@ describe("stage workspace binding", () => {
       if (previousHome === undefined) delete process.env.AVE_HOME;
       else process.env.AVE_HOME = previousHome;
     }
+  });
+
+  it.skipIf(process.platform === "win32")("keeps the lexical POSIX stage binding after the directory moves", () => {
+    renameSync(own, join(runRoot, "moved"));
+    expect(isBoundStageWorkspacePath(STAGE, join(own, "notes.txt"))).toBe(true);
   });
 
   it("a read and a write inside the bound workspace are not a protected-path floor", async () => {

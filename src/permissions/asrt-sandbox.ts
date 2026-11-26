@@ -3274,6 +3274,7 @@ async function initializeSandboxRuntime(
   _workerUnixSocketDirs.clear();
   try {
     useAppOwnedSandboxTempRoot();
+    if (process.platform !== "win32") await gatherWindowsReadDenyEvidence(trustedSettings);
     startupSignal?.throwIfAborted();
     const config = buildSharedSandboxConfig(withWorkerUnixSockets(trustedSettings), snapshotWindowsLiveGrants(sandboxSession));
     fullConfig = config;
@@ -3412,10 +3413,16 @@ export async function wrapToolCommand(
     const notices: string[] = [];
     let gitControlSnapshot: SandboxGitControlSnapshot | undefined;
     let grantRevision: number | undefined;
-    const customConfig = inAveHomeBoundarySnapshot(options.boundarySnapshot, () => {
+    const buildCustomConfig = () => {
       grantRevision = session?.windowsLiveGrantRevision;
       return buildPerCommandSandboxCustomConfig(filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, undefined, snapshotWindowsLiveGrants(session));
-    });
+    };
+    const customConfig = process.platform === "win32"
+      ? inAveHomeBoundarySnapshot(options.boundarySnapshot, buildCustomConfig)
+      : await inAveHomeBoundarySnapshot(options.boundarySnapshot, async () => {
+        if (filesystem?.denyRead !== undefined) await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, filesystem.denyRead);
+        return buildCustomConfig();
+      });
     const cleanupBare = process.platform === "linux"
       ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
     checkWindowsSandboxStampTargets(customConfig?.filesystem);
@@ -3608,10 +3615,16 @@ async function wrapLongLivedCommand(
     const notices: string[] = [];
     let gitControlSnapshot: SandboxGitControlSnapshot | undefined;
     let grantRevision: number | undefined;
-    const customConfig = inAveHomeBoundarySnapshot(options.boundarySnapshot, () => {
+    const buildCustomConfig = () => {
       grantRevision = session?.windowsLiveGrantRevision;
       return buildPerCommandSandboxCustomConfig(filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, undefined, snapshotWindowsLiveGrants(session));
-    });
+    };
+    const customConfig = process.platform === "win32"
+      ? inAveHomeBoundarySnapshot(options.boundarySnapshot, buildCustomConfig)
+      : await inAveHomeBoundarySnapshot(options.boundarySnapshot, async () => {
+        if (filesystem?.denyRead !== undefined) await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, filesystem.denyRead);
+        return buildCustomConfig();
+      });
     const cleanupBare = process.platform === "linux"
       ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
     // `wrapOptions` carries a tty only for the terminal.

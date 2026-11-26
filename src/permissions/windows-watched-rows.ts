@@ -561,6 +561,7 @@ export function listWatchedQuarantine(): WatchedQuarantineEntry[] {
     let entries: ManifestEntry[];
     try { entries = readManifest(slot); }
     catch { return []; }
+    if (process.platform !== "win32") return entries.map((entry, index) => ({ ...entry, slot, index }));
     return entries.map(({ restoreIdentity: _, ...entry }, index) => ({ ...entry, slot, index }));
   });
 }

@@ -26,6 +26,7 @@ import {
   caseFoldForMatch,
   createSensitivePathMatcher,
   foldCanonicalPathSeparators,
+  isSensitivePath,
   resolvePathForPolicy,
 } from "../sensitive-paths.js";
 import { isPathAllowed } from "../allowed-directories.js";
@@ -1641,18 +1642,22 @@ function buildUserPrompt(
       : undefined;
   // Use the same resolver and predicates as the rule classifier. This is evidence about declared operands, not an attestation about tool code.
   const pathChecks = withLocalityDecision(() => {
+    const isWindows = process.platform === "win32";
+    const declaredPaths = isWindows ? undefined : extractDeclaredPathTargets(input);
     const guest = isDisposableSubstrateCapability(input.sandboxCapability);
     const canonicalizeGuestPath = (path: string) => foldCanonicalPathSeparators(posix.normalize(path));
     const sensitiveRead = guest ? createSensitivePathMatcher("read", undefined, canonicalizeGuestPath, { inspectKeyMaterial: false })
-      : createSensitivePathMatcher("read");
+      : isWindows ? createSensitivePathMatcher("read") : (path: string) => isSensitivePath(path, "read");
     const sensitiveWrite = guest ? createSensitivePathMatcher("write", undefined, canonicalizeGuestPath, { inspectKeyMaterial: false })
-      : createSensitivePathMatcher("write");
-    return extractDeclaredPathTargets(input).map(({ nativePath, canonicalPath }) => ({
+      : isWindows ? createSensitivePathMatcher("write") : (path: string) => isSensitivePath(path, "write");
+    const checkPath = ({ nativePath, canonicalPath }: ReturnType<typeof extractDeclaredPathTargets>[number]) => ({
       path: nativePath,
       insideAllowedDirectories: isInsideAllowed(canonicalPath, input.allowedDirectories),
       sensitiveRead: sensitiveRead(nativePath) !== null,
       sensitiveWrite: sensitiveWrite(nativePath) !== null,
-    }));
+    });
+    if (declaredPaths !== undefined) return declaredPaths.map(checkPath);
+    return extractDeclaredPathTargets(input).map(checkPath);
   });
   const hostPolicyFacts = {
     ruleVerdict: input.permissionReason === undefined ? ruleVerdict
@@ -1861,7 +1866,16 @@ export class LlmRiskClassifier implements RiskClassifier {
   }
 
   // Audit callers need the raw rule + LLM verdicts separately from the composed final verdict. The public RiskClassifier interface remains the final-verdict-only surface so non-LLM classifiers stay simple.
-  async classifyWithTrace(
+  classifyWithTrace(
+    input: ToolInvocationContext,
+    opts?: { abortSignal?: AbortSignal },
+    prepared?: { ruleVerdict: RiskVerdict; userPrompt: string },
+  ): Promise<LlmRiskClassificationTrace> {
+    if (process.platform !== "win32") return this.classifyPrepared(input, undefined, undefined, opts);
+    return this.classifyWithWindowsTrace(input, opts, prepared);
+  }
+
+  private async classifyWithWindowsTrace(
     input: ToolInvocationContext,
     opts?: { abortSignal?: AbortSignal },
     prepared?: { ruleVerdict: RiskVerdict; userPrompt: string },
@@ -1891,10 +1905,11 @@ export class LlmRiskClassifier implements RiskClassifier {
 
   private async classifyPrepared(
     input: ToolInvocationContext,
-    ruleVerdict: RiskVerdict,
-    userPrompt: string,
+    preparedRuleVerdict: RiskVerdict | undefined,
+    preparedPrompt: string | undefined,
     opts?: { abortSignal?: AbortSignal },
   ): Promise<LlmRiskClassificationTrace> {
+    const ruleVerdict = preparedRuleVerdict ?? this.rule.classify(input);
     // Host-determined tools never consult the LLM: their risk is settled by system structure, not by anything a model could weigh. For agent_spawn the structural fact is that every effectful call the child makes re-enters this same permission pipeline — a fact that is not in the reviewer prompt, so asking the LLM poses a question it cannot answer; it kept replying HIGH ("no sandbox isolation, file access") and the max(rule, llm) composition let that guess override the host's LOW. Name-scoped and builtin-only: a plugin/MCP tool that happens to share the name still takes the full composed path.
     if (isHostDeterminedRiskTool(input)) {
       return { ruleVerdict, llmVerdict: null, finalVerdict: ruleVerdict, outcome: "host-determined" };
@@ -1911,6 +1926,7 @@ export class LlmRiskClassifier implements RiskClassifier {
 
     let llmVerdict: RiskVerdict;
     try {
+      const userPrompt = preparedPrompt ?? buildUserPrompt(input, ruleVerdict);
       const { completion, attempts } = await this.runProviderWithRetry(
         userPrompt,
         opts?.abortSignal,

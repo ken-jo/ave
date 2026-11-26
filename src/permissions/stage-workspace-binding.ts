@@ -61,8 +61,10 @@ export function isOwnStageWorkspacePath(sessionId: string | undefined, path: str
   return withLocalityDecision(() => {
     const root = sessionId === undefined ? undefined : bindings.get(sessionId);
     if (root === undefined || !isAbsolute(path) || segmentsOf(path).includes("..")) return false;
-    const currentRoot = tryLocalRealpath(root);
-    if (currentRoot === undefined || fold(currentRoot) !== fold(root)) return false;
+    if (process.platform === "win32") {
+      const currentRoot = tryLocalRealpath(root);
+      if (currentRoot === undefined || fold(currentRoot) !== fold(root)) return false;
+    }
     let physical: string;
     try {
       const inspected = inspectPhysicalFilesystemPath(path, root, Number.POSITIVE_INFINITY);
@@ -81,6 +83,7 @@ export function isBoundStageWorkspacePath(sessionId: string | undefined, path: s
   return withLocalityDecision(() => {
     const root = sessionId === undefined ? undefined : bindings.get(sessionId);
     if (root === undefined || below(root, path) === null) return false;
+    if (process.platform !== "win32") return true;
     const currentRoot = tryLocalRealpath(root);
     return currentRoot !== undefined && fold(currentRoot) === fold(root);
   });

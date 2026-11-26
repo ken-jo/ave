@@ -306,6 +306,30 @@ function captureOptionalWatchPublications() {
   return { watch, restore: () => prepare.mockRestore() };
 }
 
+it.skipIf(process.platform === "win32")("observes POSIX startup cancellation before initializing the sandbox runtime", async () => {
+  const controller = new AbortController();
+  const reason = new Error("startup was cancelled");
+  const throwIfAborted = controller.signal.throwIfAborted.bind(controller.signal);
+  let checks = 0;
+  const check = vi.spyOn(controller.signal, "throwIfAborted").mockImplementation(() => {
+    throwIfAborted();
+    if (++checks === 2) queueMicrotask(() => controller.abort(reason));
+  });
+  const initialize = vi.spyOn(asrtRuntime.SandboxManager, "initialize").mockResolvedValue(undefined);
+  const reset = vi.spyOn(asrtRuntime.SandboxManager, "reset").mockResolvedValue({ windowsAclUnreleased: [] });
+  const fixtureProgram = process.execPath;
+  try {
+    await expect(initializeAsrtSandbox({
+      linuxWrapperPrograms: { bwrapPath: fixtureProgram, socatPath: fixtureProgram, ripgrep: { command: fixtureProgram } },
+    }, undefined, false, controller.signal)).rejects.toBe(reason);
+    expect(initialize).not.toHaveBeenCalled();
+  } finally {
+    check.mockRestore();
+    initialize.mockRestore();
+    reset.mockRestore();
+  }
+});
+
 describe.runIf(process.platform === "win32")("Windows deny route preflight", () => {
   let initialize: MockInstance<typeof asrtRuntime.SandboxManager.initialize>;
   const remoteRoute = "\\\\example\\share\\blocked";

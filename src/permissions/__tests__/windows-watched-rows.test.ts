@@ -195,6 +195,16 @@ describe("watched protected rows", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")("preserves copied quarantine receipt fields when listing on POSIX", async () => {
+    const entry = await quarantineTasks("copied-receipt");
+    const manifest = join(dirname(entry.quarantined), "watched-manifest.json");
+    const record = JSON.parse(readFileSync(manifest, "utf8"));
+    const restoreIdentity = { source: "copied-source", parent: "copied-parent" };
+    record.entries[0].restoreIdentity = restoreIdentity;
+    writeFileSync(manifest, JSON.stringify(record));
+    expect(listWatchedQuarantine()[0]).toMatchObject({ restoreIdentity });
+  });
+
   it.runIf(process.platform === "win32")("stops restore at a failed source-drive query before probing the destination", async () => {
     watchAbsentProtectedRow(tasks, [workspace]);
     mkdirSync(join(workspace, ".vscode"));
