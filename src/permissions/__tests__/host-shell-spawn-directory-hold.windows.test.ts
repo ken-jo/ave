@@ -1,9 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer, type Socket } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import * as nodePty from "node-pty";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -445,6 +446,31 @@ describe.runIf(process.platform === "win32")("host shell spawn directory hold", 
     await closed(child);
     expect(output).toMatch(/^breakaway refused \d+/u);
     expect(child.exitCode).toBe(0);
+  });
+
+  it("leaves a host terminal and its background process in the held directory running when a pinned command is reaped", async () => {
+    const held = await holdLeaf();
+    // The terminal's own process starts a background process in the held directory and records its id.
+    const marker = join(root, "terminal-background");
+    const script = `const c = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], { stdio: 'ignore', detached: true }); c.unref();` +
+      ` require('fs').writeFileSync(${JSON.stringify(marker)}, String(c.pid)); setTimeout(() => {}, 20000);`;
+    const terminal = nodePty.spawn(process.execPath, ["-e", script], { cwd: leaf, env: process.env, cols: 80, rows: 24 });
+    let background = 0;
+    try {
+      await vi.waitFor(() => expect(existsSync(marker)).toBe(true), { timeout: 10000 });
+      background = Number.parseInt(readFileSync(marker, "utf8"), 10);
+      const { child, output } = run(held, descendantThenExit(0));
+      await closed(child);
+      await expect(held.outcome()).resolves.toEqual({ kind: "reaped", stopped: true });
+      expect(alive(Number.parseInt(output(), 10))).toBe(false);
+      expect(alive(terminal.pid)).toBe(true);
+      expect(alive(background)).toBe(true);
+    } finally {
+      if (background > 0 && alive(background)) process.kill(background);
+      terminal.kill();
+      if (alive(terminal.pid)) process.kill(terminal.pid);
+      await vi.waitFor(() => expect([terminal.pid, background].filter((pid) => pid > 0 && alive(pid))).toEqual([]), { timeout: 10000 });
+    }
   });
 
   it("leaves a launch without a permit, and its background process, alone", async () => {
