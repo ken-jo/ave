@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { redactFsPath } from "../../audit/dlp-filter.js";
@@ -37,6 +38,8 @@ let project: string;
 let audit: AuditLogger;
 let manager: PermissionManager;
 let registry: ToolRegistry;
+
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "ave-answered-origin-")));
