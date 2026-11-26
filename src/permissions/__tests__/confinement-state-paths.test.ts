@@ -7,6 +7,15 @@ import { mxcConfinementStatePaths } from "../mxc-runtime-root.js";
 import { srtWinConfinementStatePaths } from "../srt-win-integrity.js";
 import { getLocale, setLocale } from "../../i18n/runtime.js";
 
+// Paths that resolve to a given identity, on any host: a drive letter can map to a network share.
+const resolvesTo = vi.hoisted(() => new Map<string, string>());
+vi.mock("node:fs", async (original) => {
+  const actual = await original<typeof import("node:fs")>();
+  const native = (path: string, ...rest: unknown[]) =>
+    resolvesTo.get(String(path).toLowerCase()) ?? (actual.realpathSync.native as (...args: unknown[]) => string)(path, ...rest);
+  return { ...actual, realpathSync: Object.assign((...args: Parameters<typeof actual.realpathSync>) => actual.realpathSync(...args), { native }) };
+});
+
 const missingDrive = (): string => {
   const letter = [..."ZYXWVUTSRQPONMLKJIHGFE"].find((candidate) => !existsSync(`${candidate}:\\`));
   if (letter === undefined) throw new Error("every drive letter is mapped");
@@ -17,6 +26,35 @@ describe("a host with no declared confinement state", () => {
   it("admits any write, drive path or not, without resolving it", () => {
     expect(() => assertWriteGrantsOutsideConfinementState(["/home/alice/project", "relative"], [])).not.toThrow();
   });
+});
+
+describe("a grant's resolved identity", () => {
+  const state = [{ path: "C:\\example-state\\sandbox-runtime", stateClass: "helper-ledger" as const }];
+  beforeEach(() => resolvesTo.set("c:\\example-state", "C:\\example-state"));
+  afterEach(() => resolvesTo.clear());
+
+  const refusedAsUnresolved = (grant: string, states = state): void => {
+    expect(() => assertWriteGrantsOutsideConfinementState([grant], states)).toThrow(expect.objectContaining({
+      code: "confinement-state-write-grant", path: grant, reason: "grant-unresolved",
+    }));
+  };
+
+  it("refuses a grant that resolves off any drive, such as a mapped drive's share, and every write when the state does", () => {
+    resolvesTo.set("c:\\example-mapped", "\\\\server\\share");
+    refusedAsUnresolved("C:\\example-mapped\\work");
+    resolvesTo.set("c:\\example-state", "\\\\server\\share\\state");
+    expect(() => assertWriteGrantsOutsideConfinementState(["C:\\example-other"], state)).toThrow(expect.objectContaining({ path: undefined }));
+  });
+
+  it("reads a forward-slash drive path as the drive path it is", () => {
+    expect(() => assertWriteGrantsOutsideConfinementState(["C:/example-state/work"], state)).not.toThrow();
+    expect(() => assertWriteGrantsOutsideConfinementState(["C:/example-state/sandbox-runtime/x"], state)).toThrow(expect.objectContaining({ reason: "helper-ledger" }));
+  });
+
+  it.each(["sandbox-runtime.", "sandbox-runtime ", "work\\new.", "work\\file::$DATA", "work:stream"])(
+    "refuses a missing component Windows would open under another name: %s", (tail) => {
+      refusedAsUnresolved(`C:\\example-state\\${tail}`);
+    });
 });
 
 describe.runIf(process.platform === "win32")("write admission resolves the declared state strictly", () => {

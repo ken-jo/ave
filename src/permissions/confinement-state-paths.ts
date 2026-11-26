@@ -36,12 +36,19 @@ export class ConfinementStateWriteGrantError extends Error {
   }
 }
 
-/** `path` with its deepest existing ancestor resolved and the missing rest kept; undefined when no ancestor resolves or the
- * filesystem refuses the lookup. Never a lexical fallback. */
+const DRIVE_PATH = /^[A-Za-z]:\\/u;
+
+/** `path` with its deepest existing ancestor resolved and the missing rest kept; undefined when no ancestor resolves, the
+ * filesystem refuses the lookup, the identity is off a drive (a mapped drive's share) or a missing component is one
+ * Windows would open under another name (a trailing dot or space, a stream). Never a lexical fallback. */
 function strictlyResolved(path: string): string | undefined {
-  if (!/^[A-Za-z]:\\/u.test(path)) return undefined;
-  try { return canonicalWhereItExists(winPath.normalize(path), winPath); }
+  const normalized = winPath.normalize(path);
+  if (!DRIVE_PATH.test(normalized)) return undefined;
+  let real: string;
+  try { real = canonicalWhereItExists(normalized, winPath); }
   catch { return undefined; }
+  if (!DRIVE_PATH.test(real)) return undefined;
+  return real.slice(3).split("\\").some((component) => /[. ]$|:/u.test(component)) ? undefined : real;
 }
 
 /** Each declared state path as spelled and as resolved; undefined when the declaration is missing or any path is unproven. */
