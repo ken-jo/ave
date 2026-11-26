@@ -777,7 +777,7 @@ export class ViewImageTool extends FileTool<typeof ViewImageInputSchema> {
       const prepared = await prepareImageFile(target, {
         cwd: ctx.cwd, extraAllowedDirectories: [...ctx.extraAllowedDirectories],
         blockReadsOutsideWorkingDirectories: ctx.blockReadsOutsideWorkingDirectories === true,
-      }, { maxBytes: input.maxBytes, maxDimension: input.maxDimension }, ctx.abortSignal, ctx.fileTargetSeal);
+      }, { maxBytes: input.maxBytes, maxDimension: input.maxDimension }, ctx.abortSignal, ctx.fileTargetSeal, ctx.imageTargetPath);
       ctx.fileTargetSeal?.verify();
       const { data, ...details } = prepared;
       return {

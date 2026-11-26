@@ -202,6 +202,7 @@ export interface ExecutionStageContext {
   replayRootBinding?: ReplayRootBinding;
   /** The file targets and project anchors the authorization judged; verified at handler admission. */
   fileTargetSeal?: TargetSeal;
+  imageTargetPath?: string;
   abortSignal: AbortSignal | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
@@ -1219,6 +1220,7 @@ export async function executeAuthorizedToolInvocation(
     const ctx: ToolExecutionContext = {
       ...executionContext,
       ...(context.fileTargetSeal === undefined ? {} : { fileTargetSeal: context.fileTargetSeal }),
+      ...(context.imageTargetPath === undefined ? {} : { imageTargetPath: context.imageTargetPath }),
       ...(approvalMemory?.kind === "key" ? { metadata: {
         ...executionContext.metadata, [APPROVAL_MEMORY_SCOPE_METADATA_KEY]: approvalMemory.scope,
       } } : {}),

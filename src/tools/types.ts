@@ -59,6 +59,8 @@ export interface ToolExecutionContext {
   cwd: string;
   /** Host authority over the original operands of a local file operation. */
   fileTargetSeal?: TargetSeal;
+  /** Native image path captured by the invocation's read judgment. */
+  imageTargetPath?: string;
   /** Host-derived execution surface; UI-opening tools must refuse unattended calls. */
   headless?: boolean;
   /** Host-built per-hop permission gate for mediated network requests. */

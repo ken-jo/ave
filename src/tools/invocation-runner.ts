@@ -2822,6 +2822,7 @@ async function runToolInvocationAttempt(
       permissionRecheckResult: authorization.permissionRecheckResult,
       replayRootBinding: opts.replayRootBinding,
       fileTargetSeal,
+      imageTargetPath: tool.name === "view_image" ? canonicalTargets[0]?.runtimePath : undefined,
       abortSignal,
       hostShellExecutionPermitBinding,
       hostShellApprovalDecision,

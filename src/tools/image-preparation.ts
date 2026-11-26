@@ -5,7 +5,7 @@ import { spawnManaged, forceKillManagedChildProcess } from "../main/managed-chil
 import { buildSafeChildEnv } from "./safe-env.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
-import type { TargetSeal } from "../permissions/target-seal.js";
+import { TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
 import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import {
   IMAGE_PREPARATION_POLICY, ImagePreparationBytesRequestSchema,
@@ -152,14 +152,20 @@ export async function prepareImageFile(
   requested: Partial<ImagePreparationOptions> = {},
   callerSignal?: AbortSignal,
   seal?: TargetSeal,
+  expectedPath?: string,
 ): Promise<PreparedImage> {
   // Parsing copies the scope/options before admission; callers cannot mutate a queued request.
   const request = ImagePreparationRequestSchema.omit({ expectedPath: true }).parse({ path, options: requested, scope: readScope });
-  return prepareImageRequest(() => withLocalityDecision(() => {
-    seal?.verify();
-    const expectedPath = localFs.realpathNative(admitLocalRoute(request.path).verdict);
-    return { ...request, expectedPath };
-  }), undefined, callerSignal);
+  return prepareImageRequest(() => {
+    if (process.platform !== "win32") {
+      if (seal && expectedPath === undefined) throw new TargetIdentityChangedError();
+      return expectedPath === undefined ? { ...request, source: "posix-file" } : { ...request, expectedPath };
+    }
+    return withLocalityDecision(() => {
+      seal?.verify();
+      return { ...request, expectedPath: localFs.realpathNative(admitLocalRoute(request.path).verdict) };
+    });
+  }, undefined, callerSignal);
 }
 
 // Copy and bound broker input before queuing; pass bytes through stdin to the isolated decoder, never argv or base64.

@@ -159,7 +159,7 @@ describe("bounded image preparation", () => {
 
     const result = await prepareImageFile(path, {
       cwd: root, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true,
-    }, {}, undefined, seal);
+    }, {}, undefined, seal, approved);
     expect(result).toMatchObject({ originalWidth: 8, originalHeight: 4 });
   });
 
@@ -175,6 +175,7 @@ describe("bounded image preparation", () => {
     const linkType = process.platform === "win32" ? "junction" : "dir";
     await symlink(original, alias, linkType);
     const path = join(alias, "image.png");
+    const approved = realpathSync.native(path);
     const seal = sealTargets(() => realpathSync.native(path));
     const marker = join(directory, "replacement-opened");
     const trace = join(directory, "trace-open.mjs");
@@ -199,7 +200,7 @@ describe("bounded image preparation", () => {
     });
     const result = prepareImageFile(path, {
       cwd: directory, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true,
-    }, {}, undefined, seal);
+    }, {}, undefined, seal, approved);
     const error = await result.catch((failure: unknown) => failure);
     expect(existsSync(marker)).toBe(false);
     expect(error).toEqual(expect.objectContaining({ message: expect.stringContaining("Target identity changed") }));
@@ -233,6 +234,43 @@ describe("bounded image preparation", () => {
     const controller = new AbortController(); controller.abort();
     await expect(prepareFixtureImage(imageFixturePath("grid.png"), {}, controller.signal)).rejects.toThrow("image-cancelled");
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === "win32")("cancels a stalled native lookup in the decoder", async () => {
+    const path = imageFixturePath("grid.png");
+    const preload = join(directory, "stall-realpath.mjs");
+    await writeFile(preload, `
+      import fs from "node:fs/promises";
+      import { syncBuiltinESMExports } from "node:module";
+      const realpath = fs.realpath;
+      fs.realpath = async (path, ...args) => {
+        if (path === ${JSON.stringify(path)}) {
+          process.stderr.write("lookup-stalled");
+          await new Promise(() => { setInterval(() => {}, 1000); });
+        }
+        return realpath(path, ...args);
+      };
+      syncBuiltinESMExports();
+    `);
+    const hostLookup = vi.spyOn(realpathSync, "native");
+    const controller = new AbortController();
+    const spawn = managed.spawnManaged;
+    let diagnostics = "";
+    let closed = false;
+    vi.spyOn(managed, "spawnManaged").mockImplementationOnce((program, args, ...options) => {
+      const child = spawn(program, ["--import", pathToFileURL(preload).href, ...args], ...options);
+      child.stderr?.on("data", (chunk: Buffer) => {
+        diagnostics += chunk.toString();
+        if (diagnostics.includes("lookup-stalled")) controller.abort();
+      });
+      child.once("close", () => { closed = true; });
+      return child;
+    });
+
+    await expect(prepareFixtureImage(path, {}, controller.signal)).rejects.toThrow("image-cancelled");
+    expect(hostLookup.mock.calls.filter(([operand]) => operand === path)).toEqual([]);
+    expect(diagnostics).toContain("lookup-stalled");
+    expect(closed).toBe(true);
   });
 
   it("waits for child termination on cancellation, then admits a queued request", async () => {

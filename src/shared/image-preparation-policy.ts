@@ -41,6 +41,10 @@ export const ImagePreparationRequestSchema = z.object({
 }).strict();
 type ImagePreparationRequest = z.infer<typeof ImagePreparationRequestSchema>;
 
+export const ImagePreparationPosixFileRequestSchema = ImagePreparationRequestSchema.omit({ expectedPath: true })
+  .extend({ source: z.literal("posix-file") });
+type ImagePreparationPosixFileRequest = z.infer<typeof ImagePreparationPosixFileRequestSchema>;
+
 /** Validated image bytes travel over child stdin, never argv or JSON. */
 export const ImagePreparationBytesRequestSchema = z.object({
   source: z.literal("stdin"),
@@ -48,7 +52,7 @@ export const ImagePreparationBytesRequestSchema = z.object({
   options: ImagePreparationOptionsSchema,
 }).strict();
 type ImagePreparationBytesRequest = z.infer<typeof ImagePreparationBytesRequestSchema>;
-export type ImagePreparationChildRequest = ImagePreparationRequest | ImagePreparationBytesRequest;
+export type ImagePreparationChildRequest = ImagePreparationRequest | ImagePreparationPosixFileRequest | ImagePreparationBytesRequest;
 
 export const PreparedImageSchema = z.object({
   data: z.string().max(4 * Math.ceil(IMAGE_PREPARATION_POLICY.maxOutputBytes / 3)),

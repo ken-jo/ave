@@ -1,7 +1,9 @@
 import "../main/bare-program-lookup.js";
+import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import {
   ImagePreparationBytesRequestSchema,
+  ImagePreparationPosixFileRequestSchema,
   ImagePreparationRequestSchema,
 } from "../shared/image-preparation-policy.js";
 import { normalizeImage } from "./image-preparation-core.js";
@@ -54,17 +56,21 @@ if (!adoptParentHostResources()) {
         image: await normalizeImage(bytes, bytesRequest.data.options),
       }));
     } else {
-      const request = ImagePreparationRequestSchema.parse(raw);
+      const schema = process.platform === "win32" ? ImagePreparationRequestSchema
+        : ImagePreparationRequestSchema.or(ImagePreparationPosixFileRequestSchema);
+      const request = schema.parse(raw);
       if (!isAbsolute(request.path) || !isAbsolute(request.scope.cwd)) throw new Error("invalid-image-path: Image source and read scope must be absolute.");
-      const judged = withLocalityDecision(() => {
-        const real = localFs.realpathNative(admitLocalRoute(request.path).verdict);
-        if (real !== request.expectedPath) throw new TargetIdentityChangedError();
+      const requireAuthorizedPath = (real: string): string => {
+        if ("expectedPath" in request && real !== request.expectedPath) throw new TargetIdentityChangedError();
         // Check policy on both names before opening the authorized file.
         const context = { ...request.scope, metadata: {} };
         const denied = ensureFileAccess(request.path, context, "read") ?? ensureFileAccess(real, context, "read");
         if (denied) throw new Error(denied.output);
         return real;
-      });
+      };
+      const judged = process.platform === "win32" ? withLocalityDecision(() => {
+        return requireAuthorizedPath(localFs.realpathNative(admitLocalRoute(request.path).verdict));
+      }) : requireAuthorizedPath(await realpath(request.path));
       const bytes = await readImageInput(judged, new AbortController().signal);
       process.stdout.write(JSON.stringify({ ok: true, image: await normalizeImage(bytes, request.options) }));
     }
