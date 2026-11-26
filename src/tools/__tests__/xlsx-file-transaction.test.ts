@@ -273,6 +273,46 @@ describe("workbook file transaction", () => {
       expect(temporaryNames()).toEqual([]);
     });
 
+    const allow = "0000140089001200010100000000000100000000";
+    const audit = "0200140089001200010100000000000100000000";
+    function nativeFileDacls(aclFor: (file: string) => { aceCount: number; aclHex: string }) {
+      const passthrough = vi.mocked(execFileSync).getMockImplementation();
+      vi.mocked(execFileSync).mockImplementation(((helper: string, args: readonly string[] | undefined, options: unknown) => {
+        if (args?.[0] !== "--dacl" || args[1] !== "--file-access") return passthrough?.(helper, args, options as never);
+        return Buffer.from(JSON.stringify(args.slice(2).map((file) => {
+          const { dev, ino } = lstatSync(file, { bigint: true });
+          return { volumeSerialNumber: `0x${dev.toString(16).padStart(16, "0")}`,
+            fileIndex: `0x${ino.toString(16).padStart(16, "0")}`, control: 4, ...aclFor(file) };
+        })));
+      }) as typeof execFileSync);
+      return () => { vi.mocked(execFileSync).mockImplementation(passthrough as typeof execFileSync); };
+    }
+
+    it.each([
+      { form: "a revision 3 allow ACE", acl: { aceCount: 1, aclHex: `03${allow}` }, large: false },
+      { form: "allow and audit ACEs", acl: { aceCount: 2, aclHex: `02${allow}${audit}` }, large: true },
+    ])("publishes when every file keeps $form", async ({ acl, large }) => {
+      const { path, output } = await workbook(large);
+      const snapshot = readWorkbookSnapshot(path);
+      const restore = nativeFileDacls(() => acl);
+      try { publishWorkbookEdit(path, snapshot, output, 1); } finally { restore(); }
+      expect(readFileSync(path).equals(output)).toBe(true);
+    });
+
+    it.each([[true, "backup"], [false, "workbook"]])("refuses a copy that drops the source's audit ACE (large: %s)", async (large, scope) => {
+      const { path, before, output } = await workbook(large);
+      const snapshot = readWorkbookSnapshot(path);
+      const restore = nativeFileDacls((file) => file === path
+        ? { aceCount: 2, aclHex: `02${allow}${audit}` } : { aceCount: 1, aclHex: `02${allow}` });
+      try {
+        expect(() => publishWorkbookEdit(path, snapshot, output, 1)).toThrow(`[${scope}-acl-differs]`);
+      } finally {
+        restore();
+      }
+      expect(readFileSync(path).equals(before)).toBe(true);
+      expect(temporaryNames()).toEqual([]);
+    });
+
     it.each([[true, "backup"], [false, "workbook"]])("refuses an edit of a workbook with its own access rules (large: %s)", async (large, scope) => {
       const { path, before, output } = await workbook(large);
       grantOwnRule(path);

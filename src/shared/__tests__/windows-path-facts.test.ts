@@ -262,7 +262,7 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     const identity = { volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex };
     const row = { ...identity, control: 4, aceCount: 0, aclHex: "02" };
     for (const rows of [[], [identity], [{ ...row, aclHex: "abc" }], [{ ...row, control: 2, aclHex: null }],
-      [{ ...row, aclHex: "03" }], [{ ...row, aclHex: "0200" }], [{ ...row, aceCount: 1, aclHex: null }],
+      [{ ...row, aclHex: "05" }], [{ ...row, aclHex: "0200" }], [{ ...row, aceCount: 1, aclHex: null }],
       [{ ...row, aceCount: 1, aclHex: "0200000000" }], [{ ...row, aceCount: 1, aclHex: "020000050000" }]]) {
       vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify(rows)));
       expect(() => readWindowsFileDacls([file])).toThrow("Invalid Windows file DACL response");
@@ -272,12 +272,14 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
   const mask = "89001200";
   const everyone = "010100000000000100000000";
   const ace = (type: number, body: string) => `${type.toString(16).padStart(2, "0")}00${(4 + body.length / 2).toString(16).padStart(2, "0")}00${body}`;
-  const fileDacl = (aclHex: string) => ({ volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex, control: 4, aceCount: 1, aclHex });
+  const fileDacl = (aclHex: string, aceCount = 1) => ({ volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex, control: 4, aceCount, aclHex });
 
   it.each([
     ["a header-only ACE", "0200000400"],
     ["a mask without a SID", "020000080089001200"],
-    ["an audit ACE", `02${ace(0x02, mask + everyone)}`],
+    ["a header-only audit ACE", "0202000400"],
+    ["an audit mask without a SID", "020200080089001200"],
+    ["an object ACE in a revision 3 ACL", `03${ace(0x05, `${mask}01000000${"00".repeat(16)}${everyone}`)}`],
     ["a label ACE", `02${ace(0x11, mask + everyone)}`],
     ["a SID revision other than 1", `02${ace(0x00, `${mask}020100000000000100000000`)}`],
     ["16 SID sub-authorities", `02${ace(0x00, `${mask}0110000000000001${"00000000".repeat(16)}`)}`],
@@ -292,6 +294,9 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
 
   it.each([
     ["an allow ACE", `02${ace(0x00, mask + everyone)}`],
+    ["a revision 3 allow ACE", `03${ace(0x00, mask + everyone)}`],
+    ["a revision 3 deny callback ACE", `03${ace(0x0a, `${mask}${everyone}61727478`)}`],
+    ["an audit ACE", `02${ace(0x02, mask + everyone)}`],
     ["a deny ACE with 15 sub-authorities", `02${ace(0x01, `${mask}010f000000000005${"00000000".repeat(15)}`)}`],
     ["an allow ACE with slack after its SID", `02${ace(0x00, `${mask}${everyone}00000000`)}`],
     ["an object ACE with one GUID", `04${ace(0x05, `${mask}01000000${"00".repeat(16)}${everyone}`)}`],
@@ -301,7 +306,13 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     expect(readWindowsFileDacls([join(fixture, "directory", "file")])).toEqual([fileDacl(aclHex)]);
   });
 
-  it.each(["02", "04", null])("accepts a zero-ACE file DACL with ACL bytes %s", (aclHex) => {
+  it("accepts allow and audit ACEs in one file DACL", () => {
+    const reply = fileDacl(`02${ace(0x00, mask + everyone)}${ace(0x02, mask + everyone)}`, 2);
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([reply])));
+    expect(readWindowsFileDacls([join(fixture, "directory", "file")])).toEqual([reply]);
+  });
+
+  it.each(["02", "03", "04", null])("accepts a zero-ACE file DACL with ACL bytes %s", (aclHex) => {
     const row = { volumeSerialNumber: ORDINARY.volumeSerialNumber, fileIndex: ORDINARY.fileIndex, control: 4, aceCount: 0, aclHex };
     vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from(JSON.stringify([row])));
     expect(readWindowsFileDacls([join(fixture, "directory", "file")])).toEqual([row]);
