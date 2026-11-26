@@ -873,6 +873,10 @@ release, preserving the carrier and any siblings. The disposable process home
 and holder staging supply their own `.ave` so the two child denies can be
 exact there.
 
+After a holder releases, successful protected-path moves and sweep failures
+are recorded in the host log. Holder status in the UI covers admission and
+lifecycle state. The quarantine list shows entries that were moved.
+
 The ACL-backed route requires existing entries so it can stamp write denies
 before admitting a covering grant. A missing entry refuses the grant with a
 message naming the path. Neither route creates a protected entry to carry a
