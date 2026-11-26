@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LLMProvider, StreamEvent, StreamTurnParams } from "../../llm/types.js";
 import { collectActiveRuntimeRoundStream, collectRoundStream } from "../stream-collector.js";
 import { VercelUnifiedProvider } from "../../llm/vercel/adapter.js";
+import { RetiredModelError } from "../../llm/retired-model-error.js";
 import { classifyProviderError } from "../../llm/error-classifier.js";
 import { getLocale, setLocale } from "../../../i18n/index.js";
+import { noRetirementEvidence } from "../../llm/model-wire-gate.js";
 
 const initialLocale = getLocale();
 afterEach(() => setLocale(initialLocale));
@@ -58,7 +60,7 @@ describe("image capability refusal", () => {
     setLocale(locale);
     const fetchResponse = vi.fn<typeof fetch>();
     const result = await collectRoundStream({
-      provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse),
+      provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse, { getRetiredModelId: noRetirementEvidence }),
       model: "gpt-4", systemPrompt: "Describe the image.", toolSchemas: [], llmSettings: LLM_SETTINGS,
       messages: [
         { role: "assistant", content: "", toolCalls: [{ id: "image-call", name: "view_image", input: {} }] },
@@ -123,12 +125,51 @@ describe("provider completion boundary", () => {
       const onRequestStarted = vi.fn();
       await collectActiveRuntimeRoundStream({ provider, model: "test-model", systemPrompt: "system", messages: [],
         toolSchemas: [], llmSettings: LLM_SETTINGS, abortSignal: controller.signal, onRequestStarted },
-        state === "runtime-switched" ? { kind: "subscription", provider: "codex", model: "gpt-5.5-codex" } : undefined,
-        () => {});
+        {
+          getLlm: () => ({ activeChatRuntime: state === "runtime-switched"
+            ? { kind: "subscription", provider: "codex", model: "gpt-5.5-codex" }
+            : { kind: "api" } }),
+          onMismatch: () => {},
+        });
       expect(onRequestStarted).toHaveBeenCalledTimes(state === "started" ? 1 : 0);
       expect(provider.lastParams === null).toBe(state !== "started");
     },
   );
+
+  it("blocks a cached API provider when the saved route retires before dispatch", async () => {
+    const provider = new ScriptedProvider([{ type: "message_complete", stopReason: "end_turn" }]);
+    const onRuntimeMismatch = vi.fn();
+    const activeLlm = {
+      activeChatRuntime: { kind: "api" },
+      retiredProvider: { vendor: "openai", model: "test-model", reason: "unlisted" },
+    } as const;
+    const result = await collectActiveRuntimeRoundStream({
+      provider, model: "test-model", systemPrompt: "system", messages: [],
+      toolSchemas: [], llmSettings: LLM_SETTINGS,
+    }, { getLlm: () => activeLlm, onMismatch: onRuntimeMismatch });
+    expect(result.kind).toBe("interrupted");
+    expect(onRuntimeMismatch).toHaveBeenCalledOnce();
+    expect(provider.lastParams).toBeNull();
+  });
+
+  it.each([
+    ["en", "test-model is retired"],
+    ["ko", "test-model 모델은 더 이상 제공되지 않습니다"],
+  ] as const)("names retirement after dispatch in %s", async (locale, userMessage) => {
+    setLocale(locale);
+    const provider: LLMProvider = {
+      vendor: "openai",
+      streamTurn: () => { throw new RetiredModelError("test-model"); },
+    };
+
+    await expect(collectRoundStream({
+      provider, model: "test-model", systemPrompt: "system", messages: [],
+      toolSchemas: [], llmSettings: LLM_SETTINGS,
+    })).resolves.toMatchObject({
+      kind: "stream_error", classification: "model", userMessage,
+      providerError: { providerCode: "model-retired" },
+    });
+  });
 
   it.each<{ label: string; events: StreamEvent[] }>([
     { label: "empty stream", events: [] },

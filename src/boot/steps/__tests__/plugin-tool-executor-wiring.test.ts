@@ -89,6 +89,7 @@ const predecessorGenerationId = "generation-1";
 
 // A real gate (from the current module graph, after vi.resetModules) whose card the test answers, so the decision carries the gate's record of who decided.
 async function answeringGate(choice: "allow-once" | "deny-once", answeredBy: "desk" | "platform-bridge" = "desk") {
+  await import("../../../__tests__/vitest-approval-presentation.js");
   const { ApprovalGate } = await import("../../../permissions/approval-gate.js");
   const card = deferred<ApprovalRequest>();
   const surface = makeMockWebContents();
@@ -626,6 +627,7 @@ describe("setupPluginToolExecutor approval lane by effective chain origin", () =
 it.each(["host-shutdown", "scope-before-quit", "refusal-before-quit"] as const)("writes a %s denial for a parked plugin operation grant before audit close", async (settlement) => {
   // Each sealing case simulates its own process-wide ledger.
   vi.resetModules();
+  await import("../../../__tests__/vitest-approval-presentation.js");
   const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");
   const { assembleAppServices } = await import("../../assemble-services.js");
   // The gate's host-decision markers live in its module, so it comes from the same fresh graph as the executor.

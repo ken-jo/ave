@@ -1,6 +1,8 @@
+import { approvalPresentationDenial } from "../../permissions/approval-presentation.js";
+import { showNativeMessage } from "../desktop-approval-presentation.js";
 import { shortcutPlatformOf } from "../../shared/shortcuts.js";
 import { isBackgroundE2eRuntime, whenFocusEmulated } from "../e2e-window-presentation.js";
-import { clipboard, dialog, Menu, session, shell, type BrowserWindow, type MenuItemConstructorOptions, type WebContents } from "electron";
+import { clipboard, Menu, session, shell, type BrowserWindow, type MenuItemConstructorOptions, type WebContents } from "electron";
 import type { ObservedDownload } from "./browser-download-staging.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
@@ -67,9 +69,14 @@ export function getBrowserWorkspaceService(): BrowserWorkspaceService {
     agentDrives: (guestId) => browserTabRegistry.isAgentActiveGuest(guestId),
     openExternal: (url) => shell.openExternal(url),
     promptPermission: async (request) => {
+      const unattended = approvalPresentationDenial();
+      if (unattended) {
+        log.info("Browser popup permission denied: %s", unattended);
+        return false;
+      }
       const window = mainWindow(request.windowId);
       if (!window || !window.isVisible() || window.isMinimized()) return false;
-      const result = await dialog.showMessageBox(window, {
+      const result = await showNativeMessage(window, {
         type: "question", title: request.origin,
         message: t("browserWorkspace.permissionPrompt.message", {
           origin: request.origin, permissions: request.permissions.map((permission) => t(`browserWorkspace.permission.${permission}`)).join(", "),
@@ -77,7 +84,7 @@ export function getBrowserWorkspaceService(): BrowserWorkspaceService {
         buttons: [t("browserWorkspace.permissionPrompt.block"), t("browserWorkspace.permissionPrompt.allowOnce")],
         defaultId: 0, cancelId: 0, noLink: true,
       });
-      return result.response === 1 && mainWindow(request.windowId) === window && window.isVisible() && !window.isMinimized();
+      return result?.response === 1 && mainWindow(request.windowId) === window && window.isVisible() && !window.isMinimized();
     },
     fullscreenAvailable: () => false,
     onError: (error) => log.warn({ error }, "browser workspace operation failed"),

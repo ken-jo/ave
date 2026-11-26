@@ -245,6 +245,7 @@ describe("OS sandbox release at quit", () => {
 
   it("writes a real parked card's host-shutdown cancel row before the fallback audit close", async () => {
     vi.resetModules();
+    await import("../../__tests__/vitest-approval-presentation.js");
     const { AuditLogger } = await import("../../audit/audit-logger.js");
     const { ApprovalGate } = await import("../../permissions/approval-gate.js");
     const { makeMockWebContents } = await import("../../__tests__/test-helpers.js");
@@ -368,6 +369,7 @@ describe("OS sandbox release at quit", () => {
 
   it.each(["timed-out", "failed"] as const)("commits one host row per real parked card before the sink closes at the exit boundary (%s cleanup)", async (status) => {
     vi.resetModules();
+    await import("../../__tests__/vitest-approval-presentation.js");
     const { AuditLogger } = await import("../../audit/audit-logger.js");
     const { ApprovalGate, IPC_APPROVAL_REQUEST } = await import("../../permissions/approval-gate.js");
     const { PermissionManager } = await import("../../permissions/permission-manager.js");

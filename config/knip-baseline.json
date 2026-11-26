@@ -135,11 +135,6 @@
     {
       "type": "exports",
       "file": "src/main/ask-user-question-gate.ts",
-      "name": "IPC_ASK_USER_QUESTION_REQUEST"
-    },
-    {
-      "type": "exports",
-      "file": "src/main/ask-user-question-gate.ts",
       "name": "IPC_ASK_USER_QUESTION_RESPOND"
     },
     {

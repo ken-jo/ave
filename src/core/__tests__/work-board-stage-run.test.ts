@@ -609,3 +609,30 @@ it("a start whose row is gone when the run is recorded is not found, never refus
   expect(await h.start(id, h.local(version))).toEqual({ status: "not_found" });
   expect(h.live()).toHaveLength(0);
 }));
+
+it("a scheduled run parks at its human gate after reconcile and a local approve continues it", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a"), auto("b", { inputs: ["a"] })]);
+  const attachment = await h.attach(version);
+  if (attachment.source.kind !== "schedule-attachment") throw new Error("Expected schedule source");
+  const started = await h.engine.startScheduledTemplate(attachment.source, "Scheduled work");
+  if (!started.ok) throw new Error(started.code);
+  (await h.untilLive(1))[0].finish();
+  expect(await started.result).toMatchObject({ status: "awaiting_approval" });
+  const saved = await h.item(started.itemId);
+  expect(isAwaitingStageReview(saved)).toBe(true);
+  expect(saved.stageRuns[0].gate).toMatchObject({ type: "human", status: "pending" });
+
+  const restarted = h.makeEngine();
+  expect(await h.board.reconcileInterruptedRuns()).toBe(0);
+  await restarted.adoptParkedTemplateRuns();
+  expect(h.children).toHaveLength(1);
+  const reconciled = await h.item(started.itemId);
+  expect(isAwaitingStageReview(reconciled)).toBe(true);
+  expect(reconciled.stageRuns[0].gate).toEqual(saved.stageRuns[0].gate);
+  expect(await restarted.projectTemplateRuns([reconciled])).toMatchObject([{ templateRunState: "awaiting_review" }]);
+  expect(await h.decide(started.itemId, "a", "approve")).toEqual({ ok: true, status: "approved" });
+  const [second] = await h.untilLive(1);
+  expect(second.input.unattendedStage).toMatchObject({ stageId: "b" });
+  second.finish();
+  await h.until(started.itemId, item => item.runStatus === "completed");
+}));

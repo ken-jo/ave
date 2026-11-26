@@ -40,30 +40,17 @@ static wchar_t* skipArgument(wchar_t* command, const wchar_t* expected, bool* sa
   if (expected && token != expected) *same = false;
   return command;
 }
-// Receipt mode: terminate every member, then prove the job is empty. Completion
-// messages only wake the wait; the job query alone decides.
-static bool emptyJob(HANDLE job) {
-  HANDLE port = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1);
-  if (!port) { fail("CreateIoCompletionPort"); return false; }
-  JOBOBJECT_ASSOCIATE_COMPLETION_PORT association{job, port};
-  if (!SetInformationJobObject(job, JobObjectAssociateCompletionPortInformation, &association, sizeof(association)))
-    { fail("job completion port"); return false; }
-  if (!TerminateJobObject(job, 1)) { fail("TerminateJobObject"); return false; }
-#ifdef AVE_TEST_UNQUERYABLE_JOB
-  // The query failure fixture proves an unreadable job never yields a receipt.
-  HANDLE queried = INVALID_HANDLE_VALUE;
-#else
-  HANDLE queried = job;
-#endif
+// Completion messages only wake the wait; the job query alone decides.
+static bool waitForEmptyJob(HANDLE job, HANDLE port) {
   const ULONGLONG deadline = GetTickCount64() + 5000;
   for (;;) {
     JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
-    if (!QueryInformationJobObject(queried, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr))
+    if (!QueryInformationJobObject(job, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr))
       { fail("QueryInformationJobObject"); return false; }
     if (accounting.ActiveProcesses == 0) return true;
     const ULONGLONG now = GetTickCount64();
     if (now >= deadline) {
-      std::fprintf(stderr, "Windows job launcher: %lu job processes survived termination\n", accounting.ActiveProcesses);
+      std::fprintf(stderr, "Windows job launcher: %lu job processes did not exit\n", accounting.ActiveProcesses);
       return false;
     }
     DWORD message;
@@ -73,6 +60,7 @@ static bool emptyJob(HANDLE job) {
         GetLastError() != WAIT_TIMEOUT) { fail("GetQueuedCompletionStatus"); return false; }
   }
 }
+
 // Handles the host passed beyond the three standard ones, read from the startup block.
 static HANDLE inheritedHandle(size_t fd) {
   STARTUPINFOW startup{};
@@ -142,6 +130,33 @@ static bool jobHasDescendants(HANDLE job, DWORD root) {
   }
   return false;
 }
+
+
+enum class JobCleanup { Failed, Terminated, AlreadyEmpty };
+
+static JobCleanup emptyJob(HANDLE job, bool requireCleanExit) {
+  HANDLE port = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1);
+  if (!port) { fail("CreateIoCompletionPort"); return JobCleanup::Failed; }
+  JOBOBJECT_ASSOCIATE_COMPLETION_PORT association{job, port};
+  JobCleanup cleanup = JobCleanup::Failed;
+#ifdef AVE_TEST_UNQUERYABLE_JOB
+  HANDLE queried = INVALID_HANDLE_VALUE;
+#else
+  HANDLE queried = job;
+#endif
+  if (!SetInformationJobObject(job, JobObjectAssociateCompletionPortInformation, &association, sizeof(association))) {
+    fail("job completion port");
+  } else if (requireCleanExit && waitForEmptyJob(queried, port)) {
+    cleanup = JobCleanup::AlreadyEmpty;
+  } else if (!TerminateJobObject(job, 1)) {
+    fail("TerminateJobObject");
+  } else if (waitForEmptyJob(queried, port)) {
+    cleanup = JobCleanup::Terminated;
+  }
+  CloseHandle(port);
+  return cleanup;
+}
+
 int wmain(int argc, wchar_t** argv) {
   // `--receipt <absolute path>` appends "0" to an existing registered receipt only
   // after the closed job is proven empty.
@@ -270,9 +285,14 @@ int wmain(int argc, wchar_t** argv) {
     code = fail("WaitForMultipleObjects");
   }
   if (contained) {
+    wchar_t strict[2]{};
+    const bool requireCleanExit = code == 0 &&
+        GetEnvironmentVariableW(L"AVE_CI_REQUIRE_EMPTY_JOB", strict, 2) == 1 && strict[0] == L'1';
+    const JobCleanup cleanup = emptyJob(job, requireCleanExit);
     DWORD written = 0;
-    if (!emptyJob(job)) code = 125;
+    if (cleanup == JobCleanup::Failed) code = 125;
     else if (!WriteFile(receipt, "0", 1, &written, nullptr) || written != 1) code = fail("receipt write");
+    else if (requireCleanExit && cleanup != JobCleanup::AlreadyEmpty) code = 125;
     CloseHandle(receipt);
   }
   if (held) {
@@ -281,7 +301,7 @@ int wmain(int argc, wchar_t** argv) {
     if (!teardown.met || !CreateThread(nullptr, 0, enforceDeadline, &teardown, 0, nullptr)) endHeld(kUnconfirmed, 125);
     const bool stopped = result == WAIT_OBJECT_0 && jobHasDescendants(job, child.dwProcessId);
     // Every process the command started is in this job, so its emptiness is the whole reap.
-    if (result > WAIT_OBJECT_0 + 1 || !emptyJob(job)) endHeld(kUnconfirmed, 125);
+    if (result > WAIT_OBJECT_0 + 1 || emptyJob(job, false) == JobCleanup::Failed) endHeld(kUnconfirmed, 125);
     const char pinned = holdAsk(hold, 0x51485641, 0);
     if (pinned != 'P') endHeld(pinned == 'X' ? kLost : kUnconfirmed, 125);
     char record[48];

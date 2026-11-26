@@ -1,5 +1,5 @@
 // Cron schedules use wall-clock evaluation rather than advancing a stored timestamp; deduplicate each routine per minute.
-import type { RoutinesStore, RoutineRecord } from "./routines-store.js";
+import type { RoutinesStore, RoutineRecord, TemplateRoutineFire } from "./routines-store.js";
 import { isMissedWhilePaused } from "../routines/schedule-advance.js";
 import { matchesCron } from "../routines/cron-evaluator.js";
 import { createLogger } from "../lib/logger.js";
@@ -25,6 +25,7 @@ export class RoutinesScheduler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly llmHandlers = new Set<LlmSessionHandler>();
   private readonly notificationHandlers = new Set<NotificationHandler>();
+  private readonly templateRunHandlers = new Set<(event: TemplateRoutineFire) => void>();
   private inFlight = false;
   // routineId → firedAt of each LLM run in progress, so a view opened mid-run can show it without having seen the start event.
   private readonly runningRuns = new Map<string, string>();
@@ -72,6 +73,11 @@ export class RoutinesScheduler {
     return () => this.notificationHandlers.delete(handler);
   }
 
+  onTemplateRun(handler: (event: TemplateRoutineFire) => void): () => void {
+    this.templateRunHandlers.add(handler);
+    return () => this.templateRunHandlers.delete(handler);
+  }
+
   // Visible for tests — invoke a single polling pass to verify firing behaviour without waiting for the 30s interval.
   async checkAndFire(): Promise<void> {
     const now = new Date();
@@ -91,9 +97,7 @@ export class RoutinesScheduler {
           const currentMinuteUTC = minuteKeyUTC(now);
           await this.store.update(routine.id, { lastFiredMinuteUTC: currentMinuteUTC });
         }
-        const updated = await this.store.markFired(routine.id, missingPluginIds, { scheduled: true });
-        if (!updated) continue;
-        this.dispatch(updated);
+        await this.registerAndDispatch(routine, missingPluginIds, { scheduled: true });
       } catch (err) {
         // One bad routine must not stall all remaining routines in this tick.
         log.warn("routine tick error (id=%s): %s", routine.id, (err as Error).message);
@@ -159,10 +163,7 @@ export class RoutinesScheduler {
       if (routine.lastFiredMinuteUTC === minuteKey) return false;
       await this.store.update(routine.id, { lastFiredMinuteUTC: minuteKey });
     }
-    const updated = await this.store.markFired(routine.id, missingPluginIds);
-    if (!updated) return false;
-    this.dispatch(updated);
-    return true;
+    return this.registerAndDispatch(routine, missingPluginIds);
   }
 
   private async getMissingPluginIds(routine: RoutineRecord): Promise<string[]> {
@@ -177,10 +178,20 @@ export class RoutinesScheduler {
     return missing.length > 0 && scope?.mode === "allow" && scope.ids.every((id) => missing.includes(id));
   }
 
-  private dispatch(routine: RoutineRecord): void {
-    const event: RoutineFiredEvent = { routine };
-    const handlers =
-      routine.execution === "llm-session" ? this.llmHandlers : this.notificationHandlers;
+  private async registerAndDispatch(routine: RoutineRecord, missingPluginIds: string[], options?: { scheduled?: boolean }): Promise<boolean> {
+    if (routine.execution === "template-run") {
+      const fire = await this.store.registerTemplateFire(routine.id, options);
+      if (!fire) return false;
+      this.dispatch(this.templateRunHandlers, fire);
+      return true;
+    }
+    const updated = await this.store.markFired(routine.id, missingPluginIds, options);
+    if (!updated) return false;
+    this.dispatch(updated.execution === "llm-session" ? this.llmHandlers : this.notificationHandlers, { routine: updated });
+    return true;
+  }
+
+  private dispatch<T extends RoutineFiredEvent>(handlers: Set<(event: T) => void>, event: T): void {
     for (const h of handlers) {
       try {
         h(event);

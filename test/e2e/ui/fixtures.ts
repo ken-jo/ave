@@ -14,6 +14,7 @@ import {
   makeTreeWritableSync,
 } from "./seeded-electron";
 import { makeTestT, type TestT } from "./i18n.js";
+import type { LlmModelListCache } from "../../../src/shared/llm-model-list.js";
 
 import { ALERT_FIXTURE_MANIFEST, ALERT_FIXTURE_SOURCE } from "./alert-fixture.js";
 import { VIEW_FIXTURE } from "../../fixtures/e2e-plugins/view-fixture.js";
@@ -104,7 +105,8 @@ export type ElectronOptions = {
   /** Raw persisted provider id, including an id a newer build has retired. */
   seedLlmProvider: string;
   /** Per-vendor blocks to seed. Built-in vendors no longer pick a model, so a route has one only when a profile saved it. */
-  seedLlmVendors: Record<string, { model: string }> | undefined;
+  seedLlmVendors: Record<string, { model: string; baseUrl?: string }> | undefined;
+  seedLlmModelListCache: LlmModelListCache | undefined;
   seedLocale: "ko" | "en";
   /** Explicit saved sandbox preference; undefined exercises production defaults. */
   seedOsToolSandbox: boolean | undefined;
@@ -124,6 +126,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
   seedApiKey: [true, { option: true }],
   seedLlmProvider: ["", { option: true }],
   seedLlmVendors: [undefined, { option: true }],
+  seedLlmModelListCache: [undefined, { option: true }],
   // UI locale to seed. Defaults to 'en'; the production default; so ./fixtures specs exercise the English render path; their assertions go through the `t` fixture so they resolve
   // whatever is seeded. Specs that need Korean override with `test.use({ seedLocale: 'ko' })`; specs with their own harness pin their locale via a module-scoped `makeTestT(...)`.
   seedLocale: ["en", { option: true }],
@@ -167,6 +170,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       seedApiKey,
       seedLlmProvider,
       seedLlmVendors,
+      seedLlmModelListCache,
       seedLocale,
       seedOsToolSandbox,
       devFlag,
@@ -199,8 +203,15 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
     if (seedOsToolSandbox !== undefined) {
       baseSettings.features = { ...(baseSettings.features as object), osToolSandbox: seedOsToolSandbox };
     }
-    const initialSettings = seedLlmProvider || seedLlmVendors
-      ? { ...baseSettings, llm: { ...(seedLlmProvider ? { provider: seedLlmProvider } : {}), ...(seedLlmVendors ? { vendors: seedLlmVendors } : {}) } }
+    const initialSettings = seedLlmProvider || seedLlmVendors || seedLlmModelListCache
+      ? {
+          ...baseSettings,
+          llm: {
+            ...(seedLlmProvider ? { provider: seedLlmProvider } : {}),
+            ...(seedLlmVendors ? { vendors: seedLlmVendors } : {}),
+            ...(seedLlmModelListCache ? { modelListCache: seedLlmModelListCache } : {}),
+          },
+        }
       : baseSettings;
     fs.writeFileSync(
       path.join(userDataDir, "ave-settings.json"),

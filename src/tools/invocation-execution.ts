@@ -1,3 +1,4 @@
+import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 import { appendToolInvocationAudit, trackDetachedToolInvocation } from "./invocation-ledger.js";
 import { isHostExitAbort } from "../shared/host-exit-abort.js";
 import type { ToolAuditTerminationReason } from "../audit/audit-logger.js";
@@ -804,6 +805,8 @@ export async function executeAuthorizedToolInvocation(
     cwd: executionCwd,
     ...(isCanonicalBrowserTool(tool) ? {
       authorizeBrowserSite: async (url: string, lifecycleSignal?: AbortSignal): Promise<void> => {
+        const unattended = unattendedApprovalDenial();
+        if (unattended) throw new Error(unattended);
         const siteSignal = AbortSignal.any([...(abortSignal ? [abortSignal] : []), ...(lifecycleSignal ? [lifecycleSignal] : [])]);
         const manager = services.permissionManager;
         const gate = services.approvalGate;

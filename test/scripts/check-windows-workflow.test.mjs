@@ -186,6 +186,8 @@ it("derives independent receipts for preparation and every shard", async () => {
       "verify-windows-folder-classification-1",
       "build-and-test-patched-windows-sandbox-helper-1", "build-and-test-patched-windows-sandbox-helper-2",
       "run-script-tests-1",
+      "build-windows-development-desktop-1",
+      "smoke-test-windows-development-boot-1",
     ],
     "windows-permission-tests": ["run-windows-regressions-1"],
   };

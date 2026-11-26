@@ -791,7 +791,7 @@ function isAllReadOnlyVersion(graph: TemplateGraph): boolean;
   - Admission interrupts nothing and restores nothing. The old run's live child ends on its own or by Stop, and the old run's spawn authority stays revoked.
   - An orphan routine is covered the same way: its detached records still list the earlier runs.
 - `isAllReadOnlyVersion` is checked at attach, at fire and before every spawn (through `unattendedAllowed`, §2.4). After the limit is lifted the same three places ask WT-15's qualification through the same predicate (§8, §9).
-- A fire whose start is refused creates no item and no child; the refusal code is recorded as the routine's failure. The fire handler takes the code, and the tool when there is one, from the verdict of the one authority function (§2.2); it runs no check of its own.
+- A refused fire links no child and leaves no item, run record, or owned workspace. The fire rolls back provisional state if its scope, project registry entry, or attachment no longer authorizes the run before the first child links. The routine records the named refusal. The fire handler takes the code, and the tool when there is one, from the verdict of the one authority function (§2.2); it runs no check of its own.
 - One refusal has its own outcome (lead ruling Q6): `outward-effect-tool` or `tool-effect-unknown` at fire. That firing is skipped with the status "skipped: `<tool>` unavailable", where `<tool>` is the verdict's tool, and the code is recorded with it. Nothing is created. The attachment is not touched and the schedule is not listed as "needs reattach": a server that is offline for one firing asks for no new version and no new approval, and the next firing asks again. The skip counts toward the schedule breaker as a bad outcome, so two in a row pause the schedule (§11). A firing skipped `run-unsettled` or `paused` is not counted, as before.
 - The same refusal at attach (after the limit is lifted, §9): the attach is refused with that code and names the tool; no routine and no attachment are written, and a routine the handler created in that call is deleted as for any failed attach (R18).
 - A stage with no envelope, before and after the lift (rev9 review, P3-1):
@@ -809,7 +809,7 @@ Already in WT-3: a human gate is a stored object with no timeout; the item sits 
 
 ### 7.4 Interim tool-call rule (until WT-15)
 
-A session spawned with `unattendedStage` has only read-tier tools (the version is all read-only). Its permission requests are built with `headless: true`, mode `default`, and withheld session authority (the existing `withholdSessionAuthority` path, `subagent-runner.ts:2623`), whatever the owner's ambient mode is. This closes F11 for the interim (R8). WT-15 replaces the rule with the lane.
+An interim stage spawned with `unattendedStage` can use only built-in local read tools. Browser workspace tools are excluded from both the stage schema and dispatch. Browser actions can write downloads or trigger deferred sign-in, consent, and permission prompts. Its permission requests are built with `headless: true`, mode `default`, and withheld session authority (the existing `withholdSessionAuthority` path, `subagent-runner.ts:2623`), whatever the owner's ambient mode is. This closes F11 for the interim (R8). WT-15 replaces the rule with the lane.
 
 ### 7.5 Invariants and tests
 
