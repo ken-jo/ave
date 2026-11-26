@@ -1002,9 +1002,18 @@ export function buildMandatorySandboxWritePolicy(
   const rootEntries = process.platform === "linux" || process.platform === "win32"
     ? [...SANDBOX_PROTECTED_ROOT_ENTRIES, ...SANDBOX_NAMED_ENTRIES]
     : SANDBOX_PROTECTED_ROOT_ENTRIES;
+  const rootSpellings = [...new Set(rootSnapshots.flatMap(({ original, physical }) => [original, physical]))];
+  const windowsNamedEntries = new Map<string, string>();
+  const windowsProtectedBoundaries: string[] = [];
+  if (process.platform === "win32") {
+    for (const root of rootSpellings) {
+      const carrier = join(root, ".ave");
+      windowsProtectedBoundaries.push(root, carrier, resolvePolicyDenyPath(carrier));
+      for (const entry of SANDBOX_NAMED_ENTRIES) windowsNamedEntries.set(join(root, entry), entry);
+    }
+  }
   const paths = new Set([
-    ...rootSnapshots.flatMap(({ original, physical }) => [original, physical]).flatMap((root) =>
-      rootEntries.map((entry) => join(root, entry))),
+    ...rootSpellings.flatMap((root) => rootEntries.map((entry) => join(root, entry))),
     // The configuration directory is a control boundary, including future files.
     join(aveHome(), AVE_HOME_CONFIGURATION_DIRECTORY),
     permissionSettingsPath(),
@@ -1105,6 +1114,11 @@ export function buildMandatorySandboxWritePolicy(
   // Preserve both the directory entry and its target when a setting is a link.
   const resolvedDenyPaths = [...new Set([...paths].flatMap((path) => {
     const physical = resolvePolicyDenyPath(path);
+    const name = windowsNamedEntries.get(path);
+    if (name !== undefined && path.toLowerCase() !== physical.toLowerCase()
+      && windowsProtectedBoundaries.some(boundary => isPhysicalPathWithin(physical, boundary))) {
+      throw new Error(t("sandboxPolicy.namedEntryLinksToWriteBoundary", { entry: name }));
+    }
     if (mandatoryPaths.has(path)) mandatoryPaths.add(physical);
     return [path, physical];
   }))];

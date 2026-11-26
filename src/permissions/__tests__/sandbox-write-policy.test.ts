@@ -507,6 +507,21 @@ describe("mandatory sandbox control-file writes", () => {
       expect(nativeDenyRows(policy.denyWrite)).toEqual(expect.arrayContaining(targets));
     });
 
+    it.each(["carrier", "own root", "other root", "root ancestor"])("refuses a protected junction to the %s before building denies", destination => {
+      const project = join(root, "project");
+      const carrier = join(project, ".ave");
+      const other = join(root, "other");
+      mkdirSync(carrier, { recursive: true });
+      mkdirSync(other);
+      const target = new Map([["carrier", carrier], ["own root", project], ["other root", other], ["root ancestor", root]]).get(destination)!;
+      const link = join(carrier, "commands");
+      symlinkSync(target, link, "junction");
+      try {
+        expect(() => withPlatform("win32", () => buildMandatorySandboxWritePolicy([project, other])))
+          .toThrow(".ave/commands");
+      } finally { unlinkSync(link); }
+    });
+
     it("limits the named rows to admitted roots and leaves neighbouring names writable", () => {
       const project = join(root, "project");
       const nested = join(project, "nested");
