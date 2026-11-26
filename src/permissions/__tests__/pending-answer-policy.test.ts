@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionCheckResult } from "../permission-manager.js";
-import { answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingQuestionStillAsked, permissionQuestionOf, personAnswerStands, samePermissionQuestion, saveStandingAnswerRule, spendStandingAnswer, standingAnswerFor, type PendingAnswerBinding, type StandingAnswer, type StandingAnswerUse } from "../pending-answer-policy.js";
+import { answerEpochsOf, answerSurvivesRecheck, bindPendingAnswerRequest, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingAnswerDefersAllowSaves, pendingQuestionStillAsked, permissionQuestionOf, personAnswerStands, samePermissionQuestion, saveStandingAnswerRule, spendStandingAnswer, standingAnswerFor, type PendingAnswerBinding, type StandingAnswer, type StandingAnswerUse } from "../pending-answer-policy.js";
+import type { ApprovalRequestInput } from "../approval-gate.js";
 
 /** A manager's two epochs, moved by hand. */
 function policy() {
@@ -225,12 +226,18 @@ describe("a person's answer across a policy change", () => {
     expect(spendStandingAnswer(proof, "shell-permit", action)).toBeUndefined();
   });
 
-  it("holds allow saves on the gate only for a card that names the rule-save use", () => {
-    const deferAllowSaves = vi.fn();
-    openPendingAnswerCard(policy(), floorAsk(true), () => floorAsk(true), "stale-refused", bound({ deferAllowSaves }, "plain"));
-    expect(deferAllowSaves).not.toHaveBeenCalled();
-    openPendingAnswerCard(policy(), floorAsk(true), () => floorAsk(true), "stale-refused", bound({ deferAllowSaves }, "saving", ["rule-save", "shell-permit"]));
-    expect(deferAllowSaves.mock.calls).toEqual([["saving"]]);
+  it("holds allow saves only for the request bound to the saving card and its gate", () => {
+    const gate = {};
+    const request: ApprovalRequestInput = { id: "card", category: "tool", toolName: "probe",
+      args: {}, reason: "Review", createdAt: 0 };
+    const plain = openPendingAnswerCard(policy(), floorAsk(true), () => floorAsk(true), "stale-refused", bound(gate));
+    expect(pendingAnswerDefersAllowSaves(bindPendingAnswerRequest({ ...request }, plain), gate)).toBe(false);
+    const saving = openPendingAnswerCard(policy(), floorAsk(true), () => floorAsk(true), "stale-refused", bound(gate, request.id, ["rule-save", "shell-permit"]));
+    expect(pendingAnswerDefersAllowSaves(request, gate)).toBe(false);
+    const boundRequest = bindPendingAnswerRequest({ ...request }, saving);
+    expect(pendingAnswerDefersAllowSaves(boundRequest, gate)).toBe(true);
+    expect(pendingAnswerDefersAllowSaves(request, gate)).toBe(false);
+    expect(() => pendingAnswerDefersAllowSaves(boundRequest, {})).toThrow(/pending answer binding/);
   });
 
   it("writes a held allow only for a standing answer, and voids the answer when the write is refused", async () => {

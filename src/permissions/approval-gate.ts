@@ -23,7 +23,7 @@ import {
 import type { PermissionEvaluationContext } from "./evaluation-context.js";
 import { matchesReviewerApprovalBasis, type ReviewerApprovalBasis, type ReviewerDispatchOutcome } from "./permission-manager.js";
 import { matchesApprovalRuleBasis, type ApprovalRuleBasis } from "./approval-rule-evidence.js";
-import { describePermissionQuestion, spendStandingAnswer, type PermissionQuestion, type StaleAnswerOutcome, type StandingAnswer } from "./pending-answer-policy.js";
+import { describePermissionQuestion, pendingAnswerDefersAllowSaves, spendStandingAnswer, type PermissionQuestion, type StaleAnswerOutcome, type StandingAnswer } from "./pending-answer-policy.js";
 import { NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { isIssuedToolApprovalWait, withToolApprovalWait, type ToolApprovalWait } from "../tools/executor-ceiling.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
@@ -903,7 +903,6 @@ export class ApprovalGate {
   private readonly authenticatedDirectoryAnswers = new WeakSet<ApprovalDecision>();
   private readonly exactSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
   // Cards the pending-answer owner opened and the gate has not been asked yet.
-  private readonly allowSaveDeferrals = new Set<string>();
   private readonly stagedAllowSaves = new WeakMap<ApprovalDecision, { saves: readonly StagedAllowSave[]; controller: ApprovalPersistenceGuard }>();
   private readonly approvedBrowserSites = new WeakMap<ApprovalDecision, { sessionId: string; origin: string; choice: BrowserSiteChoice }>();
 
@@ -988,11 +987,6 @@ export class ApprovalGate {
     transition.saving = false;
     if (!isRuleSaveStep(saved.before, after, scope)) transition.valid = false;
     transition.to = after;
-  }
-
-  /** The pending-answer owner opens a card on `requestId`: its allow saves wait for the owner's judgement. */
-  deferAllowSaves(requestId: string): void {
-    this.allowSaveDeferrals.add(requestId);
   }
 
   defersAllowSaves(requestId: string): boolean {
@@ -1206,7 +1200,7 @@ export class ApprovalGate {
 
   // Send an approval request to the renderer and wait for the response. ConversationLoop.executeOne awaits this and blocks the turn. The requireExplicit field controls renderer dismiss behavior.
   async requestAndWait(req: ApprovalRequestInput): Promise<ApprovalDecision> {
-    const defersAllowSaves = this.allowSaveDeferrals.delete(req.id);
+    const defersAllowSaves = pendingAnswerDefersAllowSaves(req, this);
     const auditFieldsFor = (fields: ApprovalAuditFields, executionPlan?: HostShellExecutionPlanAuditProjection): string =>
       formatApprovalAuditFields({ ...fields, remoteControllerOrigin: req.remoteControllerOrigin }, executionPlan);
     const isAborted = () => this.lifetime.signal.aborted || req.abortSignal?.aborted === true;

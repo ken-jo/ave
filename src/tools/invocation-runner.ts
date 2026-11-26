@@ -1,4 +1,4 @@
-import { openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, spendStandingAnswer, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
+import { bindPendingAnswerRequest, openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, spendStandingAnswer, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { issueReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
@@ -1852,11 +1852,11 @@ async function runToolInvocationAttempt(
             invocationPermissionContext,
             outOfAllowedTarget.filePath,
           );
-          decision = await services.approvalGate.requestAndWait({
+          decision = await services.approvalGate.requestAndWait(bindPendingAnswerRequest({
             ...approvalRequest,
             // A directory confirm parks the turn exactly like a tool ask does.
             ...(directorySignal === undefined ? {} : { abortSignal: directorySignal }),
-          });
+          }, directoryCard));
         } catch (approvalErr) {
           if (grantGuard && !grantGuard.isCurrent()) {
             return { allowed: false, result: await denyCardGrant() };

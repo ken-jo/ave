@@ -1,4 +1,4 @@
-import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingQuestionStillAsked, personAnswerStands, saveStandingAnswerRule, standingAnswerFor, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
+import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, bindPendingAnswerRequest, openPendingAnswerCard, pendingQuestionStillAsked, personAnswerStands, saveStandingAnswerRule, standingAnswerFor, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
@@ -1190,7 +1190,7 @@ export async function executeAuthorizedToolInvocation(
     const card = manager ? openPendingAnswerCard(manager, permissionResult,
       () => context.checkCurrentPermission?.() ?? { decision: "deny", reason: policyChanged }, "stale-reasked",
       { gate: services.approvalGate!, requestId: liveRequest.id, action: cardAction, uses: ["rule-save", ...answerUses] }) : undefined;
-    let decision = await services.approvalGate!.requestAndWait(liveRequest);
+    let decision = await services.approvalGate!.requestAndWait(bindPendingAnswerRequest(liveRequest, card));
     abortSignal?.throwIfAborted();
     let currentEpoch = manager?.getPolicyEpoch();
     let cardAnswer: StandingAnswer | undefined;

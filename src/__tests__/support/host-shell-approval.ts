@@ -2,16 +2,17 @@ import { vi } from "vitest";
 import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, mintHostShellExecutionPermit, type HostShellToolName } from "../../permissions/host-shell-execution-permit.js";
 import type { HostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
+import { bindPendingAnswerRequest, type PendingAnswerCard } from "../../permissions/pending-answer-policy.js";
 import { getHostShellExecutionPlan } from "../../permissions/sandbox-capability.js";
 import type { ToolExecutionContext } from "../../tools/base.js";
 import { toolUseAnswer } from "./standing-answer.js";
 
 let approvalSequence = 0;
 
-export function requestBoundShellCard(gate: ApprovalGate, request: ApprovalRequestInput, cwd: string) {
+export function requestBoundShellCard(gate: ApprovalGate, request: ApprovalRequestInput, cwd: string, card?: PendingAnswerCard) {
   if (request.source !== "builtin" || request.toolCategory !== "shell" ||
     (request.toolName !== "bash" && request.toolName !== "powershell")) {
-    return gate.requestAndWait(request);
+    return gate.requestAndWait(bindPendingAnswerRequest(request, card));
   }
   const binding = request.hostShellExecutionPermitBinding ?? buildHostShellExecutionPermitBinding({
     plan: getHostShellExecutionPlan(), toolName: request.toolName, toolUseId: request.id,
@@ -19,7 +20,7 @@ export function requestBoundShellCard(gate: ApprovalGate, request: ApprovalReque
   });
   if (binding === undefined) throw new Error("Shell fixture has no valid action binding");
   const directory = createShellApprovalDirectory(binding);
-  return gate.requestAndWait({ ...request, processCwd: { directory } }).finally(() => directory.dispose());
+  return gate.requestAndWait(bindPendingAnswerRequest({ ...request, processCwd: { directory } }, card)).finally(() => directory.dispose());
 }
 
 /** Issue actual desktop consent for exactly one native shell invocation. */

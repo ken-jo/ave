@@ -15,7 +15,7 @@
 // The kinds an action needs are named when its card is opened; the answer can be spent on no other kind.
 import { decidePermission } from "./decision-pipeline.js";
 import type { PermissionCheckResult, PermissionManager } from "./permission-manager.js";
-import type { ApprovalDecision, ApprovalGate } from "./approval-gate.js";
+import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "./approval-gate.js";
 
 /** The policy a card was opened under. */
 export interface AnswerEpochs { readonly epoch: string; readonly contextEpoch: string }
@@ -166,7 +166,7 @@ export function spendStandingAnswer(answer: StandingAnswer | undefined, use: Sta
 /** What a card is bound to at open: the gate that asks it, the request it is asked under, the action it is asked for and the
  * kinds of use that action needs. */
 export interface PendingAnswerBinding {
-  readonly gate: Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer" | "deferAllowSaves" | "commitStagedAllowSaves">>;
+  readonly gate: Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer" | "commitStagedAllowSaves">>;
   readonly requestId: string;
   readonly action: string;
   readonly uses: readonly StandingAnswerUse[];
@@ -182,6 +182,7 @@ interface BoundCard extends Omit<PendingAnswerBinding, "uses"> {
 }
 
 const boundCards = new WeakMap<PendingAnswerCard, BoundCard>();
+const boundRequests = new WeakMap<ApprovalRequestInput, BoundCard>();
 
 /** Open a card on `opened`, the decision it shows. `check` is the call's current permission check; the owner alone runs it. */
 export function openPendingAnswerCard(manager: EpochSource, opened: Questioned, check: () => PermissionCheckResult, onStale: StaleAnswerOutcome,
@@ -189,8 +190,23 @@ export function openPendingAnswerCard(manager: EpochSource, opened: Questioned, 
   const card: PendingAnswerCard = { epochs: binding.epochs ?? answerEpochsOf(manager), question: permissionQuestionOf(opened), forced: opened.forceModal === true };
   boundCards.set(card, { manager, check, onStale, gate: binding.gate, requestId: binding.requestId, action: binding.action,
     uses: new Set(binding.uses), judged: false });
-  if (binding.uses.includes("rule-save")) binding.gate.deferAllowSaves?.(binding.requestId);
   return card;
+}
+
+/** Bind the hold to the request actually passed to the gate. Opening an unasked card leaves no mark on its request ID. */
+export function bindPendingAnswerRequest(request: ApprovalRequestInput, card: PendingAnswerCard | undefined): ApprovalRequestInput {
+  if (card === undefined) return request;
+  const bound = boundCards.get(card);
+  if (bound === undefined || bound.requestId !== request.id) throw new Error("Approval request does not match its pending answer card");
+  boundRequests.set(request, bound);
+  return request;
+}
+
+export function pendingAnswerDefersAllowSaves(request: ApprovalRequestInput, gate: PendingAnswerBinding["gate"]): boolean {
+  const bound = boundRequests.get(request);
+  if (bound === undefined) return false;
+  if (bound.gate !== gate || bound.requestId !== request.id) throw new Error("Approval request does not match its pending answer binding");
+  return bound.uses.has("rule-save");
 }
 
 /** Write the allow the person asked a card to remember, once its answer stands. `saved`: the policy now holds it. `refusal`: the

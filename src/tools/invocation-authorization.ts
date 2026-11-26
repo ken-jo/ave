@@ -1,4 +1,4 @@
-import { openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, standingAnswerFor, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
+import { bindPendingAnswerRequest, openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, standingAnswerFor, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
 import { RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
@@ -1146,7 +1146,7 @@ export async function authorizeToolInvocation(
               await returnUserAbort(abortDeps(finalInput)),
             );
           }
-          decision = await services.approvalGate.requestAndWait({
+          decision = await services.approvalGate.requestAndWait(bindPendingAnswerRequest({
             ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
             ...(hostShellExecutionPlan === undefined ? {} : { hostShellExecutionPlan }),
             ...approvalRequest,
@@ -1155,7 +1155,7 @@ export async function authorizeToolInvocation(
             // lets the gate stop waiting when the stop arrives afterwards,
             // instead of holding the turn's lease until its own timer expires.
             ...(abortSignal === undefined ? {} : { abortSignal }),
-          });
+          }, approvalCard));
           personAsked = true;
         } catch (approvalErr) {
           const msg = t("be_executor.approvalGateError", {

@@ -1,5 +1,5 @@
 import { t } from "../../i18n/runtime.js";
-import { openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, type StandingAnswer, type StandingAnswerUse } from "../../permissions/pending-answer-policy.js";
+import { bindPendingAnswerRequest, openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, type StandingAnswer, type StandingAnswerUse } from "../../permissions/pending-answer-policy.js";
 import { randomUUID } from "node:crypto";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { isHostApprovalRejectedDecision } from "../../permissions/approval-gate.js";
@@ -71,7 +71,7 @@ export async function resolveUserOwnedSurfaceApproval(input: {
     reason: permission.reason,
     ...(permission.forceModal ? { forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false } : {}),
   };
-  decision = await gate.requestAndWait(fallback);
+  decision = await gate.requestAndWait(bindPendingAnswerRequest(fallback, card));
   if (request.abortSignal?.aborted && decision.choice.startsWith("deny")) return { permission, decision, answer: undefined };
   request.abortSignal?.throwIfAborted();
   personAnswerStands(card, decision);

@@ -1,4 +1,4 @@
-import { openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, spendStandingAnswer, type StandingAnswer } from "./pending-answer-policy.js";
+import { bindPendingAnswerRequest, openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, spendStandingAnswer, type StandingAnswer } from "./pending-answer-policy.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf, type RemoteControllerAuthority } from "../shared/chat-origin.js";
 // Actual host effects enter the common permission pipeline before recording and execution.
 // Authorize before recording and execution; network audit also records denied attempts. Invalid input snapshots never reach implementation.
@@ -453,7 +453,7 @@ export async function gateMutatingEffect(params: {
   const action = `effect:${key}`;
   const card = openPendingAnswerCard(manager, permission, checkEffect, "stale-refused",
     { gate: params.approvalGate, requestId, action, uses: ["effect", "rule-save"] });
-  const decision = await params.approvalGate.requestAndWait({
+  const decision = await params.approvalGate.requestAndWait(bindPendingAnswerRequest({
     id: requestId,
     category: "agent-action",
     kind: "agent-action",
@@ -482,7 +482,7 @@ export async function gateMutatingEffect(params: {
     durableApprovalRecordAllowed: false,
     ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
     ...(permission.reviewer?.verdict ? { reviewerVerdict: permission.reviewer.verdict } : {}),
-  });
+  }, card));
 
   ctx.abortSignal?.throwIfAborted();
   if (!await refreshRemoteControllerBoundToSession(ctx.permissionContext?.remoteControllerAuthority, ctx.sessionId)) throw new Error("remote-controller-revoked");

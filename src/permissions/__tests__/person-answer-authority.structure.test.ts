@@ -244,12 +244,14 @@ describe("authority from a person's answer", () => {
         ? [{ node, where }] : []);
     const sites = (name: string) => calls(name).map(({ where }) => where).sort();
     expect(sites("commitStagedAllowSaves")).toEqual([`${OWNER}#saveStandingAnswerRule`]);
-    expect(sites("deferAllowSaves")).toEqual([`${OWNER}#openPendingAnswerCard`]);
+    expect(sites("pendingAnswerDefersAllowSaves")).toEqual(["permissions/approval-gate.ts#requestAndWait"]);
     expect(sites("stageAllowSave")).toEqual(["ipc/domains/permissions.ts#registerPermissionsHandlers", "ipc/domains/permissions.ts#registerPermissionsHandlers"]);
     const cards = calls("openPendingAnswerCard");
+    const asks = calls("bindPendingAnswerRequest");
     const saves = calls("saveStandingAnswerRule");
     const verdicts = calls("personAnswerStands").filter(({ node }) => node.arguments.length === 2);
     expect(saves.map(({ where }) => where).sort()).toEqual(cards.map(({ where }) => where).sort());
+    expect(asks.map(({ where }) => where).sort()).toEqual(cards.map(({ where }) => where).sort());
     expect(cards.map(({ where }) => where)).toContain("permissions/egress-approval.ts#createApprovalGateEgressRequester");
     // Only a card open captures a question to judge an answer. The terminal write fence seals and compares an already settled question.
     expect(sites("permissionQuestionOf")).toEqual([
@@ -269,6 +271,7 @@ describe("authority from a person's answer", () => {
           ts.isBinaryExpression(assignment) && assignment.right.getText() === node.getText()))?.node;
       const cardName = card && (ts.isVariableDeclaration(card) ? card.name.getText() : ts.isBinaryExpression(card) ? card.left.getText() : undefined);
       expect(cardName, where).toBeDefined();
+      expect(asks.some(({ where: scope, node: call }) => scope === where && call.arguments[1]?.getText() === cardName), where).toBe(true);
       const binding = node.arguments[4]?.getText();
       // Shared use lists still have to declare the sink at their definition.
       const uses = binding?.match(/\buses: (\w+) \}$/)?.[1];

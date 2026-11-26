@@ -1,5 +1,5 @@
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
-import { openPendingAnswerCard, personAnswerStands } from "../../../permissions/pending-answer-policy.js";
+import { openPendingAnswerCard, type PendingAnswerCard, personAnswerStands } from "../../../permissions/pending-answer-policy.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
@@ -200,7 +200,7 @@ async function subject(mode: "auto" | "default" = "auto") {
     });
     return { reached: reached.promise, release: held.resolve };
   };
-  const queueCard = (overrides: Partial<ApprovalRequestInput> = {}) => {
+  const queueCard = (overrides: Partial<ApprovalRequestInput> = {}, card?: PendingAnswerCard) => {
     const request: ApprovalRequestInput = {
       id: randomUUID(), sessionId: SESSION_ID, category: "tool", kind: "tool", toolName: "write_probe", toolCategory: "write",
       source: "builtin", trustOrigin: "user-keyboard", args: { path: join(root, "remembered.txt") }, reason: "manual review", createdAt: Date.now(),
@@ -211,7 +211,7 @@ async function subject(mode: "auto" | "default" = "auto") {
       }),
       ...overrides,
     };
-    return { request, result: track(requestBoundShellCard(gate, request, root)) };
+    return { request, result: track(requestBoundShellCard(gate, request, root, card)) };
   };
   return { root, audit, auditLog, windowA, windowB, gate, manager, registry, executeAll, execute, complete, selectComplete, pause, start, cards, waitForCard, hold, holdNextPreToolUse, queueCard, setOwner: (next: AppWindow | undefined) => { owner = next; } };
 }
@@ -1002,14 +1002,28 @@ describe("live native approval ownership", () => {
     }
   });
 
+  it("leaves a later request unaffected when a card was opened but never asked", async () => {
+    const f = await subject("default");
+    const id = randomUUID();
+    const asked = { decision: "ask" as const, reason: "manual review" };
+    openPendingAnswerCard(f.manager, asked, () => asked, "stale-refused", {
+      gate: f.gate, requestId: id, action: "tool-use:abandoned", uses: ["rule-save"],
+    });
+    const { result } = f.queueCard({ id });
+    const card = await f.waitForCard();
+    expect(f.gate.defersAllowSaves(id)).toBe(false);
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { ...allowOnceCardAnswer(card), choice: "deny-once" });
+    expect((await result).choice).toBe("deny-once");
+  });
+
   it("writes a held allow only against a standing answer that names the rule-save use", async () => {
     const f = await subject("default");
     vi.stubEnv("AVE_HOME", f.root);
     const id = randomUUID();
     const asked = { decision: "ask" as const, reason: "manual review" };
     const opened = openPendingAnswerCard(f.manager, asked, () => asked, "stale-refused", { gate: f.gate, requestId: id, action: "tool-use:held", uses: ["shell-permit"] });
-    f.gate.deferAllowSaves(id);
-    const { request, result } = f.queueCard({ id, toolName: "bash", toolCategory: "shell", args: { command: "printf ready" } });
+    const savingCard = openPendingAnswerCard(f.manager, asked, () => asked, "stale-refused", { gate: f.gate, requestId: id, action: "tool-use:held", uses: ["rule-save"] });
+    const { request, result } = f.queueCard({ id, toolName: "bash", toolCategory: "shell", args: { command: "printf ready" } }, savingCard);
     const card = await f.waitForCard();
     const persist = vi.spyOn(f.manager, "addRulePersist");
     expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {

@@ -1,5 +1,5 @@
 // Egress scopes must be among those offered by the gate; terminal asks stay in the owning window/tab. Grants belong to the egress store, never user-decision memory.
-import { openPendingAnswerCard, type PendingAnswerCard, personAnswerStands, saveStandingAnswerRule } from "./pending-answer-policy.js";
+import { bindPendingAnswerRequest, openPendingAnswerCard, type PendingAnswerCard, personAnswerStands, saveStandingAnswerRule } from "./pending-answer-policy.js";
 import type { NetworkPermissionEvaluation, NetworkRuleScope, PermissionManager } from "./permission-manager.js";
 import type { EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
@@ -66,7 +66,7 @@ export function createShellNetworkPermissionEvaluator(manager?: PermissionManage
 }
 
 export function createApprovalGateEgressRequester(
-  gate: Pick<ApprovalGate, "requestAndWait"> & Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer" | "deferAllowSaves" | "commitStagedAllowSaves">>,
+  gate: Pick<ApprovalGate, "requestAndWait"> & Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer" | "commitStagedAllowSaves">>,
   permissionManager?: PermissionManager,
 ): EgressApprovalRequester {
   const evaluateShellPermission = createShellNetworkPermissionEvaluator(permissionManager);
@@ -116,7 +116,7 @@ export function createApprovalGateEgressRequester(
       });
     }
     const remoteControllerAuthority = terminal ? undefined : request.permissionContext?.remoteControllerAuthority;
-    const decision = await gate.requestAndWait({
+    const decision = await gate.requestAndWait(bindPendingAnswerRequest({
       id: requestId,
       category: "tool",
       kind: "egress-host",
@@ -150,7 +150,7 @@ export function createApprovalGateEgressRequester(
       },
       ...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
       ...(request.abortSignal === undefined ? {} : { abortSignal: request.abortSignal }),
-    });
+    }, card));
     if (!terminal && decision.rememberPattern === NO_APPROVER_MESSAGE) { request.onNoApprover?.(); return { allow: false, reason: NO_APPROVER_MESSAGE }; }
     if (decision.choice === "allow-once" && decision.egressScope !== undefined && request.scopes.includes(decision.egressScope)) {
       if (forced && decision.egressScope !== "once") return { allow: false, reason: "A forced network approval is valid for one connection only." };

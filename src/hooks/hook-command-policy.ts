@@ -8,7 +8,7 @@ import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, min
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { buildPermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
-import { openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, toolUseAction, type StandingAnswer } from "../permissions/pending-answer-policy.js";
+import { bindPendingAnswerRequest, openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, toolUseAction, type StandingAnswer } from "../permissions/pending-answer-policy.js";
 import { t } from "../i18n/index.js";
 import { shellQuote } from "../lib/shell-resolver.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
@@ -28,7 +28,7 @@ export type HookCommandAuthorizer = (
 // Enrollment supplies executable identity; the shared pipeline supplies authority.
 export function createHookCommandAuthorizer(deps: {
   permissionManager: Pick<PermissionManager, "ensureProjectRulesLoaded" | "checkDetailed" | "dispatchReviewer" | "resolveReviewedPermission" | "getPolicyEpoch" | "getPolicyContextEpoch" | "getMode">;
-  approvalGate: Pick<ApprovalGate, "requestAndWait"> & Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer" | "deferAllowSaves" | "commitStagedAllowSaves">>;
+  approvalGate: Pick<ApprovalGate, "requestAndWait"> & Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer" | "commitStagedAllowSaves">>;
 }): HookCommandAuthorizer {
   return async (hook, payload, cwd, projectDir = cwd, attachWorkingDirectory) => {
     const command = hook.command.map(expandLeadingTilde).map(shellQuote).join(" ");
@@ -103,7 +103,7 @@ export function createHookCommandAuthorizer(deps: {
     const opened = card?.epochs;
     let answer: StandingAnswer | undefined;
     if (asksPerson) {
-      approval = await deps.approvalGate.requestAndWait({
+      approval = await deps.approvalGate.requestAndWait(bindPendingAnswerRequest({
         id, category: "tool", toolName: "bash", toolCategory: "shell",
         args: { ...args, hook: hook.id, event: payload.hookType }, reason: result.reason,
         ...approvalReasonFields(result, { fileTarget: false }),
@@ -117,7 +117,7 @@ export function createHookCommandAuthorizer(deps: {
         executionPlan: getHostShellExecutionPlanAuditProjection(plan),
         processCwd: { directory },
         ...(plan.requiresExplicitUserApproval ? { hostShellExecutionPermitBinding: binding } : {}),
-      });
+      }, card));
       if (abortSignal?.aborted) return { decision: "deny", reason: "Hook command was cancelled" };
       if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId) || !controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
       const rejected = Boolean(isHostApprovalRejectedDecision(approval));
