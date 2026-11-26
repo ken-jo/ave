@@ -282,7 +282,7 @@ describe("forced native fixture teardown", () => {
 });
 
 describe("seeded launch with a cleanup owner", () => {
-  beforeEach(() => terminateTree.mockClear());
+  beforeEach(() => { terminateTree.mockReset(); });
   function recordingOwner() {
     const steps: string[] = [];
     const paths: string[] = [];
