@@ -19,7 +19,7 @@ import {
   windowsPathKindPath, windowsPathKindReceipt, windowsPathKindReceiptPath, windowsPathKindRustflags, windowsPathKindToolPaths,
   verifyWindowsPathKindReceipt,
 } from "../../scripts/lib/windows-path-kind-build.mjs";
-import { windowsPeImageDigest } from "../../scripts/lib/windows-pe-image-digest.mjs";
+import { windowsPeImageDigest } from "../../scripts/lib/windows-path-kind-image-digest.mjs";
 
 const roots: string[] = [];
 const OLD = new Date("2026-01-01T00:00:00Z");
@@ -583,7 +583,7 @@ describe("Windows path helper packaging", () => {
     return spawnSync(process.execPath, [
       "--input-type=module", "--eval", PACKAGING,
       pathToFileURL(resolve("scripts/lib/windows-path-kind-package.mjs")).href,
-      pathToFileURL(resolve("scripts/lib/windows-pe-image-digest.mjs")).href,
+      pathToFileURL(resolve("scripts/lib/windows-path-kind-image-digest.mjs")).href,
       pathToFileURL(resolve("scripts/package.json")).href,
       appOutDir, join(root, "build.exe"), join(root, "pin.exe"), step,
     ], { encoding: "utf8", windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });

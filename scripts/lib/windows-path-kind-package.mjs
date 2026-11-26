@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { windowsPeImageDigest } from "./windows-pe-image-digest.mjs";
+import { windowsPeImageDigest } from "./windows-path-kind-image-digest.mjs";
 
 // The before-pack build of each package, held in the packager's memory for its later hooks.
 const builds = new Map();

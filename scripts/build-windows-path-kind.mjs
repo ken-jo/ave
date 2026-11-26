@@ -11,7 +11,7 @@ import {
   windowsPathKindCrateFiles, windowsPathKindPath,
   windowsPathKindReceipt, windowsPathKindReceiptPath, windowsPathKindSourceDigest, windowsPathKindSystemEnvironment,
 } from "./lib/windows-path-kind-build.mjs";
-import { windowsPeImageDigest } from "./lib/windows-pe-image-digest.mjs";
+import { windowsPeImageDigest } from "./lib/windows-path-kind-image-digest.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 
