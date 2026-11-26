@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, win32 } from "node:path";
 
 const CRATE = "native/windows-path-kind";
 const TARGETS = { x64: ["x86_64-pc-windows-msvc", 0x8664], arm64: ["aarch64-pc-windows-msvc", 0xaa64] };
@@ -117,7 +117,7 @@ function assertStaticCrt(bytes) {
       const end = name.indexOf(0);
       if (end <= 0) throw invalid();
       const dll = name.toString("latin1", 0, end);
-      if (CRT_DLL.test(dll)) throw new Error(`Windows path helper imports a dynamic CRT: ${dll}`);
+      if (CRT_DLL.test(win32.basename(dll))) throw new Error(`Windows path helper imports a dynamic CRT: ${dll}`);
     }
     if (offset + descriptorSize > size) throw invalid();
   }

@@ -1,4 +1,5 @@
 // Fixture builds cover missing or stale native launchers without invoking a toolchain.
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -136,11 +137,18 @@ describe("Windows path helper build", () => {
   it.each([
     ["VCRUNTIME140.dll", false],
     ["api-ms-win-crt-runtime-l1-1-0.dll", true],
-  ] as const)("rejects a receipt for an executable importing %s", (dll, delayed) => {
+    ["C:\\Windows\\System32\\VcRuNtImE140.DlL", false],
+    ["C:/Windows/System32/UcRtBaSe.DlL", true],
+  ] as const)("rejects receipt creation and verification for an executable importing %s", (dll, delayed) => {
     const root = fixtureRoot();
-    const { identity } = JSON.parse(readFileSync(join(root, RECEIPT), "utf8"));
-    expect(() => windowsPathKindReceipt(root, "x64", identity, pathKindPe(dll, delayed)))
-      .toThrow(`Windows path helper imports a dynamic CRT: ${dll}`);
+    const receipt = JSON.parse(readFileSync(join(root, RECEIPT), "utf8"));
+    const binary = pathKindPe(dll, delayed);
+    const message = `Windows path helper imports a dynamic CRT: ${dll}`;
+    expect.soft(() => windowsPathKindReceipt(root, "x64", receipt.identity, binary)).toThrow(message);
+    receipt.binarySha256 = createHash("sha256").update(binary).digest("hex");
+    writeFileSync(join(root, PATH_KIND), binary);
+    writeFileSync(join(root, RECEIPT), JSON.stringify(receipt));
+    expect(() => verifyWindowsPathKindBuild(root, "x64")).toThrow(message);
   });
 });
 
