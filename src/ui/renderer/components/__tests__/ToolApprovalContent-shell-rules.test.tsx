@@ -298,9 +298,9 @@ describe("shell approval card: the shared decision row", () => {
   });
 
   it.each([
-    ["en", "The project changed. Run the command again for a new approval."],
-    ["ko", "프로젝트가 변경되었습니다. 새 승인을 받으려면 명령을 다시 실행하세요."],
-  ] as const)("shows the project change notice after the card settles in %s", async (locale, message) => {
+    ["en", "The project changed or the working directory was replaced. Run the command again for a new approval."],
+    ["ko", "프로젝트가 변경되었거나 작업 디렉터리가 교체되었습니다. 새 승인을 받으려면 명령을 다시 실행하세요."],
+  ] as const)("shows the changed scope notice after the card settles in %s", async (locale, message) => {
     setLocale(locale);
     const result = deferred<{ ok: false; error: string }>();
     const record = vi.fn(() => result.promise);
