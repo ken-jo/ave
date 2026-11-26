@@ -18,8 +18,9 @@ const installationMock = vi.hoisted(() => ({ resolve: vi.fn() }));
 const sandboxHomeMock = vi.hoisted(() => ({ onCreate: vi.fn<() => void>(), onCleanup: vi.fn<(home: string) => void>() }));
 // The runtime root start-up proved, or the refusal of one that was not.
 const startRoot = vi.hoisted(() => vi.fn((): string => "C:\\ave-fixture\\cache\\mxc-runtime"));
+// While win32 is simulated, the runtime root floor row is on the simulated drive like every other host-derived path.
 vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../permissions/mxc-runtime-root.js")>(),
+  ...(await import("../../__tests__/support/simulated-win32-drive.js")).simulatedRuntimeRoot(await importOriginal()),
   requireMxcContainerStartRoot: () => startRoot(),
 }));
 vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: installationMock.resolve }));
