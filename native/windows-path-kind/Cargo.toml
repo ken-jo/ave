@@ -3,6 +3,7 @@ name = "ave-path-kind"
 version = "0.1.0"
 edition = "2024"
 publish = false
+build = false
 
 [features]
 fixture = []

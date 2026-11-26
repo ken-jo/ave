@@ -1,10 +1,10 @@
-// Fixture builds cover missing or stale native launchers without invoking a toolchain.
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildWindowsPathKind } from "../../scripts/build-windows-path-kind.mjs";
+import { pathToFileURL } from "node:url";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   hasCppBuildTools,
   missingBuildToolsMessage,
@@ -14,15 +14,10 @@ import {
   windowsJobSources,
 } from "../../scripts/prepare-windows-job.mjs";
 import {
-  WINDOWS_PATH_KIND_PROFILE, WINDOWS_PATH_KIND_RUSTFLAGS, windowsPathKindReceipt, windowsPathKindReceiptPath,
+  WINDOWS_PATH_KIND_PROFILE, WINDOWS_PATH_KIND_PROFILE_SETTINGS, windowsPathKindCompilerCommand,
+  windowsPathKindReceipt, windowsPathKindReceiptPath, windowsPathKindRustflags, windowsPathKindToolPaths,
   verifyWindowsPathKindBuild,
 } from "../../scripts/lib/windows-path-kind-build.mjs";
-
-const execFile = vi.hoisted(() => vi.fn());
-vi.mock("node:child_process", async (importOriginal) => ({
-  ...await importOriginal<typeof import("node:child_process")>(),
-  execFileSync: execFile,
-}));
 
 const roots: string[] = [];
 const OLD = new Date("2026-01-01T00:00:00Z");
@@ -63,10 +58,17 @@ function stagePathKind(root: string, machine = 0x8664): void {
   const binary = pathKindPe();
   const toolchain = /^channel = "(.*)"/mu.exec(readFileSync(join(root, "rust-toolchain.toml"), "utf8"))?.[1];
   if (!toolchain) throw new Error("Missing fixture toolchain");
-  const receipt = windowsPathKindReceipt(root, "x64", {
-    toolchain, compiler: `release: ${toolchain}`, target: "x86_64-pc-windows-msvc",
-    profile: WINDOWS_PATH_KIND_PROFILE, rustflags: WINDOWS_PATH_KIND_RUSTFLAGS,
-  }, binary);
+  const rustupRoot = "C:\\example\\.rustup";
+  const host = "x86_64-pc-windows-msvc";
+  const tools = windowsPathKindToolPaths(rustupRoot, toolchain, host);
+  const identity = {
+    toolchain, compiler: `release: ${toolchain}\nhost: ${host}`, host, target: host, rustupRoot, ...tools,
+    profile: WINDOWS_PATH_KIND_PROFILE, profileSettings: WINDOWS_PATH_KIND_PROFILE_SETTINGS,
+    rustflags: windowsPathKindRustflags(tools.linker),
+  };
+  const targetDir = "C:\\example\\target";
+  const invocation = windowsPathKindCompilerCommand(identity, targetDir, "0123456789abcdef");
+  const receipt = windowsPathKindReceipt(root, "x64", { identity, invocation, targetDir }, binary);
   binary.writeUInt16LE(machine, 68);
   mkdirSync(dirname(join(root, PATH_KIND)), { recursive: true });
   writeFileSync(join(root, PATH_KIND), binary);
@@ -79,7 +81,7 @@ function write(root: string, relative: string, time: Date): void {
   utimesSync(join(root, relative), time, time);
 }
 
-function fixtureRoot({ launcher }: { launcher?: Date } = {}): string {
+function fixtureRoot({ launcher, pathKind = true }: { launcher?: Date; pathKind?: boolean } = {}): string {
   const root = mkdtempSync(join(tmpdir(), "ave-windows-job-"));
   roots.push(root);
   for (const source of ["scripts/build-windows-job.ps1", "native/windows-job/launcher.cpp", "native/windows-job/README.md"]) {
@@ -87,7 +89,7 @@ function fixtureRoot({ launcher }: { launcher?: Date } = {}): string {
   }
   for (const source of RUST_INPUTS) write(root, source, OLD);
   writeFileSync(join(root, "rust-toolchain.toml"), PIN);
-  stagePathKind(root);
+  if (pathKind) stagePathKind(root);
   if (launcher) write(root, LAUNCHER, launcher);
   return root;
 }
@@ -102,37 +104,84 @@ function buildStub(root: string, calls: string[][]) {
 }
 
 afterEach(() => {
-  execFile.mockReset();
-  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe("Windows path helper build", () => {
-  it.skipIf(process.platform !== "win32")("probes and builds with the same pinned compiler despite environment overrides", () => {
-    const root = fixtureRoot();
-    const rustc = join(root, "pinned", "rustc.exe");
-    const override = join(root, "override.exe");
-    for (const key of ["RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
-      "CARGO_BUILD_RUSTC", "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"]) {
-      vi.stubEnv(key, override);
+  it.skipIf(process.platform !== "win32")("seals a real offline Cargo build and verifies its executed compiler command", () => {
+    const root = fixtureRoot({ pathKind: false });
+    const crate = "native/windows-path-kind";
+    cpSync(resolve(crate, "src"), join(root, crate, "src"), { recursive: true });
+    for (const file of RUST_INPUTS.filter((input) => !input.endsWith(".rs"))) {
+      cpSync(resolve(file), join(root, file));
     }
-    execFile.mockImplementation((file: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
-      if (args.includes("which")) return `${rustc}\n`;
-      if (args.includes("-vV")) return "release: 1.92.0\n";
-      expect(file).toBe("rustup");
-      expect(options.env?.RUSTC).toBe(rustc);
-      expect(options.env?.RUSTC_WRAPPER).toBe("");
-      expect(options.env?.RUSTC_WORKSPACE_WRAPPER).toBe("");
-      expect(Object.values(options.env ?? {})).not.toContain(override);
-      const output = join(args[args.indexOf("--target-dir") + 1], "x86_64-pc-windows-msvc", "release");
-      mkdirSync(output, { recursive: true });
-      writeFileSync(join(output, "ave-path-kind.exe"), pathKindPe());
-    });
+    const buildTemp = mkdtempSync(join(tmpdir(), "ave cargo temp-"));
+    roots.push(buildTemp);
+    const builder = pathToFileURL(resolve("scripts/build-windows-path-kind.mjs")).href;
+    const runBuild = (overrides: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [
+      "--input-type=module", "--eval",
+      'const {buildWindowsPathKind} = await import(process.argv[1]); buildWindowsPathKind({root: process.argv[2], arch: process.arch});',
+      builder, root,
+    ], { encoding: "utf8", windowsHide: true, env: { ...process.env, TMP: buildTemp, TEMP: buildTemp, TMPDIR: buildTemp, ...overrides, ELECTRON_RUN_AS_NODE: "1" } });
+    const receiptPath = join(root, windowsPathKindReceiptPath(process.arch));
+    const clean = runBuild();
+    expect(clean.status, clean.stderr).toBe(0);
+    const cleanReceipt = JSON.parse(readFileSync(receiptPath, "utf8"));
 
-    buildWindowsPathKind({ root, arch: "x64" });
-    expect(execFile.mock.calls.find(([, args]) => args.includes("-vV"))?.slice(0, 2)).toEqual([rustc, ["-vV"]]);
-    expect(() => verifyWindowsPathKindBuild(root, "x64")).not.toThrow();
-  });
+    const cargoHome = join(root, "user cargo home");
+    mkdirSync(cargoHome);
+    writeFileSync(join(cargoHome, "config.toml"), "[profile.release]\nopt-level = 1\n");
+    const changedProfile = runBuild({ CARGO_HOME: cargoHome, CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1" });
+    expect(changedProfile.status, changedProfile.stderr).toBe(0);
+    expect.soft(changedProfile.stderr).toContain("-C opt-level=3");
+    expect.soft(changedProfile.stderr).toContain("-C codegen-units=16");
+
+    const substitute = join(root, "alternate.exe");
+    const hostileConfig = '[build]\nrustc = "alternate.exe"\nrustc-wrapper = "alternate.exe"\n[profile.release]\nopt-level = 0\n';
+    for (const folder of [join(root, ".cargo"), join(root, crate, ".cargo")]) {
+      mkdirSync(folder);
+      writeFileSync(join(folder, "config.toml"), hostileConfig);
+    }
+    const targetLinker = process.arch === "arm64" ? "AARCH64_PC_WINDOWS_MSVC" : "X86_64_PC_WINDOWS_MSVC";
+    const hostile = runBuild({
+      CARGO_HOME: cargoHome, CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1",
+      RUSTC: substitute, RUSTC_WRAPPER: substitute, RUSTC_WORKSPACE_WRAPPER: substitute,
+      CARGO_BUILD_RUSTC: substitute, CARGO_BUILD_RUSTC_WRAPPER: substitute, CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER: substitute,
+      RUSTUP_TOOLCHAIN: "alternate", RUSTUP_HOME: join(root, "alternate rustup"), CARGO: substitute,
+      USERPROFILE: join(root, "alternate profile"), PATH: root,
+      [`CARGO_TARGET_${targetLinker}_LINKER`]: substitute,
+      RUSTFLAGS: "--unexpected", CARGO_ENCODED_RUSTFLAGS: "--unexpected", LINK: "/unexpected", LIB: root,
+    });
+    expect(hostile.status, hostile.stderr).toBe(0);
+    verifyWindowsPathKindBuild(root, process.arch);
+    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+    expect(hostile.stderr.match(/^\s*Running `(.+)`\r?$/mu)?.[1]).toBe(receipt.invocation);
+    expect(receipt.identity).toEqual(cleanReceipt.identity);
+    expect(receipt.invocation.replaceAll(receipt.targetDir, "<target>")).toBe(
+      cleanReceipt.invocation.replaceAll(cleanReceipt.targetDir, "<target>"),
+    );
+    expect(receipt.invocation).not.toContain(substitute);
+
+    const manifest = join(root, crate, "Cargo.toml");
+    const originalManifest = readFileSync(manifest, "utf8");
+    writeFileSync(manifest, `${originalManifest}\n[profile.release.package.ave-path-kind]\nopt-level = 2\n`);
+    const unexpectedFlags = runBuild();
+    expect(unexpectedFlags.status).toBe(1);
+    expect(unexpectedFlags.stderr).toContain("-C opt-level=2");
+    expect(unexpectedFlags.stderr).toContain("Unexpected Windows path helper compiler invocation");
+    expect(JSON.parse(readFileSync(receiptPath, "utf8"))).toEqual(receipt);
+    writeFileSync(manifest, originalManifest);
+
+    writeFileSync(receiptPath, JSON.stringify({ ...receipt, invocation: `${receipt.invocation} -C link-arg=/unexpected` }));
+    expect(() => verifyWindowsPathKindBuild(root, process.arch)).toThrow("Unexpected Windows path helper compiler invocation");
+
+    const parent = join(root, "build parent");
+    mkdirSync(join(parent, ".cargo"), { recursive: true });
+    writeFileSync(join(parent, ".cargo", "config"), hostileConfig);
+    const blocked = runBuild({ TMP: parent, TEMP: parent, TMPDIR: parent, AVE_TEST_TMP_ROOT: parent });
+    expect(blocked.status).toBe(1);
+    expect(blocked.stderr).toContain("Unexpected Cargo config above the Windows path helper build directory");
+  }, 60_000);
 
   it.each([
     ["VCRUNTIME140.dll", false],
@@ -144,7 +193,7 @@ describe("Windows path helper build", () => {
     const receipt = JSON.parse(readFileSync(join(root, RECEIPT), "utf8"));
     const binary = pathKindPe(dll, delayed);
     const message = `Windows path helper imports a dynamic CRT: ${dll}`;
-    expect.soft(() => windowsPathKindReceipt(root, "x64", receipt.identity, binary)).toThrow(message);
+    expect.soft(() => windowsPathKindReceipt(root, "x64", receipt, binary)).toThrow(message);
     receipt.binarySha256 = createHash("sha256").update(binary).digest("hex");
     writeFileSync(join(root, PATH_KIND), binary);
     writeFileSync(join(root, RECEIPT), JSON.stringify(receipt));

@@ -1,41 +1,71 @@
-import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import {
-  assertWindowsPathKindMachine, windowsPathKindCompiler, windowsPathKindPath,
-  windowsPathKindReceipt, windowsPathKindReceiptPath, windowsPathKindSourceDigest,
+  assertWindowsPathKindInvocation, assertWindowsPathKindMachine, windowsPathKindCompiler, windowsPathKindPath,
+  windowsPathKindReceipt, windowsPathKindReceiptPath, windowsPathKindSourceDigest, windowsPathKindSystemEnvironment,
 } from "./lib/windows-path-kind-build.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
-const CARGO_COMPILER_ENV = /^(?:(?:CARGO_BUILD_)?RUSTC(?:_WRAPPER|_WORKSPACE_WRAPPER)?|CARGO_ENCODED_RUSTFLAGS)$/iu;
+
+function assertNoCargoConfig(directory) {
+  for (let parent = directory; ; parent = dirname(parent)) {
+    for (const name of ["config", "config.toml"]) {
+      if (lstatSync(join(parent, ".cargo", name), { throwIfNoEntry: false })) {
+        throw new Error("Unexpected Cargo config above the Windows path helper build directory");
+      }
+    }
+    if (dirname(parent) === parent) return;
+  }
+}
 
 export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture = false } = {}) {
   if (process.platform !== "win32") throw new Error("The Windows path helper requires a Windows build");
-  const { executable, identity } = windowsPathKindCompiler(root, arch);
+  const identity = windowsPathKindCompiler(root, arch);
   const source = windowsPathKindSourceDigest(root);
-  const targetDir = mkdtempSync(join(tmpdir(), "ave-path-kind-cargo-"));
-  const env = {
-    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !CARGO_COMPILER_ENV.test(key))),
-    RUSTC: executable,
-    RUSTC_WRAPPER: "",
-    RUSTC_WORKSPACE_WRAPPER: "",
-    CARGO_ENCODED_RUSTFLAGS: identity.rustflags,
-  };
-  const cargo = (name, features = []) => execFileSync("rustup", [
-    "run", identity.toolchain, "cargo", "build", "--locked", "--offline",
-    "--profile", identity.profile, "--target", identity.target, "--target-dir", targetDir,
-    "--manifest-path", "native/windows-path-kind/Cargo.toml", "--bin", name, ...features,
-  ], { cwd: root, env, stdio: "inherit", windowsHide: true });
+  const buildDir = mkdtempSync(join(realpathSync(tmpdir()), "ave-path-kind-cargo-"));
+  const targetDir = join(buildDir, "target");
+  const cargoHome = join(buildDir, "cargo-home");
   const output = (name) => join(targetDir, identity.target, identity.profile, `${name}.exe`);
   try {
-    cargo("ave-path-kind");
+    mkdirSync(cargoHome);
+    const env = {
+      ...windowsPathKindSystemEnvironment(),
+      TEMP: buildDir,
+      TMP: buildDir,
+      TMPDIR: buildDir,
+      CARGO_HOME: cargoHome,
+      RUSTC: identity.rustc,
+      CARGO_ENCODED_RUSTFLAGS: identity.rustflags.join("\x1f"),
+    };
+    const profile = Object.entries(identity.profileSettings).flatMap(([key, value]) =>
+      ["--config", `profile.${identity.profile}.${key}=${JSON.stringify(value)}`]);
+    const cargo = (name, features = []) => {
+      // An absolute manifest selects the crate without making its directory the config search root.
+      assertNoCargoConfig(buildDir);
+      const result = spawnSync(identity.cargo, [
+        "build", "-v", "--color", "never", "--locked", "--offline",
+        "--profile", identity.profile, ...profile, "--target", identity.target, "--target-dir", targetDir,
+        "--manifest-path", resolve(root, "native/windows-path-kind/Cargo.toml"), "--bin", name, ...features,
+      ], { cwd: buildDir, env, encoding: "utf8", windowsHide: true });
+      if (result.stdout) process.stdout.write(result.stdout);
+      if (result.stderr) process.stderr.write(result.stderr);
+      if (result.error) throw result.error;
+      if (result.status !== 0) throw new Error(`Windows path helper Cargo build failed (exit ${result.status})`);
+      const commands = result.stderr.split(/\r?\n/u).filter(line => /^\s*Running\b/u.test(line));
+      const match = /^\s*Running `(.+)`$/u.exec(commands[0] ?? "");
+      if (commands.length !== 1 || !match) throw new Error("Expected one Windows path helper compiler invocation");
+      return { identity, targetDir, invocation: match[1] };
+    };
+    const build = cargo("ave-path-kind");
     const binary = readFileSync(output("ave-path-kind"));
-    const receipt = windowsPathKindReceipt(root, arch, identity, binary);
+    const receipt = windowsPathKindReceipt(root, arch, build, binary);
     if (fixture) {
-      cargo("ave-path-pin-test", ["--features", "fixture"]);
+      const fixtureBuild = cargo("ave-path-pin-test", ["--features", "fixture"]);
+      assertWindowsPathKindInvocation(fixtureBuild, true);
       const test = output("ave-path-pin-test");
       assertWindowsPathKindMachine(readFileSync(test), arch);
       copyFileSync(test, join(tmpdir(), "ave-path-pin-test.exe"));
@@ -54,7 +84,7 @@ export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture
       for (const file of staged) rmSync(file, { force: true });
     }
   } finally {
-    rmSync(targetDir, { recursive: true, force: true });
+    rmSync(buildDir, { recursive: true, force: true });
   }
 }
 

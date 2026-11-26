@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
-import { isAbsolute, join, win32 } from "node:path";
+import { readFileSync, readdirSync, realpathSync } from "node:fs";
+import { userInfo } from "node:os";
+import { dirname, join, win32 } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 const CRATE = "native/windows-path-kind";
 const TARGETS = { x64: ["x86_64-pc-windows-msvc", 0x8664], arm64: ["aarch64-pc-windows-msvc", 0xaa64] };
@@ -11,7 +13,49 @@ const IMPORT_DIRECTORIES = [
 ];
 const CRT_DLL = /^(?:api-ms-win-crt-|ext-ms-win-crt-|ucrtbase|msvcr|msvcp|vcruntime|concrt|vccorlib)[^.]*\.dll$/iu;
 export const WINDOWS_PATH_KIND_PROFILE = "release";
-export const WINDOWS_PATH_KIND_RUSTFLAGS = "-C\x1ftarget-feature=+crt-static";
+export const WINDOWS_PATH_KIND_PROFILE_SETTINGS = Object.freeze({
+  "opt-level": 3,
+  debug: false,
+  "split-debuginfo": "off",
+  strip: "debuginfo",
+  "debug-assertions": false,
+  "overflow-checks": false,
+  lto: false,
+  panic: "unwind",
+  incremental: false,
+  "codegen-units": 16,
+  rpath: false,
+});
+
+export function windowsPathKindToolPaths(rustupRoot, toolchain, host) {
+  const installation = win32.join(rustupRoot, "toolchains", [toolchain, host].join("-"));
+  return {
+    rustc: win32.join(installation, "bin", "rustc.exe"),
+    cargo: win32.join(installation, "bin", "cargo.exe"),
+    linker: win32.join(installation, "lib", "rustlib", host, "bin", "rust-lld.exe"),
+  };
+}
+
+function isFullyQualifiedWindowsPath(value) {
+  return typeof value === "string" && win32.isAbsolute(value) && win32.parse(value).root.length > 1;
+}
+
+export function windowsPathKindSystemEnvironment() {
+  const { SystemRoot } = process.env;
+  if (!isFullyQualifiedWindowsPath(SystemRoot)) throw new Error("Missing Windows system directory");
+  return {
+    SystemRoot,
+    SystemDrive: win32.parse(SystemRoot).root.slice(0, -1),
+    WINDIR: SystemRoot,
+    PATH: win32.join(SystemRoot, "System32"),
+    // Empty values suppress the process launcher's automatic environment inheritance.
+    HOMEDRIVE: "", HOMEPATH: "", LOGONSERVER: "", USERDOMAIN: "", USERNAME: "", USERPROFILE: "", TEMP: "",
+  };
+}
+
+export function windowsPathKindRustflags(linker) {
+  return ["-C", "target-feature=+crt-static", "-C", `linker=${linker}`, "-C", "linker-flavor=lld-link"];
+}
 
 export function windowsPathKindToolchain(root) {
   const version = /^channel = "(\d+\.\d+\.\d+)"$/mu.exec(readFileSync(join(root, "rust-toolchain.toml"), "utf8"))?.[1];
@@ -27,13 +71,57 @@ export function windowsPathKindTarget(arch) {
 export function windowsPathKindCompiler(root, arch) {
   const toolchain = windowsPathKindToolchain(root);
   const target = windowsPathKindTarget(arch);
-  // Use only an installed compiler. The rustup proxy can install a missing toolchain.
-  const options = { cwd: root, encoding: "utf8", windowsHide: true };
-  const executable = execFileSync("rustup", ["which", "--toolchain", toolchain, "rustc"], options).trim();
-  if (!isAbsolute(executable)) throw new Error("Expected an absolute path to the pinned Rust compiler");
-  const compiler = execFileSync(executable, ["-vV"], options).trim();
-  if (!compiler.split(/\r?\n/u).includes(`release: ${toolchain}`)) throw new Error("Rust compiler does not match the pinned release");
-  return { executable, identity: { toolchain, compiler, target, profile: WINDOWS_PATH_KIND_PROFILE, rustflags: WINDOWS_PATH_KIND_RUSTFLAGS } };
+  const host = windowsPathKindTarget(process.arch);
+  const rustupRoot = realpathSync(join(userInfo().homedir, ".rustup"));
+  const tools = windowsPathKindToolPaths(rustupRoot, toolchain, host);
+  for (const executable of Object.values(tools)) {
+    if (realpathSync(executable).toLowerCase() !== executable.toLowerCase()) {
+      throw new Error("Rust build tool is outside the pinned installation");
+    }
+  }
+  const compiler = execFileSync(tools.rustc, ["-vV"], {
+    cwd: dirname(tools.rustc), env: windowsPathKindSystemEnvironment(), encoding: "utf8", windowsHide: true,
+  }).trim();
+  if (!matchesCompiler(compiler, toolchain, host)) throw new Error("Rust compiler does not match the pinned release and host");
+  return {
+    toolchain, compiler, host, target, rustupRoot, ...tools, profile: WINDOWS_PATH_KIND_PROFILE,
+    profileSettings: WINDOWS_PATH_KIND_PROFILE_SETTINGS, rustflags: windowsPathKindRustflags(tools.linker),
+  };
+}
+
+function matchesCompiler(compiler, toolchain, host) {
+  if (typeof compiler !== "string") return false;
+  const lines = compiler.split(/\r?\n/u);
+  return lines.includes(`release: ${toolchain}`) && lines.includes(`host: ${host}`);
+}
+
+export function windowsPathKindCompilerCommand(identity, targetDir, metadata, fixture = false) {
+  const { target, profile, rustc, rustflags, profileSettings } = identity;
+  const deps = win32.join(targetDir, target, profile, "deps");
+  const args = [
+    rustc, "--crate-name", fixture ? "ave_path_pin_test" : "ave_path_kind",
+    "--edition=2024", fixture ? "src\\fixture.rs" : "src\\main.rs",
+    "--error-format=json", "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+    "--crate-type", "bin", "--emit=dep-info,link",
+    "-C", `opt-level=${profileSettings["opt-level"]}`, "-C", "embed-bitcode=no",
+    "-C", `codegen-units=${profileSettings["codegen-units"]}`,
+    ...(fixture ? ["--cfg", 'feature="fixture"'] : []),
+    "--check-cfg", "cfg(docsrs,test)", "--check-cfg", 'cfg(feature, values("fixture"))',
+    "-C", `metadata=${metadata}`, "--out-dir", deps, "--target", target,
+    "-C", `strip=${profileSettings.strip}`,
+    "-L", `dependency=${deps}`, "-L", `dependency=${win32.join(targetDir, profile, "deps")}`,
+    ...rustflags,
+  ];
+  // Match the pinned build driver's Windows display of argument boundaries.
+  return args.map(arg => /[\s"]/u.test(arg) ? `"${arg.replaceAll('"', '\\"')}"` : arg).join(" ");
+}
+
+export function assertWindowsPathKindInvocation({ identity, invocation, targetDir }, fixture = false) {
+  const metadata = typeof invocation === "string" && / -C metadata=([a-f0-9]{16}) /u.exec(invocation)?.[1];
+  if (!metadata || !isFullyQualifiedWindowsPath(targetDir)
+    || invocation !== windowsPathKindCompilerCommand(identity, targetDir, metadata, fixture)) {
+    throw new Error("Unexpected Windows path helper compiler invocation");
+  }
 }
 
 export function windowsPathKindPath(arch) {
@@ -123,23 +211,32 @@ function assertStaticCrt(bytes) {
   }
 }
 
-export function windowsPathKindReceipt(root, arch, identity, binary) {
+export function windowsPathKindReceipt(root, arch, build, binary) {
   assertWindowsPathKindMachine(binary, arch);
   assertStaticCrt(binary);
-  return { identity, sourceSha256: windowsPathKindSourceDigest(root), binarySha256: sha256(binary) };
+  assertWindowsPathKindInvocation(build);
+  const { identity, invocation, targetDir } = build;
+  return { identity, invocation, targetDir, sourceSha256: windowsPathKindSourceDigest(root), binarySha256: sha256(binary) };
 }
 
 export function verifyWindowsPathKindBuild(root, arch) {
   const binary = readFileSync(join(root, windowsPathKindPath(arch)));
   const receipt = JSON.parse(readFileSync(join(root, windowsPathKindReceiptPath(arch)), "utf8"));
   const pinned = windowsPathKindToolchain(root);
-  const identity = receipt.identity;
+  const { identity, invocation, targetDir } = receipt;
   if (identity?.toolchain !== pinned || identity.target !== windowsPathKindTarget(arch)
-    || identity.profile !== WINDOWS_PATH_KIND_PROFILE || identity.rustflags !== WINDOWS_PATH_KIND_RUSTFLAGS
-    || typeof identity.compiler !== "string" || !identity.compiler.split(/\r?\n/u).includes(`release: ${pinned}`)) {
+    || !Object.values(TARGETS).some(([target]) => target === identity.host)
+    || !isFullyQualifiedWindowsPath(identity.rustupRoot)
+    || identity.profile !== WINDOWS_PATH_KIND_PROFILE || !isDeepStrictEqual(identity.profileSettings, WINDOWS_PATH_KIND_PROFILE_SETTINGS)
+    || !matchesCompiler(identity.compiler, pinned, identity.host)) {
     throw new Error("Windows path helper toolchain identity changed");
   }
-  const current = windowsPathKindReceipt(root, arch, identity, binary);
+  const tools = windowsPathKindToolPaths(identity.rustupRoot, pinned, identity.host);
+  if (Object.entries(tools).some(([name, executable]) => identity[name] !== executable)
+    || !isDeepStrictEqual(identity.rustflags, windowsPathKindRustflags(tools.linker))) {
+    throw new Error("Windows path helper toolchain identity changed");
+  }
+  const current = windowsPathKindReceipt(root, arch, { identity, invocation, targetDir }, binary);
   if (receipt.sourceSha256 !== current.sourceSha256 || receipt.binarySha256 !== current.binarySha256) {
     throw new Error("Windows path helper build inputs or binary changed");
   }
