@@ -16,7 +16,7 @@ import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { normalizePathForSandbox } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { containsGlobChars, containsGlobCharsWin, expandWindowsEnvRefs, globPatternBaseDir, isUncPath, stripExtendedPathPrefix, toForwardSlashes } from "./sandbox-path-spelling.js";
 import { existingWindowsGrants, pinWindowsFilesystemConfig, windowsPinnedPaths, windowsRuntimeGrants } from "./windows-stamp-targets.js";
-import { assertWindowsGrantGrammar, pinWindowsGrantTargets } from "./windows-grant-targets.js";
+import { assertWindowsGrantGrammar, expandWindowsGrantPath, pinWindowsGrantTargets } from "./windows-grant-targets.js";
 import { admittedWindowsEntry, assertWindowsAclPolicyBudget, expandWindowsAclDenyLists, expandWindowsFsPaths, isAdmittedWindowsEntry, setWindowsAclRecoveryListener, WindowsSandboxError, type WindowsAclRecoveryReport, type WindowsAdmission } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { readAsrtSignalReleaseClaim } from "./asrt-signal-ownership.js";
 import { getSrtWinArchitecture, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
@@ -1978,7 +1978,7 @@ function assertWindowsMachineRootWriteGrants(grants: readonly string[]): void {
   if (process.platform !== "win32") return;
   for (const grant of grants) {
     // Preserve requested pattern breadth as well as pinned literal identity. A `**` tail also matches its base.
-    const expanded = expandWindowsEnvRefs(grant);
+    const expanded = expandWindowsGrantPath(grant);
     const normalized = normalizePathForSandbox(expanded);
     const pattern = containsGlobCharsWin(normalized);
     const base = pattern ? globPatternBaseDir(toForwardSlashes(normalized)).replace(/^([A-Za-z]:)?$/, "$1/").replace(/\//g, "\\") : expanded;

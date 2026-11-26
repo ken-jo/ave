@@ -30,11 +30,11 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", a
   const actual = await importOriginal<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>();
   return {
     ...actual,
-    expandWindowsFsPaths: (...args: Parameters<typeof actual.expandWindowsFsPaths>) => {
+    expandWindowsFsPaths: vi.fn((...args: Parameters<typeof actual.expandWindowsFsPaths>) => {
       const expanded = actual.expandWindowsFsPaths(...args);
       if (expanded.length > 0) expansion.after?.();
       return expanded;
-    },
+    }),
   };
 });
 
@@ -316,8 +316,9 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     }
   });
 
+  const homeRefs = ["%USERPROFILE%", "%HOMEDRIVE%%HOMEPATH%"];
+
   describe.each(["a$&b", "$1$$data"])("literal Windows home component %s", component => {
-    const homeRefs = ["%USERPROFILE%", "%HOMEDRIVE%%HOMEPATH%"];
     let profile: string;
 
     beforeEach(() => {
@@ -345,6 +346,40 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
 
       expect(() => buildSandboxConfig({ allowWrite: [grant] }))
         .toThrow(`Windows write grant ${grant} contains machine root ${machineRoot}`);
+    });
+  });
+
+  describe("residual Windows home reference", () => {
+    let profile: string;
+
+    beforeEach(() => {
+      profile = join(scratch(), "alice", "a$$b", "%HOMEPATH%");
+      mkdirSync(profile, { recursive: true });
+      vi.stubEnv("USERPROFILE", profile);
+      vi.stubEnv("HOME", profile);
+    });
+
+    it.each(homeRefs)("refuses %s before pinning or enumeration", async homeRef => {
+      const facts = await import("../../shared/windows-path-facts.js");
+      const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
+      const pin = vi.spyOn(facts, "pinWindowsPaths");
+      const enumerate = vi.mocked(expandWindowsFsPaths).mockClear();
+
+      expect(() => pinWindowsFilesystemConfig({ allowRead: [`${homeRef}*`] }))
+        .toThrow(/percent sign after expansion/);
+      expect(pin).not.toHaveBeenCalled();
+      expect(enumerate).not.toHaveBeenCalled();
+    });
+
+    it.each(homeRefs)("refuses %s at the write breadth check", async homeRef => {
+      const stampTargets = await import("../windows-stamp-targets.js");
+      const { buildSandboxConfig } = await import("../asrt-sandbox.js");
+      // Isolate the requested breadth check from grant enumeration.
+      vi.spyOn(stampTargets, "pinWindowsFilesystemConfig").mockReturnValue({});
+      vi.stubEnv("ProgramData", join(profile, "machine-root"));
+
+      expect(() => buildSandboxConfig({ allowWrite: [`${homeRef}*`] }))
+        .toThrow(/percent sign after expansion/);
     });
   });
 

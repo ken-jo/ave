@@ -1,7 +1,19 @@
-import { stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { expandTilde, stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { homedir } from "node:os";
 import { win32 } from "node:path";
 import { routeLocality, withLocalityDecision } from "../shared/local-path-io.js";
 import { admitWindowsReparse, pinWindowsPaths, type WindowsPathFacts } from "../shared/windows-path-facts.js";
+import { containsGlobCharsWin, expandWindowsEnvRefs } from "./sandbox-path-spelling.js";
+
+export function expandWindowsGrantPath(path: string): string {
+  const envExpanded = expandWindowsEnvRefs(path);
+  const expanded = expandTilde(envExpanded);
+  if (expanded.includes("%")) throw new Error("Windows filesystem grant is not a plain drive path: percent sign after expansion");
+  if ((envExpanded !== path || expanded !== envExpanded) && containsGlobCharsWin(homedir())) {
+    throw new Error(`filesystem-expansion-glob: expanded path cannot be represented literally: ${JSON.stringify(path)}`);
+  }
+  return expanded;
+}
 
 export function assertWindowsGrantGrammar(path: string): void {
   if (!/^[a-z]:[\\/]/i.test(path) || /[\0*?]/.test(path) || /:/.test(path.slice(2))) {

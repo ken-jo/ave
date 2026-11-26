@@ -249,6 +249,14 @@ describe("path spelling", () => {
     expect(spelling.expandWindowsEnvRefs("%HOMEDRIVE%%HOMEPATH%")).toBe(home);
   }));
 
+  it("keeps reference tokens introduced by home expansion literal", () => {
+    const home = "C:\\Users\\alice\\a$$b\\%HOMEPATH%";
+    withHome(home, () => {
+      expect(spelling.expandWindowsEnvRefs("%USERPROFILE%*")).toBe(`${home}*`);
+      expect(spelling.expandWindowsEnvRefs("%HOMEDRIVE%%HOMEPATH%*")).toBe(`${home}*`);
+    });
+  });
+
   it("leaves the drive empty for a home without one", () => withHome("\\\\server\\share\\alice", () => {
     expect(spelling.expandWindowsEnvRefs("%HOMEDRIVE%|%HOMEPATH%")).toBe("|\\\\server\\share\\alice");
   }));
