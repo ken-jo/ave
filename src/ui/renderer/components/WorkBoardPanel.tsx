@@ -1,3 +1,4 @@
+import { revealHiddenCharacters } from "../../../shared/display-safe-text.js";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { BoardDragSurface, useBoardMove, useBoardDropTarget } from "./work-board/BoardDragSurface.js";
 import { BoardStageTab } from "./work-board/BoardStageTab.js";
@@ -1317,6 +1318,14 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
           </div>
         ) : (
           <div className="space-y-3">
+            {!!item.delegatedSessions?.length && <section className="space-y-1 text-sm">
+              <h3 className="font-semibold">{t("workflowTemplates.delegatedSessions")}</h3>
+              <ul className="space-y-1">
+                {item.delegatedSessions.map(edge => <li key={edge.childSessionId} className="break-words">
+                  {revealHiddenCharacters(edge.title, { lineBreaks: false })} · {shortSessionId(edge.parentSessionId)} → {shortSessionId(edge.childSessionId)}
+                </li>)}
+              </ul>
+            </section>}
             <Label className="space-y-1">
               <div className="text-xs font-medium text-muted-foreground">{t("workBoard.titleLabel")}</div>
               <Input
@@ -2416,7 +2425,7 @@ export function WorkBoardPanel({
           existingItem={workflowDialog.item} onClose={closeWorkflowDialog} restoreFocus={focusWorkflowTrigger} onLaunch={launchWorkflow} />
       )}
       {workflowDialog?.kind === "run" && workflowItem && (
-        <WorkflowRunDialog item={workflowItem} run={runState[workflowItem.id]} requestedVersion={workflowDialog.requestedVersion}
+        <WorkflowRunDialog api={api} item={workflowItem} run={runState[workflowItem.id]} requestedVersion={workflowDialog.requestedVersion}
           approvals={renderApproval(workflowItem, workflowApprovals)}
           onStop={stop} onRetry={(id, input) => api.retryWorkStage(id, input)} onClose={closeWorkflowDialog} restoreFocus={focusWorkflowTrigger}
           onHistory={() => {

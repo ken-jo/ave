@@ -1,3 +1,5 @@
+import { readWorkflowDecisionHistory } from "../workflow-decision-history.js";
+import { maskWorkflowText, withoutWorkflowProjection } from "../../work-board/workflow/run-read-projection.js";
 import { isGraphHash, isStageId, isTemplateId, isTemplateVersion, WorkflowTemplateError } from "../../work-board/template-graph.js";
 import type { RunAuthoritySource, TemplateVersionPin } from "../../shared/workflow-template-types.js";
 import { registerWorkflowTemplateHandlers } from "../workflow-template-handlers.js";
@@ -21,7 +23,7 @@ import type {
   WorkPlanDecideIpcResult,
   WorkPlanDecision,
 } from "../../shared/work-board-types.js";
-import { MAX_PLAN_NOTE_LENGTH } from "../../shared/work-board-types.js";
+import { MAX_PLAN_NOTE_LENGTH, workBoardOriginSessionId } from "../../shared/work-board-types.js";
 import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
 import { parseFileMentionReferences } from "../../shared/file-mention-reference.js";
 import { sanitizeOutgoingInput } from "../handlers/chat.js";
@@ -29,7 +31,7 @@ import { PARENT_DIRECTIVE_MAX_CHARS } from "../../engine/parent-directive.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { createLogger } from "../../lib/logger.js";
 import { WorkBoardWriteRefusal } from "../../main/storage/rewrite-keeping-bytes.js";
-import { WORK_BOARD } from "../../shared/ipc-channels.js";
+import { WORK_APPROVALS, WORK_BOARD } from "../../shared/ipc-channels.js";
 import { createDirStorage } from "../../work-board/storage.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { readRunTranscript } from "../../work-board/run-transcript.js";
@@ -220,9 +222,9 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   };
 
   /** What the board shows of a template run comes from the host (the run file and the scheduler), never from the row. */
-  const withTemplateRuns = async (items: readonly WorkItemResolved[]): Promise<WorkItemResolved[]> => {
-    if (workBoardEngine) return workBoardEngine.projectTemplateRuns(items);
-    return items.map((item) => { const clean = { ...item }; delete clean.templateRunState; return clean; });
+  const withTemplateRuns = async (items: readonly WorkItemResolved[], detail?: { runId?: string }): Promise<WorkItemResolved[]> => {
+    if (workBoardEngine) return workBoardEngine.projectTemplateRuns(items, detail);
+    return items.map(withoutWorkflowProjection);
   };
 
   const loadAuthorizedItem = async (id: number): Promise<WorkItemGetResult> => {
@@ -230,7 +232,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     const result = await workBoardStore.get(id);
     if (result.status !== "found") return result;
     if (!isAuthorizedStoredWorkItem(result.item)) return { status: "not_found", itemId: id };
-    return { ...result, item: (await withTemplateRuns([result.item]))[0] ?? result.item };
+    return result;
   };
 
   handle(WORK_BOARD.list, async (e, filter?: WorkItemListFilter) => {
@@ -240,16 +242,34 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     }
     if (!workBoardStore) return NO_STORE;
     const listed = await workBoardStore.list(normalizeProjectListFilter(filter));
-    return listed.status === "ok" ? { ...listed, items: await withTemplateRuns(listed.items) } : listed;
+    if (listed.status !== "ok") return listed;
+    const authorized = listed.items.filter(isAuthorizedStoredWorkItem);
+    const byId = new Map((await withTemplateRuns(authorized)).map(item => [item.id, item]));
+    return { ...listed, items: listed.items.map(item => byId.get(item.id) ?? withoutWorkflowProjection(item)) };
   });
 
-  handle(WORK_BOARD.get, async (e, id: number) => {
+  handle(WORK_BOARD.get, async (e, id: number, runId?: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.get, e);
       return UNAUTHORIZED_FRAME;
     }
     if (!workBoardStore) return NO_STORE;
-    return loadAuthorizedItem(id);
+    if (runId !== undefined && (typeof runId !== "string" || !RUN_ID_PATTERN.test(runId))) return { ok: false, error: "invalid-input" };
+    const result = await loadAuthorizedItem(id);
+    if (result.status !== "found") return result;
+    const [item] = await withTemplateRuns([result.item], { runId });
+    if (runId !== undefined && item.workflowRun?.runId !== runId) return { status: "not_found", itemId: id };
+    if (item.workflowRun && typeof auditLogger.search === "function") {
+      item.workflowRun = { ...item.workflowRun, decisions: await readWorkflowDecisionHistory(auditLogger, id, item.workflowRun) };
+    }
+    const parentSessionId = item.templateId === undefined ? item.runSessionId : undefined;
+    const runner = parentSessionId ? deps.getSubAgentRunner?.() : undefined;
+    // A persisted child is an association only under the exact board run session that hosted it.
+    if (parentSessionId && runner?.isPersistedSpawnOfOrigin(workBoardOriginSessionId(id), parentSessionId)) {
+      item.delegatedSessions = runner.listPersistedSpawnsForOrigin(parentSessionId).map(({ childSessionId, title }) =>
+        ({ parentSessionId, childSessionId, title: maskWorkflowText(title) }));
+    }
+    return { ...result, item };
   });
 
   handle(WORK_BOARD.add, async (e, input: WorkItemCreateInput) => {
@@ -592,6 +612,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       // The decision only; the note body stays on the item.
       auditStageDecision(id as number, { runId: parsed.runId, stageId: parsed.stageId, attempt: parsed.attempt, result: parsed.resultHash.slice(0, 8), decision: result.status, note: note !== undefined });
       broadcastItemChanged(id as number, "updated");
+      broadcastToAppWindows(deps, WORK_APPROVALS.changed, undefined);
       return redactedCount > 0 ? { ...result, redactedCount } : result;
     },
   );
@@ -610,6 +631,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       if (!result.ok) return result;
       auditStageDecision(id as number, { runId: record.runId, joinId: record.joinId, conflict: record.conflictHash.slice(0, 8), decision: record.decision });
       broadcastItemChanged(id as number, "updated");
+      broadcastToAppWindows(deps, WORK_APPROVALS.changed, undefined);
       return result;
     },
   );

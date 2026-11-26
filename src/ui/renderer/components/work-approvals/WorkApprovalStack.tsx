@@ -1,3 +1,4 @@
+import { WorkflowDecisionCard, workflowDecisionKey } from "../work-board/WorkflowDecisionCard.js";
 // 확인 필요: work-level decisions for one project (plus the shared unscoped and global ones), or every authorized project grouped. The top
 // item is a real card; the rest are rows. Every action goes through its source's own channel (plan decide-plan, proposal accept/dismiss,
 // the routine panel); this component decides nothing by itself and has no approve shortcut — a decision is always a button press, and a
@@ -68,6 +69,8 @@ export function isCounted(item: WorkApprovalView): boolean {
 export function kindLabel(item: WorkApprovalView): string {
   if (item.kind === "plan") return t("workApprovals.kindPlan");
   if (item.kind === "proposal") return t("workApprovals.kindProposal");
+  if (item.kind === "stage-gate") return t("workflowTemplates.stageGate");
+  if (item.kind === "join-conflict") return t("workflowTemplates.joinConflict");
   return item.failure ? t("workApprovals.kindRoutineFailed") : t("workApprovals.kindRoutineAttention");
 }
 
@@ -412,7 +415,7 @@ function HeadCard({
   actions: WorkApprovalActions;
   targetProjectRoot: string | undefined;
   projectChoices?: readonly WorkApprovalProject[];
-  api: Pick<AveApi, "decideWorkPlan">;
+  api: Pick<AveApi, "decideWorkPlan" | "decideWorkStage" | "decideWorkJoin">;
   now: number;
   onChanged: () => void;
 }) {
@@ -440,6 +443,10 @@ function HeadCard({
       {item.kind === "plan" ? (
         <div className="mt-2">
           <PlanBody item={item} api={api} now={now} onChanged={onChanged} />
+        </div>
+      ) : item.kind === "stage-gate" || item.kind === "join-conflict" ? (
+        <div className="mt-2">
+          <WorkflowDecisionCard key={workflowDecisionKey(item)} review={item} itemId={item.itemId} api={api} onChanged={onChanged} />
         </div>
       ) : (
         <>
@@ -509,7 +516,7 @@ function QueuedRow({
       {isShared(item) && <SharedChip />}
       {age !== null && <span className="shrink-0 text-dense text-muted-foreground">{age}</span>}
       {/* A queued plan is decided only on the card, after it is expanded there. */}
-      {!selectOnly && item.kind !== "plan" && (
+      {!selectOnly && (item.kind === "proposal" || item.kind === "routine-attention") && (
         <ItemActions key={actionsKey(item)} item={item} actions={actions} targetProjectRoot={targetProjectRoot} compact />
       )}
     </li>
@@ -550,7 +557,7 @@ function useRovingFocus(keys: readonly string[]) {
 }
 
 export interface WorkApprovalStackProps {
-  api: Pick<AveApi, "listWorkApprovals" | "onWorkApprovalsChanged" | "decideWorkPlan">;
+  api: Pick<AveApi, "listWorkApprovals" | "onWorkApprovalsChanged" | "decideWorkPlan" | "decideWorkStage" | "decideWorkJoin">;
   /** The project whose home shows this stack; accepted proposals join it. Undefined means the default project. */
   project?: ProjectIdentity;
   actions: WorkApprovalActions;
@@ -720,6 +727,9 @@ export function WorkApprovalStack({
   const kinds: Array<{ id: KindFilter; label: string }> = [
     { id: "all", label: t("workApprovals.filterAll", { count: decidable.length }) },
     { id: "plan", label: t("workApprovals.filterPlan", { count: countOf("plan") }) },
+    ...(["stage-gate", "join-conflict"] as const).filter(kind => countOf(kind) > 0).map(id => ({
+      id, label: t(id === "stage-gate" ? "workflowTemplates.filterStageGates" : "workflowTemplates.filterJoinConflicts", { count: countOf(id) }),
+    })),
     { id: "proposal", label: t("workApprovals.filterProposal", { count: countOf("proposal") }) },
     { id: "routine-attention", label: t("workApprovals.filterRoutine", { count: countOf("routine-attention") }) },
   ];

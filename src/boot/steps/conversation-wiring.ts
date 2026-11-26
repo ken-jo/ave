@@ -33,7 +33,7 @@ import { createWorkBoardReporter, type WorkBoardReporter,
 import { appendMemory } from "../../work-board/work-memory.js";
 import { workflowEngineExtensions } from "./workflow-engine-extensions.js";
 import { isAuthorizedWorkspaceProjectRoot, resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
-import { WORK_BOARD } from "../../shared/ipc-channels.js";
+import { WORK_APPROVALS, WORK_BOARD } from "../../shared/ipc-channels.js";
 import type { WorkItemChangedEventPayload } from "../../shared/work-board-types.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 import { emitEvent } from "../types.js";
@@ -639,11 +639,16 @@ export async function wireConversation(
         const resolved = resolveAuthorizedWorkspaceProject(projectRoot);
         return resolved.authorized && resolved.project ? resolved.project.projectRoot : null;
       },
+      readBreaker: (sessionId) => permissionManager.getJudgeBreaker().snapshot(sessionId),
       templates: ctx.workflowTemplateStore,
       attachments: ctx.workflowTemplateStore,
       scopeAuthorised: (scope) => scope.kind === "all" || isAuthorizedWorkspaceProjectRoot(scope.projectRoot),
-      itemChanged: (itemId) => fanOutToAllWindows(ctx.host.desktop?.getAppWindows() ?? [], WORK_BOARD.itemChanged,
-        { itemId, change: "updated", changedAt: new Date().toISOString() } satisfies WorkItemChangedEventPayload, { logger: log }),
+      itemChanged: (itemId) => {
+        const windows = ctx.host.desktop?.getAppWindows() ?? [];
+        fanOutToAllWindows(windows, WORK_BOARD.itemChanged,
+          { itemId, change: "updated", changedAt: new Date().toISOString() } satisfies WorkItemChangedEventPayload, { logger: log });
+        fanOutToAllWindows(windows, WORK_APPROVALS.changed, undefined, { logger: log });
+      },
       audit: ({ itemId, ...detail }) => bootAuditLogger?.log({
         timestamp: new Date().toISOString(),
         sessionId: `work-board:${itemId}`,

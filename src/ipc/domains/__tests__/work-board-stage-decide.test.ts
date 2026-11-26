@@ -1,3 +1,5 @@
+import { registerWorkApprovalsHandlers } from "../work-approvals.js";
+import { AuditLogger } from "../../../audit/audit-logger.js";
 // A stage gate, a join decision, a stage retry and the start of a template run are work approvals: a sender-validated board-window main
 // frame with a consumed keyboard gesture. The renderer names hashes and ids; it never mints the run source.
 import { beforeEach, expect, it, vi } from "vitest";
@@ -7,11 +9,11 @@ import { configureHostResources } from "../../../main/host-resources.js";
 import * as namespace from "../../../main/storage/feature-namespace.js";
 import { autoStageOf, stageOf } from "../../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../../work-board/workflow/__tests__/stage-run-harness.js";
-import { WORK_BOARD } from "../../../shared/ipc-channels.js";
+import { WORK_APPROVALS, WORK_BOARD } from "../../../shared/ipc-channels.js";
 import { registerWorkBoardHandlers } from "../work-board.js";
 import type { IpcDeps } from "../../types.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../../gated.js";
-import { MAX_PLAN_NOTE_LENGTH } from "../../../shared/work-board-types.js";
+import { MAX_PLAN_NOTE_LENGTH, workBoardOriginSessionId } from "../../../shared/work-board-types.js";
 import { registeredIpcHandlers } from "./test-helpers.js";
 
 const ipc = vi.hoisted(() => {
@@ -239,4 +241,90 @@ it.each<[string, string, Parameters<typeof stageRunHarness>[0], (h: Harness) => 
       expect(kept()).toEqual(keptBefore);
     } finally { vi.restoreAllMocks(); }
   } finally { for (const child of h.children) child.finish(); await h.cleanup(); }
+});
+
+it("projects a parked result on get and list, then refuses the superseded snapshot at the host", async () => {
+  const h = await stageRunHarness({});
+  try {
+    const { id, item } = await awaiting(h, { summary: "First review result" });
+    const audit = new AuditLogger(join(h.dir, "audit"));
+    const owner = { isDestroyed: () => false, send: vi.fn(), mainFrame: { url: "file:///index.html" } };
+    const window = { isDestroyed: () => false, webContents: owner };
+    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, settingsService: { get: () => undefined }, auditLogger: audit, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    const event = { sender: owner, senderFrame: owner.mainFrame };
+    const stage = item.stageRuns[0];
+    const binding = { runId: item.runId, stageId: "a", attempt: 1, resultHash: stage.resultHash };
+    const expected = { runPin: item.record?.pin, pendingWorkflowDecisions: [{ kind: "stage-gate", binding, result: "First review result" }] };
+    registerWorkApprovalsHandlers({
+      workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] }, auditLogger: audit,
+    } as unknown as IpcDeps);
+    await expect(handler(WORK_APPROVALS.list)(event, { allProjects: true })).resolves.toMatchObject({
+      ok: true, total: 1, items: [{ ...expected.pendingWorkflowDecisions[0], itemId: id }],
+    });
+    const got = await handler(WORK_BOARD.get)(event, id);
+    expect(got).toMatchObject({ item: { ...expected, workflowRun: { stages: [{ stageId: "a", status: "awaiting_gate" }] } } });
+    await expect(handler(WORK_BOARD.list)(event)).resolves.toMatchObject({ items: [expected] });
+    expect(h.events).toContainEqual(expect.objectContaining({ workflowRun: expect.objectContaining({ stages: [expect.objectContaining({ stageId: "a", status: "awaiting_gate" })] }) }));
+    await expect(handler(WORK_BOARD.decideStage)(event, id, { ...binding, decision: "request_changes", note: "Revise the result" }, GESTURE)).resolves.toMatchObject({ ok: true });
+    (await h.untilLive(1))[0].finish({ summary: "Revised review result" });
+    const revised = await h.until(id, view => view.stageRuns[0]?.attempt === 2 && view.stageRuns[0]?.status === "awaiting_gate");
+    await expect(handler(WORK_BOARD.decideStage)(event, id, { ...binding, decision: "approve" }, GESTURE)).resolves.toEqual({ ok: false, reason: "attempt_mismatch" });
+    await expect(handler(WORK_BOARD.decideStage)(event, id, { ...binding, attempt: 2, decision: "approve" }, GESTURE)).resolves.toEqual({ ok: false, reason: "result_mismatch" });
+    expect((await h.item(id)).stageRuns).toEqual(revised.stageRuns);
+    await expect(handler(WORK_BOARD.get)(event, id)).resolves.toMatchObject({
+      item: { workflowRun: { decisions: [{ kind: "stage-gate", stageId: "a", attempt: 1, decision: "request_changes" }] } },
+    });
+  } finally { for (const child of h.children) child.finish(); await h.cleanup(); }
+});
+
+
+it("projects join conflict evidence and refuses the previous conflict hash after a retry", async () => {
+  const files = [{ path: "reports/summary.md", stageIds: ["a"] }];
+  let mergeCount = 0;
+  const h = await stageRunHarness({
+    integrate: () => ({ ok: false, conflict: { reason: "same-path", files, conflictHash: (++mergeCount === 1 ? "c" : "d").repeat(64) } }),
+  });
+  try {
+    const { id, item } = await awaiting(h, {}, [autoStageOf("a")]);
+    const owner = { isDestroyed: () => false, send: vi.fn(), mainFrame: { url: "file:///index.html" } };
+    const window = { isDestroyed: () => false, webContents: owner };
+    const deps = {
+      workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
+      auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+    } as unknown as IpcDeps;
+    registerWorkBoardHandlers(deps);
+    registerWorkApprovalsHandlers(deps);
+    const event = { sender: owner, senderFrame: owner.mainFrame };
+    const binding = { runId: item.runId, joinId: item.stageJoins[0].joinId, conflictHash: "c".repeat(64) };
+    const review = { kind: "join-conflict", binding, evidence: { reason: "same-path", files } };
+    await expect(handler(WORK_BOARD.get)(event, id)).resolves.toMatchObject({ item: { pendingWorkflowDecisions: [review] } });
+    await expect(handler(WORK_APPROVALS.list)(event, { allProjects: true })).resolves.toMatchObject({ total: 1, items: [review] });
+    await expect(handler(WORK_BOARD.decideJoin)(event, id, { ...binding, decision: "retry_merge" }, GESTURE)).resolves.toEqual({ ok: true });
+    const changed = await h.until(id, view => view.stageJoins[0]?.conflict?.conflictHash === "d".repeat(64));
+    await expect(handler(WORK_BOARD.decideJoin)(event, id, { ...binding, decision: "reject" }, GESTURE)).resolves.toEqual({ ok: false, reason: "conflict_mismatch" });
+    expect((await h.item(id)).stageJoins).toEqual(changed.stageJoins);
+    await expect(handler(WORK_BOARD.get)(event, id)).resolves.toMatchObject({
+      item: { workflowRun: { decisions: [{ kind: "join-conflict", joinId: binding.joinId, decision: "retry_merge" }] } },
+    });
+  } finally { for (const child of h.children) child.finish(); await h.cleanup(); }
+});
+
+
+it("shows stored delegation edges only for the parent session of this legacy item", async () => {
+  const get = vi.fn(async (id: number) => ({
+    status: "found", item: { id, runSessionId: "parent-run", title: "Legacy work", status: "in_progress", status_resolved: "in_progress" },
+  }));
+  const listPersistedSpawnsForOrigin = vi.fn(() => [{ childSessionId: "delegated-run", title: "Verify results" }]);
+  const isPersistedSpawnOfOrigin = vi.fn((origin: string, child: string) => origin === workBoardOriginSessionId(7) && child === "parent-run");
+  registerWorkBoardHandlers({
+    workBoardStore: { get },
+    getSubAgentRunner: () => ({ isPersistedSpawnOfOrigin, listPersistedSpawnsForOrigin }),
+    auditLogger: { log: vi.fn() }, getMainWindow: () => null,
+  } as unknown as IpcDeps);
+  await expect(handler(WORK_BOARD.get)({}, 7)).resolves.toMatchObject({
+    item: { delegatedSessions: [{ parentSessionId: "parent-run", childSessionId: "delegated-run", title: "Verify results" }] },
+  });
+  const other = await handler(WORK_BOARD.get)({}, 8);
+  expect(other).not.toHaveProperty("item.delegatedSessions");
+  expect(listPersistedSpawnsForOrigin).toHaveBeenCalledExactlyOnceWith("parent-run");
 });

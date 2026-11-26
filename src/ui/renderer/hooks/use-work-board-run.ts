@@ -1,3 +1,4 @@
+import type { WorkflowRunView, WorkflowStageActivityUpdate } from "../../../shared/workflow-run-view.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AveApi } from "../types.js";
 import type {
@@ -78,6 +79,9 @@ export interface WorkItemRunState {
   /** When each phase began, from the first event this board saw in it. */
   phaseAt: Partial<Record<RunPhase, string>>;
   stageUpdates?: Record<string, WorkflowStageUpdate>;
+  workflowRun?: WorkflowRunView;
+  workflowRunAt?: string;
+  stageActivity?: Record<string, WorkflowStageActivityUpdate>;
 }
 
 export type WorkflowStageUpdate = Pick<RunProgressEventPayload, "judgedBy" | "at"> & {
@@ -439,6 +443,16 @@ export function useWorkBoardRun(
             if (steerBookRef.current.onAck(ev.itemId, ack) === "apply") {
               update(ev.itemId, (cur) => ({ ...cur, steers: applySteerAck(cur.steers, ack) }));
             }
+            return;
+          }
+          if (ev.workflowRun) {
+            const workflowRun = ev.workflowRun;
+            update(ev.itemId, cur => ({ ...cur, workflowRun, workflowRunAt: ev.at }));
+            return;
+          }
+          if (ev.stageActivity) {
+            const activity = ev.stageActivity;
+            update(ev.itemId, cur => ({ ...cur, stageActivity: { ...cur.stageActivity, [activity.stageId]: activity } }));
             return;
           }
           const { stageId, attempt, phase } = ev;

@@ -1,3 +1,4 @@
+import { t } from "../../../../i18n/runtime.js";
 // @vitest-environment jsdom
 /** 확인 필요 plan approvals: the stored plan as a real card (the agent's plan beside the host's facts), decided only by a button press that
  * sends the run id and stored hash; queued plans expand before they can be decided; a re-planning plan is listed but not counted; and the
@@ -87,7 +88,9 @@ function stubApi(result: WorkApprovalListResult | ((request: unknown) => WorkApp
     listWorkApprovals: list,
     onWorkApprovalsChanged: (handler: () => void) => { changed = handler; return () => { changed = null; }; },
     decideWorkPlan,
-  } as unknown as Pick<AveApi, "listWorkApprovals" | "onWorkApprovalsChanged" | "decideWorkPlan">;
+    decideWorkStage: vi.fn<AveApi["decideWorkStage"]>(),
+    decideWorkJoin: vi.fn<AveApi["decideWorkJoin"]>(),
+  };
   return { api, list, decideWorkPlan, fireChanged: () => changed?.() };
 }
 
@@ -396,8 +399,10 @@ describe("확인 필요 — all projects", () => {
     const api = {
       listWorkApprovals: list,
       onWorkApprovalsChanged: () => () => {},
-      decideWorkPlan: vi.fn(),
-    } as unknown as Pick<AveApi, "listWorkApprovals" | "onWorkApprovalsChanged" | "decideWorkPlan">;
+      decideWorkPlan: vi.fn<AveApi["decideWorkPlan"]>(),
+      decideWorkStage: vi.fn<AveApi["decideWorkStage"]>(),
+      decideWorkJoin: vi.fn<AveApi["decideWorkJoin"]>(),
+    };
     const onFocusConsumed = vi.fn();
     const view = render(<WorkApprovalStack api={api} project={CHECKOUT} actions={actions()} now={() => NOW} onFocusConsumed={onFocusConsumed} />);
     await screen.findByTestId("work-approval-head");
@@ -409,4 +414,20 @@ describe("확인 필요 — all projects", () => {
     await waitFor(() => expect(onFocusConsumed).toHaveBeenCalledTimes(1));
     expect(within(screen.getByTestId("work-approval-head")).getByTestId("work-approval-title").textContent).toBe("Handbook plan");
   });
+});
+
+
+it("decides a workflow gate shown in the work approval stack using its displayed binding", async () => {
+  const binding = { runId: "run-a", stageId: "report", attempt: 2, resultHash: HASH, outputHash: "e".repeat(64) };
+  const { api } = stubApi(okList([{
+    kind: "stage-gate", key: "stage:4", itemId: 4, title: "Report", scope: { type: "unscoped" },
+    arrivedAt: "2026-06-15T12:00:00.000Z", result: "Parked stage result", binding,
+  }]));
+  api.decideWorkStage.mockResolvedValue({ ok: false, reason: "result_mismatch" });
+  render(<WorkApprovalStack api={api} project={CHECKOUT} actions={actions()} now={() => NOW} />);
+  expect(await screen.findByText("Parked stage result")).toBeVisible();
+  expect(api.decideWorkStage).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: t("workflowTemplates.approveStage") }));
+  await waitFor(() => expect(api.decideWorkStage).toHaveBeenCalledExactlyOnceWith(4, { ...binding, decision: "approve" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(t("reasonCodes.result-mismatch"));
 });

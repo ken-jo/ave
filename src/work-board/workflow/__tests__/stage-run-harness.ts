@@ -7,7 +7,7 @@ import type {
   RunAuthoritySource, StageJoin, TemplateScope, TemplateStage, TemplateVersion, TemplateVersionPin, WorkItemStageRun,
 } from "../../../shared/workflow-template-types.js";
 import { type WorkBoardRunEvent, type WorkItemResolved, workBoardOriginSessionId } from "../../../shared/work-board-types.js";
-import type { SubAgentRunner, SubAgentSpawnInput, SubAgentSpawnResult } from "../../../engine/subagent-runner.js";
+import type { SubAgentActivityUpdate, SubAgentRunner, SubAgentSpawnInput, SubAgentSpawnResult } from "../../../engine/subagent-runner.js";
 import { WorkBoardStore } from "../../../main/work-board-store.js";
 import { WorkflowTemplateStore } from "../../../main/workflow-template-store.js";
 import { mintHostDecisionProof } from "../../../main/workflow-template-decision.js";
@@ -27,6 +27,7 @@ export interface FakeChild {
   sessionId: string;
   ended: boolean;
   steers: string[];
+  reportActivity(update: SubAgentActivityUpdate): void;
   finish(result?: Partial<SubAgentSpawnResult>): void;
 }
 
@@ -109,6 +110,7 @@ export async function stageRunHarness(opts: {
   const templates = new WorkflowTemplateStore(join(dir, "templates.json"));
   const events: WorkBoardRunEvent[] = [];
   const children: FakeChild[] = [];
+  const activities = new Map<string, SubAgentActivityUpdate>();
   const liveChildren = new Set<FakeChild>();
   const interrupts: string[] = [];
   const audits: Parameters<NonNullable<WorkflowDeps["audit"]>>[0][] = [];
@@ -202,7 +204,7 @@ export async function stageRunHarness(opts: {
   const strays = new WeakSet<FakeChild>();
   let generation = 0;
   const ofCurrentEngine = (list: FakeChild[]) => list.filter(child => !strays.has(child));
-  async function spawnChild(by: number, input: SubAgentSpawnInput, hooks?: { onLinked?: (link: { childSessionId: string }) => void }): Promise<SubAgentSpawnResult> {
+  async function spawnChild(by: number, input: SubAgentSpawnInput, hooks?: Parameters<SubAgentRunner["spawn"]>[1]): Promise<SubAgentSpawnResult> {
     await Promise.resolve();
     const sessionId = `child-${children.length + 1}`;
     const launch = launches.getStore();
@@ -210,6 +212,10 @@ export async function stageRunHarness(opts: {
     const done = new Promise<SubAgentSpawnResult>(resolve => { end = resolve; });
     const child: FakeChild = {
       input, sessionId, ended: false, steers: [],
+      reportActivity: (update) => {
+        activities.set(sessionId, update);
+        hooks?.onActivity?.(update);
+      },
       finish: (result = {}) => {
         if (child.ended) return;
         child.ended = true;
@@ -238,7 +244,7 @@ export async function stageRunHarness(opts: {
     return done;
   }
   const runner = {
-    spawn: (input: SubAgentSpawnInput, hooks?: { onLinked?: (link: { childSessionId: string }) => void }) => spawnChild(generation, input, hooks),
+    spawn: (input: SubAgentSpawnInput, hooks?: Parameters<SubAgentRunner["spawn"]>[1]) => spawnChild(generation, input, hooks),
     interruptRun(id: string) {
       interrupts.push(id);
       const child = children.find(candidate => candidate.sessionId === id && !candidate.ended);
@@ -251,6 +257,7 @@ export async function stageRunHarness(opts: {
       child.steers.push(text);
       return { ok: true, messageId: `m-${child.steers.length}` };
     },
+    getRunStatus: (id: string) => activities.get(id) ?? null,
     parentToolRegistry: () => registry,
   } as unknown as SubAgentRunner;
 

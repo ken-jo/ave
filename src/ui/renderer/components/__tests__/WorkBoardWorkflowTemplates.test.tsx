@@ -42,7 +42,7 @@ function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [
     listWorkBoard: vi.fn(async () => ({ status: "ok", items })),
     getWorkBoardRunTranscript: vi.fn(async () => ({ events: [] })),
     getSettings: vi.fn(async () => ({ workBoard: { toolApprovalSurface: "chat" } })),
-    getWorkBoardItem: vi.fn(async () => ({ status: "found", item: { ...item, ...project } })),
+    getWorkBoardItem: vi.fn(async () => ({ status: "found", item: { ...(items[0] ?? item), ...project } })),
     listAgentProfiles: vi.fn(async () => ({ agents: [] })),
     listWorkflowTemplates: vi.fn(async () => ({ ok: true, value: templates })),
     getWorkflowTemplate: vi.fn(async () => ({ ok: true, value: { template, versions: [older, version] } })),
@@ -55,7 +55,8 @@ function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [
     completeWorkBoardItem: vi.fn(async () => ({ status: "completed", itemId: 8, item: { ...item, status: "completed" } })),
     runWorkBoardItem: vi.fn(async () => ({ status: "completed" })),
     captureUserKeyboardIntent: vi.fn(() => ({ inputOrigin: "user-keyboard", token: "click" })),
-    decideWorkStage: vi.fn(),
+    decideWorkStage: vi.fn(async () => ({ ok: true, status: "approved" })),
+    decideWorkJoin: vi.fn(async () => ({ ok: true })),
     retryWorkStage: vi.fn(async () => ({ ok: true })),
     onWorkBoardItemChanged: () => () => {},
     onWorkBoardRunFinished: () => () => {},
@@ -134,7 +135,7 @@ it("shows parked work and labels only the model decisions reported by the live h
   expect(within(view).getByText(t("workflowTemplates.modelGate"))).toBeVisible();
   expect(within(view).getByText(t("workflowTemplates.stageSession", { session: "gather-session" }))).toBeVisible();
   expect(within(view).getByText(t("workflowTemplates.stagePassed"))).toBeVisible();
-  expect(within(view).getByText(t("workflowTemplates.gateDetailsUnavailable"))).toBeVisible();
+  expect(within(view).getByText(t("workflowTemplates.noPendingDecision"))).toBeVisible();
   expect(api.decideWorkStage).not.toHaveBeenCalled();
 });
 
@@ -187,4 +188,62 @@ it("shows separate stage approval lanes in the run view and answers through the 
   expect(lanes.map(lane => lane.dataset.stageId)).toEqual(["gather", "summarize"]);
   fireEvent.click(within(lanes[1]).getByTestId(TEST_IDS.approveButton));
   expect(vi.mocked(surface.decide).mock.calls.map(call => call[0])).toEqual(["summarize"]);
+});
+
+it("reviews the result and conflict shown on the desktop before sending their exact bindings", async () => {
+  const stage = { runId: "run-a", stageId: "summarize", attempt: 2, resultHash: "c".repeat(64) };
+  const join = { runId: "run-a", joinId: "step-1", conflictHash: "e".repeat(64) };
+  const row = {
+    ...item, runPin: pin, pendingWorkflowDecisions: [
+      { kind: "stage-gate", binding: stage, result: "Review this exact result", arrivedAt: at },
+      { kind: "join-conflict", binding: join, evidence: { reason: "same-path", files: [{ path: "shared.md", stageIds: ["gather", "summarize"] }] }, arrivedAt: null },
+    ],
+  } as WorkItemResolved;
+  const { api } = mount([row]);
+  await screen.findByText(item.title);
+  fireEvent.click(screen.getByRole("button", { name: t("workflowTemplates.openRun") }));
+  const view = within(await screen.findByRole("dialog", { name: item.title }));
+  expect(await view.findByText("Review this exact result")).toBeVisible();
+  expect(view.getByText(/shared\.md/)).toBeVisible();
+  expect(api.decideWorkStage).not.toHaveBeenCalled();
+  fireEvent.click(view.getByRole("button", { name: t("workflowTemplates.approveStage") }));
+  expect(api.decideWorkStage).toHaveBeenCalledExactlyOnceWith(item.id, { ...stage, decision: "approve" });
+  fireEvent.click(view.getByRole("button", { name: t("workflowTemplates.retryJoin") }));
+  expect(api.decideWorkJoin).toHaveBeenCalledExactlyOnceWith(item.id, { ...join, decision: "retry_merge" });
+});
+
+it("reopens a pinned graph with recorded handoffs, verdict, activity, and breaker state", async () => {
+  const row = {
+    ...item, runPin: pin, workflowRun: {
+      runId: "run-a", startedAt: at, pin, stages: [{
+        stageId: "summarize", attempt: 1, status: "running", childSessionId: "summary-session",
+        receivedInputs: [{ stageId: "gather", text: "Actual source handoff", truncated: false }],
+        gate: { type: "auto", passed: true, evidence: "Evidence recorded by the model", judgedBy: "model", evaluatedAt: at },
+        activity: { turns: [{ turn: 1, text: "A recorded turn" }], tools: [{ toolUseId: "tool", name: "read_file", label: "sources.md", kind: "read", status: "done", turn: 1 }] },
+        breaker: { open: true, consecutive: 3, total: 3 },
+      }], joins: [], decisions: [],
+    },
+  } as WorkItemResolved;
+  const { api } = mount([row]);
+  api.getWorkBoardItem.mockResolvedValue({ status: "found", item: { ...row, ...project } });
+  await screen.findByText(item.title);
+  fireEvent.click(screen.getByRole("button", { name: t("workflowTemplates.openRun") }));
+  const view = within(await screen.findByRole("dialog", { name: item.title }));
+  expect(await view.findByText(t("workflowTemplates.pinnedVersion", { version: 2 }))).toBeVisible();
+  await userEvent.click(view.getByRole("button", { name: /Summarize/ }));
+  fireEvent.click(view.getByText("Gather sources", { selector: "summary" }));
+  for (const text of ["Actual source handoff", "Evidence recorded by the model", "A recorded turn", /sources\.md/]) {
+    expect(view.getByText(text)).toBeVisible();
+  }
+  expect(view.getByText(t("workflowTemplates.breakerOpen", { consecutive: 3, total: 3 }))).toBeVisible();
+});
+
+it("lists only the runs pinned to the selected immutable version", async () => {
+  const row = { ...item, workflowRunPins: [{ runId: "run-a", pin, startedAt: at }] } as WorkItemResolved;
+  mount([row]);
+  const library = await templates();
+  fireEvent.click(await library.findByRole("button", { name: template.name }));
+  expect(await library.findByRole("list", { name: t("workflowTemplates.pinnedRuns") })).toHaveTextContent(item.title);
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.versions")), { target: { value: "1" } });
+  expect(library.getByRole("list", { name: t("workflowTemplates.pinnedRuns") })).not.toHaveTextContent(item.title);
 });

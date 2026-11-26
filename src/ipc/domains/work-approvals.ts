@@ -15,6 +15,7 @@ import type { WorkItem, WorkItemResolved, WorkProposal } from "../../shared/work
 import type {
   RoutineAttentionApprovalView,
   WorkApprovalListResult,
+  WorkflowApprovalView,
   WorkApprovalProject,
   WorkApprovalView,
   WorkPlanApprovalView,
@@ -150,7 +151,7 @@ function invalidRoutineView(invalid: InvalidRoutine): RoutineAttentionApprovalVi
 }
 
 export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
-  const { workBoardStore, routinesStore, auditLogger } = deps;
+  const { workBoardStore, workBoardEngine, routinesStore, auditLogger } = deps;
 
   ipcMain.handle(WORK_APPROVALS.list, async (e, raw?: unknown): Promise<WorkApprovalListResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(e)) {
@@ -186,8 +187,24 @@ export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
     if (board.status !== "ok") return { ok: false, error: "work-approvals-source-unavailable", source: "plan" };
     const planViews = board.items.map((item) => planView(item, projects)).filter((view): view is WorkPlanApprovalView => view !== null);
 
+    const visible = board.items.filter(item => item.templateId !== undefined && planScope(item, projects) !== null);
+    if (visible.some(item => item.runId !== undefined) && !workBoardEngine) {
+      return { ok: false, error: "work-approvals-source-unavailable", source: "stage-gate" };
+    }
+    const workflowItems = workBoardEngine && visible.length ? await workBoardEngine.projectTemplateRuns(visible) : [];
+    const workflowViews = workflowItems.flatMap((item): WorkflowApprovalView[] => {
+      const scope = planScope(item, projects);
+      if (scope === null) return [];
+      return (item.pendingWorkflowDecisions ?? []).map(decision => ({
+        ...decision, scope, itemId: item.id, title: masked(item.title),
+        key: decision.kind === "stage-gate"
+          ? `stage:${item.id}:${decision.binding.runId}:${decision.binding.stageId}:${decision.binding.attempt}`
+          : `join:${item.id}:${decision.binding.runId}:${decision.binding.joinId}`,
+      }));
+    });
+
     // Proposals (unscoped), routines (global) and plans with no project belong to every project's list; a project's plans only to its own.
-    const everything: WorkApprovalView[] = [...planViews, ...proposalViews, ...routineViews];
+    const everything: WorkApprovalView[] = [...planViews, ...workflowViews, ...proposalViews, ...routineViews];
     const items = homeRoot === null
       ? everything
       : everything.filter((view) => view.scope.type !== "project" || projectRootEquals(view.scope.projectRoot, homeRoot));

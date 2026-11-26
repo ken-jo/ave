@@ -5,6 +5,7 @@
  *
  * Renderer-safe: no Node imports.
  */
+import type { PendingWorkflowDecision } from "./workflow-run-view.js";
 import type { RoutineFailure } from "./routines-types.js";
 
 // Scope: `project` (with whether it is the default project), `unscoped` (no project yet; accepting chooses one), or `global` (belongs to no project).
@@ -81,7 +82,15 @@ export interface RoutineAttentionApprovalView {
   failure?: RoutineFailure;
 }
 
+export type WorkflowApprovalView = PendingWorkflowDecision & {
+  key: string;
+  scope: WorkPlanApprovalView["scope"];
+  title: string;
+  itemId: number;
+};
+
 export type WorkApprovalView =
+  | WorkflowApprovalView
   | WorkPlanApprovalView
   | WorkProposalApprovalView
   | RoutineAttentionApprovalView;

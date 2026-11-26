@@ -1017,6 +1017,7 @@ export type AvePreloadApi = {
   >;
   getWorkBoardItem: (
     id: number,
+    runId?: string,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkItemGetResult
     | { ok: false; error: string }

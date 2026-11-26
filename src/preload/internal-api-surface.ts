@@ -991,8 +991,8 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkItemListResult
       | { ok: false; error: string }
     >,
-  getWorkBoardItem: async (id: number) =>
-    ipcRenderer.invoke(WORK_BOARD.get, id) as Promise<
+  getWorkBoardItem: async (id: number, runId?: string) =>
+    (runId === undefined ? ipcRenderer.invoke(WORK_BOARD.get, id) : ipcRenderer.invoke(WORK_BOARD.get, id, runId)) as Promise<
       | import("../shared/work-board-types.js").WorkItemGetResult
       | { ok: false; error: string }
     >,

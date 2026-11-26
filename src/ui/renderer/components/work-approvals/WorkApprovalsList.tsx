@@ -22,6 +22,7 @@ export interface WorkApprovalsProps {
 function rowSubtitle(item: WorkApprovalView): string {
   if (item.kind === "plan") return t("workApprovals.planSource");
   if (item.kind === "proposal") return proposalSource(item);
+  if (item.kind === "stage-gate" || item.kind === "join-conflict") return kindLabel(item);
   return t("workApprovals.routineScope");
 }
 

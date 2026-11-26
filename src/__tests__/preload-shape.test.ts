@@ -85,6 +85,30 @@ beforeAll(async () => {
 });
 
 describe("preload contextBridge world shape lock", () => {
+  it("bridges retained run reads, progress snapshots and gesture-bound decisions", async () => {
+    const api = exposed.get("aveApi") as AveApi;
+    const runId = "run-a";
+    const hash = "e".repeat(64);
+    const stage = { runId, stageId: "report", attempt: 2, resultHash: hash, decision: "approve" } as const;
+    const join = { runId, joinId: "step-1", conflictHash: hash, decision: "retry_merge" } as const;
+    await api.getWorkBoardItem(8, runId);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.get, 8, runId);
+    mockUserActivation.isActive = true;
+    await api.decideWorkStage(8, stage);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.decideStage, 8, stage, { inputOrigin: "user-keyboard", userActivation: true });
+    mockUserActivation.isActive = false;
+    await api.decideWorkJoin(8, join);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.decideJoin, 8, join, { inputOrigin: "user-keyboard", userActivation: false });
+    const receive = vi.fn();
+    const unsubscribe = api.onWorkBoardRunProgress(receive);
+    const [, listener] = mockOn.mock.calls.at(-1) ?? [];
+    const progress = { itemId: 8, phase: "executing", workflowRun: { runId } };
+    listener({}, progress);
+    expect(receive).toHaveBeenCalledWith(progress);
+    unsubscribe();
+    expect(mockRemoveListener).toHaveBeenLastCalledWith(WORK_BOARD.runProgress, listener);
+  });
+
   it("bridges template requests, local confirmation intent and change unsubscribe", async () => {
     const api = exposed.get("aveApi") as AveApi;
     await api.listWorkflowTemplates(); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateList);

@@ -1,3 +1,4 @@
+import { withoutWorkflowProjection } from "../work-board/workflow/run-read-projection.js";
 /** Sequence isolated plan and execution children around the user's work approval of each plan; persist their output and execution session
  * id on the board. The approval is a decision stored on the item (permission-decision-tree.md "Work approvals"), not a tool-approval card. */
 import { randomUUID } from "node:crypto";
@@ -202,7 +203,7 @@ export interface WorkBoardEngine {
   /** Boot, after the store reconciled: show rows as the run file says and take over unsettled template runs. Spawns nothing. */
   adoptParkedTemplateRuns(): Promise<void>;
   /** Adds what a board reader is told about each row's template run; drops whatever a row says about it itself. */
-  projectTemplateRuns<T extends WorkItemResolved>(items: readonly T[]): Promise<T[]>;
+  projectTemplateRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }): Promise<T[]>;
   /** The user's clear of a row shown `template-run-not-found`, while it is as its card showed it: the row ends error. Starts and stops
    * nothing. */
   clearMissingRun(itemId: number, input: { revision: string; runId: string }): Promise<WorkItemUpdateResult>;
@@ -1064,9 +1065,9 @@ export function createWorkBoardEngine(
     continueRun: async (itemId, input, opts) => { await recover(); return stageRuns?.continueRun(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" }; },
     projectRootRevoked: (canonicalRoot) => stageRuns?.projectRootRevoked(canonicalRoot),
     adoptParkedTemplateRuns: async () => { await recover(); await stageRuns?.adoptParkedRuns(); },
-    projectTemplateRuns: async (items) => {
+    projectTemplateRuns: async (items, detail) => {
       await recover();
-      return stageRuns ? stageRuns.projectRuns(items) : items.map((item) => { const clean = { ...item }; delete clean.templateRunState; return clean; });
+      return stageRuns ? stageRuns.projectRuns(items, detail) : items.map(withoutWorkflowProjection);
     },
     clearMissingRun: async (itemId, input) => { await recover(); return stageRuns?.clearMissingRun(itemId, input) ?? { status: "not_found", itemId }; },
   };

@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "../../../../components/ui/input.js";
 import { Label } from "../../../../components/ui/label.js";
 import { Textarea } from "../../../../components/ui/textarea.js";
+import { formatMediumDateTime } from "../../../../shared/format-time.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import type { UserKeyboardIntentSnapshot } from "../../../../shared/chat-origin.js";
 import type { ProjectIdentity } from "../../../../shared/project-identity.js";
@@ -34,6 +35,8 @@ export function WorkflowTemplateLibrary({ api, project, projects, existingItem, 
   const selectedId = selection?.id;
   const [record, setRecord] = useState<WorkflowTemplateRecord>();
   const [selectedVersion, setSelectedVersion] = useState<number>();
+  const [pinnedItems, setPinnedItems] = useState<WorkItemResolved[]>([]);
+  const [pinListError, setPinListError] = useState(false);
   const [editor, setEditor] = useState<{ id: string | null; draft: WorkflowTemplateDraftInput }>();
   const [starting, setStarting] = useState(existingItem !== undefined);
   const [busy, setBusy] = useState(false);
@@ -84,6 +87,28 @@ export function WorkflowTemplateLibrary({ api, project, projects, existingItem, 
     if (record) detailsHeading.current?.focus();
     else if (!selectedId) newTemplateButton.current?.focus();
   }, [editor, record, selectedId, starting]);
+
+  useEffect(() => {
+    if (!selectedId || starting || editor) return;
+    let active = true;
+    let sequence = 0;
+    const read = async () => {
+      const current = ++sequence;
+      try {
+        const result = await api.listWorkBoard();
+        if (!active || current !== sequence) return;
+        if ("status" in result && result.status === "ok") {
+          setPinnedItems(result.items.filter(item => item.templateId === selectedId));
+          setPinListError(false);
+        } else setPinListError(true);
+      } catch {
+        if (active && current === sequence) setPinListError(true);
+      }
+    };
+    const unsubscribe = api.onWorkBoardItemChanged(() => void read());
+    void read();
+    return () => { active = false; unsubscribe(); };
+  }, [api, selectedId, starting, editor]);
 
   const version = record?.versions.find(entry => entry.version === selectedVersion);
   const current = record?.versions.find(entry => entry.version === record.template.currentVersion);
@@ -156,6 +181,18 @@ export function WorkflowTemplateLibrary({ api, project, projects, existingItem, 
                 </Label>}
                 {version && <>
                   <WorkflowStageGraph graph={version} />
+                  <section className="space-y-1 text-sm">
+                    <h3 className="font-semibold">{t("workflowTemplates.pinnedRuns")}</h3>
+                    {pinListError
+                      ? <p role="alert" className="text-destructive">{t("workflowTemplates.runReadFailed")}</p>
+                      : <ul aria-label={t("workflowTemplates.pinnedRuns")} className="space-y-1">
+                        {pinnedItems.flatMap(item => (item.workflowRunPins ?? [])
+                          .filter(entry => entry.pin.templateId === version.templateId && entry.pin.version === version.version && entry.pin.graphHash === version.graphHash)
+                          .map(entry => <li key={entry.runId} className="break-words">
+                            {stageDisplayName(item.title)} · <time dateTime={entry.startedAt}>{formatMediumDateTime(entry.startedAt)}</time>
+                          </li>))}
+                      </ul>}
+                  </section>
                   <details className="space-y-2 text-sm">
                     <summary className="cursor-pointer rounded-sm focus-visible:ring-2 focus-visible:ring-ring">{t("workflowTemplates.versionDetails")}</summary>
                     <WorkflowTemplateDetails draft={draftFromRecord(record, version)} graphHash={version.graphHash} />
