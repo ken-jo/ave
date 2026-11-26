@@ -646,9 +646,7 @@ async function resolveSpawnLine(
   egress?: EgressInvocation;
   targetLaunch?: SandboxTargetLaunch;
 }> {
-  // The inference child is host-owned code, outside the extension-start floor: never asked, no consent route. Its own gate
-  // below decides, and today it refuses without the OS sandbox. The ruled Settings switch (OQ-14, on by default, unconfined
-  // with no backend) is not built. Every other owner is an extension start.
+  // Host-owned offline inference uses its own runtime gate. This adapter only handles its confined route.
   assertExtensionStartAllowed(isOfflineOwner(spec) ? { hostOwned: true }
     : { ...(spec.extensionStart ? { start: { ...spec.extensionStart, spend: true } } : {}) });
   // An offline owner's refusal is enforced by the wrap, so it never runs without one; it follows the offline-service gate, not the extension setting.

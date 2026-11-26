@@ -64,6 +64,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
   const roots = join(tmpdir(), SANDBOX_ROOT_NAME);
   return {
     appOwnedSandboxTempRoot: () => join(roots, "tmp"),
+    isOfflineProcessConfinementActive: () => false,
     appOwnedSandboxHomeRoot: () => join(roots, "home"),
     sandboxTempPrincipalDirsInUse: () => new Set<string>(),
     ensureSandboxPrivateRoot: (root: string) => {
@@ -82,6 +83,8 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
 });
 
 import { initSandboxGate } from "../steps/sandbox-init.js";
+import { registerMxcReleaseGateEvidence } from "../../permissions/mxc-extension-admission.js";
+import { areWindowsBackgroundSwitchesAvailable } from "../../permissions/windows-background-features.js";
 import { decidePermission } from "../../permissions/decision-pipeline.js";
 import { requiresUnsandboxedShellAsk } from "../../permissions/host-shell-execution-plan.js";
 import { ObligationRefusedError, setWindowsDenyUnenforceableAtBoot, windowsDenyUnenforceableAtBoot } from "../../permissions/admitted-obligation.js";
@@ -229,6 +232,26 @@ describe("initSandboxGate — Windows sandbox HOME parent", () => {
     await initSandboxGate(harness.context(true, false));
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ mxc: { state: "unavailable", reason: "container-unavailable" } }));
   });
+});
+
+it.each([false, true])("checks background feature availability with both tool scopes off only after release readiness (%s)", async released => {
+  const unregister = released ? registerMxcReleaseGateEvidence({
+    ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true,
+    forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true,
+  }) : undefined;
+  try {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OLD);
+    await initSandboxGate(harness.context(false, false));
+    expect(h.detectMxc).toHaveBeenCalledTimes(released ? 1 : 0);
+    expect(areWindowsBackgroundSwitchesAvailable()).toBe(released);
+    expect(h.startProbe).not.toHaveBeenCalled();
+    expect(h.initialize).not.toHaveBeenCalled();
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "skip", reason: "gate-off" });
+  } finally {
+    unregister?.();
+  }
 });
 
 describe("initSandboxGate — Windows MXC substrate", () => {

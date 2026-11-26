@@ -1,4 +1,5 @@
 import { MemoryEmbeddingsSection } from "./components/MemoryEmbeddingsSection.js";
+import { SessionIndexingSection } from "./components/SessionIndexingSection.js";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "../../i18n/react.js";
 import { Button } from "../../components/ui/button.js";
@@ -627,6 +628,7 @@ export function SettingsContent({
               onImmediateChange={chatSave.schedule}
             />
             <MemoryEmbeddingsSection api={api.memoryMap} />
+            <SessionIndexingSection enabled={s.sessionIndexingWithoutContainment} onChange={s.setSessionIndexingWithoutContainment} />
             {/* ChatTab is fully immediate-apply — no deferred-save bar needed. */}
           </TabsContent>
 

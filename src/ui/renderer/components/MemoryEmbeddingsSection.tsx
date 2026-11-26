@@ -12,7 +12,7 @@ const LOCAL_INFERENCE_SETTING = 'memoryEmbedding.localInferenceWithoutSandbox';
 export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<MemoryModelStatus | null>(null);
-  const [localRuntimeRefusal, setLocalRuntimeRefusal] = useState<LocalInferenceRefusal | null>(null);
+  const [modelRuntimeRefusal, setModelRuntimeRefusal] = useState<LocalInferenceRefusal | null>(null);
   const [revision, setRevision] = useState("");
   const [error, setError] = useState<MemoryMapError | null>(null);
   const [busy, setBusy] = useState(false);
@@ -23,9 +23,11 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
   const [acknowledgedEndpointId, setAcknowledgedEndpointId] = useState<string>();
   const generation = useRef(0);
   const inferenceDescriptionId = useId();
+  const localInferenceWithoutSandbox = settings?.localInferenceWithoutSandbox;
+  const localRuntimeRefusal = localInferenceWithoutSandbox === false ? 'local-inference-disabled' : modelRuntimeRefusal;
   const applyModelStatus = useCallback((result: Awaited<ReturnType<MemoryMapApi['modelStatus']>>) => {
     const refusal = !result.ok && isLocalInferenceRefusal(result.error) ? result.error : null;
-    setLocalRuntimeRefusal(refusal);
+    setModelRuntimeRefusal(refusal);
     if (refusal !== null) { setStatus(null); setError(null); return; }
     if (result.ok) { setStatus(result.value); setError(result.value.error ?? null); } else setError(result.error);
   }, []);
@@ -126,7 +128,6 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
       if (!result?.ok) throw new Error("Memory embedding source reset failed");
     },
   });
-  const localInferenceWithoutSandbox = settings?.localInferenceWithoutSandbox;
   const inferenceLabel = t("memoryEmbeddings.localInferenceWithoutSandbox");
   useSettingsControls(localInferenceWithoutSandbox === undefined ? [] : [{
     id: LOCAL_INFERENCE_SETTING,

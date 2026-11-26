@@ -165,6 +165,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   features: {
     // Profile changes affect every future prompt, so background refresh is explicit opt-in.
     idlePreferenceRefresh: false,
+    sessionIndexingWithoutContainment: true,
     // Derived long-term overviews send eligible active notes to the configured model only on opt-in.
     idleMemoryConsolidation: false,
     // Wake delivers background results through the normal parent turn and its fail-closed prompt gate; mailbox-only delivery waits for another user turn.

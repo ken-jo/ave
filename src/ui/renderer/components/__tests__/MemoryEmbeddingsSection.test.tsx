@@ -42,9 +42,15 @@ describe('memory embeddings settings', () => {
     const control = await screen.findByRole('checkbox', { name: messages['memoryEmbeddings.localInferenceWithoutSandbox'] });
     expect(control).toBeChecked();
     expect(control).toHaveAccessibleDescription(messages['memoryEmbeddings.localInferenceWithoutSandboxDescription']);
+    expect(control).toHaveAccessibleDescription(locale === 'en' ? /on this PC.*without containment/i : /이 PC에서.*격리 없이/);
     fireEvent.click(control);
     await waitFor(() => expect(control).not.toBeChecked());
     expect(await screen.findByText(messages['memoryMap.error.local-inference-disabled'])).toBeVisible();
+    expect(screen.getAllByText(messages['memoryMap.error.local-inference-disabled'])).toHaveLength(1);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: messages['memoryEmbeddings.existing'] }));
+    expect(api.modelUseExisting).not.toHaveBeenCalled();
+    expect(screen.getAllByText(messages['memoryMap.error.local-inference-disabled'])).toHaveLength(1);
     expect(screen.getByRole('button', { name: messages['memoryEmbeddings.existing'] })).toBeDisabled();
     expect(api.settingsSet).toHaveBeenCalledWith({ localInferenceWithoutSandbox: false });
     expect(_unregisteredSettingsControlsForTest(view.container)).toEqual([]);

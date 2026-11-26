@@ -3,6 +3,7 @@ import { hasUserKeyboardIntent, USER_KEYBOARD_REQUIRED } from "../../shared/chat
 import { isSubAgentMaxRounds } from "../../shared/subagent-policy.js";
 import { telemetryPatchError } from "../../shared/telemetry-policy.js";
 import { containsSecuritySettings } from "../../shared/security-settings.js";
+import { areWindowsBackgroundSwitchesAvailable } from "../../permissions/windows-background-features.js";
 import { isWebSearchProvider } from "../../data/settings-normalization.js";
 /** Settings domain IPC handlers. Covers: ave:settings:*, ave:shell:open-external */
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
@@ -96,7 +97,7 @@ function normalizeSubscriptionModel(value: unknown): string | undefined | null {
     : null;
 }
 
-/** The settings shape the renderer sees. Authoritative remote route lineage (`a2aRemote`) is main-only and never projected to the renderer. The upstream proxy (`upstreamProxy`) crosses only through its own permissions channels; the validated local model location stays in main. Every other stored field crosses as-is.
+/** The settings shape the renderer sees. Authoritative remote route lineage (`a2aRemote`) is main-only and never projected to the renderer. The upstream proxy (`upstreamProxy`) crosses only through its own permissions channels; the validated local model location stays in main. The session indexing switch is projected only when applicable.
  * `activeChatModel` is the one derived field. A vendor block always names a model, so the stored settings cannot say whether chat has a model at all; only main, which holds the secret store, can. Every renderer surface that names the active model reads it from here. */
 export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote" | "upstreamProxy" | "memoryEmbedding"> & {
   readonly activeChatModel: ActiveChatModel;
@@ -108,6 +109,7 @@ export async function rendererSettingsSnapshot(
 ): Promise<RendererSettingsSnapshot> {
   // `upstreamProxy` has its own channels (permissions upstreamProxyGet/Set).
   const { a2aRemote: _mainOnly, upstreamProxy: _ownChannel, memoryEmbedding: _embeddingConfig, ...projected } = structuredClone(snapshot);
+  if (!areWindowsBackgroundSwitchesAvailable()) delete projected.features?.sessionIndexingWithoutContainment;
   return { ...projected, activeChatModel: await resolveMainActiveChatModel(settingsService) };
 }
 
@@ -657,6 +659,11 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       return { ok: false, error: "a2a-remote-settings-main-owned" };
     }
     if (partial && typeof partial === "object" && Object.hasOwn(partial, "memoryEmbedding")) {
+      return { ok: false, error: "invalid-input" };
+    }
+    const features = partial?.features;
+    if (features && typeof features === "object" && Object.hasOwn(features, "sessionIndexingWithoutContainment")
+      && (typeof features.sessionIndexingWithoutContainment !== "boolean" || !areWindowsBackgroundSwitchesAvailable())) {
       return { ok: false, error: "invalid-input" };
     }
     // Where the sandbox egress proxy sends allowed connections: written only through the

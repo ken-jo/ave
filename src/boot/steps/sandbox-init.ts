@@ -28,6 +28,7 @@ import { AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, aveHomeBoundaryFailure, getAve
 import { isAveHomeTrustPendingAtBoot } from "../../shared/ave-home-trust.js";
 import type { ProcessRunStateProbe } from "../../permissions/windows-process-start-time.js";
 import type { AsrtSandboxInitialization } from "../../permissions/asrt-sandbox.js";
+import { isWindowsBackgroundFeatureReleaseEnabled } from "../../permissions/windows-background-features.js";
 
 const log = createLogger("ave");
 
@@ -500,6 +501,11 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
         }
       }
     } else {
+      if (isWindowsBackgroundFeatureReleaseEnabled()) {
+        const dependencies = await checkAsrtDependencies();
+        const windowsInputs = await detectWindowsBootInputs(false, false, dependencies.errors.length === 0);
+        setWindowsSandboxSubstrate(windowsSubstrateFor(windowsInputs, "none"));
+      }
       if (process.platform === "darwin") {
         log.info(
     "boot: OS tool sandbox gated off (enable via Settings → Permissions, or AVE_SANDBOX_ENABLED=1 for shells / " +

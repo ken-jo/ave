@@ -76,6 +76,7 @@ function readUtf8FileSnapshotIfPresent(path: string, maxBytes = Number.POSITIVE_
 
 export interface MemoryManagerOptions {
   aveDir?: string;
+  isSearchIndexEnabled?: () => boolean;
 }
 
 export interface NoteEntry {
@@ -460,7 +461,7 @@ export class MemoryManager implements PromptMemorySource {
     mkdirSync(this.aveDir, { recursive: true });
     this.migrateLegacyDirectory("memory", "memories");
     mkdirSync(this.memoryDir, { recursive: true });
-    this.sessions = new SessionRepository({ aveDir: this.aveDir });
+    this.sessions = new SessionRepository({ aveDir: this.aveDir, isSearchIndexEnabled: options?.isSearchIndexEnabled });
     this.ensureStructure();
   }
 

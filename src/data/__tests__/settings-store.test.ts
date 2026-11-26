@@ -97,6 +97,25 @@ describe("local memory inference preference", () => {
   });
 });
 
+describe("session search indexing preference", () => {
+  it.each(["new", "existing"] as const)("defaults on and persists an off choice for a %s profile", async (profile) => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "session-index-settings-"));
+    const load = () => new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    try {
+      if (profile === "existing") {
+        writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ features: { idlePreferenceRefresh: true } }));
+      }
+      const settings = load();
+      expect(settings.get("features")?.sessionIndexingWithoutContainment).toBe(true);
+      await settings.patch({ features: { sessionIndexingWithoutContainment: false } });
+      expect(load().get("features")?.sessionIndexingWithoutContainment).toBe(false);
+      if (profile === "existing") expect(load().get("features")?.idlePreferenceRefresh).toBe(true);
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+});
+
 describe("bundled provider settings", () => {
   it("reports malformed legacy installation state", () => {
     expect(() => normalizeMarketplace({ installedProviderIds: "groq" })).toThrow(/installedProviderIds/);

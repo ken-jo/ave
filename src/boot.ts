@@ -67,6 +67,7 @@ import { registerBootMcpDisconnect, registerShutdownHook, configureAppShutdownHo
 import { type AppServices, emitEvent as emitHostEvent, onEvent } from "./boot/types.js";
 import { startWatcherTelemetryCollector } from "./boot/steps/watcher-telemetry-collector.js";
 import { bootstrapCoreServices } from "./boot/services.js";
+import { isSessionIndexingEnabled } from "./permissions/windows-background-features.js";
 import { RoutinesStore } from "./main/routines-store.js";
 import { RoutinesScheduler } from "./main/routines-scheduler.js";
 import {
@@ -592,7 +593,9 @@ export async function bootstrap(
   // instances are wired into the live loops below, preserving root tombstones
   // against late writes in this process.
   const isolatedConversationMemoryManagers =
-    createIsolatedConversationMemoryManagers();
+    createIsolatedConversationMemoryManagers(() => isSessionIndexingEnabled(
+      settingsService.get("features")?.sessionIndexingWithoutContainment,
+    ));
   const workspaceSessionStores = [
     memoryManager,
     isolatedConversationMemoryManagers.sideChatMemoryManager,

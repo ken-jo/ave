@@ -480,6 +480,7 @@ export interface FeatureFlags {
   /** Controls host shells and workspace terminals only; worker confinement and approval policy remain independent.
    * Defaults on for macOS/Linux and off for Windows; unavailable settings activation warns, explicit macOS/Linux activation aborts, and Windows reports filesystem/network confinement only. */
   osToolSandbox?: boolean;
+  sessionIndexingWithoutContainment?: boolean;
   /**
    * Plugin-worker confinement — when `true`, the processes extensions run
    * (plugin workers, out-of-process plugin children, plugin script hooks and

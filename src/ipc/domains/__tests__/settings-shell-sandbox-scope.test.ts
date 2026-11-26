@@ -23,6 +23,23 @@ vi.mock("electron", () => ({
   ipcMain: { handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => handlers.set(channel, handler)) },
 }));
 
+const backgroundState = vi.hoisted(() => ({ release: false, noBackend: false }));
+vi.mock("../../../permissions/mxc-extension-admission.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/mxc-extension-admission.js")>(),
+  hasMxcReleaseGateEvidence: () => backgroundState.release,
+}));
+vi.mock("../../../permissions/sandbox-capability.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/sandbox-capability.js")>(),
+  getWindowsSandboxSubstrate: () => backgroundState.noBackend
+    ? { srtWinReady: false, mxc: { state: "unavailable", reason: "container-unavailable" } } : null,
+  getWindowsExtensionBackendPlan: () => backgroundState.noBackend
+    ? { selectedBackend: "none", readiness: "unavailable", reason: "container-unavailable" } : undefined,
+}));
+vi.mock("../../../shared/ave-home.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../shared/ave-home.js")>(),
+  isAveHomePrivacyVerifiedAtBoot: () => true,
+}));
+
 let userDataPath: string;
 let stopSettingsListener: (() => void) | undefined;
 const USER_INTENT = { inputOrigin: "user-keyboard", userActivation: true };
@@ -66,6 +83,35 @@ afterEach(async () => {
   stopSettingsListener = undefined;
   __resetWindowsSandboxSubstrateForTest();
   await cleanupTmpDir(userDataPath);
+});
+
+describe("session search indexing settings", () => {
+  it("publishes and accepts the independent switch only on a released PC without containment", async () => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform");
+    const f = await setup();
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    const read = () => f.invoke(CHANNELS.settings.get, undefined);
+    const write = (value: unknown) => f.invoke(CHANNELS.settings.update, {
+      features: { sessionIndexingWithoutContainment: value },
+    });
+    try {
+      backgroundState.noBackend = true;
+      expect(await read()).not.toHaveProperty("features.sessionIndexingWithoutContainment");
+      expect(await write(false)).toEqual({ ok: false, error: "invalid-input" });
+      backgroundState.release = true;
+      expect(await read()).toHaveProperty("features.sessionIndexingWithoutContainment", true);
+      expect(await write("false")).toEqual({ ok: false, error: "invalid-input" });
+      expect(await write(false)).toHaveProperty("features.sessionIndexingWithoutContainment", false);
+      expect(await read()).toHaveProperty("features.sessionIndexingWithoutContainment", false);
+      expect(f.settingsService.get("memoryEmbedding")?.localInferenceWithoutSandbox).toBe(true);
+      backgroundState.noBackend = false;
+      expect(await read()).not.toHaveProperty("features.sessionIndexingWithoutContainment");
+      expect(await write(true)).toEqual({ ok: false, error: "invalid-input" });
+    } finally {
+      if (original) Object.defineProperty(process, "platform", original);
+      backgroundState.release = backgroundState.noBackend = false;
+    }
+  });
 });
 
 describe("shell sandbox checkbox write", () => {

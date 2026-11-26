@@ -41,11 +41,12 @@ function selectTab(name: string) { fireEvent.mouseDown(screen.getByRole('tab', {
 async function ready() { await screen.findByText('메모리 3 · 연결 2'); }
 
 describe('memory map view', () => {
-  it('shows the off notice and keeps local rebuild disabled with a cached snapshot', async () => {
+  it('links to the switch and keeps local rebuild disabled without duplicating the off notice', async () => {
     const { map, props } = setup();
     map.modelStatus.mockResolvedValue({ ok: false, error: 'local-inference-disabled' });
     render(<MemoryView {...props} />);
-    expect(await screen.findByText(ko['memoryMap.error.local-inference-disabled'])).toBeVisible();
+    expect(await screen.findByRole('button', { name: '메모리 임베딩 설정' })).toBeEnabled();
+    expect(screen.queryByText(ko['memoryMap.error.local-inference-disabled'])).toBeNull();
     expect(screen.getByRole('button', { name: '지도 다시 만들기' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '메모리 임베딩 설정' })).toBeEnabled();
     expect(map.build).not.toHaveBeenCalled();

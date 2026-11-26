@@ -160,13 +160,15 @@ export function createLoopRationaleBindings(input: {
   };
 }
 
-export function createIsolatedConversationMemoryManagers(): IsolatedConversationMemoryManagers {
+export function createIsolatedConversationMemoryManagers(isSearchIndexEnabled?: () => boolean): IsolatedConversationMemoryManagers {
   const sideChatMemoryManager = new MemoryManager({
     aveDir: openFeatureNamespace("side-chat").dir,
+    isSearchIndexEnabled,
   });
   sideChatMemoryManager.load();
   const subAgentMemoryManager = new MemoryManager({
     aveDir: openFeatureNamespace("subagent").dir,
+    isSearchIndexEnabled,
   });
   subAgentMemoryManager.load();
   return { sideChatMemoryManager, subAgentMemoryManager };

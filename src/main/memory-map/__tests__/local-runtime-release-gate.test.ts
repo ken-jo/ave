@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setProcessPlatform } from '../../../__tests__/support/process-platform.js';
 import { registerMxcReleaseGateEvidence } from '../../../permissions/mxc-extension-admission.js';
+import { isSessionIndexingEnabled } from '../../../permissions/windows-background-features.js';
 import type { SandboxWindowsExtensionPlan, SandboxWindowsSubstrateInfo } from '../../../shared/sandbox-capability-info.js';
-import { assertLocalEmbeddingRuntime } from '../local-runtime.js';
+import { assertLocalEmbeddingRuntime, isLocalInferenceSwitchAvailable } from '../local-runtime.js';
 
 const state = vi.hoisted(() => ({
   confined: false, homeVerified: true,
@@ -50,6 +51,7 @@ describe('Windows local inference release gate', () => {
     unregister = registerMxcReleaseGateEvidence(EVIDENCE);
     state.plan = { selectedBackend: 'mxc', readiness: 'ready', reason: 'ready' };
     expect(assertLocalEmbeddingRuntime(false)).toBe('mxc');
+    expect(isLocalInferenceSwitchAvailable()).toBe(false);
   });
 
   it('defaults to the host child with confirmed backend absence and honours explicit false', () => {
@@ -65,6 +67,32 @@ describe('Windows local inference release gate', () => {
     unregister = registerMxcReleaseGateEvidence(EVIDENCE);
     state.confined = true;
     expect(assertLocalEmbeddingRuntime(false)).toBe('offline-sandbox');
+    expect(isLocalInferenceSwitchAvailable()).toBe(false);
+  });
+
+  it('keeps session indexing unchanged until complete packaged evidence is registered', () => {
+    expect(isSessionIndexingEnabled(false)).toBe(true);
+    unregister = registerMxcReleaseGateEvidence({ ...EVIDENCE, noWorkerPort: false });
+    expect(isSessionIndexingEnabled(false)).toBe(true);
+  });
+
+  it('defaults session indexing on and stops it independently of inference on a released PC without a backend', () => {
+    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    expect(isSessionIndexingEnabled(undefined)).toBe(true);
+    expect(isSessionIndexingEnabled(true)).toBe(true);
+    expect(isSessionIndexingEnabled(false)).toBe(false);
+    expect(assertLocalEmbeddingRuntime()).toBe('unconfined');
+    state.substrate = { mxc: { state: 'available' }, srtWinReady: false };
+    expect(isSessionIndexingEnabled(false)).toBe(true);
+    setProcessPlatform('linux');
+    expect(isSessionIndexingEnabled(false)).toBe(true);
+  });
+
+  it('accepts definitive boot absence even while the extension release pin is in place', () => {
+    unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+    state.plan = { selectedBackend: 'none', readiness: 'unavailable', reason: 'native-validation-required' };
+    expect(isLocalInferenceSwitchAvailable()).toBe(true);
+    expect(assertLocalEmbeddingRuntime()).toBe('unconfined');
   });
 
   it.each([
