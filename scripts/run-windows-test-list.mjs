@@ -10,7 +10,8 @@ import { CENSUS_TIER_TESTS, NATIVE_TIER_TESTS } from "./lib/vitest-tiers.mjs";
 // each suite to exactly one of them, so a new suite needs no list edit.
 // The default shards run every suite outside the native tier; the tier shards
 // run the native tier and the census when the build job selected them.
-export const WINDOWS_TEST_SHARDS = [1, 2, 3, 4, 5, 6];
+export const WINDOWS_TEST_SHARDS = [1, 2, 3, 4, 5, 6, 7, 8];
+export const WINDOWS_TEST_WORKERS = 2;
 export const WINDOWS_TIER_TEST_SHARDS = [1, 2, 3];
 const WINDOWS_PLAN_TIERS = ["native", "census"];
 

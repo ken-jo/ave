@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parse } from "yaml";
-import { WINDOWS_TEST_SHARDS, WINDOWS_TIER_TEST_SHARDS } from "../../scripts/run-windows-test-list.mjs";
+import { WINDOWS_TEST_SHARDS, WINDOWS_TEST_WORKERS, WINDOWS_TIER_TEST_SHARDS } from "../../scripts/run-windows-test-list.mjs";
 import { collectedVitestFiles } from "../../scripts/lib/vitest-collection.mjs";
 import { windowsPowerShellEnv, windowsPowerShellPath } from "../../scripts/lib/windows-powershell-env.mjs";
 
@@ -566,6 +566,9 @@ export function checkWindowsWorkflow(workflow, inspect) {
   const tierJob = jobs[TIER_JOB];
   checkTierSelection(jobs, `${TIER_SELECTION} && ${prepared}`);
   checkValidationJobs(jobs, `(${platform} || ${TIER_SELECTION}) && ${prepared}`);
+  if (job.env?.AVE_VITEST_MAX_WORKERS !== String(WINDOWS_TEST_WORKERS)) {
+    throw new Error(`${CONTAINED_JOB}: worker count must match the Windows planner`);
+  }
   for (const [testJob, shards, tier] of [[job, WINDOWS_TEST_SHARDS, undefined], [tierJob, WINDOWS_TIER_TEST_SHARDS, "tiers"]]) {
     const strategy = testJob?.strategy;
     if (strategy?.["fail-fast"] !== false || Object.keys(strategy.matrix ?? {}).length !== 1
