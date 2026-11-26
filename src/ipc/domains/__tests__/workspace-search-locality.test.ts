@@ -9,6 +9,7 @@ const fixture = vi.hoisted(() => ({
   cwd: "",
   query: undefined as undefined | { mock: { calls: unknown[][] } },
   atWalk: [] as string[],
+  atCollect: [] as string[],
 }));
 
 vi.unmock("../../../shared/windows-drive-locality.js");
@@ -23,11 +24,21 @@ vi.mock("../../../permissions/permission-settings-store.js", async (original) =>
   ...await original<typeof import("../../../permissions/permission-settings-store.js")>(),
   readPermissionSettings: () => ({ permissions: { additionalDirectories: [], pendingWorkspaceRootRemovals: [] } }),
 }));
-vi.mock("../workspace-file-search.js", async (original) => ({
-  ...await original<typeof import("../workspace-file-search.js")>(),
-  searchWorkspaceFiles: vi.fn(async () => {
-    fixture.atWalk = (fixture.query?.mock.calls ?? []).map(([drive]) => String(drive).toUpperCase());
-    return { truncated: false, matches: [] };
+vi.mock("../workspace-file-search.js", async (original) => {
+  const actual = await original<typeof import("../workspace-file-search.js")>();
+  return {
+    ...actual,
+    searchWorkspaceFiles: vi.fn((...args: Parameters<typeof actual.searchWorkspaceFiles>) => {
+      fixture.atWalk = (fixture.query?.mock.calls ?? []).map(([drive]) => String(drive).toUpperCase());
+      return actual.searchWorkspaceFiles(...args);
+    }),
+  };
+});
+vi.mock("../../../tools/file-tools.js", async (original) => ({
+  ...await original<typeof import("../../../tools/file-tools.js")>(),
+  collectFiles: vi.fn(async () => {
+    fixture.atCollect = (fixture.query?.mock.calls ?? []).map(([drive]) => String(drive).toUpperCase());
+    return { ok: true, value: { files: [], truncated: false } };
   }),
 }));
 
@@ -59,5 +70,13 @@ describe.runIf(process.platform === "win32")("workspace folder search judged onc
     expect(await handler?.({ sender: { id: 1 } }, "notes", { folder: join(fixture.cwd, "src") })).toEqual({ ok: true, truncated: false, matches: [] });
     expect(fixture.atWalk.length).toBeGreaterThan(0);
     expect(fixture.atWalk).toEqual([...new Set(fixture.atWalk)]);
+  });
+
+  it("carries the checked native folder and root to collection without another drive query", async () => {
+    query.mockClear();
+    const handler = fixture.handlers.get(CHANNELS.workspace.searchFiles);
+    expect(await handler?.({ sender: { id: 1 } }, "notes", { folder: join(fixture.cwd, "src") })).toEqual({ ok: true, truncated: false, matches: [] });
+    expect(fixture.atCollect.length).toBeGreaterThan(0);
+    expect(fixture.atCollect).toEqual([...new Set(fixture.atCollect)]);
   });
 });

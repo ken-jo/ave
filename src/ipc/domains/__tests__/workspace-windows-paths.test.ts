@@ -198,7 +198,7 @@ describe("workspace search path identities", () => {
   it("keeps the folder search response root native", async () => {
     const result = await searchWorkspaceFiles({
       query: "notes", roots: [FOLDED_ROOT], cwd: fixture.cwd, extraAllowed: [fixture.root],
-      folder: { path: `${fixture.root}\\src`, root: FOLDED_ROOT },
+      folder: { path: `${fixture.root}\\src`, root: resolvePathForPolicy(FOLDED_ROOT) },
     });
     expect(result.matches[0]?.root).toBe(fixture.root);
   });

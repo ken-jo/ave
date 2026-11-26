@@ -90,7 +90,7 @@ export async function searchWorkspaceFiles(args: {
   cwd: string;
   extraAllowed: readonly string[];
   /**
-   * Search one folder instead of every root. The caller has already proved it lies inside `root`. The folder itself is
+   * Search one folder instead of every root. The caller supplies the native paths it checked for containment. The folder itself is
    * walked, fresh each time, so the walk limit and the match cap apply to that folder alone (a large sibling cannot use
    * them up), a file created a moment ago is found, and only file names are matched.
    */
@@ -103,10 +103,7 @@ export async function searchWorkspaceFiles(args: {
   let truncated = false;
   const folder = args.folder;
   if (folder) {
-    const { root, path } = withLocalityDecision(() => ({
-      root: resolvePathForPolicy(folder.root),
-      path: resolvePathForPolicy(folder.path),
-    }));
+    const { root, path } = folder;
     const listed = await collectFiles(path, MAX_FILES_PER_ROOT);
     if (listed.ok) {
       truncated = listed.value.truncated;

@@ -31,6 +31,7 @@ const h = vi.hoisted(() => ({
   issuedHome: vi.fn((cwd: string, home: string | undefined): boolean => cwd === home),
   // Notified as each launch pass checks the HOME and the declared state; the test reads which decision each ran in.
   observe: undefined as undefined | ((check: string) => void),
+  afterTransport: undefined as undefined | (() => void),
 }));
 vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/mxc-runtime-root.js")>(),
@@ -169,10 +170,18 @@ vi.mock("../../permissions/asrt-sandbox.js", () => ({
   getUserReadDenies: h.userDenies,
   getWindowsProxyPortRange: () => [60080, 60089],
 }));
-vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../permissions/mxc-windows.js")>()),
-  resolveHostWxcExecPath: h.wxcExec,
-}));
+vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../permissions/mxc-windows.js")>();
+  return {
+    ...actual,
+    resolveHostWxcExecPath: h.wxcExec,
+    openMxcRequestTransport: async (...args: Parameters<typeof actual.openMxcRequestTransport>) => {
+      const transport = await actual.openMxcRequestTransport(...args);
+      h.afterTransport?.();
+      return transport;
+    },
+  };
+});
 
 import { prepareMxcShellLaunch, type PrepareMxcShellLaunchInput } from "../mxc-shell-launch.js";
 import { createContainedShellLifecycle } from "../contained-shell-lifecycle.js";
@@ -231,6 +240,26 @@ afterEach(() => {
 });
 
 describe("prepareMxcShellLaunch", () => {
+  it("refuses activation after a read grant moves during request transport setup", async () => {
+    relay();
+    const read = String.raw`C:\work\reading`;
+    const replacement = String.raw`C:\work\replacement`;
+    onDrive(read);
+    onDrive(replacement);
+    h.afterTransport = () => { onDrive(read, "link", replacement); };
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const launch = await prepareMxcShellLaunch({
+        ...INPUT,
+        filesystem: { ...INPUT.filesystem, allowRead: [read] },
+      }, lifecycle);
+      expect(() => launch.activate()).toThrow();
+      expect(h.openRelay.mock.calls[0]?.[1].acceptsConnections()).toBe(false);
+    } finally {
+      h.afterTransport = undefined;
+      await lifecycle.dispose();
+    }
+  });
   it("checks the HOME and the declared state of each launch pass in one decision", async () => {
     relay();
     const owner = {};

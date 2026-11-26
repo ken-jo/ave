@@ -4263,7 +4263,7 @@ async function spawnPowerShellInMxc(
     if (detectMxcShellCapability() === undefined) throw new Error("Container shell route is no longer available");
     const [cmd, ...args] = launch.argv;
     if (cmd === undefined) throw new Error("Container launcher is missing");
-    launch.activate();
+    boundarySnapshot.run(() => launch.activate());
     try {
       child = spawn(cmd, args, {
         // The launcher runs from its own (per-machine, admin-only) directory, so

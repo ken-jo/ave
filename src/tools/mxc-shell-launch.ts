@@ -1,6 +1,7 @@
 // Prepare invocation-scoped container launch resources. The invocation's lifecycle closes the proxy only after the launcher and its job
 // have exited, so a surviving process can never reach a port reused by another invocation.
-import { withLocalityDecision } from "../shared/local-path-io.js";
+import { sealTargetObservation } from "../permissions/target-seal.js";
+import { resolvePathForPolicy } from "../permissions/sensitive-paths.js";
 import { win32 as winPath } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
@@ -151,7 +152,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     return insideOwnWindowsSandboxHome(issuedHome.home, issuedHome.home) ? held : undefined;
   };
   // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.
-  const grants = withLocalityDecision(() => {
+  const { observation: { grants }, seal } = sealTargetObservation(() => {
     const insideBoundary = (path: string): boolean => aveHomeReadBoundaryCovering(path) !== undefined;
     // The container runtime root is closed to reads and writes alike: a grant inside it would outrank its deny. Only this invocation's own HOME is granted there, and the deny is restated so it holds beneath a granted ancestor.
     const privateRoots = appOwnedSandboxPrivateRoots();
@@ -162,14 +163,18 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     // No working directory inside the root except the invocation's own issued HOME itself, by identity.
     if (privateRootCovering(input.cwd) !== undefined && !isIssuedContainerHome(input.cwd, input.sandboxHome)) throw new Error("Container shell working directory is inside the sandbox runtime root");
     // Before ranking: the runtime root is only an ordinary read deny there, which an equal or enclosing write survives.
-    assertWriteGrantsOutsideConfinementState(input.filesystem.allowWrite, declaredConfinementStatePaths(), undefined, ownHome());
+    const home = ownHome();
+    const statePaths = declaredConfinementStatePaths();
+    assertWriteGrantsOutsideConfinementState(input.filesystem.allowWrite, statePaths, undefined, home);
     const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
     const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
     const denyRead = [...new Set([...input.filesystem.denyRead, ...privateRoots])];
     const userDenyRead = getUserReadDenies();
     const protectedFloor = getProtectedReadDenyFloor().filter((path) => !userDenyRead.includes(path));
-    return rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, denyRead, protectedFloor, userDenyRead }));
-  });
+    const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, denyRead, protectedFloor, userDenyRead }));
+    assertWriteGrantsOutsideConfinementState(grants.readwrite, statePaths, undefined, home);
+    return { cwd: resolvePathForPolicy(input.cwd), home, grants };
+  }, JSON.stringify);
   assertAdmission();
   const relay = await openHostEgressListener(token, admission);
   assertAdmission();
@@ -182,14 +187,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   });
   assertAdmission();
   relay.registerPort(listener.port);
-  // Again on what the request grants, after the waits above: no pin holds a shell root, so this is the last check, one judgment.
-  withLocalityDecision(() => {
-    assertIssuedContainerHomeInPlace(input.sandboxHome);
-    if (protectedReadDenyMatcher(appOwnedSandboxPrivateRoots())(input.cwd) !== undefined && !isIssuedContainerHome(input.cwd, input.sandboxHome)) {
-      throw new Error("Container shell working directory is inside the sandbox runtime root");
-    }
-    assertWriteGrantsOutsideConfinementState(grants.readwrite, declaredConfinementStatePaths(), undefined, ownHome());
-  });
+  seal.verify();
   const systemRoot = windowsSystemRoot();
   const env: Record<string, string> = { ...input.env };
   if (!Object.keys(env).some((key) => key.toUpperCase() === "SYSTEMROOT")) env["SYSTEMROOT"] = systemRoot;
@@ -209,6 +207,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     proxyPort: listener.port,
     activate: () => {
       assertAdmission();
+      seal.verify();
       active = true;
     },
     bindChild: transport.bindChild,

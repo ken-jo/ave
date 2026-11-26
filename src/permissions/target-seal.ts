@@ -12,10 +12,18 @@ export interface TargetSeal {
 
 /** Seal what `observe` reports now. Inside a running decision the seal shares that decision's observations. */
 export function sealTargets(observe: () => string): TargetSeal {
-  const expected = withLocalityDecision(observe);
+  return sealTargetObservation(observe, (identity) => identity).seal;
+}
+
+export function sealTargetObservation<T>(observe: () => T, identity: (observation: T) => string): { observation: T; seal: TargetSeal } {
+  const observation = withLocalityDecision(observe);
+  const expected = identity(observation);
   return {
-    verify: () => {
-      if (withLocalityDecision(observe) !== expected) throw new Error("Target identity changed");
+    observation,
+    seal: {
+      verify: () => {
+        if (identity(withLocalityDecision(observe)) !== expected) throw new Error("Target identity changed");
+      },
     },
   };
 }
