@@ -658,6 +658,23 @@ describe("ConversationLoop onTurnSummary", () => {
       expect(summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([unavailable]);
     });
 
+    it("applies a configured path's report only to answers from under that path, on a vendor's own host too", async () => {
+      // No catalog entry: only the endpoint's own list can price it.
+      const model = "lab/unlisted-model";
+      const tenantA = "https://api.openai.com/v1/tenant-a";
+      const reported = { source: "endpoint-report", rates: { inputPer1M: 3, outputPer1M: 4 } };
+      const own = vi.fn<typeof fetch>(async () => chatAnswer(model));
+      const served = await runOn(new VercelUnifiedProvider("openai", "fixture-key", tenantA, own), configuredProxy(tenantA, model));
+      expect(String(own.mock.calls[0]?.[0])).toBe(`${tenantA}/chat/completions`);
+      expect(served.summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([reported]);
+      // Another tenant of the same host answers: both lie under the vendor's `/v1`, and that is not enough.
+      const other = vi.fn<typeof fetch>(async () => answeredFrom(chatAnswer(model), "https://api.openai.com/v1/tenant-b/chat/completions"));
+      const moved = await runOn(new VercelUnifiedProvider("openai", "fixture-key", tenantA, other), configuredProxy(tenantA, model));
+      expect(String(other.mock.calls[0]?.[0])).toBe(`${tenantA}/chat/completions`);
+      expect(moved.summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([unavailable]);
+      expect(moved.summary?.modelSettings?.pricing).toEqual(unavailable);
+    });
+
     it("prices a route whose address holds a credential without the credential reaching the turn record", async () => {
       const model = "gpt-3.5-turbo";
       const baseUrl = "https://entry.invalid/gateway/fixture-path-credential/v1";

@@ -1,6 +1,7 @@
 /** The usage a request reports carries what its transport established about where the installed SDK was answered from. */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { configuredEndpointId } from "../../pricing.js";
+import { randomBytes } from "node:crypto";
+import { configuredEndpointId, createConfiguredEndpointIdentifier } from "../../pricing.js";
 import type { StreamEvent, StreamTurnParams } from "../../types.js";
 import { VercelUnifiedProvider } from "../adapter.js";
 import { collectStreamEvents as collect } from "./test-helpers.js";
@@ -109,7 +110,10 @@ describe("served route evidence", () => {
     const transport = vi.fn<typeof fetch>(async () => respond());
     const events = await collect(new VercelUnifiedProvider(vendor, "fixture-key", baseUrl, transport).streamTurn({ ...TURN, model }));
     expect(transport).toHaveBeenCalledOnce();
-    expect(servedRoute(events)).toEqual({ kind: "vendor-native", base });
+    // A configured endpoint is named too, so its own report can be told from another setting's.
+    expect(servedRoute(events)).toEqual({
+      kind: "vendor-native", base, ...(baseUrl !== undefined ? { configuredBaseId: configuredEndpointId(baseUrl) } : {}),
+    });
   });
 
   it.each([
@@ -136,7 +140,7 @@ describe("served route evidence", () => {
     // Another product on the vendor's own host is a configured endpoint, not the vendor's API.
     ["openai", "https://api.openai.com/gateway/v1", () => chat(TURN.model), TURN.model, "/gateway/v1/chat/completions"],
     ["openrouter", "https://openrouter.ai/api/alpha/v1", () => chat(TURN.model), TURN.model, "/api/alpha/v1/chat/completions"],
-  ] as const)("names a configured endpoint only by a digest of its setting: %s at %s", async (vendor, baseUrl, respond, model, sentPath) => {
+  ] as const)("names a configured endpoint only by a keyed id of its setting: %s at %s", async (vendor, baseUrl, respond, model, sentPath) => {
     const transport = vi.fn<typeof fetch>(async () => respond());
     const events = await collect(new VercelUnifiedProvider(vendor, "fixture-key", baseUrl, transport).streamTurn({ ...TURN, model }));
     expect(transport).toHaveBeenCalledOnce();
@@ -161,10 +165,32 @@ describe("served route evidence", () => {
     const direct = vi.fn<typeof fetch>(async () => answeredFrom(chat(TURN.model), `${entry}/chat/completions`));
     expect(servedRoute(await collect(new VercelUnifiedProvider("openai", "fixture-key", entry, direct).streamTurn(TURN))))
       .toEqual({ kind: "configured-endpoint", origin: "https://entry.invalid", configuredBaseId: configuredEndpointId(entry) });
-    // A proxy that hands the request on to the vendor is priced as the vendor.
+    // An answer from outside the configured endpoint establishes nothing, even from the vendor's own API.
     const handedOn = vi.fn<typeof fetch>(async () => answeredFrom(chat(TURN.model), "https://api.openai.com/v1/chat/completions", true));
     expect(servedRoute(await collect(new VercelUnifiedProvider("openai", "fixture-key", entry, handedOn).streamTurn(TURN))))
-      .toEqual({ kind: "vendor-native", base: "https://api.openai.com/v1" });
+      .toEqual({ kind: "unknown", origin: "https://api.openai.com" });
+  });
+
+  it.each([
+    ["openai", "https://api.openai.com/v1/tenant-a", "https://api.openai.com/v1/tenant-b/chat/completions"],
+    // A sibling whose name merely starts the same way is another path segment.
+    ["openai", "https://api.openai.com/v1/tenant-a", "https://api.openai.com/v1/tenant-ab/chat/completions"],
+    ["openai", "https://api.openai.com/v1/tenant-a", "https://api.openai.com/v1/chat/completions"],
+    ["openai-compatible", "https://entry.invalid/v1/tenant-a", "https://entry.invalid/v1/tenant-b/chat/completions"],
+  ] as const)("places nothing when %s configured at %s is answered from %s", async (vendor, baseUrl, answeredAt) => {
+    const transport = vi.fn<typeof fetch>(async () => answeredFrom(chat(TURN.model), answeredAt, true));
+    const events = await collect(new VercelUnifiedProvider(vendor, "fixture-key", baseUrl, transport).streamTurn(TURN));
+    expect(requestUrl(transport.mock.calls[0]?.[0]).href).toBe(`${baseUrl}/chat/completions`);
+    expect(servedRoute(events)).toEqual({ kind: "unknown", origin: new URL(answeredAt).origin });
+  });
+
+  it("names the configured path when a vendor's own host answers from under it", async () => {
+    const baseUrl = "https://api.openai.com/v1/tenant-a";
+    const transport = vi.fn<typeof fetch>(async () => answeredFrom(chat(TURN.model), `${baseUrl}/chat/completions`));
+    const events = await collect(new VercelUnifiedProvider("openai", "fixture-key", baseUrl, transport).streamTurn(TURN));
+    expect(servedRoute(events)).toEqual({
+      kind: "vendor-native", base: "https://api.openai.com/v1", configuredBaseId: configuredEndpointId(baseUrl),
+    });
   });
 
   it.each(["OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"] as const)("sends nothing when %s is set but empty", async (variable) => {
@@ -209,5 +235,29 @@ describe("served route evidence", () => {
     for (const secret of ["fixture-path-credential", "fixture-user-secret", "fixture-query-secret", "/gateway/"]) {
       expect(carried).not.toContain(secret);
     }
+  });
+
+  it("names a setting under a key only this process holds", async () => {
+    const baseUrl = "https://entry.invalid/gateway/fixture-path-credential/v1";
+    const transport = vi.fn<typeof fetch>(async () => chat(TURN.model));
+    const evidence = servedRoute(await collect(new VercelUnifiedProvider("openai-compatible", "fixture-key", baseUrl, transport).streamTurn(TURN)));
+    if (evidence?.kind !== "configured-endpoint") throw new Error(`Unexpected evidence: ${JSON.stringify(evidence)}`);
+    const captured = evidence.configuredBaseId;
+    // The process that produced it matches it again; that is all the query loop needs.
+    expect(captured).toBe(configuredEndpointId(baseUrl));
+    expect(captured).toBe(configuredEndpointId(` ${baseUrl} `));
+    expect(captured).not.toBe(configuredEndpointId(baseUrl.replace("fixture-path-credential", "another-credential")));
+    // Knowing the exact setting is not enough without the key: an unkeyed digest of it,
+    // and the same setting named by another process's key, both miss.
+    const { createHash } = await import("node:crypto");
+    expect(captured).not.toBe(createHash("sha256").update(baseUrl).digest("hex"));
+    const otherProcess = createConfiguredEndpointIdentifier();
+    const anotherProcess = createConfiguredEndpointIdentifier();
+    expect(otherProcess(baseUrl)).not.toBe(captured);
+    expect(otherProcess(baseUrl)).not.toBe(anotherProcess(baseUrl));
+    expect(otherProcess(baseUrl)).toBe(otherProcess(baseUrl));
+    // The key is what decides the name: the same key names the same setting the same way.
+    const key = randomBytes(32);
+    expect(createConfiguredEndpointIdentifier(key)(baseUrl)).toBe(createConfiguredEndpointIdentifier(key)(baseUrl));
   });
 });

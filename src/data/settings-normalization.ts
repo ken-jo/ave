@@ -94,7 +94,6 @@ import {
 } from "./settings-field-accept.js";
 import { normalizeShutdownCleanupTimeoutMs } from "../shared/tool-timeout-policy.js";
 import { normalizePricingOverrides } from "../shared/pricing-overrides.js";
-import { urlIsUnderBase, vendorDefaultApiBase } from "../shared/model-pricing.js";
 import {
   MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH,
   DEFAULT_SUBSCRIPTION_REASONING_SPEED,
@@ -407,14 +406,6 @@ function normalizeLlmModelListCache(
     const fetchedAt = typeof entry.fetchedAt === "string" && entry.fetchedAt.trim()
       ? entry.fetchedAt.trim()
       : new Date(0).toISOString();
-    // A row answers for the endpoint its key names. One whose list was read somewhere
-    // else is not that endpoint's list: its models, limits and prices are dropped, not
-    // attributed, and the next refresh replaces it.
-    const listedFor = baseUrl || vendorDefaultApiBase(entry.vendor);
-    if (listedFor === undefined || !urlIsUnderBase(entry.endpoint, listedFor)) {
-      log.warn(`model list cache: dropped a ${entry.vendor} row whose list address does not belong to its endpoint`);
-      continue;
-    }
     const key = llmModelListCacheKey(entry.vendor, baseUrl, credentialScope);
     result[key] = {
       vendor: entry.vendor,

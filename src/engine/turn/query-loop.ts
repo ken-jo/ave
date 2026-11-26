@@ -2161,14 +2161,17 @@ function toolResultMeta(
 /**
  * A request answered from under a configured endpoint can use the primary route's report
  * only when that endpoint is the primary's own setting. A fallback that keeps the vendor
- * and model but is configured elsewhere, even on the same host, does not qualify.
+ * and model but is configured elsewhere, even on the same host or under the vendor's own
+ * API path, does not qualify. A request on a vendor's default route names its canonical base.
  */
 function servedPricingRoute(evidence: ServedRouteEvidence, primaryBaseUrl: string | undefined): ServedPricingRoute {
-  if (evidence.kind === "vendor-native") return evidence;
-  return evidence.kind === "configured-endpoint" && primaryBaseUrl !== undefined
-    && evidence.configuredBaseId === configuredEndpointId(primaryBaseUrl)
-    ? { kind: "report-endpoint", base: primaryBaseUrl }
-    : { kind: "unknown" };
+  if (evidence.kind === "unknown") return { kind: "unknown" };
+  const servedByPrimarySetting = primaryBaseUrl !== undefined && evidence.configuredBaseId === configuredEndpointId(primaryBaseUrl);
+  if (evidence.kind === "vendor-native") {
+    if (evidence.configuredBaseId === undefined) return { kind: "vendor-native", base: evidence.base };
+    return servedByPrimarySetting ? { kind: "vendor-native", base: primaryBaseUrl } : { kind: "vendor-native" };
+  }
+  return servedByPrimarySetting ? { kind: "report-endpoint", base: primaryBaseUrl } : { kind: "unknown" };
 }
 
 // Record API usage only with a verified serving identity.

@@ -40,6 +40,8 @@ import { DEFAULT_APPEARANCE } from "../../shared/appearance-settings.js";
 import { SIDE_PANEL_MIN_RESERVE } from "../../shared/side-panel.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
+import { resolveModelPricing } from "../../shared/model-pricing.js";
 import {
   DEFAULT_LLM_VENDOR,
   freshAllVendorBlocks,
@@ -92,34 +94,32 @@ describe("bundled provider settings", () => {
     }
   });
 
-  it("drops a cached model list that was read from another address than the endpoint it is filed under", async () => {
+  it("keeps a cached model list filed under another endpoint than it was read from, for every reader but pricing", async () => {
     const userDataPath = mkdtempSync(join(tmpdir(), "model-list-cache-binding-"));
     try {
-      const row = (vendor: string, endpoint: string, baseUrl?: string) => ({
-        vendor, ...(baseUrl ? { baseUrl } : {}), endpoint, models: ["fixture"],
-        modelEntries: [{ id: "fixture", pricing: { prompt: "0.000003", completion: "0.000004" } }],
+      // What a refresh writes when the endpoint is saved between its route snapshot and its request:
+      // filed under the blank default route, read from the endpoint now configured.
+      const proxy = "https://proxy.invalid/v1";
+      const key = llmModelListCacheKey("openai", "");
+      const row = {
+        vendor: "openai", endpoint: `${proxy}/models`, models: ["fixture-discovered"],
+        modelEntries: [{ id: "fixture-discovered", pricing: { prompt: "0.000003", completion: "0.000004" } }],
         fetchedAt: "2026-01-01T00:00:00.000Z",
-      });
-      const serve = "https://serve.invalid/v1";
-      const project = "https://fixture.services.ai.azure.com/api/projects/project-a/openai/v1";
-      const kept = {
-        [llmModelListCacheKey("openai-compatible", serve)]: row("openai-compatible", `${serve}/models`, serve),
-        [llmModelListCacheKey("azure-foundry", project)]: row("azure-foundry", `${project}/models`, project),
-        [llmModelListCacheKey("openai", "")]: row("openai", "https://api.openai.com/v1/models"),
-        [llmModelListCacheKey("claude", "https://proxy.invalid")]: row("claude", "https://proxy.invalid/models", "https://proxy.invalid"),
       };
-      const dropped = {
-        // Another origin.
-        [llmModelListCacheKey("deepseek", serve)]: row("deepseek", "https://listing.invalid/v1/models", serve),
-        // The same host, another project.
-        [llmModelListCacheKey("xai", project)]: row("xai", "https://fixture.services.ai.azure.com/api/projects/project-b/openai/v1/models", project),
-        // A default route whose list did not come from the vendor's default address.
-        [llmModelListCacheKey("gemini", "")]: row("gemini", "https://proxy.invalid/v1beta/models"),
-        [llmModelListCacheKey("claude", "")]: row("claude", "https://eu.api.openai.com/v1/models"),
-      };
-      writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ llm: { modelListCache: { ...kept, ...dropped } } }));
-      const cache = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm").modelListCache;
-      expect(Object.keys(cache).sort()).toEqual(Object.keys(kept).sort());
+      writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ llm: {
+        provider: "openai",
+        vendors: { openai: { model: "fixture-selected", baseUrl: proxy } },
+        modelListCache: { [key]: row },
+      } }));
+      const llm = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm");
+      expect(llm.modelListCache[key]).toMatchObject({ endpoint: row.endpoint, models: row.models });
+      expect(judgeModelCatalogFrom(llm).optionsFor("openai")).toContain("fixture-discovered");
+      // The same row is not price evidence for the default route it is filed under.
+      const listed = llm.modelListCache[key]?.modelEntries?.find((entry) => entry.id === "fixture-discovered");
+      expect(listed?.pricing).toEqual(row.modelEntries[0]?.pricing);
+      expect(resolveModelPricing("openai", "fixture-discovered", [], {
+        reported: listed?.pricing, reportedAt: llm.modelListCache[key]?.endpoint,
+      })).toEqual({ source: "unknown", reason: "endpoint-price-unavailable" });
     } finally {
       await cleanupTmpDir(userDataPath);
     }

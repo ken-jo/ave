@@ -258,9 +258,11 @@ function observeServedRequest(
 }
 
 /**
- * Decide the route class at dispatch and keep only the verdict: the vendor's canonical
- * base, or a digest of the configured endpoint the answer came from under. No part of the
- * request path is kept, so a credential in a configured path does not ride on usage.
+ * Decide the route class at dispatch and keep only the verdict. With a configured endpoint
+ * the answer must come from under that endpoint, by whole path segments: another path of
+ * the same host, or a redirect out of it, establishes nothing. The verdict names the
+ * vendor's canonical base and, for a configured endpoint, a process-keyed id of the
+ * setting. No part of the request path is kept.
  */
 function servedRouteEvidence(
   vendor: LLMVendor,
@@ -276,10 +278,12 @@ function servedRouteEvidence(
     return { kind: "unknown" };
   }
   const base = vendorNativeBase(vendor, servedAddress);
-  if (base !== undefined) return { kind: "vendor-native", base };
-  return configuredBaseUrl !== undefined && sdkBaseUrl !== undefined && urlIsUnderBase(servedAddress, sdkBaseUrl)
-    ? { kind: "configured-endpoint", origin, configuredBaseId: configuredEndpointId(configuredBaseUrl) }
-    : { kind: "unknown", origin };
+  if (configuredBaseUrl === undefined) return base !== undefined ? { kind: "vendor-native", base } : { kind: "unknown", origin };
+  if (sdkBaseUrl === undefined || !urlIsUnderBase(servedAddress, sdkBaseUrl)) return { kind: "unknown", origin };
+  const configuredBaseId = configuredEndpointId(configuredBaseUrl);
+  return base !== undefined
+    ? { kind: "vendor-native", base, configuredBaseId }
+    : { kind: "configured-endpoint", origin, configuredBaseId };
 }
 
 function routelessModelCapabilities(params: {

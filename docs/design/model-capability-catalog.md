@@ -514,29 +514,44 @@ it leaves the request address; one that reports a redirect without a destination
 establishes nothing. The adapter reduces the address to a verdict at once
 (`ServedRouteEvidence` on the request's usage) and keeps no part of the path:
 
-- `vendor-native` with the vendor's canonical base, when the address is under it
-  (`vendorNativeBase`): origin **and** path. The host rule is
+- With **no endpoint configured**, `vendor-native` with the vendor's canonical base when
+  the address is under it (`vendorNativeBase`): origin **and** path. The host rule is
   `allowsImplicitModelLimits` on the origin; the path is the first-party SDK's API
   path (`/v1`, `/v1beta`), the preset's own base, or for Vertex the publisher path on
   the hosts the SDK builds (global, `<region>-aiplatform`, and
-  `aiplatform.{eu,us}.rep.googleapis.com`). Another product on the same host is not
-  the vendor's API.
-- `configured-endpoint` with the origin and a digest of the configured base URL
-  (`configuredEndpointId`), when the address is under the base the SDK was given. The
-  setting itself is not repeated: a base URL can carry a credential in its path.
-- `unknown` otherwise: an SDK environment override, a redirect to another address.
+  `aiplatform.{eu,us}.rep.googleapis.com`). Anything else is `unknown`.
+- With **an endpoint configured**, the address must first lie under the base the SDK was
+  given, by whole path segments. Another path of the same host
+  (`/v1/tenant-b` against a configured `/v1/tenant-a`) and a redirect out of the
+  endpoint, even one that lands on the vendor's own API, are `unknown`. Under it, the
+  verdict is `vendor-native` when the address is also under the vendor's canonical
+  base and `configured-endpoint` (with the origin) otherwise. Both carry
+  `configuredBaseId`, which names the setting without repeating it: a base URL can
+  carry a credential in its path.
+- `unknown` also covers an SDK environment override and a hidden redirect destination.
 
-The query loop turns the evidence into the pricing route. A `configured-endpoint`
-becomes `report-endpoint` only when its digest is the primary route's own setting, so a
-fallback that keeps the vendor and model but is configured elsewhere, even on the same
-host, does not qualify. `resolveModelPricing` then decides:
+`configuredBaseId` is an HMAC of the setting under a random key generated when the
+process loads (`configuredEndpointId` in `engine/llm/pricing.ts`). The key is held in
+memory only and is never written or logged. Producer and consumer are the same process,
+so nothing else needs it; a captured value cannot be tested against candidate URLs, and
+another process names the same setting differently.
+
+The query loop turns the evidence into the pricing route. Evidence that carries a
+`configuredBaseId` counts as the primary route's only when that id names the primary
+route's own setting, so a fallback that keeps the vendor and model but is configured
+elsewhere, even on the same host or under the vendor's own API path, does not bring the
+primary's report with it. The base a report is then checked against is the primary's
+configured endpoint, not the vendor's shared canonical base. `resolveModelPricing`
+decides:
 
 - **Catalog rates** apply only to `vendor-native`.
 - **A report applies** only when the address its model list was read from
   (`reportedPricingEndpoint`, the cache row's `endpoint`) lies under the base that
-  served: same origin, path prefix. The settings normalizer drops a cache row whose
-  `endpoint` is not under the endpoint its key names, with a warning, so a row cannot
-  attribute one address's list to another.
+  served, or before dispatch under the endpoint the row is filed under: same origin,
+  whole path segments. A row filed under one endpoint but read from another (a refresh
+  that raced a settings save can write one) stays in the cache for discovery, the
+  judge's model chooser and every other reader; it is only not price evidence. Where
+  nothing else prices the model the result is `endpoint-price-unavailable`.
 - A fallback's own cached report is not looked up; off its vendor's own base it is
   `endpoint-price-unavailable`.
 

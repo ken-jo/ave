@@ -505,7 +505,38 @@ describe("resolveModelPricing — the route a request was served on decides its 
     expect(resolveModelPricing("openai", model, [], { ...listed, served: native("openai", "https://api.openai.com/v1/responses") }))
       .toEqual(priced);
     expect(resolveModelPricing("openai", model, [], { ...listed, served: native("openai", "https://eu.api.openai.com/v1/responses") }))
-      .toEqual({ source: "unknown" });
+      .toEqual(unavailable);
+  });
+
+  it("applies a list read under the vendor's own path only to the configured path that served", () => {
+    const model = "lab/unlisted-model";
+    const tenantA = "https://api.openai.com/v1/tenant-a";
+    const listed = { baseUrl: tenantA, reported: report, reportedAt: `${tenantA}/models` };
+    expect(resolveModelPricing("openai", model, [], { ...listed, served: { kind: "vendor-native", base: tenantA } })).toEqual(priced);
+    // The vendor's API answered for another setting: the shared canonical base is not that list's address.
+    expect(resolveModelPricing("openai", model, [], { ...listed, served: { kind: "vendor-native" } })).toEqual(unavailable);
+    expect(resolveModelPricing("openai", model, [], { ...listed, served: { kind: "vendor-native", base: "https://api.openai.com/v1/tenant-b" } }))
+      .toEqual(unavailable);
+    // The vendor's catalog still prices a model it lists, whichever setting reached it.
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { ...listed, served: { kind: "vendor-native" } }).source).toBe("model-catalog");
+  });
+
+  it("keeps a list filed under another endpoint than the one it was read from out of pricing, before and after dispatch", () => {
+    const model = "lab/unlisted-model";
+    const proxy = "https://proxy.invalid/v1";
+    // Filed under the vendor's default route, read from a proxy.
+    const misfiled = { reported: report, reportedAt: `${proxy}/models` };
+    expect(resolveModelPricing("openai", model, [], misfiled)).toEqual(unavailable);
+    expect(resolveModelPricing("openai", model, [], { ...misfiled, served: native("openai", "https://api.openai.com/v1/responses") }))
+      .toEqual(unavailable);
+    // Filed under one configured endpoint, read from another origin or another path of the same host.
+    expect(resolveModelPricing("openai-compatible", model, [], { baseUrl: proxy, reported: report, reportedAt: "https://listing.invalid/v1/models" }))
+      .toEqual(unavailable);
+    expect(resolveModelPricing("openai-compatible", model, [], { baseUrl: `${proxy}/tenant-a`, reported: report, reportedAt: `${proxy}/tenant-b/models` }))
+      .toEqual(unavailable);
+    // The same lists where they were read from.
+    expect(resolveModelPricing("openai-compatible", model, [], { baseUrl: proxy, ...misfiled })).toEqual(priced);
+    expect(resolveModelPricing("openai", model, [], { reported: report, reportedAt: "https://api.openai.com/v1/models" })).toEqual(priced);
   });
 
   it("still applies a user correction for the vendor and model on any route", () => {

@@ -17,16 +17,21 @@ export type UnknownModelPricingReason = "endpoint-price-unavailable" | "legacy-r
  * configured path cannot leave the transport through it.
  */
 export type ServedRouteEvidence =
-  /** The response came from the vendor's own API base; `base` is that canonical address. */
-  | { readonly kind: "vendor-native"; readonly base: string }
-  /** The response came from under the provider's configured endpoint, named only by a digest of that setting. */
+  /**
+   * The response came from the vendor's own API base; `base` is that canonical address.
+   * `configuredBaseId` is present when an endpoint was configured and the response came
+   * from under it.
+   */
+  | { readonly kind: "vendor-native"; readonly base: string; readonly configuredBaseId?: string }
+  /** The response came from under the provider's configured endpoint, named only by a process-keyed id of that setting. */
   | { readonly kind: "configured-endpoint"; readonly origin: string; readonly configuredBaseId: string }
-  /** Neither could be established: a redirect elsewhere, or an address nothing configured. */
+  /** Neither could be established: a redirect out of the configured endpoint, or an address nothing configured. */
   | { readonly kind: "unknown"; readonly origin?: string };
 
 /** The served route as pricing judges it; `base` values come from settings or the canonical table. */
 export type ServedPricingRoute =
-  | { readonly kind: "vendor-native"; readonly base: string }
+  /** `base` is the endpoint whose model list may price it; absent when another endpoint's setting served. */
+  | { readonly kind: "vendor-native"; readonly base?: string }
   /** Served by the configured endpoint the route's model list is keyed on. */
   | { readonly kind: "report-endpoint"; readonly base: string }
   | { readonly kind: "unknown" };
@@ -249,10 +254,16 @@ export function resolveModelPricing(
     : allowsImplicitModelLimits(vendor, route?.baseUrl);
   const needsEndpointPrice = !routeEstablishesModel
     || (route !== undefined && (!isLLMVendor(vendor) || !vendorHasCatalogProvider(vendor)));
-  // A report prices only the endpoint that listed it. Before dispatch the cache key binds
-  // the two; after it, the list's own address must lie under the base that served.
-  const reportApplies = served === undefined
-    || (served.kind !== "unknown" && route?.reportedAt !== undefined && urlIsUnderBase(route.reportedAt, served.base));
+  // A report prices only the endpoint that listed it: the list's own address must lie
+  // under the base that served, or before dispatch under the base the route projects.
+  // A list filed under one endpoint but read from another is kept for everything else
+  // and is simply not price evidence.
+  const reportBase = served === undefined
+    ? route?.baseUrl?.trim() || vendorDefaultApiBase(vendor)
+    : served.kind === "unknown" ? undefined : served.base;
+  const reportApplies = served === undefined && route?.reportedAt === undefined
+    ? true
+    : route?.reportedAt !== undefined && reportBase !== undefined && urlIsUnderBase(route.reportedAt, reportBase);
   const reportedRates = route?.reported !== undefined && reportApplies
     ? endpointTokenRates(route.reported)
     : undefined;
@@ -269,6 +280,8 @@ export function resolveModelPricing(
     return { source: "model-catalog", rates: catalogRates, catalogEntry };
   }
   if (reportedRates !== undefined) return { source: "endpoint-report", rates: reportedRates };
+  // A report exists but belongs to another address: say so, as for any route without its own price.
+  if (route?.reported !== undefined && !reportApplies) return { source: "unknown", reason: "endpoint-price-unavailable" };
   return catalogEntry !== undefined && catalogRates !== undefined
     ? { source: "unknown", catalogListsZero: catalogEntry }
     : { source: "unknown" };
