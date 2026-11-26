@@ -1659,7 +1659,7 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(cleanup).toContain(
       "[System.IO.File]::Move($shortcutPath, $quarantinePath)",
     );
-    expect(cleanup).toContain("[System.IO.File]::Delete($entry.Path)");
+    expect(cleanup).toContain("SetFileInformationByHandle(stream.SafeFileHandle, FileDispositionInfo");
     expect(cleanup).toContain(
       "[System.IO.File]::Move($quarantinePath, $shortcutPath)",
     );
@@ -1721,9 +1721,9 @@ describe("Windows NSIS installer smoke contracts", () => {
     );
     expect(finalShortcutCheck).toBeGreaterThanOrEqual(0);
     expect(finalToastCheck).toBeGreaterThan(finalShortcutCheck);
-    expect(cleanup.indexOf("[System.IO.File]::Delete($entry.Path)")).toBeGreaterThan(
-      finalToastCheck,
-    );
+    const quarantineIdentityCheck = cleanup.indexOf("$deleteFile.Matches($verifiedFile, $digest)");
+    expect(quarantineIdentityCheck).toBeGreaterThan(finalToastCheck);
+    expect(cleanup.indexOf("$deleteFile.Delete()")).toBeGreaterThan(quarantineIdentityCheck);
 
     expect(earlyBoot).toContain(
       '"{62FD3EFB-B3D2-4235-9402-6979F52C0286}"',
