@@ -186,6 +186,21 @@ describe.runIf(process.platform === "win32")("host shell spawn directory hold", 
     expect(existsSync(join(root, "ran"))).toBe(false);
   });
 
+  it("refuses a hold pipe whose server is not the named helper", async () => {
+    const held = await holdLeaf();
+    const target = held.command(process.execPath, ["-e", "require('fs').writeFileSync('ran', '')"]);
+    const args = [...target.args];
+    args[2] = String(process.pid);
+    const child = spawn(target.executable, args, { cwd: root, stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    await closed(child);
+    expect(child.exitCode).toBe(125);
+    expect(stderr).toContain("cwd-pin-lost");
+    expect(existsSync(join(root, "ran"))).toBe(false);
+    held.dispose();
+  });
+
   it("releases once however close, dispose and helper loss interleave", async () => {
     for (const order of ["close-first", "loss-first"] as const) {
       const held = await holdLeaf();
