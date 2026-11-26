@@ -3525,7 +3525,8 @@ in its directory.
   it exists; an approved file tool can still create the directory.
   The three [required Windows write denies](permission-policy-design.md#os-shell-sandbox-policy)
   are exact. A missing parent for one of these rows refuses the covering
-  write grant for the launch.
+  write grant for the launch, except a missing project `.ave` carrier: its
+  `commands` and `hooks` children are watched and quarantined after creation.
   Literal denies apply throughout the command.
   Pattern denies are enumerated at launch; a file another process creates during a command's lifetime that first matches the pattern is not covered until the next command.
   In the six installed x64 runs observed on 2026-11-11, node opens of the Ave
