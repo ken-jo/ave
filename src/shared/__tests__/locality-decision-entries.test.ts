@@ -13,6 +13,8 @@ const entries: Readonly<Record<string, readonly string[]>> = {
   "src/permissions/rules/shell-exfiltration.ts": ["inspectStatement(statement, cwd, context, single", "fileTransferOption(originalToken)", "nativePathProbe(candidate, cwd, context)"],
   "src/permissions/rules/powershell-exfiltration.ts": ["inspectParsed(asPowerShellCommand(input)", "inspectPowerShellPermissionPathsInDecision(...args)"],
   "src/tools/shell-path-policy.ts": ["findShellPathPolicyViolationInDecision(...args)"],
+  "src/tools/pipeline/path-extraction.ts": ["findShellPathPolicyViolation("],
+  "src/tools/shell-tools.ts": ["findPowerShellAstPathViolationInDecision("],
   "src/permissions/rules/scoped-rule-matcher.ts": ["editPaths(subject, root)", "editDepthCandidatesInDecision(path, cwd)"],
   "src/permissions/permission-manager.ts": ["this.evaluatePermissionInDecision(", "pathGrantRemovalMatcher(root, options?.preserveRoots)", "isAdmissionDeniedPath(target.canonicalPath, args.effect)"],
   "src/tools/invocation-runner.ts": ["targetFilePaths.map(resolveFileTarget)", "PermissionManager.checkPathScope(", "assertFileTargetsUnchanged()"],

@@ -1,4 +1,5 @@
 import type { ShellExecutionFacts } from "../../shared/shell-execution.js";
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { resolve as pathResolve } from "node:path";
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
 import type { Tool } from "../base.js";
@@ -58,16 +59,18 @@ export function shellPathPolicyViolation(
   const resolvedCwd = cwdValue
     ? pathResolve(sandboxRoot, cwdValue)
     : sandboxRoot;
-  for (const command of commands) {
-    const violation = findShellPathPolicyViolation(
-      command,
-      resolvedCwd,
-      sandboxRoot,
-      allowedDirectories,
-      blockReadsOutsideWorkingDirectories,
-      facts,
-    );
-    if (violation) return violation;
-  }
-  return null;
+  return withLocalityDecision(() => {
+    for (const command of commands) {
+      const violation = findShellPathPolicyViolation(
+        command,
+        resolvedCwd,
+        sandboxRoot,
+        allowedDirectories,
+        blockReadsOutsideWorkingDirectories,
+        facts,
+      );
+      if (violation) return violation;
+    }
+    return null;
+  });
 }

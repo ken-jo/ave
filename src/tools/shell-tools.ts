@@ -53,6 +53,7 @@ import { buildHostShellChildEnv, buildSafeChildEnv, buildSandboxedChildEnv } fro
 import { assertPreparedShellAvailable, prepareShellInvocation, matchesPreparedShellInvocation, preparedShellFacts, preparedShellToolUseId, preparedShellCommand, preparedShellCwdProbe, bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, preparedSandboxBootstrap, preparedSandboxEnvironment, disposePreparedShellInvocation, claimPreparedShellInvocation, transferPreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { POWER_SHELL_AST_PARSER, normalizePowerShellAstSummary, type PowerShellArgument, type PowerShellAstSummary } from "./powershell-ast.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import {
   isDefinitePowerShellRecursion,
   isPowerShellParameterPrefix,
@@ -3696,7 +3697,11 @@ function isPowerShellForce(parameter: PowerShellParameter): boolean {
   return isPowerShellParameterPrefix(parameter, "force", 2) && isPowerShellSwitchEnabled(parameter);
 }
 
-export function findPowerShellAstPathViolation(
+export function findPowerShellAstPathViolation(...args: Parameters<typeof findPowerShellAstPathViolationInDecision>): ShellPathPolicyViolation | null {
+  return withLocalityDecision(() => findPowerShellAstPathViolationInDecision(...args));
+}
+
+function findPowerShellAstPathViolationInDecision(
   ast: PowerShellAstSummary, cwd: string, sandboxRoot: string, extraAllowedDirectories: readonly string[],
   blockReadsOutsideWorkingDirectories: boolean,
   source?: string,
@@ -3784,10 +3789,19 @@ function powerShellHostScriptReadPaths(ast: PowerShellAstSummary, source?: strin
 }
 
 export async function findPowerShellCommandPathViolation(
-  command: string, cwd: string, sandboxRoot: string, extraAllowedDirectories: readonly string[],
+  input: string | readonly string[], cwd: string, sandboxRoot: string, extraAllowedDirectories: readonly string[],
   blockReadsOutsideWorkingDirectories: boolean,
 ): Promise<ShellPathPolicyViolation | null> {
-  return findPowerShellAstPathViolation(await parsePowerShellAst(command), cwd, sandboxRoot, extraAllowedDirectories, blockReadsOutsideWorkingDirectories, command);
+  const commands = typeof input === "string" ? [input] : input;
+  const parsed: { command: string; ast: PowerShellAstSummary }[] = [];
+  for (const command of commands) parsed.push({ command, ast: await parsePowerShellAst(command) });
+  return withLocalityDecision(() => {
+    for (const { command, ast } of parsed) {
+      const violation = findPowerShellAstPathViolationInDecision(ast, cwd, sandboxRoot, extraAllowedDirectories, blockReadsOutsideWorkingDirectories, command);
+      if (violation) return violation;
+    }
+    return null;
+  });
 }
 
 function savedSessionReadNotices(root: string | undefined, readPaths: readonly string[]): readonly string[] {
