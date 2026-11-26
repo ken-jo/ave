@@ -127,15 +127,17 @@ One per-user lock replaces repeated scans.
   `.<name>.ave-uninstall-<id>.lnk` and deleted only after the final read. The
   final shortcut check denies writes and replacement while reading the shell
   properties. The deletion handle checks the same file identity and contents
-  before marking that handle for deletion. A failure before any registry delete
-  moves it back. A failure after a delete
-  leaves it in quarantine as the record of the started cleanup. The next
-  cleanup lists such entries with `Get-QuarantinedShortcuts` and re-verifies
-  each through `Get-OwnedShortcutClsid`. An exact owned entry is resumed in
-  place. Its CLSID becomes a candidate and the entry is deleted after the
-  final read, even when the original path is occupied again. Any other entry
-  (not a regular file, unreadable, or not
-  exactly owned) is left untouched and reported as `foreign-preserved` /
+  before marking that handle for deletion. On a failure before the first
+  registry delete attempt, cleanup makes a best-effort move of the shortcut
+  it parked during that run back to the original path. The move never
+  overwrites a reoccupied path, so a still-parked shortcut stays in quarantine
+  in that case. After a registry delete has been attempted, cleanup skips
+  restoration, including when the first delete fails. The next cleanup lists
+  parked entries with `Get-QuarantinedShortcuts` and re-verifies each through
+  `Get-OwnedShortcutClsid`. An exact owned entry is resumed in place. Its
+  CLSID becomes a candidate and the entry is deleted after the final read,
+  even when the original path is occupied again. Any non-regular, unreadable,
+  or inexact entry is left untouched and reported as `foreign-preserved` /
   `shortcut-quarantine`.
 - **Exit codes.** 0: everything attributable is verified removed. 2: the same,
   and at least one unattributable quarantine entry was left untouched;
