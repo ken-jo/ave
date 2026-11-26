@@ -3148,10 +3148,17 @@ async function discardFailedAsrtInitialization(
 }
 
 // Initialize once from trusted settings and publish activity only after native execution succeeds. Empty global allow lists plus non-strict mode route each connection to the ask callback; on macOS/Linux accept only listener-vouched identities and literal true allows. Log monitoring defaults off.
-function windowsDenyTargetPresent(path: string): boolean {
+function windowsDenyTargetPresent(path: string, admitted = false): boolean {
+  let entry: ReturnType<typeof admitLocalPath>;
   try {
-    const entry = admitLocalPath(path);
+    entry = admitLocalPath(path);
     admitLocalRoute(dirname(path));
+  } catch (error) {
+    rethrowLocalityFailure(error);
+    if (admitted) throw error;
+    return true;
+  }
+  try {
     return localFs.lstat(entry) !== undefined;
   } catch (error) {
     rethrowLocalityFailure(error);
@@ -3167,13 +3174,13 @@ function denyStampSpellings(entries: readonly FilesystemPathEntry[]): string[] {
 }
 
 // The only gate between Ave and the native stamp: an absent literal row there would be created as a placeholder. Never reached by a shipping caller; a hit is a policy bug or a race and fails closed.
-function assertWindowsDenyTargetsPresent(paths: readonly string[]): void {
+function assertWindowsDenyTargetsPresent(paths: readonly string[], admitted = false): void {
   if (process.platform !== "win32") return;
   withLocalityDecision(() => {
     for (const path of paths) {
       const spelling = stripExtendedPathPrefix(path);
       if (isUncPath(spelling) || containsGlobCharsWin(spelling) || !isAbsolute(spelling)) continue;
-      if (!windowsDenyTargetPresent(spelling)) throw new Error(`Windows deny target is absent and would be created: ${spelling}`);
+      if (!windowsDenyTargetPresent(spelling, admitted)) throw new Error(`Windows deny target is absent and would be created: ${spelling}`);
     }
   });
 }
@@ -3933,7 +3940,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     }
     // An absent row is watched, never stamped: the native stamp would create it.
     return [...distinct.values()].filter(row => {
-      if (windowsDenyTargetPresent(row.path)) return true;
+      if (windowsDenyTargetPresent(row.path, true)) return true;
       if (requiredRows.has(windowsReadDenyKey(row.path))) {
         throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: row.path }));
       }
@@ -3944,7 +3951,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   }));
   const targets = rows.map(row => row.path);
   timing.rows = rows.length;
-  assertWindowsDenyTargetsPresent(targets);
+  assertWindowsDenyTargetsPresent(targets, true);
   assertWindowsPolicyBudget({ denyWrite: targets }, hasConfiguredDenies(settings));
   assertWindowsGrantDenySnapshot(session, revision, allowWrite);
   const previous = timeStep("denyReadMs", () => readWindowsDenyAcls(targets, sandboxUserSid));
@@ -3969,6 +3976,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     }
     // Verify even after a partial stamp. Never release the session holder on failure.
     try {
+      assertWindowsDenyTargetsPresent(targets, true);
       const native = timeStep("denyReadMs", () => readWindowsDenyAcls(targets, sandboxUserSid));
       const readTargets = new Set(denyRead);
       for (const [index, row] of rows.entries()) {

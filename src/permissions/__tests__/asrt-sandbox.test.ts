@@ -1,3 +1,7 @@
+vi.mock("@anthropic-ai/sandbox-runtime", async original => ({ ...await original<typeof import("@anthropic-ai/sandbox-runtime")>() }));
+vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", async original => ({
+  ...await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>(),
+}));
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 // A host that proves no Windows identities (any non-Windows kernel) keeps its denies unadmitted; a Windows host can stand in for one.
@@ -119,6 +123,7 @@ vi.mock("node:os", async (importOriginal) => {
 import {
   isAsrtSandboxActive,
   initializeAsrtSandbox,
+  grantWindowsWorkerFilesystemAccess,
   resetAsrtSandbox,
   wrapToolCommand,
   wrapWorkerCommand,
@@ -157,7 +162,12 @@ import { preparedShellExecutableReadPaths } from "../../tools/prepared-shell-inv
 // ASRT-contract guards: the real vendored matcher + parent-proxy resolver, so the host-side fixes are proven against ASRT's ACTUAL semantics (not a re-implementation that could drift from the package).
 import { matchesDomainPattern } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
 import { resolveParentProxy } from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
+import * as windowsAclRuntime from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { rankWindowsFsAccess } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
+import * as asrtRuntime from "@anthropic-ai/sandbox-runtime";
+import * as locality from "../../shared/local-path-io.js";
+import * as denyAcl from "../windows-deny-acl.js";
+import { createWindowsProtectedWriteTargets } from "../../__tests__/support/windows-protected-write-fixture.js";
 import * as sensitivePaths from "../sensitive-paths.js";
 import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
@@ -294,6 +304,80 @@ function captureOptionalWatchPublications() {
     exact ? prepareWatch(path, roots, exact, claim) : () => watch(path, roots));
   return { watch, restore: () => prepare.mockRestore() };
 }
+
+describe.runIf(process.platform === "win32")("Windows deny route preflight", () => {
+  let initialize: MockInstance<typeof asrtRuntime.SandboxManager.initialize>;
+  const remoteRoute = "\\\\example\\share\\blocked";
+
+  beforeEach(() => {
+    initialize = vi.spyOn(asrtRuntime.SandboxManager, "initialize").mockResolvedValue(undefined);
+    vi.spyOn(asrtRuntime.SandboxManager, "reset").mockResolvedValue({ windowsAclUnreleased: [] });
+  });
+
+  afterEach(async () => {
+    try {
+      if (isAsrtSandboxActive()) await resetAsrtSandbox();
+    } finally {
+      foreignHost.active = false;
+      initialize.mockRestore();
+      vi.mocked(asrtRuntime.SandboxManager.reset).mockRestore();
+    }
+  });
+
+  it("refuses a worker grant whose admitted deny route became non-local before any native ACL call", async () => {
+    const root = mkdtempSync(join(tmpdir(), "worker-deny-route-"));
+    const workspace = join(root, "workspace");
+    const parent = join(workspace, "deny-parent");
+    createWindowsProtectedWriteTargets(workspace);
+    mkdirSync(parent);
+    const target = join(parent, "blocked");
+    writeFileSync(target, "");
+    const admitRoute = locality.admitLocalRoute;
+    const route = vi.spyOn(locality, "admitLocalRoute");
+    const user = vi.spyOn(asrtRuntime, "getWindowsSandboxUserStatus").mockReturnValue({
+      provisioned: true, credPresent: true, sid: "S-1-5-21-1001",
+    } as ReturnType<typeof asrtRuntime.getWindowsSandboxUserStatus>);
+    const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(() => { throw new Error("Unexpected ACL read"); });
+    const stamp = vi.spyOn(windowsAclRuntime, "stampWindowsAclAsync").mockResolvedValue(undefined);
+    try {
+      await initializeAsrtSandbox({ denyRead: [target] });
+      expect(initialize.mock.calls[0]?.[0].filesystem.denyRead).toContainEqual(expect.objectContaining({
+        path: target,
+        admitted: expect.any(Object),
+      }));
+      route.mockImplementation((path, options) => admitRoute(path === parent ? remoteRoute : path, options));
+      const refusal = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [workspace] })
+        .catch((error: unknown) => error);
+      expect(read).not.toHaveBeenCalled();
+      expect(stamp).not.toHaveBeenCalled();
+      expect(refusal).toMatchObject({ code: "ENETWORKSHAREPATH" });
+    } finally {
+      if (isAsrtSandboxActive()) await resetAsrtSandbox();
+      stamp.mockRestore();
+      read.mockRestore();
+      user.mockRestore();
+      route.mockRestore();
+      await cleanupTmpDir(root);
+    }
+  });
+
+  it("keeps an unadmitted non-local deny row at initialization", async () => {
+    // Exercise the compatibility path on a fixture without native obligation admission.
+    foreignHost.active = true;
+    const parent = mkdtempSync(join(tmpdir(), "init-deny-route-"));
+    const target = join(parent, "blocked");
+    const admitRoute = locality.admitLocalRoute;
+    const route = vi.spyOn(locality, "admitLocalRoute").mockImplementation((path, options) =>
+      admitRoute(path === target || path === parent ? remoteRoute : path, options));
+    try {
+      await initializeAsrtSandbox({ denyRead: [target] });
+      expect(initialize.mock.calls[0]?.[0].filesystem.denyRead).toContain(target);
+    } finally {
+      route.mockRestore();
+      await cleanupTmpDir(parent);
+    }
+  });
+});
 
 describe("asrt-sandbox — gate default OFF", () => {
   it("isAsrtSandboxActive() is false before any initialize (the shipped default)", () => {
