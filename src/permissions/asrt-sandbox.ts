@@ -2129,7 +2129,7 @@ function admittedLiveWriteRoots(roots: readonly FilesystemPathEntry[]): Filesyst
 
 // Stamping changes parent DACLs; never stamp the profile root for a disjoint read deny.
 function windowsDenyTargets<T extends FilesystemPathEntry>(
-  watches: Array<() => void>,
+  watches: SandboxWatchPublication[],
   entries: readonly T[],
   userDataDir: string | undefined,
   grants: readonly FilesystemPathEntry[],
@@ -2323,7 +2323,7 @@ function admissionKey(path: string): string {
 }
 
 function keepWindowsDenyTarget(
-  watches: Array<() => void>,
+  watches: SandboxWatchPublication[],
   entry: FilesystemPathEntry,
   expanded: string,
   expandedGrants: readonly string[],
@@ -2365,7 +2365,7 @@ function keepWindowsDenyTarget(
     if (reachingGrants.length > 0) {
       // Required watches are checked and armed at the grant boundary.
       const publish = required ? undefined : prepareAbsentProtectedWatch(target, reachingGrants, false);
-      if (publish !== undefined) watches.push(publish);
+      if (publish !== undefined) watches.push({ path: target, roots: reachingGrants, publish });
       return false;
     }
     const key = windowsReadDenyKey(target);
@@ -2591,15 +2591,21 @@ function buildSharedSandboxConfig(settings: TrustedSandboxSettings, liveGrants: 
   return publishSandboxConfig(withLocalityDecision(() => buildSandboxConfigInDecision(settings, gatherWindowsReadDenyEvidence(settings), liveGrants)));
 }
 
-function withSandboxWatchPublications<T>(build: (watches: Array<() => void>) => T): T {
-  const watches: Array<() => void> = [];
+interface SandboxWatchPublication {
+  readonly path: string;
+  readonly roots: readonly string[];
+  readonly publish: () => void;
+}
+
+function withSandboxWatchPublications<T>(build: (watches: SandboxWatchPublication[]) => T): T {
+  const watches: SandboxWatchPublication[] = [];
   const result = withLocalityDecision(() => build(watches));
-  for (const publish of watches) publish();
+  for (const watch of watches) watch.publish();
   return result;
 }
 
 function publishSandboxConfig({ config, watches }: ReturnType<typeof buildSandboxConfigInDecision>): SandboxRuntimeConfig {
-  for (const publish of watches) publish();
+  for (const watch of watches) watch.publish();
   return config;
 }
 
@@ -2608,7 +2614,7 @@ function buildSandboxConfigInDecision(
   readDenyEvidence?: WindowsReadDenySnapshot,
   liveGrants: WindowsLiveGrantSnapshot = {},
 ) {
-  const watches: Array<() => void> = [];
+  const watches: SandboxWatchPublication[] = [];
   assertWindowsPolicyBudget(trustedSettings, true);
   trustedSettings = admitFilesystemPolicy(trustedSettings);
   const srtWinPath = process.platform === "win32" && trustedSettings.windows?.externalConfinement !== true
@@ -3896,18 +3902,19 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   const settings = timeStep("configMs", () => withWorkerUnixSockets(baseTrustedSettings, undefined, resolveDocumentsPath));
   const revision = session.windowsDenyRevision;
   const grantRevision = session.windowsLiveGrantRevision;
-  const pending = timeStep("configMs", () => {
+  const { config: pending, stagedWatches } = timeStep("configMs", () => withLocalityDecision(() => {
     const liveGrants = snapshotWindowsLiveGrants(session);
-    return buildSharedSandboxConfig(settings, {
+    const { config, watches } = buildSandboxConfigInDecision(settings, gatherWindowsReadDenyEvidence(settings), {
       allowRead: [...(liveGrants.allowRead ?? []), ...allowRead.map(path => ({ path, literal: true as const }))],
       allowWrite: [...(liveGrants.allowWrite ?? []), ...allowWrite.map(path => ({ path, literal: true as const }))],
     });
-  });
+    return { config, stagedWatches: watches.map(({ path, roots }) => ({ path, roots })) };
+  }));
   const additionalWriteRoots = [...allowWrite, ...liveWindowsWriteRoots(session)];
   const protectedRows = allowWrite.length === 0 ? undefined
     : timeStep("preflightMs", () => measureRequiredWindowsWriteDenies(pending, additionalWriteRoots));
   const requiredRows = new Set(protectedRows?.rows.keys());
-  const rows = timeStep("preflightMs", () => withSandboxWatchPublications(watches => {
+  const rows = timeStep("preflightMs", () => withLocalityDecision(() => {
     const distinct = new Map<string, { path: string; read: boolean }>();
     for (const kind of ["denyRead", "denyWrite"] as const) {
       for (const entry of pending.filesystem[kind]) {
@@ -3930,8 +3937,8 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
       if (requiredRows.has(windowsReadDenyKey(row.path))) {
         throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: row.path }));
       }
-      const publish = prepareAbsentProtectedWatch(row.path, allowWrite.filter(root => lexicalWindowsOverlap(root, row.path)), false);
-      if (publish !== undefined) watches.push(publish);
+      const roots = allowWrite.filter(root => lexicalWindowsOverlap(root, row.path));
+      if (prepareAbsentProtectedWatch(row.path, roots, false) !== undefined) stagedWatches.push({ path: row.path, roots });
       return false;
     });
   }));
@@ -3979,7 +3986,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     }
   }
 
-  withLocalityDecision(() => {
+  const publishWatches = withLocalityDecision(() => {
     assertWindowsGrantDenySnapshot(session, revision, allowWrite);
     if (_baseTrustedSettings !== baseTrustedSettings || session.windowsLiveGrantRevision !== grantRevision) {
       throw new Error("Windows sandbox policy changed while stamping the worker grant");
@@ -3987,6 +3994,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome, issuedHome));
     timeStep("preflightMs", () => assertStillValid?.());
     if (stampFailure !== undefined) throw stampFailure;
+    return stagedWatches.map(({ path, roots }) => prepareAbsentProtectedWatch(path, roots, false));
   });
   // From this recheck to the native grant nothing yields.
   timeStep("preflightMs", () => publishRequiredWindowsWriteDenies(protectedRows));
@@ -4038,6 +4046,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   }
 
   const writable = new Set(allowWrite);
+  for (const publish of publishWatches) publish?.();
   session.windowsLiveGrantCount += 1;
   if (allowRead.length > 0) session.windowsLiveGrantRevision += 1;
   for (const path of allowRead) {

@@ -26,7 +26,7 @@ import {
   resetAsrtSandbox, unregisterWorkerUnixSocketDir, wrapTerminalCommand, wrapToolCommand, wrapWorkerCommand,
 } from "../asrt-sandbox.js";
 import { openEgressInvocation } from "../egress-invocations.js";
-import { isWatchedWorkspaceConsumable, listWatchedQuarantine, resetWatchedRows, watchedProtectedRows } from "../windows-watched-rows.js";
+import { isWatchedWorkspaceConsumable, listWatchedQuarantine, pruneWatchedRows, resetWatchedRows, watchedProtectedRows } from "../windows-watched-rows.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -928,6 +928,84 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [grant] }))
       .rejects.toThrow(/verification/);
     expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+  });
+
+  it("arms no optional watch when a worker grant is refused at its final check", async () => {
+    captureRuntime();
+    const workspace = join(root, "workspace");
+    createWindowsProtectedWriteTargets(workspace);
+    const target = join(workspace, "absent");
+    await initializeAsrtSandbox({ denyRead: [target] });
+
+    let checks = 0;
+    let watchedAtRefusal: readonly string[] | undefined;
+    await expect(grantWindowsWorkerFilesystemAccess({
+      holderPid: process.pid + 1,
+      allowWrite: [workspace],
+      assertStillValid: () => {
+        if (++checks !== 2) return;
+        watchedAtRefusal = watchedProtectedRows();
+        throw new Error("Final grant check refused");
+      },
+    })).rejects.toThrow("Final grant check refused");
+
+    expect(watchedAtRefusal).toBeDefined();
+    expect(watchedAtRefusal).not.toContain(target);
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+  });
+
+  it("adds no proposed root to an existing optional watch when a worker grant is refused", async () => {
+    captureRuntime();
+    const prior = join(root, "prior");
+    const proposed = join(prior, "proposed");
+    createWindowsProtectedWriteTargets(proposed);
+    const target = join(proposed, "absent");
+    await initializeAsrtSandbox({ denyRead: [target] });
+    buildSandboxConfig({ denyRead: [target] }, undefined, { allowWrite: [{ path: prior, literal: true }] });
+    expect(watchedProtectedRows()).toContain(target);
+
+    const failure = new Error("Drive query failed during the turn-end prune");
+    let checks = 0;
+    try {
+      await expect(grantWindowsWorkerFilesystemAccess({
+        holderPid: process.pid + 1,
+        allowWrite: [proposed],
+        assertStillValid: () => {
+          if (++checks !== 2) return;
+          setWindowsDriveQueryForTest(() => { throw failure; });
+          throw new Error("Final grant check refused");
+        },
+      })).rejects.toThrow(failure);
+    } finally {
+      setWindowsDriveQueryForTest(localDrive);
+    }
+
+    expect(watchedProtectedRows()).toContain(target);
+    pruneWatchedRows([proposed]);
+    expect(watchedProtectedRows()).not.toContain(target);
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+  });
+
+  it("arms staged optional watches once the native grant succeeded", async () => {
+    captureRuntime();
+    const prior = join(root, "prior");
+    const proposed = join(prior, "proposed");
+    createWindowsProtectedWriteTargets(proposed);
+    const existing = join(proposed, "already-watched");
+    const added = join(proposed, "new-watch");
+    await initializeAsrtSandbox({ denyRead: [existing, added] });
+    buildSandboxConfig({ denyRead: [existing] }, undefined, { allowWrite: [{ path: prior, literal: true }] });
+    let watchedAtGrant: readonly string[] | undefined;
+    vi.mocked(runtime.grantWindowsAcl).mockImplementationOnce(() => { watchedAtGrant = watchedProtectedRows(); });
+
+    const held = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [proposed] });
+    try {
+      expect(watchedAtGrant).toContain(existing);
+      expect(watchedAtGrant).not.toContain(added);
+      expect(watchedProtectedRows()).toEqual(expect.arrayContaining([existing, added]));
+    } finally {
+      held.release();
+    }
   });
 
   it("watches a newly reachable absent deny instead of stamping it before granting a worker write", async () => {
