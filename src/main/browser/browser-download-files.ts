@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { getSystemErrorName } from "node:util";
+import { errorMessage } from "../../shared/error-message.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../managed-child-processes.js";
 import { isWindowsPathKindHelperUnavailable, windowsPathKindHelperIn, withWindowsPathKindHelper } from "../windows-path-kind-launcher.js";
@@ -253,7 +254,7 @@ export function heldFileOperations(resourcePath: string, platform: NodeJS.Platfo
         return withWindowsPathKindHelper(launch, resourcePath);
       } catch (error) {
         if (!isWindowsPathKindHelperUnavailable(error)) throw error;
-        throw new HeldFileHelperUnavailableError(windowsPathKindHelperIn(resourcePath), error instanceof Error ? error.message : String(error));
+        throw new HeldFileHelperUnavailableError(windowsPathKindHelperIn(resourcePath), errorMessage(error));
       }
     };
     return helperFileOperations(withHelper, true);
