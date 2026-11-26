@@ -11,6 +11,7 @@ import { buildGraph } from '../../main/memory-map/graph.js';
 import * as localRuntime from '../../main/memory-map/local-runtime.js';
 import type { MemoryWorkerTask } from '../../main/memory-map/worker-client.js';
 import { registerMxcReleaseGateEvidence } from '../../permissions/mxc-extension-admission.js';
+import { __resetSandboxHomesUnavailableForTest, markSandboxHomesUnavailable } from '../../permissions/sandbox-capability.js';
 import { invalidateWindowsBackendEvidence } from '../../permissions/windows-confinement-evidence.js';
 import type { SandboxWindowsExtensionPlan, SandboxWindowsSubstrateInfo } from '../../shared/sandbox-capability-info.js';
 import { registerMemoryMapHandlers } from '../domains/memory-map.js';
@@ -87,13 +88,15 @@ afterEach(async () => {
   unregister?.();
   unregister = undefined;
   invalidateWindowsBackendEvidence();
+  __resetSandboxHomesUnavailableForTest();
   setProcessPlatform(HOST_PLATFORM);
   await roots.cleanup();
 });
 
 describe.each(['account', 'container'] as const)('%s admission', backend => {
-  it.each(['before projection', 'during projection', 'before atomic commit'] as const)(
-    `refuses a cached IPC build on ${backend} proof loss %s`, async boundary => {
+  describe.each([backend, 'sandbox home'] as const)('%s proof', proof => it.each(['before projection', 'during projection', 'before atomic commit'] as const)(
+    `refuses a cached IPC build on ${proof} proof loss %s`, async boundary => {
+      const loseProof = () => { if (proof === 'sandbox home') markSandboxHomesUnavailable(); else state.operational = false; };
       state.root = roots.track(await mkdtemp(join(tmpdir(), 'memory-map-admission-')));
       setProcessPlatform('win32');
       state.account = backend === 'account';
@@ -132,21 +135,21 @@ describe.each(['account', 'container'] as const)('%s admission', backend => {
       const previous = await readFile(path);
       state.runWorker.mockClear();
       hold = boundary === 'during projection';
-      if (boundary === 'before projection') state.afterRead = () => { state.operational = false; };
+      if (boundary === 'before projection') state.afterRead = loseProof;
       if (boundary === 'before atomic commit') state.beforeCommit = async () => {
-        state.operational = false;
+        loseProof();
         await localRuntime.refreshLocalInferenceAdmission();
       };
 
       const result = build();
       if (hold) {
         await Promise.race([projected.promise, result]);
-        state.operational = false;
+        loseProof();
         release.resolve();
       }
       expect.soft(await result).toEqual({ ok: false, error: 'local-runtime-unavailable' });
       expect.soft(state.runWorker.mock.calls.map(([, task]) => task.kind)).toEqual(boundary === 'before projection' ? [] : ['project']);
       expect(await readFile(path)).toEqual(previous);
     },
-  );
+  ));
 });

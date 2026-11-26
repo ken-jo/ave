@@ -86,7 +86,8 @@ export async function refreshWindowsBackgroundAdmission(scope: "all" | "switches
     const receipt = await owner.refresh();
     return {
       ...INACTIVE_ADMISSION,
-      isBackendOperational: (backend) => backend === scope && releaseIsCurrent() && receipt?.state === "operational" && owner.isCurrent(receipt),
+      isBackendOperational: (backend) => backend === scope && releaseIsCurrent() && receipt?.state === "operational" && owner.isCurrent(receipt)
+        && hasWindowsBackgroundHealth(),
     };
   }
   if (!isWindowsBackgroundFeatureReleaseEnabled()) {
@@ -110,7 +111,7 @@ export async function refreshWindowsBackgroundAdmission(scope: "all" | "switches
   return {
     areSwitchesAvailable: () => receiptsAreCurrent() && admission.areSwitchesAvailable(),
     searchIndexPolicy: (preference) => receiptsAreCurrent() ? admission.searchIndexPolicy(preference) : "inactive",
-    isBackendOperational: backend => releaseIsCurrent() && currentState(WINDOWS_BACKEND_EVIDENCE[backend]) === "operational",
+    isBackendOperational: backend => releaseIsCurrent() && currentState(WINDOWS_BACKEND_EVIDENCE[backend]) === "operational" && hasWindowsBackgroundHealth(),
   };
 }
 
