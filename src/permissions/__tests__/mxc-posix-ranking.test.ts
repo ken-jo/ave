@@ -39,7 +39,7 @@ describe("POSIX container filesystem ranking", () => {
     ["/work/.git/[h]ooks", "pattern-row"],
     ["work/relative", "relative-row"],
   ] as const satisfies readonly (readonly [string, PosixPolicyRefusal])[])("refuses unrepresentable spelling %s", (path, code) => {
-    expect(() => rankPosixContainerRows(model([protect(path)]), "seatbelt", lookups)).toThrow(expect.objectContaining({ code }));
+    expect(() => rankPosixContainerRows(model([policyFloorRow(path, "ro", "protected-name", false)]), "seatbelt", lookups)).toThrow(expect.objectContaining({ code }));
   });
 
   it("expands home, canonicalizes paths, drops missing grants and introduces no roots", () => {

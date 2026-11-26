@@ -90,10 +90,10 @@ function atOrUnder(path: string, root: string, foldsCase: boolean): boolean {
   return key === parent || key.startsWith(parent === "/" ? parent : `${parent}/`);
 }
 
-function canonicalPath(path: string, lookups: PosixPolicyLookups): string {
+function canonicalPath(path: string, literal: boolean, lookups: PosixPolicyLookups): string {
   const expanded = path === "~" ? lookups.home : path.startsWith("~/") ? lookups.home + path.slice(1) : path;
   if (!posix.isAbsolute(expanded)) throw new PosixContainerPolicyError("relative-row", `Container row is relative: ${path}`);
-  if (/[*?[\]{}]/u.test(expanded)) throw new PosixContainerPolicyError("pattern-row", `Container row is a pattern: ${path}`);
+  if (!literal && /[*?[\]{}]/u.test(expanded)) throw new PosixContainerPolicyError("pattern-row", `Container row is a pattern: ${path}`);
   const canonical = lookups.canonical(expanded);
   if (!posix.isAbsolute(canonical)) throw new PosixContainerPolicyError("relative-row", `Canonical container row is relative: ${canonical}`);
   return posix.normalize(canonical).replace(/\/+$/u, "") || "/";
@@ -215,7 +215,7 @@ function carveGrants(
 }
 
 function rankRows(model: PolicyModel, nestedRule: NestedGrantRule, lookups: PosixPolicyLookups): PosixFilesystemGrants {
-  const canonicalRows = { ...model, rows: model.rows.map((row) => ({ ...row, path: canonicalPath(row.path, lookups) })) };
+  const canonicalRows = { ...model, rows: model.rows.map((row) => ({ ...row, path: canonicalPath(row.path, row.literal, lookups) })) };
   const rows: MxcPolicyRows = mxcPolicyRows(canonicalRows);
   const key = (path: string) => pathKey(path, lookups.foldsCase);
   const covers = (root: string, path: string) => atOrUnder(path, root, lookups.foldsCase);
