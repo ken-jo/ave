@@ -48,6 +48,7 @@ function prepareRegistryFixture(clsid = legacyClsid) {
     .replace(lockLookup, "$env:AVE_FIXTURE_DIRECTORY")
     .replace(registryOpen, "[FixtureRegistryKey]::OpenCurrentUser(")
     .replace(shortcutDeleteBoundary, (statement) => `    Update-ShortcutBeforeDelete $entry.Path\n${statement}`)
+    .replace("[System.IO.File]::Move($shortcutPath, $quarantinePath)", (move) => `${move}\n        Wait-AfterShortcutMove`)
     .replace("$shortcutMoved = $false", () => `${registryFixture}\n$shortcutMoved = $false`);
   writeFileSync(script, fixtureScript);
 
@@ -84,23 +85,35 @@ function prepareRegistryFixture(clsid = legacyClsid) {
     });
   }
 
-  /** Waits for the fixture to pause, then lets `onPaused` answer for an Ave start. */
-  async function runPaused(onPaused: () => "provisioned" | "exited", scenario = "product-start") {
+  async function waitForPause(scenario: string) {
     const child = spawn(powerShell, args, { env: environment(scenario), windowsHide: true });
     onTestFinished(() => void child.kill());
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
-    const closed = new Promise<number | null>((resolve) => child.on("close", resolve));
+    const closed = new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) =>
+      child.on("close", (status) => resolve({ status, stdout, stderr })),
+    );
     const deadline = Date.now() + 20_000;
-    while (!existsSync(signal) && child.exitCode === null && Date.now() < deadline) {
+    while (!existsSync(signal) && child.exitCode === null && child.signalCode === null && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     expect(existsSync(signal), `${stdout}\n${stderr}`).toBe(true);
+    return { child, closed };
+  }
+
+  async function runPaused(onPaused: () => "provisioned" | "exited", scenario = "product-start") {
+    const { closed } = await waitForPause(scenario);
     writeFileSync(`${signal}.tmp`, onPaused());
     renameSync(`${signal}.tmp`, `${signal}.ack`);
-    return { status: await closed, stdout, stderr };
+    return closed;
+  }
+
+  async function interruptAfterShortcutMove() {
+    const { child, closed } = await waitForPause("interrupt-after-move");
+    expect(child.kill()).toBe(true);
+    expect((await closed).status).not.toBe(0);
   }
 
   const initialState = {
@@ -118,6 +131,7 @@ function prepareRegistryFixture(clsid = legacyClsid) {
     removeShortcut: () => unlinkSync(shortcut),
     installDir,
     runPaused,
+    interruptAfterShortcutMove,
     writeShortcut: (content: string) => writeFileSync(shortcut, content),
     readShortcut: () => readFileSync(shortcut, "utf8"),
     quarantineShortcut: () => {
@@ -211,20 +225,21 @@ describe("current-user toast cleanup", () => {
     else fixture.expectShortcutQuarantined();
   });
 
-  it.runIf(process.platform === "win32")("resumes from the quarantined shortcut on retry after a partial registry delete", () => {
+  it.runIf(process.platform === "win32")("keeps an incomplete legacy registration on retry after a partial registry delete", () => {
     const fixture = prepareRegistryFixture();
     const first = fixture.run("delete-error");
     expect(first.stderr).toContain("fixture exercised delete-error");
     expectCleanupFailed(first, "fixture denied deleting CustomActivator");
     fixture.expectShortcutQuarantined();
-    expect(fixture.readState()).toEqual({
+    const remaining = {
       ...fixture.initialState,
       server: { ForeignValue: fixture.initialState.server.ForeignValue },
-    });
+    };
+    expect(fixture.readState()).toEqual(remaining);
 
-    expectCleanupSucceeded(fixture.run());
-    expect(fixture.readState()).toEqual(foreignOnly(fixture.initialState));
-    fixture.expectShortcutRemoved();
+    expectCleanupFailed(fixture.run(), "incomplete Ave toast registration");
+    expect(fixture.readState()).toEqual(remaining);
+    fixture.expectShortcutQuarantined();
   });
 
   it.runIf(process.platform === "win32")("recovers product ownership on retry after a partial delete without a shortcut", () => {
@@ -276,24 +291,30 @@ describe("current-user toast cleanup", () => {
     fixture.expectShortcutQuarantined();
   });
 
-  it.runIf(process.platform === "win32").each([
-    ["just after the move", false],
-    ["during registry deletion", true],
-  ])("resumes an owned shortcut left in quarantine by a cleanup terminated %s", (_label, partial) => {
+  it.runIf(process.platform === "win32")("resumes a complete legacy registration left with an owned shortcut in quarantine", () => {
     const fixture = prepareRegistryFixture();
     fixture.quarantineShortcut();
-    if (partial) {
-      fixture.writeState({
-        ...fixture.initialState,
-        server: { ForeignValue: fixture.initialState.server.ForeignValue },
-      });
-    }
 
     const result = fixture.run();
     expectCleanupSucceeded(result);
     expect(result.stdout).toContain(quarantineName("1"));
     expect(fixture.readState()).toEqual(foreignOnly(fixture.initialState));
     fixture.expectShortcutRemoved();
+  });
+
+  it.runIf(process.platform === "win32")("keeps a partial legacy value when cleanup was interrupted immediately after the shortcut move", async () => {
+    const fixture = prepareRegistryFixture();
+    const state = { root: { CustomActivator: 1 }, server: null, foreign: null };
+    fixture.writeState(state);
+
+    await fixture.interruptAfterShortcutMove();
+    fixture.expectShortcutQuarantined();
+    expect(fixture.readState()).toEqual(state);
+    expect(existsSync(join(fixture.installDir, lockName))).toBe(false);
+
+    expectCleanupFailed(fixture.run(), "incomplete Ave toast registration");
+    expect(fixture.readState()).toEqual(state);
+    fixture.expectShortcutQuarantined();
   });
 
   it.runIf(process.platform === "win32")("resumes the quarantined shortcut when the product recreated the original", () => {
@@ -556,12 +577,7 @@ describe("current-user toast cleanup", () => {
     );
     expect(cleanup).toMatch(/try \{ \$clsid = Get-OwnedShortcutClsid \$entry \$Expected \}\s+catch \{\}/);
     expect(cleanup.match(/^\s*(?:if \([^\n]+\) \{ )?\$candidateClsids\s*(?:\+?=)/gm)).toHaveLength(3);
-    // Incomplete tuples are removable only at the product CLSID or one named by a shortcut found in quarantine.
-    expect(cleanup.match(/^\s*\$partialClsids\s*(?:\+?=)[^\n]*/gm)?.map((line) => line.trim())).toEqual([
-      "$partialClsids = @($productClsid)",
-      "$partialClsids += $entry.Clsid",
-    ]);
-    expect(cleanup).toContain("-AllowPartial:($partialClsids -contains $registration.Clsid)");
+    expect(cleanup).toContain("-AllowPartial:($registration.Clsid -eq $productClsid)");
     expect(cleanup).toContain("Confirm-ToastRegistrationsAbsent $installedExe $candidateClsids");
     expect(cleanup).not.toMatch(/GetSubKeyNames|ProfileList|HKEY_USERS|NTUSER\.DAT|UsrClass\.dat|RegLoad(?:App)?Key/i);
     const hives = [...cleanup.matchAll(/\bRegistryHive\.(\w+)/g)];

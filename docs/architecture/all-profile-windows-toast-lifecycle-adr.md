@@ -116,10 +116,10 @@ One per-user lock replaces repeated scans.
   keys. `Test-ToastSlotStillOwned` rereads each slot's type and data
   immediately before its delete. A slot that no longer matches
   `Test-OwnedToastSlotValue` is preserved and cleanup fails. Any exact typed
-  slot at the pinned product CLSID is removable without a shortcut. A CLSID
-  named by an exact owned shortcut needs the complete tuple, unless that
-  shortcut was already in quarantine. A foreign occupant of one of the three
-  slots beside an owned slot fails the cleanup for as long as it stays.
+  slot at the pinned product CLSID is removable without a shortcut. A legacy
+  CLSID named by an exact owned shortcut always requires the complete tuple.
+  A foreign occupant of one of the three slots beside an owned slot fails the
+  cleanup for as long as it stays.
 - **Final read.** `Confirm-ToastRegistrationsAbsent` reads every candidate
   CLSID in every registry view once, under the lock, before any quarantined
   shortcut is deleted.
@@ -132,9 +132,9 @@ One per-user lock replaces repeated scans.
   leaves it in quarantine as the record of the started cleanup. The next
   cleanup lists such entries with `Get-QuarantinedShortcuts` and re-verifies
   each through `Get-OwnedShortcutClsid`. An exact owned entry is resumed in
-  place: its CLSID becomes a candidate, an incomplete tuple is accepted, and
-  the entry is deleted after the final read, also when the original path is
-  occupied again. Any other entry (not a regular file, unreadable, or not
+  place. Its CLSID becomes a candidate and the entry is deleted after the
+  final read, even when the original path is occupied again. Any other entry
+  (not a regular file, unreadable, or not
   exactly owned) is left untouched and reported as `foreign-preserved` /
   `shortcut-quarantine`.
 - **Exit codes.** 0: everything attributable is verified removed. 2: the same,
@@ -157,6 +157,9 @@ Residual limits:
   launch.
 - An unattributable quarantine entry can be an owned shortcut that could not
   be read. The legacy CLSID values it names then stay.
+- An interrupted legacy deletion that leaves an incomplete tuple also leaves
+  its parked shortcut. Retrying cleanup preserves that tuple and returns 1
+  while it remains incomplete.
 - If a startup probe cannot establish the lock state due to an I/O failure,
   startup proceeds. Cleanup coordination then depends on the existing process
   check seeing that start.

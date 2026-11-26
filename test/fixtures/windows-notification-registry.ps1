@@ -229,3 +229,10 @@ function Update-ShortcutBeforeDelete {
   else { return }
   [Console]::Error.WriteLine("fixture exercised $scenario")
 }
+
+function Wait-AfterShortcutMove {
+  if ($env:AVE_FIXTURE_SCENARIO -eq "interrupt-after-move") {
+    [void][FixtureRegistryKey]::WaitForProductStart()
+    throw "fixture was not stopped after the shortcut move"
+  }
+}

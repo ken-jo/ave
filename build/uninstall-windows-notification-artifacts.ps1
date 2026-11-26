@@ -761,9 +761,6 @@ try {
   }
   $productClsid = "{62FD3EFB-B3D2-4235-9402-6979F52C0286}"
   $candidateClsids = @($productClsid)
-  # A CLSID named by a shortcut already in quarantine belongs to a cleanup
-  # that had started, so its registration may be incomplete.
-  $partialClsids = @($productClsid)
   $quarantined = @()
   $unattributedQuarantine = $false
 
@@ -776,7 +773,6 @@ try {
       continue
     }
     $quarantined += $entry
-    $partialClsids += $entry.Clsid
     if ($candidateClsids -notcontains $entry.Clsid) { $candidateClsids += $entry.Clsid }
   }
 
@@ -831,7 +827,7 @@ try {
   foreach ($registration in @(Read-ToastRegistrations $installedExe $candidateClsids)) {
     if ($registration.Slots.Owned -eq [OwnedToastSlot]::None) { continue }
     if (Remove-OwnedToastRegistration $registration.View $registration.Clsid $installedExe `
-        -AllowPartial:($partialClsids -contains $registration.Clsid)) {
+        -AllowPartial:($registration.Clsid -eq $productClsid)) {
       Write-CleanupEvent "removed" "toast-registration" (
         "Removed owned current-user Ave toast registration values for {0} ({1})." -f
         $registration.Clsid,
