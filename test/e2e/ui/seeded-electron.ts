@@ -226,6 +226,8 @@ export async function launchSeededElectron(opts: {
   homePrefix?: string;
   launchEnv?: LaunchEnv;
   launchArgs?: readonly string[];
+  /** A disposable build root's entry; the checkout's build by default. */
+  mainEntry?: string;
   prepareHome?: (aveHome: string) => void | Promise<void>;
   onLaunched?: (app: ElectronApplication) => void;
 }): Promise<SeededElectronContext> {
@@ -277,14 +279,14 @@ export async function launchSeededElectron(opts: {
 
     await opts.prepareHome?.(aveHome);
     app = await launchElectron({
-      args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox", ...(opts.launchArgs ?? [])],
+      args: [opts.mainEntry ?? MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox", ...(opts.launchArgs ?? [])],
       env: buildIsolatedElectronEnv({
         HOME: tempHome,
         USERPROFILE: tempHome,
         AVE_HOME: aveHome,
         AVE_DEV: "1",
         AVE_E2E: "1",
-        AVE_MAIN_ENTRY: MAIN_ENTRY,
+        AVE_MAIN_ENTRY: opts.mainEntry ?? MAIN_ENTRY,
         NODE_ENV: "test",
         ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
         ...(opts.launchEnv ?? {}),

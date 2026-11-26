@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const PUBLICATION_BARRIER_PRELUDE = String.raw`"use strict";
@@ -28,32 +28,64 @@ function digest(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/** Prepare an owned direct-script resource before a fresh application's manifest is pinned. */
-export function prepareWorkbookPublicationBarrier(scriptsDirectory: string, workspace: string) {
-  const manifestPath = join(scriptsDirectory, "manifest.json");
-  const originalManifest = readFileSync(manifestPath);
-  const manifest = JSON.parse(originalManifest.toString("utf8")) as { version: number; scripts: Record<string, string> };
+export interface FixtureBuildIo {
+  copy(source: string, target: string): void;
+  write(path: string, bytes: Uint8Array): void;
+  remove(path: string): void;
+}
+
+export const fileSystemIo: FixtureBuildIo = {
+  copy: (source, target) => cpSync(source, target, { recursive: true, errorOnExist: true, force: false }),
+  write: (path, bytes) => writeFileSync(path, bytes, { flag: "wx" }),
+  remove: (path) => rmSync(path, { recursive: true, force: true, maxRetries: 5 }),
+};
+
+/** The PowerShell or POSIX command the model sends for this argv. */
+export function renderWorkbookCommand(platform: NodeJS.Platform, argv: readonly string[]): string {
+  return platform === "win32"
+    ? `$env:ELECTRON_RUN_AS_NODE='1'; & ${argv.map((value) => `'${value.replaceAll("'", "''")}'`).join(" ")}`
+    : `ELECTRON_RUN_AS_NODE=1 ${argv.map((value) => `'${value.replaceAll("'", "'\\''")}'`).join(" ")}`;
+}
+
+/**
+ * Copy the checkout's build into a disposable root that only one application instance runs, then install the
+ * publication prelude there. The checkout's build is only read. Leftover roots live under the ignored test output.
+ */
+export function prepareWorkbookPublicationBuild(checkout: string, workspace: string, io: FixtureBuildIo = fileSystemIo) {
+  const sharedScripts = join(checkout, "dist", "skill-scripts");
+  const manifest = JSON.parse(readFileSync(join(sharedScripts, "manifest.json"), "utf8")) as { version: number; scripts: Record<string, string> };
   const name = "edit-xlsx.cjs";
-  const scriptPath = join(scriptsDirectory, name);
-  const producer = readFileSync(scriptPath);
+  const producer = readFileSync(join(sharedScripts, name));
   if (manifest.version !== 1 || manifest.scripts[name] !== digest(producer)) {
     throw new Error("Workbook producer does not match its resource manifest");
   }
-  const readyPath = join(workspace, "publication-ready");
-  const releasePath = join(workspace, "publication-release");
   const script = Buffer.concat([Buffer.from(PUBLICATION_BARRIER_PRELUDE), producer]);
   const preparedManifest = Buffer.from(`${JSON.stringify({ ...manifest,
     scripts: { ...manifest.scripts, [name]: digest(script) } }, null, 2)}\n`);
+  const outputs = join(checkout, "test-results");
+  mkdirSync(outputs, { recursive: true });
+  const root = realpathSync.native(mkdtempSync(join(outputs, "xlsx-publication-build-")));
+  const scriptsDirectory = join(root, "dist", "skill-scripts");
+  const scriptPath = join(scriptsDirectory, name);
   try {
-    writeFileSync(scriptPath, script);
-    writeFileSync(manifestPath, preparedManifest);
+    io.copy(join(checkout, "dist", "src"), join(root, "dist", "src"));
+    io.copy(join(checkout, "resources"), join(root, "resources"));
+    mkdirSync(scriptsDirectory);
+    for (const entry of Object.keys(manifest.scripts)) {
+      if (entry !== name) io.copy(join(sharedScripts, entry), join(scriptsDirectory, entry));
+    }
+    io.write(scriptPath, script);
+    io.write(join(scriptsDirectory, "manifest.json"), preparedManifest);
   } catch (error) {
-    writeFileSync(scriptPath, producer);
-    writeFileSync(manifestPath, originalManifest);
+    try { io.remove(root); } catch { /* A leftover root is never consumed by another instance. */ }
     throw error;
   }
-  let restored = false;
+  const readyPath = join(workspace, "publication-ready");
+  const releasePath = join(workspace, "publication-release");
+  let disposed = false;
   return {
+    root,
+    mainEntry: join(root, "dist", "src", "main", "main.js"),
     scriptPath,
     argv(runtime: string, workbookPath: string, requestPath: string): string[] {
       return [runtime, scriptPath, workbookPath, requestPath, readyPath, releasePath];
@@ -67,14 +99,10 @@ export function prepareWorkbookPublicationBarrier(scriptsDirectory: string, work
       }
     },
     /** Call only after the owned application and its command process have closed. */
-    restore(): void {
-      if (restored) return;
-      if (!readFileSync(manifestPath).equals(preparedManifest) || !readFileSync(scriptPath).equals(script)) {
-        throw new Error("Workbook fixture resources changed before restoration");
-      }
-      writeFileSync(scriptPath, producer);
-      writeFileSync(manifestPath, originalManifest);
-      restored = true;
+    dispose(): void {
+      if (disposed) return;
+      io.remove(root);
+      disposed = true;
     },
   };
 }

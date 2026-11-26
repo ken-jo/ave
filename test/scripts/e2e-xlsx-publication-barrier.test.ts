@@ -1,42 +1,79 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, win32 } from "node:path";
+import { dirname, join, resolve, win32 } from "node:path";
+import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import * as XLSX from "xlsx";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { stageWindowsPathKindHelper } from "../../src/__tests__/support/bundled-skill-resources.js";
 import { configureHostResources } from "../../src/main/host-resources.js";
-import { hostScriptInvocationReadPaths, hostScriptWriteDenyPaths } from "../../src/main/host-script-runtime.js";
+import { hostScriptInvocationReadPaths, hostScriptRuntimePaths, hostScriptWriteDenyPaths, isVerifiedHostScript } from "../../src/main/host-script-runtime.js";
+import { resolveRuntimePathsFromModuleUrl } from "../../src/main/main-paths.js";
 import { windowsPathKindHelperIn } from "../../src/main/windows-path-kind-launcher.js";
 import { rankMxcFilesystem } from "../../src/permissions/mxc-windows.js";
 import { PermissionManager } from "../../src/permissions/permission-manager.js";
 import { shellQuote } from "../../src/lib/shell-resolver.js";
 import { shellPolicyModel } from "../../src/tools/mxc-shell-launch.js";
 import { findShellPathPolicyViolation } from "../../src/tools/shell-path-policy.js";
-import { prepareWorkbookPublicationBarrier } from "../e2e/ui/xlsx-publication-barrier.js";
+import { fileSystemIo, type FixtureBuildIo, prepareWorkbookPublicationBuild } from "../e2e/ui/xlsx-publication-barrier.js";
 
-describe("workbook publication barrier", () => {
+let root: string;
+let checkout: string;
+let sharedScript: string;
+let sharedManifest: string;
+let producerBytes: Buffer;
+let manifestBytes: Buffer;
+
+beforeAll(async () => {
+  root = realpathSync.native(mkdtempSync(join(tmpdir(), "workbook-publication-")));
+  checkout = join(root, "checkout");
+  const scripts = join(checkout, "dist", "skill-scripts");
+  mkdirSync(join(checkout, "dist", "src", "main"), { recursive: true });
+  writeFileSync(join(checkout, "dist", "src", "main", "main.js"), "export {};\n");
+  writeFileSync(join(checkout, "dist", "src", "preload.cjs"), "\"use strict\";\n");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(join(checkout, "resources"));
+  stageWindowsPathKindHelper(join(checkout, "resources"));
+  sharedScript = join(scripts, "edit-xlsx.cjs");
+  await build({ entryPoints: [resolve("src/skills/xlsx-edit-cli.ts")], outfile: sharedScript,
+    bundle: true, platform: "node", format: "cjs", target: "node22", minify: true, logLevel: "silent" });
+  producerBytes = readFileSync(sharedScript);
+  sharedManifest = join(scripts, "manifest.json");
+  manifestBytes = Buffer.from(`${JSON.stringify({ version: 1,
+    scripts: { "edit-xlsx.cjs": createHash("sha256").update(producerBytes).digest("hex") } })}\n`);
+  writeFileSync(sharedManifest, manifestBytes);
+});
+afterAll(() => { rmSync(root, { recursive: true, force: true }); });
+
+function expectSharedBuildUsable(): void {
+  expect(readFileSync(sharedScript)).toEqual(producerBytes);
+  expect(readFileSync(sharedManifest)).toEqual(manifestBytes);
+  configureHostResources({ resourcePath: join(checkout, "resources"), isPackaged: false });
+  expect(isVerifiedHostScript(sharedScript)).toBe(true);
+}
+
+function leftoverBuilds(): string[] {
+  const outputs = join(checkout, "test-results");
+  return existsSync(outputs) ? readdirSync(outputs) : [];
+}
+
+function faultyIo(fault: (operation: keyof FixtureBuildIo, path: string) => boolean): FixtureBuildIo {
+  return {
+    copy: (source, target) => { if (fault("copy", target)) throw new Error(`copy fault ${target}`); fileSystemIo.copy(source, target); },
+    write: (path, bytes) => { if (fault("write", path)) throw new Error(`write fault ${path}`); fileSystemIo.write(path, bytes); },
+    remove: (path) => { if (fault("remove", path)) throw new Error(`remove fault ${path}`); fileSystemIo.remove(path); },
+  };
+}
+
+describe("workbook publication build", () => {
   it("holds the real producer after journal cells and preserves strict script admission and publication", async () => {
-    const root = mkdtempSync(join(tmpdir(), "workbook-publication-"));
-    const resources = join(root, "resources");
-    const scripts = join(root, "dist", "skill-scripts");
     const workspace = join(root, "workspace");
     const home = join(root, "home");
-    mkdirSync(scripts, { recursive: true });
-    stageWindowsPathKindHelper(resources);
     mkdirSync(workspace);
     mkdirSync(join(home, "document-observation"), { recursive: true });
-    const producer = join(scripts, "edit-xlsx.cjs");
-    await build({ entryPoints: [resolve("src/skills/xlsx-edit-cli.ts")], outfile: producer,
-      bundle: true, platform: "node", format: "cjs", target: "node22", minify: true, logLevel: "silent" });
-    const producerBytes = readFileSync(producer);
-    const manifestPath = join(scripts, "manifest.json");
-    const originalManifest = Buffer.from(`${JSON.stringify({ version: 1,
-      scripts: { "edit-xlsx.cjs": createHash("sha256").update(producerBytes).digest("hex") } })}\n`);
-    writeFileSync(manifestPath, originalManifest);
     const workbookPath = join(workspace, "values.xlsx");
     const requestPath = join(workspace, "edits.json");
     const workbook = XLSX.utils.book_new();
@@ -44,17 +81,20 @@ describe("workbook publication barrier", () => {
     const original = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
     writeFileSync(workbookPath, original);
     writeFileSync(requestPath, JSON.stringify({ sheet: 0, edits: [{ cell: "A1", value: "Changed" }, { cell: "B1", value: 84 }] }));
-    const barrier = prepareWorkbookPublicationBarrier(scripts, workspace);
+    const fixture = prepareWorkbookPublicationBuild(checkout, workspace);
     let child: ReturnType<typeof spawn> | undefined;
     let closed: Promise<unknown> | undefined;
     try {
-      expect(readFileSync(barrier.scriptPath).subarray(-producerBytes.length)).toEqual(producerBytes);
-      configureHostResources({ resourcePath: resources, isPackaged: false });
-      const argv = barrier.argv(process.execPath, workbookPath, requestPath);
+      expect(readFileSync(fixture.scriptPath).subarray(-producerBytes.length)).toEqual(producerBytes);
+      const { projectRoot } = resolveRuntimePathsFromModuleUrl(pathToFileURL(fixture.mainEntry).href);
+      expect(projectRoot).toBe(fixture.root);
+      configureHostResources({ resourcePath: join(projectRoot, "resources"), isPackaged: false });
+      expect(hostScriptRuntimePaths()?.bundledScriptsDirectory).toBe(dirname(fixture.scriptPath));
+      const argv = fixture.argv(process.execPath, workbookPath, requestPath);
       const allowRead = hostScriptInvocationReadPaths(argv, { ELECTRON_RUN_AS_NODE: "1" });
-      expect(allowRead).toContain(barrier.scriptPath);
+      expect(allowRead).toContain(fixture.scriptPath);
       if (process.platform === "win32") {
-        const helper = windowsPathKindHelperIn(resources);
+        const helper = windowsPathKindHelperIn(join(fixture.root, "resources"));
         const denyWrite = hostScriptWriteDenyPaths();
         const grants = rankMxcFilesystem(shellPolicyModel({
           allowRead, allowWrite: [workspace], denyWrite, denyRead: [], protectedFloor: [],
@@ -81,28 +121,63 @@ describe("workbook publication barrier", () => {
       let stderr = "";
       child.stdout?.on("data", bytes => { stdout += bytes; });
       child.stderr?.on("data", bytes => { stderr += bytes; });
-      await expect.poll(() => existsSync(barrier.readyPath)).toBe(true);
+      await expect.poll(() => existsSync(fixture.readyPath)).toBe(true);
       expect(child.exitCode).toBeNull();
       expect(readFileSync(workbookPath)).toEqual(original);
       const records = () => readFileSync(journalPath, "utf8").trim().split("\n").map(line => JSON.parse(line) as { kind: string });
       expect(records().map(record => record.kind)).toEqual(["begin", "cell", "cell"]);
-      barrier.release();
-      barrier.release();
+      expectSharedBuildUsable();
+      fixture.release();
+      fixture.release();
       await closed;
       expect(child.exitCode, stderr).toBe(0);
       expect(JSON.parse(stdout)).toEqual({ editedCells: 2, needsRecalculation: true, backup: null });
       expect(records().map(record => record.kind)).toEqual(["begin", "cell", "cell", "commit"]);
       expect(XLSX.read(readFileSync(workbookPath), { type: "buffer" }).Sheets.Values?.B1?.v).toBe(84);
-      barrier.restore();
-      barrier.restore();
-      expect(readFileSync(manifestPath)).toEqual(originalManifest);
-      expect(readFileSync(producer)).toEqual(producerBytes);
+      fixture.dispose();
+      fixture.dispose();
+      expect(existsSync(fixture.root)).toBe(false);
+      expectSharedBuildUsable();
     } finally {
-      barrier.release();
+      fixture.release();
       if (child && child.exitCode === null && child.signalCode === null) child.kill();
       if (closed) await closed;
-      barrier.restore();
-      rmSync(root, { recursive: true, force: true });
+      fixture.dispose();
     }
+  });
+
+  it.each([
+    ["the build copy", "copy", join("dist", "src")],
+    ["the resource copy", "copy", "resources"],
+    ["the prelude install", "write", "edit-xlsx.cjs"],
+    ["the manifest install", "write", "manifest.json"],
+  ] as const)("leaves the shared build usable when %s fails", (_name, operation, suffix) => {
+    const workspace = mkdtempSync(join(root, "install-fault-"));
+    expect(() => prepareWorkbookPublicationBuild(checkout, workspace,
+      faultyIo((kind, path) => kind === operation && path.endsWith(suffix)))).toThrow(`${operation} fault`);
+    expect(leftoverBuilds()).toEqual([]);
+    expectSharedBuildUsable();
+  });
+
+  it("leaves the shared build usable when launch, teardown or a worker fails", () => {
+    const workspace = mkdtempSync(join(root, "lifecycle-fault-"));
+    let launchedRoot = "";
+    expect(() => {
+      const launched = prepareWorkbookPublicationBuild(checkout, workspace);
+      launchedRoot = launched.root;
+      try { throw new Error("launch fault"); } finally { launched.dispose(); }
+    }).toThrow("launch fault");
+    expect(existsSync(launchedRoot)).toBe(false);
+    expectSharedBuildUsable();
+
+    const torn = prepareWorkbookPublicationBuild(checkout, workspace, faultyIo((kind) => kind === "remove"));
+    expect(() => torn.dispose()).toThrow("remove fault");
+    expectSharedBuildUsable();
+    fileSystemIo.remove(torn.root);
+
+    const abandoned = prepareWorkbookPublicationBuild(checkout, workspace);
+    expectSharedBuildUsable();
+    fileSystemIo.remove(abandoned.root);
+    expect(leftoverBuilds()).toEqual([]);
   });
 });

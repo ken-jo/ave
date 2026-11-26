@@ -10,12 +10,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { setWindowSize, buildE2eBaseSettings, buildLlmSettings, builtMainExists, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
+import { setWindowSize, buildE2eBaseSettings, buildLlmSettings, builtMainExists, launchSeededElectron, REPO_ROOT, teardownSeededElectron } from "./seeded-electron.js";
 import * as XLSX from "xlsx";
 import { offsetWorkbook } from "../../../src/__tests__/support/table-document-fixtures.js";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
-import { prepareWorkbookPublicationBarrier } from "./xlsx-publication-barrier.js";
+import { prepareWorkbookPublicationBuild, renderWorkbookCommand } from "./xlsx-publication-barrier.js";
 
 test("edited workbook shows a recalculation badge through the real viewer", async () => {
   expect(builtMainExists()).toBe(true);
@@ -228,25 +228,21 @@ test("approved agent edits stream into the read-only workbook panel", async () =
   (settings.llm as { vendors: Record<string, { baseUrl?: string }> }).vendors["openai-compatible"].baseUrl =
     `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
   settings.features = { ...(settings.features as Record<string, unknown>), osToolSandbox: true };
-  let barrier: ReturnType<typeof prepareWorkbookPublicationBarrier> | undefined;
+  let barrier: ReturnType<typeof prepareWorkbookPublicationBuild> | undefined;
   let ctx: Awaited<ReturnType<typeof launchSeededElectron>> | undefined;
   let processClosed: Promise<unknown> | undefined;
   const cleanupFailures: unknown[] = [];
   let bodyFailure: { error: unknown } | undefined;
   try {
-    const publicationBarrier = prepareWorkbookPublicationBarrier(join(process.cwd(), "dist/skill-scripts"), directory);
+    const publicationBarrier = prepareWorkbookPublicationBuild(REPO_ROOT, directory);
     barrier = publicationBarrier;
-    ctx = await launchSeededElectron({ sessionTitle: "Agent document observation", settings, historyRows: [],
+    ctx = await launchSeededElectron({ sessionTitle: "Agent document observation", settings, historyRows: [], mainEntry: publicationBarrier.mainEntry,
       onLaunched: (app) => { processClosed = once(app.process(), "close"); } });
     writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [directory],
       reviewer: { interactive: { autoApprove: "off" } } } }));
     const runtime = await ctx.app.evaluate(() => process.execPath);
     const argv = publicationBarrier.argv(runtime, path, requestPath);
-    const quoted = process.platform === "win32"
-      ? argv.map((value) => `'${value.replaceAll("'", "''")}'`)
-      : argv.map((value) => `'${value.replaceAll("'", "'\\''")}'`);
-    shellCommand = process.platform === "win32"
-      ? `$env:ELECTRON_RUN_AS_NODE='1'; & ${quoted.join(" ")}` : `ELECTRON_RUN_AS_NODE=1 ${quoted.join(" ")}`;
+    shellCommand = renderWorkbookCommand(process.platform, argv);
     await ctx.page.evaluate(async () => {
       await window.aveApi.setApiKey("openai-compatible", "sk-e2e-loopback-document");
       const mode = await window.ave.permission.setMode("strict");
@@ -390,7 +386,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     let closed = processClosed === undefined;
     if (processClosed) await cleanup(async () => { await processClosed; closed = true; });
     if (closed) {
-      await cleanup(() => { barrier?.restore(); });
+      await cleanup(() => { barrier?.dispose(); });
       await cleanup(() => { rmSync(directory, { recursive: true, force: true }); });
     }
   }
