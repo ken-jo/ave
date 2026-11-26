@@ -12,7 +12,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, win32 } from "node:path";
 import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
@@ -352,7 +352,8 @@ describe("builtin shell — Windows MXC containers", () => {
       expect(script).toContain("$PSModuleAutoLoadingPreference = 'None'");
       expect(script).toContain("[System.IO.Path]::Combine($PSHOME, 'Modules')");
       expect(script).toContain("Microsoft.PowerShell.Core\\Import-Module -Name");
-      expect(script).toContain(Buffer.from(prepared.cwd, "utf16le").toString("base64"));
+      const encodedCwd = Buffer.from(win32.normalize(prepared.cwd), "utf16le").toString("base64");
+      expect(script).toContain(`[System.Convert]::FromBase64String('${encodedCwd}')`);
       expect(prepared.env.PSModulePath).toBe("");
       expect(script).toContain(POWERSHELL_EGRESS_PROXY_PRELUDE);
     }
