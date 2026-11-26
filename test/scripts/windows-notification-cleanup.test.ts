@@ -30,17 +30,13 @@ function prepareRegistryFixture(clsid = legacyClsid) {
   // Substitute external lookups in the copied script. Its quarantine, cleanup and exit path run unchanged.
   const programsLookup =
     /\[Environment\]::GetFolderPath\(\s*\[Environment\+SpecialFolder\]::Programs,\s*\[Environment\+SpecialFolderOption\]::DoNotVerify\s*\)/;
-  const registryOpen =
-    /\[Microsoft\.Win32\.RegistryKey\]::OpenBaseKey\(\s*\[Microsoft\.Win32\.RegistryHive\]::CurrentUser,\s*\$View\s*\)|\[ToastRegistryKey\]::OpenCurrentUser\(/g;
+  const registryOpen = /\[ToastRegistryKey\]::OpenCurrentUser\(/g;
   expect(cleanup.match(registryOpen)).toHaveLength(2);
   expect(cleanup).toMatch(programsLookup);
   expect(cleanup).toContain("$shortcutMoved = $false");
   const fixtureScript = cleanup
     .replace(programsLookup, "$env:AVE_FIXTURE_DIRECTORY")
-    .replace(registryOpen, (match) => match.endsWith("(")
-      ? "[FixtureRegistryKey]::OpenCurrentUser("
-      : "[FixtureRegistryKey]::OpenBaseKey($View)")
-    .replace(/^  Initialize-ToastRegistry$/m, "")
+    .replace(registryOpen, "[FixtureRegistryKey]::OpenCurrentUser(")
     .replace("$shortcutMoved = $false", () => `${registryFixture}\n$shortcutMoved = $false`);
   writeFileSync(script, fixtureScript);
 
@@ -133,7 +129,7 @@ describe("current-user toast cleanup", () => {
       /\$shortcutAttributes = Get-ShortcutAttributes \$shortcutPath\s+if \(\$null -eq \$shortcutAttributes\) \{\s+Write-CleanupEvent "verified-absent" "shortcut"[^}]+\}\s+elseif/,
     );
     expect(cleanup).toMatch(
-      /\n {2}foreach \(\$registration in @\(Find-OwnedToastRegistrations \$installedExe \$candidateClsids\)\) \{\s+if \(Remove-OwnedToastRegistration/,
+      /\n {2}foreach \(\$registration in @\(Read-ToastRegistrations \$installedExe \$candidateClsids\)\) \{[\s\S]+?if \(Remove-OwnedToastRegistration/,
     );
   });
 
@@ -218,6 +214,40 @@ describe("current-user toast cleanup", () => {
     expect(fixture.readState()).toEqual(fixture.initialState);
   });
 
+  it.runIf(process.platform === "win32").each([
+    ["owned slot recreated", "final-owned-write", "survived cleanup"],
+    ["foreign slot changed", "final-foreign-write", "changed between final scans"],
+    ["second scan read failed", "final-read-error", "fixture denied the final scan read"],
+  ])("keeps shortcut evidence when the final registry scan is unstable: %s", (_label, scenario, detail) => {
+    const fixture = prepareRegistryFixture();
+    const result = fixture.run(scenario);
+    expectCleanupFailed(result, detail);
+    expect(result.stderr).toContain(`fixture exercised ${scenario}`);
+    fixture.expectShortcutPreserved();
+    if (scenario === "final-owned-write") {
+      expect(fixture.readState().root.defaultValue).toBe(fixture.initialState.root.defaultValue);
+    }
+    if (scenario === "final-foreign-write") {
+      expect(fixture.readState().root.CustomActivator).toBe("foreign data");
+    }
+  });
+
+  it.runIf(process.platform === "win32").each([
+    ["invoking user still has an Ave process", "app-running", "Ave is still running"],
+    ["Ave process owner cannot be verified", "owner-lookup-error", "could not verify the owner"],
+  ])("fails before mutation when the %s", (_label, scenario, detail) => {
+    const fixture = prepareRegistryFixture();
+    expectCleanupFailed(fixture.run(scenario), detail);
+    expect(fixture.readState()).toEqual(fixture.initialState);
+    fixture.expectShortcutPreserved();
+  });
+
+  it.runIf(process.platform === "win32")("keeps shortcut evidence when Ave restarts before final verification", () => {
+    const fixture = prepareRegistryFixture();
+    expectCleanupFailed(fixture.run("app-restarted"), "Ave is still running");
+    fixture.expectShortcutPreserved();
+  });
+
   it.runIf(process.platform === "win32").each(["root default", "CustomActivator", "server default"])(
     "removes the lone product %s without a shortcut",
     (slot) => {
@@ -277,7 +307,7 @@ describe("current-user toast cleanup", () => {
 
   it.runIf(process.platform === "win32")("preserves foreign values and subkeys after exact cleanup", () => {
     const fixture = prepareRegistryFixture();
-    const result = fixture.run();
+    const result = fixture.run("other-user-app");
 
     expect(result.error).toBeUndefined();
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -304,11 +334,11 @@ describe("current-user toast cleanup", () => {
     );
     expect(cleanup.match(/^\s*\$candidateClsids\s*(?:\+?=)/gm)).toHaveLength(2);
     expect(cleanup).toContain("-AllowPartial:($registration.Clsid -eq $productClsid)");
-    expect(cleanup).toContain("$remaining = @(Find-OwnedToastRegistrations $installedExe $candidateClsids)");
+    expect(cleanup).toContain("Confirm-ToastRegistrationsAbsent $installedExe $candidateClsids");
     expect(cleanup).not.toMatch(/GetSubKeyNames|ProfileList|HKEY_USERS|NTUSER\.DAT|UsrClass\.dat|RegLoad(?:App)?Key/i);
     const hives = [...cleanup.matchAll(/\bRegistryHive\.(\w+)/g)];
     expect(new Set(hives.map((match) => match[1]))).toEqual(new Set(["CurrentUser"]));
-    const registered = cleanup.indexOf("$remaining = @(Find-OwnedToastRegistrations");
+    const registered = cleanup.indexOf("Confirm-ToastRegistrationsAbsent $installedExe $candidateClsids");
     expect(cleanup.indexOf("[System.IO.File]::Delete($quarantinePath)")).toBeGreaterThan(registered);
     expect(cleanup).toContain("[System.IO.File]::Move($quarantinePath, $shortcutPath)");
   });

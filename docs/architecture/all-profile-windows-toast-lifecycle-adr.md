@@ -80,6 +80,14 @@ Two points sharpen the picture beyond the issue text:
   the three slots blocks that removal. Legacy CLSIDs require a verified shortcut
   and a complete tuple. Cleanup takes a per-user mutex and fails if it finds a
   shortcut left in quarantine by a prior invocation.
+  Cleanup verifies that the invoking user has no running Ave process before
+  mutation and again before final verification. It disposes of the quarantined
+  shortcut only after two consecutive scans of every candidate CLSID in every
+  registry view show identical slot state and no owned value. A read failure
+  or an observed change retains the shortcut evidence. The scans are
+  observational. An external writer can still recreate a slot after the last
+  scan. A write that leaves both observations identical can go undetected,
+  including one after the last read of its slot.
 - `customUnInstall` and `customRemoveFiles` in `build/installer.nsh` distinguish
   genuine uninstall from updater uninstall with the compile-time `${isUpdated}`
   check and an explicit `--updated` GetOptions probe. Notification cleanup runs

@@ -190,6 +190,21 @@ function Get-RegistryViews {
   return @([Microsoft.Win32.RegistryView]::Registry32)
 }
 
+function Assert-AveStopped {
+  param([string]$Executable, [string]$UserSid)
+
+  $name = [System.IO.Path]::GetFileName($Executable).Replace("\", "\\").Replace("'", "\'")
+  foreach ($process in (Get-CimInstance -ClassName Win32_Process -Filter "Name = '$name'")) {
+    $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid
+    if ($owner.ReturnValue -ne 0 -or [string]::IsNullOrWhiteSpace($owner.Sid)) {
+      throw "could not verify the owner of Ave process $($process.ProcessId)"
+    }
+    if ($owner.Sid -eq $UserSid) {
+      throw "Ave is still running for this user (process $($process.ProcessId))"
+    }
+  }
+}
+
 function Initialize-ToastRegistry {
   # Managed registry methods can collapse a native failure into a missing value or a successful delete.
   Add-Type -TypeDefinition @'
@@ -200,6 +215,20 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
+
+public sealed class ToastRegistrySlot
+{
+    public RegistryValueKind Kind { get; private set; }
+    public string Bytes { get; private set; }
+    public object Value { get; private set; }
+
+    public ToastRegistrySlot(RegistryValueKind kind, string bytes, object value)
+    {
+        Kind = kind;
+        Bytes = bytes;
+        Value = value;
+    }
+}
 
 public sealed class ToastRegistryKey : IDisposable
 {
@@ -272,17 +301,26 @@ public sealed class ToastRegistryKey : IDisposable
         return TryQueryValue(name, null, out kind, ref size);
     }
 
-    public object ReadValue(string name, RegistryValueKind expectedKind)
+    public ToastRegistrySlot ReadSlot(string name, RegistryValueKind expectedKind)
     {
         RegistryValueKind kind;
         int size = 0;
-        if (!TryQueryValue(name, null, out kind, ref size) || kind != expectedKind) return null;
+        if (!TryQueryValue(name, null, out kind, ref size)) return null;
 
         // Leave room for a data read even if the value reported a size of zero.
         byte[] data = new byte[Math.Max(size, 1)];
-        size = data.Length;
-        if (!TryQueryValue(name, data, out kind, ref size) || kind != expectedKind) return null;
+        RegistryValueKind dataKind;
+        int dataSize = data.Length;
+        if (!TryQueryValue(name, data, out dataKind, ref dataSize) || kind != dataKind || size != dataSize)
+            throw new InvalidDataException("Registry value changed during read: " + name);
 
+        string bytes = Convert.ToBase64String(data, 0, size);
+        object value = kind == expectedKind ? DecodeValue(name, kind, data, size) : null;
+        return new ToastRegistrySlot(kind, bytes, value);
+    }
+
+    private static object DecodeValue(string name, RegistryValueKind kind, byte[] data, int size)
+    {
         if (kind == RegistryValueKind.DWord && size == sizeof(int))
             return BitConverter.ToInt32(data, 0);
         if (kind == RegistryValueKind.String && size % sizeof(char) == 0)
@@ -317,37 +355,51 @@ enum OwnedToastSlot {
   All = 7
 }
 
-function Get-OwnedToastSlots {
+function Read-ToastRegistrationSlots {
   param(
-    [Parameter(Mandatory = $true)]$RootKey,
+    [AllowNull()]$RootKey,
     [AllowNull()]$ServerKey,
     [Parameter(Mandatory = $true)][string]$ExpectedExecutable
   )
 
+  $rootDefault = $null
+  $customActivator = $null
+  $serverDefault = $null
+  if ($null -ne $RootKey) {
+    $rootDefault = $RootKey.ReadSlot("", [Microsoft.Win32.RegistryValueKind]::String)
+    $customActivator = $RootKey.ReadSlot("CustomActivator", [Microsoft.Win32.RegistryValueKind]::DWord)
+  }
+  if ($null -ne $ServerKey) {
+    $serverDefault = $ServerKey.ReadSlot("", [Microsoft.Win32.RegistryValueKind]::String)
+  }
+
   $slots = [OwnedToastSlot]::None
-  $rootDefault = $RootKey.ReadValue("", [Microsoft.Win32.RegistryValueKind]::String)
   if (
-    [string]::Equals(
-      [string]$rootDefault,
+    $null -ne $rootDefault -and [string]::Equals(
+      [string]$rootDefault.Value,
       "Electron Notification Activator",
       [System.StringComparison]::Ordinal
     )
   ) {
     $slots = $slots -bor [OwnedToastSlot]::RootDefault
   }
-  if ($RootKey.ReadValue("CustomActivator", [Microsoft.Win32.RegistryValueKind]::DWord) -eq 1) {
+  if ($null -ne $customActivator -and $customActivator.Value -eq 1) {
     $slots = $slots -bor [OwnedToastSlot]::CustomActivator
   }
-  if ($null -ne $ServerKey) {
-    $serverDefault = $ServerKey.ReadValue("", [Microsoft.Win32.RegistryValueKind]::String)
-    if (Test-SamePath $serverDefault $ExpectedExecutable) {
-      $slots = $slots -bor [OwnedToastSlot]::ServerDefault
-    }
+  if ($null -ne $serverDefault -and (Test-SamePath $serverDefault.Value $ExpectedExecutable)) {
+    $slots = $slots -bor [OwnedToastSlot]::ServerDefault
   }
-  return $slots
+  return [PSCustomObject]@{
+    RootExists = $null -ne $RootKey
+    ServerExists = $null -ne $ServerKey
+    RootDefault = $rootDefault
+    CustomActivator = $customActivator
+    ServerDefault = $serverDefault
+    Owned = $slots
+  }
 }
 
-function Get-ToastRegistrationOwnedSlots {
+function Read-ToastRegistration {
   param(
     [Parameter(Mandatory = $true)]$View,
     [Parameter(Mandatory = $true)][string]$Clsid,
@@ -358,9 +410,12 @@ function Get-ToastRegistrationOwnedSlots {
   $server = $null
   try {
     $root = [ToastRegistryKey]::OpenCurrentUser("Software\Classes\CLSID\$Clsid", $View, $false)
-    if ($null -eq $root) { return [OwnedToastSlot]::None }
-    $server = $root.OpenSubKey("LocalServer32", $false)
-    return Get-OwnedToastSlots $root $server $ExpectedExecutable
+    if ($null -ne $root) { $server = $root.OpenSubKey("LocalServer32", $false) }
+    return [PSCustomObject]@{
+      View = $View
+      Clsid = $Clsid
+      Slots = Read-ToastRegistrationSlots $root $server $ExpectedExecutable
+    }
   }
   finally {
     if ($null -ne $server) { $server.Dispose() }
@@ -390,11 +445,12 @@ function Remove-OwnedToastRegistration {
 
     # Recheck exact types and data on writable handles. Keep the keys so a
     # concurrent writer's values cannot be removed by key deletion.
-    $slots = Get-OwnedToastSlots $root $server $ExpectedExecutable
+    $state = Read-ToastRegistrationSlots $root $server $ExpectedExecutable
+    $slots = $state.Owned
     if (
-      ((-not ($slots -band [OwnedToastSlot]::ServerDefault)) -and $null -ne $server -and $server.HasValue("")) -or
-      ((-not ($slots -band [OwnedToastSlot]::CustomActivator)) -and $root.HasValue("CustomActivator")) -or
-      ((-not ($slots -band [OwnedToastSlot]::RootDefault)) -and $root.HasValue(""))
+      ((-not ($slots -band [OwnedToastSlot]::ServerDefault)) -and $null -ne $state.ServerDefault) -or
+      ((-not ($slots -band [OwnedToastSlot]::CustomActivator)) -and $null -ne $state.CustomActivator) -or
+      ((-not ($slots -band [OwnedToastSlot]::RootDefault)) -and $null -ne $state.RootDefault)
     ) {
       throw "Ave toast registration $Clsid ($View) contains a foreign value in a registration slot"
     }
@@ -423,22 +479,36 @@ function Remove-OwnedToastRegistration {
   }
 }
 
-function Find-OwnedToastRegistrations {
+function Read-ToastRegistrations {
   param(
     [Parameter(Mandatory = $true)][string]$ExpectedExecutable,
     [Parameter(Mandatory = $true)][string[]]$CandidateClsids
   )
 
-  $matches = @()
   foreach ($view in (Get-RegistryViews)) {
     foreach ($clsid in $CandidateClsids) {
-      $slots = Get-ToastRegistrationOwnedSlots $view $clsid $ExpectedExecutable
-      if ($slots -ne [OwnedToastSlot]::None) {
-        $matches += [PSCustomObject]@{ View = $view; Clsid = $clsid; Slots = $slots }
-      }
+      Read-ToastRegistration $view $clsid $ExpectedExecutable
     }
   }
-  return @($matches)
+}
+
+function Confirm-ToastRegistrationsAbsent {
+  param([string]$ExpectedExecutable, [string[]]$CandidateClsids)
+
+  $previous = $null
+  for ($pass = 0; $pass -lt 2; $pass++) {
+    $scan = @(Read-ToastRegistrations $ExpectedExecutable $CandidateClsids)
+    foreach ($registration in $scan) {
+      if ($registration.Slots.Owned -ne [OwnedToastSlot]::None) {
+        throw "owned Ave toast registration values for $($registration.Clsid) ($($registration.View)) survived cleanup"
+      }
+    }
+    $snapshot = ConvertTo-Json -InputObject $scan -Depth 5 -Compress
+    if ($pass -ne 0 -and $snapshot -cne $previous) {
+      throw "Ave toast registration state changed between final scans"
+    }
+    $previous = $snapshot
+  }
 }
 
 function Assert-NoQuarantinedShortcut {
@@ -500,6 +570,7 @@ try {
     throw "another Ave notification cleanup is in progress for this user"
   }
 
+  Assert-AveStopped $installedExe $userSid
   Initialize-ToastRegistry
   $programs = [Environment]::GetFolderPath(
     [Environment+SpecialFolder]::Programs,
@@ -581,8 +652,10 @@ try {
     }
   }
 
-  foreach ($registration in @(Find-OwnedToastRegistrations $installedExe $candidateClsids)) {
-    if (Remove-OwnedToastRegistration $registration.View $registration.Clsid $installedExe $registration.Slots `
+  foreach ($registration in @(Read-ToastRegistrations $installedExe $candidateClsids)) {
+    $owned = $registration.Slots.Owned
+    if ($owned -eq [OwnedToastSlot]::None) { continue }
+    if (Remove-OwnedToastRegistration $registration.View $registration.Clsid $installedExe $owned `
         -AllowPartial:($registration.Clsid -eq $productClsid)) {
       Write-CleanupEvent "removed" "toast-registration" (
         "Removed owned current-user Ave toast registration values for {0} ({1})." -f
@@ -591,14 +664,6 @@ try {
       )
     }
   }
-
-  $remaining = @(Find-OwnedToastRegistrations $installedExe $candidateClsids)
-  if ($remaining.Count -ne 0) {
-    throw "one or more owned Ave toast registration values survived cleanup"
-  }
-  Write-CleanupEvent "verified-absent" "toast-registration" (
-    "no owned current-user Ave toast registration values remain"
-  )
 
   $shortcutResidue = Get-ShortcutAttributes $shortcutPath
   if (
@@ -635,6 +700,15 @@ try {
     ) {
       throw "the quarantined shortcut changed during cleanup"
     }
+  }
+
+  Assert-AveStopped $installedExe $userSid
+  Confirm-ToastRegistrationsAbsent $installedExe $candidateClsids
+  Write-CleanupEvent "verified-absent" "toast-registration" (
+    "no owned current-user Ave toast registration values remain"
+  )
+
+  if ($shortcutMoved) {
     [System.IO.File]::Delete($quarantinePath)
     if ($null -ne (Get-ShortcutAttributes $quarantinePath)) {
       throw "the quarantined owned shortcut survived cleanup"

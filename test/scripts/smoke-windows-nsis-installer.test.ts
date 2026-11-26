@@ -1654,7 +1654,7 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(cleanup).toContain("RegistryView]::Registry32");
     expect(cleanup).toContain("System.AppUserModel.ID");
     expect(cleanup).toContain("System.AppUserModel.ToastActivatorCLSID");
-    expect(cleanup).toContain('ReadValue("CustomActivator", [Microsoft.Win32.RegistryValueKind]::DWord)');
+    expect(cleanup).toContain('ReadSlot("CustomActivator", [Microsoft.Win32.RegistryValueKind]::DWord)');
     expect(cleanup).toContain("RegQueryValueExW(handle, name");
     expect(cleanup).toContain(
       "[System.IO.File]::Move($shortcutPath, $quarantinePath)",
@@ -1714,13 +1714,16 @@ describe("Windows NSIS installer smoke contracts", () => {
       'Write-CleanupEvent "foreign-preserved" "shortcut"',
     );
     const finalToastCheck = cleanup.indexOf(
-      "$remaining = @(Find-OwnedToastRegistrations $installedExe $candidateClsids)",
+      "Confirm-ToastRegistrationsAbsent $installedExe $candidateClsids",
     );
     const finalShortcutCheck = cleanup.lastIndexOf(
       "$shortcutResidue = Get-ShortcutAttributes $shortcutPath",
     );
-    expect(finalToastCheck).toBeGreaterThanOrEqual(0);
-    expect(finalShortcutCheck).toBeGreaterThan(finalToastCheck);
+    expect(finalShortcutCheck).toBeGreaterThanOrEqual(0);
+    expect(finalToastCheck).toBeGreaterThan(finalShortcutCheck);
+    expect(cleanup.indexOf("[System.IO.File]::Delete($quarantinePath)")).toBeGreaterThan(
+      finalToastCheck,
+    );
 
     expect(earlyBoot).toContain(
       '"{62FD3EFB-B3D2-4235-9402-6979F52C0286}"',

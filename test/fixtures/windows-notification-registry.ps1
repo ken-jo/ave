@@ -1,24 +1,28 @@
 class FixtureRegistryKey {
   static [object] $State
+  static [bool] $Deleted
+  static [bool] $WroteDuringScan
+  static [int] $FinalScanCount
   [string] $Role
+  [bool] $FinalView
 
   FixtureRegistryKey([string]$role) { $this.Role = $role }
-
-  static [FixtureRegistryKey] OpenBaseKey([Microsoft.Win32.RegistryView]$view) {
-    return [FixtureRegistryKey]::new("base")
-  }
 
   static [FixtureRegistryKey] OpenCurrentUser(
     [string]$path, [Microsoft.Win32.RegistryView]$view, [bool]$writable
   ) {
     if ($path -ne "Software\Classes\CLSID\$env:AVE_FIXTURE_CLSID") { return $null }
-    return [FixtureRegistryKey]::new("root")
+    $key = [FixtureRegistryKey]::new("root")
+    $key.FinalView = -not $writable -and $view -eq [Microsoft.Win32.RegistryView]::Registry32
+    if ($key.FinalView -and [FixtureRegistryKey]::Deleted) { [FixtureRegistryKey]::FinalScanCount++ }
+    return $key
   }
 
   [FixtureRegistryKey] OpenSubKey([string]$path, [bool]$writable) {
-    if ($this.Role -eq "base") { return [FixtureRegistryKey]::OpenCurrentUser($path, "Default", $writable) }
     if ($path -eq "LocalServer32" -and $null -ne [FixtureRegistryKey]::State.server) {
-      return [FixtureRegistryKey]::new("server")
+      $key = [FixtureRegistryKey]::new("server")
+      $key.FinalView = $this.FinalView -and -not $writable
+      return $key
     }
     if ($path -eq "Foreign" -and $null -ne [FixtureRegistryKey]::State.foreign) {
       return [FixtureRegistryKey]::new("foreign")
@@ -48,23 +52,43 @@ class FixtureRegistryKey {
     return [Microsoft.Win32.RegistryValueKind]::None
   }
 
-  [object] GetValue([string]$name, [object]$missing) {
-    return $this.GetValue($name, $missing, [Microsoft.Win32.RegistryValueOptions]::None)
-  }
-
-  [object] GetValue([string]$name, [object]$missing, [Microsoft.Win32.RegistryValueOptions]$options) {
+  [object] ReadSlot([string]$name, [Microsoft.Win32.RegistryValueKind]$expectedKind) {
+    $this.BeforeRead($name)
     if ($env:AVE_FIXTURE_SCENARIO -eq "read-error") {
       [Console]::Error.WriteLine("fixture exercised read-error")
       throw [System.UnauthorizedAccessException]::new("fixture denied the value read")
     }
     $value = $this.Value($name)
-    if ($null -eq $value) { return $missing }
-    return $value
+    if ($null -eq $value) { return $null }
+    $kind = $this.GetValueKind($name)
+    return [PSCustomObject]@{
+      Kind = $kind
+      Bytes = ConvertTo-Json -InputObject $value -Compress
+      Value = if ($kind -eq $expectedKind) { $value } else { $null }
+    }
   }
 
-  [object] ReadValue([string]$name, [Microsoft.Win32.RegistryValueKind]$kind) {
-    if ($this.GetValueKind($name) -ne $kind) { return $null }
-    return $this.GetValue($name, $null)
+  [void] BeforeRead([string]$name) {
+    if ($this.FinalView -and [FixtureRegistryKey]::FinalScanCount -gt 0) {
+      $scenario = $env:AVE_FIXTURE_SCENARIO
+      if ($scenario -eq "final-read-error" -and [FixtureRegistryKey]::FinalScanCount -eq 2) {
+        [Console]::Error.WriteLine("fixture exercised final-read-error")
+        throw [System.UnauthorizedAccessException]::new("fixture denied the final scan read")
+      }
+      if ($this.Role -eq "server" -and $name -eq "" -and -not [FixtureRegistryKey]::WroteDuringScan) {
+        $root = [FixtureRegistryKey]::State.root
+        if ($scenario -eq "final-owned-write") {
+          $root | Add-Member -NotePropertyName defaultValue -NotePropertyValue "Electron Notification Activator"
+        }
+        elseif ($scenario -eq "final-foreign-write") {
+          $root | Add-Member -NotePropertyName CustomActivator -NotePropertyValue "foreign data"
+        }
+        else { return }
+        [FixtureRegistryKey]::WroteDuringScan = $true
+        [FixtureRegistryKey]::Save()
+        [Console]::Error.WriteLine("fixture exercised $scenario")
+      }
+    }
   }
 
   static [void] Save() {
@@ -72,8 +96,6 @@ class FixtureRegistryKey {
       $env:AVE_FIXTURE_REGISTRY, ([FixtureRegistryKey]::State | ConvertTo-Json -Depth 4 -Compress)
     )
   }
-
-  [void] DeleteValue([string]$name, [bool]$throwOnMissing) { $this.DeleteValue($name) }
 
   [void] DeleteValue([string]$name) {
     if ($this.Role -eq "root" -and $name -eq "CustomActivator") {
@@ -88,6 +110,7 @@ class FixtureRegistryKey {
     }
     $key = [FixtureRegistryKey]::State.($this.Role)
     $key.PSObject.Properties.Remove($this.ValueSlot($name))
+    [FixtureRegistryKey]::Deleted = $true
     [FixtureRegistryKey]::Save()
     if ($env:AVE_FIXTURE_SCENARIO -eq "overlap" -and $this.Role -eq "server") {
       $this.RunOverlappingCleanup()
@@ -119,6 +142,34 @@ class FixtureRegistryKey {
 }
 
 [FixtureRegistryKey]::State = ConvertFrom-Json ([System.IO.File]::ReadAllText($env:AVE_FIXTURE_REGISTRY))
+
+function Get-CimInstance {
+  param($ClassName, $Filter)
+  if ($ClassName -ne "Win32_Process" -or $Filter -ne "Name = 'Ave.exe'") {
+    throw "unexpected process lookup: $ClassName $Filter"
+  }
+  if (
+    $env:AVE_FIXTURE_SCENARIO -in @("app-running", "other-user-app", "owner-lookup-error") -or
+    ($env:AVE_FIXTURE_SCENARIO -eq "app-restarted" -and [FixtureRegistryKey]::Deleted)
+  ) {
+    [PSCustomObject]@{ ProcessId = 1234 }
+  }
+}
+
+function Invoke-CimMethod {
+  param($InputObject, $MethodName)
+  if ($InputObject.ProcessId -ne 1234 -or $MethodName -ne "GetOwnerSid") {
+    throw "unexpected process owner lookup"
+  }
+  if ($env:AVE_FIXTURE_SCENARIO -eq "owner-lookup-error") {
+    return [PSCustomObject]@{ ReturnValue = 2; Sid = $null }
+  }
+  $sid = if ($env:AVE_FIXTURE_SCENARIO -in @("app-running", "app-restarted")) {
+    [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  }
+  else { "S-1-5-21-1-2-3-4" }
+  [PSCustomObject]@{ ReturnValue = 0; Sid = $sid }
+}
 
 function Get-ShortcutRecord {
   param([string]$Path)
