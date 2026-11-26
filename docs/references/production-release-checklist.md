@@ -187,14 +187,24 @@ explicitly changes distribution strategy. Runtime assets such as the compressed
 Marketplace, plugin, and MCP artifact bootstrap remain app runtime concerns,
 where signing, permissions, and network policy are available.
 
+### MSIX/AppX packaging decision
+
 MSIX/AppX is a separate packaging decision. Do not ship it alongside NSIS until
 the update mechanism, signing certificate/Partner Center path, and enterprise
 distribution requirements are decided.
 
+The supported fix for per-profile toast registration is a signed package with
+external location. Embed the matching identity in the executable, declare the
+toast activator GUID in the package manifest, provision the package for all
+users, and preserve package registration across updates. See the
+[toast lifecycle design](../architecture/all-profile-windows-toast-lifecycle-adr.md#msixappx-package-identity-with-external-location).
+
 ### All-profile toast cleanup
 
-**Release limit — per-profile toast registration.** With runtime v45.3.4,
-the NSIS build runs `EnsureShortcut();` and `EnsureCLSIDRegistry();` under
+**Release limit — per-profile toast registration.** An unpackaged NSIS build
+always writes HKCU per user who runs Ave, so uninstall can clean only the
+current user's entries. With runtime v45.3.4, the NSIS build runs
+`EnsureShortcut();` and `EnsureCLSIDRegistry();` under
 `if (!is_packaged)` whenever the activator is registered. That condition uses
 OS package identity. The runtime uses the current user's Programs folder and
 HKCU for these calls. The AUMID and CLSID setters select identifiers only.
