@@ -214,6 +214,8 @@ describe("UsageDashboard", () => {
     const point = { ...firstDay, cost: 0, unknownCostTurns: 1, endpointPriceUnavailableTurns: 1 };
     const api = usageDashboardApi({ today: point, trend: [point, secondDay] });
     await renderDashboard(api);
+    const today = await screen.findByText(t("usageDashboard.today"));
+    expect(today.parentElement?.parentElement).toHaveTextContent("비용 미정 + 비용 미정 요청 1건");
     const heading = await screen.findByText(t("usageDashboard.monthlyProjection"));
     const card = heading.parentElement?.parentElement;
     expect(card).toHaveTextContent("이 경로의 엔드포인트가 사용 가능한 가격을 제공하지 않았습니다.");

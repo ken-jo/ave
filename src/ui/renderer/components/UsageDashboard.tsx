@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card.js";
 import { Input } from "../../../components/ui/input.js";
-import { formatCost, formatTokens, formatUsageCost } from "../../../lib/cost-format.js";
+import { formatCost, formatTokens } from "../../../lib/cost-format.js";
 import type { AveApi, UsageSummaryShape, UsageTrendPt } from "../types.js";
 import { Sparkline } from "./Sparkline.js";
 import { SettingsPageHeader } from "./PageShell.js";
@@ -13,6 +13,7 @@ import type { SettingsTab } from "../../../shared/settings-tabs.js";
 import { localDateKey, shiftLocalDateKey } from "../../../shared/local-date.js";
 import { shortSessionId } from "../../../shared/session-lookup.js";
 import { averageDailyCost } from "../../../shared/pricing-data.js";
+import { formatUsageCost } from "../utils/usage-cost.js";
 
 type Preset = "7d" | "30d" | "90d" | "all" | "custom";
 
@@ -198,7 +199,7 @@ export function UsageDashboard({
   const unpricedRequests = summary.trend.reduce((total, point) => total + (point.unknownCostTurns ?? 0), 0);
   const dailyCost = summary.auditIncomplete ? undefined : averageDailyCost(summary.trend);
   const displayCost = (usage: Parameters<typeof formatUsageCost>[0]) =>
-    summary.auditIncomplete ? t("be_costEstimator.costUnknown") : formatUsageCost(usage);
+    summary.auditIncomplete ? t("be_costEstimator.costUnknown") : formatUsageCost(usage, t);
 
   return (
     <div className="space-y-5" data-testid="usage-dashboard">

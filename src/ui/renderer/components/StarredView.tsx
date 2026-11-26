@@ -11,7 +11,8 @@ import type { ProjectIdentity } from "../../../shared/project-identity.js";
 import { projectLabelForSession } from "../utils/insights-project-groups.js";
 import { CalendarFallback, LazyCalendar } from "./LazyCalendar.js";
 import { localDateKey, localDayStart, utcDateKey } from "../../../shared/local-date.js";
-import { formatTokensExact, formatUsageCost } from "../../../lib/cost-format.js";
+import { formatTokensExact } from "../../../lib/cost-format.js";
+import { formatUsageCost } from "../utils/usage-cost.js";
 import { formatHhMm, formatMediumDateTime, formatMonthYear } from "../../../shared/format-time.js";
 import { InsightsUsageBreakdown } from "./InsightsUsageBreakdown.js";
 import { shortSessionId } from "../../../shared/session-lookup.js";
@@ -512,7 +513,7 @@ export function StarredView({
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
               {dailyUsage && `${formatTokensExact(dailyUsage.inputTokens)} / ${formatTokensExact(dailyUsage.outputTokens)} · `}
-              {dailyUsageReady ? formatUsageCost(dailyUsage ?? {}) : t("usageDashboard.loading")}
+              {dailyUsageReady ? formatUsageCost(dailyUsage ?? {}, t) : t("usageDashboard.loading")}
             </p>
           </section>
         </div>

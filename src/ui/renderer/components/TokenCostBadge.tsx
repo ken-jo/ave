@@ -9,7 +9,8 @@ import {
 import { LEGACY_ROUTE_UNRECORDED, parseResolvedModelPricing, type ModelUsageSegment, type UnknownModelPricingReason } from "../../../shared/model-pricing.js";
 import type { LLMVendor } from "../../../shared/llm-vendor-defaults.js";
 import type { SubscriptionUsageTelemetry } from "../../../shared/subscription-runtime.js";
-import { formatCost, PRICING_REASON_LABELS, formatTokens, formatTokensExact } from "../../../lib/cost-format.js";
+import { formatCost, formatTokens, formatTokensExact } from "../../../lib/cost-format.js";
+import { PRICING_REASON_LABELS } from "../utils/usage-cost.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 
 /** The turn's rates, resolved by the caller through `resolveModelPricing`. */

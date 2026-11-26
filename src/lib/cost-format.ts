@@ -1,5 +1,4 @@
 import { t } from "../i18n/runtime.js";
-import type { UnknownModelPricingReason } from "../shared/model-pricing.js";
 
 /** Clamp invalid or nonpositive counts to zero and round sub-thousand fractions. */
 export function formatTokens(n: number): string {
@@ -23,27 +22,4 @@ export function formatCost(n: number): string {
   if (n < 0.01) return `$${n.toFixed(4)}`;
   if (n < 1) return `$${n.toFixed(3)}`;
   return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-export const PRICING_REASON_LABELS = {
-  "endpoint-price-unavailable": "pricing.endpointPriceUnavailable",
-  "legacy-route-unrecorded": "pricing.legacyRouteUnrecorded",
-} as const satisfies Record<UnknownModelPricingReason, string>;
-
-export function formatUsageCost(usage: {
-  cost?: number;
-  unknownCostTurns?: number;
-  endpointPriceUnavailableTurns?: number;
-  legacyRouteUnrecordedTurns?: number;
-}): string {
-  const { cost, unknownCostTurns } = usage;
-  const base = cost !== undefined && (!unknownCostTurns || cost > 0)
-    ? formatCost(cost) : t("be_costEstimator.costUnknown");
-  return [
-    usage.unknownCostTurns
-      ? t("usageDashboard.unknownCostTurns", { base, turns: String(usage.unknownCostTurns) })
-      : base,
-    ...(usage.endpointPriceUnavailableTurns ? [t(PRICING_REASON_LABELS["endpoint-price-unavailable"])] : []),
-    ...(usage.legacyRouteUnrecordedTurns ? [t(PRICING_REASON_LABELS["legacy-route-unrecorded"])] : []),
-  ].join(" · ");
 }
