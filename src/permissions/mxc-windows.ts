@@ -652,9 +652,10 @@ export function rankMxcRowsBySpelling(
   const raised = [...dedupe(denied).flatMap((deny) => {
     if (!inexact(deny)) return deny;
     const firstMissing = firstMissingOf(deny);
-    // A missing parent cannot carry an exact deny, and a deny on the parent would take its other children: the name is watched.
+    // A missing parent cannot carry an exact deny, and a deny on the parent would take its other children: a protected name is
+    // watched, and any other deny there refuses the launch.
     if (missingCarriers.has(foldPath(firstMissing))) {
-      if (readDeniedExactly.has(foldPath(deny))) throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: deny }));
+      if (readDeniedExactly.has(foldPath(deny)) || !requiredWriteDenies.has(foldPath(deny))) throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: deny }));
       watched.push(deny);
       return [];
     }
@@ -967,9 +968,10 @@ function rankAdmittedMxcFilesystem(
   const raised = denied.flatMap(deny => {
     if (!inexact(deny)) return deny.target;
     const firstMissing = firstMissingOf(deny);
-    // A missing parent cannot carry an exact deny, and a deny on the parent would take its other children: the name is watched.
+    // A missing parent cannot carry an exact deny, and a deny on the parent would take its other children: a protected name is
+    // watched, and any other deny there refuses the launch.
     if (missingCarriers.has(foldPath(firstMissing))) {
-      if (deny.polarity.access !== "write") throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: deny.origin.row }));
+      if (deny.polarity.access !== "write" || !required.has(deny.origin.row)) throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: deny.origin.row }));
       watched.push(deny);
       return [];
     }

@@ -3529,9 +3529,9 @@ in its directory.
   its nearest existing folder and that folder's volume and file identity. The
   outcome check accepts a watched row only at the deny's own path, under the
   deny's own anchor object. Any other deny whose first missing component is
-  the same missing parent is not raised either: a write deny is watched at its
-  own path, and a user or secret read deny refuses the launch, naming it. A
-  deny the policy states on the parent itself keeps its own outcome.
+  the same missing parent is not raised either: a configured write deny at
+  another path, or a user or secret read deny, refuses the launch, naming it.
+  A deny the policy states on the parent itself keeps its own outcome.
   Admission does not depend on a live watch. The launch's last synchronous
   check (shell activation, the holder's check before native creation) confirms
   the folder is still the ranked object and the first missing component is

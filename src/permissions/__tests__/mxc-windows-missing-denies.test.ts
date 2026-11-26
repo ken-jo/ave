@@ -115,7 +115,7 @@ describe("missing deny parents", () => {
     });
   });
 
-  it("never widens a deny under a missing protected parent to the parent: a write deny is watched, a read deny refuses", () => {
+  it("never widens a deny under a missing protected parent to the parent: a protected name is watched, any other deny refuses", () => {
     const carrier = win32.join(root, ".ave");
     const [commands, hooks, tasks] = ["commands", "hooks", "tasks"].map(name => win32.join(carrier, name)) as [string, string, string];
     const refused = (path: string) => t("sandboxPolicy.windowsProtectedWriteRefused", { path });
@@ -123,11 +123,10 @@ describe("missing deny parents", () => {
       .toEqual({ readwrite: [root], readonly: [], denied: [], watched: [hooks] });
     const children = [commands, hooks];
     const required = { ...policy([]), denyWrite: children, requiredWriteDenies: children };
-    // A configured write deny at a protected child's spelling, alone or beside it, leaves the parent's other children writable.
+    // A configured write deny at a protected child's own spelling is the same obligation and leaves the parent's other children writable.
     expect(rankMxcLists({ ...required, independentWriteDenies: [hooks] }, exists)).toEqual({ readwrite: [root], readonly: [], denied: [], watched: [hooks, commands] });
-    expect(rankMxcLists({ ...required, denyWrite: [...children, tasks] }, exists))
-      .toEqual({ readwrite: [root], readonly: [], denied: [], watched: [tasks, ...children] });
-    // A read deny cannot be watched: the launch is refused naming it, never widened.
+    // A deny that is not a protected name cannot be watched: the launch is refused naming it, never widened.
+    expect(() => rankMxcLists({ ...required, denyWrite: [...children, tasks] }, exists)).toThrow(refused(tasks));
     expect(() => rankMxcLists({ ...required, protectedFloor: [commands] }, exists)).toThrow(refused(commands));
     expect(() => rankMxcLists({ ...required, userDenyRead: [hooks] }, exists)).toThrow(refused(hooks));
     // A deny the policy states on the parent itself is that row's own outcome and covers the children.
@@ -149,8 +148,7 @@ describe("missing deny parents", () => {
       const required = { ...base, denyWrite: children, requiredWriteDenies: children };
       expect(rankAdmittedMxcLists({ ...required, independentWriteDenies: [hooks] }))
         .toEqual({ readwrite: [workspace], readonly: [], denied: [], watched: [hooks, commands].map(watchedRow) });
-      expect(rankAdmittedMxcLists({ ...required, denyWrite: [...children, tasks] }))
-        .toEqual({ readwrite: [workspace], readonly: [], denied: [], watched: [tasks, ...children].map(watchedRow) });
+      expect(() => rankAdmittedMxcLists({ ...required, denyWrite: [...children, tasks] })).toThrow(refused(tasks));
       expect(() => rankAdmittedMxcLists({ ...required, protectedFloor: [commands] })).toThrow(refused(commands));
       expect(() => rankAdmittedMxcLists({ ...required, userDenyRead: [hooks] })).toThrow(refused(hooks));
       expect(rankAdmittedMxcLists({ ...required, denyRead: [carrier] })).toEqual({ readwrite: [workspace], readonly: [], denied: [carrier] });
