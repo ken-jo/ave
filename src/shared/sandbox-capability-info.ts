@@ -1,4 +1,5 @@
 import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
+import type { ContainerBackend } from "./container-platform.js";
 import type { WindowsReadDenyPrincipal } from "./windows-read-deny-evidence.js";
 
 /** Report actual confinement only: full filesystem/process/network on macOS/Linux; filesystem and egress on Windows.
@@ -239,6 +240,10 @@ const UNKNOWN_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({
 
 export function egressProtocolCoverageFor(substrate: "mxc" | "asrt" | "srt-win" | "approved-host" | "none"): EgressProtocolCoverage {
   return substrate === "mxc" ? MXC_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
+}
+
+export function containerEgressProtocolCoverage(backend: ContainerBackend): EgressProtocolCoverage {
+  return backend === "process-container" ? MXC_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
 }
 
 /** The scopes an egress grant can be given. A shell tool call's card offers Deny plus once, session, project, always (owner 2026-10-25, five-choice network card); a workspace terminal
