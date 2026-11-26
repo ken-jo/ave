@@ -238,6 +238,9 @@ async function decodeCaptureTile(
     const last = start + count - 1;
     const bottom = Math.ceil(footprintEnd(sourceTop, stepY, last, pixelHeight, footprintStart(sourceTop, stepY, last, pixelHeight)));
     const height = bottom - top;
+    if (pixelWidth * height > CAPTURE_DECODE_PIXELS) {
+      throw captureStitchError("screenshot-limit", "a capture strip exceeds the extraction pixel limit");
+    }
     const decoded = await input.clone().extract({ left: 0, top, width: pixelWidth, height })
       .raw().toBuffer({ resolveWithObject: true });
     const { data, info } = decoded;

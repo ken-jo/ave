@@ -40,24 +40,24 @@ async function tagWideGamut(png: Buffer): Promise<Buffer> {
   return Buffer.concat([png.subarray(0, 33), profile, png.subarray(33)]);
 }
 
-function tiledSession(pixelRatio = 1, zoom = 1, captureTile?: (pageY: number) => Promise<Buffer>, contentHeight = CONTENT_HEIGHT) {
+function tiledSession(pixelRatio = 1, zoom = 1, captureTile?: (pageY: number) => Promise<Buffer>, contentHeight = CONTENT_HEIGHT, viewportHeight = VIEWPORT_HEIGHT) {
   let pageY = 0;
   const restore = vi.fn(async () => {});
   const send = vi.fn(async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
     if (method === "Page.getLayoutMetrics") return {
       cssContentSize: { x: 0, y: 0, width: WIDTH, height: contentHeight },
-      cssVisualViewport: { pageX: 0, pageY, clientWidth: WIDTH, clientHeight: VIEWPORT_HEIGHT },
+      cssVisualViewport: { pageX: 0, pageY, clientWidth: WIDTH, clientHeight: viewportHeight },
     };
     if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
     if (method === "Page.createIsolatedWorld") return { executionContextId: 73 };
     if (method === "Runtime.callFunctionOn") {
       const values = params?.arguments as Array<{ value: unknown }>;
-      pageY = Math.min(Number(values[1]?.value), contentHeight - VIEWPORT_HEIGHT);
+      pageY = Math.min(Number(values[1]?.value), contentHeight - viewportHeight);
       return {};
     }
     if (method === "Page.captureScreenshot") {
       const png = captureTile ? await captureTile(pageY) : await sharp(Buffer.from(await tile(pageY), "base64"))
-        .resize({ width: WIDTH * pixelRatio * zoom, height: VIEWPORT_HEIGHT * pixelRatio * zoom, kernel: "nearest" }).png().toBuffer();
+        .resize({ width: WIDTH * pixelRatio * zoom, height: viewportHeight * pixelRatio * zoom, kernel: "nearest" }).png().toBuffer();
       return { data: png.toString("base64") };
     }
     throw new Error(`unexpected protocol call: ${method}`);
@@ -75,6 +75,20 @@ function tiledSession(pixelRatio = 1, zoom = 1, captureTile?: (pageY: number) =>
 }
 
 describe("browser capture tiles", () => {
+  it("refuses a single output row that exceeds the extraction pixel limit", async () => {
+    const png = await sharp({ create: { width: 6000, height: 3000, channels: 3, background: "white" } }).png().toBuffer();
+    const { cdp, restore, captureViewport } = tiledSession(3000, 1, async () => png, 1, 1);
+    const extract = vi.spyOn(sharp.prototype, "extract");
+    try {
+      await expect(captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 3000, undefined, captureViewport))
+        .rejects.toMatchObject({ code: "screenshot-limit" });
+      expect(extract).not.toHaveBeenCalled();
+      expect(restore).toHaveBeenCalledOnce();
+    } finally {
+      extract.mockRestore();
+    }
+  });
+
   it.each([{ pixelRatio: 1, zoom: 1 }, { pixelRatio: 2, zoom: 1 }, { pixelRatio: 3, zoom: 1 }, { pixelRatio: 2, zoom: 1.25 }])("stitches every document row and clips the overlap at density $pixelRatio and zoom $zoom", async ({ pixelRatio, zoom }) => {
     const { cdp, send, restore, captureViewport } = tiledSession(pixelRatio, zoom);
     const result = await captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport);
