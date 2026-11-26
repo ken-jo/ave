@@ -2,6 +2,7 @@
 
 #include <fcntl.h>
 #include <io.h>
+#include <sddl.h>
 
 namespace {
 
@@ -271,24 +272,129 @@ size_t hold_reply_limit() {
 size_t hold_reply_limit() { return MAX_PATH_FACTS_OUTPUT_BYTES; }
 #endif
 
-struct HoldJob { HANDLE job; HANDLE pipe; };
+struct HoldJob {
+  HANDLE job;
+  HANDLE pipe;
+  HANDLE admitted;  // Set once the host names the launcher that may connect.
+  DWORD launcher = 0;
+  HANDLE launcher_process = nullptr;
+  const PinnedPath* pinned;
+  volatile LONG reported = 0;
+};
+
+constexpr DWORD kHoldMagic = 0x31485641;  // "AVH1"
+constexpr DWORD kHoldAdmitMs = 30000;
 
 bool send_hold_byte(HANDLE pipe, char byte) {
   DWORD written = 0;
   return WriteFile(pipe, &byte, 1, &written, nullptr) && written == 1;
 }
 
-// One launcher connects, sends its suspended command's PID and resumes it only after 'A'. After the
-// command exits, every process left in the job is stopped and 'R' confirms the job is empty.
+bool read_hold_exact(HANDLE input, void* target, DWORD size) {
+  auto* cursor = static_cast<char*>(target);
+  while (size) {
+    DWORD count = 0;
+    if (!ReadFile(input, cursor, size, &count, nullptr) || !count) return false;
+    cursor += count;
+    size -= count;
+  }
+  return true;
+}
+
+void write_hold_outcome(HoldJob* hold, bool reaped, bool stopped) {
+  if (InterlockedExchange(&hold->reported, 1) != 0) return;
+  const char* line = !reaped ? "{\"outcome\":\"lost\"}\n" : stopped ? "{\"outcome\":\"reaped\",\"stopped\":true}\n" : "{\"outcome\":\"reaped\",\"stopped\":false}\n";
+  std::fwrite(line, 1, std::strlen(line), stdout);
+  std::fflush(stdout);
+}
+
+DWORD parent_process_id(HANDLE process) {
+  struct BasicInformation { LONG_PTR exit; PVOID peb; ULONG_PTR affinity; LONG_PTR priority; ULONG_PTR id; ULONG_PTR parent; };
+  using Query = LONG(NTAPI*)(HANDLE, int, PVOID, ULONG, PULONG);
+  const HMODULE module = GetModuleHandleW(L"ntdll.dll");
+  const auto address = module == nullptr ? nullptr : GetProcAddress(module, "NtQueryInformationProcess");
+  if (address == nullptr) return 0;
+  Query query = nullptr;
+  std::memcpy(&query, &address, sizeof(query));
+  BasicInformation information{};
+  return query(process, 0, &information, sizeof(information), nullptr) < 0 ? 0 : static_cast<DWORD>(information.parent);
+}
+
+bool created_after(HANDLE later, HANDLE earlier) {
+  FILETIME a{}, b{}, unused{};
+  if (!GetProcessTimes(later, &a, &unused, &unused, &unused) || !GetProcessTimes(earlier, &b, &unused, &unused, &unused)) return false;
+  return CompareFileTime(&a, &b) >= 0;
+}
+
+// Reopens the leaf by name without following links: it must still be the directory issued at hold time.
+bool leaf_still_pinned(const PinnedPath& pinned) {
+  if (!verify_pinned_path(pinned)) return false;
+  const std::wstring& leaf = pinned.components.back();
+  const std::wstring extended = leaf.compare(0, 2, L"\\\\") == 0 ? L"\\\\?\\UNC\\" + leaf.substr(2) : L"\\\\?\\" + leaf;
+  HANDLE handle = CreateFileW(extended.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                              OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return false;
+  PathFacts current;
+  const bool read = handle_facts(handle, current);
+  CloseHandle(handle);
+  const auto& issued = pinned.facts.back();
+  return read && current.id.VolumeSerialNumber == issued.id.VolumeSerialNumber
+    && std::memcmp(&current.id.FileId, &issued.id.FileId, sizeof(FILE_ID_128)) == 0
+    && (current.tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+}
+
+// Members still running when the root exits, other than console hosts the system attaches.
+bool job_has_descendants(HANDLE job) {
+  std::vector<unsigned char> buffer(sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + 1024 * sizeof(ULONG_PTR));
+  auto* list = reinterpret_cast<JOBOBJECT_BASIC_PROCESS_ID_LIST*>(buffer.data());
+  if (!QueryInformationJobObject(job, JobObjectBasicProcessIdList, list, static_cast<DWORD>(buffer.size()), nullptr)) return true;
+  for (DWORD index = 0; index < list->NumberOfProcessIdsInList; ++index) {
+    HANDLE member = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(list->ProcessIdList[index]));
+    if (member == nullptr) return true;
+    wchar_t image[MAX_PATH + 1]{};
+    DWORD size = MAX_PATH;
+    const bool named = QueryFullProcessImageNameW(member, 0, image, &size) != FALSE;
+    CloseHandle(member);
+    const std::wstring path(image, size);
+    if (!named || path.size() < 12 || _wcsicmp(path.c_str() + path.size() - 12, L"\\conhost.exe") != 0) return true;
+  }
+  return false;
+}
+
+// The host names the launcher it started; only that process may connect. It sends one frame naming its
+// suspended child, which joins this job before 'A'. After the root exits, every member is stopped, the
+// held chain is rechecked, and 'R' confirms both. The launcher then reports its own teardown ('K' clean),
+// and the outcome line on stdout is the host's record of the run.
+// A launcher that exits without a full exchange (or never connects) leaves the run lost.
+DWORD WINAPI watch_hold_launcher(void* context) {
+  auto* hold = static_cast<HoldJob*>(context);
+  WaitForSingleObject(hold->launcher_process, INFINITE);
+  Sleep(500);
+  write_hold_outcome(hold, false, false);
+  return 0;
+}
+
 DWORD WINAPI serve_hold_job(void* context) {
-  const auto* hold = static_cast<const HoldJob*>(context);
+  auto* hold = static_cast<HoldJob*>(context);
   if (!ConnectNamedPipe(hold->pipe, nullptr) && GetLastError() != ERROR_PIPE_CONNECTED) return 0;
-  DWORD pid = 0, count = 0;
-  if (!ReadFile(hold->pipe, &pid, sizeof(pid), &count, nullptr) || count != sizeof(pid)) return 0;
-  HANDLE command = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
-  if (command == nullptr || !AssignProcessToJobObject(hold->job, command)) {
+  ULONG client = 0;
+  struct Frame { DWORD magic; DWORD pid; } frame{};
+  DWORD available = 1;
+  HANDLE command = nullptr;
+  const bool admitted = WaitForSingleObject(hold->admitted, kHoldAdmitMs) == WAIT_OBJECT_0
+    && GetNamedPipeClientProcessId(hold->pipe, &client) && client == hold->launcher
+    && WaitForSingleObject(hold->launcher_process, 0) == WAIT_TIMEOUT
+    && read_hold_exact(hold->pipe, &frame, sizeof(frame)) && frame.magic == kHoldMagic
+    && PeekNamedPipe(hold->pipe, nullptr, 0, nullptr, &available, nullptr) && available == 0
+    && (command = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE | SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, frame.pid)) != nullptr
+    && parent_process_id(command) == hold->launcher && created_after(command, hold->launcher_process)
+    && AssignProcessToJobObject(hold->job, command);
+  if (!admitted) {
     if (command != nullptr) CloseHandle(command);
     send_hold_byte(hold->pipe, 'F');
+    write_hold_outcome(hold, false, false);
+    // Disconnecting discards anything unread, so a refused client is never left waiting.
+    DisconnectNamedPipe(hold->pipe);
     return 0;
   }
   if (!send_hold_byte(hold->pipe, 'A')) TerminateJobObject(hold->job, 125);
@@ -297,21 +403,85 @@ DWORD WINAPI serve_hold_job(void* context) {
 #ifdef AVE_TEST_HOLD_FIXTURE
   if (GetEnvironmentVariableW(L"AVE_TEST_HOLD_EXIT_BEFORE_REAP", nullptr, 0) != 0) ExitProcess(0);
 #endif
-  if (!TerminateJobObject(hold->job, 1)) { send_hold_byte(hold->pipe, 'X'); return 0; }
-  const ULONGLONG deadline = GetTickCount64() + 5000;
-  for (;;) {
-    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
-    if (!QueryInformationJobObject(hold->job, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr)) break;
-    if (accounting.ActiveProcesses == 0) { send_hold_byte(hold->pipe, 'R'); return 0; }
-    if (GetTickCount64() >= deadline) break;
-    Sleep(10);
+  const bool stopped = job_has_descendants(hold->job);
+  bool reaped = false;
+  if (TerminateJobObject(hold->job, 1)) {
+    for (const ULONGLONG deadline = GetTickCount64() + 5000;;) {
+      JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
+      if (!QueryInformationJobObject(hold->job, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr)) break;
+      if (accounting.ActiveProcesses == 0) { reaped = true; break; }
+      if (GetTickCount64() >= deadline) break;
+      Sleep(10);
+    }
   }
-  send_hold_byte(hold->pipe, 'X');
+  // A leaf replaced in place (for example made into a junction) no longer matches the facts reported at hold time.
+  reaped = reaped && leaf_still_pinned(*hold->pinned);
+  char verdict = 0;
+  DWORD count = 0;
+  const bool clean = send_hold_byte(hold->pipe, reaped ? 'R' : 'X') && reaped
+    && ReadFile(hold->pipe, &verdict, 1, &count, nullptr) && count == 1 && verdict == 'K';
+  write_hold_outcome(hold, clean, stopped);
   return 0;
 }
 
+// The pipe admits only this user, and only the launcher the host names.
+HANDLE create_hold_pipe(const wchar_t* name) {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return INVALID_HANDLE_VALUE;
+  DWORD needed = 0;
+  GetTokenInformation(token, TokenUser, nullptr, 0, &needed);
+  std::vector<unsigned char> storage(needed);
+  const bool user = GetTokenInformation(token, TokenUser, storage.data(), needed, &needed) != FALSE;
+  CloseHandle(token);
+  LPWSTR sid = nullptr;
+  if (!user || !ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(storage.data())->User.Sid, &sid)) return INVALID_HANDLE_VALUE;
+  const std::wstring sddl = std::wstring(L"D:P(A;;GA;;;") + sid + L")";
+  LocalFree(sid);
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr)) return INVALID_HANDLE_VALUE;
+  SECURITY_ATTRIBUTES security{sizeof(security), descriptor, FALSE};
+  HANDLE pipe = CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 16, 16, 0, &security);
+  LocalFree(descriptor);
+  return pipe;
+}
+
+#ifdef AVE_TEST_HOLD_FIXTURE
+// 'L' asks for the job's member process ids as one JSON line on stderr.
+void report_hold_members(HANDLE job) {
+  std::vector<unsigned char> buffer(sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + 1024 * sizeof(ULONG_PTR));
+  auto* list = reinterpret_cast<JOBOBJECT_BASIC_PROCESS_ID_LIST*>(buffer.data());
+  std::string line = "[";
+  if (QueryInformationJobObject(job, JobObjectBasicProcessIdList, list, static_cast<DWORD>(buffer.size()), nullptr)) {
+    for (DWORD index = 0; index < list->NumberOfProcessIdsInList; ++index)
+      line += (index ? "," : "") + std::to_string(list->ProcessIdList[index]);
+  }
+  line += "]\n";
+  std::fwrite(line.data(), 1, line.size(), stderr);
+  std::fflush(stderr);
+}
+
+// `--breakaway <executable>`: try to start a process outside every job; prints whether the system refused.
+int try_breakaway(int argc, wchar_t** argv) {
+  if (argc != 3) return 2;
+  STARTUPINFOW startup{sizeof(startup)};
+  PROCESS_INFORMATION process{};
+  std::wstring command = L"\"" + std::wstring(argv[2]) + L"\"";
+  if (CreateProcessW(argv[2], command.data(), nullptr, nullptr, FALSE, CREATE_BREAKAWAY_FROM_JOB | CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                     nullptr, nullptr, &startup, &process)) {
+    TerminateProcess(process.hProcess, 1);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    std::fputs("breakaway allowed\n", stdout);
+    return 1;
+  }
+  std::fprintf(stdout, "breakaway refused %lu\n", GetLastError());
+  return 0;
+}
+#endif
+
 // `--hold <directory> --pipe <name>`: report the --pin row, then keep every component held until stdin
-// closes. The helper owns the only handle to a kill-on-close job; a launcher started with the same pipe
+// closes. The helper owns the only handle to a kill-on-close job; the launcher the host names on stdin
 // puts its command in that job, so the command cannot outlive the hold.
 int hold_path(int argc, wchar_t** argv) {
   if (argc != 5 || std::wstring(argv[3]) != L"--pipe" || std::wstring(argv[4]).rfind(L"\\\\.\\pipe\\ave-hold-", 0) != 0) return 2;
@@ -334,23 +504,37 @@ int hold_path(int argc, wchar_t** argv) {
   }
   if (row.size() + kFraming > limit) { std::fputs("held directory reply exceeds the limit\n", stderr); return 3; }
   const std::string output = "[" + row + "]}]\n";
-  HoldJob hold{CreateJobObjectW(nullptr, nullptr), INVALID_HANDLE_VALUE};
+  HoldJob hold{CreateJobObjectW(nullptr, nullptr), INVALID_HANDLE_VALUE, CreateEventW(nullptr, TRUE, FALSE, nullptr), 0, nullptr, &pinned};
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
   limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-  if (hold.job == nullptr || !SetInformationJobObject(hold.job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+  if (hold.job == nullptr || hold.admitted == nullptr || !SetInformationJobObject(hold.job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
     std::fputs("could not create the hold job\n", stderr);
     return 3;
   }
-  hold.pipe = CreateNamedPipeW(argv[4], PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
-                               PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 16, 16, 0, nullptr);
-  if (hold.pipe == INVALID_HANDLE_VALUE || CreateThread(nullptr, 0, serve_hold_job, &hold, 0, nullptr) == nullptr) {
+  hold.pipe = create_hold_pipe(argv[4]);
+  if (hold.pipe == INVALID_HANDLE_VALUE) {
     std::fputs("could not open the hold pipe\n", stderr);
     return 3;
   }
   if (std::fwrite(output.data(), 1, output.size(), stdout) != output.size() || std::fflush(stdout) != 0) return 3;
-  char byte;
-  DWORD count;
-  while (ReadFile(GetStdHandle(STD_INPUT_HANDLE), &byte, 1, &count, nullptr) && count) {}
+  if (CreateThread(nullptr, 0, serve_hold_job, &hold, 0, nullptr) == nullptr) return 3;
+  HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+  DWORD launcher = 0;
+  if (read_hold_exact(input, &launcher, sizeof(launcher)) && launcher != 0) {
+    hold.launcher_process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, launcher);
+    if (hold.launcher_process != nullptr) {
+      hold.launcher = launcher;
+      SetEvent(hold.admitted);
+      if (CreateThread(nullptr, 0, watch_hold_launcher, &hold, 0, nullptr) == nullptr) ExitProcess(3);
+    }
+    char byte;
+    DWORD count;
+    while (ReadFile(input, &byte, 1, &count, nullptr) && count) {
+#ifdef AVE_TEST_HOLD_FIXTURE
+      if (byte == 'L') report_hold_members(hold.job);
+#endif
+    }
+  }
   // Exiting closes the job handle, which stops any command still in it.
   ExitProcess(0);
 }

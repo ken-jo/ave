@@ -317,17 +317,29 @@ directory and every ancestor (traverse access, read and write sharing, no
 delete sharing), writes the `--pin` row in binary mode (at most 8 MiB on the
 wire, LF included), and keeps the handles until stdin closes. It also owns the
 only handle to a kill-on-close job. The handle is not inheritable, and the
-helper starts no processes. One client of the pipe sends a suspended process
-id. The helper assigns that process to the job (nested in any job it already
-has) and answers `A`, or `F` when assignment fails. When that process exits,
-the helper terminates the job, waits up to 5 seconds for it to be empty, and
-answers `R`, or `X` when it is not. The helper's exit closes the job, which
-stops everything in it.
+helper starts no processes. The pipe admits only the current user. After the
+row, the host writes the job launcher's process id (4 bytes) to stdin; the
+helper serves one client, and only that live launcher (waiting at most 30
+seconds for its id). The client sends exactly `AVH1` and a process id; extra
+bytes, a short frame, or a process that is not the launcher's own newer child
+get `F`. Otherwise the helper assigns that process to the job (nested in any
+job it already has) and answers `A`. When that process exits, the helper notes
+whether anything besides console hosts is still running, terminates the job,
+waits up to 5 seconds for it to be empty, rechecks every held handle and
+reopens the leaf by name without following links (same file id, not a reparse
+point), and answers `R`, or `X` when any of that fails. The launcher answers
+`K` once its own job is proven empty. The helper then writes one stdout line:
+`{"outcome":"reaped","stopped":<bool>}` after `R` and `K`, else
+`{"outcome":"lost"}`. The helper's exit closes the job, which stops everything
+in it.
 
 Build `-Helper path-kind -HoldFixture` for `ave-path-kind-hold-fixture.exe`,
 which is never packaged. It reads the reply limit from
 `AVE_TEST_HOLD_REPLY_LIMIT` and, with `AVE_TEST_HOLD_EXIT_BEFORE_REAP` set,
-exits after the command instead of answering `R`.
+exits after the command instead of answering `R`. After the launcher id, an
+`L` on stdin prints the job's member process ids as one JSON line on stderr.
+`--breakaway <executable>` tries to start that executable outside every job and
+prints `breakaway refused <error>` (exit 0) or `breakaway allowed` (exit 1).
 
 ## Compatibility deny evidence
 
