@@ -2178,9 +2178,7 @@ async function atomicTextWrite(target: string, content: string, seal?: TargetSea
     async run(recordEffect) {
       seal?.verify();
       assertProjectWritePath(target);
-      const identity = await writeTextAtomically(target, content, seal);
-      recordEffect(target);
-      return identity;
+      return writeTextAtomically(target, content, recordEffect, seal);
     },
   }, seal);
 }
@@ -2196,7 +2194,12 @@ function unlinkProjectFile(target: string, seal?: TargetSeal): Promise<void> {
   }, seal);
 }
 
-async function writeTextAtomically(target: string, content: string, seal?: TargetSeal): Promise<WrittenFileIdentity | undefined> {
+async function writeTextAtomically(
+  target: string,
+  content: string,
+  recordEffect: (path: string) => void,
+  seal?: TargetSeal,
+): Promise<WrittenFileIdentity | undefined> {
   const temp = withLocalityDecision(() => {
     seal?.verify();
     const stableTarget = seal === undefined
@@ -2219,6 +2222,7 @@ async function writeTextAtomically(target: string, content: string, seal?: Targe
       }
     } finally { await handle?.close(); }
     await renameWithTransientRetry(temp, target, seal);
+    recordEffect(target);
   } catch (error) {
     try {
       if (windowsStage) windowsStage.discard();

@@ -8,10 +8,11 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { sealTargets, TargetIdentityChangedError } from "../../permissions/target-seal.js";
 import { resolvePhysicalFilesystemPath } from "../../shared/shell-filesystem-path.js";
 import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
-import { CopyPathTool, MoveFileTool, WriteFileTool } from "../../tools/file-tools.js";
+import { CopyPathTool, MoveFileTool, ReadFileTool, WriteFileTool } from "../../tools/file-tools.js";
 import { checkpointFileMutation, restoreCodeCheckpoint, withCodeCheckpoint } from "../code-checkpoints.js";
 
 const probe = vi.hoisted(() => vi.fn<(path: unknown) => void>());
+const afterRename = vi.hoisted(() => vi.fn<(destination: unknown) => void>());
 const copy = vi.hoisted(() => ({
   afterCopy: undefined as (() => void) | undefined,
   afterOpen: undefined as ((path: unknown, handle: FileHandle) => void) | undefined,
@@ -47,6 +48,10 @@ vi.mock("node:fs/promises", async (original) => {
     realpath: (...args: Parameters<typeof actual.realpath>) => { probe(args[0]); return actual.realpath(...args); },
     rmdir: (...args: Parameters<typeof actual.rmdir>) => { probe(args[0]); return actual.rmdir(...args); },
     unlink: (...args: Parameters<typeof actual.unlink>) => { probe(args[0]); return actual.unlink(...args); },
+    rename: async (...args: Parameters<typeof actual.rename>) => {
+      await actual.rename(...args);
+      afterRename(args[1]);
+    },
     copyFile: async (...args: Parameters<typeof actual.copyFile>) => {
       await actual.copyFile(...args);
       copy.afterCopy?.();
@@ -75,7 +80,8 @@ describe("checkpoint mutation locality", () => {
   afterEach(async () => {
     setWindowsDriveQueryForTest();
     vi.unstubAllEnvs();
-    probe.mockClear();
+    probe.mockReset();
+    afterRename.mockReset();
     copy.afterCopy = undefined;
     copy.afterOpen = undefined;
     await rm(root, { recursive: true, force: true });
@@ -166,6 +172,35 @@ describe("checkpoint mutation locality", () => {
     expect(await restoreCodeCheckpoint(sessionId, "mutation", { cwd: root, extraAllowedDirectories: [] })).toEqual({ ok: true });
     expect(await readFile(first, "utf8")).toBe("first");
     expect(await readFile(second, "utf8")).toBe("second");
+  });
+
+  it.skipIf(process.platform === "win32")("rewinds a published text write after attribution fails", async () => {
+    const sessionId = randomUUID();
+    const context = { cwd: root, extraAllowedDirectories: [], metadata: { sessionId } };
+    const original = await readFile(first);
+    const read = await new ReadFileTool().execute({ path: first }, context);
+    expect(read.isError, read.output).toBe(false);
+    const unavailable = Object.assign(new Error("Attribution path lookup failed"), { code: "EIO" });
+    const failAttribution = vi.fn(() => { throw unavailable; });
+    afterRename.mockImplementation((destination) => {
+      if (destination !== first) return;
+      probe.mockImplementation((operand) => {
+        if (operand !== first) return;
+        probe.mockReset();
+        failAttribution();
+      });
+    });
+
+    await withCodeCheckpoint({ sessionId, messageId: "mutation" }, async () => {
+      await expect(new WriteFileTool().execute({ path: first, content: "published edit" }, context))
+        .rejects.toBe(unavailable);
+    });
+
+    expect(failAttribution).toHaveBeenCalledOnce();
+    expect(await readFile(first, "utf8")).toBe("published edit");
+    afterRename.mockReset();
+    expect(await restoreCodeCheckpoint(sessionId, "mutation", context)).toEqual({ ok: true });
+    expect(await readFile(first)).toEqual(original);
   });
 
   it.runIf(process.platform === "win32")("rewinds prior edits when a staged file never reaches publication", async () => {
