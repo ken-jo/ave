@@ -91,9 +91,9 @@ describe('memory graph publication', () => {
     const runWorker: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
       const [, task, , report] = args;
       if (task.kind === 'embed-batch') {
-        task.texts.forEach((_, index) => report?.({
-          jobId: task.jobId, phase: 'embedding', completed: index + 1, total: task.texts.length,
-        }));
+        for (const index of task.texts.keys()) {
+          report?.({ jobId: task.jobId, phase: 'embedding', completed: index + 1, total: task.texts.length });
+        }
       }
       return f.runWorker<T>(...args);
     };

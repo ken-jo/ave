@@ -852,7 +852,7 @@ describe("prepareMxcShellLaunch", () => {
       const deep = join(root, ...Array.from({ length: 5 }, () => "x".repeat(220)));
       const paths = Array.from({ length: 32 }, (_, index) => join(deep, `grant ${index}`));
       for (const path of paths) mkdirSync(winPath.toNamespacedPath(path), { recursive: true });
-      const launch = await prepareMxcShellLaunch({ ...INPUT, cwd: paths[0]!,
+      const launch = await prepareMxcShellLaunch({ ...INPUT, cwd: join(deep, "grant 0"),
         filesystem: { ...INPUT.filesystem, allowWrite: [], allowRead: paths } }, lifecycle);
       expect(launch.argv[1]).toBe("--config");
       launch.activate();
