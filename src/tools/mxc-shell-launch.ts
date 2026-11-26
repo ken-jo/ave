@@ -20,7 +20,7 @@ import {
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../permissions/policy-model.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
 import { assertIssuedContainerHomeInPlace, isIssuedContainerHome } from "../permissions/sandbox-home-registry.js";
-import { watchMxcProtectedRows } from "../permissions/windows-watched-rows.js";
+import { WatchedQuarantineError, watchMxcProtectedRows } from "../permissions/windows-watched-rows.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 
 export interface MxcShellLaunch {
@@ -207,7 +207,14 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   let watchedNotice: string | undefined;
   if (grants.watched !== undefined) {
     const sweep = watchMxcProtectedRows(grants.watched, { commandId: token });
-    lifecycle.defer(async () => { watchedNotice = await sweep(); });
+    lifecycle.defer(async () => {
+      try {
+        watchedNotice = await sweep();
+      } catch (error) {
+        if (error instanceof WatchedQuarantineError) watchedNotice = error.message;
+        throw error;
+      }
+    });
   }
   return {
     argv: [wxcExec, ...transport.args],

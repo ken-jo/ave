@@ -4,9 +4,10 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
@@ -80,6 +81,7 @@ import * as egressHostListener from "../../permissions/egress-host-listener.js";
 import { egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../../permissions/egress-invocations.js";
 import * as mxcWindows from "../../permissions/mxc-windows.js";
 import * as mxcPolicyPipe from "../../permissions/mxc-policy-pipe.js";
+import { isWatchedWorkspaceConsumable, listWatchedQuarantine, pruneWatchedRows, WATCHED_ROW_VIOLATION } from "../../permissions/windows-watched-rows.js";
 import * as asrtSandbox from "../../permissions/asrt-sandbox.js";
 import { AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
 import * as chatOrigin from "../../shared/chat-origin.js";
@@ -921,7 +923,8 @@ describe("builtin shell — Windows MXC containers", () => {
   // The real preparation and transport wrapper; only the policy pipe beneath the wrapper is replaced.
   async function configureCommandLauncher(
     openPipe: typeof mxcPolicyPipe.openMxcPolicyPipe,
-    observerError: Error,
+    observerError?: Error,
+    overrides?: Partial<PrepareMxcShellLaunchInput>,
   ) {
     const { prepareMxcShellLaunch } = await vi.importActual<typeof import("../mxc-shell-launch.js")>("../mxc-shell-launch.js");
     const prepareParser = mxcLaunchMock.prepare.getMockImplementation();
@@ -936,9 +939,11 @@ describe("builtin shell — Windows MXC containers", () => {
     vi.spyOn(mxcPolicyPipe, "openMxcPolicyPipe").mockImplementation(openPipe);
     mxcLaunchMock.prepare.mockImplementation((input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle) => {
       if (isParserLaunch(input)) return prepareParser(input, lifecycle);
-      releaseListenerCleanups.push(onEgressInvocationReleased((token) => {
-        if (token === input.egressToken) throw observerError;
-      }));
+      if (observerError !== undefined) {
+        releaseListenerCleanups.push(onEgressInvocationReleased((token) => {
+          if (token === input.egressToken) throw observerError;
+        }));
+      }
       // Every host-derived field is fixed, so a POSIX run reaches the transport as a Windows one does.
       return prepareMxcShellLaunch({
         ...input,
@@ -948,10 +953,60 @@ describe("builtin shell — Windows MXC containers", () => {
         env: { SYSTEMROOT: String.raw`C:\Windows`, LOCALAPPDATA: String.raw`C:\ave-fixture\home\AppData\Local`, AVE_FIXTURE_PADDING: "x".repeat(25_000) },
         exists: (path) => path === WXC_EXEC || path === FIXTURE_WORKSPACE,
         list: () => [],
+        ...overrides,
       }, lifecycle);
     });
     return closeRelay;
   }
+
+  it.runIf(ORIGINAL_PLATFORM === "win32")("includes the watched-row failure and partial quarantine in the shell result", async () => {
+    bootMxcShells();
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-mxc-mixed-quarantine-")));
+    const blockedRoot = join(root, "blocked");
+    const movableRoot = join(root, "movable");
+    const home = join(root, "home");
+    const blocked = join(blockedRoot, ".ave", "commands");
+    const movable = join(movableRoot, ".ave", "hooks");
+    const protectedPaths = [blocked, movable];
+    for (const folder of [blockedRoot, movableRoot, home]) mkdirSync(folder);
+    vi.stubEnv("AVE_HOME", home);
+    try {
+      await configureCommandLauncher(async () => ({ bindChild: vi.fn(), release: vi.fn(async () => {}) }), undefined, {
+        cwd: movableRoot,
+        filesystem: { allowWrite: [blockedRoot, movableRoot], allowRead: [], denyRead: [], denyWrite: protectedPaths, requiredWriteDenies: protectedPaths },
+        exists: (path) => path === WXC_EXEC || existsSync(path),
+      });
+      const prepare = mxcLaunchMock.prepare.getMockImplementation();
+      if (prepare === undefined) throw new Error("Missing command launch fixture");
+      mxcLaunchMock.prepare.mockImplementation(async (input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle) => {
+        const launch = await prepare(input, lifecycle);
+        if (!isParserLaunch(input)) {
+          renameSync(blockedRoot, join(root, "previous"));
+          mkdirSync(blocked, { recursive: true });
+          mkdirSync(movable, { recursive: true });
+        }
+        return launch;
+      });
+      const result = await executePowerShell({ ...context("mixed-watched-quarantine"), cwd: movableRoot });
+      expect(result, result.output).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true, sandboxed: true } });
+      const failure = t("sandboxPolicy.watchedQuarantineFailed", {
+        path: JSON.stringify(blocked),
+        reason: `the folder ${JSON.stringify(blockedRoot)} changed identity`,
+      });
+      expect(result.output).toContain(`\n${failure}`);
+      expect(result.output).toContain(`\n[${WATCHED_ROW_VIOLATION}]`);
+      expect(result.output).toContain(`\n${JSON.stringify(movable)} -> `);
+      expect(existsSync(blocked)).toBe(true);
+      expect(isWatchedWorkspaceConsumable(blockedRoot)).toBe(false);
+      expect(existsSync(movable)).toBe(false);
+      expect(isWatchedWorkspaceConsumable(movableRoot)).toBe(true);
+      expect(listWatchedQuarantine()).toEqual([expect.objectContaining({ original: movable })]);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+      pruneWatchedRows([]);
+    }
+  });
 
   it.each(["route loss", "cancellation"] as const)("reports the transport open failure first after %s during preparation", async (trigger) => {
     bootMxcShells();

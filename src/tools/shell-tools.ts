@@ -4273,7 +4273,7 @@ async function spawnPowerShellInMxc(
         const released = await lifecycle.dispose();
         const completed = result();
         const notice = launch.watchedNotice;
-        if (notice !== undefined) completed.output = `${completed.output}\n${notice}`;
+        if (notice !== undefined) completed.output = `${completed.output}\n${scrubDiagnosticSecrets(notice)}`;
         return withContainedReleaseFailures(completed, [...failures, ...released]);
       }
       void lifecycle.dispose().then((released) => {

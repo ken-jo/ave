@@ -14,6 +14,9 @@ export type WindowsProtectedRowOutcome = "stamped" | "carried" | "excepted" | "w
 /** The named violation a command result carries when it created a watched row. */
 export const WATCHED_ROW_VIOLATION = "sandbox-watched-path-created";
 
+/** A localized sweep failure that can include the restore locations of successful moves. */
+export class WatchedQuarantineError extends Error {}
+
 const MANIFEST = "watched-manifest.json";
 
 interface FileIdentity {
@@ -218,7 +221,7 @@ export async function sweepWatchedRows(context: WatchedSweepContext, holder?: sy
     ? t("sandboxPolicy.watchedQuarantined", { code: WATCHED_ROW_VIOLATION, moves: moved.map(entry => `${JSON.stringify(entry.original)} -> ${JSON.stringify(entry.quarantined)}`).join("\n") })
     : undefined;
   for (const failure of failures) log.warn(failure);
-  if (failures.length > 0) throw new Error([...new Set(failures)].join("\n") + (notice ? `\n${notice}` : ""));
+  if (failures.length > 0) throw new WatchedQuarantineError([...new Set(failures)].join("\n") + (notice ? `\n${notice}` : ""));
   if (notice) log.warn(notice);
   return notice;
 }
