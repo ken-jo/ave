@@ -242,13 +242,27 @@ describe("current-user toast cleanup", () => {
     });
   });
 
+  it.runIf(process.platform === "win32")("preserves a pre-existing nonempty cleanup lock byte for byte", () => {
+    const fixture = prepareRegistryFixture();
+    const lock = join(fixture.installDir, lockName);
+    const sentinel = Buffer.from([0x00, 0x41, 0xff, 0x0a]);
+    writeFileSync(lock, sentinel);
+
+    const result = fixture.run();
+    expect(existsSync(lock), "pre-existing lock file was deleted").toBe(true);
+    expect(readFileSync(lock)).toEqual(sentinel);
+    expectCleanupFailed(result, "notification cleanup lock path is occupied");
+    expect(fixture.readState()).toEqual(fixture.initialState);
+    fixture.expectShortcutPreserved();
+  });
+
   it.runIf(process.platform === "win32")("retains legacy ownership when another cleanup overlaps quarantine", () => {
     const fixture = prepareRegistryFixture();
     expectCleanupFailed(fixture.run("overlap"), "fixture stopped the first cleanup");
     const overlap = fixture.readOverlap();
     expect(overlap.evidence).toBe(shortcutEvidence);
     expect(overlap.status, overlap.output).toBe(1);
-    expect(overlap.output).toContain("another Ave notification cleanup is in progress for this user");
+    expect(overlap.output).toContain("notification cleanup lock path is occupied");
     expect(overlap.output).toContain('"status":"contract-failed"');
     expect(overlap.output).not.toContain('"status":"verified-absent","artifact":"toast-registration"');
     expect(fixture.readState()).toEqual({
@@ -362,7 +376,7 @@ describe("current-user toast cleanup", () => {
     expect(lock.WINDOWS_NOTIFICATION_CLEANUP_LOCK).toBe(lockName);
     expect(cleanup).toMatch(lockLookup);
     expect(cleanup).toMatch(
-      /\(Join-Path \$lockDirectory "\.ave-notification-cleanup\.lock"\),\s+\[System\.IO\.FileMode\]::OpenOrCreate,\s+\[System\.IO\.FileAccess\]::ReadWrite,\s+\[System\.IO\.FileShare\]::None,\s+1,\s+\[System\.IO\.FileOptions\]::DeleteOnClose/,
+      /\(Join-Path \$lockDirectory "\.ave-notification-cleanup\.lock"\),\s+\[System\.IO\.FileMode\]::CreateNew,\s+\[System\.IO\.FileAccess\]::ReadWrite,\s+\[System\.IO\.FileShare\]::None,\s+1,\s+\[System\.IO\.FileOptions\]::DeleteOnClose/,
     );
     const stopped = [...cleanup.matchAll(/^\s*Assert-AveStopped /gm)];
     expect(stopped).toHaveLength(1);

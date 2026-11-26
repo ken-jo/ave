@@ -622,7 +622,7 @@ try {
   try {
     $cleanupLock = [System.IO.FileStream]::new(
       (Join-Path $lockDirectory ".ave-notification-cleanup.lock"),
-      [System.IO.FileMode]::OpenOrCreate,
+      [System.IO.FileMode]::CreateNew,
       [System.IO.FileAccess]::ReadWrite,
       [System.IO.FileShare]::None,
       1,
@@ -630,9 +630,9 @@ try {
     )
   }
   catch [System.IO.IOException] {
-    # ERROR_SHARING_VIOLATION
-    if ($_.Exception.GetBaseException().HResult -ne -2147024864) { throw }
-    throw "another Ave notification cleanup is in progress for this user"
+    # ERROR_FILE_EXISTS, ERROR_ALREADY_EXISTS, ERROR_SHARING_VIOLATION
+    if ($_.Exception.GetBaseException().HResult -notin @(-2147024816, -2147024713, -2147024864)) { throw }
+    throw "the current user's Ave notification cleanup lock path is occupied"
   }
   $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   Assert-AveStopped $installedExe $userSid
