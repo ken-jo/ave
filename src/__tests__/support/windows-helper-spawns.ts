@@ -9,12 +9,13 @@ const launches: string[] = [];
  * Pass-through child_process that records each launch of the native path helper by its first argument.
  * Worker-thread launches are not counted (for example, repository inspection if a verified Windows Git is ever added).
  */
-export function countingChildProcess(actual: typeof ChildProcess): typeof ChildProcess {
+export function countingChildProcess(actual: typeof ChildProcess, onLaunch?: () => void): typeof ChildProcess {
   const counted = <F extends (...args: never[]) => unknown>(launch: F): F => {
     const wrapped = ((...args: Parameters<F>) => {
       const [file, argv] = args as unknown as [unknown, unknown];
       if (typeof file === "string" && basename(file).toLowerCase() === HELPER) {
         launches.push(Array.isArray(argv) && typeof argv[0] === "string" ? argv[0] : "");
+        onLaunch?.();
       }
       return launch(...args);
     }) as F;

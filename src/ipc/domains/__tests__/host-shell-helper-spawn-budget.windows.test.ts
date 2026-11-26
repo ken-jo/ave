@@ -15,22 +15,25 @@ import { configureHostResources } from "../../../main/host-resources.js";
 import { windowsPathKindHelperIn } from "../../../main/windows-path-kind-launcher.js";
 import { PermissionTestResources } from "../../../permissions/__tests__/test-resources.js";
 import { ApprovalGate, type ApprovalRequest, IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
-import { consumeHostShellExecutionPermitForSpawn, canonicalizeHostShellAllowedDirectories, resolveHostShellWorkingDirectory } from "../../../permissions/host-shell-execution-permit.js";
+import * as shellPermits from "../../../permissions/host-shell-execution-permit.js";
 import { parseHostShellExecutionInput } from "../../../permissions/host-shell-execution-plan.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../../../permissions/judge/judge-settings.js";
+import * as pendingAnswers from "../../../permissions/pending-answer-policy.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { LlmRiskClassifier, type LlmReviewerProvider } from "../../../permissions/reviewer/risk-classifier.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot, setWindowsSandboxSubstrate } from "../../../permissions/sandbox-capability.js";
+import * as shellDirectory from "../../../permissions/shell-working-directory-identity.js";
 import * as approvals from "../../../permissions/user-approval-store.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { pinWindowsPaths } from "../../../shared/windows-path-facts.js";
 import { ToolExecutor } from "../../../tools/executor.js";
+import * as pathExtraction from "../../../tools/pipeline/path-extraction.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { BashTool, PowerShellTool } from "../../../tools/shell-tools.js";
 import { userPermissionContext } from "../../../tools/__tests__/tool-context-fixture.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
-  (await import("../../../__tests__/support/windows-helper-spawns.js")).countingChildProcess(await importOriginal()));
+  (await import("../../../__tests__/support/windows-helper-spawns.js")).countingChildProcess(await importOriginal(), recordLaunch));
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("electron", () => ({
@@ -51,6 +54,43 @@ const HOST_SHELL_ADMISSION_DECISIONS = {
   bash: { card: ["Bash path policy", ...CARD_DECISIONS], approved: APPROVED_DECISIONS },
   powershell: { card: CARD_DECISIONS, approved: APPROVED_DECISIONS },
 } as const;
+
+type AdmissionDecision = (typeof HOST_SHELL_ADMISSION_DECISIONS)["bash"]["card" | "approved"][number];
+let activeDecision: AdmissionDecision | undefined;
+let launchesByDecision: Record<string, number> = {};
+
+function recordLaunch(): void {
+  const decision = activeDecision ?? "unattributed";
+  launchesByDecision[decision] = (launchesByDecision[decision] ?? 0) + 1;
+}
+
+function trackDecision<Receiver, Args extends unknown[], Result>(decision: AdmissionDecision, run: (this: Receiver, ...args: Args) => Result) {
+  return function (this: Receiver, ...args: Args): Result {
+    const previous = activeDecision;
+    // The pending answer recheck also calls checkDetailed; count it under the recheck.
+    activeDecision ??= decision;
+    try {
+      return run.apply(this, args);
+    } finally {
+      activeDecision = previous;
+    }
+  };
+}
+
+function trackAdmissionDecisions(): void {
+  const { buildHostShellExecutionPermitBinding, mintHostShellExecutionPermit, consumeHostShellExecutionPermitForSpawn } = shellPermits;
+  const { shellPathPolicyViolation } = pathExtraction;
+  const { checkDetailed } = PermissionManager.prototype;
+  const { holdShellWorkingDirectory } = shellDirectory;
+  const { personAnswerStands } = pendingAnswers;
+  vi.spyOn(shellPermits, "buildHostShellExecutionPermitBinding").mockImplementation(trackDecision("card binding", buildHostShellExecutionPermitBinding));
+  vi.spyOn(pathExtraction, "shellPathPolicyViolation").mockImplementation(trackDecision("Bash path policy", shellPathPolicyViolation));
+  vi.spyOn(PermissionManager.prototype, "checkDetailed").mockImplementation(trackDecision("permission evaluation", checkDetailed));
+  vi.spyOn(shellDirectory, "holdShellWorkingDirectory").mockImplementation(trackDecision("pre-card cwd revalidation", holdShellWorkingDirectory));
+  vi.spyOn(pendingAnswers, "personAnswerStands").mockImplementation(trackDecision("pending-answer permission recheck", personAnswerStands));
+  vi.spyOn(shellPermits, "mintHostShellExecutionPermit").mockImplementation(trackDecision("permit mint", mintHostShellExecutionPermit));
+  vi.spyOn(shellPermits, "consumeHostShellExecutionPermitForSpawn").mockImplementation(trackDecision("permit consumption", consumeHostShellExecutionPermitForSpawn));
+}
 
 afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
@@ -135,18 +175,20 @@ describe.skipIf(!helperPresent)("host shell admission native helper launch budge
       const parsed = parseHostShellExecutionInput(input);
       const plan = ctx.hostShellExecutionPlan;
       if (!parsed || !plan) throw new Error("host shell admission reached the tool without a plan");
-      const authority = consumeHostShellExecutionPermitForSpawn({
+      const authority = shellPermits.consumeHostShellExecutionPermitForSpawn({
         permit: ctx.hostShellExecutionPermit, plan, toolName,
         toolUseId: ctx.metadata.toolUseId as string, command: parsed.command, requestedCwd: parsed.cwd,
-        executionCwd: ctx.cwd, resolvedCwd: resolveHostShellWorkingDirectory(ctx.cwd, parsed.cwd),
+        executionCwd: ctx.cwd, resolvedCwd: shellPermits.resolveHostShellWorkingDirectory(ctx.cwd, parsed.cwd),
         timeoutSeconds: parsed.timeoutSeconds, executionMode: parsed.executionMode, justification: parsed.justification,
-        runInBackground: parsed.runInBackground, allowedDirectories: canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
+        runInBackground: parsed.runInBackground, allowedDirectories: shellPermits.canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
       });
       expect(authority).toBeDefined();
       return { output: "admitted", isError: false };
     });
     f.registry.register(tool);
+    trackAdmissionDecisions();
     takeWindowsHelperLaunches();
+    launchesByDecision = {};
     const running = f.executor.executeAll([{ id: `${toolName}-budget`, name: toolName,
       input: { command: "git status", executionMode: "host", justification: "Show the working tree state" } }], {
       sessionId: SESSION_ID, executionCwd: project,
@@ -154,6 +196,8 @@ describe.skipIf(!helperPresent)("host shell admission native helper launch budge
     });
     const card = await Promise.race([f.card, running.then(([result]) => { throw new Error(`settled before the card: ${JSON.stringify(result)}`); })]);
     const beforeCard = takeWindowsHelperLaunches();
+    const cardDecisions = launchesByDecision;
+    launchesByDecision = {};
     const respond = handlers.get(PERMISSIONS.approvalRespond);
     if (!respond) throw new Error("approval responder is not registered");
     await respond(f.event, allowOnceCardAnswer(card));
@@ -163,11 +207,13 @@ describe.skipIf(!helperPresent)("host shell admission native helper launch budge
     expect(result.content).toBe("admitted");
     expect(execute).toHaveBeenCalledOnce();
     const launches = { card: beforeCard, approved: afterApproval };
+    const attributed = { card: cardDecisions, approved: launchesByDecision };
     for (const phase of ["card", "approved"] as const) {
       const decisions = HOST_SHELL_ADMISSION_DECISIONS[toolName][phase];
       const reason = `${phase}: one helper launch per decision (${decisions.join(", ")})`;
       expect(totalLaunches(launches[phase]), reason).toBeLessThanOrEqual(HOST_SHELL_ADMISSION_TARGET);
       expect(launches[phase], reason).toEqual({ "--pin": decisions.length });
+      expect(attributed[phase], reason).toEqual(Object.fromEntries(decisions.map(decision => [decision, 1])));
     }
   });
 });
