@@ -31,10 +31,19 @@ function captureColorChunks(png: Buffer, keepPrefix = false): { color: Buffer; p
   throw new BrowserActionError("screenshot-unavailable", "the capture tile has invalid PNG metadata");
 }
 
-/** Sample source pixel centers once, and write a strip at a time without retaining tile rasters in the canvas. */
+function footprintStart(origin: number, step: number, index: number, size: number): number {
+  if (step >= 1) return origin + index * step;
+  return Math.max(0, Math.min(size - 1, origin + (index + 0.5) * step - 0.5));
+}
+
+function footprintEnd(origin: number, step: number, index: number, size: number, start: number): number {
+  return step >= 1 ? Math.min(size, origin + (index + 1) * step) : start + 1;
+}
+
 function copyCaptureTile(
-  context: SKRSContext2D, pixels: Buffer, pixelWidth: number, pixelHeight: number, channels: 3 | 4,
+  context: SKRSContext2D, pixels: Buffer, pixelWidth: number, channels: 3 | 4,
   sourceTop: number, stepX: number, stepY: number, width: number, copied: number, rows: number,
+  tileHeight: number, sectionTop: number, sectionStart: number,
 ): void {
   const strip = context.createImageData(width, Math.min(rows, Math.max(1, Math.floor(CAPTURE_STRIP_BYTES / (width * 4)))));
   const target = strip.data;
@@ -42,11 +51,11 @@ function copyCaptureTile(
   for (let start = 0; start < rows; start += strip.height) {
     const count = Math.min(rows - start, strip.height);
     for (let y = 0; y < count; y += 1) {
-      const sourceY = Math.max(0, sourceTop + (start + y + 0.5) * stepY - 0.5);
-      const y0 = Math.floor(sourceY), y1 = Math.min(y0 + 1, pixelHeight - 1);
-      const yWeight = sourceY - y0;
-      if (stepX === 1 && yWeight === 0) {
-        const left = y0 * pixelWidth * channels;
+      const row = sectionStart + start + y;
+      const top = footprintStart(sourceTop, stepY, row, tileHeight);
+      const bottom = footprintEnd(sourceTop, stepY, row, tileHeight, top);
+      if (stepX === 1 && Number.isInteger(top) && bottom - top === 1) {
+        const left = (top - sectionTop) * pixelWidth * channels;
         const out = y * width * 4;
         if (hasAlpha) target.set(pixels.subarray(left, left + width * channels), out);
         else {
@@ -61,25 +70,29 @@ function copyCaptureTile(
         }
         continue;
       }
+      const firstY = Math.floor(top), endY = Math.ceil(bottom);
       for (let x = 0; x < width; x += 1) {
-        const sourceX = Math.max(0, (x + 0.5) * stepX - 0.5);
-        const x0 = Math.floor(sourceX), x1 = Math.min(x0 + 1, pixelWidth - 1);
-        const xWeight = sourceX - x0;
-        const topLeft = (y0 * pixelWidth + x0) * channels, topRight = (y0 * pixelWidth + x1) * channels;
-        const bottomLeft = (y1 * pixelWidth + x0) * channels, bottomRight = (y1 * pixelWidth + x1) * channels;
-        const a = (hasAlpha ? (pixels[topLeft + 3] ?? 0) : 1) * (1 - xWeight) * (1 - yWeight);
-        const b = (hasAlpha ? (pixels[topRight + 3] ?? 0) : 1) * xWeight * (1 - yWeight);
-        const c = (hasAlpha ? (pixels[bottomLeft + 3] ?? 0) : 1) * (1 - xWeight) * yWeight;
-        const d = (hasAlpha ? (pixels[bottomRight + 3] ?? 0) : 1) * xWeight * yWeight;
-        const alpha = hasAlpha ? a + b + c + d : 1;
-        const out = (y * width + x) * 4;
-        for (let channel = 0; channel < 3; channel += 1) {
-          target[out + channel] = alpha === 0 ? 0 : Math.round(
-            ((pixels[topLeft + channel] ?? 0) * a + (pixels[topRight + channel] ?? 0) * b
-              + (pixels[bottomLeft + channel] ?? 0) * c + (pixels[bottomRight + channel] ?? 0) * d) / alpha,
-          );
+        const left = footprintStart(0, stepX, x, pixelWidth);
+        const right = footprintEnd(0, stepX, x, pixelWidth, left);
+        const firstX = Math.floor(left), endX = Math.ceil(right);
+        let red = 0, green = 0, blue = 0, opacity = 0;
+        for (let sy = firstY; sy < endY; sy += 1) {
+          const yCoverage = Math.min(sy + 1, bottom) - Math.max(sy, top);
+          let source = ((sy - sectionTop) * pixelWidth + firstX) * channels;
+          for (let sx = firstX; sx < endX; sx += 1, source += channels) {
+            const coverage = (Math.min(sx + 1, right) - Math.max(sx, left)) * yCoverage;
+            const weight = hasAlpha ? coverage * (pixels[source + 3] ?? 0) : coverage;
+            opacity += weight;
+            red += (pixels[source] ?? 0) * weight;
+            green += (pixels[source + 1] ?? 0) * weight;
+            blue += (pixels[source + 2] ?? 0) * weight;
+          }
         }
-        target[out + 3] = hasAlpha ? alpha : 255;
+        const out = (y * width + x) * 4;
+        target[out] = opacity === 0 ? 0 : Math.round(red / opacity);
+        target[out + 1] = opacity === 0 ? 0 : Math.round(green / opacity);
+        target[out + 2] = opacity === 0 ? 0 : Math.round(blue / opacity);
+        target[out + 3] = hasAlpha ? Math.round(opacity / ((right - left) * (bottom - top))) : 255;
       }
     }
     context.putImageData(strip, 0, copied + start, 0, 0, width, count);
@@ -93,13 +106,13 @@ async function decodeCaptureTile(
   const sourceTop = skip * scale;
   const stepX = Math.min(pixelWidth, width * scale) / width;
   const stepY = Math.min(pixelHeight - sourceTop, rows * scale) / rows;
-  // Large viewports are read in sections with one neighboring sample at each edge.
+  // Include every source row touched by the section's first and last footprints.
   const rowsPerDecode = Math.max(1, Math.floor((CAPTURE_DECODE_PIXELS / pixelWidth - 2) / stepY));
   for (let start = 0; start < rows; start += rowsPerDecode) {
     const count = Math.min(rowsPerDecode, rows - start);
-    const sectionTop = sourceTop + start * stepY;
-    const top = Math.max(0, Math.floor(sectionTop + 0.5 * stepY - 0.5));
-    const bottom = Math.min(pixelHeight, Math.floor(sectionTop + (count - 0.5) * stepY - 0.5) + 2);
+    const top = Math.floor(footprintStart(sourceTop, stepY, start, pixelHeight));
+    const last = start + count - 1;
+    const bottom = Math.ceil(footprintEnd(sourceTop, stepY, last, pixelHeight, footprintStart(sourceTop, stepY, last, pixelHeight)));
     const height = bottom - top;
     const { data, info } = await input.clone().extract({ left: 0, top, width: pixelWidth, height })
       .raw().toBuffer({ resolveWithObject: true });
@@ -107,7 +120,7 @@ async function decodeCaptureTile(
     if (info.width !== pixelWidth || info.height !== height || (info.channels !== 3 && info.channels !== 4)) {
       throw new BrowserActionError("screenshot-unavailable", "the tile has an unsupported pixel format");
     }
-    copyCaptureTile(context, data, pixelWidth, height, info.channels, sectionTop - top, stepX, stepY, width, copied + start, count);
+    copyCaptureTile(context, data, pixelWidth, info.channels, sourceTop, stepX, stepY, width, copied + start, count, pixelHeight, top, start);
   }
 }
 

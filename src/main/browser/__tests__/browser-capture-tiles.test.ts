@@ -30,19 +30,19 @@ async function tile(pageY: number): Promise<string> {
   return (await sharp(pixels, { raw: { width: WIDTH, height: VIEWPORT_HEIGHT, channels: 3 } }).png().toBuffer()).toString("base64");
 }
 
-function tiledSession(pixelRatio = 1, zoom = 1, captureTile?: (pageY: number) => Promise<Buffer>) {
+function tiledSession(pixelRatio = 1, zoom = 1, captureTile?: (pageY: number) => Promise<Buffer>, contentHeight = CONTENT_HEIGHT) {
   let pageY = 0;
   const restore = vi.fn(async () => {});
   const send = vi.fn(async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
     if (method === "Page.getLayoutMetrics") return {
-      cssContentSize: { x: 0, y: 0, width: WIDTH, height: CONTENT_HEIGHT },
+      cssContentSize: { x: 0, y: 0, width: WIDTH, height: contentHeight },
       cssVisualViewport: { pageX: 0, pageY, clientWidth: WIDTH, clientHeight: VIEWPORT_HEIGHT },
     };
     if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
     if (method === "Page.createIsolatedWorld") return { executionContextId: 73 };
     if (method === "Runtime.callFunctionOn") {
       const values = params?.arguments as Array<{ value: unknown }>;
-      pageY = Math.min(Number(values[1]?.value), CONTENT_HEIGHT - VIEWPORT_HEIGHT);
+      pageY = Math.min(Number(values[1]?.value), contentHeight - VIEWPORT_HEIGHT);
       return {};
     }
     if (method === "Page.captureScreenshot") {
@@ -90,18 +90,54 @@ describe("browser capture tiles", () => {
     ]));
   });
 
-  it.each([[2, 2, 128], [3, 4, 255], [2.5, 3, 191]])("samples a one-device-pixel line at %sx without blurring adjacent rows", async (scale, line, expected) => {
+  it.each([
+    { scale: 2, phases: [[128, 0], [128, 0]] },
+    { scale: 2.5, phases: [[102, 0], [102, 0], [51, 51], [0, 102], [0, 102]] },
+    { scale: 3, phases: [[85, 0], [85, 0], [85, 0]] },
+  ])("weights every phase of a one-device-pixel line in both axes at $scale×", async ({ scale, phases }) => {
     const nativeWidth = WIDTH * scale;
     const nativeHeight = VIEWPORT_HEIGHT * scale;
-    const pixels = Buffer.alloc(nativeWidth * nativeHeight * 3);
-    pixels.fill(255, line * nativeWidth * 3, (line + 1) * nativeWidth * 3);
-    const png = await sharp(pixels, { raw: { width: nativeWidth, height: nativeHeight, channels: 3 } }).png().toBuffer();
-    const { cdp, captureViewport } = tiledSession(scale, 1, async () => png);
+    const actual: number[][] = [];
+    for (const axis of ["horizontal", "vertical"] as const) {
+      for (const [line] of phases.entries()) {
+        const pixels = Buffer.alloc(nativeWidth * nativeHeight * 3);
+        for (let row = 0; row < nativeHeight; row += 1) {
+          const start = (row * nativeWidth + (axis === "vertical" ? line : 0)) * 3;
+          if (axis === "vertical" || row === line) {
+            pixels.fill(255, start, start + (axis === "vertical" ? 3 : nativeWidth * 3));
+          }
+        }
+        const png = await sharp(pixels, { raw: { width: nativeWidth, height: nativeHeight, channels: 3 } }).png().toBuffer();
+        const { cdp, captureViewport } = tiledSession(scale, 1, async () => png);
+        const result = await captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport);
+        const data = await sharp(Buffer.from(result.data, "base64")).raw().toBuffer();
+        actual.push(axis === "horizontal"
+          ? Array.from({ length: CONTENT_HEIGHT }, (_, row) => data[row * WIDTH * 4] ?? 0)
+          : Array.from({ length: WIDTH }, (_, column) => data[column * 4] ?? 0));
+      }
+    }
+    expect(actual).toEqual([
+      ...phases.map(([first, second]) => [first, second, 0, 0, first, second, 0, 0, 0, 0]),
+      ...phases.map(([first, second]) => [first, second, 0, 0]),
+    ]);
+  });
+
+  it("keeps coverage at tile seams and clips a fractional overlap", async () => {
+    const scale = 2.5;
+    const width = WIDTH * scale, height = VIEWPORT_HEIGHT * scale;
+    const { cdp, captureViewport } = tiledSession(scale, 1, async (pageY) => {
+      const pixels = Buffer.alloc(width * height * 3);
+      const line = pageY === 0 ? 9 : pageY === 4 ? 0 : 7;
+      const channel = pageY === 0 ? 0 : pageY === 4 ? 1 : 2;
+      for (let x = 0; x < width; x += 1) pixels[(line * width + x) * 3 + channel] = 255;
+      if (pageY === 5) pixels.fill(255, 6 * width * 3, 7 * width * 3);
+      return sharp(pixels, { raw: { width, height, channels: 3 } }).png().toBuffer();
+    }, 9);
     const result = await captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport);
-    expect(result).toMatchObject({ width: WIDTH, height: CONTENT_HEIGHT });
+    expect(result).toMatchObject({ width: WIDTH, height: 9 });
     const data = await sharp(Buffer.from(result.data, "base64")).raw().toBuffer();
-    expect(Array.from({ length: CONTENT_HEIGHT }, (_, row) => data[row * WIDTH * 4])).toEqual([
-      0, expected, 0, 0, 0, expected, 0, 0, 0, 0,
+    expect(Array.from({ length: 9 }, (_, row) => [...data.subarray(row * WIDTH * 4, row * WIDTH * 4 + 3)])).toEqual([
+      [0, 0, 0], [0, 0, 0], [0, 0, 0], [102, 0, 0], [0, 102, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 51],
     ]);
   });
 
