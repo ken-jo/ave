@@ -151,6 +151,7 @@ vi.mock("../../permissions/asrt-sandbox.js", () => ({
 }));
 vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../permissions/mxc-windows.js")>()),
+  getHostWxcExecIdentity: () => "verified-launcher",
   resolveHostWxcExecPath: h.wxcExec,
 }));
 vi.mock("../../permissions/windows-confinement-evidence.js", () => {

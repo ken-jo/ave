@@ -9,9 +9,10 @@ import { openInvocationProxyListener } from "../permissions/egress-invocation-li
 import { openHostEgressListener } from "../permissions/egress-host-listener.js";
 import { egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../permissions/egress-invocations.js";
 import { detectMxcShellCapability, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
-import { observeWindowsBackend, reportWindowsBackendLoss } from "../permissions/windows-confinement-evidence.js";
+import { observeWindowsBackend, reportWindowsBackendLoss, type WindowsBackendObservation } from "../permissions/windows-confinement-evidence.js";
 import {
   buildMxcShellRequest,
+  getHostWxcExecIdentity,
   openMxcRequestTransport,
   rankMxcFilesystem,
   resolveHostWxcExecPath,
@@ -26,7 +27,7 @@ export interface MxcShellLaunch {
   readonly argv: readonly string[];
   readonly proxyPort: number;
   /** Admit connections after the final shell admission checks, immediately before spawn. */
-  activate(): void;
+  activate(): WindowsBackendObservation;
   /** Bind policy delivery immediately after spawning the launcher. */
   bindChild(child: ChildProcess): void;
 }
@@ -132,10 +133,12 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   if (invocationSignal?.aborted === true) lifecycle.revoke();
   assertAdmission();
   let wxcExec: string;
+  let launcherIdentity: string;
   // Taken before the launcher check starts, so its failure reaches only the evidence it was measured against.
   const backendObservation = observeWindowsBackend("container");
   try {
-    wxcExec = await resolveHostWxcExecPath();
+    launcherIdentity = getHostWxcExecIdentity();
+    wxcExec = await resolveHostWxcExecPath(launcherIdentity);
   } catch {
     reportWindowsBackendLoss(backendObservation);
     // The resolver's failures name the launcher's absolute path.
@@ -192,7 +195,10 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     proxyPort: listener.port,
     activate: () => {
       assertAdmission();
+      if (getHostWxcExecIdentity() !== launcherIdentity) throw new Error("Contained shell launcher changed before spawn");
+      const observation = observeWindowsBackend("container");
       active = true;
+      return observation;
     },
     bindChild: transport.bindChild,
   };

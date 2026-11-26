@@ -283,6 +283,7 @@ describe("builtin shell — Windows MXC containers", () => {
       const parser = Array.isArray(options?.stdio) && options.stdio[0] === "pipe";
       return parser || args.includes(PARSER_REQUEST) ? fakeChild(PARSED, 0) : fakeChild(`${CONTAINER_OUTPUT}\n`, 0);
     });
+    mxcLaunchMock.activate.mockImplementation(() => backendEvidence.observeWindowsBackend("container"));
     mxcLaunchMock.prepare.mockImplementation(async (input: { commandLine: string }, lifecycle: ContainedShellLifecycle) => {
       lifecycle.defer(mxcLaunchMock.release);
       return {
@@ -1085,6 +1086,7 @@ describe("builtin shell — Windows MXC containers", () => {
       admission?.adopt(closeRelay);
       return { port: 9, proxyAuthorization: "Basic eA==", registerPort: vi.fn(), recordRefusal: vi.fn(), close: closeRelay };
     });
+    vi.spyOn(mxcWindows, "getHostWxcExecIdentity").mockReturnValue("verified-launcher");
     vi.spyOn(mxcWindows, "resolveHostWxcExecPath").mockResolvedValue(WXC_EXEC);
     vi.spyOn(asrtSandbox, "getProtectedReadDenyFloor").mockReturnValue([]);
     const workspace = request === undefined && ORIGINAL_PLATFORM === "win32"
@@ -1119,6 +1121,20 @@ describe("builtin shell — Windows MXC containers", () => {
     if (workspace !== FIXTURE_WORKSPACE) releaseListenerCleanups.push(() => rmSync(workspace, { recursive: true, force: true }));
     return closeRelay;
   }
+
+  it("refuses a launcher replaced while the verified request transport is being prepared", async () => {
+    bootMxcShells();
+    const releasePipe = vi.fn(async () => {});
+    await configureCommandLauncher(async () => {
+      vi.mocked(mxcWindows.getHostWxcExecIdentity).mockReturnValue("replacement-launcher");
+      return { bindChild: () => {}, release: releasePipe };
+    });
+    const result = await executePowerShell(context("ps-mxc-replaced-launcher"));
+    expect(result.output).toContain("Contained shell launcher changed before spawn");
+    expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+    expect(childProcessMock.spawn.mock.calls.filter(([command, args]) => command === WXC_EXEC && !args.includes(PARSER_REQUEST))).toHaveLength(0);
+    expect(releasePipe).toHaveBeenCalledOnce();
+  });
 
   it.runIf(ORIGINAL_PLATFORM === "win32").each([
     "brackets", "relative pattern", "absolute pattern", "interior dot", "mixed separators", "drive case", "extended drive", "unrepresentable pattern",

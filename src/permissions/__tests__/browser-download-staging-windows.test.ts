@@ -337,6 +337,7 @@ vi.mock("../sandbox-capability.js", async (original) => {
 });
 vi.mock("../mxc-windows.js", async (original) => ({
   ...await original<typeof import("../mxc-windows.js")>(),
+  getHostWxcExecIdentity: () => "verified-launcher",
   resolveHostWxcExecPath: async () => launcherPath,
 }));
 

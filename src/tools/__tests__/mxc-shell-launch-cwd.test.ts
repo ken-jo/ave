@@ -13,6 +13,7 @@ vi.mock("../../permissions/egress-host-listener.js", () => ({
 }));
 vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/mxc-windows.js")>(),
+  getHostWxcExecIdentity: () => "verified-launcher",
   resolveHostWxcExecPath: async () => String.raw`C:\Ave\resources\mxc\x64\wxc-exec.exe`,
 }));
 vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => ({

@@ -93,7 +93,7 @@ import {
 import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
 import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
 import { isWindowsPathAtOrUnder, mayIndicateMxcShellStartupFailure, MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
-import { observeWindowsBackend, recheckWindowsContainerBackendAfterShellFailure, reportWindowsBackendLoss, type WindowsBackendObservation } from "../permissions/windows-confinement-evidence.js";
+import { recheckWindowsContainerBackendAfterShellFailure, reportWindowsBackendLoss, type WindowsBackendObservation } from "../permissions/windows-confinement-evidence.js";
 import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";
 import { createContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 import { buildMandatorySandboxWritePolicy } from "../permissions/sandbox-write-policy.js";
@@ -4248,10 +4248,8 @@ async function spawnPowerShellInMxc(
     if (detectMxcShellCapability() === undefined) throw new Error("Container shell route is no longer available");
     const [cmd, ...args] = launch.argv;
     if (cmd === undefined) throw new Error("Container launcher is missing");
-    launch.activate();
     const launcherEnv = buildSafeChildEnv({});
-    // Taken before the launcher starts, so a launch failure reaches only the evidence live at that start.
-    backendObservation = observeWindowsBackend("container");
+    backendObservation = launch.activate();
     try {
       child = spawn(cmd, args, {
         // The launcher runs from its own (per-machine, admin-only) directory, so
