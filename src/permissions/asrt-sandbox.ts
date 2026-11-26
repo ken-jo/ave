@@ -935,7 +935,7 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
   const allowRead = readGrantsOutsideReadDenies(admitted.allowRead, protectedFloor, pierces, []);
   const readDenies = literalDenies([
     ...getDefaultSensitiveReadDenyPaths(), ...admitted.denyRead,
-    ...namespaceRoots, ...(pinnedOwnership?.hostStorageRoots ?? []),
+    ...aveHomeReadBoundaryRoots(), ...namespaceRoots, ...(pinnedOwnership?.hostStorageRoots ?? []),
   ]);
   const requiredWrites = new Set(mandatory.windowsRequiredWriteDenies);
   // Only the mandatory floor's own copy of a required row gives way to it; sensitive and configured denies keep their outcome.
@@ -1687,6 +1687,7 @@ export function getBuiltinShellReadPolicy(
   hostHome: string | undefined,
   sandboxHome?: string,
   boundarySnapshot?: AveHomeBoundarySnapshot,
+  backend?: "mxc",
 ): {
   readonly allowRead: readonly string[];
   readonly denyRead: readonly string[];
@@ -1697,10 +1698,10 @@ export function getBuiltinShellReadPolicy(
   readonly policyNotices: readonly string[];
 } {
   void hostHome;
-  return inAveHomeBoundarySnapshot(boundarySnapshot, () => composeBuiltinShellReadPolicy(readPaths, sandboxHome));
+  return inAveHomeBoundarySnapshot(boundarySnapshot, () => composeBuiltinShellReadPolicy(readPaths, sandboxHome, backend));
 }
 
-function composeBuiltinShellReadPolicy(readPaths: readonly string[], sandboxHome: string | undefined): ReturnType<typeof getBuiltinShellReadPolicy> {
+function composeBuiltinShellReadPolicy(readPaths: readonly string[], sandboxHome: string | undefined, backend: "mxc" | undefined): ReturnType<typeof getBuiltinShellReadPolicy> {
   const sessions = getBuiltinShellSessionReadPolicy();
   const privateRoots = appOwnedSandboxPrivateRoots();
   // On Windows the HOME must be one this process created and still holds, not merely a path of that shape.
@@ -1728,7 +1729,8 @@ function composeBuiltinShellReadPolicy(readPaths: readonly string[], sandboxHome
     if (!insideOwnHome && privateRootCovering(resolved) !== undefined) return false;
     return true;
   });
-  const denyRead = Object.freeze([...sessions.denyRead, ...privateRoots]);
+  // The container can state the full home boundary without the profile-wide side effects of an ACL stamp.
+  const denyRead = Object.freeze([...sessions.denyRead, ...privateRoots, ...(backend === "mxc" ? aveHomeReadBoundaryRoots() : [])]);
   composedShellReadDenies.set(denyRead, {
     user: Object.freeze([...(_baseTrustedSettings?.denyRead ?? [])]),
   });

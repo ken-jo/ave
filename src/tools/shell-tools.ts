@@ -4203,7 +4203,7 @@ async function spawnPowerShellInMxc(
     const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
     // One Ave home boundary snapshot serves this command's read policy and its container grants.
     const boundarySnapshot = createAveHomeBoundarySnapshot(sessionId);
-    const { allowRead, denyRead, floorPierces, withheldSessionReadRoot, policyNotices: readNotices } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path, boundarySnapshot);
+    const { allowRead, denyRead, floorPierces, withheldSessionReadRoot, policyNotices: readNotices } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path, boundarySnapshot, "mxc");
     policyNotices = [...readNotices, ...savedSessionReadNotices(withheldSessionReadRoot, commandReadPaths)];
     const egress = openEgressInvocation(
       { kind: "shell", toolName: "powershell", toolUseId, requiresListener: true, context: ambientShellEgressContext() },

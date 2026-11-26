@@ -14,9 +14,9 @@ import { localFs } from "../../shared/local-path-io.js";
 import * as policyHome from "../../shared/policy-home.js";
 import * as facts from "../../shared/windows-path-facts.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { getDefaultSensitiveWriteDenyPaths, getProtectedReadDenyFloor } from "../asrt-sandbox.js";
+import { admitMxcExtensionFilesystem, getBuiltinShellReadPolicy, getDefaultSensitiveWriteDenyPaths, getProtectedReadDenyFloor } from "../asrt-sandbox.js";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
-import { assertMxcDenyOutcomes, buildMxcShellRequest, isWindowsPathAtOrUnder, mxcRequestArgs, powerShellMxcCommandLine, resolveHostWxcExecPath, type MxcDenyException, type MxcDirectoryEntry, type MxcFilesystemGrants, type MxcWatchedRow } from "../mxc-windows.js";
+import { assertMxcDenyOutcomes, buildMxcShellRequest, isWindowsPathAtOrUnder, mxcRequestArgs, powerShellMxcCommandLine, rankMxcFilesystem, resolveHostWxcExecPath, type MxcDenyException, type MxcDirectoryEntry, type MxcFilesystemGrants, type MxcWatchedRow } from "../mxc-windows.js";
 import { SENSITIVE_PATH_PATTERNS } from "../sensitive-paths.js";
 import { consumeObligations } from "../admitted-obligation.js";
 import { claimMxcWatchedRows, listWatchedQuarantine, WATCHED_ROW_VIOLATION } from "../windows-watched-rows.js";
@@ -550,6 +550,76 @@ describe("pattern denies", () => {
       .toEqual([win32.join(sessions, "one", ".SSH"), win32.join(sessions, "one", "notes", "id_rsa"), win32.join(home, "notes", "id_rsa")]);
     expect(() => rankMxcLists(policy(["**/.ssh"]), exists, list))
       .toThrow(/^Windows sandbox policy cannot hold pattern deny: \*\*\\\.ssh \(an unanchored pattern reaches a writable grant\)$/);
+  });
+});
+
+describe.skipIf(process.platform !== "win32")("composed container floors", () => {
+  function withProfile(run: (profile: string, project: string) => void): void {
+    withMxcWorkspace(scratch => {
+      const profile = join(scratch, "alice");
+      const home = join(scratch, "ave-data");
+      const project = join(scratch, "project");
+      for (const path of [profile, home, project]) mkdirSync(path);
+      vi.stubEnv("AVE_HOME", home);
+      vi.stubEnv("USERPROFILE", profile);
+      vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
+      try { run(profile, project); }
+      finally { vi.unstubAllEnvs(); }
+    });
+  }
+
+  function rankComposed(kind: "shell" | "holder", root: string, profile: string, options: { denyRead?: string[]; denyWrite?: string[] } = {}): MxcFilesystemGrants {
+    const { denyRead = [], denyWrite = [] } = options;
+    if (kind === "holder") {
+      const { model } = admitMxcExtensionFilesystem({ allowRead: [], allowWrite: [root], denyRead, denyWrite },
+        { readRoots: [], writeRoots: [root], hostStorageRoots: [] });
+      return rankMxcFilesystem(model);
+    }
+    const read = getBuiltinShellReadPolicy([root], profile, undefined, undefined, "mxc");
+    const sensitive = getDefaultSensitiveWriteDenyPaths();
+    const mandatory = buildMandatorySandboxWritePolicy([root], undefined, sensitive);
+    return rankAdmittedMxcLists({ allowWrite: mandatory.allowWrite, allowRead: read.allowRead,
+      denyRead: [...read.denyRead, ...denyRead], denyWrite: mandatory.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path),
+      independentWriteDenies: [...sensitive, ...denyWrite], protectedFloor: getProtectedReadDenyFloor(),
+      requiredWriteDenies: mandatory.windowsRequiredWriteDenies });
+  }
+
+  it.each(["shell", "holder"] as const)("admits the synthetic profile with the %s default floor and relocated Ave home", kind => {
+    withProfile(profile => {
+      const carrier = join(profile, ".ave");
+      const certs = join(carrier, "certs");
+      const namesCerts = (path: string) => isWindowsPathAtOrUnder(certs, path) && isWindowsPathAtOrUnder(path, certs);
+      expect(getDefaultSensitiveWriteDenyPaths().some(namesCerts)).toBe(true);
+      expect(getProtectedReadDenyFloor().some(namesCerts)).toBe(true);
+      const grants = rankComposed(kind, profile, profile);
+      expect(grants.readwrite).toContain(profile);
+      expect(grants.denied).toContain(carrier);
+      expect(grants.denied.some(deny => isWindowsPathAtOrUnder(certs, deny))).toBe(true);
+      expect(grants.watched?.some(row => isWindowsPathAtOrUnder(row.path, carrier)) ?? false).toBe(false);
+      expect(existsSync(carrier)).toBe(false);
+    });
+  });
+
+  it.each(["shell", "holder"] as const)("uses the %s declared parent coverage while an ordinary project keeps its watched children", kind => {
+    withProfile((profile, project) => {
+      const carrier = join(project, ".ave");
+      const commands = join(carrier, "commands");
+      const hooks = join(carrier, "hooks");
+      const independent = join(carrier, "tasks");
+      const ordinary = rankComposed(kind, project, profile);
+      expect(ordinary.readwrite).toContain(project);
+      expect(ordinary.denied).not.toContain(carrier);
+      expect(ordinary.watched).toEqual([commands, hooks].map(watchedUnder(project)));
+      for (const options of [{ denyRead: [independent] }, { denyWrite: [independent] }]) {
+        expect(() => rankComposed(kind, project, profile, options))
+          .toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: independent }));
+      }
+      const covered = rankComposed(kind, project, profile, { denyRead: [independent, carrier], denyWrite: [independent] });
+      expect(covered.readwrite).toContain(project);
+      expect(covered.denied).toContain(carrier);
+      expect(covered.watched).toBeUndefined();
+      expect(existsSync(carrier)).toBe(false);
+    });
   });
 });
 

@@ -3528,10 +3528,13 @@ in its directory.
   `watched`: the write grant proceeds, and the result records the name with
   its nearest existing folder and that folder's volume and file identity. The
   outcome check accepts a watched row only at the deny's own path, under the
-  deny's own anchor object. Any other deny whose first missing component is
-  the same missing parent is not raised either: a configured write deny at
-  another path, or a user or secret read deny, refuses the launch, naming it.
-  A deny the policy states on the parent itself keeps its own outcome.
+  deny's own anchor object. An independent deny under the same missing
+  parent refuses the launch unless the policy already denies the parent at
+  its own path. The container composers state the Ave home read boundary at
+  each of its roots, including the legacy profile `.ave` when the active
+  home is elsewhere. That boundary covers the absent legacy home and its
+  sensitive children. An ordinary project's missing `.ave` remains writable
+  while its required children are watched.
   Admission does not depend on a live watch. The launch's last synchronous
   check (shell activation, the holder's check before native creation) confirms
   the folder is still the ranked object and the first missing component is
