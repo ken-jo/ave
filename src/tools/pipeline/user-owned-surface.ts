@@ -106,6 +106,7 @@ async function resolveSurface(input: SurfaceInput): Promise<SurfaceResolution> {
   }
   personAnswerStands(card, decision);
   const verdict = card.verdict ?? { kind: "policy-changed" as const };
+  if (verdict.kind === "recheck-failed") return refused(decision, verdict.reason, HOST_PROVENANCE);
   if (verdict.kind === "policy-changed") return refused(decision, "Permission policy changed while approval was pending.", RULE_PROVENANCE);
   if ("fresh" in verdict) {
     permission = verdict.fresh;

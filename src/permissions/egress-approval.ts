@@ -157,7 +157,8 @@ export function createApprovalGateEgressRequester(
       if (!terminal) {
         if (request.abortSignal?.aborted) return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected };
         if (card === undefined || !personAnswerStands(card, decision)) {
-          return { allow: false, reason: "Permission policy changed during network approval." };
+          const verdict = card?.verdict;
+          return { allow: false, reason: verdict?.kind === "recheck-failed" ? verdict.reason : "Permission policy changed during network approval." };
         }
         const { refusal } = await saveStandingAnswerRule(card, decision);
         if (refusal !== undefined) return { allow: false, reason: refusal };

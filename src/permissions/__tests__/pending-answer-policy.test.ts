@@ -142,12 +142,16 @@ describe("a person's answer across a policy change", () => {
     expect(recordStaleAnswer).not.toHaveBeenCalled();
   });
 
-  it.each(["allow-once", "deny-once"] as const)("refuses a %s when the bound check has no result, without its error text", (choice) => {
+  it.each(["allow-once", "deny-once"] as const)("preserves a thrown recheck failure for %s without exposing its error or saving a rule", async (choice) => {
     const manager = policy();
     const { value } = answer(choice);
-    const card = openPendingAnswerCard(manager, floorAsk(true), () => { throw new Error("Project rules were not loaded"); }, "stale-refused", bound(value.gate));
+    const commitStagedAllowSaves = vi.fn(async () => ({ saved: true }));
+    const card = openPendingAnswerCard(manager, floorAsk(true), () => { throw new Error("Project rules were not loaded"); }, "stale-refused",
+      bound({ ...value.gate, commitStagedAllowSaves }, undefined, ["rule-save"]));
     expect(personAnswerStands(card, value.decision)).toBe(false);
-    expect(card.verdict).toEqual({ kind: choice === "allow-once" ? "policy-changed" : "declined" });
+    expect(card.verdict).toEqual({ kind: "recheck-failed", reason: "Permission recheck failed during approval." });
+    expect(await saveStandingAnswerRule(card, value.decision)).toEqual({ saved: false });
+    expect(commitStagedAllowSaves).not.toHaveBeenCalled();
   });
 
   it("reports a Deny as the policy's own denial when the call is now denied", () => {
@@ -291,7 +295,6 @@ describe("a person's answer across a policy change", () => {
   });
 
   it.each([
-    ["a throwing check", () => { throw new Error("Project rules were not loaded"); }],
     ["a denying check", () => result({ decision: "deny", reason: "Saved deny rule" })],
     ["another forced question", () => floorAsk(false)],
   ] as const)("mints no standing answer on %s", (_name, check) => {

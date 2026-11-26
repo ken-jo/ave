@@ -1215,14 +1215,18 @@ export async function executeAuthorizedToolInvocation(
         return;
       }
       if (verdict.kind === "stands") cardAnswer = verdict.proof;
+      if (verdict.kind === "recheck-failed") {
+        permissionResult = refusal(verdict.reason, HOST_PROVENANCE);
+        throw new Error(verdict.reason);
+      }
       const invalidationReason = verdict.kind === "policy-changed" ? policyChanged : verdict.kind === "denied" ? verdict.fresh.reason : undefined;
       // The allow the person asked this card to remember is written only now that its answer stands; the policy it moved is the approved one.
       const save = invalidationReason === undefined ? await saveStandingAnswerRule(card, decision) : undefined;
       if (save?.saved) currentEpoch = manager.getPolicyEpoch();
-      const refusal = invalidationReason ?? save?.refusal;
-      if (refusal !== undefined) {
-        permissionResult = { ...permissionResult, decision: "deny", reason: refusal, provenance: RULE_PROVENANCE };
-        throw new Error(refusal);
+      const refusalReason = invalidationReason ?? save?.refusal;
+      if (refusalReason !== undefined) {
+        permissionResult = { ...permissionResult, decision: "deny", reason: refusalReason, provenance: RULE_PROVENANCE };
+        throw new Error(refusalReason);
       }
     }
     const surfaceResolution = services.permissionManager ? await resolveUserOwnedSurfaceApproval({

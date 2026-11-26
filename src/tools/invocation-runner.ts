@@ -1966,16 +1966,17 @@ async function runToolInvocationAttempt(
           return { allowed: false, result: await denyCardGrant() };
         }
         // The one rule for answered cards (pending-answer-policy.ts): a sibling stage's "Allow for this run" leaves the answer standing.
-        const directoryStands = personAnswerStands(directoryCard, decision);
-        const directoryAnswer = directoryCard.verdict?.kind === "stands" ? directoryCard.verdict.proof : undefined;
-        if (!directoryStands || directoryAnswer === undefined) {
-          const verdict = directoryCard.verdict;
-          const reason = verdict?.kind === "denied" ? verdict.fresh.reason
-            : verdict?.kind === "stale" ? t("be_executor.answerQuestionChanged") : "Permission policy changed during approval.";
-          const denied = refusal(reason, RULE_PROVENANCE);
+        personAnswerStands(directoryCard, decision);
+        const verdict = directoryCard.verdict;
+        if (verdict?.kind !== "stands") {
+          const reason = verdict?.kind === "recheck-failed" ? verdict.reason
+            : verdict?.kind === "denied" ? verdict.fresh.reason
+              : verdict?.kind === "stale" ? t("be_executor.answerQuestionChanged") : "Permission policy changed during approval.";
+          const denied = refusal(reason, verdict?.kind === "recheck-failed" ? HOST_PROVENANCE : RULE_PROVENANCE);
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, denied.reason, true, startTime, denied, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: denied.reason, is_error: true, durationMs: Date.now() - startTime }) };
         }
+        const directoryAnswer = verdict.proof;
         const surfaceResolution = await resolveUserOwnedSurfaceApproval({ manager, gate: services.approvalGate, permission: dirLayerResult, decision,
           answer: directoryAnswer, action: directoryAction, uses: directoryUses, request: { ...approvalRequest, abortSignal: directorySignal }, sessionId,
           review: async permission => await dispatchReviewerForInteractiveAuto(manager, toolUse.name, source, invocationCategory, reviewerPathFields, finalInput, directoryScope, [], invocationPermissionContext, makeDirectoryEvaluationContext({ pathFields: reviewerPathFields, targetFilePaths: [outOfAllowedTarget.filePath] }), {}, callbacks, meta, approvalPurpose, hostShellExecutionPlan, directorySignal, auditInput, sessionId, permission) ?? permission,

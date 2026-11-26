@@ -488,8 +488,10 @@ export async function gateMutatingEffect(params: {
   if (!await refreshRemoteControllerBoundToSession(ctx.permissionContext?.remoteControllerAuthority, ctx.sessionId)) throw new Error("remote-controller-revoked");
   // Another conversation's or run's memory-only allow rule leaves the answer standing; any other change refuses it.
   const stands = personAnswerStands(card, decision);
-  const answer = card.verdict?.kind === "stands" ? card.verdict.proof : undefined;
-  if (!stands && (decision.choice.startsWith("allow") || card.verdict?.kind === "denied")) throw new Error(EFFECT_ANSWER_REFUSED);
+  const verdict = card.verdict;
+  if (verdict?.kind === "recheck-failed") throw new Error(verdict.reason);
+  const answer = verdict?.kind === "stands" ? verdict.proof : undefined;
+  if (!stands && (decision.choice.startsWith("allow") || verdict?.kind === "denied")) throw new Error(EFFECT_ANSWER_REFUSED);
   assertEffectPaths(paths);
   if (decision.rememberPattern === NO_APPROVER_MESSAGE) {
     noApproverLatch.get(ctx)?.();

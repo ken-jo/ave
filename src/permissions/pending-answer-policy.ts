@@ -96,10 +96,11 @@ export function pendingQuestionStillAsked(pending: Questioned, now: Questioned):
 export type StaleAnswerOutcome = "stale-reasked" | "stale-refused";
 
 /** The owner's verdict on an answered card. `fresh` is the check it judged by; a caller acts on it, never on a check of its own.
- * A moved policy refuses an Allow before any check runs, and so does a check with no result, an answer to another card and a
- * second answer to this one. A Deny stays the person's (`declined`) unless the policy now denies the call itself. */
+ * A moved policy, an answer to another card, and a second answer to this one refuse the Allow before a check runs.
+ * A thrown check is a host failure. A Deny otherwise stays the person's unless the policy now denies the call itself. */
 export type PendingAnswerVerdict =
   | { readonly kind: "declined" | "policy-changed" }
+  | { readonly kind: "recheck-failed"; readonly reason: string }
   | { readonly kind: "denied"; readonly fresh: PermissionCheckResult }
   | { readonly kind: "stands"; readonly fresh: PermissionCheckResult; readonly proof: StandingAnswer }
   | { readonly kind: "stale"; readonly fresh: PermissionCheckResult; readonly from: PermissionQuestion; readonly to: PermissionQuestion };
@@ -251,7 +252,7 @@ function judgeCard(card: PendingAnswerCard, bound: BoundCard, decision: Approval
   try {
     fresh = bound.check();
   } catch {
-    return refused;
+    return { kind: "recheck-failed", reason: "Permission recheck failed during approval." };
   }
   if (fresh.decision === "deny") return { kind: "denied", fresh };
   if (!allows) return { kind: "declined" };

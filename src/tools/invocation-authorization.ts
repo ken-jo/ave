@@ -1236,12 +1236,13 @@ export async function authorizeToolInvocation(
         const cardAnswer = answerVerdict?.kind === "stands" ? answerVerdict.proof : undefined;
         // A stale Allow refuses this call and names why; a stale Deny is reported as the person's Deny below.
         const staleAllow = answerVerdict?.kind === "stale" && decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision);
-        let approvalInvalidationReason = isSettledRefusal(decision) ? undefined : answerVerdict?.kind === "policy-changed"
+        const recheckFailure = answerVerdict?.kind === "recheck-failed" ? answerVerdict.reason : undefined;
+        let approvalInvalidationReason = isSettledRefusal(decision) ? undefined : recheckFailure ?? (answerVerdict?.kind === "policy-changed"
           ? "Permission policy changed while approval was pending"
           : !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)
             ? "remote-controller-revoked"
             : answerVerdict?.kind === "denied" ? answerVerdict.fresh.reason
-              : staleAllow ? t("be_executor.answerQuestionChanged") : undefined;
+              : staleAllow ? t("be_executor.answerQuestionChanged") : undefined);
         // The allow the person asked this card to remember is written only now: the answer stands and nothing above refuses the call.
         if (approvalInvalidationReason === undefined && approvalCard) approvalInvalidationReason = (await saveStandingAnswerRule(approvalCard, decision)).refusal;
         if (approvalInvalidationReason !== undefined) {
@@ -1254,9 +1255,9 @@ export async function authorizeToolInvocation(
           });
           const durationMs = Date.now() - startTime;
           const revokedPermission: PermissionCheckResult = {
-            decision: "deny", provenance: RULE_PROVENANCE,
+            decision: "deny", provenance: recheckFailure === undefined ? RULE_PROVENANCE : HOST_PROVENANCE,
             reason,
-            };
+          };
           emitToolStart(callbacks, toolUse.name, finalInput, meta);
           callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, revokedPermission, Infinity, invocationPermissionContext, invocationCategory, executionCwd);

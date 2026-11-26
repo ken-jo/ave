@@ -130,6 +130,7 @@ export function createHookCommandAuthorizer(deps: {
     if (card && approval) {
       personAnswerStands(card, approval);
       const verdict = card.verdict ?? { kind: "policy-changed" as const };
+      if (verdict.kind === "recheck-failed") return { decision: "deny", reason: verdict.reason };
       if (!("fresh" in verdict)) {
         return { decision: "deny", reason: verdict.kind === "declined" ? "user denied hook command" : "Permission policy changed while approval was pending" };
       }

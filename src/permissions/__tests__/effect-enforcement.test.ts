@@ -1699,7 +1699,7 @@ describe("an effect card's answer is judged by the owner", () => {
         pipelineRequest: { ...now.pipelineRequest, floor: { code: "protected-path", reason: "Changed while the card was open." } } } as PermissionCheckResult;
     });
     cards[0].answer(choice);
-    await expect(pending).rejects.toThrow("Permission policy changed during effect approval");
+    await expect(pending).rejects.toThrow(change === "a check that throws" ? "Permission recheck failed during approval." : "Permission policy changed during effect approval");
     expect(log).toEqual([]);
     // A stale Allow is kept for the audit with no authority; a check with no result has no question to record.
     if (change === "a check that throws") expect(recordStaleAnswer).not.toHaveBeenCalled();
