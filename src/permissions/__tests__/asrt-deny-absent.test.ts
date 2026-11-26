@@ -51,6 +51,9 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js", async (im
 
 vi.unmock("../../shared/windows-drive-locality.js");
 
+const localDrive = () => "\\Device\\HarddiskVolume1";
+beforeEach(() => setWindowsDriveQueryForTest(localDrive));
+
 useVerifiedAveHomePrivacy();
 
 function writeFixtureWindowsAdapter(root: string, srtWin: { exe: string; prependArgs: string[] }): string {
@@ -1408,7 +1411,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     vi.mocked(lstatSync).mockClear();
     setWindowsDriveQueryForTest(drive => {
       if (drive === failedDrive) throw failure;
-      return "\\Device\\HarddiskVolume1";
+      return localDrive();
     });
     try {
       expect(() => buildSandboxConfig({
@@ -1418,7 +1421,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
       expect(watchedProtectedRows()).toEqual(before);
       expect(vi.mocked(lstatSync).mock.calls.some(([path]) => String(path).includes("later-deny"))).toBe(false);
     } finally {
-      setWindowsDriveQueryForTest();
+      setWindowsDriveQueryForTest(localDrive);
     }
   });
 

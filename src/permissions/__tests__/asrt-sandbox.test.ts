@@ -287,6 +287,14 @@ function runArgv(
   });
 }
 
+function captureOptionalWatchPublications() {
+  const watch = vi.fn((_path: string, _roots: readonly string[]) => {});
+  const prepareWatch = watchedRows.prepareAbsentProtectedWatch;
+  const prepare = vi.spyOn(watchedRows, "prepareAbsentProtectedWatch").mockImplementation((path, roots, exact, claim) =>
+    exact ? prepareWatch(path, roots, exact, claim) : () => watch(path, roots));
+  return { watch, restore: () => prepare.mockRestore() };
+}
+
 describe("asrt-sandbox — gate default OFF", () => {
   it("isAsrtSandboxActive() is false before any initialize (the shipped default)", () => {
     expect(isAsrtSandboxActive()).toBe(false);
@@ -1806,7 +1814,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const profile = join(tmpdir(), "ave-windeny-profile");
     process.env.AVE_ASRT_TEST_HOME = profile;
     setProcessPlatform("win32");
-    const watch = vi.spyOn(watchedRows, "watchAbsentProtectedRow").mockImplementation(() => {});
+    const { watch, restore } = captureOptionalWatchPublications();
     try {
       const work = join(profile, "work");
       const config = buildSandboxConfig({
@@ -1824,7 +1832,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       // Outside the profile: kept.
       expect(denies).toContain(join(fakeAveHome, "settings.json"));
     } finally {
-      watch.mockRestore();
+      restore();
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
@@ -1944,7 +1952,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const currentEvidence = readDenyEvidenceModule.windowsReadDenyEvidence;
     const evidence = vi.spyOn(readDenyEvidenceModule, "windowsReadDenyEvidence").mockImplementation((path, snapshot) =>
       /^\\\\server\\profiles\\tester(?:\\|$)/i.test(path) ? { status: "missing" } : currentEvidence(path, snapshot));
-    const watch = vi.spyOn(watchedRows, "watchAbsentProtectedRow").mockImplementation(() => {});
+    const { watch, restore } = captureOptionalWatchPublications();
     try {
       const build = () => buildSandboxConfig({
         allowedDomains: [],
@@ -1969,7 +1977,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       expect(bare(config.filesystem.denyWrite).includes(admitted)).toBe(kept && existed);
       expect(existsSync(admitted)).toBe(existed);
     } finally {
-      watch.mockRestore();
+      restore();
       vi.mocked(lstatSync).mockImplementation(nativeLstat);
       vi.mocked(readdirSync).mockImplementation(nativeReaddir);
       pinFacts.mockRestore();
@@ -2077,7 +2085,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const profile = homedir();
     vi.stubEnv("USERPROFILE", profile);
     vi.stubEnv("HOME", profile);
-    const watch = vi.spyOn(watchedRows, "watchAbsentProtectedRow").mockImplementation(() => {});
+    const { watch, restore } = captureOptionalWatchPublications();
     try {
       const root = join(profile, "x");
       mkdirSync(root, { recursive: true });
@@ -2098,7 +2106,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       expect(watch.mock.calls.map(([path]) => path)).toContain(join(root, ".bashrc"));
       expect(watch.mock.calls.map(([path]) => path)).not.toContain(resolve(grant, ".bashrc"));
     } finally {
-      watch.mockRestore();
+      restore();
       vi.unstubAllEnvs();
     }
   });
