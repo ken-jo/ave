@@ -21,7 +21,7 @@ import { classifyWindowsSpelling, normalizeWindowsPathSpelling, windowsVolumeRoo
 
 class Decision {
   readonly drives = new Map<string, DriveIdentity>();
-  failure?: { error: unknown };
+  failure?: { error: unknown; drive: string };
   readonly memos = new Map<object, Map<string, unknown>>();
   // A decision opened by a single lookup outside any running decision; it serves only the synchronous run that opened it.
   open = true;
@@ -40,12 +40,18 @@ class Decision {
 }
 
 let active: Decision | undefined;
-const driveQueryFailures = new WeakSet<object>();
+const driveQueryFailures = new WeakMap<object, string>();
 const ownerMemos = new WeakMap<object, Map<string, unknown>>();
 
 /** Whether `error` is a failed drive query: no fallback, default or provider path may stand in for its decision. */
 export function isLocalityFailure(error: unknown): boolean {
   return typeof error === "object" && error !== null && driveQueryFailures.has(error);
+}
+
+export function localityFailureAffectsPath(error: unknown, path: string): boolean {
+  const spelling = classifyWindowsSpelling(path, "win32");
+  return spelling.kind === "local-drive" && typeof error === "object" && error !== null &&
+    driveQueryFailures.get(error) === spelling.drive;
 }
 
 /** For a catch that maps lookup errors to "no answer": a failed drive query, or any error inside a failed decision, propagates. */
@@ -109,7 +115,7 @@ export function withLocalityDecision<T>(fn: () => T, decision?: LocalityDecision
     return result;
   } catch (error) {
     // Whatever a failed decision throws carries its failure, however a lookup wrapped it.
-    if (chosen.failure !== undefined && typeof error === "object" && error !== null) driveQueryFailures.add(error);
+    if (chosen.failure !== undefined && typeof error === "object" && error !== null) driveQueryFailures.set(error, chosen.failure.drive);
     throw error;
   } finally {
     active = previous;
@@ -209,8 +215,8 @@ function driveIdentity(drive: string, decision: Decision): DriveIdentity {
         : queryDriveIdentity(drive, decision.resourcePath);
       if (!identity.local && identity.unavailable !== undefined) throw identity.unavailable;
     } catch (error) {
-      if (typeof error === "object" && error !== null) driveQueryFailures.add(error);
-      decision.failure = { error };
+      if (typeof error === "object" && error !== null) driveQueryFailures.set(error, drive);
+      decision.failure = { error, drive };
       throw error;
     }
     decision.drives.set(drive, identity);

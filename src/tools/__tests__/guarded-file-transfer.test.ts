@@ -283,7 +283,7 @@ describe("owned rollback and settlement", () => {
           await sink.file("owned", chunks(bytes), { expectedBytes: bytes.length, ownerExecutable: false });
           if (cleanup === "incomplete") await writeFile(join(destinationPath, "foreign"), "preserve");
           setWindowsDriveQueryForTest(query);
-          withLocalityDecision(() => admitLocalPath(sourceDrive + "\\input.bin"));
+          withLocalityDecision(() => admitLocalPath(`${sourceDrive}\\input.bin`));
         });
         expect(result).toMatchObject({ ok: false, code: "io-error", message: "Source drive query failed", cleanup });
         expect(query.mock.calls.filter(([drive]) => drive === sourceDrive)).toHaveLength(1);

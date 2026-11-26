@@ -541,7 +541,8 @@ export async function deleteCodeCheckpoints(sessionId: string): Promise<void> {
   });
 }
 
-type MutationRunner<T> = (recordEffect: (path: string) => void) => Promise<T>;
+export type RecordCheckpointEffect = (path: string, options?: { localityFailed?: boolean }) => void;
+type MutationRunner<T> = (recordEffect: RecordCheckpointEffect) => Promise<T>;
 
 /** A tracked writer reports a file as soon as its mutation has happened or may have partially happened. */
 type FileMutation<T> = (() => Promise<T>) | { run: MutationRunner<T> };
@@ -746,7 +747,9 @@ async function checkpointMutation<T>(
     });
     const affected = new Set<StoredChange>();
     let postEffectSeal = seal;
-    const recordEffect = (path: string) => {
+    let effectLocalityFailed = false;
+    const recordEffect: RecordCheckpointEffect = (path, options) => {
+      effectLocalityFailed ||= options?.localityFailed === true;
       const change = effectPaths.get(path);
       if (change) {
         affected.add(change);
@@ -830,8 +833,8 @@ async function checkpointMutation<T>(
     try {
       const result = await run(recordEffect);
       const failed = Boolean(result && typeof result === "object" && "isError" in result && result.isError === true);
-      if (failed || (tracksEffects && affected.size < changes.length)) await removeUnchanged(failed);
-      recordCounts = true;
+      if (failed || (tracksEffects && affected.size < changes.length)) await removeUnchanged(failed && !effectLocalityFailed);
+      recordCounts = !effectLocalityFailed;
       return result;
     } catch (error) {
       const failedLocality = isLocalityFailure(error);

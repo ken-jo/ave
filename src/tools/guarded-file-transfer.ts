@@ -1,4 +1,4 @@
-import { admitLocalPath, isLocalityFailure, localFs, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
+import { admitLocalPath, isLocalityFailure, localFs, localityFailureAffectsPath, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { terminalFileEvidence, writtenFileIdentity, type WrittenFileIdentity } from "../main/terminal/changed-file-evidence.js";
 import { constants, createReadStream, read, rmdirSync, unlinkSync, type BigIntStats, type ReadStream } from "node:fs";
 import { lstat, mkdir, open, opendir, realpath, rmdir, unlink, type FileHandle } from "node:fs/promises";
@@ -595,15 +595,15 @@ class OwnedTransfer {
     }
   }
 
-  async rollback(): Promise<Pick<Extract<TransferResult, { ok: false }>, "cleanup" | "residualPaths" | "cleanupErrors">> {
+  async rollback(): Promise<Pick<Extract<TransferResult, { ok: false }>, "cleanup" | "residualPaths" | "cleanupErrors" | "localityFailed">> {
     const residualPaths: string[] = [];
     let incomplete = this.cleanupErrors.length > 0;
     const pending = [...this.ledger].reverse();
     let next = 0;
+    let localityFailed = false;
     try {
       this.assertLocality();
-      for (; next < pending.length; next += 1) {
-        const entry = pending[next]!;
+      for (let entry = pending[next]; entry !== undefined; entry = pending[++next]) {
         const path = this.entryPath(entry);
         try {
           await this.verifyOwned(entry);
@@ -633,6 +633,7 @@ class OwnedTransfer {
       }
     } catch (error) {
       if (process.platform !== "win32" || !isLocalityFailure(error)) throw error;
+      localityFailed = true;
       const preserve = (path: string, error: unknown, residual?: string): void => {
         incomplete = true;
         this.addCleanupError(`Cleanup preserved ${path}: ${errorMessage(error)}`);
@@ -642,9 +643,9 @@ class OwnedTransfer {
       };
       // A poisoned transfer cannot authorize I/O. Recover only via the destination's recorded ownership chain.
       try {
+        if (this.destinationAnchors.some(({ path }) => localityFailureAffectsPath(error, path))) throw error;
         withLocalityDecision(() => {
-          for (; next < pending.length; next += 1) {
-            const entry = pending[next]!;
+          for (let entry = pending[next]; entry !== undefined; entry = pending[++next]) {
             const path = this.entryPath(entry);
             let residual: string | undefined;
             try {
@@ -674,11 +675,13 @@ class OwnedTransfer {
         });
       } catch (error) {
         if (!isLocalityFailure(error)) throw error;
-        if (next < pending.length) preserve(this.entryPath(pending[next]!), error);
+        const entry = pending[next];
+        if (entry !== undefined) preserve(this.entryPath(entry), error);
       }
     }
     return {
       cleanup: incomplete ? "incomplete" : this.ledger.length === 0 ? "not-created" : "removed",
+      ...(localityFailed ? { localityFailed: true } : {}),
       ...(residualPaths.length > 0 ? { residualPaths } : {}),
       ...(this.cleanupErrors.length > 0 ? { cleanupErrors: this.cleanupErrors } : {}),
     };

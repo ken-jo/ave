@@ -1,6 +1,6 @@
 import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { noteOwnedWrite, terminalFileEvidence, writtenFileIdentity, type WrittenFileIdentity } from "../main/terminal/changed-file-evidence.js";
-import { checkpointFileMutation, markCodeCheckpointUnavailable } from "../memory/code-checkpoints.js";
+import { checkpointFileMutation, markCodeCheckpointUnavailable, type RecordCheckpointEffect } from "../memory/code-checkpoints.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { constants, type Dirent, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -1729,7 +1729,7 @@ export class CopyPathTool extends FileTool<typeof CopyPathInputSchema> {
     const checkpointSupported = await isFileCopyCheckpointSupported(sourcePath, ctx.cwd);
     ctx.fileTargetSeal?.verify();
     const expectedSource = checkpointSupported ? await lstat(sourcePath, { bigint: true }) : undefined;
-    const transfer = async (recordEffect?: (path: string) => void) => {
+    const transfer = async (recordEffect?: RecordCheckpointEffect) => {
       ctx.fileTargetSeal?.verify();
       assertProjectWritePath(sourcePath);
       assertProjectWritePath(destinationPath);
@@ -1738,7 +1738,9 @@ export class CopyPathTool extends FileTool<typeof CopyPathInputSchema> {
         expectedSource,
         assertPath: assertProjectWritePath,
       });
-      if (result.ok || result.cleanup === "incomplete") recordEffect?.(destinationPath);
+      if (result.ok || result.cleanup === "incomplete") {
+        recordEffect?.(destinationPath, { localityFailed: !result.ok && result.localityFailed });
+      }
       return fileTransferExecutionResult(result);
     };
     if (checkpointSupported) {

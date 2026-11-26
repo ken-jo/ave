@@ -307,14 +307,15 @@ describe("checkpoint mutation locality", () => {
     await withCodeCheckpoint({ sessionId, messageId: "mutation" }, async () => {
       const failure = await new CopyPathTool().execute(
         { sourcePath: first, destinationPath: destination }, { ...context, fileTargetSeal: seal },
-      ).catch((error: unknown) => error);
+      );
       const workspaceOperations = probe.mock.calls.flatMap(([path]) => {
         if (typeof path !== "string" || path === state || path.startsWith(state + sep)) return [];
         return path === root || path.startsWith(root + sep) || root.startsWith(path.endsWith(sep) ? path : path + sep) ? [path] : [];
       });
       expect(workspaceOperations).toEqual([]);
       expect(query).toHaveBeenCalledOnce();
-      expect(failure).toBe(unavailable);
+      expect(failure.isError).toBe(true);
+      expect(JSON.parse(failure.output)).toMatchObject({ ok: false, cleanup: "incomplete", message: unavailable.message });
       setWindowsDriveQueryForTest(() => LOCAL_DRIVE);
     });
 

@@ -38,6 +38,7 @@ export type TransferResult =
       cleanup: "not-created" | "removed" | "incomplete";
       residualPaths?: string[];
       cleanupErrors?: string[];
+      localityFailed?: true;
     };
 
 export interface FileTransferLimits {
