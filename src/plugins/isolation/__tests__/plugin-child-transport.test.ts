@@ -1028,6 +1028,9 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
         await api.storage.write("overlap.txt", "effect");
         return { status: "raised", alertId: "alert" } as never;
       }),
+      "storage.write": defineHostApiPath("storage.write", async ({ args }) => {
+        await api.storage.write(String(args[0]), "effect");
+      }),
     } });
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({ name: "overlap_probe", source: "plugin", pluginId: PLUGIN,
@@ -1094,7 +1097,11 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
     const observations = () => shadowLog.mock.calls
       .map(([row]) => JSON.parse(row.output ?? "{}") as Record<string, unknown>)
       .filter((row) => row.event === "effect-shadow");
-    return { rig, manager, gate, desk, cards, write, call, effectFromChild, replyTo, terminal, observations, readReceipt, close };
+    const standaloneWrite = (id: string, relPath: string) => rig.deliver({
+      jsonrpc: "2.0", id, method: hostApiMethodOf("storage.write"),
+      params: { relPath, data: { kind: "text", text: "effect" } },
+    });
+    return { rig, manager, gate, desk, cards, write, call, effectFromChild, standaloneWrite, replyTo, terminal, observations, readReceipt, close };
   }
 
   it.each(["framed", "frameless"] as const)("audits a standing-allowed write without an owner with a %s sibling", async (topology) => {
@@ -1145,6 +1152,53 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
     } finally {
       await t.close();
       await pendingPoll;
+    }
+  });
+
+  it("audits a standalone write independently and withholds all affected read receipts", async () => {
+    const t = await overlap();
+    try {
+      t.manager.setMode("allow");
+      const first = await t.call("first-read", "overlap_read");
+      const sibling = await t.call("sibling-write");
+      t.standaloneWrite("standalone-write", "own.txt");
+      expect(await t.replyTo("standalone-write")).toMatchObject({ result: null });
+      expect(t.write).toHaveBeenCalledExactlyOnceWith("own.txt", "effect");
+      first.finish();
+      sibling.finish();
+      await expect(first.result).resolves.toEqual([expect.objectContaining({ content: "read" })]);
+      await expect(sibling.result).resolves.toEqual([expect.objectContaining({ content: "spoke" })]);
+      const observations = t.observations();
+      const independent = observations.find((row) => row.hostApiPath === "storage.write");
+      expect.soft(independent).toMatchObject({
+        pluginId: PLUGIN, hasMutatingEffect: true,
+        effects: [expect.objectContaining({ kind: "storageWrite", effect: "write", target: "own.txt" })],
+      });
+      expect.soft(independent).not.toHaveProperty("toolName");
+      expect.soft(observations.filter((row) => row.toolName !== undefined)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ toolName: "overlap_read", effects: [], observationIncomplete: true }),
+        expect.objectContaining({ toolName: "overlap_probe", effects: [], observationIncomplete: true }),
+      ]));
+      expect(t.readReceipt).not.toHaveBeenCalled();
+      expect(t.cards).toEqual([]);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it("refuses a standalone write outside plugin storage even beside a live call", async () => {
+    const t = await overlap();
+    try {
+      t.manager.setMode("allow");
+      const read = await t.call("read", "overlap_read");
+      t.standaloneWrite("outside-write", "../outside.txt");
+      expect(await t.replyTo("outside-write")).toMatchObject({ error: { data: { code: "effect-boundary-denied" } } });
+      expect(t.write).not.toHaveBeenCalled();
+      expect(t.cards).toEqual([]);
+      read.finish();
+      await expect(read.result).resolves.toEqual([expect.objectContaining({ content: "read" })]);
+    } finally {
+      await t.close();
     }
   });
 

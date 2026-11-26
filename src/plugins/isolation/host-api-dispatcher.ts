@@ -20,6 +20,7 @@ import {
   sameEffectAuthority,
 } from "../../permissions/effect-enforcement.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
+import { pathEffectClass } from "../../permissions/effect-kind.js";
 import { createEffectLedger, currentEffectLedger, runWithEffectLedger } from "../../permissions/effect-ledger.js";
 import { emitEffectShadowLog } from "../../permissions/reviewer/risk-shadow-log.js";
 import { ManifestIntegrityError } from "../../permissions/manifest-integrity.js";
@@ -1459,8 +1460,13 @@ export class HostApiDispatcher {
   /** A request without a token takes the standalone policy, whether or not a tool call is live. */
   private runTokenless(path: HostApiPath, signal: AbortSignal, invoke: () => Promise<unknown>): Promise<unknown> {
     return runOutsideInvocation(() => {
-      if (!readsEffectFrame(path)) return invoke();
-      return runWithEffectGateContext({ headless: false, standalone: true, toolName: path, abortSignal: signal }, invoke);
+      const run = () => readsEffectFrame(path)
+        ? runWithEffectGateContext({ headless: false, standalone: true, toolName: path, abortSignal: signal }, invoke)
+        : invoke();
+      const effect = pathEffectClass(path);
+      return effect === "write" || effect === "verb-derived"
+        ? this.runWithIndependentObservation(path, this.options.invocations?.live() ?? [], run)
+        : run();
     });
   }
 
@@ -1500,14 +1506,22 @@ export class HostApiDispatcher {
       }
     }
 
-    // Mark every possible owner before the request yields and a sibling can finish.
-    for (const candidate of [invocation.run, ...siblings]) {
+    return invocation.run(() => this.runWithIndependentObservation(path, [invocation.run, ...siblings],
+      () => named === undefined ? invoke() : runUnattributedEffectRequest(named, invoke)));
+  }
+
+  private async runWithIndependentObservation(
+    path: HostApiPath,
+    candidates: Iterable<InvocationContextRunner>,
+    invoke: () => Promise<unknown>,
+  ): Promise<unknown> {
+    // Mark every possible owner before the request yields and a candidate can finish.
+    for (const candidate of candidates) {
       candidate(currentEffectLedger)?.markObservationIncomplete();
     }
     const ledger = createEffectLedger();
     try {
-      return await invocation.run(() => runWithEffectLedger(ledger,
-        () => named === undefined ? invoke() : runUnattributedEffectRequest(named, invoke)));
+      return await runWithEffectLedger(ledger, invoke);
     } finally {
       const summary = ledger.summary();
       if (this.options.effectAudit && summary.effects.length > 0) {
