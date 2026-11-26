@@ -271,11 +271,23 @@ describe("shutdown permission audit ordering", () => {
     });
 
     const child = Object.assign(new EventEmitter(), {
-      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null,
+      pid: 14003, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null, signalCode: null,
     });
     child.stdin.once("finish", scriptStarted.resolve);
     vi.mocked(spawn).mockImplementationOnce(() => child as unknown as ReturnType<typeof spawn>);
     killScript.mockImplementationOnce(() => { child.emit("close", null, "SIGKILL"); });
+    // A POSIX hook is a process group; the managed runner kills and probes it directly.
+    let groupAlive = true;
+    const nativeKill = process.kill;
+    const groupKill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid !== -child.pid) return nativeKill(pid, signal);
+      if (signal === "SIGKILL" && groupAlive) {
+        groupAlive = false;
+        child.emit("close", null, "SIGKILL");
+      }
+      if (groupAlive) return true;
+      throw Object.assign(new Error("Group exited"), { code: "ESRCH" });
+    });
 
     const registry = new ToolRegistry();
     for (const name of ["http_probe", "script_probe"]) {
@@ -306,7 +318,8 @@ describe("shutdown permission audit ordering", () => {
       await expect(app.shutdown?.()).resolves.toBeUndefined();
       expect(signal.aborted).toBe(true);
       expect(httpAborted).toBe(true);
-      expect(killScript).toHaveBeenCalledWith(child, "hook caller aborted");
+      if (process.platform === "win32") expect(killScript).toHaveBeenCalledWith(child, "hook caller aborted");
+      else expect(groupKill).toHaveBeenCalledWith(-child.pid, "SIGKILL");
       expect(await invocations).toMatchObject([
         { status: "fulfilled", value: [{ is_error: true }] },
         { status: "fulfilled", value: [{ is_error: true }] },
@@ -318,6 +331,7 @@ describe("shutdown permission audit ordering", () => {
       child.emit("close", 0, null);
       await invocations;
       vi.useRealTimers();
+      groupKill.mockRestore();
     }
   });
 });
