@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { createLogger } from "../lib/logger.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { errorMessage } from "../shared/error-message.js";
-import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
+import { turnExtensionPolicyContext, unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 
 const log = createLogger("extension-start-consent");
 
@@ -122,7 +122,7 @@ export interface ExtensionStartSession {
 /** The session of the turn this call runs in. Outside a turn, or in one no person watches, it is unattended. */
 export function turnExtensionStartSession(sessionId: string): ExtensionStartSession {
   const turn = turnExtensionPolicyContext.getStore();
-  const attended = turn !== undefined && turn.headless !== true && turn.ownerUnattended !== true
+  const attended = !unattendedApprovalDenial() && turn !== undefined && turn.headless !== true && turn.ownerUnattended !== true
     && turn.approvalSurface !== "unavailable" && turn.remoteControllerAuthority === undefined && turn.withholdSessionAuthority !== true;
   return { sessionId, attended, ...(turn?.abortSignal ? { abortSignal: turn.abortSignal } : {}) };
 }
@@ -195,6 +195,7 @@ export function listPendingExtensionStarts(): readonly (PendingExtensionStart & 
  * another identity under the same key is another start, so no earlier answer, open card or waiting consent covers it.
  */
 export function deferExtensionStart(start: PendingExtensionStart): void {
+  if (unattendedApprovalDenial()) return;
   if (differentStartWaits(start)) dropExtensionStart(start.key);
   const existing = entries.get(start.key);
   // A start being asked about, or already declined, keeps its entry.
@@ -211,6 +212,7 @@ function differentStartWaits(start: ExtensionStartIdentity): boolean {
 
 /** The consent a yes parked for this key, removed from the list; the caller threads it to its spawn. */
 export function takeExtensionStartGrant(key: string): ExtensionStartAuthority | undefined {
+  if (unattendedApprovalDenial()) return undefined;
   const grant = parked.get(key);
   if (grant === undefined) return undefined;
   parked.delete(key);
@@ -345,6 +347,11 @@ async function showCards(sessionId: string, waitingForCard: Asked[]): Promise<vo
 function answer(entry: Entry, session: ExtensionStartSession): Promise<AskOutcome> {
   // One question per start at a time, whichever site asks.
   if (entry.state !== "pending" || asking.has(entry.key)) return Promise.resolve(undefined);
+  const unattended = unattendedApprovalDenial();
+  if (unattended) {
+    log.info("Extension start denied (%s): %s", entry.kind, unattended);
+    return Promise.resolve(undefined);
+  }
   if (!session.attended || asker === undefined) {
     notifyOnce(entry, "unattended");
     return Promise.resolve(undefined);
@@ -451,6 +458,8 @@ export async function runExtensionStart<T>(
   } catch (error) {
     // The spawn site names what it would run; the question and the consent are for exactly that.
     if (!isExtensionStartConsentRequired(error) || error.start?.key !== pending.key) throw error;
+    const unattended = unattendedApprovalDenial();
+    if (unattended) throw new Error(unattended);
     const start = { ...pending, identity: error.start.identity, cause: error.unconfinedCause };
     if (session === undefined) {
       deferExtensionStart(start);

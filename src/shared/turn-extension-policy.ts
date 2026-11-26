@@ -31,6 +31,11 @@ const DEFAULT_TURN_EXTENSION_POLICY: TurnExtensionPolicy = Object.freeze({
 
 export const turnExtensionPolicyContext = new AsyncLocalStorage<TurnExtensionPolicy>();
 
+/** Nested approval surfaces use the host turn, including callbacks captured before it started. */
+export function unattendedApprovalDenial(): "unattended-approval-denied" | undefined {
+  return turnExtensionPolicyContext.getStore()?.unattendedStage === true ? "unattended-approval-denied" : undefined;
+}
+
 /** Derive policy only from a host-minted authority, never an input-origin string. */
 export function resolveTurnExtensionPolicy(
   authority: RemoteControllerAuthority | undefined,

@@ -75,7 +75,7 @@ export interface StageRunEngineDeps {
   /** The authorised registry root of a project path, or null when the registry does not hold it. */
   resolveProjectRoot: (projectRoot: string) => string | null;
   templates: Pick<WorkflowTemplateStore, "get" | "resolveVersion">;
-  attachments: Pick<WorkflowTemplateStore, "getAttachment" | "listByTemplate" | "listByRoutine" | "readScheduleRunAuthority">;
+  attachments: Pick<WorkflowTemplateStore, "getAttachment" | "listByTemplate" | "listByRoutine" | "readScheduleRunAuthority" | "withScheduleRunAuthority">;
   getRunner: () => SubAgentRunner | undefined;
   getAgentProfile?: (name: string) => Promise<LoadedAgentProfile | null>;
   emit: (e: Omit<WorkBoardRunEvent, "at">) => void;
@@ -1226,14 +1226,36 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   async function startScheduled(source: ScheduledTemplateSource, title: string): Promise<ScheduledTemplateStart> {
-    const checked = await checkStart(source);
-    if ("status" in checked) {
-      return { ok: false, code: checked.reasonCode ?? "template-run-unavailable", ...(checked.reasonTool ? { tool: checked.reasonTool } : {}) };
-    }
-    const created = await store.create({ title, templateId: source.pin.templateId, projectRoot: checked.projectRoot });
-    if (created.status !== "created") return { ok: false, code: created.reason };
-    // Hold the new row through start, including workspace creation, so a local start cannot race the scheduled one.
-    deps.holdItem(created.itemId);
+    const { pin, attachmentId } = source;
+    const admission = await (async () => {
+      try {
+        const version = await resolvePinned(pin);
+        stepsOf(version);
+        return await deps.attachments.withScheduleRunAuthority(pin.templateId, attachmentId, async ({ record, attachment }) => {
+          const stored = record?.versions.find(entry => entry.version === pin.version) ?? null;
+          const projectRoot = attachment?.approvedScope.kind === "project" ? attachment.approvedScope.projectRoot : undefined;
+          const verdict = deps.authoriseRunSource({
+            phase: "start", source, runPin: pin, template: record?.template ?? null, stored,
+            storedHashMatches: stored === null || stored.graphHash === pin.graphHash,
+            attachment, runProjectRoot: projectRoot, scopeAuthorised: deps.scopeAuthorised, unattendedAllowed,
+          });
+          if (!verdict.ok) return { ok: false, code: verdict.code, ...("tool" in verdict ? { tool: verdict.tool } : {}) } as const;
+          if (!deps.outputs && version.stages.some(stage => (stage.requestedOutputs?.length ?? 0) > 0)) {
+            return { ok: false, code: "outputs-unavailable" } as const;
+          }
+          const created = await store.create({ title, templateId: pin.templateId, projectRoot });
+          if (created.status !== "created") return { ok: false, code: created.reason } as const;
+          deps.holdItem(created.itemId);
+          return { ok: true, created, checked: { projectRoot, version } } as const;
+        });
+      } catch (error) {
+        const fault = pinFault(error);
+        if (!fault) log.warn("scheduled template start check failed: %s", errorMessage(error));
+        return { ok: false, code: fault ?? "run-state-unavailable" } as const;
+      }
+    })();
+    if (!admission.ok) return admission;
+    const { created, checked } = admission;
     let admitted = false;
     try {
       const ready = await adopted();

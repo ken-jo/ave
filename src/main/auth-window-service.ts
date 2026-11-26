@@ -1,3 +1,4 @@
+import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 import { isBackgroundE2eRuntime } from "./e2e-window-presentation.js";
 import { rememberPluginAuthPartition } from "./plugin-auth-partition-tracker.js";
 export { wirePluginAuthPartitionPersistence, seedPluginAuthPartitions, rememberPluginAuthPartition, getTrackedPluginAuthPartitions, forgetTrackedPluginAuthPartitions } from "./plugin-auth-partition-tracker.js";
@@ -223,6 +224,8 @@ export async function openAuthWindow(
   parent: BaseWindow,
   options: OpenAuthWindowOptions,
 ): Promise<AuthCookie[] | OpenAuthWindowResult> {
+  const unattended = unattendedApprovalDenial();
+  if (unattended) throw new Error(unattended);
   return openAuthWindowInternal(parent, options);
 }
 
@@ -233,6 +236,8 @@ export async function openOAuthInAuthWindow(
   options: OAuthLoginOptions,
 ): Promise<void> {
   try {
+    const unattended = unattendedApprovalDenial();
+    if (unattended) throw new Error(unattended);
     if (requiresSystemBrowser(url)) {
       await openSystemBrowserLogin(parent, url, options);
       return;

@@ -296,8 +296,10 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
   const templateScheduleRow = (routine: RoutineRecord) => {
     const { attachmentId } = routine;
     const status = routine.templateAttention === "attachment-missing" ? t("workflowSchedule.needsReattachOrDelete")
+      : routine.templateAttention === "attachment-unavailable" ? t("workflowSchedule.attachmentUnavailable")
       : routine.templateAttention === "scope-changed" ? t("workflowSchedule.needsReattach")
       : routine.lastTemplateSkip?.code === "run-unsettled" ? t("workflowSchedule.skippedUnsettled")
+      : routine.lastTemplateSkip?.code === "attachment-replaced" ? t("workflowSchedule.skippedReplaced")
       : routine.lastTemplateSkip ? t("workflowSchedule.skippedUnavailable", { tool: routine.lastTemplateSkip.tool.name })
       : routine.lastFailure ? t("workflowSchedule.failed") : undefined;
     return (
@@ -307,13 +309,13 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
         {attachmentId && !routine.templateAttention && !routine.pausedAt && (
           <Button variant="ghost" size="sm" onClick={() => void runAction(() => api.triggerRoutineNow(routine.id))}>{t("workflowSchedule.runNow")}</Button>
         )}
-        <Button variant="ghost" size="sm" onClick={() => setAttachment({ routine })}>{t("workflowSchedule.reattach")}</Button>
+        {routine.templateAttention !== "attachment-unavailable" && <Button variant="ghost" size="sm" onClick={() => setAttachment({ routine })}>{t("workflowSchedule.reattach")}</Button>}
         {attachmentId ? (
           <Button variant="ghost" size="sm" onClick={() => void runAction(async () => {
             const result = await api.detachWorkflowTemplateSchedule(attachmentId);
             return result.ok && result.value ? { ok: true } : { ok: false };
           })}>{t("workflowSchedule.detach")}</Button>
-        ) : <Button variant="ghost" size="sm" onClick={() => startDelete(routine.id)}>{t("routinePanel.deleteButton")}</Button>}
+        ) : routine.templateAttention !== "attachment-unavailable" && <Button variant="ghost" size="sm" onClick={() => startDelete(routine.id)}>{t("routinePanel.deleteButton")}</Button>}
       </div>
     );
   };

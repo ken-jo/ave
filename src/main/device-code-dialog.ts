@@ -1,3 +1,4 @@
+import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 import { randomBytes } from "node:crypto";
 import { BrowserWindow, clipboard, session, shell, type BaseWindow } from "electron";
 import type { DeviceCodePresentation, DeviceCodePrompt } from "../auth/oauth-device-code.js";
@@ -75,10 +76,13 @@ footer { border-top: 1px solid #dbe3ef; padding-top: 18px; display: flex; justif
 export function createDeviceCodePresentation(parentWindow: () => BaseWindow | null): DeviceCodePresentation {
   return {
     available: () => {
+      if (unattendedApprovalDenial()) return false;
       const parent = parentWindow();
       return parent !== null && !parent.isDestroyed();
     },
     async show(prompt, controller) {
+      const unattended = unattendedApprovalDenial();
+      if (unattended) throw new Error(unattended);
       const parent = parentWindow();
       if (!parent || parent.isDestroyed()) {
         throw new Error("Device sign-in needs a person. Authenticate in the desktop app before running unattended; do not retry here.");

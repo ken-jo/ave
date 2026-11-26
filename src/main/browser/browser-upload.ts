@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { basename, extname, isAbsolute, join } from "node:path";
 import { sameFileIdentity, type FileIdentity } from "../../lib/file-identity.js";
 import { openFeatureNamespace } from "../storage/feature-namespace.js";
+import { unattendedApprovalDenial } from "../../shared/turn-extension-policy.js";
 import { DENY_EXTENSIONS } from "../../shared/attachments-deny-list.js";
 import { sensitiveFilePattern } from "../../tools/file-access-policy.js";
 import { BrowserActionError, throwIfAborted } from "./browser-action-guard.js";
@@ -220,6 +221,8 @@ export async function stageBrowserUpload(
   pickFiles: (request: BrowserUploadPickerRequest) => Promise<readonly string[] | null>,
   assertDestination: () => void,
 ): Promise<BrowserUploadSelection | null> {
+  const unattended = unattendedApprovalDenial();
+  if (unattended) throw new BrowserActionError(unattended, "This operation needs an interactive file picker");
   assertUploadActive(destination.signal);
   assertDestination();
   let chosen: readonly string[] | null;

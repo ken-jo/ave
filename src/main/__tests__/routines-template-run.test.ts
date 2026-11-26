@@ -1,13 +1,12 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
-import type { RoutineRecord } from "../../shared/routines-types.js";
 import type { TemplateScope, TemplateVersion } from "../../shared/workflow-template-types.js";
 import { createRoutineScheduleTool } from "../../tools/routine-schedule.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 import { RoutinesScheduler } from "../routines-scheduler.js";
-import { RoutinesStore, removeRoutineWithRuns } from "../routines-store.js";
+import { RoutinesStore, removeRoutineWithRuns, type TemplateRoutineFire } from "../routines-store.js";
 import { mintHostDecisionProof } from "../workflow-template-decision.js";
 import { futureIso, pastIso } from "./routines-fixture.js";
 import { t } from "../../i18n/index.js";
@@ -29,10 +28,10 @@ async function setup(h: Awaited<ReturnType<typeof stageRunHarness>>) {
   const scheduler = new RoutinesScheduler(store, async () => []);
   const dispatches: Promise<void>[] = [];
   const { fireScheduledTemplate } = await import("../routines-template-run.js");
-  const fire = (routine: RoutineRecord) => fireScheduledTemplate({
+  const fire = (event: TemplateRoutineFire) => fireScheduledTemplate({
     routinesStore: store, workflowTemplateStore: h.templates, workBoardStore: h.board, workBoardEngine: h.engine,
-  }, routine);
-  scheduler.onTemplateRun(({ routine }) => { dispatches.push(fire(routine)); });
+  }, event);
+  scheduler.onTemplateRun(event => { dispatches.push(fire(event)); });
   const add = (at?: string) => store.add(input(at), proof());
   const attach = (scheduleId: string, version: TemplateVersion, scope: TemplateScope = { kind: "all" }) =>
     store.withTemplateSchedule(scheduleId, () => h.templates.attachSchedule({ scheduleId, ...h.pinOf(version) }, proof(), scope));
@@ -316,4 +315,79 @@ it("a confirmation during the final spawn check refuses the old scope without li
   } finally {
     get.mockRestore();
   }
+}));
+
+it.each(["scope-changed", "template-archived"] as const)("a fire refuses %s committed before item creation", code => fixture(async f => {
+  const routine = await f.add();
+  const scope = project("/project/a");
+  const version = await f.h.confirm([autoStageOf("first")], { scope });
+  await f.attach(routine.id, version, scope);
+  const resolveVersion = f.h.templates.resolveVersion.bind(f.h.templates);
+  const interleave = vi.spyOn(f.h.templates, "resolveVersion").mockImplementationOnce(async pin => {
+    const resolved = await resolveVersion(pin);
+    if (code === "template-archived") await f.h.templates.archive(version.templateId);
+    else await f.h.confirm([autoStageOf("replacement")], { id: version.templateId, scope: project("/project/b") });
+    return resolved;
+  });
+  try {
+    await (await f.dispatch(routine.id)).result;
+    expect(f.store.list()[0].lastFailure).toMatchObject({ reason: code });
+    expect(interleave).toHaveBeenCalled();
+    expect(await f.rows()).toEqual([]);
+    expect(await f.h.board.runs.list()).toEqual({ status: "found", runs: [] });
+    expect(f.h.workspaceCalls.some(call => call.startsWith("open:"))).toBe(false);
+    expect(f.h.children).toEqual([]);
+  } finally {
+    interleave.mockRestore();
+  }
+}));
+
+it("a fire stamped before reattach skips the replacement and only a later fire starts it", () => fixture(async f => {
+  const routine = await f.add();
+  const first = await f.h.confirm([autoStageOf("first")]);
+  await f.attach(routine.id, first);
+  const replacement = await f.h.confirm([autoStageOf("replacement")], { id: first.templateId });
+  const markFired = f.store.markFired.bind(f.store);
+  let reattach: ReturnType<typeof f.attach> | undefined;
+  const stamp = vi.spyOn(f.store, "markFired").mockImplementationOnce(async (...args) => {
+    const stamped = await markFired(...args);
+    if (!stamped) throw new Error("Fire was not stamped");
+    reattach = f.attach(routine.id, replacement);
+    return stamped;
+  });
+  try {
+    const old = await f.dispatch(routine.id);
+    await reattach;
+    let waitingForOld = true;
+    await Promise.race([
+      old.result,
+      f.h.untilLive(1).then(([child]) => { if (waitingForOld) child.finish(); }),
+    ]);
+    waitingForOld = false;
+    await old.result;
+    expect(f.store.list()[0].lastTemplateSkip).toEqual({ code: "attachment-replaced" });
+    expect(await f.rows()).toEqual([]);
+    expect(f.h.children).toEqual([]);
+    const next = await f.dispatch(routine.id);
+    const [child] = await Promise.race([f.h.untilLive(1), next.result.then(() => {
+      throw new Error(JSON.stringify(f.store.list()[0].lastFailure));
+    })]);
+    expect(child.input.unattendedStage).toMatchObject({ stageId: "replacement" });
+    child.finish();
+    await next.result;
+  } finally {
+    stamp.mockRestore();
+  }
+}));
+
+it("a fire refuses unreadable attachment storage without starting or removing the routine", () => fixture(async f => {
+  const routine = await f.add();
+  const version = await f.h.confirm([autoStageOf("first")]);
+  await f.attach(routine.id, version);
+  await writeFile(join(f.h.dir, "templates.json"), "{");
+  await (await f.dispatch(routine.id)).result;
+  expect(f.store.list()).toMatchObject([{ id: routine.id, lastFailure: { reason: "attachment-unavailable" } }]);
+  expect(await f.rows()).toEqual([]);
+  expect(await f.h.board.runs.list()).toEqual({ status: "found", runs: [] });
+  expect(f.h.children).toEqual([]);
 }));

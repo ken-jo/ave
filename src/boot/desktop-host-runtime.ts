@@ -1,3 +1,4 @@
+import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 import { closeMainWindowDocuments } from "../main/main-window-host.js";
 import { app, BaseWindow, dialog, nativeImage, Notification, powerMonitor, session, shell } from "electron";
 import { createDeviceCodePresentation } from "../main/device-code-dialog.js";
@@ -83,6 +84,8 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       createFloatingDockSurface: (settings) => new ElectronFloatingDockSurface(hostDockThemeSource, settings),
       pickFolders: (pluginId, parentWindow) => pickFoldersForPlugin(pluginId, { parentWindow }),
       pickBrowserUploadFiles: async (request) => {
+        const unattended = unattendedApprovalDenial();
+        if (unattended) throw new Error(unattended);
         const owner = getMainWindows().find((window) => window.id === request.windowId && !window.isDestroyed());
         if (!owner || request.signal.aborted) return null;
         const selection = await dialog.showOpenDialog(owner, { title: request.origin, properties: ["openFile", "multiSelections"] });

@@ -99,7 +99,8 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
     const result = await routines.withTemplateSchedule(id, async (remove) => {
       requireTemplate(routines.list().some(routine => routine.id === id && routine.execution === "template-run"), "routine-not-found");
       try {
-        return await store.attachSchedule({ templateId, version, graphHash, scheduleId: id }, proof, approvedScope, { requireCurrent: true });
+        return await routines.writeTemplateAttachment(id, approvedScope, () =>
+          store.attachSchedule({ templateId, version, graphHash, scheduleId: id }, proof, approvedScope, { requireCurrent: true }));
       } catch (error) {
         if (created) {
           try { await remove(); }

@@ -1,3 +1,4 @@
+import { unattendedApprovalDenial } from "../../shared/turn-extension-policy.js";
 import { shortcutPlatformOf } from "../../shared/shortcuts.js";
 import { isBackgroundE2eRuntime, whenFocusEmulated } from "../e2e-window-presentation.js";
 import { clipboard, dialog, Menu, session, shell, type BrowserWindow, type MenuItemConstructorOptions, type WebContents } from "electron";
@@ -67,6 +68,11 @@ export function getBrowserWorkspaceService(): BrowserWorkspaceService {
     agentDrives: (guestId) => browserTabRegistry.isAgentActiveGuest(guestId),
     openExternal: (url) => shell.openExternal(url),
     promptPermission: async (request) => {
+      const unattended = unattendedApprovalDenial();
+      if (unattended) {
+        log.info("Browser popup permission denied: %s", unattended);
+        return false;
+      }
       const window = mainWindow(request.windowId);
       if (!window || !window.isVisible() || window.isMinimized()) return false;
       const result = await dialog.showMessageBox(window, {

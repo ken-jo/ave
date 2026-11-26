@@ -1,4 +1,8 @@
+import { unattendedApprovalDenial } from "../../shared/turn-extension-policy.js";
 import { BROWSER_PAGE_PROMPT_LIMIT, type BrowserPagePrompt, type BrowserPromptAnswer } from "../../shared/browser-workspace.js";
+
+import { createLogger } from "../../lib/logger.js";
+const log = createLogger("browser-page-prompts");
 
 type PromptOf<K extends BrowserPagePrompt["kind"]> = Extract<BrowserPagePrompt, { kind: K }>;
 type AnswerOf<K extends BrowserPagePrompt["kind"]> = Extract<BrowserPromptAnswer, { kind: K }>;
@@ -17,6 +21,11 @@ export class BrowserPagePrompts {
 
   /** `details` is the prompt as its asker describes it; the queue assigns the id. */
   ask<K extends BrowserPagePrompt["kind"]>(guestId: number, kind: K, details: Omit<PromptOf<K>, "id" | "kind">): Promise<AnswerOf<K> | null> {
+    const unattended = unattendedApprovalDenial();
+    if (unattended) {
+      log.info("Browser page prompt denied (%s): %s", kind, unattended);
+      return Promise.resolve(null);
+    }
     const queue = this.pending.get(guestId) ?? [];
     if (queue.length >= BROWSER_PAGE_PROMPT_LIMIT) return Promise.resolve(null);
     return new Promise((resolve) => {

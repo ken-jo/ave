@@ -123,3 +123,10 @@ describe("one chooser per plugin", () => {
     });
   });
 });
+
+it("refuses a tool-owned folder chooser in an unattended stage before calling the OS", async () => {
+  const { turnExtensionPolicyContext } = await import("../../../shared/turn-extension-policy.js");
+  await expect(turnExtensionPolicyContext.run({ unattendedStage: true, allowExternalHooks: false }, () =>
+    pickFoldersForPlugin("extension", withWindow))).rejects.toThrow("unattended-approval-denied");
+  expect(showOpenDialog).not.toHaveBeenCalled();
+});

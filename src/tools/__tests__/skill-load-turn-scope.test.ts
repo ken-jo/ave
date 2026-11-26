@@ -225,3 +225,27 @@ describe("skill body approval controller authority", () => {
     expect(gate.pendingCount).toBe(0);
   });
 });
+
+it("an unattended stage cannot raise a first-use card through the gate captured by skill registration", async () => {
+  const wc = makeMockWebContents();
+  const gate = new ApprovalGate(wc as never, undefined, 20);
+  const approve = vi.fn();
+  const register = vi.fn();
+  const tool = createSkillLoadTool({
+    store: { load: async () => skillFixture("user-skill") } as unknown as SkillLoadToolDeps["store"],
+    approvals: { isApproved: async () => false, approve } as unknown as SkillLoadToolDeps["approvals"],
+    approvalGate: gate, overlay: { register } as unknown as SkillLoadToolDeps["overlay"], emit: vi.fn(),
+  });
+  try {
+    const result = await turnExtensionPolicyContext.run({ allowExternalHooks: false, unattendedStage: true }, () =>
+      tool.execute({ skillName: "user-skill" }, { cwd: process.cwd(), extraAllowedDirectories: [], metadata: { sessionId: "scheduled-child" } }));
+    expect(wc.send).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ isError: true });
+    expect(result.output).toContain("unattended-approval-denied");
+    expect(gate.pendingCount).toBe(0);
+    expect(approve).not.toHaveBeenCalled();
+    expect(register).not.toHaveBeenCalled();
+  } finally {
+    gate.disposeAll();
+  }
+});

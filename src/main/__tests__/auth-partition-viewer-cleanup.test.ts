@@ -193,3 +193,12 @@ describe("auth partition viewer cleanup", () => {
     expect(__internals.activeViewerCount(partition)).toBe(0);
   });
 });
+
+it("refuses an authentication viewer from an unattended stage before opening a window", async () => {
+  const { turnExtensionPolicyContext } = await import("../../shared/turn-extension-policy.js");
+  electronMocks.windows.length = 0;
+  await expect(turnExtensionPolicyContext.run({ unattendedStage: true, allowExternalHooks: false }, () =>
+    openAuthPartitionViewer({ pluginId: "extension", url: "https://portal.example.test/home", allowedHosts: ["portal.example.test"] })))
+    .rejects.toThrow("unattended-approval-denied");
+  expect(electronMocks.windows).toEqual([]);
+});

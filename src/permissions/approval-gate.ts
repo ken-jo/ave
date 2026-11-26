@@ -1,3 +1,4 @@
+import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 import { browserOrigin } from "../shared/browser-tools.js";
 import { extensionStartApprovalRows, isBrowserSiteChoice, isExtensionStartChoices, type BrowserSiteChoice, type ExtensionStartChoice } from "../shared/permissions-events.js";
 import { aveHome, isAveHomeConfigurationRefused } from "../shared/ave-home.js";
@@ -366,6 +367,8 @@ export interface ApprovalDecision {
   browserSiteChoice?: BrowserSiteChoice;
   requestId: string;
   choice: ApprovalChoice;
+  /** Host refusal before delivery. Renderer responses cannot set host rejection provenance. */
+  reasonCode?: "unattended-approval-denied";
   userOwnedSurfaceChoice?: UserOwnedSurfaceChoice;
   // For an `egress-host` ask answered `allow-once`: how long the allow lasts, one of the request's `egressHost.scopes`. Required there, ignored everywhere else; a missing or unoffered scope makes the answer a deny.
   egressScope?: EgressGrantScope;
@@ -1124,6 +1127,18 @@ export class ApprovalGate {
       });
     assertEgressHostRequestShape(req);
     assertExtensionStartRequestShape(req);
+    const unattended = unattendedApprovalDenial();
+    if (unattended) {
+      this.auditLogger?.log({
+        timestamp: new Date().toISOString(),
+        sessionId: req.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:${unattended}] ${req.id} ${auditFieldsFor(req)} → deny-once`,
+      });
+      return markHostApprovalRejectedDecision({
+        requestId: req.id, choice: "deny-once", reasonCode: unattended, rememberPattern: t("reasonCodes.unattended-approval-denied"),
+      });
+    }
     if (req.browserSite !== undefined && (browserOrigin(req.browserSite) !== req.browserSite || !req.sessionId || req.source !== "builtin" || req.forceExplicit !== true || req.durableApprovalRecordAllowed !== false || req.evaluationContext?.headless === true)) {
       return rejectBeforeAnswer();
     }

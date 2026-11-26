@@ -286,3 +286,15 @@ describe("native popup desktop controls", () => {
     await expect(selected).resolves.toEqual({ ok: false, error: "native-operation-failed" });
   });
 });
+
+it("refuses an unattended browser popup permission before showing the native dialog", async () => {
+  const { turnExtensionPolicyContext } = await import("../../../shared/turn-extension-policy.js");
+  owner();
+  getBrowserWorkspaceService();
+  const request = { windowId: 1, guestId: 7, origin: "https://site.example", permissions: ["camera" as const] };
+  const deps = native.deps;
+  if (!deps) throw new Error("Browser workspace was not initialized");
+  await expect(turnExtensionPolicyContext.run({ unattendedStage: true, allowExternalHooks: false }, () =>
+    deps.promptPermission(request))).resolves.toBe(false);
+  expect(native.showMessageBox).not.toHaveBeenCalled();
+});

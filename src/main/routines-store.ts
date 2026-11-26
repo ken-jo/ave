@@ -5,12 +5,13 @@ import { isValidCronExpression } from "../routines/cron-evaluator.js";
 import { readJsonFileOrEmpty, writeFileAtomicAtPath } from "./storage/feature-namespace.js";
 import { createLogger } from "../lib/logger.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
+import { errorMessage } from "../shared/error-message.js";
 import { isStringArray } from "../shared/is-record.js";
 import { isValidPluginId } from "../plugins/public-contract.js";
 import { advanceRepeatAt, isMissedWhilePaused, isRoutineScheduleShape, scheduleIdentity } from "../routines/schedule-advance.js";
 import { projectRootEquals } from "../shared/project-identity.js";
 import { assertHostDecisionProof, type HostDecisionProof } from "./workflow-template-decision.js";
-import type { ScheduleAttachment, WorkflowTemplate } from "../shared/workflow-template-types.js";
+import type { ScheduleAttachment, TemplateScope, WorkflowTemplate } from "../shared/workflow-template-types.js";
 import { isTemplateId, attachmentScopeMatches, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { isValidSessionId } from "../shared/session-id.js";
 const log = createLogger("ave");
@@ -111,11 +112,14 @@ function invalidStoredRoutine(record: unknown): StoredInvalidRoutine | null {
   return null;
 }
 // Validate a record loaded from disk. Rejects tampered / corrupted entries so a single bad record cannot infect the scheduler tick.
-function isValidRecord(r: unknown): r is RoutineRecord {
+function isValidRecord(r: unknown): r is StoredRoutine {
   if (!r || typeof r !== "object") return false;
   const x = r as Record<string, unknown>;
   if (typeof x.id !== "string" || x.id.length > 128) return false;
   if (!isRoutineTrigger(x.trigger) || !isRoutineExecution(x.execution)) return false;
+  if (x.pendingTemplateProjectRoot !== undefined && (x.execution !== "template-run" ||
+    (x.pendingTemplateProjectRoot !== null && (typeof x.pendingTemplateProjectRoot !== "string" ||
+      x.pendingTemplateProjectRoot.length === 0 || x.pendingTemplateProjectRoot.length > MAX_PROJECT_ROOT_LENGTH)))) return false;
   if (x.attachmentId !== undefined || x.templateAttention !== undefined) return false;
   if (x.execution === "template-run" && (x.trigger !== "schedule" || !x.schedule || !isTemplateId(x.id))) return false;
   if (x.lastTemplateSkip !== undefined && (x.execution !== "template-run" || !validTemplateSkip(x.lastTemplateSkip))) return false;
@@ -157,7 +161,7 @@ function canConnect(targetSessionId: unknown, trigger: unknown, execution: unkno
 function validTemplateSkip(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const skip = value as Record<string, unknown>;
-  if (skip.code === "run-unsettled") return skip.tool === undefined;
+  if (skip.code === "run-unsettled" || skip.code === "attachment-replaced") return skip.tool === undefined;
   if (skip.code !== "outward-effect-tool" && skip.code !== "tool-effect-unknown") return false;
   const tool = skip.tool as Record<string, unknown> | undefined;
   return tool != null && typeof tool.name === "string" && tool.name.length > 0 && tool.name.length <= 500
@@ -213,7 +217,7 @@ export function isValidRoutineScope(value: unknown): value is RoutineScope {
   );
 }
 
-function isCanonicalRecord(r: unknown): r is RoutineRecord {
+function isCanonicalRecord(r: unknown): r is StoredRoutine {
   if (!isValidRecord(r)) return false;
   if ("allowedPlugins" in r) {
     log.warn(
@@ -241,9 +245,14 @@ interface StoredInvalidRoutine extends InvalidRoutine {
   readonly raw: unknown;
 }
 
+interface StoredRoutine extends RoutineRecord {
+  /** Keep both routes searchable while the attachment write and routine write settle. */
+  pendingTemplateProjectRoot?: string | null;
+}
+
 interface RoutinesFile {
   version: 2;
-  routines: RoutineRecord[];
+  routines: StoredRoutine[];
   // Held-back records, written back unchanged after the valid ones.
   invalid: StoredInvalidRoutine[];
 }
@@ -303,7 +312,7 @@ function readFileOrEmpty(filePath: string): Promise<RoutinesFile> {
   return readJsonFileOrEmpty(filePath, emptyRoutinesFile, (parsed) => {
     const file = parsed as RoutinesFile;
     if (!Array.isArray(file.routines)) return emptyRoutinesFile();
-    const routines: RoutineRecord[] = [];
+    const routines: StoredRoutine[] = [];
     const invalid: StoredInvalidRoutine[] = [];
     for (const record of file.routines as unknown[]) {
       repairStoredFailure(record);
@@ -324,7 +333,7 @@ async function writeFileAtomic(filePath: string, data: RoutinesFile): Promise<vo
 }
 
 // Deep clone a RoutineRecord to prevent callers from mutating shared cache refs.
-function cloneRecord(r: RoutineRecord): RoutineRecord {
+function cloneRecord({ pendingTemplateProjectRoot: _pendingProject, ...r }: StoredRoutine): RoutineRecord {
   return {
     ...r,
     ...(r.runs ? { runs: structuredClone(r.runs) } : {}),
@@ -387,13 +396,18 @@ type TemplateRoutineInput = Omit<AddRoutineInput, "execution" | "projectRoot"> &
   projectRoot?: string;
 };
 
+export interface TemplateRoutineFire {
+  routine: RoutineRecord;
+  attachment: { id: string } | { reason: "attachment-missing" | "attachment-unavailable" };
+}
+
 interface TemplateAttachmentReader {
   listByRoutine(id: string): Promise<ScheduleAttachment[]>;
-  listActiveScheduleAttachments(): Promise<ReadonlyMap<string, { attachment: ScheduleAttachment; template: WorkflowTemplate }>>;
+  listActiveScheduleAttachments(scheduleIds: ReadonlySet<string>): Promise<ReadonlyMap<string, { attachment: ScheduleAttachment; template: WorkflowTemplate }>>;
 }
 
 export class RoutinesStore {
-  private cache: RoutineRecord[] = [];
+  private cache: StoredRoutine[] = [];
   private invalidCache: StoredInvalidRoutine[] = [];
   private loaded = false;
   private readonly filePath: string;
@@ -461,13 +475,29 @@ export class RoutinesStore {
   }
 
   async listScheduleDisplay(filter?: { projectRoot?: string }, options?: { includeDismissed: boolean }): Promise<RoutineListResult> {
-    const candidates = options?.includeDismissed ? this.list() : this.listActive();
-    const attachments = candidates.some(routine => routine.execution === "template-run")
-      ? await this.requireTemplateAttachments().listActiveScheduleAttachments()
-      : undefined;
-    const routines = candidates.map((routine): RoutineRecord => {
+    const projectRoot = filter?.projectRoot;
+    const candidates = this.cache.filter(routine => (options?.includeDismissed || !routine.dismissedAt) &&
+      (inProject(routine, projectRoot) || (routine.pendingTemplateProjectRoot !== undefined &&
+        inProject({ projectRoot: routine.pendingTemplateProjectRoot ?? undefined }, projectRoot))));
+    const templateIds = new Set(candidates.filter(routine => routine.execution === "template-run").map(routine => routine.id));
+    if (templateIds.size === 0) return { routines: candidates.map(cloneRecord), invalid: this.listInvalid() };
+
+    const reader = this.requireTemplateAttachments();
+    let attachments: Awaited<ReturnType<TemplateAttachmentReader["listActiveScheduleAttachments"]>>;
+    try {
+      attachments = await reader.listActiveScheduleAttachments(templateIds);
+    } catch (error) {
+      log.warn("schedule attachments could not be read: %s", errorMessage(error));
+      return {
+        routines: candidates.filter(routine => inProject(routine, projectRoot)).map(routine => ({
+          ...cloneRecord(routine), ...(routine.execution === "template-run" ? { templateAttention: "attachment-unavailable" as const } : {}),
+        })),
+        invalid: this.listInvalid(),
+      };
+    }
+    const routines = candidates.map(cloneRecord).map((routine): RoutineRecord => {
       if (routine.execution !== "template-run") return routine;
-      const active = attachments?.get(routine.id);
+      const active = attachments.get(routine.id);
       if (!active) return { ...routine, templateAttention: "attachment-missing" };
       const { attachment, template } = active;
       const scope = attachmentScopeMatches(attachment, template);
@@ -478,6 +508,46 @@ export class RoutinesStore {
       };
     });
     return { routines: routines.filter(routine => inProject(routine, filter?.projectRoot)), invalid: this.listInvalid() };
+  }
+
+  /** Called while the schedule queue is held. Until the attachment commits, its previous scope still owns display. */
+  async writeTemplateAttachment(id: string, scope: TemplateScope, writeAttachment: () => Promise<ScheduleAttachment>): Promise<ScheduleAttachment> {
+    const routine = this.cache.find(entry => entry.id === id && entry.execution === "template-run");
+    if (!routine) throw new WorkflowTemplateError("routine-not-found");
+    const target = scope.kind === "project" ? scope.projectRoot : null;
+    const previous = routine.pendingTemplateProjectRoot === undefined
+      ? routine.projectRoot
+      : await this.getActiveTemplateAttachment(id).then(attachment =>
+        attachment ? attachment.approvedScope.kind === "project" ? attachment.approvedScope.projectRoot : undefined : routine.projectRoot);
+    if ((previous ?? null) === target && routine.pendingTemplateProjectRoot === undefined) return writeAttachment();
+
+    const staged = await this.mutate(id, entry => {
+      if (previous === undefined) delete entry.projectRoot;
+      else entry.projectRoot = previous;
+      entry.pendingTemplateProjectRoot = target;
+      return true;
+    });
+    if (!staged) throw new WorkflowTemplateError("routine-not-found");
+    let committed = false;
+    try {
+      const attachment = await writeAttachment();
+      committed = true;
+      return attachment;
+    } finally {
+      try {
+        await this.mutate(id, entry => {
+          if (committed) {
+            if (target === null) delete entry.projectRoot;
+            else entry.projectRoot = target;
+          }
+          delete entry.pendingTemplateProjectRoot;
+          return true;
+        });
+      } catch (error) {
+        // The persisted two-project route still finds the item after a restart. Its attachment selects the visible project.
+        log.warn("template schedule project could not be finalized (id=%s): %s", id, errorMessage(error));
+      }
+    }
   }
 
   async getActiveTemplateAttachment(id: string): Promise<ScheduleAttachment | undefined> {
@@ -897,7 +967,7 @@ export class RoutinesStore {
   // `apply` returns whether it changed the record; an unchanged record is not rewritten. Null only when the routine does not exist.
   private async mutate(
     id: string,
-    apply: (record: RoutineRecord) => boolean,
+    apply: (record: StoredRoutine) => boolean,
     options?: { skipDismissed?: boolean },
   ): Promise<RoutineRecord | null> {
     if (!this.loaded) await this.load();
@@ -909,6 +979,23 @@ export class RoutinesStore {
       if (!r || (options?.skipDismissed && r.dismissedAt)) return null;
       if (apply(r)) await this.persist(file);
       return cloneRecord(r);
+    });
+  }
+
+  /** A fire and its attachment are registered together against reattach and detach. */
+  registerTemplateFire(id: string, options?: { scheduled?: boolean }): Promise<TemplateRoutineFire | null> {
+    return this.withTemplateSchedule(id, async () => {
+      const routine = await this.markFired(id, [], options);
+      if (!routine) return null;
+      const attachments = this.requireTemplateAttachments();
+      let active: ScheduleAttachment | undefined;
+      try {
+        active = (await attachments.listByRoutine(id)).find(attachment => attachment.detachedAt === undefined);
+      } catch (error) {
+        log.warn("template attachment could not be read for fire (id=%s): %s", id, errorMessage(error));
+        return { routine, attachment: { reason: "attachment-unavailable" } };
+      }
+      return { routine, attachment: active ? { id: active.id } : { reason: "attachment-missing" } };
     });
   }
 
@@ -970,7 +1057,7 @@ export class RoutinesStore {
   }
 }
 
-function inProject(record: RoutineRecord, projectRoot: string | undefined): boolean {
+function inProject(record: Pick<RoutineRecord, "projectRoot">, projectRoot: string | undefined): boolean {
   return projectRoot === undefined || record.projectRoot === undefined || projectRootEquals(record.projectRoot, projectRoot);
 }
 

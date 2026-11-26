@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerBuiltinTools } from "../../../boot/tools.js";
@@ -40,6 +40,7 @@ function setup(extra: Partial<IpcDeps> = {}) {
   const remove = vi.fn(async () => true);
   const routinesStore = {
     list: vi.fn(() => [{ id: "daily", execution: "template-run" }]),
+    writeTemplateAttachment: vi.fn(async (_id: string, _scope: TemplateScope, write: () => Promise<unknown>) => write()),
     withTemplateSchedule: vi.fn(async (_id: string, action: (remove: () => Promise<boolean>) => Promise<unknown>) => action(remove)),
   };
   const deps = { workflowTemplateStore: store, routinesStore, auditLogger: { log: auditLog }, getMainWindow: () => window, getAppWindows: () => [window], ...extra } as unknown as IpcDeps;
@@ -424,12 +425,14 @@ it("returns the declared read error when a board read throws on a malformed run 
 async function withScheduleApproval(body: (f: {
   event: ReturnType<typeof setup>["event"];
   templates: WorkflowTemplateStore;
+  templatesPath: string;
   routines: RoutinesStore;
   confirm: (id?: string, toolScope?: "all" | "read", scope?: TemplateScope) => ReturnType<WorkflowTemplateStore["confirmDraft"]>;
 }) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), "template-approval-"));
   try {
-    const templates = new WorkflowTemplateStore(join(dir, "templates.json"));
+    const templatesPath = join(dir, "templates.json");
+    const templates = new WorkflowTemplateStore(templatesPath);
     const routines = new RoutinesStore(join(dir, "routines.json"));
     routines.bindTemplateAttachments(templates);
     const { event } = setup({ workflowTemplateStore: templates, routinesStore: routines });
@@ -438,7 +441,7 @@ async function withScheduleApproval(body: (f: {
       if (!draft) throw new Error("Draft was not saved");
       return templates.confirmDraft(template.id, { expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision }, { who: "user", origin: "local-desktop" });
     };
-    await body({ event, templates, routines, confirm });
+    await body({ event, templates, templatesPath, routines, confirm });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -535,4 +538,38 @@ it("reattaching from project A to B moves the schedule and calendar entry and pr
   expect(await handler(WORK_BOARD.templateDetachSchedule)(f.event, active.id, gesture)).toEqual({ ok: true, value: true });
   expect(await schedulePanel(scopeB.projectRoot)).toMatchObject({ routines: [] });
   expect(await calendarPanel(scopeB.projectRoot)).toMatchObject({ ok: true, occurrences: [] });
+}));
+
+it("unreadable template storage leaves ordinary project lists and calendars available", () => withScheduleApproval(async f => {
+  const { resolveAuthorizedWorkspaceProject } = await import("../../../main/project-root-authorization.js");
+  const scopeA = { kind: "project", projectRoot: "/projects/a" } as const;
+  const projectB = "/projects/b";
+  const version = await f.confirm(undefined, "read", scopeA);
+  vi.mocked(resolveAuthorizedWorkspaceProject).mockReturnValueOnce({
+    authorized: true, project: { projectRoot: scopeA.projectRoot, projectName: "A", isDefault: false },
+  });
+  const request = { ...newScheduleRequest(version), expectedScope: scopeA };
+  expect(await handler(WORK_BOARD.templateAttachSchedule)(f.event, request, gesture)).toMatchObject({ ok: true });
+  const [template] = f.routines.list();
+  const ordinary = await f.routines.add({ trigger: "schedule", execution: "notification-only", createdBy: "user",
+    notificationTitle: "Reminder", projectRoot: projectB, schedule: request.schedule as { at: string; repeat: { kind: "daily" } } });
+  const display = vi.spyOn(f.templates, "listActiveScheduleAttachments");
+  await writeFile(f.templatesPath, "{");
+  const time = Date.parse(request.schedule.at);
+  const range = { from: new Date(time - 60_000).toISOString(), to: new Date(time + 60_000).toISOString() };
+  try {
+    await expect(handler(ROUTINES.list)(f.event, { projectRoot: projectB })).resolves.toMatchObject({ routines: [{ id: ordinary.id }] });
+    await expect(handler(ROUTINES.listOccurrences)(f.event, { ...range, projectRoot: projectB })).resolves.toMatchObject({ ok: true, occurrences: [{ routineId: ordinary.id }] });
+    expect(display).not.toHaveBeenCalled();
+    await expect(handler(ROUTINES.list)(f.event, { projectRoot: scopeA.projectRoot })).resolves.toMatchObject({
+      routines: [{ id: template.id, templateAttention: "attachment-unavailable" }],
+    });
+    await expect(handler(ROUTINES.listOccurrences)(f.event, { ...range, projectRoot: scopeA.projectRoot })).resolves.toMatchObject({
+      ok: true, occurrences: [{ routineId: template.id }],
+    });
+    await expect(f.routines.remove(template.id)).rejects.toThrow("invalid-template-file");
+    expect(f.routines.list().map(routine => routine.id)).toContain(template.id);
+  } finally {
+    display.mockRestore();
+  }
 }));

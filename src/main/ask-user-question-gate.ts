@@ -1,4 +1,5 @@
 // FIFO questions appear in the composer dock; this broker does not enforce permission policy.
+import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 import { randomUUID } from "node:crypto";
 import { CHANNELS } from "../contract/app-contract.js";
 import type { WebContents } from "electron";
@@ -57,6 +58,7 @@ export interface AskUserQuestionResponse {
   answers?: AskUserQuestionAnswer[];
   // Card-level dismissal — every question abandoned at once.
   dismissed?: boolean;
+  reasonCode?: "unattended-approval-denied";
 }
 
 // 1–4 questions per card. Cap is shared between tool input validation and gate.
@@ -224,6 +226,8 @@ export class AskUserQuestionGate {
     sessionId: string;
     abortSignal?: AbortSignal;
   }): Promise<AskUserQuestionResponse> {
+    const unattended = unattendedApprovalDenial();
+    if (unattended) return Promise.resolve({ requestId: "", dismissed: true, reasonCode: unattended });
     if (!Array.isArray(input.questions) || input.questions.length === 0 || input.questions.length > MAX_QUESTIONS_PER_CARD) {
       return Promise.resolve({
         requestId: "",

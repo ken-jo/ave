@@ -1,5 +1,6 @@
 // Picking a path identifies user intent without widening the filesystem envelope; writes still require an existing grant. The host owns the native
 // dialog and its title identifies the requesting plugin.
+import { unattendedApprovalDenial } from "../../shared/turn-extension-policy.js";
 import { dialog } from "electron";
 import type { BaseWindow } from "electron";
 import { t } from "../../i18n/index.js";
@@ -40,6 +41,8 @@ export async function pickFoldersForPlugin(
   pluginId: string,
   deps: PickFoldersDeps,
 ): Promise<PickFoldersResult> {
+  const unattended = unattendedApprovalDenial();
+  if (unattended) throw new Error(unattended);
   if (inFlight.has(pluginId)) throw new FolderPickerBusyError(pluginId);
   inFlight.add(pluginId);
   try {

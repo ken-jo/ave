@@ -248,3 +248,13 @@ describe("device sign-in dialog", () => {
     }
   });
 });
+
+it("refuses device sign-in from an unattended stage without creating a dialog", async () => {
+  const { turnExtensionPolicyContext } = await import("../../shared/turn-extension-policy.js");
+  const presentation = createDeviceCodePresentation(parent);
+  await turnExtensionPolicyContext.run({ unattendedStage: true, allowExternalHooks: false }, async () => {
+    expect(presentation.available()).toBe(false);
+    await expect(presentation.show(prompt(), new AbortController())).rejects.toThrow("unattended-approval-denied");
+  });
+  expect(state.windows).toHaveLength(0);
+});

@@ -1,3 +1,4 @@
+import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 import { isBackgroundE2eRuntime, showWindowForRuntime } from "./e2e-window-presentation.js";
 // Reuses the calling plugin’s auth partition without exposing cookies or a host bridge. Enforce manifest domains on navigation and redirects; deny
 // popups and downloads from the credential-bearing session.
@@ -156,6 +157,8 @@ function ensurePartitionSessionGuards(
 export async function openAuthPartitionViewer(
   opts: OpenAuthPartitionViewerOptions,
 ): Promise<void> {
+  const unattended = unattendedApprovalDenial();
+  if (unattended) throw new Error(unattended);
   if (!urlMatchesAllowList(opts.url, opts.allowedHosts)) {
     throw new Error(
       `openAuthPartitionViewer: url host is not in the allow-list (got ${safeUrlForLog(opts.url)})`,

@@ -186,8 +186,9 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       }
     })();
   });
-  routinesScheduler.onTemplateRun(({ routine }) => {
-    void fireScheduledTemplate(ctx, routine).catch((error: unknown) => {
+  routinesScheduler.onTemplateRun(fire => {
+    const { routine } = fire;
+    void fireScheduledTemplate(ctx, fire).catch((error: unknown) => {
       log.warn("scheduled template dispatch failed (%s): %s", routine.id, sanitizeRoutineFailureReason((error as Error).message));
       if (routine.lastFiredAt) {
         void routinesStore.recordRunOutcome(routine.id, routine.lastFiredAt, { ok: false, kind: "error", reason: "run-state-unavailable" })

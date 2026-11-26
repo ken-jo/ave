@@ -149,3 +149,12 @@ describe("native upload selection staging", () => {
     await expect(selection.dispatch(destination, async () => {})).rejects.toMatchObject({ code: "upload-revoked" });
   });
 });
+
+it("refuses an unattended browser upload before requesting a file selection", async () => {
+  const { turnExtensionPolicyContext } = await import("../../../shared/turn-extension-policy.js");
+  const { vi } = await import("vitest");
+  const pick = vi.fn(async () => null);
+  await expect(turnExtensionPolicyContext.run({ unattendedStage: true, allowExternalHooks: false }, () =>
+    stageBrowserUpload(request(), pick, () => {}))).rejects.toMatchObject({ code: "unattended-approval-denied" });
+  expect(pick).not.toHaveBeenCalled();
+});
