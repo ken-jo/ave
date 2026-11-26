@@ -166,7 +166,7 @@ describe("workbook publication build", () => {
     expectSharedBuildUsable();
   });
 
-  it.each(["../escape.cjs", "nested/inner.cjs", "Upper.cjs", "plain.js"])("refuses manifest key %s before any copy or write", (key) => {
+  it.each(["../escape.cjs", "nested/inner.cjs", "Upper.cjs", "plain.js", "plainxcjs"])("refuses manifest key %s before any copy or write", (key) => {
     const malformed = join(root, `malformed-${createHash("sha256").update(key).digest("hex").slice(0, 8)}`);
     mkdirSync(join(malformed, "dist", "skill-scripts"), { recursive: true });
     writeFileSync(join(malformed, "dist", "skill-scripts", "edit-xlsx.cjs"), producerBytes);
