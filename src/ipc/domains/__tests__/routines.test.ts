@@ -38,6 +38,10 @@ function makeDeps(
         },
       ]),
       listActive: vi.fn(() => []),
+      listScheduleDisplay: vi.fn(async () => ({
+        routines: [],
+        invalid: [{ id: "legacy", field: "scope.forcedPluginIds", value: "a_b", reason: "invalid-plugin-id" }],
+      })),
       listForDisplay: vi.fn(() => ({
         routines: [],
         invalid: [{ id: "legacy", field: "scope.forcedPluginIds", value: "a_b", reason: "invalid-plugin-id" }],
@@ -222,7 +226,7 @@ describe("schedule panel IPC", () => {
   it("passes the project filter to the list and forces createdBy=user on add", async () => {
     const deps = await setup([]);
     await invoke(ROUTINES.list, { projectRoot: "/p/a" });
-    expect(deps.routinesStore.listForDisplay).toHaveBeenCalledWith({ projectRoot: "/p/a" });
+    expect(deps.routinesStore.listScheduleDisplay).toHaveBeenCalledWith({ projectRoot: "/p/a" });
     deps.routinesStore.add.mockResolvedValueOnce({ id: "new" });
     await invoke(ROUTINES.add, { trigger: "schedule", execution: "notification-only", notificationTitle: "n", projectRoot: "/p/a", createdBy: "agent" });
     expect(deps.routinesStore.add).toHaveBeenCalledWith(expect.objectContaining({ projectRoot: "/p/a", createdBy: "user" }));

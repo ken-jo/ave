@@ -1,3 +1,5 @@
+import type { EnvelopeToolRef } from "./workflow-template-types.js";
+
 /** Shared routine contracts must remain renderer-safe; the main store re-exports them without pulling filesystem modules into renderer bundles. */
 
 export const MAX_PERSISTED_ROUTINES = 50;
@@ -8,7 +10,11 @@ export const MAX_LLM_SESSION_ROUTINES = 10;
 /** Bound source identity at both the scheduling tool and store to prevent persisted-file bloat. */
 export const MAX_ROUTINE_SOURCE_LENGTH = 140;
 
-export type RoutineExecution = "llm-session" | "notification-only";
+export type RoutineExecution = "llm-session" | "notification-only" | "template-run";
+
+type TemplateRoutineSkip =
+  | { code: "run-unsettled" }
+  | { code: "outward-effect-tool" | "tool-effect-unknown"; tool: EnvelopeToolRef };
 
 /** Bound a persisted failure reason so a long provider error cannot bloat routines.json. */
 export const MAX_ROUTINE_FAILURE_REASON_LENGTH = 500;
@@ -29,7 +35,7 @@ export type RoutineFailure =
   & ({ kind: "error"; reason: string } | { kind: "shutdown-timeout" });
 
 /** How one fire's run ended, as reported to the store. */
-export type RoutineRunOutcome = { ok: true } | { ok: false; kind: "error"; reason: string } | { ok: false; kind: "shutdown-timeout" };
+export type RoutineRunOutcome = { ok: true } | { ok: false; kind: "error"; reason: string } | { ok: false; kind: "shutdown-timeout" } | { ok: false; kind: "template-skipped"; skip: TemplateRoutineSkip };
 
 /** Missing plugin scope means deny-all; inherit must be explicit and snapshots active plugins at fire time. */
 type RoutinePluginScope =
@@ -71,6 +77,12 @@ export interface RoutineRecord {
   trigger: "shutdown" | "schedule";
   schedule?: RoutineSchedule;
   execution: RoutineExecution;
+  /** Projected from the active attachment. The template store owns the pin. */
+  attachmentId?: string;
+  /** Projected schedule-list state, independent of the last fire. */
+  templateAttention?: "attachment-missing" | "scope-changed";
+  /** Latest scheduled-template skip, persisted with its reason. */
+  lastTemplateSkip?: TemplateRoutineSkip;
   /** System prompt injected when execution === "llm-session". */
   prePrompt?: string;
   title?: string;

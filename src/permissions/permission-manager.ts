@@ -4,7 +4,7 @@ import { isReadOnlyCommand } from "./reviewer/host-risk-inspector.js";
 import { wrapperCommand } from "./rules/shell-prefix-policy.js";
 import { verifiedShellParsed } from "./verified-shell-command.js";
 import { currentHostTerminalTurn } from "../tools/host-terminal-turn.js";
-import { sessionAuthorityWithheld } from "../shared/turn-extension-policy.js";
+import { sessionAuthorityWithheld, turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 import type { HostTerminalCommandScope } from "../tools/terminal-run.js";
 import { isIssuedUserOwnedBrowserScope, type UserOwnedBrowserScope } from "./user-owned-browser-scope.js";
 import { UserOwnedSurfaceStore } from "./user-owned-surface-store.js";
@@ -1595,6 +1595,13 @@ export class PermissionManager {
   }
 
   private pipelineResult(evidence: PermissionDecisionRequest, context?: HostTerminalPermissionContext): PermissionCheckResult {
+    const unattended = turnExtensionPolicyContext.getStore()?.unattendedStage === true;
+    if (unattended) {
+      // The interim read tier uses Default and has no ambient grants. Keep the existing admission and floor order.
+      const { deny, ask } = evidence.rules ?? {};
+      evidence = { ...evidence, mode: "strict", headless: true, rules: { deny, ask } };
+      if (context) context = { ...context, headless: true, approvalSurface: "unavailable" };
+    }
     const hostTerminalContext = context?.agentBrowser || context?.hostTerminalTurn || context?.userOwnedBrowser || context?.remoteControllerAuthority ? Object.freeze({
       agentBrowser: context.agentBrowser,
       ...(context.hostTerminalTurn ? { hostTerminalTurn: Object.freeze({ ...context.hostTerminalTurn }) } : {}), userOwnedBrowser: context.userOwnedBrowser,

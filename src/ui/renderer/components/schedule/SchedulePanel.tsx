@@ -22,6 +22,7 @@ import { useContainerNarrow } from "../../hooks/use-container-narrow.js";
 import { usePaneActions } from "../PaneFrame.js";
 import { AddRoutineModal, InvalidRoutineRow } from "../RoutinePanel.js";
 import { ScheduleItemPopover, routineTitle, type ScheduleItemDraft } from "./ScheduleItemPopover.js";
+import { AttachWorkflowScheduleDialog } from "./AttachWorkflowScheduleDialog.js";
 import { useScheduleData } from "./use-schedule-data.js";
 import { formatIpcError } from "../../format-ipc-error.js";
 import { CONNECTED_BAR, chatTitle, useProjectChats } from "./chat-link.js";
@@ -160,6 +161,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
     tabRefs.current[target]?.focus();
   };
   const [create, setCreate] = useState<{ at?: Date; template?: AgentPluginRoutineTemplate } | null>(null);
+  const [attachment, setAttachment] = useState<{ routine?: RoutineRecord } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const range = useMemo(() => scheduleRange(mode, anchor, narrow), [mode, anchor, narrow]);
@@ -173,8 +175,9 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
   const pendingRef = useRef<string | null>(null);
   pendingRef.current = pendingDelete;
   const commitDelete = useCallback(async (id: string) => {
-    await api.removeRoutine(id);
+    const removed = await api.removeRoutine(id);
     if (mounted.current) {
+      if (removed.error === "detach-template-schedule-first") setNotice(t("reasonCodes.detach-template-schedule-first"));
       setPendingDelete((current) => (current === id ? null : current));
       void refresh();
     }
@@ -277,21 +280,46 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
       icon: <Plus className="h-4 w-4" />,
       disabled: capReached,
       onSelect: () => setCreate({}),
-      ...(templates.length > 0 ? {
-        items: [
+      items: [
           { id: "manual", label: t("schedulePanel.addManual"), onSelect: () => setCreate({}) },
+          { id: "workflow", label: t("workflowSchedule.attach"), onSelect: () => setAttachment({}) },
           ...templates.map((template) => ({
             id: packageRoutineSource(template),
             label: t("schedulePanel.addFromTemplate", { title: template.title, source: template.packageName }),
             onSelect: () => setCreate({ template }),
           })),
-        ],
-      } : {}),
+      ],
     },
     { id: "schedule-refresh", label: t("routinePanel.refreshButton"), icon: <RefreshCw className="h-4 w-4" />, onSelect: () => void refresh() },
   ], [narrow, capReached, templates, refresh]));
 
+  const templateScheduleRow = (routine: RoutineRecord) => {
+    const { attachmentId } = routine;
+    const status = routine.templateAttention === "attachment-missing" ? t("workflowSchedule.needsReattachOrDelete")
+      : routine.templateAttention === "scope-changed" ? t("workflowSchedule.needsReattach")
+      : routine.lastTemplateSkip?.code === "run-unsettled" ? t("workflowSchedule.skippedUnsettled")
+      : routine.lastTemplateSkip ? t("workflowSchedule.skippedUnavailable", { tool: routine.lastTemplateSkip.tool.name })
+      : routine.lastFailure ? t("workflowSchedule.failed") : undefined;
+    return (
+      <div key={routine.id} className="flex flex-wrap items-center gap-2 px-2 py-1 text-xs" data-routine-id={routine.id} tabIndex={-1}>
+        <span className="min-w-0 flex-1 truncate font-semibold">{routineTitle(routine)}</span>
+        {status && <span role="status" className="text-warning">{status}</span>}
+        {attachmentId && !routine.templateAttention && !routine.pausedAt && (
+          <Button variant="ghost" size="sm" onClick={() => void runAction(() => api.triggerRoutineNow(routine.id))}>{t("workflowSchedule.runNow")}</Button>
+        )}
+        <Button variant="ghost" size="sm" onClick={() => setAttachment({ routine })}>{t("workflowSchedule.reattach")}</Button>
+        {attachmentId ? (
+          <Button variant="ghost" size="sm" onClick={() => void runAction(async () => {
+            const result = await api.detachWorkflowTemplateSchedule(attachmentId);
+            return result.ok && result.value ? { ok: true } : { ok: false };
+          })}>{t("workflowSchedule.detach")}</Button>
+        ) : <Button variant="ghost" size="sm" onClick={() => startDelete(routine.id)}>{t("routinePanel.deleteButton")}</Button>}
+      </div>
+    );
+  };
+
   const popoverFor = (entry: ScheduleEntry): ReactNode => {
+    if (entry.routine.execution === "template-run") return templateScheduleRow(entry.routine);
     const routineRuns = runs.filter((r) => r.routineId === entry.routine.id).sort((a, b) => b.firedAt.localeCompare(a.firedAt));
     const nextAt = occurrences.find((o) => o.routineId === entry.routine.id && o.status !== "missed")?.at;
     return (
@@ -528,7 +556,8 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
                   </span>
                   <RunMetrics metrics={e.metrics} />
                   <span className="block truncate text-muted-foreground">
-                    {e.routine.execution === "notification-only" ? t("schedulePanel.runsAsNotification")
+                    {e.routine.execution === "template-run" ? t("workflowSchedule.template")
+                      : e.routine.execution === "notification-only" ? t("schedulePanel.runsAsNotification")
                       : e.routine.targetSessionId ? t("schedulePanel.connectedTo", { chat: chatTitle(chats, e.routine.targetSessionId) })
                         : t("schedulePanel.runsInNewChat")}
                   </span>
@@ -584,6 +613,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
 
   const todayLabel = mode === "day" ? t("schedulePanel.today") : mode === "week" ? t("schedulePanel.thisWeek") : t("schedulePanel.thisMonth");
   const attention = records.filter((r) => r.needsAttention && visible(r.id));
+  const templateRoutines = records.filter(routine => routine.execution === "template-run" && visible(routine.id));
 
   return (
     <div ref={setContainer} className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-testid="schedule-panel" data-narrow={narrow ? "1" : "0"}>
@@ -639,6 +669,8 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
         </div>
       )}
 
+      {templateRoutines.length > 0 && <div className="max-h-40 overflow-y-auto border-b">{templateRoutines.map(templateScheduleRow)}</div>}
+
       <div className="flex min-h-0 flex-1 overflow-hidden" role="tabpanel" id={`${tabIds}-panel`} aria-labelledby={`${tabIds}-tab-${mode}`}>
         {mode === "month" ? monthGrid(range.days) : timeGrid(range.days)}
         {mode === "day" && !narrow && dayList(range.days[0]!)}
@@ -676,6 +708,8 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
           onAdded={() => { setCreate(null); void refresh(); }}
         />
       )}
+      {attachment && <AttachWorkflowScheduleDialog api={api} routine={attachment.routine} onClose={() => setAttachment(null)}
+        onAttached={() => { setAttachment(null); void refresh(); }} />}
     </div>
   );
 }

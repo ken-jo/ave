@@ -41,7 +41,6 @@ function validateFile(raw: unknown): TemplatesFile {
       const version = record.versions.find((v: TemplateVersion) => v.version === attachment.version);
       requireTemplate(version, "unknown-version");
       requireTemplate(version.graphHash === attachment.graphHash, "graph-hash-mismatch");
-      requireTemplate(isAllReadOnlyVersion(canonicalTemplateGraph(version)), "schedule-requires-read-only");
       if (attachment.detachedAt === undefined) schedules.add(attachment.scheduleId);
       attachmentIds.add(attachment.id);
     }
@@ -183,13 +182,14 @@ export class WorkflowTemplateStore {
       return structuredClone(confirmed);
     });
   }
-  async attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof, approvedScope: TemplateScope): Promise<ScheduleAttachment> {
+  async attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof, approvedScope: TemplateScope, options?: { requireCurrent: true }): Promise<ScheduleAttachment> {
     requireTemplate(hasTemplateKeys(input, ["scheduleId", "templateId", "version", "graphHash"]) && isTemplateId(input.scheduleId) && isTemplateId(input.templateId) && isTemplateVersion(input.version) && isGraphHash(input.graphHash));
     assertHostDecisionProof(proof);
     requireTemplate(isTemplateScope(approvedScope));
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await this.readFile(); const record = this.find(file, input.templateId);
       requireTemplate(!record.template.archivedAt, "template-archived");
+      if (options?.requireCurrent) requireTemplate(record.template.currentVersion === input.version, "not-current-version");
       const version = record.versions.find(v => v.version === input.version);
       requireTemplate(version, "unknown-version");
       requireTemplate(version.graphHash === input.graphHash, "graph-hash-mismatch");

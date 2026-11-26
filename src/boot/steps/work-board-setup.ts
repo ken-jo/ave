@@ -62,6 +62,7 @@ export async function setupWorkBoard(ctx: BootContext): Promise<void> {
   );
 
   ctx.workflowTemplateStore = new WorkflowTemplateStore();
+  ctx.routinesStore.bindTemplateAttachments(ctx.workflowTemplateStore);
   ctx.workBoardStore = workBoardStore;
   ctx.workBoardStorage = workBoardStorage;
   // Defer initial scanning until IPC is wired; shutdown owns the timer.

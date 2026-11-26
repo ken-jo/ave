@@ -25,6 +25,7 @@ export class RoutinesScheduler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly llmHandlers = new Set<LlmSessionHandler>();
   private readonly notificationHandlers = new Set<NotificationHandler>();
+  private readonly templateRunHandlers = new Set<(event: RoutineFiredEvent) => void>();
   private inFlight = false;
   // routineId → firedAt of each LLM run in progress, so a view opened mid-run can show it without having seen the start event.
   private readonly runningRuns = new Map<string, string>();
@@ -70,6 +71,11 @@ export class RoutinesScheduler {
   onNotification(handler: NotificationHandler): () => void {
     this.notificationHandlers.add(handler);
     return () => this.notificationHandlers.delete(handler);
+  }
+
+  onTemplateRun(handler: (event: RoutineFiredEvent) => void): () => void {
+    this.templateRunHandlers.add(handler);
+    return () => this.templateRunHandlers.delete(handler);
   }
 
   // Visible for tests — invoke a single polling pass to verify firing behaviour without waiting for the 30s interval.
@@ -179,8 +185,11 @@ export class RoutinesScheduler {
 
   private dispatch(routine: RoutineRecord): void {
     const event: RoutineFiredEvent = { routine };
-    const handlers =
-      routine.execution === "llm-session" ? this.llmHandlers : this.notificationHandlers;
+    const handlers = {
+      "llm-session": this.llmHandlers,
+      "notification-only": this.notificationHandlers,
+      "template-run": this.templateRunHandlers,
+    }[routine.execution];
     for (const h of handlers) {
       try {
         h(event);

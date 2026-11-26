@@ -75,6 +75,7 @@ export function useScheduleData(
       void refresh();
     };
     const unsubs = [
+      api.onWorkflowTemplatesChanged?.(() => void refresh()),
       api.onRoutineFired?.(() => void refresh()),
       api.onRoutineRunningStarted?.(({ routineId, firedAt }) => {
         setRunning((prev) => new Map(prev).set(routineId, firedAt));

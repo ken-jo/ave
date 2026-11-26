@@ -8,6 +8,8 @@ export interface TurnExtensionPolicy {
   readonly allowExternalHooks: boolean;
   /** Host-owned unattended turn state, preserved across lifecycle callbacks. */
   readonly headless?: boolean;
+  /** Host-minted interim policy for a stage started by a schedule. */
+  readonly unattendedStage?: true;
   readonly ownerUnattended?: boolean;
   readonly approvalSurface?: ApprovalSurface;
   readonly remoteControllerAuthority?: RemoteControllerAuthority;
@@ -35,14 +37,16 @@ export function resolveTurnExtensionPolicy(
   headless = false,
   context: Omit<TurnExtensionPolicy, "allowExternalHooks" | "headless" | "remoteControllerAuthority"> = {},
 ): TurnExtensionPolicy {
+  const inherited = turnExtensionPolicyContext.getStore();
   return Object.freeze({
     ...DEFAULT_TURN_EXTENSION_POLICY,
     ...context,
     headless,
     remoteControllerAuthority: authority,
-    allowExternalHooks: true,
+    allowExternalHooks: inherited?.unattendedStage !== true,
+    ...(inherited?.unattendedStage ? { unattendedStage: true as const } : {}),
     // A turn started inside a scheduled wake (the woken turn itself, or a child it runs) keeps the host-set withhold.
-    ...(turnExtensionPolicyContext.getStore()?.withholdSessionAuthority === true ? { withholdSessionAuthority: true } : {}),
+    ...(inherited?.withholdSessionAuthority === true ? { withholdSessionAuthority: true } : {}),
   });
 }
 

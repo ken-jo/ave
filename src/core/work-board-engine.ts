@@ -34,7 +34,7 @@ import type {
   WorkItemUpdateResult,
 } from "../shared/work-board-types.js";
 import type { EnvelopeToolRef, RunAuthoritySource } from "../shared/workflow-template-types.js";
-import { createStageRunEngine, type StageRunEngineDeps } from "../work-board/workflow/stage-run-engine.js";
+import { createStageRunEngine, type StageRunEngineDeps, type ScheduledTemplateSource, type ScheduledTemplateStart } from "../work-board/workflow/stage-run-engine.js";
 import {
   MAX_PLAN_NOTE_LENGTH,
   BRIEFING_PROPOSAL_KINDS,
@@ -171,6 +171,7 @@ interface DecidePlanOutcome {
 }
 
 export interface WorkBoardEngine {
+  startScheduledTemplate(source: ScheduledTemplateSource, title: string): Promise<ScheduledTemplateStart>;
   /** Combine in-process and persisted active-status guards per item; finished reruns start clean while preserving history. Returns
    * awaiting_approval once the plan is stored; nothing waits for the user here. */
   runItem(itemId: number, opts?: RunItemOptions): Promise<RunItemResult>;
@@ -1054,6 +1055,10 @@ export function createWorkBoardEngine(
   return {
     runItem,
     decidePlan,
+    startScheduledTemplate: async (source, title) => {
+      await recover();
+      return stageRuns?.startScheduled(source, title) ?? { ok: false, code: "template-run-unavailable" };
+    },
     runBriefing,
     executingChildSessionId: (itemId) => executingChildByItem.get(itemId),
     steerRun,

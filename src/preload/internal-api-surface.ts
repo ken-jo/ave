@@ -1,5 +1,5 @@
 import { memoryMapApiSurface } from './memory-map-api-surface.js';
-import type { ScheduleAttachmentInput, ScheduleAttachment, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../shared/workflow-template-types.js";
+import type { ScheduleAttachmentRequest, ScheduleAttachment, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../shared/workflow-template-types.js";
 import type { MemoryDetailResult, MemorySummariesResult } from "../shared/memory-detail.js";
 import type { HookTrustListResult, HookTrustReviewRequest, HookTrustReviewResult } from "../shared/hook-trust-review.js";
 import type { RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
@@ -979,7 +979,7 @@ export function buildInternalApiSurface() {
   draftWorkflowTemplate: async (id: string | null, input: WorkflowTemplateDraftInput) => ipcRenderer.invoke(WORK_BOARD.templateDraft, id, input) as Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>,
   confirmWorkflowTemplate: async (id: string, input: WorkflowTemplateConfirmInput) => ipcRenderer.invoke(WORK_BOARD.templateConfirm, id, input, ipcUserKeyboardIntent()) as Promise<WorkflowTemplateIpcResult<TemplateVersion>>,
   detachWorkflowTemplateSchedule: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateDetachSchedule, id, ipcUserKeyboardIntent()) as Promise<WorkflowTemplateIpcResult<boolean>>,
-  attachWorkflowTemplateSchedule: async (input: ScheduleAttachmentInput) => ipcRenderer.invoke(WORK_BOARD.templateAttachSchedule, input, ipcUserKeyboardIntent()) as Promise<WorkflowTemplateIpcResult<ScheduleAttachment>>,
+  attachWorkflowTemplateSchedule: async (input: ScheduleAttachmentRequest) => ipcRenderer.invoke(WORK_BOARD.templateAttachSchedule, input, ipcUserKeyboardIntent()) as Promise<WorkflowTemplateIpcResult<ScheduleAttachment>>,
   archiveWorkflowTemplate: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateArchive, id) as Promise<WorkflowTemplateIpcResult<null>>,
   onWorkflowTemplatesChanged: (handler: () => void) => {
     const listener = () => handler();

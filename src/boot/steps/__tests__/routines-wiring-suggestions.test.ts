@@ -41,6 +41,7 @@ function wire(
   const routinesScheduler = {
     onLlmSession: (handler: Handler) => { handlers.llm = handler; return () => {}; },
     onNotification: (handler: Handler) => { handlers.notification = handler; return () => {}; },
+    onTemplateRun: () => () => {},
     markRunning: vi.fn(),
     markStopped: vi.fn(),
   };

@@ -2327,6 +2327,7 @@ export class SubAgentRunner {
     profileModel: string | undefined;
     /** The parent behind this run, when it has one that could answer for it. `null` leaves the child's approvals on the path they took before tier 2 existed: straight to the user. */
     approvalProvenance: SubAgentApprovalProvenance | null;
+    unattendedStage?: boolean;
   }): {
     childDeps: ConversationLoopDeps;
     grantedScope: PersistedSubAgentToolScope;
@@ -2368,7 +2369,7 @@ export class SubAgentRunner {
       : undefined;
 
     // Wrap the parent ApprovalGate so approval requests from this sub-agent's tool calls show "[Sub-Agent: <title>]" in their reason text.
-    const wrappedApprovalGate = this.deps.parentDeps.approvalGate
+    const wrappedApprovalGate = !args.unattendedStage && this.deps.parentDeps.approvalGate
       ? makeSubAgentApprovalAdapter(
           this.deps.parentDeps.approvalGate,
           args.title,
@@ -2404,6 +2405,7 @@ export class SubAgentRunner {
       // the main `~/.ave/sessions/` list; the child's saveSession/loadSession (via `self.deps.memoryManager` in run-turn) now target the subagent namespace under the regex-valid childSessionId set by the caller.
       memoryManager: this.deps.subAgentMemoryManager,
       approvalGate: wrappedApprovalGate,
+      ...(args.unattendedStage ? { headless: true, approvalSurface: "unavailable" as const } : {}),
       // Sub-agent runs are fire-and-forget; no post-turn hook chain to keep the parent session unaffected.
       postTurnHookChain: undefined,
       // The child's sessions live in the sub-agent namespace; the parent's predicate scans the window's main loops and must not judge them.
@@ -2614,6 +2616,7 @@ export class SubAgentRunner {
         ...inherited,
         allowExternalHooks: inherited?.allowExternalHooks ?? true,
         remoteControllerAuthority: undefined,
+        ...(input.unattendedStage ? { unattendedStage: true as const, headless: true, approvalSurface: "unavailable" as const, withholdSessionAuthority: true, allowExternalHooks: false } : {}),
       }), () => this.runSpawnChild(checkpointChild, input, callbacks, executionPolicy, durableLinkBarrier));
     } finally {
       checkpointChild.release?.();
@@ -2685,6 +2688,7 @@ export class SubAgentRunner {
           title: input.title,
           profileModel: input.profileModel,
           includeAgentSend: true,
+          unattendedStage: input.unattendedStage !== undefined,
           approvalProvenance: buildSubAgentApprovalProvenance({
             childSessionId,
             originSessionId: input.originSessionId,

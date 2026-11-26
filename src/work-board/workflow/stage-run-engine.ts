@@ -19,7 +19,7 @@ import { errorMessage } from "../../shared/error-message.js";
 import {
   MAX_PLAN_NOTE_LENGTH, workBoardOriginSessionId,
   type StageGateDecideInput, type StageGateDecideResult, type StageJoinDecideInput, type StageJoinDecideResult, type StageRetryResult,
-  type WorkBoardCancelResult, type WorkBoardRunEvent, type WorkBoardSteerAck, type WorkBoardSteerResult, type WorkItem, type WorkItemResolved,
+  type WorkBoardCancelResult, type WorkBoardRunEvent, type WorkBoardSteerAck, type WorkBoardSteerResult, type WorkItemResolved,
   type WorkItemRunResult, type WorkItemUpdateResult,
 } from "../../shared/work-board-types.js";
 import { outputHashOf, resultHashOf } from "../../shared/workflow-template-output.js";
@@ -67,7 +67,7 @@ interface RequestedOutputHooks {
 
 export interface StageRunEngineDeps {
   /** The board: the row of a run carries its id, its shown status and its final output. Nothing a run is decided from is read here. */
-  store: Pick<WorkBoardStore, "get" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "clearMissingRun">;
+  store: Pick<WorkBoardStore, "get" | "create" | "remove" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "clearMissingRun">;
   /** Every run-authority field: the pin, the source, the stage runs, the joins, the gates and how the run ended. */
   runs: WorkflowRunState;
   /** The authorised registry root of a project path, or null when the registry does not hold it. */
@@ -103,7 +103,14 @@ export interface StageRunEngineDeps {
   _observeDetachedWorkForTest?: (work: () => Promise<unknown>, kind?: "launch") => void;
 }
 
+export type ScheduledTemplateSource = Extract<RunAuthoritySource, { kind: "schedule-attachment" }>;
+export type ScheduledTemplateStart =
+  | { ok: true; itemId: number; result: Promise<WorkItemRunResult> }
+  | { ok: false; code: string; tool?: EnvelopeToolRef };
+
 export interface StageRunEngine {
+  /** Resolves once admission writes the run. The result observes its first quiescent state separately. */
+  startScheduled(source: ScheduledTemplateSource, title: string): Promise<ScheduledTemplateStart>;
   /** Resolves with the run's first quiescent state, or with the start's refusal (error, already_running, not_found). That state may already
    * be past a gate: a decision queued before then is part of it. Gate state comes from events, not from this value. */
   start(itemId: number, a: { source: RunAuthoritySource; approvalSurface: WebContents | null }): Promise<WorkItemRunResult>;
@@ -966,7 +973,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const profile = stage.agentName ? (await deps.getAgentProfile?.(stage.agentName)) ?? null : null;
       if (stage.agentName && !profile) throw new Error(`agent profile not found: ${stage.agentName}`);
       const readOnly = stage.toolScope === "read";
-      const readTools = readOnly ? runner.parentToolRegistry().listAll().filter(tool => requiredTier(tool.category) === "read").map(tool => tool.name) : [];
+      const readTools = readOnly ? runner.parentToolRegistry().listAll().filter(tool => requiredTier(tool.category) === "read" && (lane === "attended" || tool.source === "builtin")).map(tool => tool.name) : [];
       const revision = run.gate?.type === "human" && run.gate.status === "changes_requested" && run.gate.note !== undefined && run.output !== undefined
         ? { priorOutput: run.output, note: run.gate.note, ...(run.taint ? { taint: run.taint } : {}) }
         : undefined;
@@ -1155,42 +1162,85 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const row = got.item;
       const record = row.runId === undefined ? null : await records.get(itemId, row.runId);
       if (record ? record.settled === undefined : ROW_BUSY.has(row.runStatus ?? "idle")) return busy;
-      return await startRun(itemId, row, a);
+      const checked = await checkStart(a.source);
+      if ("status" in checked) return checked;
+      if (row.projectRoot !== checked.projectRoot) return refusedStart("project-mismatch");
+      const started = await beginStart(itemId, a.source, a.approvalSurface, checked);
+      return "status" in started ? started : await firstResult(started);
     } finally {
       // A refused start never opened a run; the caller's in-flight mark goes with it.
       if (!runs.has(itemId)) deps.releaseItem(itemId);
     }
   }
 
-  async function startRun(itemId: number, item: WorkItem, a: { source: RunAuthoritySource; approvalSurface: WebContents | null }): Promise<WorkItemRunResult> {
-    const refused = (code: string, tool?: EnvelopeToolRef): WorkItemRunResult => ({ status: "error", reason: code, reasonCode: code, ...(tool ? { reasonTool: tool } : {}) });
-    const source = a.source;
+  function refusedStart(code: string, tool?: EnvelopeToolRef): WorkItemRunResult {
+    return { status: "error", reason: code, reasonCode: code, ...(tool ? { reasonTool: tool } : {}) };
+  }
+
+  interface CheckedStart { version: TemplateVersion; projectRoot: string | undefined }
+
+  async function checkStart(source: RunAuthoritySource): Promise<CheckedStart | WorkItemRunResult> {
     const pin = source.pin;
-    let version: TemplateVersion;
-    let projectRoot: string | undefined;
     try {
-      // A refusal writes nothing. The run's project is resolved by the host: the authorised registry root of the project on the card,
-      // or the snapshot the schedule was approved for. The board row's project is never the run's.
+      // Only the source's approved project may be used for a run.
       if (source.kind === "local-create-and-run" && source.projectRoot !== undefined) {
         const registered = deps.resolveProjectRoot(source.projectRoot);
-        if (registered === null) return refused("scope-not-authorised");
-        if (registered !== source.projectRoot) return refused("project-mismatch");
+        if (registered === null) return refusedStart("scope-not-authorised");
+        if (registered !== source.projectRoot) return refusedStart("project-mismatch");
       }
-      projectRoot = await runProjectOf(source);
+      const projectRoot = await runProjectOf(source);
       const verdict = await verdictFor("start", projectRoot, source, pin);
-      if (!verdict.ok) return refused(verdict.code, "tool" in verdict ? verdict.tool : undefined);
-      // A row that names another project is refused; it is compared, never used.
-      if (item.projectRoot !== projectRoot) return refused("project-mismatch");
-      version = await resolvePinned(pin);
+      if (!verdict.ok) return refusedStart(verdict.code, "tool" in verdict ? verdict.tool : undefined);
+      const version = await resolvePinned(pin);
       stepsOf(version);
+      if (!deps.outputs && version.stages.some(stage => (stage.requestedOutputs?.length ?? 0) > 0)) return refusedStart("outputs-unavailable");
+      return { projectRoot, version };
     } catch (error) {
       const fault = pinFault(error);
-      if (fault) return refused(fault);
-      log.warn("template run start check failed (id=%d): %s", itemId, errorMessage(error));
-      return refused("run-state-unavailable");
+      if (fault) return refusedStart(fault);
+      log.warn("template run start check failed: %s", errorMessage(error));
+      return refusedStart("run-state-unavailable");
     }
-    if (!deps.outputs && version.stages.some(stage => (stage.requestedOutputs?.length ?? 0) > 0)) return refused("outputs-unavailable");
+  }
 
+  async function startScheduled(source: ScheduledTemplateSource, title: string): Promise<ScheduledTemplateStart> {
+    const checked = await checkStart(source);
+    if ("status" in checked) {
+      return { ok: false, code: checked.reasonCode ?? "template-run-unavailable", ...(checked.reasonTool ? { tool: checked.reasonTool } : {}) };
+    }
+    const created = await store.create({ title, templateId: source.pin.templateId, projectRoot: checked.projectRoot });
+    if (created.status !== "created") return { ok: false, code: created.reason };
+    // Hold the new row through start, including workspace creation, so a local start cannot race the scheduled one.
+    deps.holdItem(created.itemId);
+    let admitted = false;
+    try {
+      const ready = await adopted();
+      if (!ready.ok) return { ok: false, code: ready.code };
+      const started = await beginStart(created.itemId, source, null, checked);
+      if ("status" in started) return { ok: false, code: started.reasonCode ?? "template-run-unavailable" };
+      admitted = true;
+      return { ok: true, itemId: created.itemId, result: firstResult(started) };
+    } finally {
+      if (!admitted) {
+        try {
+          const current = await store.get(created.itemId);
+          // A partial start can change run fields before being refused. Use its latest revision when the item itself was left alone.
+          if (current.status === "found" && current.item.updated_at === created.item.updated_at) {
+            const removed = await store.remove(created.itemId, current.item.mutationRevision);
+            if (removed.status === "invalid") log.warn("refused schedule start row could not be removed (id=%d): %s", created.itemId, removed.reason);
+          }
+        } catch (error) {
+          log.warn("refused schedule start row cleanup failed (id=%d): %s", created.itemId, errorMessage(error));
+        } finally {
+          deps.releaseItem(created.itemId);
+        }
+      }
+    }
+  }
+
+  async function beginStart(itemId: number, source: RunAuthoritySource, surface: WebContents | null, { projectRoot, version }: CheckedStart): Promise<RunState | WorkItemRunResult> {
+    const pin = source.pin;
+    const refused = refusedStart;
     const runId = randomUUID();
     const ref: RunRef = { itemId, runId, runKey: runKeyOf(itemId, runId), ...(projectRoot !== undefined ? { projectRoot } : {}) };
     const opened = await workspace.open(ref, projectRoot);
@@ -1228,9 +1278,13 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const code = error instanceof WorkflowTemplateError || error instanceof WorkBoardWriteRefusal ? error.code : unreadable ? "invalid-template-run" : undefined;
       return abandonStart(ref, recorded, refused(code ?? "run-state-unavailable"), unstarted);
     }
-    const state = openState(itemId, runId, projectRoot, a.approvalSurface);
+    const state = openState(itemId, runId, projectRoot, surface);
     emit({ itemId, phase: "executing" });
     post(state, { type: "started" });
+    return state;
+  }
+
+  async function firstResult(state: RunState): Promise<WorkItemRunResult> {
     await idle(state);
     return resultOf(state);
   }
@@ -1617,7 +1671,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   return {
-    start, decideGate, decideJoin, retryStage, continueRun, projectRootRevoked, steer, stop, projectRuns, clearMissingRun, reconsider,
+    start, startScheduled, decideGate, decideJoin, retryStage, continueRun, projectRootRevoked, steer, stop, projectRuns, clearMissingRun, reconsider,
     adoptParkedRuns: async () => {
       const done = await adopted();
       if (!done.ok) log.warn("template runs not adopted at boot: %s", done.code);

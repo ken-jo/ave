@@ -200,6 +200,9 @@ export function createRoutineScheduleTool(store: RoutinesStore, deps: RoutineSch
       const a = (rawInput ?? {}) as Record<string, unknown>;
       const action = parseAction(a.action);
       if (!action) return errorResult("action must be 'add', 'update' or 'remove'");
+      if (a.execution === "template-run" || Object.hasOwn(a, "attachmentId") || Object.hasOwn(a, "templateId") || Object.hasOwn(a, "graphHash")) {
+        return errorResult(t("reasonCodes.template-schedule-local-approval"));
+      }
       if (action !== "add") {
         const sessionId = ctx?.metadata?.sessionId;
         const chat = typeof sessionId === "string" && sessionId ? deps.chatForSession(sessionId) : undefined;
@@ -208,8 +211,11 @@ export function createRoutineScheduleTool(store: RoutinesStore, deps: RoutineSch
         if (extra.length > 0) return errorResult(`${action} does not take: ${extra.join(", ")}`);
         if (typeof a.routineId !== "string" || !a.routineId) return errorResult(`${action} needs routineId`);
         // Only an item connected to this chat; every other item is the user's to change.
-        const record = chat === undefined ? undefined : store.list().find((r) => r.id === a.routineId);
-        if (!record || record.targetSessionId !== chat) {
+        const record = store.list().find((r) => r.id === a.routineId);
+        if (record?.execution === "template-run") {
+          return errorResult(t(action === "remove" ? "reasonCodes.detach-template-schedule-first" : "reasonCodes.template-schedule-local-approval"));
+        }
+        if (!chat || !record || record.targetSessionId !== chat) {
           return errorResult(`routine_schedule can ${action} only a schedule item connected to this chat`);
         }
         if (action === "remove") {

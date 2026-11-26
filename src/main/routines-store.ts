@@ -9,6 +9,9 @@ import { isStringArray } from "../shared/is-record.js";
 import { isValidPluginId } from "../plugins/public-contract.js";
 import { advanceRepeatAt, isMissedWhilePaused, isRoutineScheduleShape, scheduleIdentity } from "../routines/schedule-advance.js";
 import { projectRootEquals } from "../shared/project-identity.js";
+import { assertHostDecisionProof, type HostDecisionProof } from "./workflow-template-decision.js";
+import type { ScheduleAttachment, WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
+import { isTemplateId, attachmentScopeMatches, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { isValidSessionId } from "../shared/session-id.js";
 const log = createLogger("ave");
 
@@ -72,7 +75,7 @@ export function isRoutineTrigger(value: unknown): value is RoutineRecord["trigge
 }
 
 export function isRoutineExecution(value: unknown): value is RoutineRecord["execution"] {
-  return value === "llm-session" || value === "notification-only";
+  return value === "llm-session" || value === "notification-only" || value === "template-run";
 }
 
 // The plugin-id-bearing fields of one stored routine, by field path.
@@ -113,6 +116,9 @@ function isValidRecord(r: unknown): r is RoutineRecord {
   const x = r as Record<string, unknown>;
   if (typeof x.id !== "string" || x.id.length > 128) return false;
   if (!isRoutineTrigger(x.trigger) || !isRoutineExecution(x.execution)) return false;
+  if (x.attachmentId !== undefined || x.templateAttention !== undefined) return false;
+  if (x.execution === "template-run" && (x.trigger !== "schedule" || !x.schedule || !isTemplateId(x.id))) return false;
+  if (x.lastTemplateSkip !== undefined && (x.execution !== "template-run" || !validTemplateSkip(x.lastTemplateSkip))) return false;
   if (x.lastFiredMinuteUTC !== undefined && typeof x.lastFiredMinuteUTC !== "string") return false;
   if (x.lastFiredAt !== undefined && typeof x.lastFiredAt !== "string") return false;
   if (x.lastSkippedReason !== undefined && x.lastSkippedReason !== "plugins-missing" && x.lastSkippedReason !== "chat-busy") return false;
@@ -146,6 +152,18 @@ function isValidRecord(r: unknown): r is RoutineRecord {
 // Only an LLM item on a schedule can enter a chat: a notification has no turn, and a quit-time run has no one to read it.
 function canConnect(targetSessionId: unknown, trigger: unknown, execution: unknown): boolean {
   return isValidSessionId(targetSessionId) && trigger === "schedule" && execution === "llm-session";
+}
+
+function validTemplateSkip(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const skip = value as Record<string, unknown>;
+  if (skip.code === "run-unsettled") return skip.tool === undefined;
+  if (skip.code !== "outward-effect-tool" && skip.code !== "tool-effect-unknown") return false;
+  const tool = skip.tool as Record<string, unknown> | undefined;
+  return tool != null && typeof tool.name === "string" && tool.name.length > 0 && tool.name.length <= 500
+    && typeof tool.stageId === "string" && isTemplateId(tool.stageId)
+    && (tool.collection === "tools" || tool.collection === "mcpReadOnlyTools"
+      || tool.collection === "mcpGenerationTools" || tool.collection === "pluginGenerationTools");
 }
 
 function isValidRoutineFailure(value: unknown): boolean {
@@ -310,6 +328,7 @@ function cloneRecord(r: RoutineRecord): RoutineRecord {
   return {
     ...r,
     ...(r.runs ? { runs: structuredClone(r.runs) } : {}),
+    ...(r.lastTemplateSkip ? { lastTemplateSkip: structuredClone(r.lastTemplateSkip) } : {}),
     needsAttention: r.needsAttention
       ? { missingPluginIds: [...r.needsAttention.missingPluginIds] }
       : undefined,
@@ -355,11 +374,39 @@ function routineScopeRetention(
   });
 }
 
+export class AttachedTemplateRoutineError extends Error {
+  readonly code = "detach-template-schedule-first";
+
+  constructor() {
+    super("Detach the schedule from its template first.");
+  }
+}
+
+type TemplateRoutineInput = Omit<AddRoutineInput, "execution" | "projectRoot"> & {
+  execution: "template-run";
+  projectRoot?: string;
+};
+
+interface TemplateAttachmentReader {
+  listByRoutine(id: string): Promise<ScheduleAttachment[]>;
+  get(id: string): Promise<Pick<WorkflowTemplateRecord, "template">>;
+}
+
 export class RoutinesStore {
   private cache: RoutineRecord[] = [];
   private invalidCache: StoredInvalidRoutine[] = [];
   private loaded = false;
   private readonly filePath: string;
+  private templateAttachments?: TemplateAttachmentReader;
+
+  bindTemplateAttachments(store: TemplateAttachmentReader): void {
+    this.templateAttachments = store;
+  }
+
+  /** The same schedule queue orders starts, reattachments, detach and plain removal. */
+  withTemplateSchedule<T>(id: string, work: (remove: () => Promise<boolean>) => Promise<T>): Promise<T> {
+    return withInProcessFileQueue(join(`${this.filePath}.schedules`, `schedule-${encodeURIComponent(id)}`), () => work(() => this.removeLocked(id)));
+  }
 
   // Fires after every successful write so projections (the work-approvals list) re-read instead of polling.
   readonly changed = new ChangeSignal((err) => log.warn("[routines-store] change listener threw: %s", (err as Error).message));
@@ -413,7 +460,25 @@ export class RoutinesStore {
     return { routines: this.listActive(filter), invalid: this.listInvalid() };
   }
 
-  async add(input: AddRoutineInput): Promise<RoutineRecord> {
+  async listScheduleDisplay(filter?: { projectRoot?: string }): Promise<RoutineListResult> {
+    const result = this.listForDisplay(filter);
+    const routines = await Promise.all(result.routines.map(async (routine): Promise<RoutineRecord> => {
+      if (routine.execution !== "template-run") return routine;
+      const active = (await this.requireTemplateAttachments().listByRoutine(routine.id)).find(a => a.detachedAt === undefined);
+      if (!active) return { ...routine, templateAttention: "attachment-missing" };
+      const { template } = await this.requireTemplateAttachments().get(active.templateId);
+      const scope = attachmentScopeMatches(active, template);
+      return { ...routine, attachmentId: active.id, ...(scope.ok ? {} : { templateAttention: scope.code }) };
+    }));
+    return { ...result, routines };
+  }
+
+  private requireTemplateAttachments(): TemplateAttachmentReader {
+    if (!this.templateAttachments) throw new Error("Template attachment store unavailable");
+    return this.templateAttachments;
+  }
+
+  async add(input: AddRoutineInput | TemplateRoutineInput, proof?: HostDecisionProof): Promise<RoutineRecord> {
     if (!this.loaded) await this.load();
 
     // An unknown trigger or execution would be dropped as a bad record on the next read, so refuse it here.
@@ -421,12 +486,18 @@ export class RoutinesStore {
     if (!isRoutineExecution(input.execution)) {
       throw new Error(`RoutinesStore.add: execution must be 'llm-session' or 'notification-only': ${String(input.execution)}`);
     }
+    if (input.execution === "template-run") {
+      assertHostDecisionProof(proof);
+      if (input.trigger !== "schedule" || !isRoutineScheduleShape(input.schedule) || (!input.schedule.at && input.schedule.repeat?.kind !== "cron") || input.createdBy !== "user"
+        || input.prePrompt !== undefined || input.notificationTitle !== undefined || input.notificationBody !== undefined
+        || input.scope !== undefined || input.source !== undefined) throw new Error("Invalid template routine");
+    }
     const normalizedSchedule = validateRoutineContent("add", input);
     if (input.targetSessionId !== undefined && !canConnect(input.targetSessionId, input.trigger, input.execution)) {
       throw new Error("RoutinesStore.add: targetSessionId must be a valid chat id on a scheduled llm-session item");
     }
     const normalizedProjectRoot = typeof input.projectRoot === "string" ? input.projectRoot.trim() : "";
-    if (!normalizedProjectRoot || normalizedProjectRoot.length > MAX_PROJECT_ROOT_LENGTH) {
+    if ((!normalizedProjectRoot && input.execution !== "template-run") || normalizedProjectRoot.length > MAX_PROJECT_ROOT_LENGTH) {
       throw new Error(`RoutinesStore.add: projectRoot is required (a non-empty string of at most ${MAX_PROJECT_ROOT_LENGTH} characters)`);
     }
     if (!isActor(input.createdBy)) {
@@ -487,7 +558,7 @@ export class RoutinesStore {
       scope: normalizedScope,
       createdAt: new Date().toISOString(),
       ...(normalizedSource !== undefined ? { source: normalizedSource } : {}),
-      projectRoot: normalizedProjectRoot,
+      ...(normalizedProjectRoot ? { projectRoot: normalizedProjectRoot } : {}),
       createdBy: input.createdBy,
       ...(input.targetSessionId !== undefined ? { targetSessionId: input.targetSessionId } : {}),
     };
@@ -533,9 +604,18 @@ export class RoutinesStore {
   }
 
   async remove(id: string): Promise<boolean> {
+    return this.withTemplateSchedule(id, remove => remove());
+  }
+
+  private async removeLocked(id: string): Promise<boolean> {
     if (!this.loaded) await this.load();
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
+      const record = file.routines.find(r => r.id === id);
+      if (record?.execution === "template-run" &&
+        (await this.requireTemplateAttachments().listByRoutine(id)).some(a => a.detachedAt === undefined)) {
+        throw new AttachedTemplateRoutineError();
+      }
       const before = file.routines.length + file.invalid.length;
       file.routines = file.routines.filter((r) => r.id !== id);
       file.invalid = file.invalid.filter((held) => held.id !== id);
@@ -681,6 +761,11 @@ export class RoutinesStore {
         delete r.lastFailure;
         return true;
       }
+      if (outcome.kind === "template-skipped") {
+        if (r.execution !== "template-run" || !validTemplateSkip(outcome.skip)) throw new Error("Invalid template routine skip");
+        r.lastTemplateSkip = outcome.skip;
+        return true;
+      }
       const at = new Date().toISOString();
       const failure: RoutineFailure = outcome.kind === "error"
         ? { kind: "error", firedAt, at, reason: sanitizeRoutineFailureReason(outcome.reason) }
@@ -704,9 +789,13 @@ export class RoutinesStore {
   }
 
   // A user edit from the schedule panel, validated exactly as add validates. Null for an unknown or dismissed item.
-  async edit(id: string, patch: RoutineEditPatch): Promise<RoutineRecord | null> {
+  async edit(id: string, patch: RoutineEditPatch, proof?: HostDecisionProof): Promise<RoutineRecord | null> {
     return this.mutate(id, (r) => {
       if (r.dismissedAt) return false;
+      if ((patch as { execution?: unknown }).execution === "template-run" || r.execution === "template-run") {
+        assertHostDecisionProof(proof);
+        if (Object.keys(patch).some(key => key !== "title" && key !== "schedule")) throw new WorkflowTemplateError("invalid-input");
+      }
       if (patch.schedule !== undefined && r.trigger !== "schedule") {
         throw new Error("RoutinesStore.edit: a shutdown item has no schedule");
       }
@@ -834,9 +923,11 @@ export class RoutinesStore {
         this.invalidCache = file.invalid;
         return null;
       }
-      const firedAt = new Date(nowMs).toISOString();
+      const previous = r.execution === "template-run" && r.lastFiredAt ? Date.parse(r.lastFiredAt) : Number.NaN;
+      const firedAt = new Date(previous >= nowMs ? previous + 1 : nowMs).toISOString();
       r.lastFiredAt = firedAt;
       delete r.lastSkippedReason;
+      delete r.lastTemplateSkip;
       delete r.lastSkippedMinuteUTC;
       if (missingPluginIds.length > 0) r.needsAttention = { missingPluginIds: [...missingPluginIds] };
       else delete r.needsAttention;
@@ -844,7 +935,7 @@ export class RoutinesStore {
       const repeat = r.schedule?.repeat;
       if (!repeat || repeat.kind === "none") {
         // A partial run stays visible for review and removal, but is not due again.
-        if (missingPluginIds.length === 0) r.dismissedAt = firedAt;
+        if (missingPluginIds.length === 0 && r.execution !== "template-run") r.dismissedAt = firedAt;
       } else advanceRepeatingSchedule(r, firedAt);
       // cron routines: next-fire is re-computed by the scheduler each tick — no need to advance `at` here.
       await this.persist(file);

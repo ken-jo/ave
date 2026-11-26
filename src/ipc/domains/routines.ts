@@ -13,7 +13,7 @@ import { listRoutineOccurrences } from "../../routines/occurrences.js";
 import { isRoutineScheduleShape } from "../../routines/schedule-advance.js";
 import { ROUTINES } from "../../shared/ipc-channels.js";
 import { ensureSuggestionsSession } from "../../main/suggestions-session.js";
-import { isRoutineExecution, isRoutineTrigger, isValidRoutineScope, removeRoutineWithRuns } from "../../main/routines-store.js";
+import { AttachedTemplateRoutineError, isRoutineExecution, isRoutineTrigger, isValidRoutineScope, removeRoutineWithRuns } from "../../main/routines-store.js";
 import { MAX_ROUTINE_SOURCE_LENGTH } from "../../shared/routines-types.js";
 import { isValidSessionId } from "../../shared/session-id.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
@@ -39,7 +39,7 @@ function hasValidFieldTypes(input: Record<string, unknown>, allowNullTitle: bool
 const RENDERER_ROUTINE_SOURCE = /^(?:agent-plugin|extension):[^:\s]+:[^:\s]+$/;
 
 function hasValidAddFields(input: Record<string, unknown>): boolean {
-  if (!isRoutineTrigger(input.trigger) || !isRoutineExecution(input.execution)) return false;
+  if (!isRoutineTrigger(input.trigger) || !isRoutineExecution(input.execution) || input.execution === "template-run" || "attachmentId" in input) return false;
   if (input.scope !== undefined && !isValidRoutineScope(input.scope)) return false;
   if (input.source === undefined) return true;
   return typeof input.source === "string" && input.source.length <= MAX_ROUTINE_SOURCE_LENGTH && RENDERER_ROUTINE_SOURCE.test(input.source);
@@ -71,7 +71,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     }
     if (!routinesStore) return { routines: [], invalid: [] } satisfies RoutineListResult;
     const projectRoot = projectRootFilter(filter);
-    return projectRoot === undefined ? routinesStore.listForDisplay() : routinesStore.listForDisplay({ projectRoot });
+    return routinesStore.listScheduleDisplay(projectRoot === undefined ? undefined : { projectRoot });
   });
 
   ipcMain.handle(ROUTINES.remove, async (e, id: string) => {
@@ -80,18 +80,24 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     if (!routinesStore) return { ok: false, error: "no-store" };
-    const ok = await removeRoutineWithRuns(
-      {
-        routinesStore,
-        memoryManager,
-        endSessionScope: async (sessionId) => {
-          const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
-          endSessionScopedPermissions(sessionId, deps.conversationLoop.permissionManager);
+    if (typeof id !== "string") return { ok: false, error: "invalid-input" };
+    try {
+      const ok = await removeRoutineWithRuns(
+        {
+          routinesStore,
+          memoryManager,
+          endSessionScope: async (sessionId) => {
+            const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
+            endSessionScopedPermissions(sessionId, deps.conversationLoop.permissionManager);
+          },
         },
-      },
-      id,
-    );
-    return { ok };
+        id,
+      );
+      return { ok };
+    } catch (error) {
+      if (error instanceof AttachedTemplateRoutineError) return { ok: false, error: error.code };
+      throw error;
+    }
   });
 
   ipcMain.handle(ROUTINES.triggerNow, async (e, id: string) => {
@@ -118,7 +124,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     if (!routinesStore) return [];
     const pending = routinesStore
       .list()
-      .filter((routine) => routine.lastFiredAt && routine.lastResultAcknowledgedAt !== routine.lastFiredAt);
+      .filter((routine) => routine.execution !== "template-run" && routine.lastFiredAt && routine.lastResultAcknowledgedAt !== routine.lastFiredAt);
     const results: RoutineFiredPayload[] = [];
     for (const routine of pending) {
       const firedAt = routine.lastFiredAt!;
@@ -211,6 +217,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     if (!routinesStore) return { ok: false, error: "no-store" };
     if (typeof id !== "string" || !patch || typeof patch !== "object" || Array.isArray(patch)
       || !hasValidFieldTypes(patch as Record<string, unknown>, true)) return { ok: false, error: "invalid-input" };
+    if ("execution" in patch || "attachmentId" in patch) return { ok: false, error: "invalid-input" };
     const target = (patch as Record<string, unknown>).targetSessionId;
     if (target !== undefined && target !== null && !isValidSessionId(target)) return { ok: false, error: "invalid-input" };
     if (typeof target === "string") {
@@ -295,7 +302,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       }
       // A failed run may have no session, and a notification item never has one.
       // A connected item's run is a turn in its chat, which 대화 열기 opens.
-      if (inRange(routine.lastFiredAt) && !seen.has(routine.lastFiredAt)) {
+      if (!routine.lastTemplateSkip && inRange(routine.lastFiredAt) && !seen.has(routine.lastFiredAt)) {
         const chat = routine.targetSessionId && !routine.orphanedAt && canOpenSession(routine.targetSessionId) ? { sessionId: routine.targetSessionId } : {};
         runs.push({ routineId: routine.id, firedAt: routine.lastFiredAt, status: statusOf(routine.lastFiredAt), ...chat });
       }

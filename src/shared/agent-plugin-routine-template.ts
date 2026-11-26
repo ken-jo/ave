@@ -2,6 +2,7 @@ import type { AddRoutineInput } from "./routines-types.js";
 
 /** A verified suggestion. It has no runtime identity until the user creates a routine. */
 export interface AgentPluginRoutineTemplate extends Omit<AddRoutineInput, "scope" | "source" | "projectRoot" | "createdBy"> {
+  execution: Exclude<AddRoutineInput["execution"], "template-run">;
   id: string;
   packageName: string;
   version: string;

@@ -9,6 +9,6 @@ export function mintHostDecisionProof(origin: TemplateConfirmationOrigin): HostD
   const proof: HostDecisionProof = Object.freeze({ origin, auditId: randomUUID(), decidedAt: new Date().toISOString(), [decisionBrand]: true as const });
   decisions.add(proof); return proof;
 }
-export function assertHostDecisionProof(proof: HostDecisionProof): void {
-  requireTemplate(decisions.has(proof) && proof.origin === "local-desktop");
+export function assertHostDecisionProof(proof: HostDecisionProof | undefined): asserts proof is HostDecisionProof {
+  requireTemplate(proof !== undefined && decisions.has(proof) && proof.origin === "local-desktop");
 }
