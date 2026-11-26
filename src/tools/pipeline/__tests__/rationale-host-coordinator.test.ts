@@ -231,7 +231,7 @@ function setup(options: SetupOptions = {}) {
       return await answeredApprovalDecision({
         requestId: request.id,
         choice: options.approvalChoice ?? "allow-once",
-      });
+      }, "desk", request.toolName, request.invocationToolUseId);
     }),
     cancelPendingRequest: vi.fn((requestId: string) =>
       resolvePendingApproval(requestId, "deny-once")
@@ -1363,6 +1363,27 @@ it.each(["allow-once", "allow-session", "allow-always"] as const)("normal ration
   expect(await state.coordinator.promptForApproval(control.ticketId, { now: NOW })).toBeNull();
 });
 
+
+it.each([false, true])("attributes a rationale denial only to its bound answer (authenticated=%s)", async (authenticated) => {
+  const recordTerminalDenial = vi.fn(async () => {});
+  const state = setup({
+    recordTerminalDenial,
+    ...(authenticated ? { approvalChoice: "deny-once" as const }
+      : { requestHumanApproval: async ({ requestId }: { requestId: string }) => ({ requestId, choice: "deny-once" as const }) }),
+  });
+  const { control } = materialize(state);
+  await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: responseFor(control) }] }, now: NOW });
+  const result = await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  if (authenticated) {
+    expect(result).toMatchObject({ outcome: "denied", ticket: { state: "denied" } });
+    expect(recordTerminalDenial).toHaveBeenCalledExactlyOnceWith("The user denied this permission request.");
+  } else {
+    expect(result).toMatchObject({ outcome: "denied", reason: "approval rejected by host", ticket: { state: "denied", terminalReason: "host-denied" } });
+    expect(recordTerminalDenial).toHaveBeenCalledExactlyOnceWith("approval rejected by host");
+  }
+  expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext, now: NOW })).toBeNull();
+});
 
 it("preserves an explicit hook or policy denial without relabeling it as user cancellation", async () => {
   const state = setup({ requestHumanApproval: async () => { throw new RationaleHumanApprovalDeniedError("The permission hook blocked this request."); } });

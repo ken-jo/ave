@@ -557,6 +557,15 @@ export function provenanceTrustOrigin<Origin extends string>(
   }
 }
 
+/** A refused approval stays host-owned unless the gate recorded a person's denial. */
+export function hostApprovalDenialReason(decision: ApprovalDecision): string | undefined {
+  if (isAnsweredApprovalDenial(decision) || decision.choice.startsWith("allow")) return undefined;
+  if (isHostApprovalCancelledDecision(decision)) return "approval request cancelled";
+  if (decision.rememberPattern === NO_APPROVER_MESSAGE) return NO_APPROVER_MESSAGE;
+  if (isHostApprovalTimeoutDecision(decision)) return "approval request expired";
+  return "approval rejected by host";
+}
+
 /** A deny a person answered, as the gate recorded it when it accepted the answer. */
 export function isAnsweredApprovalDenial(decision: ApprovalDecision): boolean {
   const handle = answeredDecisionHandles.get(decision);

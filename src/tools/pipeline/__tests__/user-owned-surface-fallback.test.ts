@@ -2,10 +2,11 @@
  * "Allow for this run" leaves the answer standing; any other change, and a call the policy now denies or forces, refuses it. */
 import { describe, expect, it, vi } from "vitest";
 import { t } from "../../../i18n/runtime.js";
-import { answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
+import { answeredApprovalDecision, answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../../permissions/approval-gate.js";
 import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import type { PermissionCheckResult, PermissionManager } from "../../../permissions/permission-manager.js";
+import { approvalFailureOutcome } from "../approval-outcome.js";
 import { resolveUserOwnedSurfaceApproval, userOwnedSurfaceCardFacts } from "../user-owned-surface.js";
 import { standingAnswer } from "../../../__tests__/support/standing-answer.js";
 import { standingAnswerFor } from "../../../permissions/pending-answer-policy.js";
@@ -37,7 +38,7 @@ it("includes review fallback facts only for the ordinary surface card when the r
 });
 
 /** Resolves a surface card answered "auto" whose review asks again, so the fallback card is raised; `change` happens while it is open. */
-async function answerFallback(change: Change, rechecked: Partial<PermissionCheckResult> = {}, fallbackChoice: ApprovalDecision["choice"] = "allow-once") {
+async function answerFallback(change: Change, rechecked: Partial<PermissionCheckResult> = {}, fallbackChoice: ApprovalDecision["choice"] = "allow-once", recordless = false) {
   const state = { generation: 0, memoryRules: 0 };
   const rechecks: Array<{ acrossMemoryRuleChanges: true } | undefined> = [];
   const manager = {
@@ -53,7 +54,9 @@ async function answerFallback(change: Change, rechecked: Partial<PermissionCheck
   const gate = {
     consumeUserOwnedSurfaceChoice: () => "auto",
     allowsPolicyTransition: () => false,
-    requestAndWait: answeringRequestAndWait((request: ApprovalRequestInput) => {
+    requestAndWait: recordless
+      ? async (request: ApprovalRequestInput) => { cards.push(request); return { requestId: request.id, choice: fallbackChoice }; }
+      : answeringRequestAndWait((request: ApprovalRequestInput) => {
       cards.push(request);
       if (change !== "none") state.generation += 1;
       if (change === "memory rule") state.memoryRules += 1;
@@ -113,15 +116,26 @@ describe("a user-owned surface's review fallback card", () => {
     expect(await resolving).toMatchObject({ answer: undefined, decision: { choice: "deny-once" }, permission: { decision: "deny" } });
   });
 
-  it("a person's Deny is a deny permission whatever the caller's re-check said, on a card of any kind", async () => {
+  it("leaves a recordless fallback refusal to the host outcome", async () => {
+    const { resolving } = await answerFallback("none", {}, "deny-once", true);
+    const resolved = await resolving;
+    expect(resolved).toMatchObject({ answer: undefined, decision: { choice: "deny-once" }, permission: ask });
+    expect(approvalFailureOutcome(resolved.decision, "browser_click")?.permission).toMatchObject({
+      decision: "deny", reason: "approval rejected by host", provenance: { kind: "host" },
+    });
+  });
+
+  it.each([false, true])("uses the bound deny on an initial card (authenticated=%s)", async (authenticated) => {
     const allowed: PermissionCheckResult = { decision: "allow", reason: "a run rule now allows this", provenance: RULE_PROVENANCE };
     const manager = { recheckPermission: vi.fn() } as unknown as PermissionManager;
     const request = { id: "plain-card", sessionId: "stage-session", category: "tool", kind: "tool", toolName: "write_probe", toolCategory: "write", args: {}, reason: "paused", createdAt: 0 } as ApprovalRequestInput;
+    const refusal = { requestId: request.id, choice: "deny-once" as const };
+    const decision = authenticated ? await answeredApprovalDecision(refusal, "desk", request.toolName) : refusal;
     const resolved = await resolveUserOwnedSurfaceApproval({
-      manager, gate: {} as ApprovalGate, permission: allowed, decision: { requestId: request.id, choice: "deny-once" }, answer: undefined, action: ACTION, uses: [], request, sessionId: "stage-session",
+      manager, gate: {} as ApprovalGate, permission: allowed, decision, answer: undefined, action: ACTION, uses: [], request, sessionId: "stage-session",
       review: async permission => permission,
     });
-    expect(resolved).toMatchObject({ answer: undefined, permission: { decision: "deny" }, decision: { choice: "deny-once" } });
+    expect(resolved).toMatchObject({ answer: undefined, permission: { decision: authenticated ? "deny" : "allow" }, decision: { choice: "deny-once" } });
     expect(manager.recheckPermission).not.toHaveBeenCalled();
   });
 });

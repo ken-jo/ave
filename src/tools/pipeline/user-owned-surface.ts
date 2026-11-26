@@ -2,7 +2,7 @@ import { t } from "../../i18n/runtime.js";
 import { bindPendingAnswerRequest, openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, type StandingAnswer, type StandingAnswerUse } from "../../permissions/pending-answer-policy.js";
 import { randomUUID } from "node:crypto";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
-import { admitApprovalAnswer, HOST_PROVENANCE, isHostApprovalRejectedDecision, isHostApprovalTimeoutDecision, RULE_PROVENANCE, type HostProvenance, type RuleProvenance } from "../../permissions/approval-gate.js";
+import { admitApprovalAnswer, HOST_PROVENANCE, RULE_PROVENANCE, type HostProvenance, type RuleProvenance } from "../../permissions/approval-gate.js";
 import type { PermissionCheckResult, PermissionManager } from "../../permissions/permission-manager.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { abortSupersedesApprovalDecision, isSettledRefusal, refusal } from "./approval-outcome.js";
@@ -70,8 +70,10 @@ async function resolveSurface(input: SurfaceInput): Promise<SurfaceResolution> {
     decision: denial, answer: undefined,
   });
   if (isSettledRefusal(decision)) {
-    return isHostApprovalRejectedDecision(decision) || isHostApprovalTimeoutDecision(decision)
-      ? { permission, decision, answer: undefined } : personDenied(decision);
+    const admitted = admitApprovalAnswer(decision, {
+      requestId: request.id, toolName: request.toolName, toolUseId: request.invocationToolUseId,
+    });
+    return admitted?.decision === "deny" ? personDenied(decision) : { permission, decision, answer: undefined };
   }
   if (!request.userOwnedSurface || !sessionId) return { permission, decision, answer: input.answer };
   permission = manager.recheckPermission(permission);
@@ -100,11 +102,10 @@ async function resolveSurface(input: SurfaceInput): Promise<SurfaceResolution> {
   };
   decision = await gate.requestAndWait(bindPendingAnswerRequest(fallback, card));
   // A refused answer ends as the caller's host failure, under the first card's decision.
-  admitApprovalAnswer(decision, { requestId: fallbackId, toolName: fallback.toolName, toolUseId: fallback.invocationToolUseId });
+  const admitted = admitApprovalAnswer(decision, { requestId: fallbackId, toolName: fallback.toolName, toolUseId: fallback.invocationToolUseId });
   if (abortSupersedesApprovalDecision(request.abortSignal, decision)) return { permission, decision, answer: undefined };
   if (isSettledRefusal(decision)) {
-    return isHostApprovalRejectedDecision(decision) || isHostApprovalTimeoutDecision(decision)
-      ? { permission, decision, answer: undefined } : personDenied(decision);
+    return admitted?.decision === "deny" ? personDenied(decision) : { permission, decision, answer: undefined };
   }
   personAnswerStands(card, decision);
   const verdict = card.verdict ?? { kind: "policy-changed" as const };

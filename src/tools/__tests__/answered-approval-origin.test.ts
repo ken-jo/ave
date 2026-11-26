@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
@@ -80,6 +81,26 @@ describe("plugin-emitted invocations answered at the desk", () => {
     expect(requestAndWait).toHaveBeenCalledOnce();
     expect((await auditRows()).filter(row => row.toolUseId === "plugin-tool-write" && row.decision === "allow"))
       .toEqual([expect.objectContaining({ trustOrigin: "user-keyboard" })]);
+  });
+
+  it.each(["ordinary", "directory"] as const)("records a recordless %s refusal as host-owned", async (route) => {
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    const path = join(route === "directory" ? outside : project, "refused.txt");
+    const requestAndWait = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "deny-always" as const }));
+    const saveDeny = vi.spyOn(manager, "addAlwaysDeniedPersist");
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const [result] = await executor.executeAll([{ id: "host-refused", name: "write_file", input: { path, content: "refused" } }], {
+      sessionId: randomUUID(), executionCwd: project, permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
+    });
+    expect(requestAndWait).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ category: "tool", toolName: "write_file" }));
+    expect(requestAndWait.mock.calls[0]?.[0].kind).toBe(route === "directory" ? "out-of-allowed-dir" : undefined);
+    expect(result).toMatchObject({ is_error: true, content: t("be_executor.approvalRejectedByHost", { name: "write_file", reason: t("be_executor.approvalHostRejectedReason") }) });
+    expect(existsSync(path)).toBe(false);
+    expect(saveDeny).not.toHaveBeenCalled();
+    expect(await ledger("host-refused")).toEqual([expect.objectContaining({
+      decision: "deny", trustOrigin: "unknown", terminalKind: "denied",
+    })]);
   });
 
   it("records the directory grant and allow as the desk's", async () => {

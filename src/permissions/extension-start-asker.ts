@@ -1,7 +1,7 @@
 /** The card and the notice for extension starts that nothing confines. */
 import { randomUUID } from "node:crypto";
 import type { ExtensionStartApprovalRow, ExtensionStartChoice } from "../shared/permissions-events.js";
-import { isHostApprovalRejectedDecision, isHostApprovalTimeoutDecision, type ApprovalGate } from "./approval-gate.js";
+import { admitApprovalAnswer, type AnsweredRecord, type ApprovalGate } from "./approval-gate.js";
 import type { ExtensionStartAsker, PendingExtensionStart } from "./extension-start-consent.js";
 
 export function createExtensionStartAsker(deps: {
@@ -16,8 +16,9 @@ export function createExtensionStartAsker(deps: {
       if (starts.length === 0 || session.abortSignal?.aborted) return "no-approver";
       // A row id names one start on this card only. What it stands for stays here, so an answer can only name a start that was shown.
       const shown = starts.map((start) => ({ start, row: { id: randomUUID(), label: start.label, kind: start.kind, cause: start.cause } satisfies ExtensionStartApprovalRow }));
+      const requestId = randomUUID();
       const decision = await deps.approvalGate.requestAndWait({
-        id: randomUUID(),
+        id: requestId,
         category: "tool",
         kind: "extension-start",
         toolName: "extension_start",
@@ -31,16 +32,21 @@ export function createExtensionStartAsker(deps: {
         forceExplicit: true,
         ...(session.abortSignal ? { abortSignal: session.abortSignal } : {}),
       });
-      // A card that timed out or that the host closed was not answered by a person.
-      const unanswered: boolean = isHostApprovalRejectedDecision(decision) || isHostApprovalTimeoutDecision(decision);
-      if (session.abortSignal?.aborted || unanswered) return "no-approver";
+      if (session.abortSignal?.aborted) return "no-approver";
+      let admitted: AnsweredRecord | undefined;
+      try {
+        admitted = admitApprovalAnswer(decision, { requestId, toolName: "extension_start", toolUseId: undefined });
+      } catch {
+        return "no-approver";
+      }
+      if (admitted === undefined || (admitted.choice !== "allow-once" && admitted.choice !== "deny-once")) return "no-approver";
       const choices: Readonly<Record<string, unknown>> | undefined = decision.extensionStartChoices;
       const answers = new Map<string, ExtensionStartChoice>();
       for (const { start, row } of shown) {
         if (choices !== undefined) {
           const choice = Object.hasOwn(choices, row.id) ? choices[row.id] : undefined;
           if (choice === "yes" || choice === "no") answers.set(start.key, choice);
-        } else if (decision.choice !== "allow-once") answers.set(start.key, "no");
+        } else if (admitted.decision === "deny") answers.set(start.key, "no");
         // An allow that names no start speaks for a start only when it was the only one on the card.
         else if (shown.length === 1) answers.set(start.key, "yes");
       }

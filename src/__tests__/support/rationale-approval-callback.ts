@@ -16,6 +16,7 @@ export function createRationaleApprovalCallback(input: {
     category: "tool",
     kind: "tool",
     toolName: candidate.toolName,
+    invocationToolUseId: candidate.toolUseId,
     toolCategory: candidate.category,
     sessionId: candidate.requestAnchor.sessionId,
     args: finalInput,

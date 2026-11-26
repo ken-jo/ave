@@ -1,7 +1,6 @@
 import { admitToolInvocation, admitToolInvocationWhileAuditOpen, appendToolInvocationAudit, toolInvocationsSealed } from "../../tools/invocation-ledger.js";
 import { HostExitAbortError, isHostExitAbort } from "../../shared/host-exit-abort.js";
-import { approvalDecisionTrustOrigin, isAnsweredApprovalDenial } from "../../permissions/approval-gate.js";
-import { hostApprovalDenialReason } from "../../tools/pipeline/approval-outcome.js";
+import { approvalDecisionTrustOrigin, hostApprovalDenialReason, isAnsweredApprovalDenial } from "../../permissions/approval-gate.js";
 /** Route plugin calls through the executor; only trusted panel calls may use the app-only runtime bypass. */
 import { randomUUID } from "node:crypto";
 import { createHookRunner } from "../conversation.js";

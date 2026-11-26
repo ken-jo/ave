@@ -173,6 +173,15 @@ describe("hook command permission admission", () => {
       .toMatchObject({ decision: "deny", rawStdout: "", reason: "hook command denied: user denied hook command" });
   });
 
+  it("refuses a recordless answer without attributing it to the user", async () => {
+    const p = policy();
+    p.permissionManager.setMode("strict");
+    p.requestAndWait.mockImplementationOnce(async request => ({ requestId: request.id, choice: "deny-once" }));
+    expect(await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand })).toMatchObject({
+      decision: "deny", rawStdout: "", reason: "hook command denied: approval rejected by host",
+    });
+  });
+
   it("respects a deny rule added while approval was pending", async () => {
     const p = policy("allow-once");
     p.permissionManager.setMode("strict");

@@ -1901,11 +1901,12 @@ async function runToolInvocationAttempt(
             hookChainFromDispatch("perm", permissionHook));
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, durationMs: Date.now() - startTime }) };
         }
-        const finishDirectoryDenial = async (decision: ApprovalDecision) => {
+        const finishDirectoryDenial = async (decision: ApprovalDecision, surfaceRefused = false) => {
           if (isHostApprovalCancelledDecision(decision)) {
-            return { allowed: false as const, result: await cancelDirectoryGrant() };
+            return { allowed: false as const, approvalDecision: decision, result: await cancelDirectoryGrant() };
           }
-          const hostFailure = approvalFailureOutcome(decision, toolUse.name, dirLayerResult);
+          const hostFailure = surfaceRefused ? { content: dirLayerResult.reason, permission: dirLayerResult }
+            : approvalFailureOutcome(decision, toolUse.name, dirLayerResult);
           // A settled desk refusal remains the answer even if authority is later lost.
           if (hostFailure && !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) {
             return { allowed: false as const, result: await denyDirectoryGrant() };
@@ -1987,7 +1988,9 @@ async function runToolInvocationAttempt(
         });
         if ("denied" in surfaceResolution) return { allowed: false, result: surfaceResolution.denied };
         dirLayerResult = surfaceResolution.permission;
-        if (surfaceResolution.decision.choice.startsWith("deny")) return finishDirectoryDenial(surfaceResolution.decision);
+        if (surfaceResolution.decision.choice.startsWith("deny")) {
+          return finishDirectoryDenial(surfaceResolution.decision, surfaceResolution.provenance !== undefined);
+        }
         if (grantGuard && !grantGuard.isCurrent()) {
           return { allowed: false, result: await denyCardGrant() };
         }

@@ -4,6 +4,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { answeredApprovalDecision } from "../../__tests__/support/answering-approval-gate.js";
@@ -618,6 +619,29 @@ describe("one terminal row per surface invocation", () => {
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
       expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
+    });
+  });
+
+  it.each([false, true])("records a late host refusal or cancellation (cancelled=%s)", async (cancelled) => {
+    const f = await fixture({ surfaceChoice: "auto" });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "late-host-refusal-turn" }, async () => {
+      const pending = f.run();
+      await f.reached;
+      await f.pause();
+      f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "ask");
+      if (!cancelled) f.request.mockImplementationOnce(async request => ({ requestId: request.id, choice: "deny-once" }));
+      f.release();
+      if (cancelled) {
+        await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+        f.gate.disposeAll();
+      }
+      const [result] = await pending;
+      expect(result).toMatchObject({ is_error: true, content: cancelled ? t("be_executor.toolExecutionCancelled")
+        : t("be_executor.approvalRejectedByHost", { name: "terminal_run", reason: t("be_executor.approvalHostRejectedReason") }) });
+      expect(f.typed).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({
+        decision: "deny", trustOrigin: "unknown", terminalKind: cancelled ? "cancelled" : "denied",
+      })]);
     });
   });
 

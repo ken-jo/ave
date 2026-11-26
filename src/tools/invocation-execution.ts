@@ -7,7 +7,7 @@ import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pi
 import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
 import { checkReplayRootBinding, type ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { attachSandboxBlock, sandboxBlockForResult, type SandboxBlock } from "../shared/sandbox-block.js";
-import { admitApprovalAnswer, answeredApprovalProvenance, answeredRecordForAction, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalRejectedDecision, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision } from "../permissions/approval-gate.js";
+import { admitApprovalAnswer, answeredApprovalProvenance, answeredRecordForAction, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalCancelledDecision, isHostApprovalRejectedDecision, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision } from "../permissions/approval-gate.js";
 import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
@@ -1241,7 +1241,7 @@ export async function executeAuthorizedToolInvocation(
     decision = surfaceResolution.decision;
     lateApprovalDecision = decision;
     if (abortSupersedesApprovalDecision(abortSignal, decision)) abortSignal?.throwIfAborted();
-    const failure = approvalFailureOutcome(decision, toolUse.name);
+    const failure = surfaceResolution.provenance === undefined ? approvalFailureOutcome(decision, toolUse.name) : null;
     if (failure) {
       permissionResult = failure.permission;
       throw new Error(failure.content);
@@ -1356,12 +1356,13 @@ export async function executeAuthorizedToolInvocation(
         await requestLateApproval(attempt.error.request);
       } catch (error) {
         const userAbort = abortSupersedesApprovalDecision(abortSignal, lateApprovalDecision);
+        const cancelled = userAbort || lateApprovalDecision !== undefined && isHostApprovalCancelledDecision(lateApprovalDecision);
         // A late approval that failed without a refusal of its own ends as the host's.
         if (!userAbort && permissionResult?.decision !== "deny") permissionResult = refusal(errorMessage(error), HOST_PROVENANCE);
         return {
           ok: false,
           // A late deny the person answered ends as their denial, not as the seal's.
-          reason: userAbort ? "user-abort" : "error",
+          reason: cancelled ? "user-abort" : "error",
           error: error instanceof Error ? error : new Error(String(error)),
         };
       }

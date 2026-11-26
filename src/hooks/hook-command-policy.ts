@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { PermissionCheckResult, PermissionManager } from "../permissions/permission-manager.js";
-import { admitApprovalAnswer, approvalReasonFields, isHostApprovalRejectedDecision, type ApprovalDecision, type ApprovalGate } from "../permissions/approval-gate.js";
+import { admitApprovalAnswer, approvalReasonFields, hostApprovalDenialReason, type AnsweredRecord, type ApprovalDecision, type ApprovalGate } from "../permissions/approval-gate.js";
 import { errorMessage } from "../shared/error-message.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
 import { getHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
@@ -8,7 +8,7 @@ import { getHostShellExecutionPlanAuditProjection, type HostShellExecutionPlan }
 import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, mintHostShellExecutionPermit, consumeHostShellExecutionPermit } from "../permissions/host-shell-execution-permit.js";
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { buildPermissionEvaluationContext } from "../permissions/evaluation-context.js";
-import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
+import { offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
 import { bindPendingAnswerRequest, openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, toolUseAction, type StandingAnswer } from "../permissions/pending-answer-policy.js";
 import { t } from "../i18n/index.js";
 import { shellQuote } from "../lib/shell-resolver.js";
@@ -120,16 +120,17 @@ export function createHookCommandAuthorizer(deps: {
         processCwd: { directory },
         ...(plan.requiresExplicitUserApproval ? { hostShellExecutionPermitBinding: binding } : {}),
       }, card));
+      let admitted: AnsweredRecord | undefined;
       try {
-        admitApprovalAnswer(approval, { requestId: id, toolName: "bash", toolUseId: undefined });
+        admitted = admitApprovalAnswer(approval, { requestId: id, toolName: "bash", toolUseId: undefined });
       } catch (error) {
         return { decision: "deny", reason: errorMessage(error), commandAdmissionFailure: "recheck-failed" };
       }
       if (abortSignal?.aborted) return { decision: "deny", reason: "Hook command was cancelled" };
       if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId) || !controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
-      const rejected = Boolean(isHostApprovalRejectedDecision(approval));
-      if (rejected || approval.choice !== "allow-once" && approval.choice !== "allow-session" && approval.choice !== "allow-always") {
-        return { decision: "deny", reason: approval.rememberPattern === NO_APPROVER_MESSAGE ? NO_APPROVER_MESSAGE : "user denied hook command" };
+      if (admitted?.decision !== "allow") {
+        return { decision: "deny", reason: admitted?.decision === "deny"
+          ? "user denied hook command" : hostApprovalDenialReason(approval) ?? "approval rejected by host" };
       }
     }
     if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId) || !controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
@@ -139,7 +140,7 @@ export function createHookCommandAuthorizer(deps: {
       const verdict = card.verdict ?? { kind: "policy-changed" as const };
       if (verdict.kind === "recheck-failed") return { decision: "deny", reason: verdict.reason, commandAdmissionFailure: verdict.kind };
       if (!("fresh" in verdict)) {
-        return { decision: "deny", reason: verdict.kind === "declined" ? "user denied hook command" : "Permission policy changed while approval was pending" };
+        return { decision: "deny", reason: "Permission policy changed while approval was pending" };
       }
       current = verdict.fresh;
       if (verdict.kind === "denied") return { decision: "deny", reason: current.reason };

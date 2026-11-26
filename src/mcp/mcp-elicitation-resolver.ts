@@ -1,9 +1,11 @@
 /** Route untrusted elicitation through per-server host approval, never user-command dispatch.
  * URL mode asks consent; forms return captured input; unsupported input methods throw. */
 import { randomUUID } from "node:crypto";
-import type {
-  ApprovalDecision,
-  ApprovalRequestInput,
+import {
+  admitApprovalAnswer,
+  type AnsweredRecord,
+  type ApprovalDecision,
+  type ApprovalRequestInput,
 } from "../permissions/approval-gate.js";
 import type { McpInputRequestResolver } from "./mcp-client.js";
 import {
@@ -92,13 +94,15 @@ export function createElicitationResolverFactory(deps: {
         ? { message, url: request.url, elicitationId: request.elicitationId }
         : { message, requestedSchema: request.requestedSchema };
 
+      const requestId = randomUUID();
+      const toolName = `mcp:${serverId}:elicitation`;
       const decision = await deps.approvalGate.requestAndWait({
-        id: randomUUID(),
+        id: requestId,
         category: "agent-action",
         kind: "agent-action",
         allowedChoices: ["allow-once", "deny-once"],
         durableApprovalRecordAllowed: false,
-        toolName: `mcp:${serverId}:elicitation`,
+        toolName,
         toolCategory: "meta",
         args,
         reason: message,
@@ -107,13 +111,20 @@ export function createElicitationResolverFactory(deps: {
         trustOrigin: "plugin-emitted",
       });
 
-      if (decision.choice !== "allow-once") return { action: "decline" };
+      let admitted: AnsweredRecord | undefined;
+      try {
+        admitted = admitApprovalAnswer(decision, { requestId, toolName, toolUseId: undefined });
+      } catch {
+        return { action: "cancel" };
+      }
+      if (admitted?.decision === "deny") return { action: "decline" };
+      if (admitted?.choice !== "allow-once") return { action: "cancel" };
 
       if (shouldValidateFormContent(request)) {
         const schema = parseElicitationSchema(request.requestedSchema);
-        if (!schema || !isRecord(decision.elicitationContent)) return { action: "decline" };
+        if (!schema || !isRecord(decision.elicitationContent)) return { action: "cancel" };
         if (!validateElicitationContent(schema, decision.elicitationContent)) {
-          return { action: "decline" };
+          return { action: "cancel" };
         }
         return { action: "accept", content: decision.elicitationContent };
       }

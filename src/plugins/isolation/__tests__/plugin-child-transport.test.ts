@@ -1103,7 +1103,7 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
     try {
       t.manager.setMode("allow");
       const read = await t.call("overlap-read", "overlap_read");
-      let sibling;
+      let sibling: { token: string; result: Promise<unknown>; finish: () => void };
       if (topology === "framed") {
         sibling = await t.call("overlap-sibling");
       } else {

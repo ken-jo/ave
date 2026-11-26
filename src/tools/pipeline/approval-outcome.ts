@@ -3,7 +3,9 @@ import { t } from "../../i18n/index.js";
 import {
   answeredApprovalProvenance,
   HOST_PROVENANCE,
+  hostApprovalDenialReason,
   isAnsweredApprovalDenial,
+  isHostApprovalCancelledDecision,
   isHostApprovalTimeoutDecision,
   isHostApprovalRejectedDecision,
   type ApprovalDecision,
@@ -43,14 +45,6 @@ export function answeredPermission(permission: PermissionCheckResult, decision: 
   return { ...permission, provenance: answeredApprovalProvenance(decision) };
 }
 
-/** Why the host ended an approval it produced itself, or undefined for a decision a person made. */
-export function hostApprovalDenialReason(decision: ApprovalDecision): string | undefined {
-  const expired = isHostApprovalTimeoutDecision(decision);
-  if (!expired && !isHostApprovalRejectedDecision(decision)) return undefined;
-  if (expired && decision.rememberPattern === NO_APPROVER_MESSAGE) return NO_APPROVER_MESSAGE;
-  return expired ? "approval request expired" : "approval rejected by host";
-}
-
 /** A card answer that is not an allow, or that the host rejected: terminal whatever the policy says afterwards. */
 export function isSettledRefusal(decision: ApprovalDecision): boolean {
   return !decision.choice.startsWith("allow") || isHostApprovalRejectedDecision(decision);
@@ -74,11 +68,12 @@ export function approvalFailureOutcome(
   if (reason === undefined) return null;
   const expired = isHostApprovalTimeoutDecision(decision);
   const autoSkipped = reason === NO_APPROVER_MESSAGE;
+  const cancelled = isHostApprovalCancelledDecision(decision);
   const detail = decision.rememberPattern
     ? maskSensitiveData(decision.rememberPattern).masked
     : t("be_executor.approvalHostRejectedReason");
   return {
-    content: autoSkipped ? NO_APPROVER_MESSAGE : expired ? t("be_executor.approvalExpired", { name: toolName })
+    content: cancelled ? t("be_executor.toolExecutionCancelled") : autoSkipped ? NO_APPROVER_MESSAGE : expired ? t("be_executor.approvalExpired", { name: toolName })
       : t("be_executor.approvalRejectedByHost", { name: toolName, reason: detail }),
     permission: {
       decision: "deny",

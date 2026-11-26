@@ -473,7 +473,7 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
     await run("headless-then-abort", async (probe) => {
       expect(probe.controller.signal.aborted).toBe(true);
       await expectNoDenial(probe, "user aborted turn");
-      expect(reasons(await settledRow(probe))[1]).toBe("user denied approval request");
+      expect(reasons(await settledRow(probe))[1]).toBe("approval rejected by host");
     });
   });
 

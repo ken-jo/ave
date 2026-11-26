@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { extensionStartApprovalRows, type ExtensionStartApprovalRow } from "../../shared/permissions-events.js";
 import { createExtensionStartAsker } from "../extension-start-asker.js";
 import { ApprovalGate, type ApprovalDecision, type ApprovalRequestInput } from "../approval-gate.js";
@@ -17,10 +17,11 @@ const idOf = (rows: readonly ExtensionStartApprovalRow[], index: number): string
 
 type Answer = (rows: readonly ExtensionStartApprovalRow[]) => Partial<ApprovalDecision>;
 
-function asker(answer: Answer, { malformed = false } = {}) {
+function asker(answer: Answer, { outsideAllowedChoices = false, recordless = false } = {}) {
   const requestAndWait = vi.fn(async (request: ApprovalRequestInput): Promise<ApprovalDecision> => {
     const decision: ApprovalDecision = { requestId: request.id, choice: "deny-once", ...answer(extensionStartApprovalRows(request.args) ?? []) };
-    if (malformed) return decision;
+    if (recordless) return decision;
+    if (outsideAllowedChoices) return answeredApprovalDecision(decision, "desk", request.toolName);
 
     const surface = { isDestroyed: () => false, send: vi.fn() };
     const gate = new ApprovalGate(surface as never);
@@ -65,13 +66,13 @@ describe("the extension start card", () => {
     }
   });
 
-  it("answers only the rows it showed: a start the answer does not name gets no answer", async () => {
-    const { asker: subject } = asker((rows) => ({ choice: "allow-once", extensionStartChoices: { [idOf(rows, 0)]: "yes", "mcp-stdio:files": "yes", "plugin-child:notes": "yes" } }), { malformed: true });
-    expect(await subject.ask([START, ...OTHERS], SESSION)).toEqual(new Map([["mcp-stdio:files", "yes"]]));
+  it("refuses answers that name rows the card did not show", async () => {
+    const { asker: subject } = asker((rows) => ({ choice: "allow-once", extensionStartChoices: { [idOf(rows, 0)]: "yes", "mcp-stdio:files": "yes", "plugin-child:notes": "yes" } }));
+    expect(await subject.ask([START, ...OTHERS], SESSION)).toBe("no-approver");
   });
 
   it("never reads a yes for several starts out of one allow that names none of them", async () => {
-    const { asker: subject } = asker(() => ({ choice: "allow-once" }), { malformed: true });
+    const { asker: subject } = asker(() => ({ choice: "allow-once" }), { outsideAllowedChoices: true });
     expect(await subject.ask([START, ...OTHERS], SESSION)).toEqual(new Map());
   });
 
@@ -80,8 +81,12 @@ describe("the extension start card", () => {
     expect(await subject.ask([START, ...OTHERS], SESSION)).toEqual(new Map([["mcp-stdio:files", "no"], ["plugin-child:notes", "no"], ["worker:notes/index", "no"]]));
   });
 
-  it.each(["deny-once", "allow-session", "allow-always"] as const)("treats %s as a no", async (choice) => {
-    expect(await asker(() => ({ choice }), { malformed: choice !== "deny-once" }).asker.ask([START], SESSION)).toEqual(new Map([["mcp-stdio:files", "no"]]));
+  it.each(["deny-once", "deny-always"] as const)("treats recordless %s as unanswered", async (choice) => {
+    expect(await asker(() => ({ choice }), { recordless: true }).asker.ask([START], SESSION)).toBe("no-approver");
+  });
+
+  it.each(["allow-session", "allow-always"] as const)("treats the unsupported %s as unanswered", async (choice) => {
+    expect(await asker(() => ({ choice }), { outsideAllowedChoices: true }).asker.ask([START], SESSION)).toBe("no-approver");
   });
 
   it("passes the notice reason and the audit row through", () => {

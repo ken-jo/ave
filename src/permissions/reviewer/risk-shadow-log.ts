@@ -18,6 +18,7 @@ export function emitEffectShadowLog(
 ): void {
   const { correlationId, hasMutatingEffect, effects, observationIncomplete } = record.hostObservedEffect;
   const subject = "toolName" in record ? { toolName: record.toolName } : { hostApiPath: record.hostApiPath };
+  const label = "toolName" in subject ? subject.toolName : `unattributed ${subject.hostApiPath}`;
   const fields = {
     event: "effect-shadow",
     ...subject,
@@ -34,7 +35,7 @@ export function emitEffectShadowLog(
       timestamp: new Date().toISOString(),
       sessionId: "permission-shadow",
       type: "info",
-      input: `effect-shadow ${"toolName" in subject ? subject.toolName : "unattributed " + subject.hostApiPath} source=${record.source} hostObservable=${record.hostObservable} hasMutatingEffect=${hasMutatingEffect}`,
+      input: `effect-shadow ${label} source=${record.source} hostObservable=${record.hostObservable} hasMutatingEffect=${hasMutatingEffect}`,
       output: JSON.stringify(fields),
     });
   } catch {

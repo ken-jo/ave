@@ -12,7 +12,7 @@ import {
   type PermissionCheckContext,
   type PermissionCheckResult,
 } from "../permissions/permission-manager.js";
-import { admitApprovalAnswer, answeredApprovalProvenance, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalRejectedDecision, RULE_PROVENANCE, type ApprovalDecision, type LinkedApprovalTarget } from "../permissions/approval-gate.js";
+import { admitApprovalAnswer, answeredApprovalProvenance, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalCancelledDecision, isHostApprovalRejectedDecision, RULE_PROVENANCE, type ApprovalDecision, type LinkedApprovalTarget } from "../permissions/approval-gate.js";
 import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import type {
   HostShellExecutionPlan,
@@ -158,7 +158,7 @@ export interface AuthorizationStageContext {
   hostTerminalReapproval?: boolean;
   reviewedPermissionForCard?: PermissionCheckResult;
   cardRequestId?: string;
-  onHumanDecision?: (decision: import("../permissions/approval-gate.js").ApprovalDecision) => void;
+  onApprovalDecision?: (decision: import("../permissions/approval-gate.js").ApprovalDecision) => void;
   resolvedPluginOperation: ResolvedPluginOperation | undefined;
   pluginOperationPrincipal: PluginOperationPrincipal | undefined;
 }
@@ -627,18 +627,18 @@ export async function authorizeToolInvocation(
               stopped === true ? quit ? "host-shutdown" : "user-abort" : undefined);
           },
           requestHumanApproval: context.directoryAuthorization?.requestHumanApproval ?? (async ({ requestId, abortSignal: cardAbortSignal }) => {
-            let humanDecision: import("../permissions/approval-gate.js").ApprovalDecision | undefined;
+            let approvalDecision: import("../permissions/approval-gate.js").ApprovalDecision | undefined;
             const cardAuthorization = await authorizeToolInvocation({ ...context, directoryAuthorization: undefined,
               rationaleBatchContext: undefined, rationaleResumeContext: undefined,
               reviewedPermissionForCard, cardRequestId: requestId,
               abortSignal: services.invocationTerminal.bindAbortSignal(cardAbortSignal),
-              onHumanDecision: (decision) => { humanDecision = decision; },
+              onApprovalDecision: (decision) => { approvalDecision = decision; },
             });
-            if (humanDecision === undefined && "tool_use_id" in cardAuthorization && cardAuthorization.is_error === true) {
+            if (approvalDecision === undefined && "tool_use_id" in cardAuthorization && cardAuthorization.is_error === true) {
               throw new RationaleHumanApprovalDeniedError(cardAuthorization.content);
             }
-            if (humanDecision === undefined) throw new Error("Approval did not produce an authenticated decision");
-            return humanDecision;
+            if (approvalDecision === undefined) throw new Error("Approval did not produce an authenticated decision");
+            return approvalDecision;
           }),
           sandboxCapability,
           sandboxExecutionPlan,
@@ -1283,22 +1283,23 @@ export async function authorizeToolInvocation(
         }
         permissionResult = surfaceResolution.permission;
         decision = surfaceResolution.decision;
-        context.onHumanDecision?.(decision);
+        context.onApprovalDecision?.(decision);
         const manuallyApproved = decision.choice.startsWith("allow") &&
           !isHostApprovalRejectedDecision(decision);
 
         if (decision.choice.startsWith("deny")) {
-          const hostFailure = approvalFailureOutcome(
-            decision, toolUse.name,
-          );
+          const hostFailure = surfaceResolution.provenance === undefined
+            ? approvalFailureOutcome(decision, toolUse.name) : null;
+          const cancelled = isHostApprovalCancelledDecision(decision);
           const deniedPermission = hostFailure?.permission ?? (surfaceResolution.provenance === undefined
             ? refusal("user denied approval request", answeredApprovalProvenance(decision))
-            : refusal(permissionResult.decision === "deny" ? permissionResult.reason : "user denied approval request", surfaceResolution.provenance));
+            : refusal(permissionResult.reason, surfaceResolution.provenance));
           // The accepted deny is this attempt's outcome from here; a host row written during the save below keeps it.
           services.invocationTerminal?.select(deniedPermission);
           // deny-always: 영구 거부 규칙 추가
           if (
             decision.choice === "deny-always" &&
+            deniedPermission.provenance.kind === "answered" &&
             services.permissionManager
           ) {
             const pattern =
@@ -1326,7 +1327,7 @@ export async function authorizeToolInvocation(
             undefined,
             durationMs,
           );
-          await auditCurrentToolCall(
+          await (cancelled ? context.auditCancelledToolCall : auditCurrentToolCall)(
             sessionId,
             toolUse.name,
             source,

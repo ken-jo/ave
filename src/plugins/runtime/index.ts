@@ -1332,7 +1332,7 @@ abstract class PluginRuntimeState {
   ) => PluginHostApi;
   protected readonly deploymentGuard?: PluginDeploymentGuard;
   protected readonly installReceiptCacheRoot?: string;
-  private readonly effectAudit?: Pick<AuditLogger, "logShadow">;
+  protected readonly effectAudit?: Pick<AuditLogger, "logShadow">;
   protected readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
   protected readonly onMalformedCredentialSelector?: (pluginId: string) => void;
   protected readonly onDisable?: (pluginId: string) => void;
