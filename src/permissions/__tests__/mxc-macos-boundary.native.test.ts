@@ -5,46 +5,34 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { launcherPathFor } from "../mxc-launcher.js";
-import { _runSeatbeltCanaryForTest, parseSeatbeltProfile } from "../mxc-macos.js";
-import { posixPolicyLookups, rankPosixContainerRows } from "../mxc-posix.js";
-import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../policy-model.js";
-import { buildSeatbeltDenySuffix } from "../seatbelt-profile.js";
+import { _runSeatbeltCanaryForTest, buildSeatbeltShellRequest } from "../mxc-macos.js";
+import { posixPolicyLookups } from "../mxc-posix.js";
+import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../policy-model.js";
 
-describe.runIf(process.platform === "darwin" && process.arch === "arm64")("native Seatbelt deny suffix", () => {
+describe.runIf(process.platform === "darwin" && process.arch === "arm64")("native macOS shell boundary", () => {
   let root: string;
   let work: string;
 
   beforeEach(() => {
-    root = realpathSync.native(mkdtempSync(join(tmpdir(), "seatbelt-suffix-")));
+    root = realpathSync.native(mkdtempSync(join(tmpdir(), "sb-")));
     work = join(root, "work");
     mkdirSync(work);
   });
 
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-  function launch(commandLine: string, timeout: number, suffix: string, filesystem: object) {
+  function launch(commandLine: string, timeoutMs: number, model: PolicyModel, cwd = work) {
     const launcher = launcherPathFor(resolve("resources"), "darwin", "arm64");
     if (launcher === undefined) throw new Error("macOS launcher path is missing");
     const config = join(root, "launcher.json");
-    const request = {
-      version: "1.0.0", containment: "seatbelt",
-      process: { commandLine: "/usr/bin/true", cwd: work, timeout: 5_000 },
-      filesystem,
-      network: { egress: { default: "deny" }, ingress: { default: "deny", hostLoopback: "deny" } },
-      seatbelt: { nestedPty: false },
-    };
-    const run = (args: string[]) => spawnSync(launcher, [...args, "--config", config], {
-      stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: buildSafeChildEnv(), timeout: 8_000,
+    const { request } = buildSeatbeltShellRequest({
+      model, cwd, commandLine, timeoutMs, lookups: posixPolicyLookups(root, true),
+      env: { HOME: root, PATH: "/usr/bin:/bin" }, proxyUrl: "http://127.0.0.1:1",
     });
     writeFileSync(config, JSON.stringify(request), { mode: 0o600 });
-    const generated = run(["--debug"]);
-    expect(generated.status, generated.stderr).toBe(0);
-    const profileOverride = parseSeatbeltProfile(`${generated.stdout}\n${generated.stderr}`) + suffix;
-    writeFileSync(config, JSON.stringify({
-      ...request, process: { ...request.process, commandLine, timeout },
-      seatbelt: { ...request.seatbelt, profileOverride },
-    }));
-    return run([]);
+    return spawnSync(launcher, ["--config", config], {
+      stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: buildSafeChildEnv(), timeout: 8_000,
+    });
   }
 
   it("carves around a denied sibling and refuses protected moves and new pattern matches", () => {
@@ -57,32 +45,27 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
     mkdirSync(open, { recursive: true });
     writeFileSync(join(open, "control"), "readable");
     writeFileSync(secret, "private fixture");
-    const literalRows = [
-      policyFloorRow(vault, "denied", "read-boundary", true),
-      policyFloorRow(protectedChild, "ro", "protected-name", true),
-    ];
-    const lookups = posixPolicyLookups(root, true);
-    const grants = rankPosixContainerRows(buildPolicyModel({
-      floors: literalRows, userGrants: [], extensionManifests: [],
+    const model = buildPolicyModel({
+      userGrants: [], extensionManifests: [],
+      floors: [
+        policyFloorRow(vault, "denied", "read-boundary", true),
+        policyFloorRow(protectedChild, "ro", "protected-name", true),
+        policyFloorRow(work + "/**/*.locked", "ro", "protected-name", false),
+      ],
       launchGrants: [
         policyGrantRow(root, "ro", "launch-grant", true),
         policyGrantRow(work, "rw", "launch-grant", true),
         policyGrantRow(open, "ro", "launch-grant", true),
       ],
-    }), "seatbelt", lookups);
-    const suffix = buildSeatbeltDenySuffix({
-      literals: literalRows, writeRoots: [work], lookups,
-      patterns: [policyFloorRow(`${work}/**/*.locked`, "ro", "protected-name", false)],
     });
     const result = launch([
       `test "$(cat '${open}/control')" = readable || exit 11`,
       `if cat '${secret}'; then exit 12; fi`,
+      "if stat '" + secret + "'; then exit 16; fi",
       "mkdir ordinary && echo ok > ordinary/good || exit 13",
       "if (echo denied > ordinary/new.locked); then exit 14; fi",
       "if mv control renamed; then exit 15; fi",
-    ].join("\n"), 3_000, suffix, {
-      readwritePaths: grants.readwrite, readonlyPaths: grants.readonly, deniedPaths: grants.denied,
-    });
+    ].join("\n"), 3_000, model);
     expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(result.stdout).not.toContain("private fixture");
     expect(existsSync(protectedChild)).toBe(true);
@@ -98,33 +81,31 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
     mkdirSync(child, { recursive: true });
     for (const dir of [outer, project, inner, child]) writeFileSync(join(dir, "file"), "fixture");
 
-    const lookups = posixPolicyLookups(root, true);
-    const grants = rankPosixContainerRows(buildPolicyModel({
+    const model = buildPolicyModel({
       floors: [outer, inner].map(dir => policyFloorRow(dir, "denied", "read-boundary", true)),
       launchGrants: [work, project, child].map(dir => policyGrantRow(dir, "ro", "launch-grant", true)),
       userGrants: [], extensionManifests: [],
-    }), "seatbelt", lookups);
+    });
     const result = launch([
       `cat '${project}/file' || exit 11`,
       `cat '${child}/file' || exit 12`,
       `if cat '${outer}/file'; then exit 13; fi`,
       `if cat '${inner}/file'; then exit 14; fi`,
-    ].join("\n"), 3_000, "", {
-      readwritePaths: grants.readwrite, readonlyPaths: grants.readonly, deniedPaths: grants.denied,
-    });
+    ].join("\n"), 3_000, model);
     expect(result.status, result.stdout + result.stderr).toBe(0);
   });
 
   it("reaps the shell, a background child and a setsid descendant on the backend timeout under an override", () => {
-    const suffix = buildSeatbeltDenySuffix({
-      literals: [], patterns: [], writeRoots: [work], lookups: posixPolicyLookups(root, true),
+    const model = buildPolicyModel({
+      floors: [], userGrants: [], extensionManifests: [],
+      launchGrants: [policyGrantRow(work, "rw", "launch-grant", true)],
     });
     const result = launch([
       "echo $$ > shell.pid",
       "sleep 8 & echo $! > child.pid",
       `/usr/bin/perl -MPOSIX -e 'POSIX::setsid() >= 0 or die $!; open(my $pid, ">", "detached.pid") or die $!; print $pid $$; close($pid); sleep 8' &`,
       "wait",
-    ].join("\n"), 1_200, suffix, { readwritePaths: [work], readonlyPaths: [], deniedPaths: [] });
+    ].join("\n"), 1_200, model);
     expect(result.signal).toBeNull();
     expect(result.status, result.stdout + result.stderr).toBe(255);
     for (const name of ["shell", "child", "detached"]) {
@@ -146,6 +127,7 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
     if (launcher === undefined) throw new Error("macOS launcher path is missing");
     const wrapper = join(work, "abort-probe");
     writeFileSync(wrapper, `#!/bin/sh
+if [ "$1" = "--debug" ]; then exit 91; fi
 if [ "$1" = "--config" ]; then
   /usr/bin/perl -MJSON::PP -0777 -i -pe 'my $request=decode_json($_); $request->{process}{commandLine}=q{echo $$ > child.pid; /bin/sleep 1; exit 0}; $_=encode_json($request)' "$2" || exit 1
 fi

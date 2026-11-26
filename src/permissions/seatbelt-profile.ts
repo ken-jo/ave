@@ -95,59 +95,6 @@ function regexFilter(regex: string): string {
   return `(regex #"${regex}")`;
 }
 
-function literalFilter(path: string): string {
-  if (!posix.isAbsolute(path) || CONTROL_CHARACTER.test(path)) {
-    throw new SeatbeltDenyError("relative-row", `Invalid container profile path: ${path}`);
-  }
-  return `(literal ${JSON.stringify(path)})`;
-}
-
-function pathSpelling(path: string, foldsCase: boolean): string {
-  return foldsCase ? path.normalize("NFC").toLowerCase() : path;
-}
-
-function covers(root: string, path: string, foldsCase: boolean): boolean {
-  const base = pathSpelling(root, foldsCase);
-  const candidate = pathSpelling(path, foldsCase);
-  return candidate === base || candidate.startsWith(base === "/" ? "/" : `${base}/`);
-}
-
-export function buildSeatbeltDenySuffix(input: {
-  literals: readonly PolicyFloorRow[];
-  patterns: readonly PolicyFloorRow[];
-  writeRoots: readonly string[];
-  lookups: SuffixLookups;
-}): string {
-  const { literals, patterns, writeRoots, lookups } = input;
-  const pins = new Set<string>();
-  const variantDenies: string[] = [];
-  for (const row of literals) {
-    const containing = writeRoots.filter(root => covers(root, row.path, lookups.foldsCase));
-    if (containing.length === 0) continue;
-    for (let ancestor = posix.dirname(row.path); ancestor !== "/" && ancestor !== "."; ancestor = posix.dirname(ancestor)) {
-      pins.add(ancestor);
-    }
-    if (!lookups.foldsCase && row.access === "ro") {
-      const root = containing.reduce((left, right) => left.length >= right.length ? left : right);
-      const tail = row.path.slice(root.length).replace(/[a-z]|[^a-z]+/giu, part => /^[a-z]$/iu.test(part)
-        ? `[${part.toLowerCase()}${part.toUpperCase()}]` : escapeRegex(part));
-      variantDenies.push(`(deny file-write* ${regexFilter(`^${escapeRegex(root)}${tail}(/.*)?$`)})`);
-    }
-  }
-  const forms = [
-    ...(pins.size === 0 ? [] : [`(deny file-write-unlink file-write-create ${[...pins].map(literalFilter).join(" ")})`]),
-    "(deny network-outbound (remote unix-socket))",
-    "(deny network-bind (local unix-socket))",
-    ...variantDenies,
-    ...patterns.map((row) => {
-      const regex = seatbeltDenyGlob(row.path, row.reason === "protected-name", lookups);
-      const operation = row.access === "ro" ? "file-write*" : "file-read* file-read-metadata";
-      return `(deny ${operation} ${regexFilter(regex)})`;
-    }),
-  ];
-  return `${[...new Set(forms)].join("\n")}\n`;
-}
-
 const SHELL_BASELINE = `(version 1)
 (deny default)
 (allow process-fork)

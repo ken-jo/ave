@@ -68,7 +68,7 @@ describe("macOS container shell canary evidence", () => {
   const success = {
     status: 0, timedOut: false, stdout: "container-shell-control\n",
     control: "container-shell-control\n", outsideWrite: false, otherPortConnected: false,
-    protectedParentInPlace: true,
+    protectedParentInPlace: true, unixSocketConnected: false, protectedNewFile: false,
   };
 
   it("requires a working control and each denied effect", () => {
@@ -83,6 +83,8 @@ describe("macOS container shell canary evidence", () => {
     ["control write failure", { control: null }],
     ["write deny leak", { outsideWrite: true }],
     ["network deny leak", { otherPortConnected: true }],
+    ["Unix-socket deny leak", { unixSocketConnected: true }],
+    ["new pattern match", { protectedNewFile: true }],
     ["ancestor move", { protectedParentInPlace: false }],
   ] as const)("fails on %s", (_case, evidence) => {
     expect(_seatbeltCanaryPassedForTest({ ...success, ...evidence })).toBe(false);

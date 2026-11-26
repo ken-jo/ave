@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { rankPosixContainerRows, type PosixPolicyLookups } from "../mxc-posix.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../policy-model.js";
-import { buildSeatbeltShellProfile, splitSeatbeltPolicyRows } from "../seatbelt-profile.js";
+import { _seatbeltDenyGlobForTest, buildSeatbeltShellProfile, splitSeatbeltPolicyRows } from "../seatbelt-profile.js";
 
 const lookups: PosixPolicyLookups = {
   home: "/users/example", foldsCase: true, canonical: path => path,
@@ -28,6 +28,17 @@ function fixture(paths = lookups) {
 }
 
 describe("Seatbelt shell profile", () => {
+  it.each([
+    ["/sessions/**/*.key", "^/sessions/(.*/)?[^/]*\\.key(/.*)?$"],
+    ["/sessions/**/.env.*", "^/sessions/(.*/)?\\.env\\.[^/]*(/.*)?$"],
+    ["/sessions/key?.pem", "^/sessions/key[^/]\\.pem(/.*)?$"],
+    ["/sessions/**", "^/sessions(/.*)?$"],
+    ["/.config/**/Login Data", "^/\\.config/(.*/)?Login Data(/.*)?$"],
+    ["/**/.[gG][iI][tT]/[hH][oO][oO][kK][sS]", "^/(.*/)?\\.[gG][iI][tT]/[hH][oO][oO][kK][sS](/.*)?$"],
+  ])("compiles %s with the existing deny semantics", (glob, expected) => {
+    expect(_seatbeltDenyGlobForTest(glob, true)).toBe(expected);
+  });
+
   it("renders the pinned baseline, allowances and denies for ranked rows", () => {
     expect(buildSeatbeltShellProfile(fixture())).toMatchInlineSnapshot(`
       "(version 1)
@@ -114,5 +125,13 @@ describe("Seatbelt shell profile", () => {
     });
     expect(() => buildSeatbeltShellProfile({ ...fixture(), model }))
       .toThrow(expect.objectContaining({ code: "pattern-row" }));
+  });
+  it("keeps marked metacharacters literal and refuses an undecidable user class", () => {
+    const literal = policyFloorRow("/sessions/[archive]", "denied", "read-boundary", true);
+    const pattern = policyFloorRow("/sessions/[a-z].key", "denied", "user-deny", false);
+    const model = buildPolicyModel({ floors: [literal, pattern], launchGrants: [], userGrants: [], extensionManifests: [] });
+    expect(splitSeatbeltPolicyRows(model)).toEqual({ literalModel: { rows: [literal] }, patternRows: [pattern] });
+    expect(() => buildSeatbeltShellProfile({ ...fixture(), model }))
+      .toThrow(expect.objectContaining({ code: "pattern-undecidable" }));
   });
 });

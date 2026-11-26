@@ -15,7 +15,7 @@ export const NATIVE_TIER_TESTS = [
   "src/permissions/__tests__/container-route-unswitched.test.ts",
   "src/permissions/__tests__/mxc-runtime-root-floor.test.ts",
   "src/permissions/__tests__/mxc-runtime-root.test.ts",
-  "src/permissions/__tests__/seatbelt-deny-suffix.native.test.ts",
+  "src/permissions/__tests__/mxc-macos-boundary.native.test.ts",
   "src/permissions/__tests__/srt-win-integrity.test.ts",
   "src/plugins/isolation/__tests__/confined-plugin-child.test.ts",
   "src/sandbox/__tests__/runtime-grant-native.test.ts",
