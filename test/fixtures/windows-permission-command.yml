@@ -54,25 +54,20 @@
     src/permissions/__tests__/allowed-directories-nfd-root.test.ts
     src/permissions/__tests__/mxc-extension-admission.test.ts
     src/permissions/__tests__/mxc-sdk-packaging.test.ts
-    src/permissions/__tests__/asrt-linux-runtime-probe.test.ts
-    src/permissions/__tests__/asrt-sandbox.test.ts
     src/permissions/__tests__/git-readonly-argv.test.ts
     src/permissions/__tests__/git-readonly-controls.test.ts
     src/permissions/__tests__/git-repository-inputs.test.ts
     src/permissions/__tests__/git-repository-read-boundary.test.ts
     src/permissions/__tests__/verified-shell-command.test.ts
     src/main/__tests__/document-open.test.ts
-    src/permissions/__tests__/asrt-deny-absent.test.ts
     src/permissions/__tests__/mxc-policy-pipe.test.ts
     src/permissions/__tests__/mxc-windows-missing-denies.test.ts
     src/permissions/__tests__/mxc-windows-transport.test.ts
     src/tools/__tests__/mxc-shell-launch.test.ts
     src/tools/__tests__/mxc-link-traversal.integration.test.ts
     src/tools/__tests__/mxc-pipe-lifetime.integration.test.ts
-    src/permissions/__tests__/asrt-deny-absent-native.test.ts
     src/sandbox/__tests__/runtime-grant-native.test.ts
     src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts
-    src/permissions/__tests__/windows-deny-acl.test.ts
     src/main/terminal/__tests__/host-shell-integration.test.ts
     src/permissions/__tests__/host-shell-execution-permit.test.ts
     src/permissions/__tests__/allowed-directories.test.ts
@@ -153,15 +148,12 @@
     src/ui/renderer/tabs/__tests__/SubscriptionProvidersSection.test.tsx
     src/__tests__/support/native-executable.test.ts
     src/__tests__/support/fixture-owner.test.ts
-    src/__tests__/support/fixture-acl-reset.test.ts
     src/tools/__tests__/background-shell-windows-job.test.ts
     src/tools/__tests__/bash-dialect.test.ts
     src/lib/__tests__/admin-policy-file.test.ts
     src/permissions/__tests__/policy-store-windows.test.ts
     src/shared/__tests__/windows-admin-policy.test.ts
     src/__tests__/program-data-isolation.test.ts
-    src/permissions/__tests__/asrt-stamp-targets.test.ts
-    src/permissions/__tests__/windows-stamp-targets.test.ts
     src/permissions/__tests__/filesystem-policy-boundary.test.ts
     src/shared/__tests__/windows-read-deny-evidence.test.ts
     src/shared/__tests__/ave-home-configuration-owners.test.ts
@@ -179,18 +171,10 @@
     src/permissions/__tests__/windows-sandbox-logic.test.ts
     src/permissions/__tests__/sandbox-write-policy.test.ts
     src/permissions/__tests__/macos-sandbox-wrap.test.ts
-    src/permissions/__tests__/asrt-protected-write-roots.test.ts
-    src/permissions/__tests__/asrt-exit-release.test.ts
     test/scripts/fetch-uv-cache.test.ts
     test/scripts/setup-bun-cache.test.ts
-    test/scripts/asrt-patched-symbols.test.ts
-    src/permissions/__tests__/asrt-windows-support.test.ts
-    src/permissions/__tests__/asrt-background-initialization.test.ts
-    src/permissions/__tests__/asrt-windows-initialization.test.ts
     src/boot/__tests__/sandbox-init-windows-mxc.test.ts
-    src/permissions/__tests__/asrt-windows-grant-paths.test.ts
     src/permissions/__tests__/ave-home-read-boundary.test.ts
-    src/permissions/__tests__/srt-win-integrity.test.ts
     src/permissions/__tests__/egress-runtime-proxy.test.ts
     src/tools/__tests__/shell-windows-partial-plan-b.test.ts
     src/tools/__tests__/shell-windows-mxc.test.ts
@@ -309,7 +293,6 @@
     src/main/__tests__/project-root-authorization.test.ts
     src/main/__tests__/python-runtime.test.ts
     src/main/__tests__/tour-state-store.test.ts
-    src/main/__tests__/windows-acl-host.test.ts
     src/main/terminal/__tests__/pty-manager.test.ts
     src/main/terminal/__tests__/pty-native-binding.test.ts
     src/main/terminal/__tests__/shell-integration.test.ts
@@ -322,9 +305,6 @@
     src/marketplace/service/__tests__/client.test.ts
     src/mcp/__tests__/agent-plugin-mcp.test.ts
     src/mcp/__tests__/mcp-stdio-sandbox-wrap.test.ts
-    src/permissions/__tests__/asrt-java-proxy-agent.test.ts
-    src/permissions/__tests__/asrt-sandbox-root-dir-row.test.ts
-    src/permissions/__tests__/asrt-stamp-debug.test.ts
     src/permissions/__tests__/ave-home-confinement.test.ts
     src/permissions/__tests__/ave-home-extension-starts.test.ts
     src/permissions/__tests__/base-allowed-directories.test.ts
@@ -342,7 +322,6 @@
     src/permissions/__tests__/sandbox-temp-principal.test.ts
     src/permissions/__tests__/sensitive-paths-windows.test.ts
     src/permissions/__tests__/shell-exfiltration-windows.test.ts
-    src/permissions/__tests__/windows-acl-grant-holder.test.ts
     src/permissions/__tests__/windows-shell-network-access.test.ts
     src/permissions/__tests__/worker-spawn.test.ts
     src/permissions/__tests__/workspace-root-reconciler.test.ts
@@ -436,7 +415,6 @@
     src/mcp/__tests__/mcp-manager-bundled-generation.test.ts
     src/mcp/__tests__/mcp-oauth-integration.test.ts
     src/mcp/__tests__/mcp-policy-home-review.test.ts
-    src/permissions/__tests__/asrt-pinned-write-roots.test.ts
     src/permissions/__tests__/permission-mode-apply.test.ts
     src/permissions/__tests__/permission-settings-judge.test.ts
     src/permissions/__tests__/permission-settings-model-migration.test.ts

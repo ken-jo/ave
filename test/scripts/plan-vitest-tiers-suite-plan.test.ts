@@ -57,8 +57,8 @@ describe("Vitest tiers for written planCiSuite plans", () => {
 
   it("selects the native tier for a traced dependency of a native tier suite", () => {
     // Discovery reports one native importer, so the tier comes from the traced plan rather than a must-run group.
-    const source = "src/lib/confined-process-phase.ts";
-    const importer = "src/permissions/__tests__/asrt-sandbox.test.ts";
+    const source = "src/permissions/mxc-runtime-root.ts";
+    const importer = "src/permissions/__tests__/mxc-runtime-root.test.ts";
     const { written, tiers } = suitePlan([source], PULL_REQUEST, { headRef: "fix/phase", baseRef: "main" },
       { status: 0, stdout: JSON.stringify([{ source, tests: [importer] }]) });
     expect(written.reason).toMatch(/^pull request into main; 1 changed module\(s\) reach 1 test file\(s\); /u);
