@@ -40,6 +40,7 @@ import { z } from "zod";
 
 import { spawnWindowsJobProcess } from "../main/windows-job-launcher.js";
 import { t } from "../i18n/index.js";
+import type { WindowsHoldOutcome } from "../shared/windows-path-facts.js";
 import {
   createDynamicTool,
   ZodTool,
@@ -279,6 +280,14 @@ function formatShellCompletion(output: string, empty: boolean, completion: Shell
       ? `exited with code ${completion.code}`
       : "failed with no reported exit code or signal";
   return empty ? `Shell command ${cause} without output.` : `Shell command ${cause}.\n${output}`;
+}
+
+/** The working-directory hold reports outside the command's output: a lost hold fails the run whatever the exit code, and
+ * background processes it stopped at the end are named. */
+function withCwdPinOutcome<T extends { output: string; isError: boolean; metadata?: Record<string, unknown> }>(result: T, pin: WindowsHoldOutcome | undefined): T {
+  if (pin === undefined || (pin.kind === "reaped" && !pin.stopped)) return result;
+  if (pin.kind === "reaped") return { ...result, output: `${result.output}\n${t("shellExecution.cwdPinStoppedBackground")}` };
+  return { ...result, output: `${result.output}\n${t("shellExecution.cwdPinLost")}`, isError: true, metadata: { ...result.metadata, cwdPinLost: true } };
 }
 
 /** Keep a bounded UTF-8 prefix while continuing to drain both child pipes. */
@@ -634,6 +643,8 @@ export interface BackgroundShellManager {
     initialOutput?: string;
     initialOutputTruncated?: boolean;
     observation?: AgentTerminalObservationLease;
+    /** The working-directory hold's report, read once the child closes. */
+    cwdPin?: () => Promise<WindowsHoldOutcome | undefined>;
   }): string;
   registerBroker(input: {
     sessionId: string;
@@ -1085,7 +1096,7 @@ function createManager(): BackgroundShellManager {
   };
 
   return {
-    register({ sessionId, command, child, startedAt, killProcessGroup = false, captureOutput = true, initialOutput = "", initialOutputTruncated = false, observation }): string {
+    register({ sessionId, command, child, startedAt, killProcessGroup = false, captureOutput = true, initialOutput = "", initialOutputTruncated = false, observation, cwdPin }): string {
       // Keep the registry lean within a long-lived session: drop this session's
       // already-finished shells whose output has been fully read before adding a
       // new one. Never-read terminal shells are preserved (the model may still
@@ -1158,13 +1169,23 @@ function createManager(): BackgroundShellManager {
       });
       child.on("close", (code, signal: NodeJS.Signals | null = null) => {
         if (captureOutput) append(entry, decoders.stdout.end() + decoders.stderr.end());
-        entry.exitCode = code;
-        entry.signal = signal;
-        if (entry.status === "running") {
-          entry.status = signal === null ? "exited" : "killed";
-        }
-        observation?.finish(code, entry.status === "killed" ? "cancelled" : entry.status === "failed" || code !== 0 ? "failed" : "completed");
-        notify(entry);
+        const settle = (pin: WindowsHoldOutcome | undefined): void => {
+          entry.exitCode = code;
+          entry.signal = signal;
+          if (pin?.kind === "lost" && entry.status === "running") {
+            entry.status = "failed";
+            append(entry, `\n${t("shellExecution.cwdPinLost")}\n`);
+          } else if (pin?.kind === "reaped" && pin.stopped) {
+            append(entry, `\n${t("shellExecution.cwdPinStoppedBackground")}\n`);
+          }
+          if (entry.status === "running") {
+            entry.status = signal === null ? "exited" : "killed";
+          }
+          observation?.finish(code, entry.status === "killed" ? "cancelled" : entry.status === "failed" || code !== 0 ? "failed" : "completed");
+          notify(entry);
+        };
+        if (cwdPin === undefined) settle(undefined);
+        else void cwdPin().then(settle, () => settle({ kind: "lost" }));
       });
       child.on("error", (err) => {
         if (entry.status === "running") {
@@ -2195,6 +2216,7 @@ async function spawnBackground(command: string, cwd: string, sessionId: string, 
   assertManagedChildProcessAdmissionOpen("tool:bash:background");
   const observation = startShellObservation(command, cwd, sandbox);
   let child: ChildProcess;
+  let launchHold: HostShellSpawnDirectoryHold | undefined;
   try {
     const launch = (hold?: HostShellSpawnDirectoryHold) => process.platform === "win32"
       ? spawnWindowsJobProcess(shell.cmd, [...argv], { cwd, env }, hold?.launcherArgs)
@@ -2212,6 +2234,7 @@ async function spawnBackground(command: string, cwd: string, sessionId: string, 
           assertShellRemoteAuthority();
           const started = launch(hold);
           hold.bind(started);
+          launchHold = hold;
           return started;
         }, refreshShellRemoteAuthority);
     if (launched === undefined) throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
@@ -2223,6 +2246,7 @@ async function spawnBackground(command: string, cwd: string, sessionId: string, 
     sessionId,
     command,
     child,
+    cwdPin: launchHold?.outcome,
     startedAt: new Date().toISOString(),
     killProcessGroup: process.platform !== "win32",
     observation,
@@ -2746,13 +2770,13 @@ export async function spawnWithSandbox(
             ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
         }, released));
       } else {
-        const result = withReleaseFailures({
+        const result = withCwdPinOutcome(withReleaseFailures({
           output: formatted,
           isError: lifetime.aborted || code !== 0 || sandboxCleanupFailed,
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, sandboxed: true,
             ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
           ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
-        }, released);
+        }, released), lifetime.aborted ? undefined : await directoryHold.outcome());
         resolveResult(!lifetime.aborted && code !== null && code !== 0
           ? await attachFilesystemBlock(result, egress.token, command, resolvedCwd) : result);
       }
@@ -2868,7 +2892,7 @@ async function spawnWithTimeout(
         try {
           assertManagedChildProcessAdmissionOpen("tool:bash:background");
           shellId = backgroundShellManager.register({
-            sessionId, command, child, startedAt, killProcessGroup: true, captureOutput: false,
+            sessionId, command, child, startedAt, killProcessGroup: true, captureOutput: false, cwdPin: launchHold?.outcome,
             initialOutput: initialOutput.output, initialOutputTruncated: initialOutput.truncated,
           });
         } catch (err) {
@@ -2917,13 +2941,13 @@ async function spawnWithTimeout(
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: true },
         });
       } else {
-        resolve({
+        resolve(withCwdPinOutcome({
           output: rejected
             ? `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}` : formatted,
           isError: rejected || lifetime.aborted || code !== 0,
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code },
           ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
-        });
+        }, lifetime.aborted ? undefined : await launchHold?.outcome()));
       }
     };
 
@@ -4142,8 +4166,9 @@ async function spawnPowerShellWithSandbox(
         metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut, sandboxed: true,
           ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
       }, released);
+      const pinned = lifetime.aborted || lifetime.timedOut ? result : withCwdPinOutcome(result, await cwdHold.outcome());
       resolveResult(!lifetime.aborted && !lifetime.timedOut && code !== null && code !== 0
-        ? await attachFilesystemBlock(result, egress.token, command, cwd) : result);
+        ? await attachFilesystemBlock(pinned, egress.token, command, cwd) : pinned);
     };
     const fault = finalizationFault("tool:powershell:asrt", resolveResult, "PowerShell ");
 
@@ -4235,11 +4260,13 @@ async function spawnPowerShellInMxc(
   let token: string;
   let launch: MxcShellLaunch;
   let child: PipedChild;
+  let launchHold: HostShellSpawnDirectoryHold | undefined;
   try {
     const sandboxHome = createSandboxProcessHome();
     failurePrefix = "";
     lifecycle.defer(() => sandboxHome.cleanup());
     const cwdHold = await holdHostShellSpawnDirectory(spawnAuthorization);
+    launchHold = cwdHold;
     lifecycle.defer(() => cwdHold.dispose());
     const powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome);
     const sandboxWritePaths = [...writePaths, sandboxHome.path];
@@ -4441,8 +4468,9 @@ async function spawnPowerShellInMxc(
           },
           () => endObservation(code, watch.aborted ? "cancelled" : watch.timedOut || exitSignal !== null ? "failed" : undefined),
         ]);
+        const pinned = watch.aborted || watch.timedOut ? completed : withCwdPinOutcome(completed, await launchHold?.outcome());
         const result = parserResponse === undefined && !watch.aborted && !watch.timedOut && code !== null && code !== 0
-          ? await attachFilesystemBlock(completed, egressToken, command, cwd) : completed;
+          ? await attachFilesystemBlock(pinned, egressToken, command, cwd) : pinned;
         return release(() => result, failures);
       });
     };
@@ -4511,14 +4539,14 @@ async function spawnPowerShell(
       const output = lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
       ));
-      resolve({
+      resolve(withCwdPinOutcome({
         output: lifetime.timedOut
           ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
           : rejected
             ? `PowerShell spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}` : output,
         isError: rejected || lifetime.aborted || lifetime.timedOut || code !== 0,
         metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut },
-      });
+      }, lifetime.aborted || lifetime.timedOut ? undefined : await launchHold?.outcome()));
     };
 
     const fault = finalizationFault("tool:powershell", resolve, "PowerShell ");

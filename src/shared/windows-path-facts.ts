@@ -238,11 +238,19 @@ export interface HeldWindowsDirectory {
   readonly launcherArgs: readonly string[];
   /** The job launcher invocation that starts `executable` with `launcherArgs`. */
   command(executable: string, args: readonly string[]): { executable: string; args: string[] };
+  /** Names the started job launcher; the helper admits a command from that process only. */
+  admit(launcherPid: number): void;
+  /** The helper's report on the admitted command: "reaped" once every process in the job has stopped and the directory
+   * still matches the hold; "lost" when the helper exits, reports anything else, or the hold is released first. */
+  outcome(): Promise<WindowsHoldOutcome>;
   /** False once the helper that owns the handles has exited or failed, or after `release`. */
   isHeld(): boolean;
   /** Idempotent. */
   release(): void;
 }
+
+export type WindowsHoldOutcome = { readonly kind: "reaped"; readonly stopped: boolean } | { readonly kind: "lost" };
+const HOLD_OUTCOME_LIMIT = 256;
 
 /** Hold a directory and every ancestor against rename and delete until `release`; undefined when the helper did not hold it.
  * The handles and the command's job live in the helper, so its exit or failure after the reply loses the hold. */
@@ -258,9 +266,25 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
   let settled = false;
   let released = false;
   let lost = false;
+  let admitted = false;
+  let reportOutcome!: (outcome: WindowsHoldOutcome) => void;
+  const outcome = new Promise<WindowsHoldOutcome>((settleOutcome) => { reportOutcome = settleOutcome; });
+  let report = "";
+  const reportLine = (chunk: Buffer): void => {
+    report += chunk.toString("latin1");
+    const newline = report.indexOf("\n");
+    if (newline < 0) {
+      if (report.length > HOLD_OUTCOME_LIMIT) reportOutcome({ kind: "lost" });
+      return;
+    }
+    const line = report.slice(0, newline);
+    reportOutcome(line === '{"outcome":"reaped","stopped":true}' ? { kind: "reaped", stopped: true }
+      : line === '{"outcome":"reaped","stopped":false}' ? { kind: "reaped", stopped: false } : { kind: "lost" });
+  };
   const release = (): void => {
     if (released) return;
     released = true;
+    reportOutcome({ kind: "lost" });
     child.stdin.destroy();
     child.kill();
   };
@@ -268,6 +292,14 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     facts,
     launcherArgs: ["--hold-pipe", pipe, String(child.pid)],
     command: (executable, args) => ({ executable: resolveWindowsJobLauncher(), args: ["--hold-pipe", pipe, String(child.pid), executable, ...args] }),
+    admit: (launcherPid) => {
+      if (admitted || released) return;
+      admitted = true;
+      const frame = Buffer.alloc(4);
+      frame.writeUInt32LE(launcherPid);
+      child.stdin.write(frame);
+    },
+    outcome: () => outcome,
     isHeld: () => !released && !lost,
     release,
   });
@@ -278,8 +310,10 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      child.stdout.destroy();
-      if (result === undefined) release();
+      if (result === undefined) {
+        child.stdout.destroy();
+        release();
+      }
       resolve(result);
     };
     const failed = (): void => {
@@ -290,9 +324,13 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     child.on("error", failed);
     child.once("exit", failed);
     child.stdin.on("error", failed);
-    child.stdout.on("error", () => settle(undefined));
+    child.stdout.on("error", () => { settle(undefined); reportOutcome({ kind: "lost" }); });
+    child.stdout.once("close", () => reportOutcome({ kind: "lost" }));
     child.stdout.on("data", (chunk: Buffer) => {
-      if (settled) return;
+      if (settled) {
+        reportLine(chunk);
+        return;
+      }
       const newline = chunk.indexOf(0x0a);
       const frameBytes = newline < 0 ? chunk.length : newline + 1;
       if (received + frameBytes > MAX_PATH_FACTS_OUTPUT_BYTES) {
@@ -302,6 +340,7 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
       received += frameBytes;
       chunks.push(newline < 0 ? chunk : chunk.subarray(0, frameBytes));
       if (newline < 0) return;
+      if (frameBytes < chunk.length) reportLine(chunk.subarray(frameBytes));
       try {
         const [facts] = decodeWindowsPathFacts(decodeWindowsNativeReply(Buffer.concat(chunks, received)), 1, "--pin");
         settle(facts === undefined || child.pid === undefined ? undefined : held(facts));

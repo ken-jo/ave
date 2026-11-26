@@ -5220,6 +5220,8 @@ export const en = {
 
   // shellExecution
   "shellExecution.blocked": "Shell execution is unavailable under the current execution plan.",
+  "shellExecution.cwdPinLost": "cwd-pin-lost: Ave lost its hold on the working directory before the command and every process it started had stopped, so this run is treated as failed.",
+  "shellExecution.cwdPinStoppedBackground": "Background processes started by this command were stopped when it finished (cwd pin).",
   "shellExecution.homePrivacyHelperUnavailable": "Shell commands and hooks are off: Ave could not check its home folder privacy at startup. Restart Ave; if it persists, reinstall Ave.",
   "shellExecution.boundaryUnverifiedAsk": "Ave home privacy could not be established at startup, so a shell command runs without the OS sandbox only after you approve it. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while home privacy stays unverified. Other permission checks still apply and may ask again.",
   "shellExecution.boundaryUnverifiedOneTime": "Ave home privacy could not be established at startup, so this command would run without the OS sandbox. You can approve this command once.",

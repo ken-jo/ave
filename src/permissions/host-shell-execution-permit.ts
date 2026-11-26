@@ -2,6 +2,8 @@
 import type { ChildProcess } from "node:child_process";
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
+import type { WindowsHoldOutcome } from "../shared/windows-path-facts.js";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { captureShellWorkingDirectoryIdentity, holdShellWorkingDirectory, matchesShellWorkingDirectoryIdentity, pinShellWorkingDirectory, sameShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
 import {
   parseHostShellExecutionInput,
@@ -290,40 +292,45 @@ export interface HostShellSpawnDirectoryHold {
   command(executable: string, args: readonly string[]): { executable: string; args: string[] };
   /** Arguments that put a job launcher's command in the hold's job. */
   readonly launcherArgs: readonly string[];
-  /** Keep the hold until this child closes. */
+  /** Keep the hold until this child closes; only this child may put its command in the hold's job. */
   bind(child: ChildProcess): void;
+  /** Settles after the bound child closes: the helper's report, "lost" when it does not report in time, undefined without a hold. */
+  outcome(): Promise<WindowsHoldOutcome | undefined>;
   /** Release now unless a child was bound. */
   dispose(): void;
 }
 
 const NO_DIRECTORY_HOLD: HostShellSpawnDirectoryHold = Object.freeze({
   assertHeld() {}, command: (executable: string, args: readonly string[]) => ({ executable, args: [...args] }),
-  launcherArgs: [], bind() {}, dispose() {},
+  launcherArgs: [], bind() {}, outcome: async () => undefined, dispose() {},
 });
 
 /** Windows children open their cwd by path, so a permit-bearing Bash or PowerShell launch holds the approved directory chain
  * against rename and delete from before its final check until the child closes. The hold helper owns the only handle to a
  * kill-on-close job; the command starts suspended through the job launcher and runs only once it is in that job, so a
- * helper that is gone refuses the launch and a helper that exits stops the whole tree. The launcher exits 125 with
- * "cwd-pin-lost" unless the helper reports the job empty after the command, so a lost hold is a failed execution.
+ * helper that is gone refuses the launch and a helper that exits stops the whole tree. Only the bound launcher may
+ * admit its command. `outcome` is the helper's own report, so a lost hold fails the run whatever the exit code.
  * Acquisition failure, an identity mismatch or an observed loss refuses before spawn. Nothing is proven inside the
  * child, and a held leaf whose contents can be removed can still become a junction in place. */
 export async function holdHostShellSpawnDirectory(authorization: HostShellSpawnAuthorization | undefined): Promise<HostShellSpawnDirectoryHold> {
   if (authorization === undefined || process.platform !== "win32") return NO_DIRECTORY_HOLD;
   const held = await pinShellWorkingDirectory(authorization.cwdIdentity);
   if (held === undefined) throw new HostShellDirectoryHoldError();
-  let bound = false;
+  let bound: Promise<WindowsHoldOutcome> | undefined;
   return {
     assertHeld() { if (!held.isHeld()) throw new HostShellDirectoryHoldError(); },
     command: held.command,
     launcherArgs: held.launcherArgs,
     bind(child) {
-      bound = true;
-      child.once("close", held.release);
+      if (child.pid !== undefined) held.admit(child.pid);
+      bound = new Promise<void>((closed) => child.once("close", () => closed())).then(() => Promise.race([held.outcome(),
+        new Promise<WindowsHoldOutcome>((late) => setTimeout(() => late({ kind: "lost" }), TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs).unref())]))
+        .finally(held.release);
       // A started child can report an error and keep running; only a start without a process frees the hold early.
       child.on("error", () => { if (child.pid === undefined) held.release(); });
     },
-    dispose() { if (!bound) held.release(); },
+    outcome: () => bound ?? Promise.resolve(undefined),
+    dispose() { if (bound === undefined) held.release(); },
   };
 }
 
