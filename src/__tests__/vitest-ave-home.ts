@@ -42,6 +42,9 @@ vi.mock("../permissions/generated/srt-win-build-receipts.js", async (importOrigi
   return { default: selectSrtWinTestReceipts(generated) };
 });
 
+// Suites answer every drive as local and spawn no drive classifier; windows-drive-locality.test.ts checks the classifier.
+vi.mock("../shared/windows-drive-locality.js", () => ({ queryDriveIdentity: () => ({ local: true }), setWindowsDriveQueryForTest: () => undefined }));
+
 // Capture the real host before suite code can replace process.platform.
 const HOST_TYPE = getBuiltinModule("node:os").type();
 const host = HOST_TYPE === "Windows_NT" ? "win32" : HOST_TYPE === "Darwin" ? "darwin" : "linux";

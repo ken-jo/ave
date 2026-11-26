@@ -7,7 +7,8 @@ import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { createHookCommandAuthorizer, type HookCommandAuthorizer } from "../hook-command-policy.js";
@@ -32,6 +33,8 @@ import type { ToolInvocationContext } from "../../permissions/reviewer/risk-clas
 import { shellRuleCoversCommand } from "../../permissions/rules/shell-rule-approval.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
 import { cardGate } from "../../__tests__/support/forced-shell-card.js";
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 const sandboxedHost = vi.hoisted(() => ({ active: false }));
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({

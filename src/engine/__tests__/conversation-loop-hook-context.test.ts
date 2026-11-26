@@ -1,5 +1,6 @@
 import { dirname, resolve } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { parseHookConfig } from "../../hooks/hook-config.js";
@@ -10,6 +11,7 @@ import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js"
 
 const COMMAND = resolve(__dirname, "../../../test/fixtures/hooks/influence-command.cjs");
 
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 describe("hook context model and user delivery", () => {
   it("shows attributed context even when the prompt hook refuses the turn", async () => {
     const manager = new ScriptHookManager();

@@ -1,9 +1,10 @@
 import { writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import fsPromises, { mkdtemp, readFile, writeFile, rm, symlink, link, stat, mkdir, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { checkpointFileMutation, isCodeCheckpointAvailable, markCodeCheckpointUnavailable, restoreCodeCheckpoint as restoreWithPolicy, withCodeCheckpoint, withRequiredCodeCheckpoint } from "../code-checkpoints.js";
@@ -16,6 +17,7 @@ let root: string;
 let file: string;
 let sessionId: string;
 let ctx: ToolExecutionContext;
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "ave-code-rewind-")));
   file = join(root, "source.txt");

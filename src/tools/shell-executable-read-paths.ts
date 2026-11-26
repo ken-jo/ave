@@ -1,9 +1,12 @@
-import { accessSync, constants, realpathSync, statSync } from "node:fs";
+import { constants } from "node:fs";
+import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { hostScriptInvocationReadPaths } from "../main/host-script-runtime.js";
 import { basename, delimiter, isAbsolute, sep } from "node:path";
 
 import { caseFoldForMatch, isSensitivePath } from "../permissions/sensitive-paths.js";
+import { admitWindowsLookupPaths, observeWindowsShellDirectories, windowsObligationsApply, type AdmittedObligation } from "../permissions/admitted-obligation.js";
 import { staticShellWord } from "../shared/shell-analysis.js";
+import { isFullyQualifiedWindowsPath } from "../shared/windows-path-spelling.js";
 import { stripCommandPath } from "../shared/shell-effective-command.js";
 import { inspectShellExecution, type ShellCommandEvent, type ShellExecutionFacts } from "../shared/shell-execution.js";
 import { inspectEmbeddedShellPrograms } from "./shell-path-policy.js";
@@ -38,23 +41,53 @@ function readableExecutable(path: ExecutablePath): boolean {
     && !isSensitivePath(path.real);
 }
 
-function executablePath(candidate: string): ExecutablePath | undefined {
+// A command-derived candidate is looked up only on a route proven local; a share, device or unproven one names nothing.
+function executablePath(candidate: string, batch?: ReadonlyMap<string, AdmittedObligation>): ExecutablePath | undefined {
   try {
-    accessSync(candidate, constants.X_OK);
-    if (!statSync(candidate).isFile()) return undefined;
-    const real = realpathSync.native(candidate);
-    if (!statSync(real).isFile()) return undefined;
-    accessSync(real, constants.X_OK);
-    return { lexical: candidate, real };
+    return withLocalityDecision(() => {
+      if (windowsObligationsApply()) {
+        const executable = (batch ?? admitWindowsLookupPaths([candidate], "preview")).get(candidate);
+        if (executable?.kind !== "file") return undefined;
+        const route = admitLocalRoute(executable.target);
+        if (route.followedLink || route.physical !== executable.target) return undefined;
+        localFs.access(route.verdict, constants.X_OK);
+        return { lexical: candidate, real: executable.target };
+      }
+      const route = admitLocalRoute(candidate).verdict;
+      localFs.access(route, constants.X_OK);
+      if (!localFs.stat(route).isFile()) return undefined;
+      const real = localFs.realpathNative(route);
+      const physical = admitLocalRoute(real).verdict;
+      if (!localFs.stat(physical).isFile()) return undefined;
+      localFs.access(physical, constants.X_OK);
+      return { lexical: candidate, real };
+    });
   } catch (error) {
     if (error instanceof Error && "code" in error
-      && ["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"].includes(String(error.code))) return undefined;
+      && ["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP", "ENETWORKSHAREPATH"].includes(String(error.code))) return undefined;
     throw error;
   }
 }
 
 function lookupExecutable(name: string, path: string, cwd: string | null, all = false): ExecutablePath[] {
   if (!name || name.includes("/") || (sep === "\\" && name.includes("\\"))) return [];
+  if (windowsObligationsApply()) {
+    const directories = path.split(delimiter);
+    if (directories.some(entry => (cwd === null && !isFullyQualifiedWindowsPath(entry)) || entry.split(/[\\/]/u).includes(".."))) return [];
+    const candidates = directories.map(entry => {
+      const directory = isAbsolute(entry) ? entry : `${cwd}${sep}${entry}`;
+      return directory.endsWith(sep) ? `${directory}${name}` : `${directory}${sep}${name}`;
+    });
+    const batch = admitWindowsLookupPaths(candidates, "preview");
+    const found: ExecutablePath[] = [];
+    for (const candidate of candidates) {
+      const executable = executablePath(candidate, batch);
+      if (!executable) continue;
+      found.push(executable);
+      if (!all) break;
+    }
+    return found;
+  }
   const found: ExecutablePath[] = [];
   for (const entry of path.split(delimiter)) {
     if (!isAbsolute(entry) && cwd === null) return [];
@@ -73,7 +106,7 @@ function resolvedExecutables(name: string, path: string, cwd: string | null, all
   if (!name.includes("/") && !(sep === "\\" && name.includes("\\"))) {
     return lookupExecutable(name, path, cwd, all).filter(readableExecutable);
   }
-  if (!isAbsolute(name)) return [];
+  if (!isAbsolute(name) || (windowsObligationsApply() && name.split(/[\\/]/u).includes(".."))) return [];
   const explicit = executablePath(name);
   if (!explicit || !readableExecutable(explicit)) return [];
   const selected = lookupExecutable(basename(name), path, cwd)[0];
@@ -140,6 +173,7 @@ export function collectShellExecutableReadPaths(
   const baselinePath = facts.environment.PATH;
   inspectShellExecution(command, cwd, facts, {
     path() {},
+    observeDirectory: observeWindowsShellDirectories,
     command(event) {
       if (event.functionCall) return;
       for (const path of hostScriptInvocationReadPaths(event.argv, event.environment)) paths.add(path);

@@ -80,7 +80,10 @@ describe("configured saved-session access", () => {
     // Windows directory rows keep their separator for srt-win.
     const sessionsRow = sessions + (process.platform === "win32" ? sep : "");
     expect(getDefaultSensitiveReadDenyPaths()).toContain(sessionsRow);
-    expect(getBuiltinShellSessionReadPolicy().denyRead).not.toContain(sessionsRow);
+    // Windows shell confinement keeps the saved-session store denied for every command.
+    const shellSessionDenies = getBuiltinShellSessionReadPolicy().denyRead;
+    if (process.platform === "win32") expect(shellSessionDenies).toContain(sessionsRow);
+    else expect(shellSessionDenies).not.toContain(sessionsRow);
     expect(getDefaultSensitiveWriteDenyPaths()).toContain(sessionsRow);
     expect(isSensitivePath(canonical(transcript))).not.toBeNull();
   });

@@ -1,9 +1,10 @@
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { join, resolve } from "node:path";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { configureHostResources } from "../../main/host-resources.js";
 import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
@@ -12,6 +13,7 @@ import { inspectShellPermissionPaths } from "../../permissions/rules/literal-she
 
 // Native path resolution and namespace aliases are specific to this host.
 describe.skipIf(process.platform !== "win32")("native shell path aliases", () => {
+  beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
   const roots: string[] = [];
   afterEach(async () => {
     for (const root of roots.splice(0)) await cleanupTmpDir(root);

@@ -1,7 +1,8 @@
 import { setReviewerForTest, wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 /** Opted-in approval memory follows target scope; new arguments still need a fresh review no riskier than the stored verdict.
  * Unscoped tools keep exact-argument memory, and recorded identity comes only from the host pending snapshot. */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,6 +33,9 @@ import { userPermissionContext } from "./tool-context-fixture.js";
 import { t } from "../../i18n/index.js";
 
 type CardAnswer = "allow-once" | "allow-session" | "deny-exact";
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("remembered decisions keyed on the tool's opted-in memory scope", () => {
   let dir: string;

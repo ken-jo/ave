@@ -17,7 +17,7 @@ function expectShellDialectContracts(section: string, dialect: "bash" | "powersh
   expect(section).toContain('hostShellPlan.mode === "blocked"');
   expect(section).toContain('hostShellPlan.mode === "asrt"');
   expect(section).toContain("shell: false");
-  expect(section).toContain("const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy(");
+  expect(section).toMatch(/const \{ allowRead, denyRead, floorPierces(?:, withheldSessionReadRoot)?, policyNotices(?:: readNotices)? \} = getBuiltinShellReadPolicy\(/);
   // Saved-session reads pierce the protected floor only when the shell explicitly requests them.
   expect(section).toMatch(/\n\s+floorPierces,\n\s+}/);
   expect(section).toContain("denyWrite: getDefaultSensitiveWriteDenyEntries()");

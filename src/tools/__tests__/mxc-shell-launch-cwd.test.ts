@@ -1,8 +1,9 @@
 import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
+import { configureHostResources } from "../../main/host-resources.js";
 import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../../permissions/sandbox-home-registry.js";
 
 const h = vi.hoisted(() => ({ root: "" }));
@@ -34,6 +35,8 @@ describe.runIf(process.platform === "win32")("a container shell's working direct
   const own = (): string => join(h.root, "homes", "ave-sandbox-home-own");
   const other = (): string => join(h.root, "homes", "ave-sandbox-home-other");
   beforeAll(() => {
+    // Filesystem admission pins the real paths through the native helpers.
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     base = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-cwd-")));
     h.root = join(base, "cache", "mxc-runtime");
     for (const home of [own(), other()]) {
@@ -55,7 +58,7 @@ describe.runIf(process.platform === "win32")("a container shell's working direct
     try {
       return await prepareMxcShellLaunch({ egressToken: "tok", commandLine: "cmd.exe /d /c echo hi", cwd, sandboxHome: own(),
         filesystem: { allowWrite: [cwd], allowRead: [], denyRead: [], denyWrite: [] },
-        env: { SYSTEMROOT: String.raw`C:\Windows` }, timeoutMs: 5_000, exists: () => true, list: () => [] }, lifecycle).catch((error: unknown) => error);
+        env: { SYSTEMROOT: String.raw`C:\Windows` }, timeoutMs: 5_000, exists: () => true }, lifecycle).catch((error: unknown) => error);
     } finally {
       await lifecycle.dispose();
     }

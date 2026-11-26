@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { posix } from "node:path";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
+import { join, posix } from "node:path";
 import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../agent-observation-context.js";
 import { setAgentTerminalObservationSink } from "../agent-terminal-observation.js";
 
@@ -213,6 +214,9 @@ afterEach(() => {
 const itPosixGuest = it.skipIf(process.platform === "win32");
 // Broker grants bind the guest path independently of the host's filesystem.
 const guestResolvedCwd = (guestPath: string) => posix.resolve(guestPath);
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("brokered workload shell execution", () => {
   it("observes foreground output on completion without introducing a second transport request", async () => {

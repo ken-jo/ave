@@ -1,6 +1,7 @@
 import { resolve as resolvePath } from "node:path";
 import { getPolicyHome, policyHomeAnchors } from "../shared/policy-home.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
+import { observeWindowsShellDirectories } from "../permissions/admitted-obligation.js";
 import { t } from "../i18n/index.js";
 import { staticShellWord, type ShellWord } from "../shared/shell-analysis.js";
 import { extractShellCommands } from "../shared/shell-command-fields.js";
@@ -37,6 +38,7 @@ export class BashAstValidator {
       for (const command of extractShellCommands(input)) {
         inspectShellExecution(command, cwd, facts, {
           path() {}, // This stage owns structure; the independent path gate owns authority.
+          observeDirectory: observeWindowsShellDirectories,
           word(word) {
             if (word.parts.some((part) => part.kind === "parameter" && part.name === "IFS")) {
               refuse("ifs-command-injection", t("be_bashAstValidator.ifsInjection"), word);

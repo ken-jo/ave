@@ -1,12 +1,14 @@
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { shellQuote as quote } from "../../lib/shell-resolver.js";
 
 import { inspectShellExecution, type ShellExecutionFacts } from "../../shared/shell-execution.js";
+import * as shellExecution from "../../shared/shell-execution.js";
 import { collectShellExecutableReadPaths } from "../shell-executable-read-paths.js";
 import { isSensitivePath } from "../../permissions/sensitive-paths.js";
+import { configureHostResources } from "../../main/host-resources.js";
 
 vi.mock("../../permissions/sensitive-paths.js", async original => {
   const actual = await original<typeof import("../../permissions/sensitive-paths.js")>();
@@ -39,6 +41,32 @@ function fixture() {
   const collect = (command: string, supplied = facts): readonly string[] => collectShellExecutableReadPaths(command, cwd, supplied);
   return { root, cwd, first, second, facts, executable, collect };
 }
+
+describe.runIf(process.platform === "win32")("Windows command lookup", () => {
+  it.each([
+    ["relative", true],
+    ["\\first-bin", true],
+    ["..\\first-bin", false],
+  ] as const)("refuses a whole PATH lookup with row %s and unknown cwd=%s", (pathEntry, unknownCwd) => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    const f = fixture();
+    const probe = f.executable("probe");
+    const command = "command -v probe";
+    const firstRow = unknownCwd ? pathEntry : `${f.cwd}\\${pathEntry}`;
+    const facts = (path: string): ShellExecutionFacts => ({ ...f.facts, environment: { ...f.facts.environment, PATH: path } });
+    const inspect = inspectShellExecution;
+    const observation = unknownCwd ? vi.spyOn(shellExecution, "inspectShellExecution")
+      .mockImplementation((source, cwd, facts, inspector) => inspect(source, cwd, facts, {
+        ...inspector, command: event => inspector.command?.({ ...event, cwd: null }),
+      })) : undefined;
+    try {
+      expect(f.collect(command, facts(f.first))).toEqual([probe]);
+      expect(f.collect(command, facts(`${firstRow};${f.first}`))).toEqual([]);
+    } finally {
+      observation?.mockRestore();
+    }
+  });
+});
 
 describe.skipIf(process.platform === "win32")("shell executable read paths", () => {
   it("retains native executable spellings for content inspection", () => {

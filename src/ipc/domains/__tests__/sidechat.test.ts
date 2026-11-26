@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { beforeAll, describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { EventEmitter } from "node:events";
 import type { IpcMainInvokeEvent } from "electron";
 import {
@@ -51,7 +52,7 @@ import { deferred } from "../../../__tests__/test-helpers.js";
 import * as shellTasks from "../../../tools/shell-tools.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createPaneHostTerminalLoop } from "../../../engine/__tests__/support/pane-host-terminal-loop.js";
 import { ScriptedTurnProvider } from "../../../engine/__tests__/support/conversation-loop-fixtures.js";
 import type { LLMProvider, StreamEvent } from "../../../engine/llm/types.js";
@@ -168,6 +169,7 @@ function register(
   return { sideChatMemoryManager };
 }
 
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 beforeEach(() => {
   handlers.clear();
   sent.length = 0;

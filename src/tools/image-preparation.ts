@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { getConfiguredHostResources } from "../main/host-resources.js";
 import { mainDir } from "../main/main-paths.js";
 import { spawnManaged, forceKillManagedChildProcess } from "../main/managed-child-processes.js";
 import { buildSafeChildEnv } from "./safe-env.js";
@@ -50,7 +51,9 @@ function runImageChild(
 ): Promise<PreparedImage> {
   signal.throwIfAborted();
   const { options } = request;
-  const child = spawnManaged(process.execPath, [join(mainDir, "image-preparation-child.js"), JSON.stringify(request)], {
+  const child = spawnManaged(process.execPath, [
+    join(mainDir, "image-preparation-child.js"), JSON.stringify(request), JSON.stringify(getConfiguredHostResources() ?? null),
+  ], {
     env: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
     stdio: [stdinBytes === undefined ? "ignore" : "pipe", "pipe", "pipe"], windowsHide: true,
   }, { label: "image-preparation" });

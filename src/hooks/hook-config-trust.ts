@@ -11,6 +11,7 @@ import { defaultHooksDir, discoverHooks, type DiscoveredHook } from "./hook-disc
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { disabledHookOriginalName } from "./hook-disable-state.js";
+import { admitWindowsLookupPaths, windowsObligationsApply } from "../permissions/admitted-obligation.js";
 
 const log = createLogger("hook-config-trust");
 
@@ -115,22 +116,29 @@ export function hashHookCommandFiles(command: readonly string[], configDir: stri
   const files = new Set<string>();
   let cwd: string;
   try {
-    cwd = realpathSync(configDir);
-    if (!statSync(cwd).isDirectory()) throw new Error("Not a directory");
+    cwd = resolveHookConfigDirectory(configDir);
   } catch {
     return { hash: hasher.digest("hex"), files: [], errors: ["configuration directory cannot be resolved"] };
   }
   hasher.update("\0cwd\0").update(trustAnchorKey(cwd));
-  for (const [index, raw] of command.entries()) {
-    if (raw.startsWith("-")) continue;
+  const nativeWindows = windowsObligationsApply();
+  const operands = command.flatMap((raw, index) => {
+    if (raw.startsWith("-")) return [];
     const token = expandLeadingTilde(raw);
     const executable = index === 0;
     // A bare executable is PATH-resolved; operands are always resolved against the bound cwd.
-    if (executable && !isAbsolute(token) && !token.includes("/") && !token.includes(sep)) continue;
-    const candidate = pathResolve(cwd, token);
+    if (executable && !isAbsolute(token) && !token.includes("/") && !token.includes(sep)) return [];
+    if (nativeWindows && !executable && /^[a-z][a-z0-9+.-]+:\/\//iu.test(token)) return [];
+    return [{ index, candidate: pathResolve(cwd, token), executable }];
+  });
+  const windowsPaths = nativeWindows ? admitWindowsLookupPaths(operands.map(operand => operand.candidate), "preview") : undefined;
+  for (const { index, candidate, executable } of operands) {
     try {
-      const target = realpathSync(candidate);
-      if (!statSync(target).isFile()) {
+      const admitted = windowsPaths?.get(candidate);
+      if (windowsPaths !== undefined && admitted === undefined) throw new Error("Hook operand could not be admitted");
+      if (admitted?.kind === "missing" && !executable) continue;
+      const target = admitted?.target ?? realpathSync(candidate);
+      if (admitted === undefined ? !statSync(target).isFile() : admitted.kind !== "file") {
         if (executable) errors.push("hook executable is not a regular file");
         continue;
       }
@@ -169,8 +177,7 @@ export function hashHookConfigDefinition(raw: Buffer, entries: readonly HookConf
 }
 
 export function bindHookConfigPaths(entries: HookConfigEntry[], baseDirectory: string): void {
-  const configDir = realpathSync(baseDirectory);
-  if (!statSync(configDir).isDirectory()) throw new Error("Hook configuration directory is unavailable");
+  const configDir = resolveHookConfigDirectory(baseDirectory);
   for (const entry of entries) {
     entry.configDir = configDir;
     const executable = entry.command[0];
@@ -180,6 +187,17 @@ export function bindHookConfigPaths(entries: HookConfigEntry[], baseDirectory: s
       entry.command = [pathResolve(configDir, expanded), ...entry.command.slice(1)];
     }
   }
+}
+
+function resolveHookConfigDirectory(path: string): string {
+  if (windowsObligationsApply()) {
+    const admitted = admitWindowsLookupPaths([path], "preview").get(path);
+    if (admitted?.kind === "dir") return admitted.target;
+  } else {
+    const resolved = realpathSync(path);
+    if (statSync(resolved).isDirectory()) return resolved;
+  }
+  throw new Error("Hook configuration directory is unavailable");
 }
 
 // Normalize path separators before hashing so platform spelling changes do not re-quarantine the same script.

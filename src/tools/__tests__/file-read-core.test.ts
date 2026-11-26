@@ -4,7 +4,8 @@ import { hashAndCountLines } from "../file-read-state.js";
 import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { open } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import {
   assertReadableFilePath,
   isBinaryFile,
@@ -32,6 +33,7 @@ describe("isGlobPattern", () => {
 describe("assertReadableFilePath", () => {
   let root: string;
   beforeAll(() => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     root = mkdtempSync(join(tmpdir(), "ave-read-core-"));
     mkdirSync(join(root, "sub"), { recursive: true });
     writeFileSync(join(root, "in.md"), "# in scope\nline2\n");
