@@ -265,25 +265,45 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     ]);
   });
 
-  it.each([".agents", ".ave/commands", ".ave/hooks"])("refuses a worker write grant while %s is absent", async name => {
+  it.each([".agents", ".ave/commands", ".ave/hooks"])("watches %s when an ACL worker write grant reaches it", async name => {
     captureRuntime();
     const workspace = join(root, "workspace");
     const missing = join(workspace, name);
     createWindowsProtectedWriteTargets(workspace, name);
     await initializeAsrtSandbox({});
-    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [workspace] }))
-      .rejects.toThrow(missing);
-    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
-    expect(windowsHelpers.stampWindowsAclAsync).not.toHaveBeenCalled();
-    expect(lstatSync(missing, { throwIfNoEntry: false })).toBeUndefined();
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [workspace] });
+    try {
+      expect(runtime.grantWindowsAcl).toHaveBeenCalledOnce();
+      expect(stampedPaths()).not.toContain(missing);
+      expect(watchedProtectedRows()).toContain(missing);
+      expect(lstatSync(missing, { throwIfNoEntry: false })).toBeUndefined();
+    } finally { grant.release(); }
   });
 
-  it("refuses to initialize an ACL write root without its protected entries", async () => {
+  it("watches required names missing from an initial ACL write root", async () => {
     captureRuntime();
     const workspace = join(root, "workspace");
     createWindowsProtectedWriteTargets(workspace, ".ave/hooks");
-    await expect(initializeAsrtSandbox({ allowWrite: [workspace] })).rejects.toThrow(join(workspace, ".ave", "hooks"));
-    expect(manager.initialize).not.toHaveBeenCalled();
+    const missing = join(workspace, ".ave", "hooks");
+    await initializeAsrtSandbox({ allowWrite: [workspace] });
+    expect(manager.initialize).toHaveBeenCalledOnce();
+    expect(paths(config?.filesystem.denyWrite)).not.toContain(missing);
+    expect(watchedProtectedRows()).toContain(missing);
+    expect(lstatSync(missing, { throwIfNoEntry: false })).toBeUndefined();
+  });
+
+  it("refuses a worker grant if a watched name appears during the stamp", async () => {
+    captureRuntime();
+    const workspace = join(root, "workspace");
+    const missing = join(workspace, ".agents");
+    createWindowsProtectedWriteTargets(workspace, ".agents");
+    await initializeAsrtSandbox({});
+    vi.mocked(windowsHelpers.stampWindowsAclAsync).mockImplementationOnce(async () => { mkdirSync(missing); });
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [workspace] }))
+      .rejects.toThrow(missing);
+    expect(windowsHelpers.stampWindowsAclAsync).toHaveBeenCalledOnce();
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+    expect(watchedProtectedRows()).not.toContain(missing);
   });
 
   it("admits a Windows file write grant without requiring child entries", async () => {
@@ -304,11 +324,12 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     const first = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [workspace] });
     try {
       renameSync(carrier, join(root, "original-carrier"));
-      await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowWrite: [workspace] }))
-        .rejects.toThrow(join(carrier, "commands"));
-      expect(runtime.grantWindowsAcl).toHaveBeenCalledOnce();
-      expect(watchedProtectedRows()).toEqual(expect.arrayContaining([join(carrier, "commands"), join(carrier, "hooks")]));
-      expect(watchedProtectedRows()).not.toContain(carrier);
+      const second = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowWrite: [workspace] });
+      try {
+        expect(runtime.grantWindowsAcl).toHaveBeenCalledTimes(2);
+        expect(watchedProtectedRows()).toEqual(expect.arrayContaining([join(carrier, "commands"), join(carrier, "hooks")]));
+        expect(watchedProtectedRows()).not.toContain(carrier);
+      } finally { second.release(); }
     } finally { first.release(); }
   });
 

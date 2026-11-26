@@ -2317,7 +2317,7 @@ function keepWindowsDenyTarget(
   if (!present) {
     // Never hand an absent row to the native stamp: it would create it. A reachable row is watched instead.
     if (reachingGrants.length > 0) {
-      // Required rows are checked at admission. Only an already live writer warrants a watch for one of them.
+      // Required watches are checked and armed at the grant boundary.
       if (!required) watchAbsentProtectedRow(target, reachingGrants);
       return false;
     }
@@ -2701,22 +2701,32 @@ export function buildSandboxConfig(
 
 const requiredWindowsWriteDenies = new WeakMap<SandboxRuntimeConfig, readonly string[]>();
 
-function assertRequiredWindowsWriteDenies(config: SandboxRuntimeConfig, additionalRoots: readonly string[] = []): readonly string[] {
+function assertRequiredWindowsWriteDenies(config: SandboxRuntimeConfig, additionalRoots: readonly string[] = [], armWatches = false): readonly string[] {
   const required = requiredWindowsWriteDenies.get(config);
   if (required === undefined) return [];
   const roots = [...windowsPinnedPaths(config.filesystem.allowWrite), ...additionalRoots];
   const reached = required.filter(path => roots.some(root => lexicalWindowsOverlap(root, path)));
   const projected = new Set(spelledPathEntries(config.filesystem.denyWrite, "denyWrite").map(windowsReadDenyKey));
   const liveRoots = active ? watchedRootsInUse(sandboxSession) : [];
+  const missing: string[] = [];
   let unenforced: string | undefined;
   for (const path of reached) {
-    if (!windowsDenyTargetPresent(path)) {
+    const present = windowsDenyTargetPresent(path);
+    const willStamp = projected.has(windowsReadDenyKey(path));
+    if (present === willStamp) {
+      if (!present) missing.push(path);
+      continue;
+    }
+    if (!present) {
       const reaching = liveRoots.filter(root => lexicalWindowsOverlap(root, path));
       if (reaching.length > 0) watchAbsentProtectedRow(path, reaching, true);
-    } else if (projected.has(windowsReadDenyKey(path))) continue;
+    }
     unenforced ??= path;
   }
   if (unenforced !== undefined) throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: unenforced }));
+  if (armWatches) {
+    for (const path of missing) watchAbsentProtectedRow(path, roots.filter(root => lexicalWindowsOverlap(root, path)), true);
+  }
   return reached;
 }
 
@@ -3142,7 +3152,7 @@ async function initializeSandboxRuntime(
     // A host that claimed its signals (asrt-signal-ownership.ts) drains confined children before it resets the runtime; the runtime's own signal
     // handler would reset it, and revoke its ACEs, while they still run (carried patch part 12).
     if (readAsrtSignalReleaseClaim()) SandboxManager.setSignalCleanupOwnedByHost(true);
-    assertRequiredWindowsWriteDenies(config);
+    assertRequiredWindowsWriteDenies(config, [], true);
     checkWindowsSandboxStampTargets(config.filesystem);
     if (process.platform === "win32") warnWindowsPlaceholderLeftovers(config.filesystem);
     // From here the runtime may stamp ACEs that only its reset, spawning the private helper copy, releases.
@@ -3838,7 +3848,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome, issuedHome));
   timeStep("preflightMs", () => assertStillValid?.());
   if (stampFailure !== undefined) throw stampFailure;
-  if (requiredRows.size > 0) timeStep("preflightMs", () => assertRequiredWindowsWriteDenies(pending, additionalWriteRoots));
+  if (requiredRows.size > 0) timeStep("preflightMs", () => assertRequiredWindowsWriteDenies(pending, additionalWriteRoots, true));
   // Resolved after every refusal above, so a refused turn starts no holder.
   const holderPid = timeStep("preflightMs", () => typeof requestedHolderPid === "number" ? requestedHolderPid : requestedHolderPid());
   if (allowRead.length > 0 || allowWrite.length > 0) {

@@ -13,11 +13,23 @@ const pin = vi.hoisted(() => ({ real: false, fail: undefined as ((path: string) 
 vi.mock("../../shared/windows-path-facts.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../shared/windows-path-facts.js")>();
   const { lstatSync: look } = await import("node:fs");
+  const { dirname } = await import("node:path");
   return { ...actual, pinWindowsPaths: (paths: readonly string[]) => pin.real ? actual.pinWindowsPaths(paths) : paths.map((path) => {
     const failure = pin.fail?.(path);
     if (failure !== undefined) throw failure;
-    const entry = look(path, { bigint: true });
-    return { volumeSerial: entry.dev.toString(16), fileId: entry.ino.toString(16) };
+    const entry = look(path, { bigint: true, throwIfNoEntry: false });
+    if (entry !== undefined) return { volumeSerial: entry.dev.toString(16), fileId: entry.ino.toString(16) };
+    let anchor = dirname(path);
+    let parent = look(anchor, { bigint: true, throwIfNoEntry: false });
+    while (parent === undefined && dirname(anchor) !== anchor) {
+      anchor = dirname(anchor);
+      parent = look(anchor, { bigint: true, throwIfNoEntry: false });
+    }
+    if (parent === undefined) throw new Error("Fixture watch has no existing ancestor");
+    return { exists: false, attributes: 0, reparseTag: 0, ancestors: [{
+      exists: true, canonical: anchor, directory: parent.isDirectory(), attributes: 0, reparseTag: 0,
+      volumeSerialNumber: parent.dev.toString(), fileIndex: parent.ino.toString(),
+    }] };
   }) };
 });
 

@@ -225,7 +225,9 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     const held = await holdWindowsFilesystemGrant({ label: "watched-fresh-native", allowRead: [], allowWrite: [workspace] });
     try {
       expect(entriesBelow(root)).toEqual(before);
-      expect(watchedProtectedRows()).toContain(join(workspace, ".vscode"));
+      expect(watchedProtectedRows()).toEqual(expect.arrayContaining(
+        [".vscode", ".agents", ".ave/commands", ".ave/hooks"].map(name => join(workspace, name)),
+      ));
     } finally { held.release(); }
     // The profile root holds the helper's default ledger, so a write grant on it is refused before anything is stamped.
     expect(srtWinConfinementStatePaths()).toContain(join(root, "AppData", "Local", "sandbox-runtime"));
@@ -241,7 +243,6 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     const { workspace, held } = await grantedWorkspace();
     try {
       const { wrapped, invocation } = await runPlantingTasks(workspace);
-      expect(isHostGitWorkspaceAvailable(workspace)).toBe(false);
       vi.stubEnv("AVE_HOME", sameVolumeAveHome());
       invocation.release();
       const outcome = await wrapped.cleanupCompleted;

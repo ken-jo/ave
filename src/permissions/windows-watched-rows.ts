@@ -5,7 +5,7 @@ import { createLogger } from "../lib/logger.js";
 import { renameFileOnce } from "../lib/transient-fs-lock-retry.js";
 import { errorMessage } from "../shared/error-message.js";
 import { setHostWorkspaceGuard } from "../shared/host-workspace-gate.js";
-import { pinWindowsPaths } from "../shared/windows-path-facts.js";
+import { admitWindowsReparse, pinWindowsPaths } from "../shared/windows-path-facts.js";
 import type { MxcWatchedRow } from "./mxc-windows.js";
 import { createSandboxQuarantine, sandboxQuarantineRoot } from "./sandbox-quarantine.js";
 
@@ -104,11 +104,20 @@ function entryAt(path: string, bigint = false): Stats | BigIntStats | undefined 
 export function watchAbsentProtectedRow(path: string, roots: readonly string[], exact = false): void {
   const target = plain(path);
   const id = key(target);
-  if (excepted.has(id)) return;
+  if (excepted.has(id) && !exact) return;
+  const pinned = exact ? pinAbsentWatchAnchor(target) : undefined;
   const known = watched.get(id);
   if (known) {
+    if (exact && !sameIdentity(known.anchor, known.anchorIdentity)) throw refusal(target);
     known.exact ||= exact;
     for (const root of roots) known.roots.add(root);
+    if (exact) delete known.restored;
+    return;
+  }
+  if (pinned !== undefined) {
+    excepted.delete(id);
+    watched.set(id, { path: target, ...pinned, recordedAt: new Date().toISOString(),
+      roots: new Set(roots), holders: new Set(), exact });
     return;
   }
   let anchor = dirname(target);
@@ -124,6 +133,23 @@ export function watchAbsentProtectedRow(path: string, roots: readonly string[], 
     if (parent === anchor) return;
     anchor = parent;
   }
+}
+
+function pinAbsentWatchAnchor(path: string): Pick<WatchedRow, "anchor" | "anchorIdentity"> {
+  try {
+    const [facts] = pinWindowsPaths([path]);
+    const parent = facts?.ancestors.findLast(component => component.exists === true);
+    if (facts?.exists === false && admitWindowsReparse(facts) === true && parent?.directory
+      && parent.canonical !== null && parent.volumeSerialNumber !== null && parent.fileIndex !== null) {
+      const anchor = plain(parent.canonical);
+      const anchorIdentity = { dev: BigInt(parent.volumeSerialNumber), ino: BigInt(parent.fileIndex) };
+      if (within(anchor, path) && key(anchor) !== key(path)
+        && sameIdentity(anchor, anchorIdentity) && entryAt(path) === undefined) return { anchor, anchorIdentity };
+    }
+  } catch (error) {
+    throw refusal(path, error);
+  }
+  throw refusal(path);
 }
 
 /** One container launch's claim on its watched rows. */
@@ -224,7 +250,7 @@ function rowState(row: WatchedRow): "absent" | "present" | "unverifiable" {
     const present = entryAt(row.path) !== undefined;
     if (sameIdentity(row.anchor, row.anchorIdentity)) return present ? "present" : "absent";
     // A replaced folder with nothing at the name leaves nothing to read once no contained process can still write there.
-    return present || row.holders.size > 0 ? "unverifiable" : "absent";
+    return present || row.holders.size > 0 || (row.exact && row.roots.size > 0) ? "unverifiable" : "absent";
   } catch {
     return "unverifiable";
   }
@@ -419,7 +445,10 @@ export async function restoreWatchedQuarantine(slot: string, index: number): Pro
   if (!entryAt(dirname(entry.original))?.isDirectory()) throw new Error(`The folder of ${entry.original} no longer exists`);
   await renameFileOnce(entry.quarantined, entry.original);
   const row = watched.get(key(entry.row));
-  if (row === undefined || row.holders.size === 0) {
+  if (row?.exact && row.roots.size > 0) {
+    // The ACL grant can still write to this name, so the next sweep must check it.
+    delete row.restored;
+  } else if (row === undefined || row.holders.size === 0) {
     excepted.add(key(entry.row));
     watched.delete(key(entry.row));
   } else {
