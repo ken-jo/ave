@@ -4,6 +4,8 @@ import { captureBrowserPage, captureBrowserViewport } from "../browser-capture.j
 import { captureScrollParameters } from "../browser-capture-scroll.js";
 import type { CdpSession } from "../browser-action-guard.js";
 
+vi.mock("../browser-capture-stitch-process.js", () => import("./in-process-capture-stitcher.js"));
+
 const WIDTH = 4;
 const VIEWPORT_HEIGHT = 4;
 const CONTENT_HEIGHT = 10;

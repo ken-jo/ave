@@ -16,4 +16,6 @@ export const MAIN_ENTRY_POINTS = Object.freeze({
   "git-repository-inspection-worker": "src/permissions/rules/git-repository-inspection-worker-main.ts",
   "memory-map-child": "src/main/memory-map/inference-child-main.ts",
   "preview-document-child-main": "src/tools/preview-document-child-main.ts",
+  // A full-page capture composes its tiles in this child, which ends with the capture.
+  "browser-capture-stitch-child": "src/main/browser/browser-capture-stitch-child-main.ts",
 });
