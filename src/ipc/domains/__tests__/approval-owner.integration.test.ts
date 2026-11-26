@@ -14,6 +14,7 @@ import { PermissionTestResources } from "../../../permissions/__tests__/test-res
 import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput, IPC_APPROVAL_REQUEST, IPC_APPROVAL_SETTLED } from "../../../permissions/approval-gate.js";
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../../../permissions/judge/judge-settings.js";
+import * as terminalWriteAuthority from "../../../permissions/host-terminal-write-authority.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { matchesProjectRuleRootBinding, projectRulesLocation } from "../../../permissions/rules/project-rule-files.js";
 import { captureShellWorkingDirectoryIdentity } from "../../../permissions/shell-working-directory-identity.js";
@@ -30,7 +31,8 @@ import { parseHostShellExecutionInput } from "../../../permissions/host-shell-ex
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot, setWindowsSandboxSubstrate } from "../../../permissions/sandbox-capability.js";
 import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../../boot/steps/windows-sandbox-plan.js";
 import { ToolExecutor } from "../../../tools/executor.js";
-import { runWithHostTerminalTurn } from "../../../tools/host-terminal-turn.js";
+import { noteOtherPrincipalGuidance, runWithHostTerminalTurn } from "../../../tools/host-terminal-turn.js";
+import * as invocationExecution from "../../../tools/invocation-execution.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { BashTool } from "../../../tools/shell-tools.js";
 import { createTerminalRunTool } from "../../../tools/terminal-run.js";
@@ -212,15 +214,13 @@ async function subject(mode: "auto" | "default" = "auto") {
 }
 
 describe("live native approval ownership", () => {
-  it.each(["before save", "during audit", "unchanged"] as const)("checks the terminal floor card's directory when it is %s", async scenario => {
+  async function terminalFloorSubject() {
     const f = await subject("default");
     vi.stubEnv("AVE_HOME", f.root);
     setShellSandboxRequestedAtBoot(true);
     f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "allow");
     const cwd = join(f.root, "work");
     mkdirSync(cwd);
-    const originalCwd = captureShellWorkingDirectoryIdentity(cwd);
-    expect(originalCwd).toBeDefined();
     const windowId = 101;
     const terminal = terminalSessionFixture("terminal:0000c0de-1", "manual");
     const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
@@ -255,11 +255,98 @@ describe("live native approval ownership", () => {
         }),
       },
     }));
-    const run = (turnId: string, command: string) => runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId }, () =>
+    const runTerminal = (turnId: string, command: string) =>
       f.executeAll([{ id: turnId, name: "terminal_run", input: { command, waitSeconds: 0 } }], {
         sessionId: SESSION_ID, executionCwd: cwd,
         permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", additionalDirectories: [cwd] }),
-      }));
+      });
+    const recordTerminalWaiver = (card: ApprovalRequest) => Promise.resolve(invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "session",
+      verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
+      rule: { action: "allow", scope: "session" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
+    }));
+    return { ...f, cwd, write, runTerminal, recordTerminalWaiver };
+  }
+
+  it.each(["deny", "allow"] as const)("rechecks the original terminal command after saving its late floor waiver: %s", async current => {
+    const f = await terminalFloorSubject();
+    const frame = frameEvent(f.windowA);
+    const warmup = runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "initial-waiver" }, () =>
+      f.runTerminal("initial-waiver", "printf initial"));
+    const first = await f.waitForCard();
+    expect(await f.recordTerminalWaiver(first)).toEqual({ ok: true });
+    await invoke(PERMISSIONS.approvalRespond, frame, allowOnceCardAnswer(first));
+    expect((await warmup)[0]?.is_error).toBeFalsy();
+    expect(f.write.mock.calls).toEqual([["printf initial"]]);
+    f.write.mockClear();
+
+    const reached = deferred<void>();
+    const held = f.hold();
+    const execute = invocationExecution.executeAuthorizedToolInvocation;
+    const admission = vi.spyOn(invocationExecution, "executeAuthorizedToolInvocation").mockImplementationOnce(context => execute({
+      ...context,
+      finalizeExecutionRouteGrant: async () => {
+        reached.resolve();
+        await held.promise;
+        return context.finalizeExecutionRouteGrant?.();
+      },
+    }));
+    const lateCard = deferred<ApprovalRequest>();
+    f.windowA.webContents.send.mockImplementation((channel: string, card: ApprovalRequest) => {
+      if (channel === IPC_APPROVAL_REQUEST) lateCard.resolve(card);
+    });
+    const transition = vi.spyOn(f.gate, "allowsPolicyTransition");
+    const issueWriteAuthority = vi.spyOn(terminalWriteAuthority, "issueHostTerminalWriteAuthority");
+    const turnId = "late-waiver";
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId }, async () => {
+      const pending = f.runTerminal(turnId, "printf ready");
+      const settledEarly = pending.then(result => { throw new Error(`Terminal command settled early: ${result[0]?.content}`); });
+      await Promise.race([reached.promise, lateCard.promise.then(() => { throw new Error("Approval card arrived before handler admission"); }), settledEarly]);
+      expect(admission.mock.calls[0]?.[0].permissionResult).toMatchObject({ decision: "allow", reasonCode: "floor-session-allow" });
+      expect(f.cards(f.windowA)).toEqual([first]);
+      // The existing waiver covers the floor only while the ordinary decision allows the command.
+      f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "ask");
+      held.resolve();
+
+      const card = await Promise.race([lateCard.promise, settledEarly]);
+      expect(card).toMatchObject({
+        args: { command: "printf ready" },
+        allowedChoices: ["allow-once", "deny-once"],
+        shellRule: { floorSessionOnly: true, sessionAllowed: true },
+      });
+      expect(issueWriteAuthority).not.toHaveBeenCalled();
+      expect(f.write).not.toHaveBeenCalled();
+      const openedEpoch = f.manager.getPolicyEpoch();
+      expect(await f.recordTerminalWaiver(card)).toEqual({ ok: true });
+      expect(f.manager.getPolicyEpoch()).not.toBe(openedEpoch);
+      if (current === "deny") noteOtherPrincipalGuidance();
+      await invoke(PERMISSIONS.approvalRespond, frame, allowOnceCardAnswer(card));
+
+      const [result] = await pending;
+      expect(transition).toHaveReturnedWith(true);
+      expect(f.cards(f.windowA)).toEqual([first, card]);
+      if (current === "deny") {
+        expect.soft(issueWriteAuthority.mock.calls.length).toBe(0);
+        expect(f.write).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+          is_error: true,
+          content: "Host terminal typing is available only to the user's own turn in its pane chat",
+        });
+      } else {
+        expect(result?.is_error, result?.content).toBeFalsy();
+        expect(result?.tool_use_id).toBe(turnId);
+        expect(f.write.mock.calls).toEqual([["printf ready"]]);
+      }
+    });
+  });
+
+  it.each(["before save", "during audit", "unchanged"] as const)("checks the terminal floor card's directory when it is %s", async scenario => {
+    const f = await terminalFloorSubject();
+    const { cwd, write } = f;
+    const originalCwd = captureShellWorkingDirectoryIdentity(cwd);
+    expect(originalCwd).toBeDefined();
+    const run = (turnId: string, command: string) => runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId }, () =>
+      f.runTerminal(turnId, command));
     const original = run("original-terminal-command", "printf ready");
     const card = await f.waitForCard();
     expect(card.shellRule).toMatchObject({ floorSessionOnly: true, sessionAllowed: true });
@@ -279,11 +366,7 @@ describe("live native approval ownership", () => {
       await append(entry);
     });
     if (scenario === "before save") replaceCwd();
-    const record = Promise.resolve(invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
-      requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "session",
-      verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
-      rule: { action: "allow", scope: "session" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
-    }));
+    const record = f.recordTerminalWaiver(card);
     if (scenario === "during audit") {
       await Promise.race([auditReached.promise, record.then(() => { throw new Error("Waiver save skipped its audit wait"); })]);
       replaceCwd();

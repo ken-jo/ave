@@ -205,7 +205,7 @@ export interface ExecutionStageContext {
   hostShellExecutionPlan: HostShellExecutionPlan | undefined;
   executionRouteGrant?: ExecutionGrant;
   finalizeExecutionRouteGrant?: () => Promise<ExecutionGrant | undefined>;
-  hostTerminalRoute?: { recheck(): Promise<void>; decidedBackend: string; backendIdentity(): string | undefined };
+  hostTerminalRoute?: { recheck(): Promise<void>; decidedBackend: string; backendIdentity(): string | undefined; floorPlan?: HostShellExecutionPlan };
   checkCurrentPermission?: AuthorizedInvocation["checkCurrentPermission"];
   checkCurrentHostTerminalPermission?: AuthorizedInvocation["checkCurrentHostTerminalPermission"];
   onHostTerminalWriteRefused?: (releasedGeneration: number, policyEpoch: string) => void;
@@ -1160,9 +1160,16 @@ export async function executeAuthorizedToolInvocation(
       ...browserApprovalCardFacts(tool, approvalMemory),
       reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${permissionResult.reason}` : permissionResult.reason,
       ...approvalReasonFields(permissionResult, { fileTarget: false }),
-      ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
+      ...(permissionResult.forceModal ? {
+        forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
         ...(lateApprovalPolicyEpoch !== undefined && offersFloorSessionAllow(permissionResult)
-          ? { floorSessionAllowed: true as const, floorSessionPolicyEpoch: lateApprovalPolicyEpoch } : {}) } : {}),
+          ? {
+              floorSessionAllowed: true as const,
+              floorSessionPolicyEpoch: lateApprovalPolicyEpoch,
+              ...(hostTerminalRoute?.floorPlan === undefined ? {} : { hostShellExecutionPlan: hostTerminalRoute.floorPlan }),
+            }
+          : {}),
+      } : {}),
       ...hostTerminalApprovalFacts(tool, approvalMemory, finalInput.command),
       ...userOwnedSurfaceCardFacts(permissionResult),
     };

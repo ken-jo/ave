@@ -1356,6 +1356,7 @@ async function runToolInvocationAttempt(
         const decidedLegacyPlanIdentity = sealed.plan.legacyPlanIdentity;
         const route = Object.freeze({
           decidedBackend: hostTerminalPlan.identity,
+          floorPlan: hostTerminalFloorPlan,
           backendIdentity: () => {
             try {
               if (isWorkloadBrokerActive() || isOperatorContainerPublished()) return undefined;

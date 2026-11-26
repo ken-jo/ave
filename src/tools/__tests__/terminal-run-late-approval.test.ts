@@ -131,7 +131,7 @@ async function fixture(options: { outside?: boolean; mode?: "default" | "strict"
 }
 
 describe("host terminal late native approval", () => {
-  it.each(["deny", "allow"] as const)("rechecks a late answer across its own saved session waiver: %s", async current => {
+  it.each(["deny", "allow"] as const)("rechecks a tainted late answer across a synthetic same-card transition: %s", async current => {
     const f = await fixture();
     const denial = "Current permission refuses the terminal command.";
     await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "late-waiver-turn" }, async () => {
@@ -141,9 +141,10 @@ describe("host terminal late native approval", () => {
       f.release();
       await vi.waitFor(() => expect(f.cards).toHaveLength(1), CARD_WAIT);
       const card = f.cards[0];
-      if (!card) throw new Error("No late waiver card");
+      if (!card) throw new Error("No tainted late card");
       expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
-      // Exercise the authenticated transition the late decision receives after a successful save.
+      expect(card.shellRule).toBeUndefined();
+      // This card offers no waiver. Inject the transition to isolate the answer recheck.
       const token = f.gate.beginApprovalRuleSave(card.id, f.manager.getPolicyEpoch());
       f.manager.addFloorSessionGrant(SESSION_ID, { code: "sandbox-unavailable" });
       f.gate.completeApprovalRuleSave(token, f.manager.getPolicyEpoch(), "session");
