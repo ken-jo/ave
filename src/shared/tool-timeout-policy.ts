@@ -78,6 +78,9 @@ export const TOOL_TIMEOUT_POLICY = {
   // A sandboxed Windows plugin child starts and announces its listener.
   windowsPluginChildConnectMs: 30_000,
   // The child listener outlasts the host's announce and connect deadline.
+  // Spacing between independent container confirmations that ambiguous shell completions trigger; it doubles up to the maximum while no loss is confirmed.
+  windowsContainerConfirmationMinIntervalMs: 60_000,
+  windowsContainerConfirmationMaxIntervalMs: 900_000,
   windowsInferenceChildConnectMs: 30_000,
   windowsInferenceChildAcceptMs: 60_000,
   windowsInferenceChildHandshakeMs: 10_000,

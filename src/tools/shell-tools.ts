@@ -93,7 +93,7 @@ import {
 import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
 import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
 import { isWindowsPathAtOrUnder, mayIndicateMxcShellStartupFailure, MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
-import { invalidateWindowsBackendEvidence, recheckWindowsContainerBackendAfterShellFailure } from "../permissions/windows-confinement-evidence.js";
+import { observeWindowsBackend, recheckWindowsContainerBackendAfterShellFailure, reportWindowsBackendLoss, type WindowsBackendObservation } from "../permissions/windows-confinement-evidence.js";
 import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";
 import { createContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 import { buildMandatorySandboxWritePolicy } from "../permissions/sandbox-write-policy.js";
@@ -4193,6 +4193,7 @@ async function spawnPowerShellInMxc(
   let token: string;
   let launch: MxcShellLaunch;
   let child: PipedChild;
+  let backendObservation: WindowsBackendObservation | undefined;
   let policyNotices: readonly string[];
   try {
     const sandboxHome = createSandboxProcessHome();
@@ -4249,6 +4250,8 @@ async function spawnPowerShellInMxc(
     if (cmd === undefined) throw new Error("Container launcher is missing");
     launch.activate();
     const launcherEnv = buildSafeChildEnv({});
+    // Taken before the launcher starts, so a launch failure reaches only the evidence live at that start.
+    backendObservation = observeWindowsBackend("container");
     try {
       child = spawn(cmd, args, {
         // The launcher runs from its own (per-machine, admin-only) directory, so
@@ -4262,7 +4265,7 @@ async function spawnPowerShellInMxc(
         env: launcherEnv,
       });
     } catch (error) {
-      invalidateWindowsBackendEvidence("container");
+      reportWindowsBackendLoss(backendObservation);
       throw launcherError(error);
     }
   } catch (error) {
@@ -4322,7 +4325,7 @@ async function spawnPowerShellInMxc(
     let shellDiagnostics = "";
     let closed: Promise<void> | undefined;
     spawned.on("error", (err) => {
-      if (spawned.pid === undefined) invalidateWindowsBackendEvidence("container");
+      if (spawned.pid === undefined && backendObservation !== undefined) reportWindowsBackendLoss(backendObservation);
       void (async () => {
         if (closed !== undefined) await closed;
         // A spawn that fails (no pid) may never emit "close". A running child keeps its

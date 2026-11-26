@@ -1,4 +1,5 @@
 import type { SandboxWindowsSubstrateInfo } from "../shared/sandbox-capability-info.js";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
   checkAsrtDependencies,
   getWindowsAccountConfinementHelperIdentity,
@@ -91,6 +92,25 @@ export class WindowsBackendEvidenceOwner {
     this.pending = undefined;
   }
 
+  /** The evidence generation and route a failure observer starts measuring against. */
+  observe(): { readonly epoch: number; readonly route: readonly unknown[] | undefined } {
+    try {
+      return { epoch: this.epoch, route: this.provider.route() };
+    } catch {
+      return { epoch: this.epoch, route: undefined };
+    }
+  }
+
+  /** Whether nothing has replaced the evidence since `observe` returned this generation. */
+  isObserved(observed: { readonly epoch: number; readonly route: readonly unknown[] | undefined }): boolean {
+    if (observed.route === undefined || observed.epoch !== this.epoch) return false;
+    try {
+      return sameRoute(observed.route, this.provider.route());
+    } catch {
+      return false;
+    }
+  }
+
   isCurrent(receipt: WindowsBackendEvidence): boolean {
     return receipt.epoch === this.epoch && this.current() === receipt;
   }
@@ -156,7 +176,8 @@ let containerBackendLossEpoch = 0;
 
 export function getWindowsContainerBackendLossEpoch(): number { return containerBackendLossEpoch; }
 
-export function invalidateWindowsBackendEvidence(backend?: "account" | "container"): void {
+/** Voids the named evidence now. Asynchronous failure observers report through `reportWindowsBackendLoss` instead. */
+export function invalidateWindowsBackendEvidence(backend?: WindowsBackend): void {
   if (backend !== "account") {
     containerBackendLossEpoch += 1;
     containerBackend.invalidate();
@@ -164,18 +185,56 @@ export function invalidateWindowsBackendEvidence(backend?: "account" | "containe
   if (backend !== "container") accountBackend.invalidate();
 }
 
-/** Test the shared backend with a fixed command while preserving existing receipts on a healthy start. */
-export async function recheckWindowsContainerBackendAfterShellFailure(): Promise<void> {
-  try {
-    const route = containerBackend.provider.route();
-    const lossEpoch = containerBackendLossEpoch;
-    const support = await probeContainerPowerShellStart();
-    const confirmedLoss = support.state === "unavailable" && (support.reason === "unverified-session"
-      || (support.reason === "powershell-start-failed" && mayIndicateMxcShellStartupFailure(1, support.detail)));
-    if (confirmedLoss && lossEpoch === containerBackendLossEpoch && sameRoute(route, containerBackend.provider.route())) {
-      invalidateWindowsBackendEvidence("container");
-    }
-  } catch { /* An inconclusive check cannot establish shared backend loss. */ }
+declare const WINDOWS_BACKEND_OBSERVATION: unique symbol;
+/** What a failure observer measured against: one backend's evidence generation and route. */
+export interface WindowsBackendObservation { readonly [WINDOWS_BACKEND_OBSERVATION]: true; readonly backend: WindowsBackend }
+
+const observations = new WeakMap<WindowsBackendObservation, ReturnType<WindowsBackendEvidenceOwner["observe"]>>();
+
+/** Taken before a failure observer starts measuring, so its later report can only reach the evidence it measured. */
+export function observeWindowsBackend(backend: WindowsBackend): WindowsBackendObservation {
+  const observation = Object.freeze({ backend }) as WindowsBackendObservation;
+  observations.set(observation, WINDOWS_BACKEND_EVIDENCE[backend].observe());
+  return observation;
+}
+
+/** Revokes the evidence the observer measured. A report that outlived that evidence is dropped: it changes nothing. */
+export function reportWindowsBackendLoss(observation: WindowsBackendObservation): boolean {
+  const observed = observations.get(observation);
+  if (observed === undefined || !WINDOWS_BACKEND_EVIDENCE[observation.backend].isObserved(observed)) return false;
+  invalidateWindowsBackendEvidence(observation.backend);
+  return true;
+}
+
+let confirmation: Promise<void> | undefined;
+let confirmationIntervalMs = 0;
+let confirmationNotBefore = Number.NEGATIVE_INFINITY;
+
+/**
+ * Tests the shared backend with a fixed command after an ambiguous shell completion. One confirmation runs at a time and
+ * every completion arriving meanwhile shares it. The next one waits out an interval that doubles while no loss is
+ * confirmed. A skipped or inconclusive confirmation establishes nothing: it neither revokes nor admits.
+ */
+export function recheckWindowsContainerBackendAfterShellFailure(): Promise<void> {
+  if (confirmation !== undefined) return confirmation;
+  if (performance.now() < confirmationNotBefore) return Promise.resolve();
+  const observation = observeWindowsBackend("container");
+  const flight: Promise<void> = (async () => {
+    let confirmedLoss = false;
+    try {
+      const support = await probeContainerPowerShellStart();
+      confirmedLoss = support.state === "unavailable" && (support.reason === "unverified-session"
+        || (support.reason === "powershell-start-failed" && mayIndicateMxcShellStartupFailure(1, support.detail)));
+    } catch { /* An inconclusive check cannot establish shared backend loss. */ }
+    if (confirmedLoss) reportWindowsBackendLoss(observation);
+    const { windowsContainerConfirmationMinIntervalMs: min, windowsContainerConfirmationMaxIntervalMs: max } = TOOL_TIMEOUT_POLICY;
+    confirmationIntervalMs = confirmedLoss ? min : Math.min(max, Math.max(min, confirmationIntervalMs * 2));
+    confirmationNotBefore = performance.now() + confirmationIntervalMs;
+  })().finally(() => {
+    if (confirmation === flight) confirmation = undefined;
+  });
+  confirmation = flight;
+  return flight;
 }
 
 /** Probes every backend for the calling operation and returns what each probe established. */

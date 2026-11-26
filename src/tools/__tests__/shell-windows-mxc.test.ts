@@ -155,6 +155,13 @@ const PARSED = JSON.stringify({
   }],
 });
 
+let confirmationClock = 0;
+/** Moves past any interval an earlier shared-backend confirmation left behind, and holds the clock there. */
+function passConfirmationInterval(): void {
+  confirmationClock += 3_600_000;
+  vi.spyOn(performance, "now").mockImplementation(() => confirmationClock);
+}
+
 function bootMxcShells(): void {
   setProcessPlatform("win32");
   setShellSandboxRequestedAtBoot(true);
@@ -601,7 +608,7 @@ describe("builtin shell — Windows MXC containers", () => {
 
   it.each(["reports an error", "throws"] as const)("releases the listener and shows only the error code when the launcher's spawn %s", async (failure) => {
     bootMxcShells();
-    const reportLoss = vi.spyOn(backendEvidence, "invalidateWindowsBackendEvidence");
+    const reportLoss = vi.spyOn(backendEvidence, "reportWindowsBackendLoss");
     // Node names the launcher's absolute path in the message, `syscall`, `path` and `spawnargs`.
     const spawnError = (): Error => Object.assign(new Error(`spawn ${WXC_EXEC} ENOENT`), {
       code: "ENOENT", errno: -4058, syscall: `spawn ${WXC_EXEC}`, path: WXC_EXEC, spawnargs: ["--config-base64", "eyJ9"],
@@ -618,7 +625,7 @@ describe("builtin shell — Windows MXC containers", () => {
     const result = await executePowerShell(context(`ps-mxc-enoent-${failure}`));
     expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
     expect(result.output).toBe("PowerShell spawn failed: container launcher error ENOENT");
-    expect(reportLoss).toHaveBeenCalledExactlyOnceWith("container");
+    expect(reportLoss).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ backend: "container" }));
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
   });
 
@@ -629,6 +636,7 @@ describe("builtin shell — Windows MXC containers", () => {
     ["ordinary command failure", 1, "Command failed", false, false],
   ] as const)("checks shared container evidence when %s", async (_name, code, diagnostics, revokes, rechecks) => {
     bootMxcShells();
+    passConfirmationInterval();
     vi.spyOn(mxcWindows, "getHostWxcExecIdentity").mockReturnValue("verified-launcher");
     vi.spyOn(mxcWindows, "resolveHostWxcExecPath").mockResolvedValue(WXC_EXEC);
     const checkStart = vi.spyOn(mxcWindows, "probeHostMxcPowerShellStart").mockResolvedValue({ state: "available", windowsBuild: null });
@@ -647,9 +655,89 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(owner.isCurrent(earlier)).toBe(!revokes);
   });
 
+  const STARTUP_DIAGNOSTIC = "Error: BaseContainer job-object setup failed (5)";
+  const START_FAILED = { state: "unavailable", reason: "powershell-start-failed", windowsBuild: null, detail: STARTUP_DIAGNOSTIC } as const;
+  const START_OK = { state: "available", windowsBuild: null } as const;
+  async function issuedContainerEvidence() {
+    bootMxcShells();
+    passConfirmationInterval();
+    vi.spyOn(mxcWindows, "getHostWxcExecIdentity").mockReturnValue("verified-launcher");
+    vi.spyOn(mxcWindows, "resolveHostWxcExecPath").mockResolvedValue(WXC_EXEC);
+    const checkStart = vi.spyOn(mxcWindows, "probeHostMxcPowerShellStart").mockResolvedValue(START_OK);
+    const owner = backendEvidence.WINDOWS_BACKEND_EVIDENCE.container;
+    const receipt = await owner.refresh();
+    if (receipt === undefined) throw new Error("Container evidence was not issued");
+    checkStart.mockClear();
+    return { checkStart, owner, receipt, lossEpoch: backendEvidence.getWindowsContainerBackendLossEpoch() };
+  }
+  const ambiguousCompletion = (): void => {
+    childProcessMock.spawn.mockImplementation((command: string) =>
+      command === WXC_EXEC ? fakeChild("", 1, STARTUP_DIAGNOSTIC) : fakeChild(PARSED, 0));
+  };
+
+  it("drops a failed confirmation that a newer receipt for the same route has outlived", async () => {
+    const { checkStart, owner, lossEpoch } = await issuedContainerEvidence();
+    let settleConfirmation!: (support: typeof START_FAILED) => void;
+    checkStart.mockImplementationOnce(() => new Promise((resolve) => { settleConfirmation = resolve; }));
+    ambiguousCompletion();
+    const completed = executePowerShell(context("ps-mxc-stale-confirmation"));
+    await vi.waitFor(() => expect(checkStart).toHaveBeenCalledOnce());
+    const newer = await owner.refresh();
+    if (newer === undefined) throw new Error("Container evidence was not reissued");
+    expect(newer.state).toBe("operational");
+    settleConfirmation(START_FAILED);
+    expect((await completed).isError).toBe(true);
+    expect.soft(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch);
+    expect(owner.isCurrent(newer)).toBe(true);
+  });
+
+  it("drops a launcher start failure that newer evidence has outlived", async () => {
+    const { owner, lossEpoch } = await issuedContainerEvidence();
+    let reissued: ReturnType<typeof owner.refresh> | undefined;
+    childProcessMock.spawn.mockImplementation((command: string, args: readonly string[], options?: { stdio?: unknown }) => {
+      if (args.includes(PARSER_REQUEST)) return fakeChild(PARSED, 0);
+      if (command !== WXC_EXEC) return fakeChild(Array.isArray(options?.stdio) && options.stdio[0] === "pipe" ? PARSED : "", 0);
+      reissued = owner.refresh();
+      return childWithSpawnError(Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }));
+    });
+    expect((await executePowerShell(context("ps-mxc-stale-start-failure"))).isError).toBe(true);
+    const newer = await reissued;
+    if (newer === undefined) throw new Error("Container evidence was not reissued");
+    expect.soft(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch);
+    expect(owner.isCurrent(newer)).toBe(true);
+  });
+
+  it("runs one confirmation for overlapping and repeated ambiguous completions, and still revokes once the interval has passed", async () => {
+    const { checkStart, owner, receipt, lossEpoch } = await issuedContainerEvidence();
+    const requested = vi.spyOn(backendEvidence, "recheckWindowsContainerBackendAfterShellFailure");
+    let settleConfirmation!: (support: typeof START_OK) => void;
+    checkStart.mockImplementationOnce(() => new Promise((resolve) => { settleConfirmation = resolve; }));
+    ambiguousCompletion();
+    const overlapping = [executePowerShell(context("ps-mxc-overlap-1")), executePowerShell(context("ps-mxc-overlap-2"))];
+    await vi.waitFor(() => expect(requested).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(checkStart).toHaveBeenCalled());
+    expect(checkStart).toHaveBeenCalledOnce();
+    settleConfirmation(START_OK);
+    for (const result of await Promise.all(overlapping)) expect(result.isError).toBe(true);
+
+    // Inside the interval a command's output starts no native work and waits for none.
+    checkStart.mockImplementation(() => new Promise(() => {}));
+    for (const id of ["ps-mxc-repeat-1", "ps-mxc-repeat-2"]) expect((await executePowerShell(context(id))).isError).toBe(true);
+    expect(requested).toHaveBeenCalledTimes(4);
+    expect(checkStart).toHaveBeenCalledOnce();
+    expect(owner.isCurrent(receipt)).toBe(true);
+
+    passConfirmationInterval();
+    checkStart.mockResolvedValue(START_FAILED);
+    expect((await executePowerShell(context("ps-mxc-after-interval"))).isError).toBe(true);
+    expect(checkStart).toHaveBeenCalledTimes(2);
+    expect(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch + 1);
+    expect(owner.isCurrent(receipt)).toBe(false);
+  });
+
   it("keeps a running launcher's abort watch after an error and releases only on close", async () => {
     bootMxcShells();
-    const reportLoss = vi.spyOn(backendEvidence, "invalidateWindowsBackendEvidence");
+    const reportLoss = vi.spyOn(backendEvidence, "reportWindowsBackendLoss");
     const container = captureCommandLaunch();
     let launcher: (EventEmitter & Record<string, unknown>) | undefined;
     childProcessMock.spawn.mockImplementation((command: string, args: readonly string[], options?: { stdio?: unknown }) => {
