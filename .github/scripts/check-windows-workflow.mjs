@@ -639,6 +639,15 @@ export function checkWindowsWorkflow(workflow, inspect) {
     ...powerShellCommandProblems(steps.filter(step => !CONTAINED_JOBS.includes(step.jobId)), inspect),
   ];
   if (failures.length) throw new Error(failures.join("\n"));
+  const scriptSteps = jobs[SCRIPT_TEST_JOB].steps;
+  const scriptInstall = scriptSteps.findIndex(step => step.run === X64_RUST_INSTALL);
+  const scriptTest = scriptSteps.findIndex(step => step.name === "Run script tests");
+  if (scriptInstall < 0 || scriptTest <= scriptInstall
+    || scriptSteps[scriptInstall].if !== REGRESSION_CONDITION || scriptSteps[scriptInstall]["working-directory"] !== "ave"
+    || scriptSteps[scriptTest].if !== REGRESSION_CONDITION
+    || scriptSteps[scriptTest].run !== [...WRAPPER, "bun", "run", "test:scripts"].join(" ")) {
+    throw new Error(`${SCRIPT_TEST_JOB}: must install the pinned path helper toolchain before running the contained script tests`);
+  }
   checkFirstPreparationLaunch(jobs[PREPARATION_JOB].steps);
   for (const id of Object.keys(HELPER_TRUST)) checkHelperExecutionOrder(id, jobs[id].steps);
 }

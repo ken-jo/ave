@@ -648,6 +648,19 @@ it("requires the pinned path helper toolchain before building the Windows develo
   assert.throws(() => checkWindowsWorkflow(changed, parsedLines), /must install the pinned path helper toolchain before building/);
 });
 
+it("requires the pinned path helper toolchain before running the Windows script tests", () => {
+  const changed = changedWorkflow((steps, get) => {
+    const install = steps.findIndex(step => step.run === "node .github/scripts/install-windows-path-kind-rust.mjs x64");
+    if (install !== -1) steps.splice(install, 1);
+    steps.splice(steps.indexOf(get("Run script tests")) + 1, 0, {
+      run: "node .github/scripts/install-windows-path-kind-rust.mjs x64",
+      if: CONDITION,
+      "working-directory": "ave",
+    });
+  }, "windows-script-tests");
+  assert.throws(() => checkWindowsWorkflow(changed, parsedLines), /must install the pinned path helper toolchain before running/);
+});
+
 it("rejects a contained test step allowed to fail", () => {
   const changed = changedWorkflow((_steps, get) => {
     get("Run Windows regressions")["continue-on-error"] = true;

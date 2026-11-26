@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
@@ -16,11 +16,12 @@ import {
 } from "../../scripts/prepare-windows-job.mjs";
 import {
   WINDOWS_PATH_KIND_PROFILE, WINDOWS_PATH_KIND_PROFILE_SETTINGS, windowsPathKindCompilerCommand,
-  windowsPathKindPath, windowsPathKindReceipt, windowsPathKindReceiptPath, windowsPathKindRustflags, windowsPathKindToolPaths,
+  windowsPathKindReceipt, windowsPathKindReceiptPath, windowsPathKindRustflags, windowsPathKindToolPaths,
   verifyWindowsPathKindReceipt,
 } from "../../scripts/lib/windows-path-kind-build.mjs";
 import { windowsPeImageDigest } from "../../scripts/lib/windows-path-kind-image-digest.mjs";
 import { contentHash as sha256 } from "../../src/__tests__/support/content-hash.js";
+import { pathKindPe } from "../../src/__tests__/support/windows-path-kind-pe.mjs";
 
 const roots: string[] = [];
 const OLD = new Date("2026-01-01T00:00:00Z");
@@ -31,31 +32,6 @@ const RECEIPT = windowsPathKindReceiptPath("x64");
 const PIN = 'channel = "1.92.0"\n';
 const RUST_INPUTS = ["native/windows-path-kind/src/main.rs", "native/windows-path-kind/Cargo.toml",
   "native/windows-path-kind/Cargo.lock", "scripts/build-windows-path-kind.mjs", "scripts/lib/windows-path-kind-build.mjs"];
-
-function pathKindPe(dll = "KERNEL32.dll", delayed = false): Buffer {
-  const binary = Buffer.alloc(0x400);
-  binary.writeUInt16LE(0x5a4d);
-  binary.writeUInt32LE(64, 60);
-  binary.writeUInt32LE(0x4550, 64);
-  binary.writeUInt16LE(0x8664, 68);
-  binary.writeUInt16LE(1, 70); // One section
-  binary.writeUInt16LE(240, 84); // Optional header size
-  const optional = 88;
-  binary.writeUInt16LE(0x20b, optional);
-  binary.writeUInt32LE(16, optional + 108); // Data directory count
-  const directory = optional + 112 + 8 * (delayed ? 13 : 1);
-  binary.writeUInt32LE(0x1000, directory);
-  binary.writeUInt32LE(delayed ? 64 : 40, directory + 4);
-  const section = optional + 240;
-  binary.writeUInt32LE(0x200, section + 8);
-  binary.writeUInt32LE(0x1000, section + 12);
-  binary.writeUInt32LE(0x200, section + 16);
-  binary.writeUInt32LE(0x200, section + 20);
-  if (delayed) binary.writeUInt32LE(1, 0x200);
-  binary.writeUInt32LE(0x1080, 0x200 + (delayed ? 4 : 12));
-  binary.write(dll, 0x280, "ascii");
-  return binary;
-}
 
 function stagePathKind(root: string, machine = 0x8664): void {
   const binary = pathKindPe();
@@ -115,7 +91,7 @@ function write(root: string, relative: string, time: Date): void {
   utimesSync(join(root, relative), time, time);
 }
 
-function fixtureRoot({ launcher, pathKind = true }: { launcher?: Date; pathKind?: boolean } = {}): string {
+function fixtureRoot({ launcher }: { launcher?: Date } = {}): string {
   const root = mkdtempSync(join(tmpdir(), "ave-windows-job-"));
   roots.push(root);
   for (const source of ["scripts/build-windows-job.ps1", "native/windows-job/launcher.cpp", "native/windows-job/README.md"]) {
@@ -123,7 +99,7 @@ function fixtureRoot({ launcher, pathKind = true }: { launcher?: Date; pathKind?
   }
   for (const source of RUST_INPUTS) write(root, source, OLD);
   writeFileSync(join(root, "rust-toolchain.toml"), PIN);
-  if (pathKind) stagePathKind(root);
+  stagePathKind(root);
   if (launcher) write(root, LAUNCHER, launcher);
   return root;
 }
@@ -140,262 +116,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function pathKindBuildFixture() {
-  const root = fixtureRoot({ pathKind: false });
-  const crate = "native/windows-path-kind";
-  cpSync(resolve(crate, "src"), join(root, crate, "src"), { recursive: true });
-  for (const file of RUST_INPUTS.filter((input) => !input.endsWith(".rs"))) {
-    cpSync(resolve(file), join(root, file));
-  }
-  const buildTemp = mkdtempSync(join(tmpdir(), "ave cargo temp-"));
-  roots.push(buildTemp);
-  const runScript = (script: string, code: string, overrides: NodeJS.ProcessEnv = {}, args: string[] = []) => spawnSync(process.execPath, [
-    "--input-type=module", "--eval", code, pathToFileURL(resolve(script)).href, root, ...args,
-  ], {
-    encoding: "utf8", windowsHide: true,
-    env: {
-      ...process.env, TMP: buildTemp, TEMP: buildTemp, TMPDIR: buildTemp, AVE_TEST_TMP_ROOT: buildTemp,
-      ...overrides, ELECTRON_RUN_AS_NODE: "1",
-    },
-  });
-  const runBuild = (overrides?: NodeJS.ProcessEnv) => runScript("scripts/build-windows-path-kind.mjs",
-    'const {buildWindowsPathKind} = await import(process.argv[1]); buildWindowsPathKind({root: process.argv[2]});',
-    overrides);
-  const receiptPath = join(root, windowsPathKindReceiptPath(process.arch));
-  return { root, crate, runBuild, runScript, receiptPath, buildTemp };
-}
-
 describe("Windows path helper build", () => {
-  it.skipIf(process.platform !== "win32")("pins discovery and records every build tool before using it", () => {
-    const { root, runBuild, receiptPath } = pathKindBuildFixture();
-    const clean = runBuild();
-    expect(clean.status, clean.stderr).toBe(0);
-    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
-    const { tools } = receipt.identity.inputs;
-    const discovery = tools.find(({ path }: { path: string }) => win32.basename(path) === "vswhere.exe");
-    expect.soft(discovery).toBeDefined();
-    if (discovery) expect(discovery.sha256).toBe(createHash("sha256").update(readFileSync(discovery.path)).digest("hex"));
-
-    const hostile = runBuild({ SystemRoot: "Q:\\example", "ProgramFiles(x86)": root, PATH: root });
-    expect(hostile.status, hostile.stderr).toBe(0);
-    expect(JSON.parse(readFileSync(receiptPath, "utf8")).identity).toEqual(receipt.identity);
-  }, 60_000);
-
-  it.skipIf(process.platform !== "win32")("rejects incomplete, duplicated or redirected build input inventories", () => {
-    const { root, runBuild, receiptPath } = pathKindBuildFixture();
-    const built = runBuild();
-    expect(built.status, built.stderr).toBe(0);
-    verifyWindowsPathKindReceipt(root, process.arch);
-    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
-    const { inputs } = receipt.identity;
-    for (const list of ["tools", "rustLibraries", "libraries"] as const) {
-      for (let index = 0; index < inputs[list].length; index += 1) {
-        const files = inputs[list].filter((_: unknown, i: number) => i !== index);
-        writeFileSync(receiptPath, JSON.stringify({
-          ...receipt, identity: { ...receipt.identity, inputs: { ...inputs, [list]: files } },
-        }));
-        expect.soft(() => verifyWindowsPathKindReceipt(root, process.arch), inputs[list][index].path).toThrow(/toolchain identity/u);
-      }
-    }
-    for (const unexpected of [inputs.tools[0], { ...inputs.tools[0], path: "Q:\\example\\vswhere.exe" }]) {
-      writeFileSync(receiptPath, JSON.stringify({
-        ...receipt, identity: { ...receipt.identity, inputs: { ...inputs, tools: [...inputs.tools, unexpected] } },
-      }));
-      expect.soft(() => verifyWindowsPathKindReceipt(root, process.arch)).toThrow(/toolchain identity/u);
-    }
-  }, 60_000);
-
-  it.skipIf(process.platform !== "win32")("seals a real offline Cargo build and verifies its executed compiler command", () => {
-    const { root, crate, runBuild, receiptPath } = pathKindBuildFixture();
-    const clean = runBuild();
-    expect(clean.status, clean.stderr).toBe(0);
-    const cleanReceipt = JSON.parse(readFileSync(receiptPath, "utf8"));
-
-    const cargoHome = join(root, "user cargo home");
-    mkdirSync(cargoHome);
-    writeFileSync(join(cargoHome, "config.toml"), "[profile.release]\nopt-level = 1\n");
-    const changedProfile = runBuild({ CARGO_HOME: cargoHome, CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1" });
-    expect(changedProfile.status, changedProfile.stderr).toBe(0);
-    expect.soft(changedProfile.stderr).toContain("-C opt-level=3");
-    expect.soft(changedProfile.stderr).toContain("-C codegen-units=16");
-
-    const substitute = join(root, "alternate.exe");
-    const hostileConfig = '[build]\nrustc = "alternate.exe"\nrustc-wrapper = "alternate.exe"\n[profile.release]\nopt-level = 0\n';
-    for (const folder of [join(root, ".cargo"), join(root, crate, ".cargo")]) {
-      mkdirSync(folder);
-      writeFileSync(join(folder, "config.toml"), hostileConfig);
-    }
-    const targetLinker = process.arch === "arm64" ? "AARCH64_PC_WINDOWS_MSVC" : "X86_64_PC_WINDOWS_MSVC";
-    const hostile = runBuild({
-      CARGO_HOME: cargoHome, CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1",
-      RUSTC: substitute, RUSTC_WRAPPER: substitute, RUSTC_WORKSPACE_WRAPPER: substitute,
-      CARGO_BUILD_RUSTC: substitute, CARGO_BUILD_RUSTC_WRAPPER: substitute, CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER: substitute,
-      RUSTUP_TOOLCHAIN: "alternate", RUSTUP_HOME: join(root, "alternate rustup"), CARGO: substitute,
-      USERPROFILE: join(root, "alternate profile"), PATH: root,
-      [`CARGO_TARGET_${targetLinker}_LINKER`]: substitute,
-      RUSTFLAGS: "--unexpected", CARGO_ENCODED_RUSTFLAGS: "--unexpected", LINK: "/unexpected", LIB: root,
-    });
-    expect(hostile.status, hostile.stderr).toBe(0);
-    verifyWindowsPathKindReceipt(root, process.arch);
-    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
-    expect(hostile.stderr.match(/^\s*Running `(.+)`\r?$/mu)?.[1]).toBe(receipt.invocation);
-    expect(receipt.identity).toEqual(cleanReceipt.identity);
-    expect(receipt.invocation.replaceAll(receipt.targetDir, "<target>")).toBe(
-      cleanReceipt.invocation.replaceAll(cleanReceipt.targetDir, "<target>"),
-    );
-    expect(receipt.invocation).not.toContain(substitute);
-
-    const manifest = join(root, crate, "Cargo.toml");
-    const originalManifest = readFileSync(manifest, "utf8");
-    writeFileSync(manifest, `${originalManifest}\n[profile.release.package.ave-path-kind]\nopt-level = 2\n`);
-    const unexpectedFlags = runBuild();
-    expect(unexpectedFlags.status).toBe(1);
-    expect(unexpectedFlags.stderr).toContain("-C opt-level=2");
-    expect(unexpectedFlags.stderr).toContain("Unexpected Windows path helper compiler invocation");
-    expect(JSON.parse(readFileSync(receiptPath, "utf8"))).toEqual(receipt);
-    writeFileSync(manifest, originalManifest);
-
-    writeFileSync(receiptPath, JSON.stringify({ ...receipt, invocation: `${receipt.invocation} -C link-arg=/unexpected` }));
-    expect(() => verifyWindowsPathKindReceipt(root, process.arch)).toThrow("Unexpected Windows path helper compiler invocation");
-
-    const parent = join(root, "build parent");
-    mkdirSync(join(parent, ".cargo"), { recursive: true });
-    writeFileSync(join(parent, ".cargo", "config"), hostileConfig);
-    const blocked = runBuild({ TMP: parent, TEMP: parent, TMPDIR: parent, AVE_TEST_TMP_ROOT: parent });
-    expect(blocked.status).toBe(1);
-    expect(blocked.stderr).toContain("Unexpected Cargo config above the Windows path helper build directory");
-  }, 60_000);
-
-  it.skipIf(process.platform !== "win32")("isolates the link from crate-local libraries", () => {
-    const { root, crate, runBuild, receiptPath } = pathKindBuildFixture();
-    const clean = runBuild();
-    expect(clean.status, clean.stderr).toBe(0);
-    const executable = join(root, windowsPathKindPath(process.arch));
-    const binary = readFileSync(executable);
-    const cleanReceipt = JSON.parse(readFileSync(receiptPath, "utf8"));
-
-    writeFileSync(join(root, crate, "libucrt.lib"), "unexpected archive");
-    writeFileSync(join(root, "kernel32.lib"), "unexpected archive");
-    const shadowed = runBuild();
-    expect(shadowed.status, shadowed.stderr).toBe(0);
-    expect(readFileSync(executable)).toEqual(binary);
-    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
-    expect(receipt.identity.inputs).toEqual(cleanReceipt.identity.inputs);
-    expect(receipt.identity.inputs.libraries).toEqual(expect.arrayContaining([
-      expect.objectContaining({ path: expect.stringMatching(/libucrt\.lib$/iu), sha256: expect.stringMatching(/^[a-f0-9]{64}$/u) }),
-    ]));
-    verifyWindowsPathKindReceipt(root, process.arch);
-  }, 60_000);
-
-  it.skipIf(process.platform !== "win32")("replaces an independently supplied executable even with an authentic recorded command", () => {
-    const { root, runBuild, runScript, receiptPath, buildTemp } = pathKindBuildFixture();
-    write(root, windowsJobLauncherPath(process.arch), NEW);
-    const built = runBuild();
-    expect(built.status, built.stderr).toBe(0);
-    const executable = join(root, windowsPathKindPath(process.arch));
-    const original = readFileSync(executable);
-    const supplied = pathKindPe();
-    if (process.arch === "arm64") supplied.writeUInt16LE(0xaa64, 68);
-    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
-    writeFileSync(executable, supplied);
-    writeFileSync(receiptPath, JSON.stringify({ ...receipt, binarySha256: createHash("sha256").update(supplied).digest("hex") }));
-    verifyWindowsPathKindReceipt(root, process.arch);
-
-    const prepared = runScript("scripts/prepare-windows-job.mjs",
-      'const {prepareWindowsJob} = await import(process.argv[1]); prepareWindowsJob({root: process.argv[2]});');
-    expect(prepared.status, prepared.stderr).toBe(0);
-    expect(readFileSync(executable).equals(original)).toBe(true);
-    expect(readdirSync(buildTemp)).toEqual([]);
-    verifyWindowsPathKindReceipt(root, process.arch);
-  }, 60_000);
-
-  it.skipIf(process.platform !== "win32")("gives each test build a private helper and fixture that a second build cannot replace", () => {
-    const { root, runScript, buildTemp } = pathKindBuildFixture();
-    const outputs = [mkdtempSync(join(buildTemp, "first-")), mkdtempSync(join(buildTemp, "second-"))];
-    const build = (outDir: string) => {
-      const result = runScript("scripts/build-windows-path-kind.mjs",
-        "const {buildWindowsPathKind} = await import(process.argv[1]);"
-        + "console.log(JSON.stringify(buildWindowsPathKind({root: process.argv[2], fixture: true, outDir: process.argv[3]})));",
-        {}, [outDir]);
-      expect(result.status, result.stderr).toBe(0);
-      return JSON.parse(result.stdout.trim()) as { helper: string; fixture: string; binarySha256: string };
-    };
-    const first = build(outputs[0]);
-    const selected = readFileSync(first.fixture);
-    const second = build(outputs[1]);
-    expect([first.helper, first.fixture]).toEqual([join(outputs[0], "ave-path-kind.exe"), join(outputs[0], "ave-path-pin-test.exe")]);
-    expect(second.fixture).not.toBe(first.fixture);
-    expect(readFileSync(first.fixture).equals(selected)).toBe(true);
-    expect(createHash("sha256").update(readFileSync(first.helper)).digest("hex")).toBe(first.binarySha256);
-    expect(readdirSync(buildTemp).sort()).toEqual(outputs.map((output) => output.slice(buildTemp.length + 1)).sort());
-    expect(existsSync(join(root, windowsPathKindPath(process.arch)))).toBe(false);
-    const nativeTest = readFileSync(resolve("scripts/test-windows-path-kind.mjs"), "utf8");
-    expect(nativeTest).toContain("buildWindowsPathKind({ root, fixture: true, outDir: output })");
-    expect(nativeTest).not.toContain("ave-path-pin-test.exe");
-  }, 120_000);
-
-  it.skipIf(process.platform !== "win32")("refuses a helper substituted after the runner's build returns", () => {
-    const { runScript } = pathKindBuildFixture();
-    const code = [
-      "import { registerHooks } from 'node:module';",
-      "registerHooks({ load(url, context, nextLoad) {",
-      "  if (!url.endsWith('/scripts/build-windows-path-kind.mjs')) return nextLoad(url, context);",
-      "  return { format: 'module', shortCircuit: true, source: " +
-        "\"import { writeFileSync } from 'node:fs'; import { buildWindowsPathKind as build } from \"" +
-        " + JSON.stringify(url + '?original') + ';' + " +
-        "\"export function buildWindowsPathKind(options) { const result = build({ ...options, root: process.argv[2] }); " +
-        "writeFileSync(result.helper, 'substituted helper'); return result; }\" };",
-      "}});",
-      "await import(process.argv[1]);",
-    ].join("\n");
-    const result = runScript("scripts/test-windows-path-kind.mjs", code);
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("Windows test executable does not match the producing build");
-  }, 120_000);
-
-  it.skipIf(process.platform !== "win32")("refuses a pin fixture substituted after the builder publishes it", () => {
-    const { runScript, buildTemp } = pathKindBuildFixture();
-    const outDir = mkdtempSync(join(buildTemp, "pin-test-"));
-    const code = [
-      "import assert from 'node:assert/strict';",
-      "import { createHash } from 'node:crypto';",
-      "import { readFileSync, writeFileSync } from 'node:fs';",
-      "const { buildWindowsPathKind } = await import(process.argv[1]);",
-      "const { fixture, fixtureSha256 } = buildWindowsPathKind({ root: process.argv[2], fixture: true, outDir: process.argv[3] });",
-      "assert.equal(fixtureSha256, createHash('sha256').update(readFileSync(fixture)).digest('hex'));",
-      "const { withVerifiedWindowsExecutable } = await import(process.argv[4]);",
-      "assert.equal(withVerifiedWindowsExecutable(fixture, fixtureSha256, path => path.endsWith('ave-path-pin-test.exe')), true);",
-      "writeFileSync(fixture, 'substituted fixture');",
-      "assert.throws(() => withVerifiedWindowsExecutable(fixture, fixtureSha256, () => assert.fail('launch reached')), " +
-        "/Windows test executable does not match the producing build/);",
-    ].join("\n");
-    const result = runScript("scripts/build-windows-path-kind.mjs", code, {}, [
-      outDir, pathToFileURL(resolve("scripts/lib/windows-locked-executable.mjs")).href,
-    ]);
-    expect(result.status, result.stderr).toBe(0);
-  }, 120_000);
-
-  it.skipIf(process.platform !== "win32")("binds the main bundle to fresh output instead of staged executable bytes", () => {
-    const { root, runScript } = pathKindBuildFixture();
-    const executable = join(root, windowsPathKindPath(process.arch));
-    mkdirSync(dirname(executable), { recursive: true });
-    const supplied = pathKindPe();
-    writeFileSync(executable, supplied);
-    const result = runScript("scripts/build-windows-path-kind.mjs",
-      'const {buildWindowsPathKind} = await import(process.argv[1]); console.log(buildWindowsPathKind({root: process.argv[2]}).binarySha256);');
-    expect(result.status, result.stderr).toBe(0);
-    const built = readFileSync(executable);
-    expect(built.equals(supplied)).toBe(false);
-    expect(result.stdout.trim()).toBe(createHash("sha256").update(built).digest("hex"));
-
-    const dev = readFileSync(resolve("scripts/run-electron-dev.mjs"), "utf8");
-    const bundle = readFileSync(resolve("scripts/build-main-esbuild.mjs"), "utf8");
-    expect(dev).toContain('spawnWatcher("main", process.execPath, [resolve(repoRoot, "scripts/build-main-esbuild.mjs"), "--watch"])');
-    expect(bundle).toContain("pathKindSha256 = buildWindowsPathKind({ root: repoRoot })");
-    expect(bundle).toContain('__AVE_WINDOWS_PATH_KIND_SHA256__: pathKindSha256 === null ? "null" : WINDOWS_PATH_KIND_BUNDLE_PIN');
-    expect(bundle).toContain("windowsPathKindBundlePinDeclaration(pathKindSha256)");
-  }, 60_000);
-
   it.each([
     ["VCRUNTIME140.dll", false],
     ["api-ms-win-crt-runtime-l1-1-0.dll", true],

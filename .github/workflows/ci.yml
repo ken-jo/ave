@@ -1380,6 +1380,7 @@ jobs:
         shell: powershell
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
       - *windows-provision
+      - *windows-path-kind-rust
       - name: Run script tests
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
