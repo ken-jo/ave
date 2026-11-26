@@ -4068,6 +4068,13 @@ export async function findPowerShellCommandPathViolation(
   blockReadsOutsideWorkingDirectories: boolean,
 ): Promise<ShellPathPolicyViolation | null> {
   const commands = typeof input === "string" ? [input] : input;
+  if (process.platform !== "win32") {
+    for (const command of commands) {
+      const violation = findPowerShellAstPathViolation(await parsePowerShellAst(command), cwd, sandboxRoot, extraAllowedDirectories, blockReadsOutsideWorkingDirectories, command);
+      if (violation) return violation;
+    }
+    return null;
+  }
   const parsed: { command: string; ast: PowerShellAstSummary }[] = [];
   for (const command of commands) parsed.push({ command, ast: await parsePowerShellAst(command) });
   return withLocalityDecision(() => {

@@ -1586,7 +1586,8 @@ async function runToolInvocationAttempt(
     });
 
     const canonicalTargets: Array<{ filePath: string; canonicalPath: string; runtimePath: string }> = [];
-    const unsealedRuleSubject = scopedRuleSubjectFor(tool, finalInput, executionCwd);
+    const isWindows = process.platform === "win32";
+    let unsealedRuleSubject = isWindows ? scopedRuleSubjectFor(tool, finalInput, executionCwd) : undefined;
     const resolveFileTarget = (filePath: string): (typeof canonicalTargets)[number] => {
       const runtimePath = unsealedRuleSubject?.kind === "edit"
         ? resolveShellFilesystemPath(filePath, executionCwd)
@@ -1688,7 +1689,7 @@ async function runToolInvocationAttempt(
           return manager.recheckPermission(behavior.reviewedPermission);
         });
       } catch (error) {
-        if (canonicalTargets.length === 0) throw error;
+        if (!isWindows || canonicalTargets.length === 0) throw error;
         return { allowed: false, result: await denyFileTargets(changedTargetReason) };
       }
       const memoryRequest = directoryPermission.pipelineRequest;
@@ -2092,7 +2093,7 @@ async function runToolInvocationAttempt(
                   path: approvedDirectory,
                   session: false,
                   acknowledgeWarnings: true,
-                }, undefined, lifecycle, sealedPersistenceGuard(grantGuard, fileTargetSeal, directorySeal))
+                }, undefined, lifecycle, isWindows ? sealedPersistenceGuard(grantGuard, fileTargetSeal, directorySeal) : grantGuard)
               : { ok: false as const, error: "workspace lifecycle unavailable" };
             assertApprovalPersistenceCurrent(grantGuard);
           } catch (error) {
@@ -2272,7 +2273,12 @@ async function runToolInvocationAttempt(
           const resolvedCwd = resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined);
           // Unpinned startup cannot run a native host preflight. The tool repeats
           // this gate after host consent or parses inside the selected container.
-          if (isPowerShellStartupPinned() && hostShellExecutionPlan?.substrate !== "mxc") {
+          if (!isWindows) {
+            for (const command of isPowerShellStartupPinned() && hostShellExecutionPlan?.substrate !== "mxc" ? extractShellCommands(finalInput) : []) {
+              shellPathViolation = await findPowerShellCommandPathViolation(command, resolvedCwd, executionCwd, invocationRuntimeAllowedDirectories, blockReadsOutsideWorkingDirectories);
+              if (shellPathViolation) break;
+            }
+          } else if (isPowerShellStartupPinned() && hostShellExecutionPlan?.substrate !== "mxc") {
             const commands = extractShellCommands(finalInput);
             const [first] = commands;
             if (first !== undefined) {
@@ -2495,12 +2501,38 @@ async function runToolInvocationAttempt(
       });
       return { sensitiveTarget, linkedTargets, projectRoots, insideProject };
     });
-    let initialPathScope: ReturnType<typeof initialPathJudgment>;
-    try { initialPathScope = initialPathJudgment(); }
-    catch {
-      return await denyFileTargets(pathEffect === "write" ? "Cannot resolve write target" : "Cannot resolve file target");
+    let initialPathScope: ReturnType<typeof initialPathJudgment> | undefined;
+    if (isWindows) {
+      try { initialPathScope = initialPathJudgment(); }
+      catch {
+        return await denyFileTargets(pathEffect === "write" ? "Cannot resolve write target" : "Cannot resolve file target");
+      }
+    } else {
+      unsealedRuleSubject = scopedRuleSubjectFor(tool, finalInput, executionCwd);
+      for (const filePath of targetFilePaths) {
+        let runtimePath: string;
+        try {
+          // Native edits must distinguish a new suffix from a dangling or
+          // unreadable ancestor before sealing the one shared path snapshot.
+          if (unsealedRuleSubject?.kind === "edit") {
+            const resolved = resolveShellFilesystemPath(filePath, executionCwd);
+            if (resolved.includes("\\")) throw new Error("Ambiguous write path");
+            runtimePath = resolved;
+          } else {
+            runtimePath = resolvePathForPolicy(filePath);
+          }
+        } catch {
+          const reason = "Cannot resolve write target";
+          const blocked: PermissionCheckResult = { decision: "deny", reason, provenance: RULE_PROVENANCE };
+          const durationMs = Date.now() - startTime;
+          emitToolStart(callbacks, toolUse.name, finalInput, meta);
+          callbacks?.onToolEnd?.(toolUse.name, reason, true, meta, undefined, durationMs);
+          await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true, startTime, blocked, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+          return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, durationMs });
+        }
+        canonicalTargets.push({ filePath, canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), runtimePath });
+      }
     }
-    const { sensitiveTarget, linkedTargets, projectRoots, insideProject } = initialPathScope;
     const declaredPaths = (tool.pathFields ?? []).flatMap((field) => selectDeclaredPathValues(finalInput, field)).filter((path): path is string => typeof path === "string");
     invocationPermissionContext.paths = canonicalTargets.flatMap((target) => {
       const operands = declaredPaths.filter((path) => resolveToolPathForPermission(path, executionCwd) === target.filePath);
@@ -2517,7 +2549,23 @@ async function runToolInvocationAttempt(
       if (criticalTarget) invocationPermissionContext.floor = { code: "critical-delete", reason: "Deleting this root requires a fresh human approval." };
     }
 
+    const sensitiveTarget = initialPathScope !== undefined ? initialPathScope.sensitiveTarget : brokeredFileRouteSelected
+      ? undefined
+      : withLocalityDecision(() => PermissionManager.checkPathScope({
+          canonicalTargets,
+          allowedDirectories: invocationAllowedScope.directories,
+          effect: pathEffect,
+          blockReadsOutsideWorkingDirectories,
+        }).sensitiveHit);
     const targetFilePath = canonicalTargets[0]?.filePath;
+    // Targets a link sends somewhere other than their spelling; a card shows both.
+    const linkedTargets = initialPathScope?.linkedTargets ?? (() => {
+      const inProject = createProjectMembership(executionCwd);
+      return canonicalTargets.flatMap((target) => {
+        const { canonicalPath } = approvalTargetFor(target.filePath, target.runtimePath);
+        return canonicalPath === undefined ? [] : [{ filePath: target.filePath, canonicalPath, outsideProject: !inProject(target.canonicalPath) }];
+      });
+    })();
     const sensitivePathPattern = sensitiveTarget?.pattern ?? null;
 
     // Turn-scope admission. `pluginTurnScopeTarget` answers "which plugin does
@@ -2569,6 +2617,18 @@ async function runToolInvocationAttempt(
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
     }
 
+    let projectRoots: string[];
+    let insideProject: boolean;
+    if (initialPathScope !== undefined) {
+      ({ projectRoots, insideProject } = initialPathScope);
+    } else {
+      // Project roots deliberately exclude the broader Layer 1 defaults and per-turn temp grants.
+      const rawProjectRoots = [executionCwd, ...(permissionContext.projectDirectories ?? [])];
+      projectRoots = sanitizeAllowedDirectories(rawProjectRoots);
+      const lexicalProjectRoots = rawProjectRoots.map((root) => caseFoldForMatch(foldCanonicalPathSeparators(resolveToolPathForPermission(root, executionCwd))));
+      insideProject = nativeFileWrite && areProjectWriteTargetsInside(canonicalTargets, lexicalProjectRoots, projectRoots,
+        unsealedRuleSubject?.kind === "edit" ? unsealedRuleSubject.paths : undefined);
+    }
     // Outside project roots, preserve the existing reviewer lane for supported host edits.
     const unsupportedTransfer = nativeFileWrite && insideProject && (tool.name === "extract_archive" || (tool.name === "copy_path"
       && !(typeof finalInput.sourcePath === "string" && await isFileCopyCheckpointSupported(finalInput.sourcePath, executionCwd))));
@@ -2596,7 +2656,8 @@ async function runToolInvocationAttempt(
           });
           return editDecision.decision === "allow" && manager.checkScopedRules(editSubject, executionCwd).decision === "allow";
         });
-      } catch {
+      } catch (error) {
+        if (!isWindows) throw error;
         return await denyFileTargets(changedTargetReason);
       }
       if (savedEditAllowed) {
@@ -2631,9 +2692,12 @@ async function runToolInvocationAttempt(
       });
       let currentFileScope: ReturnType<typeof checkCurrentFileScope>;
       try { currentFileScope = checkCurrentFileScope(); }
-      catch { return await denyFileTargets(changedTargetReason); }
+      catch (error) {
+        if (!isWindows) throw error;
+        return await denyFileTargets(changedTargetReason);
+      }
       const { scopeTargets, pathScope } = currentFileScope;
-      if (pathScope.sensitiveHit) return await denyFileTargets(`sensitive path hard-block: ${pathScope.sensitiveHit.pattern}`);
+      if (isWindows && pathScope.sensitiveHit) return await denyFileTargets(`sensitive path hard-block: ${pathScope.sensitiveHit.pattern}`);
       const outOfAllowed = pathScope.outOfAllowed;
       const outOfAllowedTarget = outOfAllowed === null ? null : { ...outOfAllowed,
         realPath: scopeTargets.find((target) => target.filePath === outOfAllowed.filePath)?.runtimePath ?? outOfAllowed.canonicalPath };
@@ -2746,7 +2810,7 @@ async function runToolInvocationAttempt(
       targetFilePath,
       linkedTargets,
       canonicalTargets,
-      ...(canonicalTargets.length > 0 ? { assertFileTargetsUnchanged } : {}),
+      ...(isWindows && canonicalTargets.length > 0 ? { assertFileTargetsUnchanged } : {}),
       approvalCacheKey,
       executionCwd,
       auditCurrentToolCall,
@@ -2765,7 +2829,7 @@ async function runToolInvocationAttempt(
     if ("tool_use_id" in authorization || authorization.outcome === "rationale-required") {
       return authorization;
     }
-    if (canonicalTargets.length > 0) {
+    if (isWindows && canonicalTargets.length > 0) {
       try { withLocalityDecision(() => assertFileTargetsUnchanged()); }
       catch { return await denyFileTargets(changedTargetReason); }
     }
@@ -2883,7 +2947,7 @@ async function runToolInvocationAttempt(
       checkCurrentPermission: authorization.checkCurrentPermission,
       replayRootBinding: opts.replayRootBinding,
       fileTargetSeal,
-      imageTargetPath: tool.name === "view_image" ? canonicalTargets[0]?.runtimePath : undefined,
+      imageTargetPath: isWindows && tool.name === "view_image" ? canonicalTargets[0]?.runtimePath : undefined,
       abortSignal,
       hostShellExecutionPermitBinding,
       answerUses: answerUses(),
@@ -2927,7 +2991,7 @@ async function runToolInvocationAttempt(
       pluginAuthLifecycle,
     });
     // The checkpoint snapshots the sealed project roots before the handler admission rechecks them.
-    if (permissionResult?.requiresCodeCheckpoint === true && !grantStillSealed(undefined)) return await denyFileTargets(changedTargetReason);
+    if (isWindows && permissionResult?.requiresCodeCheckpoint === true && !grantStillSealed(undefined)) return await denyFileTargets(changedTargetReason);
     const executedResult = permissionResult?.requiresCodeCheckpoint === true
       ? await withProjectWriteRoots(projectRoots, () => withRequiredCodeCheckpoint(executeAuthorized))
       : await executeAuthorized();
