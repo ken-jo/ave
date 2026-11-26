@@ -1,6 +1,7 @@
 // Exfiltration floors cover every sender and compound-command path; ordinary downloads, local copies and repository pushes remain negative controls.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { analysisLimitAnswer } from "../../__tests__/support/permission-lane.js";
+import { configureHostResources } from "../../main/host-resources.js";
 import * as shellAnalysis from "../../shared/shell-analysis.js";
 
 // Transparent wrapper: counts parses so one decision can be shown to parse once.
@@ -22,6 +23,9 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { aveHome } from "../../shared/ave-home.js";
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 const CWD = "/work/project";
 

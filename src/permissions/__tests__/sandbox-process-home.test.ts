@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { appOwnedSandboxHomeRoot, ensureSandboxTempPrincipalDir } from "../asrt-sandbox.js";
 import { sweepSandboxPrivateRoots } from "../../boot/steps/sandbox-init.js";
+import { mxcRuntimeRootFloorPath, mxcSandboxHomesParent } from "../mxc-runtime-root.js";
 import {
   _resolveHostOwnerMarkerForTest,
   createSandboxProcessHome,
@@ -245,10 +246,16 @@ describe("createSandboxProcessHome", () => {
   );
 
   // Windows only: the profile's paths are Windows paths (`win32.join`), which only a Windows host creates where they name.
-  it.runIf(process.platform === "win32")("keeps the Windows HOME under the host temp directory, as before", () => {
+  it.runIf(process.platform === "win32")("creates the Windows HOME and its temp directory under the container runtime root, outside the host temp directory", () => {
     const home = createSandboxProcessHome("win32");
     try {
-      expect(dirname(home.path)).toBe(realpathSync.native(tmpdir()));
+      expect(dirname(home.path)).toBe(realpathSync.native(mxcSandboxHomesParent()));
+      expect(dirname(home.path)).toBe(join(realpathSync.native(mxcRuntimeRootFloorPath()), "homes"));
+      const temp = realpathSync.native(tmpdir()).toLowerCase();
+      for (const path of [home.path, home.env.TEMP ?? "", home.env.TMP ?? ""]) {
+        expect(path.toLowerCase().startsWith(`${home.path.toLowerCase()}`), path).toBe(true);
+        expect(path.toLowerCase().startsWith(`${temp}\\`), path).toBe(false);
+      }
       expect(existsSync(appOwnedSandboxHomeRoot())).toBe(false);
     } finally {
       home.cleanup();

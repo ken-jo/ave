@@ -3,7 +3,6 @@
 
 
 import { lstat, readdir, realpath, unlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
 import { createLogger } from "../../lib/logger.js";
@@ -21,6 +20,7 @@ import {
 } from "./windows-sandbox-plan.js";
 import type { SandboxStartFailureCause } from "../../shared/sandbox-capability-info.js";
 import { classifySandboxDependencyErrors } from "../../permissions/sandbox-start-failure.js";
+import { denyUnenforceableKind, isObligationRefusal, setWindowsDenyUnenforceableAtBoot } from "../../permissions/admitted-obligation.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
 import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
@@ -31,12 +31,28 @@ import type { AsrtSandboxInitialization } from "../../permissions/asrt-sandbox.j
 
 const log = createLogger("ave");
 
+// This start could not prove the container runtime root private: no container, and no sandbox HOME, until a restart.
+let runtimeRootUnproved = false;
+
 export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSignal): Promise<void> {
   startupSignal?.throwIfAborted();
   const { settingsService, bootAuditLogger, buildWorkerEgressAllowlists } = ctx;
-  // Sandbox HOMEs are made whether or not the gate activates, so their sweep does not wait on it.
-  // Not awaited: the in-use set and live owner markers keep this process's HOMEs, and a slow probe must not hold boot.
-  if (process.platform === "win32") void sweepWindowsSandboxHomes();
+  // Sandbox HOMEs are made whether or not the gate activates, so their parent is established here, on every Windows start,
+  // before anything can ask for a HOME; a root that cannot be proved private leaves every HOME refused.
+  // The sweep is not awaited: the in-use set and live owner markers keep this process's HOMEs, and a slow probe must not hold boot.
+  if (process.platform === "win32") {
+    const { establishMxcSandboxHomesParent } = await import("../../permissions/mxc-runtime-root.js");
+    try {
+      establishMxcSandboxHomesParent();
+      runtimeRootUnproved = false;
+    } catch (error) {
+      runtimeRootUnproved = true;
+      const { markSandboxHomesUnavailable } = await import("../../permissions/sandbox-capability.js");
+      markSandboxHomesUnavailable();
+      log.warn("boot: Windows sandbox HOME root unavailable: %s", errorMessage(error));
+    }
+    void sweepWindowsSandboxHomes();
+  }
   setAveHomePrivacyRefusalReporter((message) => {
     log.warn(message);
     bootAuditLogger.log({ timestamp: new Date().toISOString(), sessionId: "extensions", type: "error",
@@ -327,7 +343,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             // A failed session setup clears runtime config, permitting clean proxy-only initialization for container shells.
             // An unverifiable Ave home boundary refuses every confined start, so a proxy-only retry cannot help.
             if (windowsInputs === undefined || windowsStart === undefined || !canRetryWindowsAsProxyOnly(windowsInputs, windowsStart)
-              || aveHomeBoundaryFailure(srtWinErr) !== undefined) {
+              || aveHomeBoundaryFailure(srtWinErr) !== undefined || isObligationRefusal(srtWinErr)) {
               throw srtWinErr;
             }
             log.warn(
@@ -339,6 +355,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             await initializeAs(windowsStart);
           }
           if (initialization?.windowsIsolation !== undefined) windowsStart = "proxy-only";
+          if (process.platform === "win32") setWindowsDenyUnenforceableAtBoot(undefined);
           // Publish only initialized confinement: full on macOS/Linux, filesystem and network only on the Windows runtime.
           // Inactive or degraded activation must leave capability none; reviewers rely on these dimensions.
           const asrtBackend =
@@ -452,8 +469,11 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
                 ? "degrade-windows-init-failed"
                 : failDecision.reason;
             const cause = errorMessage(initErr);
+            // A deny the backend cannot enforce takes the forced sandbox-unavailable question for every shell command.
+            const denyUnenforceable = process.platform === "win32" ? denyUnenforceableKind(initErr) : undefined;
+            if (denyUnenforceable !== undefined) setWindowsDenyUnenforceableAtBoot(denyUnenforceable);
             const failureCauses: SandboxStartFailureCause[] = [
-              runtimeProbeFailed ? "linux-runtime-probe-failed" : "init-failed",
+              runtimeProbeFailed ? "linux-runtime-probe-failed" : denyUnenforceable === "network" ? "windows-deny-unenforceable" : denyUnenforceable === "path" ? "windows-deny-path-unenforceable" : "init-failed",
             ];
             if (failDecision.action === "abort") {
               // Explicit activation must fail closed on initialization errors.
@@ -562,14 +582,24 @@ export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<s
   return counts;
 }
 
-/** Windows sandbox HOMEs live in the host temp directory, which other Ave instances share, so only a HOME whose marked owner is gone is removed. */
+/** Windows sandbox HOMEs live under the container runtime root, which this account's other Ave instances share, so only a HOME whose marked owner is gone is removed. It sweeps the parent `initSandboxGate` established, whatever the sandbox setting: a HOME is created for unconfined children too. A root that cannot be proved private leaves nothing to sweep, and every later HOME is refused. */
 async function sweepWindowsSandboxHomes(): Promise<void> {
   try {
     const { sandboxProcessHomesInUse, warmSandboxHomeOwner } = await import("../../permissions/sandbox-process-home.js");
     warmSandboxHomeOwner();
+    const { mxcSandboxHomesParent } = await import("../../permissions/mxc-runtime-root.js");
+    let homes: string;
+    try {
+      homes = mxcSandboxHomesParent();
+    } catch (error) {
+      log.warn("boot: Windows sandbox HOME root unavailable: %s", errorMessage(error));
+      return;
+    }
     const { readWindowsProcessRunStates } = await import("../../permissions/windows-process-start-time.js");
     const { removed, failed } = await sweepStaleWindowsSandboxHomes(
-      tmpdir(), sandboxProcessHomesInUse(), readWindowsProcessRunStates);
+      homes, sandboxProcessHomesInUse(), readWindowsProcessRunStates, () => {
+        if (mxcSandboxHomesParent() !== homes) throw new Error("Sandbox HOME parent changed during the sweep");
+      });
     if (removed > 0) log.info("boot: removed %d stale Windows sandbox HOME(s)", removed);
     if (failed > 0) log.warn("boot: could not remove %d stale Windows sandbox HOME(s)", failed);
   } catch (error) {
@@ -577,11 +607,12 @@ async function sweepWindowsSandboxHomes(): Promise<void> {
   }
 }
 
-/** Remove `ave-sandbox-home-*` directories directly under `root` whose sibling owner marker names a process that is gone or a reused pid, with their markers, and drop orphan markers of dead owners. Keep unmarked, unreadable and undetermined ones. Never follows links. */
+/** Remove `ave-sandbox-home-*` directories directly under `root` whose sibling owner marker names a process that is gone or a reused pid, with their markers, and drop orphan markers of dead owners. Keep unmarked, unreadable and undetermined ones. Never follows links. `assertRootUnmoved` runs before each removal and stops the sweep by throwing. */
 export async function sweepStaleWindowsSandboxHomes(
   root: string,
   inUse: ReadonlySet<string>,
   probe: ProcessRunStateProbe,
+  assertRootUnmoved: () => void = () => {},
 ): Promise<{ removed: number; failed: number }> {
   const { SANDBOX_HOME_OWNER_SUFFIX, SANDBOX_HOME_PREFIX, readSandboxHomeOwner } =
     await import("../../permissions/sandbox-process-home.js");
@@ -618,6 +649,7 @@ export async function sweepStaleWindowsSandboxHomes(
     const stale = state !== undefined
       && (!state.running || (state.startTime !== null && state.startTime !== startTime));
     if (!stale) continue;
+    assertRootUnmoved();
     try {
       if (!orphan) {
         const entry = await lstat(home);
@@ -643,11 +675,13 @@ async function detectWindowsBootInputs(
 ): Promise<WindowsSandboxPlanInputs> {
   const { detectHostMxcPrerequisites } = await import("../../permissions/mxc-windows.js");
   const mxc = await detectHostMxcPrerequisites();
-  if (mxc.state === "unavailable") logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
+  if (runtimeRootUnproved) logMxcUnavailable("runtime-root-unproved", mxc.windowsBuild, "the container runtime root was not proved at start-up");
+  else if (mxc.state === "unavailable") logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
   return {
     shellRequested,
     workerRequested,
-    mxc: mxc.state === "available" ? { state: "checking" } : { state: "unavailable", reason: mxc.reason },
+    mxc: runtimeRootUnproved ? { state: "unavailable", reason: "runtime-root-unproved" }
+      : mxc.state === "available" ? { state: "checking" } : { state: "unavailable", reason: mxc.reason },
     // Pinned until this installation carries a release-gate record (contract fields 8-13, gathered on the packaged build).
     // Neither shell startup nor a holder's own start evidence (fields 1-5, known only after a start) certifies that gate.
     extensionMxc: { state: "unavailable", reason: "native-validation-required" },

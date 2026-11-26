@@ -1,7 +1,8 @@
 import { mkdtemp, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { agentObservationFixture } from "../../__tests__/support/agent-observation.js";
 import { reviewChange } from "../../__tests__/support/terminal-session-fixtures.js";
 
@@ -51,6 +52,9 @@ afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("agent document observation context", () => {
   it.each(["completed", "interrupted", "errored"])("notifies resource owners at the end of a %s turn without ending its session", async (outcome) => {

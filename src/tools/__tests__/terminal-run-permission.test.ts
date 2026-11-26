@@ -1,7 +1,8 @@
 import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
 /** terminal_run takes the shell lane of the one permission pipeline: the command it types is the rule subject of the same `Bash(...)` rules and shell floors the bash tool's command is, in the directory the target terminal's shell
  * reported. Drives the real `ToolExecutor` with a real `PermissionManager` and the real `terminal_run`; only the PTY write is a stub that records what would have been typed. The terminal is a registered block tracker at an empty prompt. */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -92,6 +93,9 @@ async function run(
     result: result!,
   };
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("terminal_run permission", () => {
   it("judges the command as a bash rule subject in the terminal's directory", async () => {

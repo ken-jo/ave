@@ -68,6 +68,8 @@ function check(command: string, runsSandboxed: boolean, extra: { headless?: bool
   });
 }
 
+// Windows host shell cwds are pinned through the shipped path-kind helper; boot configures its resources first.
+
 describe("shell confinement and escape rules", () => {
   it("auto-allows a confined call and asks for the same plain call", () => {
     expect(check("printf ready", true)).toMatchObject({ decision: "allow" });

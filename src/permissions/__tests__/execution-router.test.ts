@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL } from "../../shared/powershell-recursive-traversal.js";
 import { getLocale, setLocale } from "../../i18n/index.js";
@@ -208,6 +209,7 @@ function issuedUnavailableFallback() {
   return getHostShellExecutionPlan();
 }
 
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 afterEach(() => {
   operatorCapabilities.current = null;
   workloadCapabilities.active = null;

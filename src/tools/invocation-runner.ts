@@ -25,7 +25,7 @@ import { hostShellAnalysisFacts, prepareShellInvocation, preparedShellFacts, bin
 import { resolveHostShellWorkingDirectory } from "../permissions/host-shell-execution-permit.js";
 import { randomUUID } from "node:crypto";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
-import { statSync } from "node:fs";
+import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import type { Tool } from "./base.js";
 import type { HookRunner } from "../hooks/hook-runner.js";
@@ -84,6 +84,7 @@ import {
   sanitizeAllowedDirectories,
   buildAllowedScope,
   buildRuntimeAllowedDirectories,
+  directoryKey,
   isFilesystemRootPath,
   pickClosestParent,
   validateDirectoryAddition,
@@ -135,7 +136,7 @@ import { issueAuthorizationRequiredControl } from "../shared/authorization-requi
 // This runner owns preparation/path policy and composes the extracted
 // LOW/MEDIUM-risk helpers. Authorization and execution/finalization are
 // delegated to their named stages below.
-import { extractTargetFilePaths, shellPathPolicyViolation } from "./pipeline/path-extraction.js";
+import { extractTargetFilePaths, shellPathPolicyViolation, withPathFieldDefaults } from "./pipeline/path-extraction.js";
 import { canonicalFilePathEffect, scopedRuleSubjectFor } from "./pipeline/scoped-rule-subject.js";
 import { hasShellCommandArgument } from "../shared/shell-command-fields.js";
 import { buildApprovalPurposeSuggestion } from "./pipeline/approval-purpose.js";
@@ -884,7 +885,7 @@ async function runToolInvocationAttempt(
     const rewrittenInput = preResult.action === "modify" && preResult.updatedInput
       ? preResult.updatedInput
       : sessionInput;
-    const finalInput = normalizeMcpResourceReadInput(tool, rewrittenInput);
+    const finalInput = withPathFieldDefaults(tool, normalizeMcpResourceReadInput(tool, rewrittenInput));
     let resolvedPluginOperation: ResolvedPluginOperation | undefined;
     let pluginOperationPrincipal: PluginOperationPrincipal | undefined;
     if (tool.operationPolicy) {
@@ -1659,13 +1660,14 @@ async function runToolInvocationAttempt(
       }
       // Detect whether the request path itself is a directory (e.g.
       // `list_files /Users/example`) so the auto-suggest goes to the path
-      // itself rather than its parent. `statSync` is used here only to
+      // itself rather than its parent. The stat is used here only to
       // hint the UI suggestion — the actual permission check downstream
       // is prefix-based and unaffected by TOCTOU, and the user must
       // re-type the suggested path before persisting (phishing defense).
       let isDirectoryTarget = false;
       try {
-        isDirectoryTarget = statSync(outOfAllowedTarget.realPath).isDirectory();
+        // Only a proven local route is opened to shape a suggestion; a share, device or mapped spelling is refused unopened.
+        isDirectoryTarget = withLocalityDecision(() => localFs.stat(admitLocalRoute(outOfAllowedTarget.realPath).verdict).isDirectory());
       } catch {
         // Path does not exist yet (e.g. write target before first write);
         // fall back to file-style behavior (suggest the parent dir).
@@ -2338,7 +2340,9 @@ async function runToolInvocationAttempt(
       const operands = declaredPaths.filter((path) => resolveToolPathForPermission(path, executionCwd) === target.filePath);
       return (operands.length > 0 ? operands : [target.filePath]).map((path) => {
         const expanded = expandLeadingTilde(path);
-        return { lexical: isAbsolute(expanded) ? expanded : executionCwd + "/" + expanded, canonical: target.canonicalPath, runtimePath: target.runtimePath,
+        // A leading `.` names the working directory itself; spelling it as a dot component would make a share cwd ambiguous.
+        const relative = expanded.replace(/^(?:\.(?:[\\/]+|$))+/u, "");
+        return { lexical: isAbsolute(expanded) ? expanded : relative === "" ? executionCwd : executionCwd + "/" + relative, canonical: target.canonicalPath, runtimePath: target.runtimePath,
           effect: canonicalFileTool !== undefined ? canonicalFilePathEffect(tool, finalInput, target.filePath, executionCwd) : requiredTier(invocationCategory) };
       });
     });
@@ -2475,19 +2479,24 @@ async function runToolInvocationAttempt(
     // path-bearing arguments on Tool.pathFields; plugin entries are copied
     // from host-validated manifest authority metadata by plugin-tool-adapter.
     if (canonicalTargets.length > 0 && !brokeredFileRouteSelected) {
+      // A share or device operand is admitted only by authority over its own spelling, never by the drive it names.
+      const scopeTargets = canonicalTargets.map((target) => {
+        const canonicalPath = directoryKey(target.filePath, target.canonicalPath);
+        return canonicalPath === target.canonicalPath ? target : { ...target, canonicalPath, runtimePath: target.filePath };
+      });
       while (true) {
         // Re-run the Layer 1 predicate each iteration: applyApprovedDirectory
         // widens `invocationAllowedScope` after a grant, so the scope must be
         // re-supplied to PermissionManager.checkPathScope (SOT V2).
         const pathScope = PermissionManager.checkPathScope({
-          canonicalTargets,
+          canonicalTargets: scopeTargets,
           allowedDirectories: invocationAllowedScope.directories,
           effect: pathEffect,
           blockReadsOutsideWorkingDirectories,
         });
         const outOfAllowed = pathScope.outOfAllowed;
         const outOfAllowedTarget = outOfAllowed === null ? null : { ...outOfAllowed,
-          realPath: canonicalTargets.find((target) => target.filePath === outOfAllowed.filePath)?.runtimePath ?? outOfAllowed.canonicalPath };
+          realPath: scopeTargets.find((target) => target.filePath === outOfAllowed.filePath)?.runtimePath ?? outOfAllowed.canonicalPath };
         if (!outOfAllowedTarget) {
           // A read the directory list would have refused leaves no prompt and
           // no grant behind it, so the audit row is the only record that the
@@ -2533,7 +2542,7 @@ async function runToolInvocationAttempt(
         }
         applyApprovedDirectory(resolution.approvedDirectory);
         // The one card authorizes the complete sealed invocation; saved folders retain only the chosen scope.
-        for (const target of canonicalTargets) applyApprovedDirectory(target.runtimePath);
+        for (const target of [...canonicalTargets, ...scopeTargets]) applyApprovedDirectory(target.runtimePath);
         if (fileWritePolicy && !resolution.pendingRationale && invocationPermissionContext.headless !== true) fileWritePolicy.directoryApproved = true;
         break;
         // allow-once / allow-session / allow-always — fall through to Step 3

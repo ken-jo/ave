@@ -79,6 +79,14 @@ describe("simulated configuration boundary", () => {
     expect(readAveHomeConfigurationFile(file)?.toString()).toBe('{"restricted":"queued"}');
     expect(childProcess.execFileSync).not.toHaveBeenCalled();
   });
+
+  it("reports a simulated drive's volume root as an existing directory, as every Windows walk finds it", () => {
+    setProcessPlatform("win32");
+    const runtimeRoot = String.raw`Q:\runtime-cache\ave\mxc-runtime\ `.trim();
+    const [row] = pathFacts.pinWindowsPaths([runtimeRoot]);
+    expect(row).toMatchObject({ exists: false, ancestors: [{ exists: true, directory: true, canonical: "Q:\\" }, { exists: false }, { exists: false }] });
+    expect(childProcess.execFileSync).not.toHaveBeenCalled();
+  });
 });
 
 describe("simulated sandbox process HOME", () => {
@@ -134,6 +142,12 @@ describe("simulated container runtime root", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("starts containers under the simulated floor root as the proved one", () => {
+    const simulated = simulatedRuntimeRoot(runtimeRoot, "linux");
+    setProcessPlatform("win32");
+    expect(simulated.requireMxcContainerStartRoot()).toBe(SIMULATED_MXC_RUNTIME_ROOT);
   });
 
   it("puts synthetic staging directly under the simulated win32 floor root", () => {

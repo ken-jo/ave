@@ -33,6 +33,11 @@ const state = vi.hoisted(() => ({
   probe: vi.fn(),
 }));
 
+// The in-memory drive has no directory identities: recording the issued HOME is observed, not performed.
+vi.mock("../../permissions/sandbox-home-registry.js", async (original) => ({
+  ...await original<typeof import("../../permissions/sandbox-home-registry.js")>(),
+  recordIssuedContainerHome: vi.fn(), forgetIssuedContainerHome: vi.fn(),
+}));
 vi.mock("../../permissions/confined-child.js", () => ({
   spawnMxcConfinedChild: (spec: unknown) => state.spawn(spec),
   spawnConfinedChild: vi.fn(),
@@ -43,6 +48,18 @@ vi.mock("../../permissions/sandbox-capability.js", async (original) => ({
   getWindowsExtensionBackendPlan: () => state.plan,
 }));
 vi.mock("../../permissions/workspace-authorized-roots.js", () => ({ listAuthorizedWorkspaceRoots: () => state.workspaces }));
+vi.mock("../../permissions/admitted-obligation.js", async original => ({
+  ...await original<typeof import("../../permissions/admitted-obligation.js")>(),
+  admitWindowsLookupPaths: (paths: readonly string[]) => new Map(paths.flatMap(path => {
+    const normalized = winPath.normalize(path);
+    const fold = (value: string) => winPath.normalize(value).toLowerCase();
+    const link = [...state.links].find(([key]) => fold(normalized) === fold(key) || fold(normalized).startsWith(`${fold(key)}\\`));
+    const target = link ? link[1] + normalized.slice(link[0].length) : normalized;
+    const kind = [...state.files].some(file => fold(file) === fold(target)) ? "file" :
+      [...state.dirs].some(directory => fold(directory) === fold(target)) ? "dir" : "missing";
+    return [[path, { target, kind }]];
+  })),
+}));
 vi.mock("../../shared/ave-home.js", async (original) => ({
   ...await original<typeof import("../../shared/ave-home.js")>(),
   aveHome: () => "C:\\ave",
@@ -191,6 +208,7 @@ const {
   spawnMxcBundledHolder,
 } = holderModule;
 const { registerMxcReleaseGateEvidence } = await import("../../permissions/mxc-extension-admission.js");
+const { forgetIssuedContainerHome, recordIssuedContainerHome } = await import("../../permissions/sandbox-home-registry.js");
 const { MXC_RELEASE_GATE_EVIDENCE } = await import("../../__tests__/support/mxc-supervisor.js");
 const { prepareMxcPluginChildLaunch } = await import("../../plugins/isolation/mxc-plugin-child-launch.js");
 const { resolvePluginHostStorageDir } = await import("../../plugins/plugin-storage-layout.js");
@@ -217,7 +235,7 @@ function input(overrides: Partial<Parameters<typeof spawnMxcBundledHolder>[0]> =
     label: "mcp:fs",
     command: "node",
     args: ["C:\\ave\\plugins\\fs\\gen\\server.js"],
-    baseEnv: { PATH: "relative\\bin;C:\\Program Files\\nodejs", SystemRoot: "C:\\Windows" },
+    baseEnv: { PATH: "C:\\Program Files\\nodejs", SystemRoot: "C:\\Windows" },
     holderEnv: { API_TOKEN: "t" },
     allowRead: ["C:\\ave\\plugins\\fs\\gen"],
     allowWrite: ["C:\\ave\\mcp\\fs\\sandbox"],
@@ -378,6 +396,16 @@ describe("executable rule", () => {
     await expect(spawnMxcBundledHolder(input())).rejects.toBeInstanceOf(MxcExecutableNotAdmissibleError);
   });
 
+  it.each(["relative\\bin", "\\nodejs", "C:\\Program Files\\other\\..\\nodejs"])(
+    "refuses the entire executable search when PATH starts with %s",
+    async (entry) => {
+      await expect(spawnMxcBundledHolder(input({
+        baseEnv: { PATH: `${entry};C:\\Program Files\\nodejs`, SystemRoot: "C:\\Windows" },
+      }))).rejects.toBeInstanceOf(MxcExecutableNotAdmissibleError);
+      expect(state.spawn).not.toHaveBeenCalled();
+    },
+  );
+
   it("refuses a workspace executable reached through a junction", async () => {
     state.links.set("C:\\linked", "D:\\work");
     await expect(spawnMxcBundledHolder(input({ command: "C:\\linked\\tool.exe" }))).rejects.toBeInstanceOf(MxcExecutableNotAdmissibleError);
@@ -513,10 +541,13 @@ describe("holder layout", () => {
 describe("teardown", () => {
   it("removes the staging tree after verified termination without following a planted link", async () => {
     const holder = await spawnMxcBundledHolder(input());
-    const temp = lastSpec().temp;
+    const { home, temp } = lastSpec();
+    // Its staging HOME is the one issued to it, until the tree goes.
+    expect(recordIssuedContainerHome).toHaveBeenCalledWith(home, winPath.dirname(SYNTHETIC_MXC_STAGING_PARENT));
     state.links.set(`${temp}\\escape`, "D:\\work");
     await holder.release();
     await holder.release();
+    expect(vi.mocked(forgetIssuedContainerHome).mock.calls.filter(([path]) => path === home)).toHaveLength(1);
     expect(spawned.release).toHaveBeenCalledTimes(1);
     // Removal runs on the retired sibling, so the link is unlinked under that name.
     expect(state.removed.some((path) => /\\[0-9a-f]{32}\.retired\\temp\\escape$/u.test(path))).toBe(true);

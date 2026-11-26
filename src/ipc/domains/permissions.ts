@@ -85,6 +85,7 @@ import {
   getHostShellExecutionPlan,
   getSandboxBootOutcome,
   getWindowsSandboxSubstrate,
+  getSandboxHomesUnavailable,
   isShellSandboxRequestedAtBoot,
   isPluginWorkerConfinementRequestedAtBoot,
   setSandboxStatusChangeListener,
@@ -393,6 +394,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       shell,
       // Windows: which substrate carries shells and extensions this boot and how strongly their egress is attributed (proxy-egress PR 9).
       windowsSubstrate: platform === "win32" ? getWindowsSandboxSubstrate() : null,
+      ...(platform === "win32" && getSandboxHomesUnavailable() ? { sandboxHomesUnavailable: true } : {}),
       shellExecutionPlan: getHostShellExecutionPlanAuditProjection(shellPlan),
       confines: sandboxConfinementForPlatform(platform, kind),
     };

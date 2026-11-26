@@ -258,6 +258,7 @@ function memoryReview(current: Awaited<ReturnType<typeof subject>>, input: Recor
   );
 }
 
+
 describe("executor automated approval pause", () => {
   it("denies a late hook replacement without replaying an earlier completed hook effect", async () => {
     const current = await subject();

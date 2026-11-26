@@ -16,8 +16,9 @@ import {
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
+import { configureHostResources } from "../../main/host-resources.js";
 import { buildImagePreparationEntry, imageFixturePath } from "../../__tests__/support/image-preparation-runtime.js";
 import { IMAGE_PREPARATION_POLICY } from "../../shared/image-preparation-policy.js";
 import { trimOversizedToolResult } from "../../shared/tool-result-trim.js";
@@ -92,7 +93,10 @@ afterEach(async () => {
 useConfigurationOwner();
 
 describe("view_image tool", () => {
-  beforeAll(async () => { imageRuntime.directory = await buildImagePreparationEntry("file-image-runtime"); });
+  beforeAll(async () => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    imageRuntime.directory = await buildImagePreparationEntry("file-image-runtime");
+  });
   afterAll(async () => { await cleanupTmpDir(imageRuntime.directory); });
 
   it.each(["png", "jpeg", "gif", "webp"])("decodes a valid %s file and returns a bounded visual copy", async (format) => {

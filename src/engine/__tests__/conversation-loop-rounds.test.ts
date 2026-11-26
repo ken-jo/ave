@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { join, resolve } from "node:path";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 
 import { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage, LLMProvider, StreamEvent, StreamTurnParams,
@@ -76,6 +77,7 @@ function withoutRuntimeMeta(messages: ReadonlyArray<GenericMessage>) {
   });
 }
 
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 describe("ConversationLoop queryLoop", () => {
   it("clears per-turn prompt builder state when prompt assembly throws", async () => {
     const toolRegistry = new ToolRegistry();

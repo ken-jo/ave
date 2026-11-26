@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile, lstat, open, opendir, rmdir, unlink, type FileHandle } from "node:fs/promises";
 import { read } from "node:fs";
 import { join } from "node:path";
@@ -67,6 +68,9 @@ function interceptWrites(
 ): void {
   vi.spyOn(handle, "write").mockImplementation(write as FileHandle["write"]);
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("descriptor and stream settlement", () => {
   it("coalesces byte chunks, waits for short writes and closes every descriptor once", async () => {

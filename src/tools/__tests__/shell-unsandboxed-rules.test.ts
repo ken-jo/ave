@@ -119,6 +119,7 @@ async function run(input: {
 const PRINTF_DENY: PermissionRule[] = [{ pattern: "Bash(printf *)", action: "deny" }];
 const CURL_ALLOW: PermissionRule[] = [{ pattern: "Bash(curl *)", action: "allow" }];
 
+
 describe("explicit unsandboxed retry (executionMode host)", () => {
   it("runs without a prompt when a matching allow rule covers the command", async () => {
     const { result, cards, execute } = await run({

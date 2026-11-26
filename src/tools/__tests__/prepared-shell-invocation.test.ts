@@ -14,6 +14,8 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 import * as resolver from "../../lib/shell-resolver.js";
 import * as homeOwner from "../../permissions/sandbox-process-home.js";
+import { SandboxHomeUnavailableError } from "../../permissions/sandbox-home-registry.js";
+import { t } from "../../i18n/index.js";
 import { bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, claimPreparedShellInvocation, disposePreparedShellInvocation, matchesPreparedShellInvocation, prepareShellInvocation, preparedSandboxBootstrap, preparedSandboxEnvironment, preparedShellCommand, preparedShellFacts, transferPreparedShellInvocation, type PreparedShellInvocation } from "../prepared-shell-invocation.js";
 
 const roots: string[] = [];
@@ -215,6 +217,19 @@ describe.skipIf(process.platform === "win32")("prepared shell facts and resource
       activeCapability: { kind: "asrt", confidence: "verified", platform: process.platform, reason: "Controlled sandbox fixture", confines: { filesystem: true, process: true, network: true } } });
     expect(() => prepareShellInvocation({ command: "printf ready", executionCwd: cwd, resolvedCwd: cwd, plan }, controller.signal)).toThrow();
     expect(create).toHaveBeenCalledOnce(); expect(existsSync(create.mock.results[0]!.value.path)).toBe(false);
+  });
+
+  it("carries the named refusal, and prepares nothing, when no sandbox HOME can be made", () => {
+    const unavailable = new SandboxHomeUnavailableError(new Error("root unproved"));
+    const create = vi.spyOn(homeOwner, "createSandboxProcessHome").mockImplementation(() => { throw unavailable; });
+    const capabilities = vi.spyOn(resolver, "getBashCapabilities");
+    const cwd = process.cwd();
+    const plan = buildHostShellExecutionPlan({ platform: process.platform, requestedSandbox: true,
+      activeCapability: { kind: "asrt", confidence: "verified", platform: process.platform, reason: "Controlled sandbox fixture", confines: { filesystem: true, process: true, network: true } } });
+    expect(() => prepareShellInvocation({ command: "printf ready", executionCwd: cwd, resolvedCwd: cwd, plan }))
+      .toThrow(expect.objectContaining({ code: "sandbox-home-unavailable", message: t("sandboxPolicy.homesUnavailable") }));
+    expect(create).toHaveBeenCalledOnce();
+    expect(capabilities).not.toHaveBeenCalled();
   });
 
   it("keeps plain execution free of sandbox HOME allocation", () => {

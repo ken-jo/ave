@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { discoverHookTrustFiles } from "../hook-config-trust.js";
 import { disableHook } from "../hook-discovery.js";
@@ -20,6 +21,7 @@ function content(fileName: string, matcher: string): string {
     : `#!/bin/sh\n# ave-hook-matcher: ${matcher}\nexit 0\n`;
 }
 
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "hook-disable-cause-"));
   layout = { hooksDir: dir, disabledDir: join(dir, ".disabled"), lockfilePath: join(dir, ".lockfile.json") };

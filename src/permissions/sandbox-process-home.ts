@@ -8,35 +8,49 @@ import {
   writeFileSync,
 } from "node:fs";
 import { lstat, open } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, win32 } from "node:path";
 
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
 import { appOwnedSandboxHomeRoot, ensureSandboxPrivateRoot } from "./asrt-sandbox.js";
+import { MxcRuntimeRootError, mxcSandboxHomesParent } from "./mxc-runtime-root.js";
+import { markSandboxHomesUnavailable } from "./sandbox-capability.js";
+import { forgetIssuedContainerHome, liveSandboxProcessHomes, recordIssuedContainerHome, SandboxHomeUnavailableError } from "./sandbox-home-registry.js";
 import { drainAgentObservationHome, registerAgentObservationHome } from "../tools/agent-observation-context.js";
 import { readWindowsProcessRunStates, type ProcessRunStateProbe } from "./windows-process-start-time.js";
 
 const log = createLogger("sandbox-process-home");
 export const SANDBOX_HOME_PREFIX = "ave-sandbox-home-";
-// Windows HOMEs share the host temp directory with other Ave instances, so each has a sibling owner marker for the boot sweep (`sweepStaleWindowsSandboxHomes`). The sibling sits in the temp root, which no confined process can write.
+// Windows HOMEs share one parent with this account's other Ave instances, so each has a sibling owner marker for the boot sweep (`sweepStaleWindowsSandboxHomes`). The marker sits in that parent (`mxcSandboxHomesParent`), which no confined process is granted.
 export const SANDBOX_HOME_OWNER_SUFFIX = ".owner";
 const OWNER_MARKER_MAX_BYTES = 128;
 const CLEANUP_RETRY_DELAYS_MS = [50, 250, 1_000] as const;
 
 // The sandbox HOMEs this process created and has not yet removed.
-const liveHomes = new Set<string>();
+const liveHomes = liveSandboxProcessHomes;
 
 // The sandbox HOMEs this process created and has not yet removed. The boot sweep keeps them: a HOME a process started during this boot is using is never removed, whatever order boot and the first spawn run in.
 export function sandboxProcessHomesInUse(): ReadonlySet<string> {
   return liveHomes;
 }
 
-// Where a sandbox HOME is created: the app-owned root on macOS and Linux, which the sandbox read floor denies to every other confined process (`appOwnedSandboxHomeRoot`); the host temp directory on Windows, unchanged, where a confined process reaches a path only through an ACL grant.
+// Where a sandbox HOME is created. On a Windows host: `homes` under the container runtime root (`mxcSandboxHomesParent`), never the host temp directory; a root that cannot be proved private refuses the HOME. Elsewhere: the app-owned root (`appOwnedSandboxHomeRoot`). Either is on the sandbox read floor, and each confined process is re-opened its own HOME alone.
 function sandboxHomeParent(platform: NodeJS.Platform): string {
-  if (platform === "win32") return realpathSync.native(tmpdir());
+  if (platform === "win32" && process.platform === "win32") {
+    try {
+      return realpathSync.native(mxcSandboxHomesParent());
+    } catch (error) {
+      if (error instanceof MxcRuntimeRootError) {
+        markSandboxHomesUnavailable();
+        throw new SandboxHomeUnavailableError(error);
+      }
+      throw error;
+    }
+  }
   return realpathSync.native(ensureSandboxPrivateRoot(appOwnedSandboxHomeRoot()));
 }
+
+export { isSandboxHomeUnavailable } from "./sandbox-home-registry.js";
 
 export interface SandboxHomeOwner {
   readonly pid: number;
@@ -226,7 +240,7 @@ function createProfileDirectories(env: Readonly<Record<string, string>>): void {
   for (const directory of directories) mkdirSync(directory, { recursive: true, mode: 0o700 });
 }
 
-// Give each process a fresh HOME and temp root so writable config cannot alter later commands; never store durable state there because cleanup discards it. POSIX homes live under a read-denied app root with only the process's own home re-allowed; Windows sets TEMP/TMP, while POSIX wrap/bootstrap owns TMPDIR.
+// Give each process a fresh HOME and temp root so writable config cannot alter later commands; never store durable state there because cleanup discards it. Homes live under a read-denied private root with only the process's own home re-allowed; Windows sets TEMP/TMP, while POSIX wrap/bootstrap owns TMPDIR.
 export function createSandboxProcessHome(
   platform: NodeJS.Platform = process.platform,
   removeHome: typeof rmSync = rmSync,
@@ -247,12 +261,18 @@ export function createSandboxProcessHome(
     ) {
       throw new Error(`refusing unsafe sandbox process HOME: ${homePath}`);
     }
+    // Asked again: a parent replaced while the HOME was created is refused, and the HOME is removed.
+    if (platform === "win32" && process.platform === "win32" && sandboxHomeParent(platform) !== parentRoot) {
+      throw new Error(`refusing sandbox process HOME under a replaced parent: ${homePath}`);
+    }
 
     env = Object.freeze(sandboxProcessProfileEnvironment(homePath, platform));
     createProfileDirectories(env);
     mkdirSync(join(homePath, "document-observation"), { mode: 0o700 });
+    if (platform === "win32") recordIssuedContainerHome(homePath, dirname(parentRoot));
     registerAgentObservationHome(homePath);
   } catch (err) {
+    forgetIssuedContainerHome(homePath);
     if (
       dirname(createdPath) === parentRoot &&
       basename(createdPath).startsWith(SANDBOX_HOME_PREFIX)
@@ -276,6 +296,7 @@ export function createSandboxProcessHome(
       removeHome(homePath, { recursive: true, force: true });
       cleaned = true;
       liveHomes.delete(homePath);
+      forgetIssuedContainerHome(homePath);
       failedAttempts = 0;
       // After the HOME, so a crash between the two leaves an orphan marker the sweep drops, never an unmarked HOME.
       if (platform === "win32") {

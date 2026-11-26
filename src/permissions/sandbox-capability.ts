@@ -2,6 +2,7 @@
 
 import { assertSandboxWindowsExtensionPlan, egressProtocolCoverageFor } from "../shared/sandbox-capability-info.js";
 import { getAveHomePrivacyFailure, isAveHomePrivacyApprovable, isAveHomePrivacyVerifiedAtBoot } from "../shared/ave-home.js";
+import { windowsDenyUnenforceableAtBoot } from "./admitted-obligation.js";
 import { t } from "../i18n/index.js";
 import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type {
@@ -256,6 +257,25 @@ export function detectMxcShellCapability(): SandboxCapability | undefined {
   return _mxcShellCapability;
 }
 
+// Windows: no sandbox HOME can be made this run (the container runtime root is unproved, or its HOME parent was replaced).
+// It holds until a restart, whatever the sandbox setting, since unconfined children need a HOME too.
+let _sandboxHomesUnavailable = false;
+
+export function markSandboxHomesUnavailable(): void {
+  if (_sandboxHomesUnavailable) return;
+  _sandboxHomesUnavailable = true;
+  notifySandboxStatusChanged();
+}
+
+export function getSandboxHomesUnavailable(): boolean {
+  return _sandboxHomesUnavailable;
+}
+
+// @internal — test teardown only.
+export function __resetSandboxHomesUnavailableForTest(): void {
+  _sandboxHomesUnavailable = false;
+}
+
 // @internal — test teardown only.
 export function __resetWindowsSandboxSubstrateForTest(): void {
   if (_windowsSubstrate !== null || _mxcShellCapability !== undefined) _sandboxGeneration += 1;
@@ -338,7 +358,7 @@ export function getHostShellExecutionPlan(executionMode: HostShellExecutionReque
     shellSubstrate: mxc === undefined ? "asrt" : "mxc",
     executionMode,
     unavailableCauses: _bootOutcome?.causes,
-    unavailableSandboxRequiresAsk: privacyFailure !== undefined,
+    unavailableSandboxRequiresAsk: privacyFailure !== undefined || windowsDenyUnenforceableAtBoot() !== undefined,
     unconfinedShellDenied: privacyFailure !== undefined && !isAveHomePrivacyApprovable(privacyFailure.category),
     homePrivacyVerified: isAveHomePrivacyVerifiedAtBoot(),
   });

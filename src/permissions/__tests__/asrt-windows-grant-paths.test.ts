@@ -23,8 +23,10 @@ import * as defaultWorkspace from "../../main/default-workspace-root.js";
 import { ConversationLoop } from "../../engine/conversation-loop.js";
 import { makeBasicConversationLoopDeps } from "../../engine/__tests__/support/conversation-loop-fixtures.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
-import { admitMxcExtensionFilesystem, buildSandboxConfig, getDefaultSensitiveWriteDenyEntries, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, runWithSandboxWritePreflight, wrapToolCommand } from "../asrt-sandbox.js";
+import { admitMxcExtensionFilesystem, appOwnedSandboxPrivateRoots, buildSandboxConfig, getBuiltinShellReadPolicy, getDefaultSensitiveWriteDenyEntries, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, runWithSandboxWritePreflight, wrapToolCommand } from "../asrt-sandbox.js";
+import { mxcSandboxHomesParent } from "../mxc-runtime-root.js";
 import { mxcPolicyRows } from "../mxc-windows.js";
+import { createSandboxProcessHome } from "../sandbox-process-home.js";
 
 vi.mock("@anthropic-ai/sandbox-runtime", async importOriginal => ({
   ...(await importOriginal<typeof import("@anthropic-ai/sandbox-runtime")>()),
@@ -101,6 +103,80 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     }
   });
 
+  it("grants a sandbox HOME under the container runtime root to its own process only", async () => {
+    const homes = mxcSandboxHomesParent();
+    const home = createSandboxProcessHome("win32");
+    const own = home.path;
+    // A directory of the right shape that the host never issued.
+    const sibling = mkdtempSync(join(homes, "ave-sandbox-home-"));
+    const released = createSandboxProcessHome("win32");
+    released.cleanup();
+    mkdirSync(`${own}-2`);
+    mkdirSync(join(dirname(homes), "staging"), { recursive: true });
+    try {
+      // The deny on the root is reported as stamped: the grant is what is under test.
+      await initializeAsrtSandbox({});
+      vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => paths.map(() => ({
+        denyMask: 0x1f01ff, inheritableMask: 0x1f01ff, parentMask: 0x40, directory: true,
+      })));
+      const refused = "inside a protected sensitive target";
+      const request = (path: string, sandboxHome?: string) => grantWindowsWorkerFilesystemAccess({
+        holderPid: process.pid + 1, allowRead: [path], allowWrite: [path], ...(sandboxHome === undefined ? {} : { sandboxHome }),
+      });
+      const grant = await request(own, own);
+      try {
+        expect(grant.allowWrite).toEqual([own]);
+      } finally {
+        grant.release();
+      }
+      const inside = await request(join(own, "AppData"), own);
+      inside.release();
+      // Another process's HOME, the HOME parent, the root and its staging stay closed, whatever HOME the caller names.
+      await expect(request(sibling, own)).rejects.toThrow(refused);
+      await expect(request(own)).rejects.toThrow(refused);
+      await expect(request(homes, own)).rejects.toThrow(refused);
+      await expect(request(dirname(homes), own)).rejects.toThrow(refused);
+      await expect(request(join(dirname(homes), "staging"), own)).rejects.toThrow(refused);
+      await expect(request(sibling, homes)).rejects.toThrow(refused);
+      await expect(request(sibling, dirname(homes))).rejects.toThrow(refused);
+      await expect(request(`${own}-2`, own)).rejects.toThrow(refused);
+      // Naming a path as the HOME proves nothing: only a HOME the host issued and still holds is reopened.
+      await expect(request(sibling, sibling)).rejects.toThrow(refused);
+      await expect(request(own, own.toUpperCase())).rejects.toThrow(refused);
+      mkdirSync(released.path);
+      await expect(request(released.path, released.path)).rejects.toThrow(refused);
+    } finally {
+      home.cleanup();
+      rmSync(released.path, { recursive: true, force: true });
+      rmSync(sibling, { recursive: true, force: true });
+      rmSync(`${own}-2`, { recursive: true, force: true });
+    }
+  });
+
+  it("a shell's read policy keeps its own sandbox HOME and paths inside it, and drops another process's", async () => {
+    const homes = mxcSandboxHomesParent();
+    const home = createSandboxProcessHome("win32");
+    const own = home.path;
+    const sibling = mkdtempSync(join(homes, "ave-sandbox-home-"));
+    try {
+      await initializeAsrtSandbox({});
+      const inside = join(own, "AppData");
+      const policy = getBuiltinShellReadPolicy([own, inside, sibling, join(sibling, "AppData"), homes, dirname(homes)], undefined, own);
+      // The saved-session grant rides along with every shell.
+      expect(policy.allowRead.filter(path => !policy.floorPierces.includes(path))).toEqual([own, inside]);
+      expect(policy.denyRead).toEqual(expect.arrayContaining(appOwnedSandboxPrivateRoots()));
+      // Without a HOME of its own a wrap is granted none.
+      const homeless = getBuiltinShellReadPolicy([own, inside], undefined);
+      expect(homeless.allowRead.filter(path => !homeless.floorPierces.includes(path))).toEqual([]);
+      // Nor is a HOME the host never issued reopened by naming it.
+      const forged = getBuiltinShellReadPolicy([sibling], undefined, sibling);
+      expect(forged.allowRead.filter(path => !forged.floorPierces.includes(path))).toEqual([]);
+    } finally {
+      home.cleanup();
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+
   it("admits an MXC extension output beside bracketed Documents and retains the profile deny", async () => {
     const documents = join(fixture, "Work [Archive]", "Documents");
     const engine = join(documents, "PowerShell");
@@ -133,7 +209,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     }));
     const result = await compose();
     expect(query).toHaveBeenCalledTimes(1);
-    expect(result.filesystemPolicy?.denyWrite).toContainEqual({ path: profile, literal: true });
+    expect(result.filesystemPolicy?.denyWrite?.map(entry => typeof entry === "string" ? entry : entry.path)).toContain(profile);
 
     query.mockRejectedValueOnce(new Error("Documents helper timed out"));
     await expect(compose()).rejects.toThrow("Windows profile write floor could not establish all profile paths");
@@ -415,11 +491,16 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     const paths = [join(fixture, "Foo"), join(fixture, "foo")];
     const ids = ["0x00000000000000000000000000000001", "0x00000000000000000000000000000002"];
     let swapped = false;
-    const pin = vi.spyOn(facts, "pinWindowsPaths").mockImplementation(requests => requests.map(path => {
-      const index = paths.indexOf(path);
-      return index < 0 ? nativePin([path])[0]! : { ...template, canonical: path,
-        fileId: swapped && index === 1 ? "0x00000000000000000000000000000003" : ids[index]! };
-    }));
+    const pin = vi.spyOn(facts, "pinWindowsPaths").mockImplementation(requests => {
+      // The other rows are pinned natively in one helper run, as the producer batches them.
+      const others = requests.filter(path => !paths.includes(path));
+      const native = others.length === 0 ? [] : [...nativePin(others)];
+      return requests.map(path => {
+        const index = paths.indexOf(path);
+        return index < 0 ? native.shift()! : { ...template, canonical: path,
+          fileId: swapped && index === 1 ? "0x00000000000000000000000000000003" : ids[index]! };
+      });
+    });
     const holderPid = process.pid + 1;
     const held = new Map<string, string>();
     const revokedIds: string[] = [];
@@ -486,11 +567,15 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     const nativePin = facts.pinWindowsPaths;
     const template = nativePin([target])[0]!;
     const paths = [join(fixture, "Foo"), join(fixture, "foo")];
-    vi.spyOn(facts, "pinWindowsPaths").mockImplementation(requests => requests.map(path => {
-      const index = paths.indexOf(path);
-      return index < 0 ? nativePin([path])[0]! : { ...template, canonical: path,
-        fileId: index === 0 ? "0x00000000000000000000000000000001" : "0x00000000000000000000000000000002" };
-    }));
+    vi.spyOn(facts, "pinWindowsPaths").mockImplementation(requests => {
+      const ordinary = nativePin(requests.filter(path => !paths.includes(path)));
+      let ordinaryIndex = 0;
+      return requests.map(path => {
+        const index = paths.indexOf(path);
+        return index < 0 ? ordinary[ordinaryIndex++]! : { ...template, canonical: path,
+          fileId: index === 0 ? "0x00000000000000000000000000000001" : "0x00000000000000000000000000000002" };
+      });
+    });
     vi.mocked(runtime.grantWindowsAcl).mockImplementationOnce(() => { throw new Error("partial grant"); });
     const row = { path: paths[0]!, status: "revoked" as const };
     vi.mocked(runtime.revokeWindowsAcl).mockReturnValue(kind === "missing" ? [row]
@@ -500,7 +585,8 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     expect(runtime.grantWindowsAcl).toHaveBeenCalledTimes(1);
   });
 
-  it("retains both case-only deny obligations while preparing an overlapping write grant", async () => {
+  // Native admission keys a present row by its object, so both case-only spellings stamp the one file once.
+  it("stamps the object behind case-only deny spellings while preparing an overlapping write grant", async () => {
     const paths = [join(target, "Foo"), join(target, "foo")];
     writeFileSync(join(target, "foo"), "");
     await initializeAsrtSandbox({ denyRead: paths });
@@ -509,8 +595,8 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     })));
     const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] });
     try {
-      expect(stampWindowsAclAsync).toHaveBeenLastCalledWith(expect.objectContaining({ denyRead: expect.arrayContaining(paths) }));
-      for (const [requests] of read.mock.calls) expect(requests).toEqual(expect.arrayContaining(paths));
+      expect(stampWindowsAclAsync).toHaveBeenLastCalledWith(expect.objectContaining({ denyRead: [join(target, "foo")] }));
+      for (const [requests] of read.mock.calls) expect(requests).toEqual([join(target, "foo")]);
     } finally { grant.release(); }
   });
 
@@ -786,22 +872,28 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     } else expect(runtime.revokeWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({ holderPid: process.pid + 1 }));
   });
 
-  it("keeps junction deny evidence unproven and refuses an overlapping grant", async () => {
+  it("keeps junction deny evidence unproven and refuses a deny whose object is the profile root", async () => {
     const link = join(target, "denied");
-    symlinkSync(join(fixture, "alice"), link, "junction");
+    const profile = join(fixture, "alice");
+    symlinkSync(profile, link, "junction");
     expect(() => denyAcl.readWindowsDenyAcls([link], "S-1-5-21-1001")).toThrow(/verification/);
-    await initializeAsrtSandbox({ denyRead: [link], denyWrite: [link] });
-    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] })).rejects.toThrow(/verification/);
+    await expect(initializeAsrtSandbox({ denyRead: [link], denyWrite: [link] })).rejects.toMatchObject({
+      code: "sandbox-obligation-unenforceable", rows: expect.arrayContaining([expect.objectContaining({ reason: "link-spelling" })]),
+    });
+    await expect(initializeAsrtSandbox({ denyRead: [profile] })).rejects.toMatchObject({
+      code: "sandbox-obligation-unenforceable", rows: expect.arrayContaining([expect.objectContaining({ reason: "unstampable-no-evidence" })]),
+    });
     expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
   });
 
-  it("keeps a profile junction read-deny row and exposes unproven evidence", async () => {
+  it("refuses a profile junction read deny and exposes unproven evidence", async () => {
     const link = join(fixture, "alice", "denied");
     symlinkSync(target, link, "junction");
     const evidence = await readWindowsReadDenyEvidence([link]);
     expect(evidence.get(windowsReadDenyKey(link))?.status).toBe("reparse");
-    const built = buildSandboxConfig({ denyRead: [link] }, evidence);
-    expect(built.filesystem.denyRead.map(row => typeof row === "string" ? row : row.path)).toContain(link);
+    expect(() => buildSandboxConfig({ denyRead: [link] }, evidence)).toThrow(expect.objectContaining({
+      code: "sandbox-obligation-unenforceable", rows: expect.arrayContaining([expect.objectContaining({ reason: "link-spelling" })]),
+    }));
   });
 
   it("returns a visible home privacy error for a junction", () => {

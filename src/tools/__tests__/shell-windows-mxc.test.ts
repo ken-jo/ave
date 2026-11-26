@@ -1,10 +1,10 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
-vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
 
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -16,6 +16,13 @@ const childProcessMock = vi.hoisted(() => ({
 }));
 const installationMock = vi.hoisted(() => ({ resolve: vi.fn() }));
 const sandboxHomeMock = vi.hoisted(() => ({ onCreate: vi.fn<() => void>(), onCleanup: vi.fn<(home: string) => void>() }));
+// The runtime root start-up proved, or the refusal of one that was not.
+const startRoot = vi.hoisted(() => vi.fn((): string => "C:\\ave-fixture\\cache\\mxc-runtime"));
+// While win32 is simulated, the runtime root floor row is on the simulated drive like every other host-derived path.
+vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
+  ...(await import("../../__tests__/support/simulated-win32-drive.js")).simulatedRuntimeRoot(await importOriginal()),
+  requireMxcContainerStartRoot: () => startRoot(),
+}));
 vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: installationMock.resolve }));
 const mxcLaunchMock = vi.hoisted(() => ({
   prepare: vi.fn(),
@@ -69,17 +76,20 @@ import { setAgentTerminalObservationSink } from "../agent-terminal-observation.j
 import { MAX_POWERSHELL_PARSER_RESPONSE_BYTES } from "../powershell-parser-response.js";
 import type { ToolExecutionContext } from "../types.js";
 import { MXC_BASH_UNAVAILABLE_MESSAGE } from "../../permissions/mxc-windows.js";
-import { rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
+import { rankAdmittedMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 import { permissionsFilePath } from "../../permissions/permissions-store.js";
 import { userApprovalFilePath } from "../../permissions/user-approval-store.js";
 import { egressGrantFilePath } from "../../permissions/egress-grants.js";
 import * as egressHostListener from "../../permissions/egress-host-listener.js";
 import { egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../../permissions/egress-invocations.js";
 import * as mxcWindows from "../../permissions/mxc-windows.js";
+import * as policyHome from "../../shared/policy-home.js";
+import { t } from "../../i18n/index.js";
 import * as mxcPolicyPipe from "../../permissions/mxc-policy-pipe.js";
 import { holdHostShellSpawnDirectory } from "../../permissions/host-shell-execution-permit.js";
 import type { WindowsHoldVerdict } from "../../shared/windows-path-facts.js";
 import * as asrtSandbox from "../../permissions/asrt-sandbox.js";
+import { getConfiguredSessionReadRoot } from "../../permissions/sensitive-paths.js";
 import { AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
 import * as chatOrigin from "../../shared/chat-origin.js";
 import {
@@ -181,6 +191,37 @@ function executePowerShell(toolContext: ToolExecutionContext, command = "Write-O
 }
 
 describe("builtin shell — Windows MXC containers", () => {
+  it.runIf(ORIGINAL_PLATFORM === "win32").each([true, false])(
+    "shows the saved-session read notice only for a read operand (read=%s)",
+    async (read) => {
+      bootMxcShells();
+      const sessionRoot = getConfiguredSessionReadRoot();
+      if (sessionRoot === undefined) throw new Error("Expected a configured session root");
+      const path = join(sessionRoot, "session.jsonl");
+      const name = read ? "Get-Content" : "Write-Output";
+      const command = `${name} '${path}'`;
+      const parsed = JSON.stringify({
+        errors: [], redirections: [], unsupported: [],
+        commands: [{ name, text: command, arguments: [
+          { kind: "literal", text: name, value: name },
+          { kind: "literal", text: `'${path}'`, value: path },
+        ] }],
+      });
+      childProcessMock.spawn.mockImplementation((_file, argv: readonly string[]) => argv.includes(PARSER_REQUEST)
+        ? fakeChild(parsed, 0)
+        : fakeChild(read ? "Access is denied" : path, read ? 1 : 0));
+      const result = await executePowerShell(context("saved-session-notice"), command);
+      expect(result).toMatchObject({ isError: read, metadata: { sandboxed: true } });
+      const notice = t("sandboxPolicy.savedSessionReadWithheld");
+      if (read) expect(result.output).toContain(notice);
+      else expect(result.output).not.toContain(notice);
+      const launch = mxcLaunchMock.prepare.mock.lastCall?.[0] as PrepareMxcShellLaunchInput | undefined;
+      if (launch === undefined) throw new Error("Expected the command launch policy");
+      expect(launch.filesystem.allowRead.some((entry) => mxcWindows.isWindowsPathAtOrUnder(entry, sessionRoot))).toBe(false);
+      expect(launch.filesystem.floorPierces).toEqual([]);
+    },
+  );
+
   it("refuses a prepared parser when the container route ends before native spawn", async () => {
     bootMxcShells();
     const prepare = mxcLaunchMock.prepare.getMockImplementation();
@@ -440,7 +481,7 @@ describe("builtin shell — Windows MXC containers", () => {
   });
 
   it("gives the container the mandatory write floor: workspace control files and Ave's stores stay unwritable", async () => {
-    const { mkdirSync, mkdtempSync, existsSync, realpathSync, rmSync, writeFileSync } = await import("node:fs");
+    const { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const workspace = realpathSync(mkdtempSync(join(tmpdir(), "ave-mxc-floor-")));
@@ -472,7 +513,7 @@ describe("builtin shell — Windows MXC containers", () => {
       }
       // Windows keeps denied workspace controls read-only when present and denied when absent.
       if (process.platform === "win32" && ORIGINAL_PLATFORM === "win32") {
-        const grants = rankMxcLists({ ...filesystem, protectedFloor: [] }, existsSync);
+        const grants = rankAdmittedMxcLists({ ...filesystem, protectedFloor: [] });
         // Compare Windows paths case-insensitively, including canonical drive letters.
         const folded = (paths: readonly string[]) => paths.map(pathKey);
         expect(folded(grants.readwrite)).toContain(pathKey(workspace));
@@ -501,6 +542,37 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(result.output).toBe("PowerShell spawn failed: could not create isolated HOME: profile directory failed");
     expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
     expect(childProcessMock.spawn).not.toHaveBeenCalled();
+  });
+
+  it("carries the named refusal, and prepares nothing, when no sandbox HOME can be made", async () => {
+    bootMxcShells();
+    const { SandboxHomeUnavailableError } = await import("../../permissions/sandbox-home-registry.js");
+    const { t } = await import("../../i18n/index.js");
+    sandboxHomeMock.onCreate.mockImplementationOnce(() => { throw new SandboxHomeUnavailableError(new Error("root unproved")); });
+    const result = await executePowerShell(context("ps-mxc-home-unavailable"));
+    expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+    expect(result.output).toBe(`PowerShell spawn failed: could not create isolated HOME: ${t("sandboxPolicy.homesUnavailable")}: root unproved`);
+    expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
+    expect(childProcessMock.spawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses the container while the runtime root is not proved, and releases its HOME", async () => {
+    bootMxcShells();
+    const { prepareMxcShellLaunch } = await vi.importActual<typeof import("../mxc-shell-launch.js")>("../mxc-shell-launch.js");
+    mxcLaunchMock.prepare.mockImplementation(prepareMxcShellLaunch);
+    const resolveLauncher = vi.spyOn(mxcWindows, "resolveHostWxcExecPath").mockResolvedValue(WXC_EXEC);
+    startRoot.mockImplementation(() => { throw new Error("Container runtime root was not established when the sandbox started"); });
+    try {
+      const result = await executePowerShell(context("ps-mxc-root-unproved"));
+      expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+      expect(result.output).toMatch(/^PowerShell spawn failed: .*not established/u);
+      expect(resolveLauncher).not.toHaveBeenCalled();
+      expect(childProcessMock.spawn.mock.calls.some((call) => call[0] === WXC_EXEC)).toBe(false);
+      expect(sandboxHomeMock.onCleanup).toHaveBeenCalledOnce();
+    } finally {
+      startRoot.mockReset();
+      startRoot.mockReturnValue("C:\\ave-fixture\\cache\\mxc-runtime");
+    }
   });
 
   it.each([false, true])("fails closed on policy delivery failure with headless=%s", async (headless) => {
@@ -933,7 +1005,8 @@ describe("builtin shell — Windows MXC containers", () => {
   // The real preparation and transport wrapper; only the policy pipe beneath the wrapper is replaced.
   async function configureCommandLauncher(
     openPipe: typeof mxcPolicyPipe.openMxcPolicyPipe,
-    observerError: Error,
+    observerError?: Error,
+    request?: Pick<PrepareMxcShellLaunchInput, "cwd" | "filesystem">,
   ) {
     const { prepareMxcShellLaunch } = await vi.importActual<typeof import("../mxc-shell-launch.js")>("../mxc-shell-launch.js");
     const prepareParser = mxcLaunchMock.prepare.getMockImplementation();
@@ -945,25 +1018,103 @@ describe("builtin shell — Windows MXC containers", () => {
       return { port: 9, proxyAuthorization: "Basic eA==", registerPort: vi.fn(), recordRefusal: vi.fn(), close: closeRelay };
     });
     vi.spyOn(mxcWindows, "resolveHostWxcExecPath").mockResolvedValue(WXC_EXEC);
+    vi.spyOn(asrtSandbox, "getProtectedReadDenyFloor").mockReturnValue([]);
+    const workspace = request === undefined && ORIGINAL_PLATFORM === "win32"
+      ? realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-transport-")))
+      : FIXTURE_WORKSPACE;
+    if (request === undefined && ORIGINAL_PLATFORM !== "win32") {
+      const buildRequest = mxcWindows.buildMxcShellRequest;
+      vi.spyOn(mxcWindows, "buildMxcShellRequest").mockImplementation(input =>
+        buildRequest({ ...input, grants: { ...input.grants, readwrite: [workspace] } }));
+    }
     vi.spyOn(mxcPolicyPipe, "openMxcPolicyPipe").mockImplementation(openPipe);
     mxcLaunchMock.prepare.mockImplementation((input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle) => {
       if (isParserLaunch(input)) return prepareParser(input, lifecycle);
       releaseListenerCleanups.push(onEgressInvocationReleased((token) => {
-        if (token === input.egressToken) throw observerError;
+        if (observerError !== undefined && token === input.egressToken) throw observerError;
       }));
       // Every host-derived field is fixed, so a POSIX run reaches the transport as a Windows one does.
       return prepareMxcShellLaunch({
         ...input,
-        cwd: FIXTURE_WORKSPACE,
-        filesystem: { allowWrite: [FIXTURE_WORKSPACE], allowRead: [], denyRead: [], denyWrite: [], floorPierces: [] },
+        ...(request === undefined ? { cwd: workspace, filesystem: {
+          allowWrite: ORIGINAL_PLATFORM === "win32" ? [workspace] : [], allowRead: [], denyRead: [], denyWrite: [],
+        } } : { ...request, filesystem: {
+          ...request.filesystem,
+          denyRead: input.filesystem.denyRead,
+        } }),
         // Too large for the command line, so the request travels over the policy pipe.
-        env: { SYSTEMROOT: String.raw`C:\Windows`, LOCALAPPDATA: String.raw`C:\ave-fixture\home\AppData\Local`, AVE_FIXTURE_PADDING: "x".repeat(25_000) },
-        exists: (path) => path === WXC_EXEC || path === FIXTURE_WORKSPACE,
-        list: () => [],
+        env: { SYSTEMROOT: String.raw`C:\Windows`, LOCALAPPDATA: String.raw`C:\ave-fixture\home\AppData\Local`,
+          ...(request === undefined ? { AVE_FIXTURE_PADDING: "x".repeat(25_000) } : {}) },
+        exists: (path) => path === WXC_EXEC || existsSync(path),
       }, lifecycle);
     });
+    if (workspace !== FIXTURE_WORKSPACE) releaseListenerCleanups.push(() => rmSync(workspace, { recursive: true, force: true }));
     return closeRelay;
   }
+
+  it.runIf(ORIGINAL_PLATFORM === "win32").each([
+    "brackets", "relative pattern", "absolute pattern", "interior dot", "mixed separators", "drive case", "extended drive", "unrepresentable pattern",
+  ] as const)(
+    "launches a workspace with %s using admitted filesystem rows",
+    async (kind) => {
+      bootMxcShells();
+      const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-workspace-")));
+      const cwd = join(root, "work", kind === "brackets" ? "[demo]" : "project");
+      try {
+        const nested = join(cwd, "nested");
+        const pem = join(nested, "fixture.pem");
+        const topLevelPem = join(cwd, "top-level.pem");
+        const other = join(nested, "fixture.txt");
+        const denyWrite = join(cwd, ".envrc");
+        mkdirSync(nested, { recursive: true });
+        writeFileSync(pem, "");
+        writeFileSync(topLevelPem, "");
+        writeFileSync(other, "");
+        const pattern = {
+          "brackets": undefined,
+          "relative pattern": "**/*.pem",
+          "absolute pattern": join(cwd, "**", "*.pem"),
+          "interior dot": String.raw`${cwd}\.\**\*.pem`,
+          "mixed separators": String.raw`${cwd}/**\*.pem`,
+          "drive case": String.raw`${cwd[0]?.toLowerCase()}${cwd.slice(1)}\**\*.pem`,
+          "extended drive": `\\\\?\\${String.raw`${cwd}\**\*.pem`}`,
+          "unrepresentable pattern": String.raw`${cwd}\**\..\*.pem`,
+        }[kind];
+        const denyRead = pattern === undefined ? [] : [pattern];
+        if (denyRead.length > 0) {
+          const profile = join(root, "profile");
+          mkdirSync(profile);
+          vi.stubEnv("HOME", profile);
+          vi.stubEnv("USERPROFILE", profile);
+          vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
+          const initialization = await asrtSandbox.initializeAsrtSandbox({
+            allowWrite: [cwd], denyRead, windows: { externalConfinement: true },
+          });
+          expect(initialization.isCurrent()).toBe(true);
+        }
+        await configureCommandLauncher(async () => { throw new Error("Expected inline policy"); }, undefined, {
+          cwd, filesystem: { allowWrite: [cwd], allowRead: [cwd], denyWrite: [denyWrite], denyRead: [] },
+        });
+        const result = await executePowerShell({ ...context(kind), cwd });
+        const args = childProcessMock.spawn.mock.calls.find(([, argv]) => argv[0] === "--config-base64" && !argv.includes(PARSER_REQUEST))?.[1];
+        if (kind === "unrepresentable pattern") {
+          expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+          expect(args).toBeUndefined();
+          return;
+        }
+        expect(result).toMatchObject({ isError: false, metadata: { sandboxed: true } });
+        if (args?.[1] === undefined) throw new Error("Expected inline policy");
+        const request = JSON.parse(Buffer.from(args[1], "base64").toString("utf8"));
+        expect(request.process.cwd).toBe(cwd);
+        expect(request.filesystem.readwritePaths).toEqual([cwd]);
+        expect(request.filesystem.deniedPaths.toSorted()).toEqual((kind === "brackets" ? [denyWrite] : [denyWrite, pem, topLevelPem]).toSorted());
+        expect(request.filesystem.deniedPaths).not.toContain(other);
+      } finally {
+        await asrtSandbox.resetAsrtSandbox();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.each(["route loss", "cancellation"] as const)("reports the transport open failure first after %s during preparation", async (trigger) => {
     bootMxcShells();

@@ -133,6 +133,7 @@ function makeExecutor(
   };
 }
 
+
 describe("execution route shadow metadata", () => {
   it("refuses a host decision rebuilt to a disposable route before execution", async () => {
     __resetActiveSandboxCapabilityForTest();

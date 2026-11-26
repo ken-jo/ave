@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, open, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { join, resolve } from "node:path";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { noteOwnedWrite, terminalFileEvidence, writtenFileIdentity } from "../../main/terminal/changed-file-evidence.js";
 import { checkpointFileMutation, markCodeCheckpointUnavailable, withCodeCheckpoint } from "../code-checkpoints.js";
 import { copyPath } from "../../tools/guarded-file-transfer.js";
@@ -13,6 +14,7 @@ import { reviewChange as change } from "../../__tests__/support/terminal-session
 let directory: string;
 let sessionId: string;
 let context: ToolExecutionContext;
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 beforeEach(async () => {
   directory = await realpath(await mkdtemp(join(tmpdir(), "ave-write-provenance-")));
   sessionId = randomUUID();

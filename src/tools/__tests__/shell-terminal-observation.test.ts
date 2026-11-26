@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { runAdmittedAgentWork } from "../../__tests__/support/agent-observation-admission.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import * as windowsJobLauncher from "../../main/windows-job-launcher.js";
@@ -56,6 +57,9 @@ function execute(command: string, background = false, signal?: AbortSignal) {
 function agent<T>(run: () => Promise<T>) {
   return runAdmittedAgentWork(identity, run);
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("shell command observation provenance and lifetime", () => {
   it("does not observe ordinary shell callers carrying agent-shaped metadata", async () => {

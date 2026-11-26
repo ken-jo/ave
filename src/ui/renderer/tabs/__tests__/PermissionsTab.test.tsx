@@ -1745,7 +1745,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     // The catalog parity check cannot see a key the code names but no catalog defines; every reason must resolve in both locales.
     const EVERY_REASON = {
       "not-windows": true, "unsupported-arch": true, "binary-missing": true, "probe-failed": true, "container-unavailable": true,
-      "request-rejected": true, "launcher-mismatch": true, "powershell-start-failed": true, "unverified-session": true,
+      "request-rejected": true, "launcher-mismatch": true, "powershell-start-failed": true, "unverified-session": true, "runtime-root-unproved": true,
       "not-requested": true, "native-validation-required": true, checking: true, ready: true, "readiness-deadline": true,
       "ancestor-policy-unsupported": true, "runtime-start-failed": true, "endpoint-isolation-unverified": true,
       "bash-incompatible": true, "ancestor-already-admitted": true, "runtime-unavailable": true,
@@ -1765,6 +1765,19 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         setLocale(previous);
       }
     });
+  });
+
+  it("names an unproved container runtime root with the sandbox setting off, where no substrate was recorded", async () => {
+    const { ave } = installApiWithWindows({ togglesOff: true });
+    ave.permission.sandboxCapability.mockResolvedValue({
+      platform: "win32", enabled: false, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: true, kind: "none", reason: "r" },
+      confines: { filesystem: true, process: false, network: true },
+      windowsSubstrate: null, sandboxHomesUnavailable: true,
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("os-sandbox-windows-homes-unavailable").textContent)
+      .toBe(t("permissionsTab.osSandboxWindowsMxcReasonRuntimeRootUnproved"));
   });
 
   it.each([

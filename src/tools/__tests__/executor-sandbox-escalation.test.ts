@@ -38,10 +38,15 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 withSourceHostResources();
 
-const processProbe = vi.hoisted(() => ({ execFileSync: vi.fn() }));
-vi.mock("node:child_process", async (original) => ({
-  ...await original<typeof import("node:child_process")>(), execFileSync: processProbe.execFileSync,
+const processProbe = vi.hoisted(() => ({
+  execFileSync: vi.fn(),
+  actualExecFileSync: undefined as unknown as typeof import("node:child_process").execFileSync,
 }));
+vi.mock("node:child_process", async (original) => {
+  const actual = await original<typeof import("node:child_process")>();
+  processProbe.actualExecFileSync = actual.execFileSync;
+  return { ...actual, execFileSync: processProbe.execFileSync };
+});
 const fsProbe = vi.hoisted(() => ({ beforeMkdir: undefined as ((path: unknown) => Promise<void>) | undefined }));
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
@@ -70,8 +75,10 @@ beforeEach(() => {
   directory = makeFixtureDirectory("executor-sandbox-escalation-");
   vi.stubEnv("AVE_HOME", join(directory, "profile"));
   __resetShellResolverCache();
-  processProbe.execFileSync.mockImplementation((_file, args: readonly string[]) =>
-    args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
+  // The shipped path-kind helper that pins Windows paths still runs.
+  processProbe.execFileSync.mockImplementation((file: string, args: readonly string[], options?: object) =>
+    /[\\/]ave-path-kind\.exe$/i.test(file) ? processProbe.actualExecFileSync(file, args, options)
+      : args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
   setProcessPlatform("linux");
   setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: "linux", reason: "Controlled native sandbox transport",
@@ -134,6 +141,7 @@ function invoke(executor: ToolExecutor, id: string, name = "bash", input: Record
     sessionId: id, permissionContext: userPermissionContext({ headless }),
   }));
 }
+
 
 it("re-enters normal permission policy before one exact host retry and retains the original result id", async () => {
   const command = "mkdir ordinary";

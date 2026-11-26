@@ -5,5 +5,41 @@
   "formatter": { "enabled": false },
   "assist": { "enabled": false },
   "css": { "parser": { "tailwindDirectives": true } },
-  "linter": { "enabled": true, "rules": { "preset": "recommended" } }
+  "linter": { "enabled": true, "rules": { "preset": "recommended" } },
+  "overrides": [
+    {
+      "includes": [
+        "src/shared/shell-filesystem-path.ts", "src/shared/shell-native-path.ts", "src/shared/windows-path-spelling.ts",
+        "src/shared/windows-drive-locality.ts", "src/permissions/rules/shell-exfiltration.ts",
+        "src/permissions/rules/powershell-exfiltration.ts", "src/tools/shell-path-policy.ts", "src/tools/invocation-runner.ts",
+        "src/permissions/allowed-directories.ts", "src/permissions/windows-grant-targets.ts",
+        "src/permissions/admitted-obligation.ts", "src/shared/windows-read-deny-evidence.ts", "src/sandbox/path-validator.ts",
+        "src/tools/mxc-shell-launch.ts"
+      ],
+      "linter": { "rules": { "style": { "noRestrictedImports": { "level": "error", "options": { "paths": {
+        "fs": "Path lookups on the path boundary go through local-path-io.",
+        "node:fs": "Path lookups on the path boundary go through local-path-io.",
+        "fs/promises": "Path lookups on the path boundary go through local-path-io.",
+        "node:fs/promises": "Path lookups on the path boundary go through local-path-io."
+      } } } } } }
+    },
+    {
+      "includes": ["src/permissions/sensitive-paths.ts", "src/tools/shell-executable-read-paths.ts"],
+      "linter": { "rules": { "style": { "noRestrictedImports": { "level": "error", "options": { "paths": {
+        "fs": { "message": "Path lookups on the path boundary go through local-path-io.", "allowImportNames": ["closeSync", "constants", "fstatSync", "readSync", "BigIntStats"] },
+        "node:fs": { "message": "Path lookups on the path boundary go through local-path-io.", "allowImportNames": ["closeSync", "constants", "fstatSync", "readSync", "BigIntStats"] },
+        "fs/promises": "Path lookups on the path boundary go through local-path-io.",
+        "node:fs/promises": "Path lookups on the path boundary go through local-path-io."
+      } } } } } }
+    },
+    {
+      "includes": ["src/permissions/asrt-sandbox.ts"],
+      "linter": { "rules": { "style": { "noRestrictedImports": { "level": "error", "options": { "paths": {
+        "fs": { "message": "Path lookups on the path boundary go through local-path-io; only the host-owned helper sites read the filesystem here.", "allowImportNames": ["chmodSync", "lstatSync", "mkdirSync", "realpathSync"] },
+        "node:fs": { "message": "Path lookups on the path boundary go through local-path-io; only the host-owned helper sites read the filesystem here.", "allowImportNames": ["chmodSync", "lstatSync", "mkdirSync", "realpathSync"] },
+        "fs/promises": "Path lookups on the path boundary go through local-path-io.",
+        "node:fs/promises": "Path lookups on the path boundary go through local-path-io."
+      } } } } } }
+    }
+  ]
 }

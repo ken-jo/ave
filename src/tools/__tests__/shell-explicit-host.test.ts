@@ -39,6 +39,7 @@ afterEach(async () => {
   for (const dir of temporaryDirectories.splice(0)) await cleanupTmpDir(dir);
 });
 
+
 describe("explicit host shell authorization", () => {
   it.each(["host", "default"] as const)("does not ask for %s host consent when the exact action would be masked", async (executionMode) => {
     for (const field of ["command", "justification", "cwd"] as const) {

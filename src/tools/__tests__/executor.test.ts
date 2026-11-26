@@ -153,6 +153,7 @@ function denyingApprovalGate() {
   return { wc, gate };
 }
 
+
 describe("ToolExecutor — A2A parent delivery capability provenance", () => {
   it.each([
     { hostCapability: true, rawCapability: false },

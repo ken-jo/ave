@@ -1,8 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { join, resolve } from "node:path";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
+import { observeWindowsShellDirectories } from "../../permissions/admitted-obligation.js";
 import { analyzeShell } from "../shell-analysis.js";
 import { inspectShellExecution, ShellExecutionError, withHostCdFaults } from "../shell-execution.js";
 import { inspectEmbeddedShellPrograms } from "../../tools/shell-path-policy.js";
@@ -303,37 +305,41 @@ describe("host cd outcome", () => {
 });
 
 describe("host cd failure states", () => {
+  beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
+  // The shipped Windows observer, as host routes use it.
+  const hostObserver = process.platform === "win32" ? { observeDirectory: observeWindowsShellDirectories } : {};
+
   it("visits each repeated cd a bounded number of times", () => {
     const {cwd,environment}=fixture();
     const visits: (string|null)[]=[];
-    inspectShellExecution(Array.from({length:15},()=>"cd safe && cd ..").join("; "),cwd,{dialect:"bash",environment,hostCdFaults:true},{path(_path,_raw,at){visits.push(at);},command(){}});
+    inspectShellExecution(Array.from({length:15},()=>"cd safe && cd ..").join("; "),cwd,{dialect:"bash",environment,hostCdFaults:true},{...hostObserver,path(_path,_raw,at){visits.push(at);},command(){}});
     expect(visits.length).toBe(44);
   });
 
   it("asks once repeated cds pass the fork cap", () => {
     const {cwd,environment}=fixture();
-    expect(()=>inspectShellExecution(Array.from({length:17},()=>"cd safe && cd ..").join("; "),cwd,{dialect:"bash",environment,hostCdFaults:true},{path(){},command(){}})).toThrow("unresolved working-directory destination");
+    expect(()=>inspectShellExecution(Array.from({length:17},()=>"cd safe && cd ..").join("; "),cwd,{dialect:"bash",environment,hostCdFaults:true},{...hostObserver,path(){},command(){}})).toThrow("unresolved working-directory destination");
   });
 
   it("models one cd fault per path through nested directories", () => {
     const {cwd,environment}=fixture();
     mkdirSync(join(cwd,"n/n/n/n/n/n/n/n"),{recursive:true});
     let visits=0;
-    inspectShellExecution(Array.from({length:8},()=>"cd n").join("; "),cwd,{dialect:"bash",environment,hostCdFaults:true},{path(){visits++;},command(){}});
+    inspectShellExecution(Array.from({length:8},()=>"cd n").join("; "),cwd,{dialect:"bash",environment,hostCdFaults:true},{...hostObserver,path(){visits++;},command(){}});
     expect(visits).toBe(36);
   });
 
   it("continues after a cd that may fail in the starting directory", () => {
     const {cwd,environment}=fixture();
     const touched: (string|null)[]=[];
-    inspectShellExecution("cd safe; touch x",cwd,{dialect:"bash",environment,hostCdFaults:true},{path(){},command(event){if(event.argv[0]==="touch")touched.push(event.cwd);}});
+    inspectShellExecution("cd safe; touch x",cwd,{dialect:"bash",environment,hostCdFaults:true},{...hostObserver,path(){},command(event){if(event.argv[0]==="touch")touched.push(event.cwd);}});
     expect(touched.sort()).toEqual([cwd,join(cwd,"safe")].sort());
   });
 
   it("models no cd fault without the unsandboxed host fact", () => {
     const {cwd,environment}=fixture();
     const touched: (string|null)[]=[];
-    inspectShellExecution("cd safe; touch x",cwd,{dialect:"bash",environment},{path(){},command(event){if(event.argv[0]==="touch")touched.push(event.cwd);}});
+    inspectShellExecution("cd safe; touch x",cwd,{dialect:"bash",environment},{...hostObserver,path(){},command(event){if(event.argv[0]==="touch")touched.push(event.cwd);}});
     expect(touched).toEqual([join(cwd,"safe")]);
   });
 
@@ -347,7 +353,15 @@ describe("host cd failure states", () => {
   it("continues a fault path in the parent when it ends inside a subshell", () => {
     const {cwd,environment}=fixture();
     const touched: (string|null)[]=[];
-    inspectShellExecution("cd safe; (exit 1); touch x",cwd,{dialect:"bash",environment,hostCdFaults:true},{path(){},command(event){if(event.argv[0]==="touch")touched.push(event.cwd);}});
+    inspectShellExecution("cd safe; (exit 1); touch x",cwd,{dialect:"bash",environment,hostCdFaults:true},{...hostObserver,path(){},command(event){if(event.argv[0]==="touch")touched.push(event.cwd);}});
     expect(touched.sort()).toEqual([cwd,join(cwd,"safe")].sort());
+  });
+
+  it.runIf(process.platform === "win32")("forks and charges a cd to an ancestor of a device-spelled cwd", () => {
+    const {cwd,environment}=fixture();
+    const command=Array.from({length:15},()=>"cd safe && cd ..").join("; ");
+    const facts={dialect:"bash" as const,environment,hostCdFaults:true as const};
+    expect(()=>inspectShellExecution(command,cwd,facts,{...hostObserver,path(){},command(){}})).not.toThrow();
+    expect(()=>inspectShellExecution(command,`\\\\?\\${cwd}`,facts,{...hostObserver,path(){},command(){}})).toThrow("unresolved working-directory destination");
   });
 });

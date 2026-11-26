@@ -3,7 +3,8 @@ import { NO_APPROVER_MESSAGE, SHELL_ANALYSIS_LIMIT_REASON } from "../../permissi
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
@@ -129,6 +130,9 @@ async function fixture(options: { outside?: boolean; mode?: "default" | "strict"
   });
   return { manager, pause, typed, cards, request, approve, deny, gate, reached, release, run, command };
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("host terminal late native approval", () => {
   it.each(["deny", "allow"] as const)("rechecks a tainted late answer across a synthetic same-card transition: %s", async current => {

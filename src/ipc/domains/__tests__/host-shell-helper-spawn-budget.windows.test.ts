@@ -46,14 +46,12 @@ const cleanup: Array<() => Promise<void>> = [];
 
 // LEAD target: at most 4 helper launches per phase (card, approved) for Bash and PowerShell.
 const HOST_SHELL_ADMISSION_TARGET = 4;
-// Binding per-phase ceiling, measured 0 on main cde88405d. PR-L raises this to 4 (the LEAD target) in the same commit that adds the
-// lookups, stating the measured count per phase in the PR body; a measured count above 4 is not raised: that PR waits for the
-// resident-helper design instead.
-const HOST_SHELL_ADMISSION_MEASURED = 0;
+// Binding per-phase ceiling: 2 once Windows lookups admit the shell's paths, below the target.
+const HOST_SHELL_ADMISSION_MEASURED = 2;
 // Per-verb detail of the current measurement; lower it when launches are removed.
 const HOST_SHELL_ADMISSION_LAUNCHES = {
-  bash: { card: {}, approved: {} },
-  powershell: { card: {}, approved: {} },
+  bash: { card: { "--pin": 2 }, approved: { "--pin": 2 } },
+  powershell: { card: { "--pin": 1 }, approved: { "--pin": 2 } },
 } as const;
 
 

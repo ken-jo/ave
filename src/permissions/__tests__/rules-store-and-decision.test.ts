@@ -5,10 +5,14 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 // Admission and deny rules precede floors; ask rules precede grants and corrupt policy denies.
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 const { projectFixture } = vi.hoisted(() => ({ projectFixture: { root: "" } }));
 

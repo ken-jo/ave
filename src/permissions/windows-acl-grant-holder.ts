@@ -85,6 +85,8 @@ export async function holdWindowsFilesystemGrant(opts: {
   readonly allowRead: readonly string[];
   readonly allowWrite: readonly string[];
   readonly assertStillValid?: () => void;
+  // The child's own sandbox HOME, when the grant names it.
+  readonly sandboxHome?: string;
 }): Promise<HeldWindowsGrant> {
   let holder: ChildProcess | undefined;
   let grant: WindowsWorkerFilesystemGrant | undefined;
@@ -130,6 +132,7 @@ export async function holdWindowsFilesystemGrant(opts: {
       allowRead: opts.allowRead,
       allowWrite: opts.allowWrite,
       ...(opts.assertStillValid !== undefined ? { assertStillValid: opts.assertStillValid } : {}),
+      ...(opts.sandboxHome !== undefined ? { sandboxHome: opts.sandboxHome } : {}),
     });
     if (lost !== undefined) throw lost;
   } catch (error) {

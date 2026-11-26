@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { mkdirSync, mkdtempSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { judgedAnswer } from "../../__tests__/support/standing-answer.js";
 import { spendStandingAnswer, toolUseAction } from "../pending-answer-policy.js";
@@ -861,6 +862,29 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
 });
 
 describe.skipIf(process.platform !== "win32")("host permits on a sandbox-capable Windows host", () => {
+  it("pins the rule cwd and Bash cd destination in the same native request", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "ave-host-cwd-batch-"));
+    const child = join(cwd, "child");
+    mkdirSync(child);
+    const manager = new PermissionManager(join(cwd, "permissions.json"));
+    const pin = vi.spyOn(windowsPathFacts, "pinWindowsPaths");
+    try {
+      manager.checkDetailed("bash", "builtin", "shell", null, {
+        hostShellExecutionPlan: buildHostShellExecutionPlan({
+          platform: "win32", requestedSandbox: false, executionMode: "host",
+          activeCapability: { kind: "none", confidence: "verified", platform: "win32", reason: "Sandbox disabled" },
+        }),
+        shellExecution: HOST_ROUTE_ON_SANDBOX_HOST,
+        ruleSubject: { kind: "shell", dialect: "bash", command: "cd child && echo entered", cwd },
+      });
+      const cwdRows = pin.mock.calls.map(([paths]) => paths.filter(path => [cwd, child].includes(path)));
+      expect(cwdRows.filter(paths => paths.length > 0)).toEqual([[cwd, child]]);
+    } finally {
+      pin.mockRestore();
+      cleanupTmpDir(cwd);
+    }
+  });
+
   it.each(["approval", "project rule"] as const)("consumes the %s permit with the invocation's forward-slash cwd", async (authority) => {
     const directory = mkdtempSync(join(tmpdir(), "ave-host-permit-cwd-"));
     try {

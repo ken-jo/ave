@@ -101,6 +101,8 @@ export type SandboxStartFailureCause =
   | "windows-sandbox-missing"
   | "windows-sandbox-integrity-failed"
   | "linux-runtime-probe-failed"
+  | "windows-deny-unenforceable"
+  | "windows-deny-path-unenforceable"
   | "init-failed";
 
 /** Why the shell sandbox is requested for this session but host shells still run without it: a start failure, a platform without a sandbox, a Windows sandbox that is active
@@ -258,6 +260,8 @@ const MXC_UNAVAILABLE_REASONS = {
   "powershell-start-failed": true,
   /** An interactive runtime start has not been established. */
   "unverified-session": true,
+  /** The container runtime root was not proved private, so no container starts. */
+  "runtime-root-unproved": true,
 } as const;
 export type SandboxMxcUnavailableReason = keyof typeof MXC_UNAVAILABLE_REASONS;
 
@@ -385,6 +389,8 @@ export interface SandboxCapabilityInfo {
   boot?: SandboxBootOutcomeView | null;
   /** Windows: which substrate carries shells and extensions this boot, and how strongly their egress is attributed. `null` off Windows, and on Windows when boot never ran the gate. */
   windowsSubstrate?: SandboxWindowsSubstrateInfo | null;
+  /** Windows: no sandboxed process can start this run because the container runtime root is unproved; set whatever the sandbox setting. */
+  sandboxHomesUnavailable?: boolean;
   /** The shell sandbox as the chat input's permission card shows it. */
   shell: ShellSandboxStatusInfo;
   /** What the sandbox actually confines on this platform when active. */

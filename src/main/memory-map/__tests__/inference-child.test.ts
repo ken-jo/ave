@@ -24,7 +24,10 @@ vi.mock('../../../plugins/isolation/child-loopback-link.js', async importOrigina
   connectToAnnouncedChild: connectLoopback,
 }));
 vi.mock('../../../permissions/windows-acl-grant-holder.js', () => ({ holdWindowsFilesystemGrant: grant }));
-vi.mock('../../../permissions/sandbox-process-home.js', () => ({ createSandboxProcessHome: createHome }));
+vi.mock('../../../permissions/sandbox-process-home.js', () => ({
+  createSandboxProcessHome: createHome,
+  isSandboxHomeUnavailable: (error: unknown) => (error as { code?: unknown } | undefined)?.code === 'sandbox-home-unavailable',
+}));
 vi.mock('../../../permissions/asrt-sandbox.js', () => ({ cleanupAsrtSandboxAfterCommand: vi.fn() }));
 vi.mock('../local-runtime.js', () => ({ assertLocalEmbeddingRuntime: vi.fn() }));
 vi.mock('../model-manifest.js', async importOriginal => {
@@ -106,6 +109,16 @@ describe('inference model stream', () => {
       if (received === 0) child.stdout.write(`${JSON.stringify({ kind: 'error', error: code })}\n`);
     });
     await expect(runInferenceChild(folder, TASK, new AbortController().signal)).rejects.toMatchObject({ code });
+  });
+
+  it('refuses with the named reason, launching nothing, when no Windows sandbox HOME can be made', async () => {
+    setProcessPlatform('win32');
+    createHome.mockImplementationOnce(() => {
+      throw Object.assign(new Error('sandboxed processes are unavailable'), { code: 'sandbox-home-unavailable' });
+    });
+    await expect(runInferenceChild(folder, TASK, new AbortController().signal))
+      .rejects.toMatchObject({ name: 'MemoryMapHostError', code: 'sandbox-home-unavailable' });
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it.each(['linux', 'win32'] as const)('delivers the request through the protocol transport using exactly three pipes on %s', async platform => {

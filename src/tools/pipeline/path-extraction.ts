@@ -9,6 +9,12 @@ import {
   type ShellPathPolicyViolation,
 } from "../shell-path-policy.js";
 
+/** The input with each omitted path field bound to the value its tool executes with. */
+export function withPathFieldDefaults(tool: Tool, input: Record<string, unknown>): Record<string, unknown> {
+  const omitted = Object.entries(tool.pathFieldDefaults ?? {}).filter(([field]) => input[field] === undefined);
+  return omitted.length === 0 ? input : { ...input, ...Object.fromEntries(omitted) };
+}
+
 // Extract declared file targets for sensitive-path hard blocks; native shells check command operands on their own surface.
 export function extractTargetFilePaths(
   tool: Tool,

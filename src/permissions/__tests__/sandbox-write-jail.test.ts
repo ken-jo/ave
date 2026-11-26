@@ -1,8 +1,9 @@
 // Derive the canonical, deduplicated union of the plugin data root and allowed directories without invoking OS isolation.
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
-import { deriveSandboxWritePaths } from "../sandbox-write-jail.js";
+import { join, sep } from "node:path";
+import { baseAllowedDirectories } from "../base-allowed-directories.js";
+import { containerShellAllowedDirectories, deriveSandboxWritePaths } from "../sandbox-write-jail.js";
 import { canonicalizePathForMatch } from "../sensitive-paths.js";
 import { PermissionTestResources } from "./test-resources.js";
 import { resolvePluginWritableRoot } from "../../plugins/plugin-storage-layout.js";
@@ -110,5 +111,23 @@ describe("deriveSandboxWritePaths", () => {
     const pluginRoot = join(writableRoot, "..");
     expect(result).not.toContain(canonicalizePathForMatch(pluginRoot));
     expect(result).not.toContain(canonicalizePathForMatch(join(pluginRoot, "dist")));
+  });
+});
+
+describe("containerShellAllowedDirectories", () => {
+  it.runIf(process.platform === "win32")("drops the host temp directory, however it is spelled, and keeps every other directory", () => {
+    const cwd = resources.makeTmpDir("ave-jail-cwd-");
+    const added = resources.makeTmpDir("ave-jail-added-");
+    const temp = baseAllowedDirectories()[0] ?? "";
+    expect(containerShellAllowedDirectories(cwd, [temp, temp.toUpperCase(), temp + sep, added])).toEqual([cwd, added]);
+    // A working directory inside the temp directory stays: only the directory itself is the base entry.
+    expect(containerShellAllowedDirectories(cwd, [])).toEqual([cwd]);
+  });
+
+  it("drops nothing on macOS and Linux", () => {
+    for (const platform of ["darwin", "linux"] as const) {
+      expect(containerShellAllowedDirectories("/work", [...baseAllowedDirectories(), "/added"], platform))
+        .toEqual(["/work", ...baseAllowedDirectories(), "/added"]);
+    }
   });
 });
