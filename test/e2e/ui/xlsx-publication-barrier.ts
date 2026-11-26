@@ -43,16 +43,28 @@ export const fileSystemIo: FixtureBuildIo = {
   remove: (path) => rmSync(path, { recursive: true, force: true, maxRetries: 5 }),
 };
 
-export interface FixtureDeadlines { readonly shutdownMs: number; readonly closeMs: number; readonly launchMs: number }
+export interface FixtureDeadlines {
+  readonly shutdownMs: number;
+  readonly closeMs: number;
+  readonly launchMs: number;
+  readonly removeMs: number;
+}
 export const FIXTURE_DEADLINES: FixtureDeadlines & { readonly startupMs: number; readonly diagnosticMs: number } =
-  Object.freeze({ startupMs: 90_000, shutdownMs: 30_000, closeMs: 15_000, launchMs: 15_000, diagnosticMs: 5_000 });
-/** The longest settle() can take, to reserve beyond a test body's own budget. */
-export const FIXTURE_CLEANUP_MS = FIXTURE_DEADLINES.shutdownMs + FIXTURE_DEADLINES.closeMs + FIXTURE_DEADLINES.launchMs;
+  Object.freeze({ startupMs: 90_000, shutdownMs: 30_000, closeMs: 15_000, launchMs: 15_000, removeMs: 10_000, diagnosticMs: 5_000 });
+/** The longest settle() takes with a profile and home seeded: close, launch settlement, then each removal. */
+export const FIXTURE_CLEANUP_MS = FIXTURE_DEADLINES.shutdownMs + FIXTURE_DEADLINES.closeMs + FIXTURE_DEADLINES.launchMs
+  + 3 * FIXTURE_DEADLINES.removeMs;
 
 /** The handles a launch supplies: graceful close, and the process it started. */
 export interface OwnedApp {
   close(): Promise<void>;
   process(): ChildProcess;
+}
+
+/** A close listener the launcher armed when it first held the process, so an earlier close is not missed. */
+export interface CloseReceipt {
+  closed: Promise<void>;
+  isClosed(): boolean;
 }
 
 interface OwnedLifetime {
@@ -62,8 +74,9 @@ interface OwnedLifetime {
   isClosed(): boolean;
 }
 
-function ownLifetime(app: OwnedApp): OwnedLifetime {
+function ownLifetime(app: OwnedApp, receipt?: CloseReceipt): OwnedLifetime {
   const child = app.process();
+  if (receipt) return { app, child, closed: receipt.closed, isClosed: receipt.isClosed };
   let closed = false;
   const closing = new Promise<void>((resolve) => child.once("close", () => { closed = true; resolve(); }));
   return { app, child, closed: closing, isClosed: () => closed };
@@ -153,19 +166,26 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
     io.remove(root);
     disposed = true;
   };
-  const seededSets: { paths: readonly string[]; remove: () => void | Promise<void> }[] = [];
+  const seededPaths: { path: string; remove: () => void | Promise<void> }[] = [];
   let launch: { settled: Promise<void>; pending: boolean } | undefined;
+  let started = false;
   let owned: OwnedLifetime | undefined;
-  let settling = false;
+  let phase: "open" | "settling" | "settled" = "open";
+  let settleDeadlines: FixtureDeadlines = FIXTURE_DEADLINES;
+  let arrivalClose: Promise<unknown[]> | undefined;
   const lateArrivals: Promise<unknown[]>[] = [];
-  const retainedPaths = () => [root, ...seededSets.flatMap((set) => set.paths), workspace].join(", ");
-  const reportLate = (failure: Error): void => { console.error(failure.message); };
+  const retainedPaths = () => [root, ...seededPaths.map((entry) => entry.path), workspace].filter((path) => existsSync(path)).join(", ");
+  const reportLate = (message: string, failures: unknown[] = []): void => { console.error(message, ...failures); };
+  const fence = (operation: string): void => {
+    if (phase !== "open") throw new Error(`The workbook fixture was settled before ${operation}`);
+  };
   return {
     root,
     workspace,
     mainEntry: join(root, "dist", "src", "main", "main.js"),
     scriptPath,
     argv(runtime: string, workbookPath: string, requestPath: string): string[] {
+      fence("its command was built");
       return [runtime, scriptPath, workbookPath, requestPath, readyPath, releasePath];
     },
     readyPath,
@@ -180,32 +200,45 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
     dispose,
     /** Start the one launch this copy serves; settle() keeps every path while it is still in progress. */
     launch<T>(start: () => Promise<T>, startupMs = FIXTURE_DEADLINES.startupMs): Promise<T> {
-      if (settling || launch) throw new Error("The workbook fixture serves exactly one launch before settle");
+      fence("its launch");
+      if (launch) throw new Error("The workbook fixture serves exactly one launch");
       const started = Promise.resolve().then(start);
       const state = { pending: true, settled: Promise.resolve() };
       state.settled = started.then(() => { state.pending = false; }, () => { state.pending = false; });
       launch = state;
       return withinDeadline(started, startupMs, "Workbook app startup");
     },
-    /** Record the seeded profile and home as soon as they exist, with their remover; they go with the copy. */
-    seeded(paths: readonly string[], remove: () => void | Promise<void> = () => { for (const path of paths) io.remove(path); }): void {
-      seededSets.push({ paths, remove });
-      if (settling) {
-        const failure = new Error(`Workbook app seeded after its fixture was settled: ${paths.join(", ")}`);
-        reportLate(failure);
+    /** Record each seeded path the moment it exists, with its remover; it goes with the copy. */
+    seeded(path: string, remove: () => void | Promise<void> = () => io.remove(path)): void {
+      seededPaths.push({ path, remove });
+      if (phase === "settled") {
+        const failure = new Error(`Workbook app seeded after its fixture was settled; retained paths: ${retainedPaths()}`);
+        reportLate(failure.message);
         lateArrivals.push(Promise.resolve([failure]));
       }
     },
-    /** Register the handles launch supplies. An arrival after settle is closed through them and reported. */
-    own(app: OwnedApp): void {
-      if (settling) {
-        const failure = new Error(`Workbook app arrived after its fixture was settled; paths: ${retainedPaths()}`);
-        reportLate(failure);
-        lateArrivals.push(Promise.resolve().then(async () => [failure, ...await closeOwned(ownLifetime(app))]));
+    /** A child may exist from now on, so nothing is removed without an owned close. */
+    starting(): void {
+      started = true;
+    },
+    /**
+     * Register the handles launch supplies, with the launcher's close receipt when it has one. An arrival during settle
+     * is closed within that settle's budget; one after it is closed through its handles and its outcome reported.
+     */
+    own(app: OwnedApp, receipt?: CloseReceipt): void {
+      if (phase === "settled") {
+        const failure = new Error(`Workbook app arrived after its fixture was settled; retained paths: ${retainedPaths()}`);
+        reportLate(failure.message);
+        const lifetime = ownLifetime(app, receipt);
+        lateArrivals.push(closeOwned(lifetime).then((failures) => {
+          reportLate(`Late workbook app close ${lifetime.isClosed() ? "confirmed" : "not confirmed"}; retained paths: ${retainedPaths()}`, failures);
+          return [failure, ...failures];
+        }));
         throw failure;
       }
       if (owned) throw new Error("The workbook fixture already owns an app");
-      owned = ownLifetime(app);
+      owned = ownLifetime(app, receipt);
+      if (phase === "settling") arrivalClose = closeOwned(owned, settleDeadlines);
     },
     /** Reports from arrivals after settle, each bounded by the close deadlines. */
     async late(): Promise<unknown[]> {
@@ -216,23 +249,36 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
      * launch settled and the owned process closed (exit and pipe closure); otherwise every retained path is reported.
      */
     async settle(deadlines: FixtureDeadlines = FIXTURE_DEADLINES): Promise<{ closed: boolean; failures: unknown[] }> {
-      settling = true;
+      if (phase !== "open") throw new Error("The workbook fixture settles once");
+      phase = "settling";
+      settleDeadlines = deadlines;
+      const end = Date.now() + deadlines.shutdownMs + deadlines.closeMs + deadlines.launchMs;
+      const remaining = () => Math.max(0, end - Date.now());
       const failures: unknown[] = [];
       if (owned) failures.push(...await closeOwned(owned, deadlines));
       if (launch?.pending) {
-        try { await withinDeadline(launch.settled, deadlines.launchMs, "Workbook app launch settlement"); }
+        try { await withinDeadline(launch.settled, Math.min(deadlines.launchMs, remaining()), "Workbook app launch settlement"); }
         catch (error) { failures.push(error); }
       }
+      if (arrivalClose) {
+        try { failures.push(...await withinDeadline(arrivalClose, remaining(), "Workbook app close after a late arrival")); }
+        catch (error) { failures.push(error); }
+      }
+      phase = "settled";
       const reason = launch?.pending ? "the launch is still in progress"
-        : launch && !owned ? "the launch supplied no owned app"
+        : started && !owned ? "a child may exist without an owned app"
           : owned && !owned.isClosed() ? "the owned app did not close" : undefined;
       if (reason) {
         failures.push(new Error(`Workbook fixture paths retained because ${reason}: ${retainedPaths()}`));
+        const pending = owned;
+        if (pending && !pending.isClosed()) {
+          void pending.closed.then(() => reportLate(`Workbook app closed after its fixture settled; retained paths: ${retainedPaths()}`));
+        }
         return { closed: false, failures };
       }
-      for (const set of seededSets) {
-        try { await set.remove(); }
-        catch (error) { failures.push(new Error(`Workbook fixture path left at ${set.paths.join(", ")}`, { cause: error })); }
+      for (const entry of seededPaths) {
+        try { await withinDeadline(Promise.resolve().then(entry.remove), deadlines.removeMs, `Removal of ${entry.path}`); }
+        catch (error) { failures.push(new Error(`Workbook fixture path left at ${entry.path}`, { cause: error })); }
       }
       try { dispose(); } catch (error) { failures.push(new Error(`Workbook fixture path left at ${root}`, { cause: error })); }
       return { closed: true, failures };

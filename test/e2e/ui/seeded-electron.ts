@@ -22,6 +22,7 @@ import { sendRendererEvent, withPageWindow } from "./renderer-events.js";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const electronProcesses = new WeakMap<ElectronApplication, ReturnType<ElectronApplication["process"]>>();
 const closedElectronProcesses = new WeakSet<ReturnType<ElectronApplication["process"]>>();
+const electronCloseReceipts = new WeakMap<ElectronApplication, { closed: Promise<void>; isClosed(): boolean }>();
 export const REPO_ROOT = resolve(HERE, "../../..");
 export const MAIN_ENTRY = resolve(REPO_ROOT, "dist/src/main/main.js");
 
@@ -83,8 +84,27 @@ export async function launchElectron(options: Parameters<typeof electron.launch>
   // The automation object releases its native implementation on close; retain the process before a spec closes or restarts it.
   const child = app.process();
   electronProcesses.set(app, child);
-  child.once("close", () => closedElectronProcesses.add(child));
+  let closed = false;
+  const receipt = new Promise<void>((resolve) => child.once("close", () => { closed = true; closedElectronProcesses.add(child); resolve(); }));
+  electronCloseReceipts.set(app, { closed: receipt, isClosed: () => closed });
   return app;
+}
+
+/** The close listener armed when the launcher first held the process. */
+export function electronCloseReceipt(app: ElectronApplication): { closed: Promise<void>; isClosed(): boolean } {
+  const receipt = electronCloseReceipts.get(app);
+  if (!receipt) throw new Error("The native process was not registered at launch");
+  return receipt;
+}
+
+/**
+ * Takes over a seeded launch: each directory as it is created, the point after which a child may exist, and the
+ * launched app with its close receipt. With an owner the launcher never quits or removes anything on failure.
+ */
+export interface SeededLaunchOwner {
+  seeded(path: string, remove: () => Promise<void>): void;
+  starting(): void;
+  own(app: ElectronApplication, receipt: { closed: Promise<void>; isClosed(): boolean }): void;
 }
 
 /** The allow-listed parent env plus `overrides`; an `undefined` override removes the key. A Windows USERPROFILE override also gets its own
@@ -229,18 +249,25 @@ export async function launchSeededElectron(opts: {
   /** A disposable build root's entry; the checkout's build by default. */
   mainEntry?: string;
   prepareHome?: (aveHome: string) => void | Promise<void>;
-  /** Receives the seeded profile and home as soon as they exist. */
-  onSeeded?: (directories: { userDataDir: string; tempHome: string }) => void;
+  /** Takes over directory cleanup and the launched app; see {@link SeededLaunchOwner}. */
+  owner?: SeededLaunchOwner;
   onLaunched?: (app: ElectronApplication) => void;
 }): Promise<SeededElectronContext> {
   const sessionId = opts.sessionId ?? "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
+  const { owner } = opts;
   const userDataDir = mkdtempSync(
     resolve(tmpdir(), opts.userDataPrefix ?? "ave-seeded-e2e-user-data-"),
   );
-  const tempHome = mkdtempSync(
-    resolve(tmpdir(), opts.homePrefix ?? "ave-seeded-e2e-home-"),
-  );
-  opts.onSeeded?.({ userDataDir, tempHome });
+  owner?.seeded(userDataDir, () => cleanupTmpDir(userDataDir));
+  let tempHome: string;
+  try {
+    tempHome = mkdtempSync(resolve(tmpdir(), opts.homePrefix ?? "ave-seeded-e2e-home-"));
+  } catch (error) {
+    if (!owner) await cleanupTmpDir(userDataDir);
+    throw error;
+  }
+  const home = tempHome;
+  owner?.seeded(home, async () => { makeTreeWritableSync(home); await cleanupTmpDir(home); });
   const aveHome = resolve(tempHome, ".ave");
 
   let app: ElectronApplication | undefined;
@@ -281,6 +308,7 @@ export async function launchSeededElectron(opts: {
     );
 
     await opts.prepareHome?.(aveHome);
+    owner?.starting();
     app = await launchElectron({
       args: [opts.mainEntry ?? MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox", ...(opts.launchArgs ?? [])],
       env: buildIsolatedElectronEnv({
@@ -296,6 +324,7 @@ export async function launchSeededElectron(opts: {
       }),
       timeout: 30_000,
     });
+    owner?.own(app, electronCloseReceipt(app));
     opts.onLaunched?.(app);
 
     app
@@ -317,6 +346,8 @@ export async function launchSeededElectron(opts: {
 
     return { app, page, userDataDir, tempHome, aveHome };
   } catch (error) {
+    // The owner holds every seeded path and the app, and alone decides what closure proves.
+    if (owner) throw error;
     if (app) await quitElectron(app);
     try {
       await removeSeededElectronDirectories(userDataDir, tempHome);
@@ -387,7 +418,7 @@ export async function teardownSeededElectron(
   await removeSeededElectronDirectories(ctx.userDataDir, ctx.tempHome);
 }
 
-export async function removeSeededElectronDirectories(userDataDir: string, tempHome: string): Promise<void> {
+async function removeSeededElectronDirectories(userDataDir: string, tempHome: string): Promise<void> {
   const results = await Promise.allSettled([
     cleanupTmpDir(userDataDir),
     Promise.resolve().then(() => {

@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { setWindowSize, buildE2eBaseSettings, buildLlmSettings, builtMainExists, launchSeededElectron, removeSeededElectronDirectories, REPO_ROOT, teardownSeededElectron } from "./seeded-electron.js";
+import { setWindowSize, buildE2eBaseSettings, buildLlmSettings, builtMainExists, launchSeededElectron, REPO_ROOT, teardownSeededElectron } from "./seeded-electron.js";
 import * as XLSX from "xlsx";
 import { offsetWorkbook } from "../../../src/__tests__/support/table-document-fixtures.js";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
@@ -236,10 +236,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     const publicationBarrier = prepareWorkbookPublicationBuild(REPO_ROOT, directory);
     barrier = publicationBarrier;
     ctx = await publicationBarrier.launch(() => launchSeededElectron({ sessionTitle: "Agent document observation", settings,
-      historyRows: [], mainEntry: publicationBarrier.mainEntry,
-      onSeeded: ({ userDataDir, tempHome }) => publicationBarrier.seeded([userDataDir, tempHome],
-        () => removeSeededElectronDirectories(userDataDir, tempHome)),
-      onLaunched: (app) => publicationBarrier.own(app) }));
+      historyRows: [], mainEntry: publicationBarrier.mainEntry, owner: publicationBarrier }));
     writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [directory],
       reviewer: { interactive: { autoApprove: "off" } } } }));
     const runtime = await ctx.app.evaluate(() => process.execPath);

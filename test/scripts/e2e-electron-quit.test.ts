@@ -1,11 +1,11 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "playwright";
 import { EventEmitter, once } from "node:events";
 import type { ElectronApplication } from "playwright";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { launchElectron, launchSeededElectron, quitElectron, teardownSeededElectron } from "../e2e/ui/seeded-electron.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { electronCloseReceipt, launchElectron, launchSeededElectron, quitElectron, type SeededLaunchOwner, teardownSeededElectron } from "../e2e/ui/seeded-electron.js";
 const launcher = vi.hoisted(() => vi.fn());
 const terminateTree = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", () => ({ execFile: terminateTree }));
@@ -279,4 +279,71 @@ describe("forced native fixture teardown", () => {
     expect(runtime.close).not.toHaveBeenCalled();
   });
 
+});
+
+describe("seeded launch with a cleanup owner", () => {
+  beforeEach(() => terminateTree.mockClear());
+  function recordingOwner() {
+    const steps: string[] = [];
+    const paths: string[] = [];
+    const removers: Array<() => Promise<void>> = [];
+    const owned: Array<{ app: ElectronApplication; receipt: { closed: Promise<void>; isClosed(): boolean } }> = [];
+    const owner: SeededLaunchOwner = {
+      seeded: (path, remove) => { steps.push("seeded"); paths.push(path); removers.push(remove); },
+      starting: () => { steps.push("starting"); },
+      own: (app, receipt) => { steps.push("own"); owned.push({ app, receipt }); },
+    };
+    const removeAll = async () => { for (const remove of removers) await remove(); };
+    return { owner, steps, paths, owned, removeAll };
+  }
+
+  it("leaves the profile and home to the owner when the handshake rejects without a close receipt", async () => {
+    const { owner, steps, paths, owned, removeAll } = recordingOwner();
+    launcher.mockRejectedValueOnce(new Error("handshake failed"));
+    await expect(launchSeededElectron({ historyRows: [], owner })).rejects.toThrow("handshake failed");
+    expect(steps).toEqual(["seeded", "seeded", "starting"]);
+    expect(owned).toEqual([]);
+    expect(terminateTree).not.toHaveBeenCalled();
+    for (const path of paths) expect(existsSync(path)).toBe(true);
+    await removeAll();
+    for (const path of paths) expect(existsSync(path)).toBe(false);
+  });
+
+  it("hands a registered app and its receipt to the owner and neither quits nor removes after a first-window failure", async () => {
+    const runtime = await application();
+    Object.assign(runtime.app, { firstWindow: vi.fn().mockRejectedValue(new Error("Window startup failed")) });
+    launcher.mockResolvedValueOnce(runtime.app);
+    const { owner, steps, paths, owned, removeAll } = recordingOwner();
+    await expect(launchSeededElectron({ historyRows: [], owner })).rejects.toThrow("Window startup failed");
+    expect(steps).toEqual(["seeded", "seeded", "starting", "own"]);
+    expect(owned[0]?.app).toBe(runtime.app);
+    expect(runtime.close).not.toHaveBeenCalled();
+    expect(runtime.quit).not.toHaveBeenCalled();
+    expect(terminateTree).not.toHaveBeenCalled();
+    for (const path of paths) expect(existsSync(path)).toBe(true);
+    expect(owned[0]?.receipt.isClosed()).toBe(false);
+    runtime.child.emit("close", 0, null);
+    await owned[0]?.receipt.closed;
+    expect(owned[0]?.receipt.isClosed()).toBe(true);
+    await removeAll();
+  });
+
+  it("registers the profile before the home exists, and rolls it back without an owner", async () => {
+    const missing = join(mkdtempSync(join(tmpdir(), "seed-parent-")), "missing", "home-");
+    const { owner, steps, paths } = recordingOwner();
+    await expect(launchSeededElectron({ historyRows: [], owner, homePrefix: missing })).rejects.toThrow();
+    expect(steps).toEqual(["seeded"]);
+    expect(existsSync(paths[0] as string)).toBe(true);
+    rmSync(paths[0] as string, { recursive: true, force: true });
+
+    const profiles = mkdtempSync(join(tmpdir(), "seed-profiles-"));
+    await expect(launchSeededElectron({ historyRows: [], homePrefix: missing, userDataPrefix: join(profiles, "profile-") })).rejects.toThrow();
+    expect(readdirSync(profiles)).toEqual([]);
+  });
+
+  it("arms the close receipt when the launcher first holds the process", async () => {
+    const runtime = await application(0, true);
+    expect(electronCloseReceipt(runtime.app).isClosed()).toBe(true);
+    await electronCloseReceipt(runtime.app).closed;
+  });
 });

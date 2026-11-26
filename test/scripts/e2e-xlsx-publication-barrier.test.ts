@@ -204,9 +204,10 @@ describe("workbook publication build", () => {
   });
 
   describe("owned app lifecycle", () => {
-    const quick = { shutdownMs: 200, closeMs: 200, launchMs: 200 };
+    const quick = { shutdownMs: 200, closeMs: 200, launchMs: 200, removeMs: 200 };
     const prepared = (io?: FixtureBuildIo) => prepareWorkbookPublicationBuild(checkout, mkdtempSync(join(root, "owned-")), io);
     const seededDirectories = () => [mkdtempSync(join(root, "profile-")), mkdtempSync(join(root, "home-"))];
+    const seedAll = (fixture: ReturnType<typeof prepared>, seeds: string[]) => { for (const seed of seeds) fixture.seeded(seed); };
 
     class FakeChild extends EventEmitter {
       exitCode: number | null = null;
@@ -233,7 +234,7 @@ describe("workbook publication build", () => {
       try {
         const fixture = prepared();
         const seeds = seededDirectories();
-        fixture.seeded(seeds);
+        seedAll(fixture, seeds);
         const { app, child, calls } = fakeApp(never);
         child.onKill = () => { child.exit(); child.closePipes(); };
         fixture.own(app);
@@ -263,7 +264,7 @@ describe("workbook publication build", () => {
     it("removes the copy, profile and home after a graceful close", async () => {
       const fixture = prepared();
       const seeds = seededDirectories();
-      fixture.seeded(seeds);
+      seedAll(fixture, seeds);
       const { app, child } = fakeApp();
       fixture.own(app);
       expect(await fixture.settle(quick)).toEqual({ closed: true, failures: [] });
@@ -275,12 +276,12 @@ describe("workbook publication build", () => {
       const fixture = prepared();
       const seeds = seededDirectories();
       const removals: string[] = [];
-      fixture.seeded(seeds, async () => { removals.push(...seeds); throw new Error("profile locked"); });
+      for (const seed of seeds) fixture.seeded(seed, async () => { removals.push(seed); throw new Error("profile locked"); });
       fixture.own(fakeApp().app);
       const settled = await fixture.settle(quick);
       expect(removals).toEqual(seeds);
       expect(settled.closed).toBe(true);
-      expect(settled.failures.map(String)).toEqual([`Error: Workbook fixture path left at ${seeds.join(", ")}`]);
+      expect(settled.failures.map(String)).toEqual(seeds.map((seed) => `Error: Workbook fixture path left at ${seed}`));
       expect(existsSync(fixture.root)).toBe(false);
       for (const path of seeds) fileSystemIo.remove(path);
     });
@@ -288,7 +289,7 @@ describe("workbook publication build", () => {
     it("keeps and reports every path when the parent exits but its pipes stay open", async () => {
       const fixture = prepared();
       const seeds = seededDirectories();
-      fixture.seeded(seeds);
+      seedAll(fixture, seeds);
       const { app, child } = fakeApp(async (exited) => { exited.exit(); });
       fixture.own(app);
       const settled = await fixture.settle(quick);
@@ -306,7 +307,7 @@ describe("workbook publication build", () => {
       expect(await boundedDiagnostic(() => Promise.reject(new Error("renderer gone")), "fallback", 50)).toBe("fallback");
       const fixture = prepared();
       const seeds = seededDirectories();
-      fixture.seeded(seeds);
+      seedAll(fixture, seeds);
       const { app, child } = fakeApp(never);
       fixture.own(app);
       const settled = await fixture.settle(quick);
@@ -327,7 +328,7 @@ describe("workbook publication build", () => {
       const seeds = seededDirectories();
       const { app } = fakeApp();
       await expect(fixture.launch(async () => {
-        fixture.seeded(seeds);
+        seedAll(fixture, seeds);
         fixture.own(app);
         await app.close();
         throw new Error("first window failed");
@@ -336,13 +337,24 @@ describe("workbook publication build", () => {
       for (const path of [fixture.root, ...seeds]) expect(existsSync(path)).toBe(false);
     });
 
-    it("keeps and reports every path when a launch supplied no owned app", async () => {
+    it("rolls back the copy, profile and home when startup fails before a child can spawn", async () => {
       const fixture = prepared();
       const seeds = seededDirectories();
-      await expect(fixture.launch(async () => { fixture.seeded(seeds); throw new Error("launch refused"); })).rejects.toThrow("launch refused");
+      await expect(fixture.launch(async () => { seedAll(fixture, seeds); throw new Error("settings write failed"); })).rejects.toThrow("settings write failed");
+      expect(await fixture.settle(quick)).toEqual({ closed: true, failures: [] });
+      for (const path of [fixture.root, ...seeds]) expect(existsSync(path)).toBe(false);
+    });
+
+    it("keeps and reports every path when a child may exist without an owned app", async () => {
+      const fixture = prepared();
+      const seeds = seededDirectories();
+      await expect(fixture.launch(async () => { seedAll(fixture, seeds); fixture.starting(); throw new Error("handshake failed"); }))
+        .rejects.toThrow("handshake failed");
       const settled = await fixture.settle(quick);
       expect(settled.closed).toBe(false);
-      expect(String(settled.failures.at(-1))).toContain(`the launch supplied no owned app: ${[fixture.root, ...seeds, fixture.workspace].join(", ")}`);
+      expect(String(settled.failures.at(-1))).toContain(
+        `a child may exist without an owned app: ${[fixture.root, ...seeds, fixture.workspace].join(", ")}`);
+      for (const path of [fixture.root, ...seeds]) expect(existsSync(path)).toBe(true);
       for (const path of [fixture.root, ...seeds]) fileSystemIo.remove(path);
     });
 
@@ -352,7 +364,7 @@ describe("workbook publication build", () => {
       let arrive = () => {};
       const arrived = new Promise<void>((resolve) => { arrive = resolve; });
       const { app, child, calls } = fakeApp();
-      const launching = fixture.launch(async () => { fixture.seeded(seeds); await arrived; fixture.own(app); }, 50);
+      const launching = fixture.launch(async () => { seedAll(fixture, seeds); await arrived; fixture.own(app); }, 50);
       await expect(launching).rejects.toThrow("Workbook app startup exceeded 50 ms");
       const settled = await fixture.settle(quick);
       expect(settled.closed).toBe(false);
@@ -377,13 +389,83 @@ describe("workbook publication build", () => {
       expect(settled.closed).toBe(true);
       expect(settled.failures.map(String)).toEqual(fault ? [`Error: Workbook fixture path left at ${fixture.root}`] : []);
       const { app, child, calls } = fakeApp();
-      expect(() => fixture.own(app)).toThrow("arrived after its fixture was settled");
-      expect((await fixture.late()).map(String)).toEqual([expect.stringContaining("arrived after its fixture was settled")]);
+      const reports = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        expect(() => fixture.own(app)).toThrow("arrived after its fixture was settled");
+        expect((await fixture.late()).map(String)).toEqual([expect.stringContaining("arrived after its fixture was settled")]);
+        expect(reports.mock.calls.map((call) => String(call[0]))).toEqual([
+          expect.stringContaining("arrived after its fixture was settled"),
+          fault ? `Late workbook app close confirmed; retained paths: ${fixture.root}, ${fixture.workspace}`
+            : `Late workbook app close confirmed; retained paths: ${fixture.workspace}`,
+        ]);
+      } finally {
+        reports.mockRestore();
+      }
       expect(calls.close).toBe(1);
       expect(child.exitCode).toBe(0);
       expect(existsSync(fixture.root)).toBe(fault !== undefined);
       expectSharedBuildUsable();
       fileSystemIo.remove(fixture.root);
+    });
+
+    it("closes an app that arrives during settle within that settle, then removes every path", async () => {
+      const fixture = prepared();
+      const seeds = seededDirectories();
+      const { app, calls } = fakeApp();
+      let arrive = () => {};
+      const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+      const launching = fixture.launch(async () => {
+        seedAll(fixture, seeds);
+        fixture.starting();
+        await arrived;
+        fixture.own(app);
+        throw new Error("first window closed");
+      }, 50);
+      await expect(launching).rejects.toThrow("Workbook app startup exceeded 50 ms");
+      const settling = fixture.settle({ ...quick, launchMs: 5_000 });
+      setTimeout(arrive, 20);
+      expect(await settling).toEqual({ closed: true, failures: [] });
+      expect(calls.close).toBe(1);
+      for (const path of [fixture.root, ...seeds]) expect(existsSync(path)).toBe(false);
+    });
+
+    it("keeps the paths and reports a stalled close of an app that arrives during settle", async () => {
+      const fixture = prepared();
+      const seeds = seededDirectories();
+      const { app, child } = fakeApp(never);
+      let arrive = () => {};
+      const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+      await expect(fixture.launch(async () => { seedAll(fixture, seeds); fixture.starting(); await arrived; fixture.own(app); }, 50))
+        .rejects.toThrow("Workbook app startup exceeded 50 ms");
+      const started = Date.now();
+      const settling = fixture.settle({ ...quick, launchMs: 1_000 });
+      setTimeout(arrive, 20);
+      const settled = await settling;
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(child.kills).toEqual([[]]);
+      expect(settled.closed).toBe(false);
+      expect(settled.failures.map(String)).toEqual([
+        expect.stringContaining("Workbook app close exceeded 200 ms"),
+        expect.stringContaining("Workbook app pipe closure exceeded 200 ms"),
+        expect.stringContaining(`the owned app did not close: ${[fixture.root, ...seeds, fixture.workspace].join(", ")}`),
+      ]);
+      for (const path of [fixture.root, ...seeds]) fileSystemIo.remove(path);
+    });
+
+    it("trusts the launcher's close receipt for a close that came before registration", async () => {
+      const fixture = prepared();
+      const { app, calls } = fakeApp();
+      fixture.own(app, { closed: Promise.resolve(), isClosed: () => true });
+      expect(await fixture.settle(quick)).toEqual({ closed: true, failures: [] });
+      expect(calls.close).toBe(0);
+      expect(existsSync(fixture.root)).toBe(false);
+    });
+
+    it("fences the command builder once settle starts", async () => {
+      const fixture = prepared();
+      await fixture.settle(quick);
+      expect(() => fixture.argv(process.execPath, "book.xlsx", "edits.json")).toThrow("settled before its command was built");
+      expect(() => fixture.launch(async () => {})).toThrow("settled before its launch");
     });
   });
 
