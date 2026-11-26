@@ -1329,11 +1329,14 @@ function createManager(): BackgroundShellManager {
     },
 
     list(sessionId): ShellTask[] {
-      const local = [...shells.values()].filter((entry) => entry.sessionId === sessionId).map((entry): ShellTask => ({
-        shellId: entry.shellId, command: entry.command, startedAt: entry.startedAt,
-        status: entry.status, backgrounded: true, canBackground: false,
-        canStop: entry.status === "running", ...shellTaskOutputPreview(entry.output, entry.outputTruncated),
-      }));
+      const local = [...shells.values()].filter((entry) => entry.sessionId === sessionId).map((entry): ShellTask => {
+        const pin = entry.status === "running" ? undefined : cwdPinCompletion(entry.pin, entry.stopRequested);
+        return {
+          shellId: entry.shellId, command: entry.command, startedAt: entry.startedAt,
+          status: entry.status, backgrounded: true, canBackground: false, canStop: entry.status === "running",
+          ...shellTaskOutputPreview(pin === undefined ? entry.output : `${entry.output}\n${pin.text}`, entry.outputTruncated),
+        };
+      });
       // Broker lifecycle actions require a fresh tool authority; the UI does not mint one.
       return [...local, ...[...brokerShells.values()].filter((entry) => entry.sessionId === sessionId).map((entry): ShellTask => ({
         shellId: entry.shellId, command: entry.command, startedAt: "", status: entry.status,

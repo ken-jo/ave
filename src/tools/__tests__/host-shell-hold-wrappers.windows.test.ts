@@ -100,7 +100,6 @@ describe.runIf(process.platform === "win32")("held working directory under the c
     return root;
   };
 
-  // The container's own teardown can stop the left process before the hold looks, so the stopped notice is not asserted here.
   it("has stopped a background process the container payload left running by the time the result settles", { timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async (testContext) => {
     const root = await containerRoute(testContext.skip);
     writeFileSync(join(root, "leave.cmd"), [
@@ -115,6 +114,7 @@ describe.runIf(process.platform === "win32")("held working directory under the c
     expect(alive(left)).toBe(false);
     expect(result.isError, result.output).toBe(false);
     expect(result.output.startsWith("left")).toBe(true);
+    // The container's own teardown can stop the left process before the hold looks, so the stopped notice is not asserted.
     expect(result.metadata).not.toHaveProperty("cwdPinLost");
   });
 
@@ -229,8 +229,8 @@ describe.runIf(srtWinProvisioned())("held working directory under the srt-win la
     boundary.helper?.kill();
     expect(await closed).toBe(125);
     expect(output).toContain("cwd-pin-lost");
-    await vi.waitFor(() => expect(listed.filter(({ pid }) => alive(pid))).toEqual([]), { timeout: 5000 });
     await expect(held.outcome()).resolves.toEqual({ kind: "lost" });
+    expect(listed.filter(({ pid }) => alive(pid))).toEqual([]);
     held.release();
   }, 60000);
 });

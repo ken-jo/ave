@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __resetManagedChildProcessesForTest, forceKillAndDrainManagedChildProcesses, getManagedChildProcessCount } from "../../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { ToolExecutionContext } from "../base.js";
-import { backgroundShellManager as manager, createBashKillTool, createBashOutputTool, MAX_OUTPUT_CHARS } from "../shell-tools.js";
+import { backgroundShellManager as manager, createBashKillTool, createBashOutputTool, listShellTasks, MAX_OUTPUT_CHARS } from "../shell-tools.js";
 import { t } from "../../i18n/index.js";
 import type { WindowsHoldOutcome } from "../../shared/windows-path-facts.js";
 
@@ -259,6 +259,15 @@ describe("background cwd pin outcome", () => {
     const { result, body } = await settled(f.shellId);
     expect(body).toMatchObject({ status: "failed", exitCode: 0, truncated: true, completion: t(key) });
     expect(result).toMatchObject({ isError: true, metadata });
+  });
+  it("shows a lost hold's reason in the shell task preview", async () => {
+    const f = pinned(async () => ({ kind: "lost" }));
+    f.stdout.emit("data", Buffer.from("x".repeat(MAX_OUTPUT_CHARS + 10)));
+    f.child.emit("close", 0);
+    await settled(f.shellId);
+    const task = listShellTasks("owner").find((entry) => entry.shellId === f.shellId);
+    expect(task?.status).toBe("failed");
+    expect(task?.output.endsWith(t("shellExecution.cwdPinLost"))).toBe(true);
   });
   it("names the stopped background processes past saturated output, after an incremental read", async () => {
     const f = pinned(async () => ({ kind: "reaped", stopped: true }));
