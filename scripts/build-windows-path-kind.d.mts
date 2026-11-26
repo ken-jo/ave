@@ -5,6 +5,7 @@ export interface WindowsPathKindBuild {
   receiptSha256: string;
   helper: string;
   fixture?: string;
+  fixtureSha256?: string;
 }
 
 export function buildWindowsPathKind(options?: { root?: string; arch?: string; fixture?: boolean; outDir?: string }): WindowsPathKindBuild;

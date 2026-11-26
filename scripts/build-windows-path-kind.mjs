@@ -101,8 +101,9 @@ export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture
       writeFileSync(helper, binary, { flag: "wx" });
       if (!fixtureBytes) return { ...evidence, helper };
       const pinFixture = join(outDir, "ave-path-pin-test.exe");
+      const fixtureSha256 = createHash("sha256").update(fixtureBytes).digest("hex");
       writeFileSync(pinFixture, fixtureBytes, { flag: "wx" });
-      return { ...evidence, helper, fixture: pinFixture };
+      return { ...evidence, helper, fixture: pinFixture, fixtureSha256 };
     }
     const exe = join(root, windowsPathKindPath(arch));
     const manifest = join(root, windowsPathKindReceiptPath(arch));

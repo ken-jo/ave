@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 
 const FILE_LIST_DIRECTORY = 1;
@@ -100,5 +101,16 @@ export function lockWindowsExecutable(executable) {
   } catch (error) {
     close();
     throw error;
+  }
+}
+
+export function withVerifiedWindowsExecutable(executable, expectedSha256, launch) {
+  const locked = lockWindowsExecutable(executable);
+  try {
+    const actualSha256 = createHash("sha256").update(locked.bytes).digest("hex");
+    if (actualSha256 !== expectedSha256) throw new Error("Windows test executable does not match the producing build");
+    return launch(locked.path);
+  } finally {
+    locked.close();
   }
 }

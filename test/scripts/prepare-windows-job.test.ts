@@ -333,6 +333,47 @@ describe("Windows path helper build", () => {
     expect(nativeTest).not.toContain("ave-path-pin-test.exe");
   }, 120_000);
 
+  it.skipIf(process.platform !== "win32")("refuses a helper substituted after the runner's build returns", () => {
+    const { runScript } = pathKindBuildFixture();
+    const code = [
+      "import { registerHooks } from 'node:module';",
+      "registerHooks({ load(url, context, nextLoad) {",
+      "  if (!url.endsWith('/scripts/build-windows-path-kind.mjs')) return nextLoad(url, context);",
+      "  return { format: 'module', shortCircuit: true, source: " +
+        "\"import { writeFileSync } from 'node:fs'; import { buildWindowsPathKind as build } from \"" +
+        " + JSON.stringify(url + '?original') + ';' + " +
+        "\"export function buildWindowsPathKind(options) { const result = build({ ...options, root: process.argv[2] }); " +
+        "writeFileSync(result.helper, 'substituted helper'); return result; }\" };",
+      "}});",
+      "await import(process.argv[1]);",
+    ].join("\n");
+    const result = runScript("scripts/test-windows-path-kind.mjs", code);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Windows test executable does not match the producing build");
+  }, 120_000);
+
+  it.skipIf(process.platform !== "win32")("refuses a pin fixture substituted after the builder publishes it", () => {
+    const { runScript, buildTemp } = pathKindBuildFixture();
+    const outDir = mkdtempSync(join(buildTemp, "pin-test-"));
+    const code = [
+      "import assert from 'node:assert/strict';",
+      "import { createHash } from 'node:crypto';",
+      "import { readFileSync, writeFileSync } from 'node:fs';",
+      "const { buildWindowsPathKind } = await import(process.argv[1]);",
+      "const { fixture, fixtureSha256 } = buildWindowsPathKind({ root: process.argv[2], fixture: true, outDir: process.argv[3] });",
+      "assert.equal(fixtureSha256, createHash('sha256').update(readFileSync(fixture)).digest('hex'));",
+      "const { withVerifiedWindowsExecutable } = await import(process.argv[4]);",
+      "assert.equal(withVerifiedWindowsExecutable(fixture, fixtureSha256, path => path.endsWith('ave-path-pin-test.exe')), true);",
+      "writeFileSync(fixture, 'substituted fixture');",
+      "assert.throws(() => withVerifiedWindowsExecutable(fixture, fixtureSha256, () => assert.fail('launch reached')), " +
+        "/Windows test executable does not match the producing build/);",
+    ].join("\n");
+    const result = runScript("scripts/build-windows-path-kind.mjs", code, {}, [
+      outDir, pathToFileURL(resolve("scripts/lib/windows-locked-executable.mjs")).href,
+    ]);
+    expect(result.status, result.stderr).toBe(0);
+  }, 120_000);
+
   it.skipIf(process.platform !== "win32")("binds the main bundle to fresh output instead of staged executable bytes", () => {
     const { root, runScript } = pathKindBuildFixture();
     const executable = join(root, windowsPathKindPath(process.arch));

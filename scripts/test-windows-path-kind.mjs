@@ -10,17 +10,24 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildWindowsPathKind } from "./build-windows-path-kind.mjs";
+import { withVerifiedWindowsExecutable } from "./lib/windows-locked-executable.mjs";
 
 if (process.platform !== "win32") throw new Error("This test requires Windows");
 const root = fileURLToPath(new URL("../", import.meta.url));
 // A private output directory: another build cannot replace the helper or fixture this run executes.
 const output = mkdtempSync(join(tmpdir(), "ave-path-kind-test-"));
 process.on("exit", () => rmSync(output, { recursive: true, force: true }));
-const { helper, fixture: pinFixture } = buildWindowsPathKind({ root, fixture: true, outDir: output });
+const { helper, binarySha256, fixture: pinFixture, fixtureSha256 } = buildWindowsPathKind({ root, fixture: true, outDir: output });
+const withHelper = (launch) => withVerifiedWindowsExecutable(helper, binarySha256, launch);
+const withPinFixture = (launch) => withVerifiedWindowsExecutable(pinFixture, fixtureSha256, launch);
+const spawnHelper = (args, options) => withHelper(path => spawn(path, args, options));
+const spawnHelperSync = (args, options) => withHelper(path => spawnSync(path, args, options));
+const spawnPinFixture = (args, options) => withPinFixture(path => spawn(path, args, options));
+const spawnPinFixtureSync = (args, options) => withPinFixture(path => spawnSync(path, args, options));
 const replyDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function runWithInput(args, input) {
-  const result = spawnSync(helper, args, { input, windowsHide: true, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+  const result = spawnHelperSync(args, { input, windowsHide: true, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
   if (result.error) throw result.error;
   return { code: result.status, stdout: replyDecoder.decode(result.stdout), stderr: replyDecoder.decode(result.stderr) };
 }
@@ -39,8 +46,8 @@ function answered(args, input = "c") {
   return { code, lines: stdout.replace(/\r?\n$/u, "").split(/\r?\n/u), stderr };
 }
 
-function runCopy(args, onLine, executable = helper) {
-  const child = spawn(executable, args, { windowsHide: true, shell: false, env: {} });
+function runCopy(args, onLine, start = spawnHelper) {
+  const child = start(args, { windowsHide: true, shell: false, env: {} });
   return new Promise((resolveCopy, rejectCopy) => {
     const lines = [];
     let pending = "";
@@ -225,7 +232,7 @@ async function recoveryTests() {
   for (const existing of [false, true]) add(`a volume without file-ID opens refuses the copy before it starts (existing target: ${existing})`, (dir) => {
     writeFileSync(join(dir, "source"), "source");
     if (existing) writeFileSync(join(dir, "target"), "old bytes");
-    const result = spawnSync(pinFixture,
+    const result = spawnPinFixtureSync(
       ["volume-without-file-ids", "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden],
       { input: "c", windowsHide: true, shell: false, env: {}, timeout: 10_000, encoding: "utf8" });
     assert.ifError(result.error);
@@ -242,7 +249,7 @@ async function recoveryTests() {
     let result;
     try {
       assert.throws(() => readFileSync(join(dir, "target")), { code: "EBUSY" });
-      result = spawnSync(pinFixture,
+      result = spawnPinFixtureSync(
         [mode, "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden],
         { input: "c", windowsHide: true, shell: false, env: {}, timeout: 10_000, encoding: "utf8" });
     } finally {
@@ -327,7 +334,7 @@ async function recoveryTests() {
       const restore = boundary !== "no-exclusive-rename";
       const args = restore ? ["--dir-restore", ...held(dir), hidden, part, ...snapshot(source)]
         : ["--dir-remove-id", ...held(dir), hidden, ...snapshot(source)];
-      const result = spawnSync(pinFixture, [boundary, ...args], {
+      const result = spawnPinFixtureSync([boundary, ...args], {
         input: "c", windowsHide: true, shell: false, env: {}, timeout: 10_000, encoding: "utf8",
       });
       assert.ifError(result.error);
@@ -441,7 +448,7 @@ async function recoveryTests() {
     const result = await runCopy(args, (line, stdin) => {
       if (line === "ready") stdin.write("c");
       if (line === "copied") stdin.end("c");
-    }, pinFixture);
+    }, spawnPinFixture);
     assert.equal(result.code, 3, JSON.stringify(result));
     assert.equal(result.lines.at(-1), "refused target removed");
     assert.equal(readFileSync(target, "utf8"), "competing bytes");
@@ -461,7 +468,7 @@ async function recoveryTests() {
       const result = await runCopy(failure === "none" ? args : [`replace-${failure}-failure`, ...args], (line, stdin) => {
         if (line === "ready") stdin.write("c");
         if (line === "copied") stdin.end("c");
-      }, failure === "none" ? helper : pinFixture);
+      }, failure === "none" ? spawnHelper : spawnPinFixture);
       assert.equal(result.code, failure === "none" ? 0 : 4, JSON.stringify(result));
       assert.equal(readFileSync(source, "utf8"), "new bytes");
       assert.ok(!existsSync(join(dir, part)));
@@ -626,7 +633,7 @@ async function recoveryTests() {
           expect(["--dir-write-record", ...held(root), record, saved], ["ready", "written"]);
           stdin.end("c");
         }
-      }, pinFixture);
+      }, spawnPinFixture);
       assert.equal(result.code, 7, JSON.stringify(result));
       assert.equal(result.lines[1], `target-id ${old[1]}`);
       if (boundary === "leftover") assert.match(result.lines.at(-1), /^target-left left /u);
@@ -669,7 +676,7 @@ async function recoveryTests() {
         const result = await runCopy([`file-id-${fault}-${position}`, ...args], (line, stdin) => {
           if (line === "ready") stdin.write("c");
           if (line === "copied") stdin.end("c");
-        }, pinFixture);
+        }, spawnPinFixture);
         const expected = site === "directory" ? { code: 3, lines: ["refused to"] }
           : site === "writer" ? { code: 4, lines: ["ready", "failed EUNKNOWN left"] }
           : { code: 0, lines: ["ready", "left"] };
@@ -689,7 +696,7 @@ async function recoveryTests() {
       const result = await runCopy(args, (line, stdin) => {
         if (line === "ready") stdin.write("c");
         if (line === "copied") stdin.end("c");
-      }, pinFixture);
+      }, spawnPinFixture);
       assert.equal(result.code, 3, JSON.stringify(result));
       assert.equal(result.lines.at(-1), blocked ? "refused target changed" : "refused target left");
       assert.equal(readFileSync(join(dir, part), "utf8"), blocked ? "" : "source");
@@ -737,7 +744,7 @@ async function policyContract() {
     assert.deepEqual(runWithInput(args, bytes), { code: 2, stdout: "", stderr: "" });
   }
 
-  const child = spawn(helper, ["--mxc-policy", name, "5000"], { windowsHide: true });
+  const child = spawnHelper(["--mxc-policy", name, "5000"], { windowsHide: true });
   const closed = once(child, "close");
   const deadline = setTimeout(() => child.kill(), 6000);
   let stderr = "";
@@ -766,7 +773,7 @@ async function policyContract() {
 
   const ownerEof = runWithInput(["--mxc-policy", name, "2000"], framed);
   assert.deepEqual(ownerEof, { code: 1, stdout: "ready\n", stderr: "Windows sandbox policy delivery failed or expired\r\n" });
-  const expired = spawn(helper, ["--mxc-policy", name, "250"], { windowsHide: true });
+  const expired = spawnHelper(["--mxc-policy", name, "250"], { windowsHide: true });
   const expiredClosed = once(expired, "close");
   const deadlineGuard = setTimeout(() => expired.kill(), 4000);
   try {
@@ -797,7 +804,7 @@ assert.equal(systemDirectoryResult.code, 0, systemDirectoryResult.stderr);
 assert.equal(systemDirectoryResult.stderr, "");
 assert.match(systemDirectoryResult.stdout, /^[a-z]:\\[^\r\n]+\r?\n$/iu);
 const systemDirectory = systemDirectoryResult.stdout.replace(/\r?\n$/u, "");
-const spoofedDirectory = spawnSync(helper, ["--system-directory"], {
+const spoofedDirectory = spawnHelperSync(["--system-directory"], {
   windowsHide: true, shell: false, timeout: 10_000,
   env: { SystemRoot: "Z:\\untrusted-root", WINDIR: "Y:\\untrusted-root", PATH: "X:\\untrusted-path" },
 });
@@ -924,7 +931,7 @@ try {
   assert.match(result.lines[2], /^writing \d+:[0-9a-f]{32}:creation:[1-9]\d*$/u);
   assert.equal(result.lines[3], "cancelled", "input that arrives while bytes are copied stops the copy");
   assert.deepEqual(readdirSync(to).sort(), ["junction.pdf", "report.pdf"]);
-  const copy = spawn(helper, ["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part", ".0123456789abcdef0123456789abcdef.removing"], { windowsHide: true, shell: false, env: {} });
+  const copy = spawnHelper(["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part", ".0123456789abcdef0123456789abcdef.removing"], { windowsHide: true, shell: false, env: {} });
   const copied = await new Promise((resolveCopy, rejectCopy) => {
     let output = "";
     copy.once("error", rejectCopy);
@@ -986,7 +993,7 @@ console.log("windows-path-kind: ok");
 
 const fixture = mkdtempSync(join(tmpdir(), "ave-path-facts-"));
 try {
-  console.log(execFileSync(pinFixture, [fixture], { windowsHide: true, encoding: "utf8" }).trim());
+  console.log(withPinFixture(path => execFileSync(path, [fixture], { windowsHide: true, encoding: "utf8" })).trim());
   console.log("native pin: deterministic retag and swapped ancestor checks passed");
   const directory = join(fixture, "directory");
   mkdirSync(directory);
