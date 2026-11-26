@@ -50,8 +50,8 @@ async function approvedPowerShell(directory: string, command: string, timeoutSec
     plan, toolName: "powershell", toolUseId: "hold-wrapper", rawInput: input, executionCwd: directory, extraAllowedDirectories: [],
   });
   if (binding === undefined) throw new Error("no permit binding for the container plan");
-  recordHostShellPolicyAuthorization(binding);
-  const permit = mintHostShellExecutionPermit({ plan, binding, approvalDecision: undefined });
+  recordHostShellPolicyAuthorization(binding, undefined);
+  const permit = mintHostShellExecutionPermit({ plan, binding, answer: undefined });
   expect(permit).toBeDefined();
   return { input, context: { cwd: directory, extraAllowedDirectories: [], metadata: { toolUseId: "hold-wrapper" }, blockReadsOutsideWorkingDirectories: true,
     hostShellExecutionPlan: plan, hostShellExecutionPermit: permit } };

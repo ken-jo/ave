@@ -102,7 +102,7 @@ async function authorizedContext(cwd: string, command = "touch marker", rulePatt
     plan, toolName: "bash", toolUseId: "cwd-spawn", rawInput: input, executionCwd: directory, extraAllowedDirectories: [],
   })!;
   let approvalDecision: ApprovalDecision | undefined;
-  if (background) recordHostShellPolicyAuthorization(binding);
+  if (background) recordHostShellPolicyAuthorization(binding, undefined);
   else if (decision.decision !== "allow") {
     const webContents = { isDestroyed: vi.fn(() => false), send: vi.fn() };
     const gate = new ApprovalGate(webContents as never);
@@ -422,8 +422,8 @@ describe.runIf(process.platform === "win32")("Windows host cwd hold at launch", 
       plan, toolName: "powershell", toolUseId: "cwd-spawn", rawInput: input, executionCwd: directory, extraAllowedDirectories: [],
     });
     if (binding === undefined) throw new Error("no permit binding");
-    recordHostShellPolicyAuthorization(binding);
-    const permit = mintHostShellExecutionPermit({ plan, binding, approvalDecision: undefined });
+    recordHostShellPolicyAuthorization(binding, undefined);
+    const permit = mintHostShellExecutionPermit({ plan, binding, answer: undefined });
     expect(permit).toBeDefined();
     spawnBoundary.helperExe = fixture;
     if (recheck !== undefined) process.env.AVE_TEST_HOLD_RECHECK = recheck;

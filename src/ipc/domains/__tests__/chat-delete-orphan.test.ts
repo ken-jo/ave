@@ -152,8 +152,8 @@ describe("ave:chat:sessionDelete", () => {
       plan, toolName: "bash", toolUseId, rawInput: input, executionCwd: cwd, extraAllowedDirectories: [],
     });
     if (binding === undefined) throw new Error("Shell permit binding was not created");
-    recordHostShellPolicyAuthorization(binding);
-    const permit = mintHostShellExecutionPermit({ plan, binding, approvalDecision: undefined });
+    recordHostShellPolicyAuthorization(binding, undefined);
+    const permit = mintHostShellExecutionPermit({ plan, binding, answer: undefined });
     const bound = deferred<void>();
     const verdict = deferred<WindowsHoldVerdict>();
     const stop = vi.fn(() => {
