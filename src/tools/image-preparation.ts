@@ -6,6 +6,7 @@ import { buildSafeChildEnv } from "./safe-env.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
 import type { TargetSeal } from "../permissions/target-seal.js";
+import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import {
   IMAGE_PREPARATION_POLICY, ImagePreparationBytesRequestSchema,
   ImagePreparationRequestSchema, PreparedImageSchema,
@@ -124,10 +125,9 @@ function runImageChild(
 }
 
 async function prepareImageRequest(
-  request: ImagePreparationChildRequest,
+  prepareRequest: () => ImagePreparationChildRequest,
   stdinBytes: Buffer | undefined,
   callerSignal?: AbortSignal,
-  seal?: TargetSeal,
 ): Promise<PreparedImage> {
   const controller = new AbortController();
   const abort = (): void => controller.abort(new Error("image-cancelled: Image preparation was cancelled."));
@@ -137,8 +137,8 @@ async function prepareImageRequest(
   let release: (() => void) | undefined;
   try {
     release = await acquireImageSlot(controller.signal);
-    seal?.verify();
-    return await runImageChild(request, controller.signal, stdinBytes);
+    controller.signal.throwIfAborted();
+    return await runImageChild(prepareRequest(), controller.signal, stdinBytes);
   } finally {
     clearTimeout(timer);
     callerSignal?.removeEventListener("abort", abort);
@@ -154,8 +154,12 @@ export async function prepareImageFile(
   seal?: TargetSeal,
 ): Promise<PreparedImage> {
   // Parsing copies the scope/options before admission; callers cannot mutate a queued request.
-  const request = ImagePreparationRequestSchema.parse({ path, options: requested, scope: readScope });
-  return prepareImageRequest(request, undefined, callerSignal, seal);
+  const request = ImagePreparationRequestSchema.omit({ expectedPath: true }).parse({ path, options: requested, scope: readScope });
+  return prepareImageRequest(() => withLocalityDecision(() => {
+    seal?.verify();
+    const expectedPath = localFs.realpath(admitLocalRoute(request.path).verdict);
+    return { ...request, expectedPath };
+  }), undefined, callerSignal);
 }
 
 // Copy and bound broker input before queuing; pass bytes through stdin to the isolated decoder, never argv or base64.
@@ -177,5 +181,5 @@ export async function prepareImageBytes(
     inputBytes: input.byteLength,
     options: requested,
   });
-  return prepareImageRequest(request, input, callerSignal);
+  return prepareImageRequest(() => request, input, callerSignal);
 }

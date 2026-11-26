@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, symlink, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { existsSync, realpathSync, symlinkSync, unlinkSync } from "node:fs";
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import sharp from "sharp";
@@ -14,6 +15,7 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { projectSubscriptionImageHistory } from "../../main/subscription-image-history.js";
 import { MAX_ACP_SUBSCRIPTION_IMAGE_BYTES } from "../../main/acp-subscription-session-client.js";
 import type { GenericMessage } from "../../engine/llm/types.js";
+import { sealTargets } from "../../permissions/target-seal.js";
 
 const runtime = vi.hoisted(() => ({ directory: "" }));
 vi.mock("../../main/main-paths.js", async (original) => ({
@@ -140,6 +142,49 @@ describe("bounded image preparation", () => {
     expect((await admitted).width).toBe(8);
   });
 
+  it("does not open an in-scope replacement selected during decoder spawn", async () => {
+    const original = join(directory, "original");
+    const replacement = join(directory, "replacement");
+    const alias = join(directory, "alias");
+    await mkdir(original);
+    await mkdir(replacement);
+    const bytes = await readFile(imageFixturePath("grid.png"));
+    await writeFile(join(original, "image.png"), bytes);
+    await writeFile(join(replacement, "image.png"), bytes);
+    const linkType = process.platform === "win32" ? "junction" : "dir";
+    await symlink(original, alias, linkType);
+    const path = join(alias, "image.png");
+    const seal = sealTargets(() => realpathSync.native(path));
+    const marker = join(directory, "replacement-opened");
+    const trace = join(directory, "trace-open.mjs");
+    await writeFile(trace, `
+      import fs from "node:fs";
+      import fsPromises from "node:fs/promises";
+      import { syncBuiltinESMExports } from "node:module";
+      const open = fsPromises.open;
+      fsPromises.open = (path, ...args) => {
+        if (path === ${JSON.stringify(realpathSync.native(join(replacement, "image.png")))}) {
+          fs.writeFileSync(${JSON.stringify(marker)}, "opened");
+        }
+        return open(path, ...args);
+      };
+      syncBuiltinESMExports();
+    `);
+    const spawn = managed.spawnManaged;
+    vi.spyOn(managed, "spawnManaged").mockImplementationOnce((program, args, ...options) => {
+      unlinkSync(alias);
+      symlinkSync(replacement, alias, linkType);
+      return spawn(program, ["--import", pathToFileURL(trace).href, ...args], ...options);
+    });
+    const result = prepareImageFile(path, {
+      cwd: directory, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true,
+    }, {}, undefined, seal);
+    const error = await result.catch((failure: unknown) => failure);
+    expect(existsSync(marker)).toBe(false);
+    expect(error).toEqual(expect.objectContaining({ message: expect.stringContaining("Target identity changed") }));
+    await unlink(alias);
+  });
+
   it("recovers from an active transport delivery limit by requesting a smaller real image", async () => {
     const pixels = Buffer.alloc(512 * 512 * 3);
     let state = 17;
@@ -226,6 +271,7 @@ describe("bounded image preparation", () => {
   it("refuses to read when the decoder is started without the host resources", () => {
     const request = ImagePreparationRequestSchema.parse({
       path: imageFixturePath("grid.png"), options: {},
+      expectedPath: realpathSync.native(imageFixturePath("grid.png")),
       scope: { cwd: repositoryRoot(), extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true },
     });
     const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;

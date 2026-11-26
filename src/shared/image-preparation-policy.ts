@@ -35,6 +35,7 @@ export type ImageReadScope = z.input<typeof ImageReadScopeSchema>;
 
 export const ImagePreparationRequestSchema = z.object({
   path: z.string().min(1),
+  expectedPath: z.string().min(1),
   options: ImagePreparationOptionsSchema,
   scope: ImageReadScopeSchema,
 }).strict();
