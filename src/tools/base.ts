@@ -15,6 +15,7 @@
  * builder, and the plugin/MCP lifecycle all consume this shape.
  */
 import { z } from "zod";
+import { isBrowserToolName } from "../shared/browser-tools.js";
 import type {
   ToolSource,
   ToolCategory,
@@ -160,6 +161,7 @@ export function isModelExposedTool(tool: Pick<Tool, "modelVisible">): boolean {
 /** Only fixed-category local reads are visible and executable in an unattended stage. */
 export function isUnattendedReadTool(tool: Tool): boolean {
   return tool.source === "builtin" && tool.category === "read" && isModelExposedTool(tool)
+    && !isBrowserToolName(tool.name)
     && !tool.arbitraryEgress && !tool.requiresMcpScope && !tool.appInvokable
     && tool.categoryForInput === undefined && tool.decisionOverride === undefined
     && tool.operationPolicy === undefined;

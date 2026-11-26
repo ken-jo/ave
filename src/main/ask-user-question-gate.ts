@@ -1,5 +1,5 @@
 // FIFO questions appear in the composer dock; this broker does not enforce permission policy.
-import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
+import { approvalPresentationDenial, presentQuestionCard } from "../permissions/approval-presentation.js";
 import { randomUUID } from "node:crypto";
 import { CHANNELS } from "../contract/app-contract.js";
 import type { WebContents } from "electron";
@@ -64,7 +64,6 @@ export interface AskUserQuestionResponse {
 // 1–4 questions per card. Cap is shared between tool input validation and gate.
 export const MAX_QUESTIONS_PER_CARD = 4;
 
-export const IPC_ASK_USER_QUESTION_REQUEST = CHANNELS.askUserQuestion.request;
 export const IPC_ASK_USER_QUESTION_RESPOND = CHANNELS.askUserQuestion.respond;
 
 interface PendingEntry {
@@ -226,7 +225,7 @@ export class AskUserQuestionGate {
     sessionId: string;
     abortSignal?: AbortSignal;
   }): Promise<AskUserQuestionResponse> {
-    const unattended = unattendedApprovalDenial();
+    const unattended = approvalPresentationDenial();
     if (unattended) return Promise.resolve({ requestId: "", dismissed: true, reasonCode: unattended });
     if (!Array.isArray(input.questions) || input.questions.length === 0 || input.questions.length > MAX_QUESTIONS_PER_CARD) {
       return Promise.resolve({
@@ -321,7 +320,7 @@ export class AskUserQuestionGate {
       }
       this.pending.set(req.id, { request: req, deliveredTo, resolve, cleanup });
       try {
-        wc.send(IPC_ASK_USER_QUESTION_REQUEST, req);
+        presentQuestionCard(wc, req);
       } catch (err) {
         cleanup();
         log.warn(

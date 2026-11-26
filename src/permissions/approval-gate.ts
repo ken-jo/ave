@@ -1,4 +1,4 @@
-import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
+import { approvalPresentationDenial, presentApproval, presentApprovalCard } from "./approval-presentation.js";
 import { browserOrigin } from "../shared/browser-tools.js";
 import { extensionStartApprovalRows, isBrowserSiteChoice, isExtensionStartChoices, type BrowserSiteChoice, type ExtensionStartChoice } from "../shared/permissions-events.js";
 import { aveHome, isAveHomeConfigurationRefused } from "../shared/ave-home.js";
@@ -387,7 +387,7 @@ export interface ApprovalDecision {
 }
 
 // The wire names are owned by CHANNELS.approval; these names keep the gate's send sites and its tests readable.
-export const IPC_APPROVAL_REQUEST = CHANNELS.approval.request;
+export { IPC_APPROVAL_REQUEST } from "./approval-presentation.js";
 // main→renderer: one parked request is no longer answerable. A renderer takes its card down when the turn that asked ends, and that covers the case where the surface holding the turn is still on screen. It is not the only way a request ends: the host retires a parked ask when the tile that asked closes, when a navigation lets go of the tile, on timeout, on abort, on shutdown. In those the surface that would have dropped the card has already unmounted, and without this announcement the card outlives its request — answerable on screen, answering nothing.
 export const IPC_APPROVAL_SETTLED = CHANNELS.approval.settled;
 
@@ -1063,7 +1063,7 @@ export class ApprovalGate {
   private notifyPendingParked(view: PendingApprovalView): void {
     for (const observer of [...this.pendingObservers]) {
       try {
-        observer.onPending(view);
+        presentApproval(() => observer.onPending(view));
       } catch {
         // An observer failure must never alter approval flow.
       }
@@ -1127,7 +1127,7 @@ export class ApprovalGate {
       });
     assertEgressHostRequestShape(req);
     assertExtensionStartRequestShape(req);
-    const unattended = unattendedApprovalDenial();
+    const unattended = approvalPresentationDenial();
     if (unattended) {
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
@@ -1462,13 +1462,13 @@ export class ApprovalGate {
     // The window showing this request's toast, which need not be one the request is sent to; every exit from here on, a throw included, tells it the request settled.
     let toastSurface: WebContents | null = null;
     try {
-      toastSurface = this.notificationService?.fire({
+      toastSurface = presentApproval(() => this.notificationService?.fire({
         kind: "approval",
         title: t("be_approvalGate.notificationTitle"),
         body: this.notificationBody(fullReq),
         contextRef: { approvalId: fullReq.id, sessionId: fullReq.sessionId },
         urgent: true,
-      }) ?? null;
+      })) ?? null;
     } catch {
       // notification failure must never block approval flow
     }
@@ -1736,7 +1736,7 @@ export class ApprovalGate {
               bindOwner(next);
               this.announceSettledToRenderer(fullReq.id, [previous]);
               sentTo = next;
-              next.send(IPC_APPROVAL_REQUEST, maskedSignedReq);
+              presentApprovalCard(next, maskedSignedReq);
             } catch { denyUnavailable(); }
           };
           const bindOwner = (owner: WebContents): void => {
@@ -1751,7 +1751,7 @@ export class ApprovalGate {
           detachOwnerRelease = this.resolveSurface?.observeOwnerReleased?.(handoff);
         }
         sentTo = surface;
-        surface.send(IPC_APPROVAL_REQUEST, maskedSignedReq);
+        presentApprovalCard(surface, maskedSignedReq);
       } catch (sendErr) {
         if (!this.pending.delete(fullReq.id)) return;
         clearTimeout(timer);
@@ -1871,7 +1871,7 @@ export class ApprovalGate {
     entry.rendererRequest = { ...entry.rendererRequest, extensionStartAnswered: Object.fromEntries(answered) };
     try {
       const surface = this.liveSurfaceFor(entry.sessionId);
-      if (surface && !surface.isDestroyed()) surface.send(IPC_APPROVAL_REQUEST, entry.rendererRequest);
+      if (surface && !surface.isDestroyed()) presentApprovalCard(surface, entry.rendererRequest);
     } catch {
       // The window went away: the host still holds the answers, and the next window is handed the card with them.
     }

@@ -1,7 +1,6 @@
 // Picking a path identifies user intent without widening the filesystem envelope; writes still require an existing grant. The host owns the native
 // dialog and its title identifies the requesting plugin.
-import { unattendedApprovalDenial } from "../../shared/turn-extension-policy.js";
-import { dialog } from "electron";
+import { approvalPresentationDenial, pickNativeFiles } from "../../permissions/approval-presentation.js";
 import type { BaseWindow } from "electron";
 import { t } from "../../i18n/index.js";
 
@@ -41,7 +40,7 @@ export async function pickFoldersForPlugin(
   pluginId: string,
   deps: PickFoldersDeps,
 ): Promise<PickFoldersResult> {
-  const unattended = unattendedApprovalDenial();
+  const unattended = approvalPresentationDenial();
   if (unattended) throw new Error(unattended);
   if (inFlight.has(pluginId)) throw new FolderPickerBusyError(pluginId);
   inFlight.add(pluginId);
@@ -52,11 +51,11 @@ export async function pickFoldersForPlugin(
     // Parented where there is a window so the sheet belongs to it, unparented otherwise — an unparented chooser still works, and refusing to ask because no
     // window happens to be up would turn a UX detail into a failure.
     const result = parent
-      ? await dialog.showOpenDialog(parent, {
+      ? await pickNativeFiles(parent, {
           title,
           properties: ["openDirectory", "multiSelections"],
         })
-      : await dialog.showOpenDialog({
+      : await pickNativeFiles({
           title,
           properties: ["openDirectory", "multiSelections"],
         });

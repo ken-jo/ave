@@ -1,4 +1,5 @@
-import { app, dialog, ipcMain, nativeImage } from "electron";
+import { pickNativeFiles } from "../../permissions/approval-presentation.js";
+import { app, ipcMain, nativeImage } from "electron";
 import { t } from "../../i18n/index.js";
 import { promises as fs } from "node:fs";
 import * as nodeFs from "node:fs";
@@ -472,7 +473,7 @@ export function registerAttachHandlers(deps: IpcDeps): void {
     const win = getMainWindow();
     if (!win) return { canceled: true, files: [], rejected: [] };
 
-    const result = await dialog.showOpenDialog(win, {
+    const result = await pickNativeFiles(win, {
       title: t("mainDialog.attachTitle"),
       properties: ["openFile", "multiSelections"],
     });

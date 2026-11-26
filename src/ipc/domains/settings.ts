@@ -1,3 +1,4 @@
+import { showNativeMessage, pickNativeFiles } from "../../permissions/approval-presentation.js";
 import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { hasUserKeyboardIntent, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
 import { isSubAgentMaxRounds } from "../../shared/subagent-policy.js";
@@ -6,7 +7,7 @@ import { containsSecuritySettings } from "../../shared/security-settings.js";
 import { isWebSearchProvider } from "../../data/settings-normalization.js";
 /** Settings domain IPC handlers. Covers: ave:settings:*, ave:shell:open-external */
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
-import { app, dialog, ipcMain } from "electron";
+import { app, ipcMain } from "electron";
 import { validateExternalUrl } from "../../shared/external-url.js";
 import type { OpenOAuthLogin } from "../../main/oauth-login.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
@@ -625,7 +626,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   ipcMain.handle(SETTINGS.pickDirectory, async (event, payload: unknown) => {
     const refused = authorizeSettingsEditorAction(event, payload, SETTINGS.pickDirectory);
     if (refused) return refused;
-    const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+    const result = await pickNativeFiles({ properties: ["openDirectory"] });
     if (!result.canceled && !result.filePaths[0]) return { ok: false, error: "directory-picker-empty-result" };
     return { ok: true, path: result.canceled ? null : result.filePaths[0] };
   });
@@ -976,7 +977,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       auditSubscriptionMutation("choose-runtime", providerValue, "rejected", "subscription-provider-not-supported");
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
-    const selected = await dialog.showOpenDialog({
+    const selected = await pickNativeFiles({
       title: `Select ${subscriptionRuntimeDescriptor(providerValue).label} executable`,
       properties: ["openFile", "dontAddToRecent"],
       ...(process.platform === "win32"
@@ -1103,7 +1104,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       return { ok: false as const, error: "subscription-logout-not-supported" as const };
     }
     if (providerValue === "grok-build") {
-      const confirmation = await dialog.showMessageBox({
+      const confirmation = await showNativeMessage({
         type: "warning",
         buttons: ["Cancel", "Sign out"],
         defaultId: 0,
@@ -1111,7 +1112,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         message: "Sign out of Grok Build?",
         detail: "This clears only Ave's isolated Grok Build session. Other provider sessions are unchanged.",
       });
-      if (confirmation.response !== 1) {
+      if (confirmation?.response !== 1) {
         const status = await runSubscriptionMutation(providerValue, (runtime, provider) => runtime.getStatus(provider));
         auditSubscriptionMutation("logout", providerValue, status.ok ? "cancelled" : "failed", status.ok ? undefined : status.error);
         return status;

@@ -1,3 +1,4 @@
+import { pickNativeSavePath } from "../../permissions/approval-presentation.js";
 import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";
@@ -30,11 +31,11 @@ export function registerUsageHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.usage.exportCsv, async (e, rows: Array<Record<string, string | number>>) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.usage.exportCsv, e); return UNAUTHORIZED_FRAME; }
-    const { dialog, BaseWindow } = await import("electron");
+    const { BaseWindow } = await import("electron");
     const win = BaseWindow.getFocusedWindow() ?? undefined;
     const result = win
-      ? await dialog.showSaveDialog(win, { defaultPath: "ave-usage.csv", filters: [{ name: "CSV", extensions: ["csv"] }] })
-      : await dialog.showSaveDialog({ defaultPath: "ave-usage.csv", filters: [{ name: "CSV", extensions: ["csv"] }] });
+      ? await pickNativeSavePath(win, { defaultPath: "ave-usage.csv", filters: [{ name: "CSV", extensions: ["csv"] }] })
+      : await pickNativeSavePath({ defaultPath: "ave-usage.csv", filters: [{ name: "CSV", extensions: ["csv"] }] });
     if (result.canceled || !result.filePath) return { ok: false, canceled: true };
     const { writeFileSync } = await import("node:fs");
     const headers = [

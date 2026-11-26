@@ -75,7 +75,7 @@ export interface StageRunEngineDeps {
   /** The authorised registry root of a project path, or null when the registry does not hold it. */
   resolveProjectRoot: (projectRoot: string) => string | null;
   templates: Pick<WorkflowTemplateStore, "get" | "resolveVersion">;
-  attachments: Pick<WorkflowTemplateStore, "getAttachment" | "listByTemplate" | "listByRoutine" | "readScheduleRunAuthority" | "withScheduleRunAuthority">;
+  attachments: Pick<WorkflowTemplateStore, "getAttachment" | "listByTemplate" | "listByRoutine" | "readScheduleRunAuthority">;
   getRunner: () => SubAgentRunner | undefined;
   getAgentProfile?: (name: string) => Promise<LoadedAgentProfile | null>;
   emit: (e: Omit<WorkBoardRunEvent, "at">) => void;
@@ -163,6 +163,8 @@ interface RunState {
   /** Why the run ends `error` without its graph being asked. */
   faulted: string | null;
   refused: { code: string; tool?: EnvelopeToolRef } | null;
+  /** A fire is provisional until its first child links. Stays present through rollback and result reporting. */
+  scheduledStart?: { refusal?: WorkItemRunResult };
   /** stageId → childSessionId, set when the child links. */
   live: Map<string, string>;
   /** `${stageId}#${attempt}` the reducer asked to spawn and no launch consumed yet. */
@@ -357,19 +359,20 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const stored = latest.record?.versions.find(version => version.version === pin.version) ?? null;
       const previousHash = record?.versions.find(version => version.version === pin.version)?.graphHash;
       const previousAttachment = record?.scheduleAttachments?.find(entry => entry.id === source.attachmentId);
-      // The checked tuple and approval must have stayed current through the read. A wrong-template attachment
-      // can never authorize this pin and is left to the usual pin-mismatch check.
-      if (!isDeepStrictEqual(record?.template, latest.record?.template)
-        || record?.draft?.revision !== latest.record?.draft?.revision
-        || previousHash !== stored?.graphHash
-        || !isDeepStrictEqual(previousAttachment, latest.attachment?.templateId === pin.templateId ? latest.attachment : undefined)) {
-        return { ok: false, code: "scope-changed" };
-      }
-      return deps.authoriseRunSource({
+      const verdict = deps.authoriseRunSource({
         phase, source, runPin: pin, template: latest.record?.template ?? null, stored,
         storedHashMatches: stored === null || stored.graphHash === pin.graphHash,
         attachment: latest.attachment, runProjectRoot: projectRoot, scopeAuthorised: deps.scopeAuthorised, unattendedAllowed,
       });
+      if (!verdict.ok) return verdict;
+      // Draft saves and newer confirmations of the same scope carry no authority over this pin.
+      if (!isDeepStrictEqual(record?.template.scope, latest.record?.template.scope)
+        || previousHash !== stored?.graphHash
+        || previousAttachment?.id !== latest.attachment?.id
+        || !isDeepStrictEqual(previousAttachment?.approvedScope, latest.attachment?.approvedScope)) {
+        return { ok: false, code: "scope-changed" };
+      }
+      return verdict;
     }
     let stored = null;
     let storedHashMatches = true;
@@ -412,7 +415,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   /** The run's board row is gone: the run is cancelled as by Stop, and from here its record is written by run id alone and ends as `cause`. */
   function rowRemoved(state: RunState, cause: RunState["removedAs"]): void {
-    if (state.rowGone || runs.get(state.itemId) !== state) return;
+    if (state.rowGone || state.scheduledStart?.refusal || runs.get(state.itemId) !== state) return;
     state.rowGone = true;
     state.removedAs = cause;
     state.stopping = true;
@@ -646,11 +649,22 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   /** After the run file says the run is over: show it on the row, tell the listeners, and let the item go. */
   async function finish(state: RunState, record: RunRecord | null, runStatus: Settled, version: TemplateVersion | null, message?: string, settled = true): Promise<void> {
-    // A row that is gone, or no longer names or holds the run, is never written; the settled record goes with the prune.
-    if (!settled) unconfirmed.set(state.runId, { ref: state.ref, status: runStatus });
+    const byAuthority = state.refused !== null && runStatus === "cancelled" && !state.stopping;
+    const provisional = settled && byAuthority && state.scheduledStart;
+    // Retire the provisional row while this run still holds it. Finish discarding its workspace before reporting the refusal.
+    if (provisional && state.refused) {
+      provisional.refusal = refusedStart(state.refused.code, state.refused.tool);
+      try {
+        await workspace.release(state.ref, "all");
+        await rollbackScheduledStart(state.ref);
+      } catch (error) {
+        log.warn("scheduled start rollback failed (id=%d): %s", state.itemId, errorMessage(error));
+        provisional.refusal = refusedStart("run-state-unavailable");
+      }
+    } else if (!settled) unconfirmed.set(state.runId, { ref: state.ref, status: runStatus });
+    // A settled record whose row is gone or lost follows the ordinary retention rules.
     else if (state.rowGone || state.lost) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", state.itemId, errorMessage(error)));
     else await showOnRow(state.itemId, runStatus, record ? finalOutput(record, version) : undefined);
-    const byAuthority = state.refused !== null && runStatus === "cancelled" && !state.stopping;
     const reason = byAuthority && state.refused
       ? { reasonCode: state.refused.code, ...(state.refused.tool ? { reasonTool: state.refused.tool } : {}) }
       : runStatus === "error" && message !== undefined && RUN_FILE_REFUSALS.has(message) ? { reasonCode: message }
@@ -976,7 +990,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       }
       const prepared = await workspace.prepare(state.ref, stage, attempt);
       const runRoot = record.runWorkspace?.runRoot;
-      if (!prepared.ok) throw new WorkflowInvariantError("workspace-missing", prepared.code);
+      if (!prepared.ok) {
+        if (state.scheduledStart) await authorise();
+        throw new WorkflowInvariantError("workspace-missing", prepared.code);
+      }
       if (runRoot === undefined || !isUnder(runRoot, prepared.workspace.root)) throw new WorkflowInvariantError("workspace-missing");
       const stageRoot = prepared.workspace.root;
 
@@ -1037,6 +1054,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           },
           {
             onLinked: ({ childSessionId }) => {
+              if (source.kind === "schedule-attachment" && state.projectRoot !== undefined
+                && !deps.scopeAuthorised({ kind: "project", projectRoot: state.projectRoot })) {
+                throw new WorkflowInvariantError("run-not-authorised", "scope-not-authorised");
+              }
               linked = childSessionId;
               state.live.set(stageId, childSessionId);
               state.starting.delete(stageId);
@@ -1050,6 +1071,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
               deps.runScope?.sessionLinked(runKey, childSessionId, { stageId, stageName: stage.name, lane });
               scoped = true;
               if (lane === "unattended" && stage.envelope) deps.lane?.sessionLinked({ runKey, stageId, sessionId: childSessionId, envelope: stage.envelope, workspaceRoot: stageRoot });
+              state.scheduledStart = undefined;
               emit({ itemId: state.itemId, phase: "executing", stageId, attempt, runSessionId: childSessionId });
               post(state, { type: "stage_linked", stageId, childSessionId }, attempt);
             },
@@ -1149,6 +1171,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   async function resultOf(state: RunState): Promise<WorkItemRunResult> {
+    if (state.scheduledStart?.refusal) return state.scheduledStart.refusal;
     // An end the run file did not confirm is an error, by the run file's refusal when that is what ended the run; never a run that waits.
     if (unconfirmed.has(state.runId)) {
       // A stop stays a stop; only its end is not saved yet.
@@ -1231,23 +1254,22 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       try {
         const version = await resolvePinned(pin);
         stepsOf(version);
-        return await deps.attachments.withScheduleRunAuthority(pin.templateId, attachmentId, async ({ record, attachment }) => {
-          const stored = record?.versions.find(entry => entry.version === pin.version) ?? null;
-          const projectRoot = attachment?.approvedScope.kind === "project" ? attachment.approvedScope.projectRoot : undefined;
-          const verdict = deps.authoriseRunSource({
-            phase: "start", source, runPin: pin, template: record?.template ?? null, stored,
-            storedHashMatches: stored === null || stored.graphHash === pin.graphHash,
-            attachment, runProjectRoot: projectRoot, scopeAuthorised: deps.scopeAuthorised, unattendedAllowed,
-          });
-          if (!verdict.ok) return { ok: false, code: verdict.code, ...("tool" in verdict ? { tool: verdict.tool } : {}) } as const;
-          if (!deps.outputs && version.stages.some(stage => (stage.requestedOutputs?.length ?? 0) > 0)) {
-            return { ok: false, code: "outputs-unavailable" } as const;
-          }
-          const created = await store.create({ title, templateId: pin.templateId, projectRoot });
-          if (created.status !== "created") return { ok: false, code: created.reason } as const;
-          deps.holdItem(created.itemId);
-          return { ok: true, created, checked: { projectRoot, version } } as const;
+        const { record, attachment } = await deps.attachments.readScheduleRunAuthority(pin.templateId, attachmentId);
+        const stored = record?.versions.find(entry => entry.version === pin.version) ?? null;
+        const projectRoot = attachment?.approvedScope.kind === "project" ? attachment.approvedScope.projectRoot : undefined;
+        const verdict = deps.authoriseRunSource({
+          phase: "start", source, runPin: pin, template: record?.template ?? null, stored,
+          storedHashMatches: stored === null || stored.graphHash === pin.graphHash,
+          attachment, runProjectRoot: projectRoot, scopeAuthorised: deps.scopeAuthorised, unattendedAllowed,
         });
+        if (!verdict.ok) return { ok: false, code: verdict.code, ...("tool" in verdict ? { tool: verdict.tool } : {}) } as const;
+        if (!deps.outputs && version.stages.some(stage => (stage.requestedOutputs?.length ?? 0) > 0)) {
+          return { ok: false, code: "outputs-unavailable" } as const;
+        }
+        const created = await store.create({ title, templateId: pin.templateId, projectRoot });
+        if (created.status !== "created") return { ok: false, code: created.reason } as const;
+        deps.holdItem(created.itemId);
+        return { ok: true, created, checked: { projectRoot, version } } as const;
       } catch (error) {
         const fault = pinFault(error);
         if (!fault) log.warn("scheduled template start check failed: %s", errorMessage(error));
@@ -1256,25 +1278,25 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     })();
     if (!admission.ok) return admission;
     const { created, checked } = admission;
-    let admitted = false;
+    const ref = newRunRef(created.itemId, checked.projectRoot);
+    let handedOff = false;
     try {
       const ready = await adopted();
       if (!ready.ok) return { ok: false, code: ready.code };
-      const started = await beginStart(created.itemId, source, null, checked);
-      if ("status" in started) return { ok: false, code: started.reasonCode ?? "template-run-unavailable" };
-      admitted = true;
+      const verdict = await verdictFor("start", checked.projectRoot, source, pin);
+      if (!verdict.ok) return verdict;
+      const started = await beginStart(created.itemId, source, null, checked, ref);
+      if ("status" in started) return { ok: false, code: started.reasonCode ?? "template-run-unavailable", ...(started.reasonTool ? { tool: started.reasonTool } : {}) };
+      handedOff = true;
       return { ok: true, itemId: created.itemId, result: firstResult(started) };
+    } catch (error) {
+      const fault = pinFault(error);
+      if (!fault) log.warn("scheduled template start failed: %s", errorMessage(error));
+      return { ok: false, code: fault ?? "run-state-unavailable" };
     } finally {
-      if (!admitted) {
+      if (!handedOff) {
         try {
-          const current = await store.get(created.itemId);
-          // A partial start can change run fields before being refused. Use its latest revision when the item itself was left alone.
-          if (current.status === "found" && current.item.updated_at === created.item.updated_at) {
-            const removed = await store.remove(created.itemId, current.item.mutationRevision);
-            if (removed.status === "invalid") log.warn("refused schedule start row could not be removed (id=%d): %s", created.itemId, removed.reason);
-          }
-        } catch (error) {
-          log.warn("refused schedule start row cleanup failed (id=%d): %s", created.itemId, errorMessage(error));
+          await rollbackScheduledStart(ref);
         } finally {
           deps.releaseItem(created.itemId);
         }
@@ -1282,13 +1304,39 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     }
   }
 
-  async function beginStart(itemId: number, source: RunAuthoritySource, surface: WebContents | null, { projectRoot, version }: CheckedStart): Promise<RunState | WorkItemRunResult> {
+  /** Use the board's revision-checked delete and run retention before discarding the owned workspace. */
+  async function rollbackScheduledStart(ref: RunRef): Promise<void> {
+    const current = await store.get(ref.itemId);
+    if (current.status === "found") {
+      if (current.item.runId !== undefined && current.item.runId !== ref.runId) {
+        throw new Error("Scheduled start row names another run");
+      }
+      const removed = await store.remove(ref.itemId, current.item.mutationRevision);
+      if (removed.status === "invalid") throw new Error(removed.reason);
+    }
+    await records.pruneSettled();
+    const projects = new Map(ref.projectRoot === undefined ? [] : [[ref.runId, { projectRoot: ref.projectRoot, itemId: ref.itemId }]]);
+    await workspace.discard(projects, runId => runId !== ref.runId);
+  }
+
+  function newRunRef(itemId: number, projectRoot: string | undefined): RunRef {
+    const runId = randomUUID();
+    return { itemId, runId, runKey: runKeyOf(itemId, runId), ...(projectRoot !== undefined ? { projectRoot } : {}) };
+  }
+
+  async function beginStart(itemId: number, source: RunAuthoritySource, surface: WebContents | null, { projectRoot, version }: CheckedStart, scheduledRef?: RunRef): Promise<RunState | WorkItemRunResult> {
+    const ref = scheduledRef ?? newRunRef(itemId, projectRoot);
     const pin = source.pin;
     const refused = refusedStart;
-    const runId = randomUUID();
-    const ref: RunRef = { itemId, runId, runKey: runKeyOf(itemId, runId), ...(projectRoot !== undefined ? { projectRoot } : {}) };
+    const { runId } = ref;
     const opened = await workspace.open(ref, projectRoot);
-    if (!opened.ok) return refused(opened.code);
+    if (!opened.ok) {
+      if (source.kind === "schedule-attachment") {
+        const verdict = await verdictFor("start", projectRoot, source, pin);
+        if (!verdict.ok) return refused(verdict.code, "tool" in verdict ? verdict.tool : undefined);
+      }
+      return refused(opened.code);
+    }
     const startedAt = new Date().toISOString();
     let recorded = false;
     try {
@@ -1323,6 +1371,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       return abandonStart(ref, recorded, refused(code ?? "run-state-unavailable"), unstarted);
     }
     const state = openState(itemId, runId, projectRoot, surface);
+    if (scheduledRef) state.scheduledStart = {};
     emit({ itemId, phase: "executing" });
     post(state, { type: "started" });
     return state;
@@ -1330,7 +1379,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   async function firstResult(state: RunState): Promise<WorkItemRunResult> {
     await idle(state);
-    return resultOf(state);
+    const result = await resultOf(state);
+    state.scheduledStart = undefined;
+    return result;
   }
 
   /** A start that failed after its workspace was opened: the workspace goes, and a run that was already stored ends `error`. A stored run

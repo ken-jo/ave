@@ -1,6 +1,6 @@
-import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
+import { approvalPresentationDenial, pickNativeFiles } from "../permissions/approval-presentation.js";
 import { closeMainWindowDocuments } from "../main/main-window-host.js";
-import { app, BaseWindow, dialog, nativeImage, Notification, powerMonitor, session, shell } from "electron";
+import { app, BaseWindow, nativeImage, Notification, powerMonitor, session, shell } from "electron";
 import { createDeviceCodePresentation } from "../main/device-code-dialog.js";
 import { desktopSecretEncryption } from "../main/desktop-secret-encryption.js";
 import { browserCapturePixelRatio } from "../main/browser/browser-capture-desktop.js";
@@ -84,11 +84,11 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       createFloatingDockSurface: (settings) => new ElectronFloatingDockSurface(hostDockThemeSource, settings),
       pickFolders: (pluginId, parentWindow) => pickFoldersForPlugin(pluginId, { parentWindow }),
       pickBrowserUploadFiles: async (request) => {
-        const unattended = unattendedApprovalDenial();
+        const unattended = approvalPresentationDenial();
         if (unattended) throw new Error(unattended);
         const owner = getMainWindows().find((window) => window.id === request.windowId && !window.isDestroyed());
         if (!owner || request.signal.aborted) return null;
-        const selection = await dialog.showOpenDialog(owner, { title: request.origin, properties: ["openFile", "multiSelections"] });
+        const selection = await pickNativeFiles(owner, { title: request.origin, properties: ["openFile", "multiSelections"] });
         return owner.isDestroyed() || request.signal.aborted || selection.canceled ? null : selection.filePaths;
       },
       browserGuestContentOrigin: (guest) => {

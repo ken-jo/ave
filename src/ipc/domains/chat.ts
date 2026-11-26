@@ -1,3 +1,4 @@
+import { showNativeMessage, pickNativeFiles, pickNativeSavePath } from "../../permissions/approval-presentation.js";
 import { registerMemoryMapHandlers } from './memory-map.js';
 import { readMemoryDetail, readMemorySummaries } from "../../memory/memory-detail.js";
 import { decideTurnChange, getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
@@ -1549,7 +1550,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     targetSessionId?: unknown,
   ) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.export, e); return UNAUTHORIZED_FRAME; }
-    const { dialog } = await import("electron");
     const { writeFile } = await import("node:fs/promises");
     const win = mainWindowForContents(e.sender) ?? getMainWindow();
     if (format !== "markdown" && format !== "json") return { ok: false, error: "invalid-format" };
@@ -1578,8 +1578,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
         : [{ name: "JSON", extensions: ["json"] }],
     };
     const res = win
-      ? await dialog.showSaveDialog(win, dialogOptions)
-      : await dialog.showSaveDialog(dialogOptions);
+      ? await pickNativeSavePath(win, dialogOptions)
+      : await pickNativeSavePath(dialogOptions);
     if (res.canceled || !res.filePath) return { ok: false, canceled: true };
 
     let body: string;
@@ -1655,7 +1655,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const sessionId = (payload as { sessionId?: unknown } | null)?.sessionId;
     if (!isValidSessionId(sessionId)) return { ok: false, error: "invalid-session" };
     // Confirm in main so callers cannot bypass a renderer-only dialog.
-    const { dialog } = await import("electron");
     const win = mainWindowForContents(e.sender) ?? getMainWindow();
     const confirmOptions = {
       type: "warning" as const,
@@ -1666,9 +1665,9 @@ export function registerChatHandlers(deps: IpcDeps): void {
       detail: t("mainDialog.deleteConversationDetail"),
     };
     const confirmation = win
-      ? await dialog.showMessageBox(win, confirmOptions)
-      : await dialog.showMessageBox(confirmOptions);
-    if (confirmation.response !== 1) return { ok: false, canceled: true };
+      ? await showNativeMessage(win, confirmOptions)
+      : await showNativeMessage(confirmOptions);
+    if (confirmation?.response !== 1) return { ok: false, canceled: true };
 
     // Guard deletion only against the loop holding that conversation; unrelated sessions need no turn lease.
     const deleteConversation = async (): Promise<void> => {
@@ -1700,7 +1699,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
   // Import is internal and always creates a fresh DLP-safe session id.
   ipcMain.handle(CHANNELS.chat.import, async (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.import, e); return UNAUTHORIZED_FRAME; }
-    const { dialog } = await import("electron");
     const { open } = await import("node:fs/promises");
     const win = mainWindowForContents(e.sender) ?? getMainWindow();
     const dialogOptions = {
@@ -1709,8 +1707,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
       properties: ["openFile"] as Array<"openFile">,
     };
     const res = win
-      ? await dialog.showOpenDialog(win, dialogOptions)
-      : await dialog.showOpenDialog(dialogOptions);
+      ? await pickNativeFiles(win, dialogOptions)
+      : await pickNativeFiles(dialogOptions);
     if (res.canceled || res.filePaths.length === 0) return { ok: false, canceled: true };
     const filePath = res.filePaths[0];
 

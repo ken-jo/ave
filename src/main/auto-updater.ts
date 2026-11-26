@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { CHANNELS } from "../contract/app-contract.js";
 import { createRequire } from "node:module";
 import { app, shell } from "electron";
+import { showNativeMessage } from "../permissions/approval-presentation.js";
 import type { BaseWindow, IpcMain, IpcMainInvokeEvent } from "electron";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { auditUnauthorized, validateHostRendererSender } from "../ipc/gated.js";
@@ -355,23 +356,18 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
       return { confirmed: await deps.confirmInstallForTest() };
     }
     try {
-      const electron = _require("electron") as {
-        dialog?: { showMessageBox?: (window: BaseWindow | undefined, opts: unknown) => Promise<{ response: number }> };
-      };
-      if (typeof electron.dialog?.showMessageBox !== "function") {
-        return { confirmed: false };
-      }
       const parent = deps.getDialogParent();
-      const result = await electron.dialog.showMessageBox(parent && !parent.isDestroyed() ? parent : undefined, {
-        type: "question",
+      const options = {
+        type: "question" as const,
         buttons: [t("common.cancel"), t("mainDialog.restart")],
         defaultId: 1,
         cancelId: 0,
         title: t("mainDialog.updateApplyTitle"),
         message: t("mainDialog.updateRestartMessage", { version: lastState.version }),
         detail: t("mainDialog.updateRestartDetail"),
-      });
-      return { confirmed: result.response === 1 };
+      };
+      const result = await (parent && !parent.isDestroyed() ? showNativeMessage(parent, options) : showNativeMessage(options));
+      return { confirmed: result?.response === 1 };
     } catch (err) {
       log.warn("confirm-install dialog failed: %s", (err as Error).message);
       return { confirmed: false };

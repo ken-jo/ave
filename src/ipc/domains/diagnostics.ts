@@ -1,5 +1,6 @@
+import { pickNativeSavePath } from "../../permissions/approval-presentation.js";
 // Diagnostics are internal and host-renderer-only; exported logs and bundle content pass through DLP.
-import { ipcMain, dialog } from "electron";
+import { ipcMain } from "electron";
 import { t } from "../../i18n/runtime.js";
 import { readFile } from "node:fs/promises";
 import { readdirSync } from "node:fs";
@@ -120,8 +121,8 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
         };
         const win = getMainWindow();
         const res = win
-          ? await dialog.showSaveDialog(win, dialogOptions)
-          : await dialog.showSaveDialog(dialogOptions);
+          ? await pickNativeSavePath(win, dialogOptions)
+          : await pickNativeSavePath(dialogOptions);
         if (res.canceled || !res.filePath) return { ok: false as const, canceled: true as const };
 
         const { writeFile } = await import("node:fs/promises");

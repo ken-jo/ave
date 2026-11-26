@@ -1,3 +1,4 @@
+import { pickNativeFiles, pickNativeSavePath } from "../../permissions/approval-presentation.js";
 import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
 import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { isBackgroundE2eRuntime, showWindowForRuntime } from "../../main/e2e-window-presentation.js";
@@ -5,7 +6,7 @@ import { stripMcpErrorCode } from "../../shared/mcp-error-code.js";
 import { createPluginRetirementPort, type PluginConfigRetention } from "../../plugins/retired-config.js";
 import { ContributionTrustReviewStaleError } from "../../plugins/plugin-contribution-trust.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
-import { dialog, ipcMain, type WebContents } from "electron";
+import { ipcMain, type WebContents } from "electron";
 import { t } from "../../i18n/index.js";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
@@ -352,7 +353,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     if (!isDevModeUnlocked()) {
       throw new Error("[security] dev mode not unlocked — enable a supported AVE_DEV* flag in a non-packaged build");
     }
-    const { filePaths, canceled } = await dialog.showOpenDialog({
+    const { filePaths, canceled } = await pickNativeFiles({
       title: t("mainDialog.installLocalPluginTitle"),
       properties: ["openDirectory"],
       message: t("mainDialog.installLocalPluginMessage"),
@@ -1410,8 +1411,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         ...(extension ? { filters: [{ name: extension.toUpperCase(), extensions: [extension] }] } : {}),
       };
       const result = win && !win.isDestroyed()
-        ? await dialog.showSaveDialog(win, dialogOptions)
-        : await dialog.showSaveDialog(dialogOptions);
+        ? await pickNativeSavePath(win, dialogOptions)
+        : await pickNativeSavePath(dialogOptions);
       if (result.canceled || !result.filePath) {
         auditDownload("info", `[mcp-app:${serverId}] ui/download-file cancelled by user`);
         return { ok: true, disposition: "cancelled" } satisfies McpUiDownloadOutcome;

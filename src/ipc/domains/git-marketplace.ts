@@ -1,6 +1,7 @@
+import { pickNativeFiles } from "../../permissions/approval-presentation.js";
 import { mainWindowForContents } from "../../main/app-state.js";
 // Compose the marketplace lazily behind host-renderer-only IPC; no network work starts before a request.
-import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session, shell, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, ipcMain, powerMonitor, session, shell, type IpcMainInvokeEvent } from "electron";
 import { randomBytes } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -783,7 +784,7 @@ export function registerGitMarketplaceHandlers(
     try {
       const options = { title: t("mainDialog.marketplacePickFolderTitle"), properties: ["openDirectory" as const, "dontAddToRecent" as const] };
       const parent = (mainWindowForContents(event.sender) ?? BrowserWindow.fromWebContents(event.sender));
-      const picked = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
+      const picked = parent ? await pickNativeFiles(parent, options) : await pickNativeFiles(options);
       const path = picked.filePaths[0];
       return { ok: true, value: picked.canceled || !path ? null : picks.hold(path) };
     } catch (error) {

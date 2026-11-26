@@ -1,10 +1,10 @@
+import { pickNativeSavePath } from "../permissions/approval-presentation.js";
 import type { MainWindow } from "./main-window-host.js";
 import { isBackgroundE2eRuntime } from "./e2e-window-presentation.js";
 import { handleAgentBrowserPopup } from "./browser/browser-popup-navigation.js";
 import {
   app,
   BrowserWindow,
-  dialog,
   session,
   type BrowserWindowConstructorOptions,
   type Event as ElectronEvent,
@@ -122,7 +122,7 @@ async function askSavePath(contents: WebContents, name: string): Promise<string 
   const host = contents.isDestroyed() ? null : contents.hostWebContents ?? contents;
   const window = host && !host.isDestroyed() ? BrowserWindow.fromWebContents(host) : null;
   const options = { defaultPath: join(app.getPath("downloads"), basename(name)) };
-  const result = window ? await dialog.showSaveDialog(window, options) : await dialog.showSaveDialog(options);
+  const result = window ? await pickNativeSavePath(window, options) : await pickNativeSavePath(options);
   return result.canceled || !result.filePath ? null : result.filePath;
 }
 

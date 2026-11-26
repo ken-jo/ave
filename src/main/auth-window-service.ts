@@ -1,10 +1,10 @@
-import { unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
+import { approvalPresentationDenial, presentRequiredApproval, showNativeMessage } from "../permissions/approval-presentation.js";
 import { isBackgroundE2eRuntime } from "./e2e-window-presentation.js";
 import { rememberPluginAuthPartition } from "./plugin-auth-partition-tracker.js";
 export { wirePluginAuthPartitionPersistence, seedPluginAuthPartitions, rememberPluginAuthPartition, getTrackedPluginAuthPartitions, forgetTrackedPluginAuthPartitions } from "./plugin-auth-partition-tracker.js";
 // The host owns login-window lifecycle; plugins supply completion patterns and cookie-domain allowlists.
 import { randomBytes } from "node:crypto";
-import { BrowserWindow, type BaseWindow, dialog, screen, session, shell, type Cookie, type Session, type WebContents } from "electron";
+import { BrowserWindow, type BaseWindow, screen, session, shell, type Cookie, type Session, type WebContents } from "electron";
 import { attachAuthWindowContent, authWindowChromeOptions, buildAuthWindowShellHtml, installAuthSessionPermissions, type AuthNavigationFailure } from "./auth-window-content.js";
 export { buildAuthWindowShellHtml } from "./auth-window-content.js";
 import { AuthWindowEndedError, isOAuthBrowserRefusal, requiresSystemBrowser } from "./oauth-login.js";
@@ -224,7 +224,7 @@ export async function openAuthWindow(
   parent: BaseWindow,
   options: OpenAuthWindowOptions,
 ): Promise<AuthCookie[] | OpenAuthWindowResult> {
-  const unattended = unattendedApprovalDenial();
+  const unattended = approvalPresentationDenial();
   if (unattended) throw new Error(unattended);
   return openAuthWindowInternal(parent, options);
 }
@@ -236,7 +236,7 @@ export async function openOAuthInAuthWindow(
   options: OAuthLoginOptions,
 ): Promise<void> {
   try {
-    const unattended = unattendedApprovalDenial();
+    const unattended = approvalPresentationDenial();
     if (unattended) throw new Error(unattended);
     if (requiresSystemBrowser(url)) {
       await openSystemBrowserLogin(parent, url, options);
@@ -253,7 +253,7 @@ export async function openOAuthInAuthWindow(
 }
 
 async function announceSystemBrowserLogin(parent: BaseWindow, url: string): Promise<void> {
-  void dialog.showMessageBox(parent, {
+  void showNativeMessage(parent, {
     type: "info", title: t("oauthWindow.title"), message: t("oauthWindow.systemBrowser"),
   }).catch(() => undefined);
   await shell.openExternal(url);
@@ -384,7 +384,7 @@ async function openAuthWindowInternal(
   }
 
   // Remote pages and their child windows share an isolated session without host privileges.
-  const authWindow = new BrowserWindow({
+  const authWindow = presentRequiredApproval(() => new BrowserWindow({
     parent,
     modal: false,
     width: 1024,
@@ -402,7 +402,7 @@ async function openAuthWindowInternal(
       webviewTag: true,
       sandbox: true,
     },
-  });
+  }));
   if (showRequested && isBackgroundE2eRuntime()) authWindow.showInactive();
   authWindow.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     configureAuthWebviewAttach({ event, webPreferences: webPreferences as Record<string, unknown>, params, url, partition: effectivePartition });

@@ -1,7 +1,8 @@
+import { pickNativeFiles, pickNativeSavePath } from "../../permissions/approval-presentation.js";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
+import { ipcMain, type IpcMainInvokeEvent } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { stageLocalAgentPlugin } from "../../marketplace/content/store.js";
 import { deriveAgentPluginComponents } from "../../marketplace/content/agent-plugin-components.js";
@@ -85,7 +86,7 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
   };
   const saveExport = async (files: Files): Promise<string | null> => {
     const manifest = JSON.parse(files.find((file) => file.path === "plugin.json")!.data.toString("utf8")) as { name: string; version: string };
-    const selection = await dialog.showSaveDialog({ defaultPath: `${manifest.name}-${manifest.version}.zip`, filters: [{ name: "Plugin package", extensions: ["zip"] }] });
+    const selection = await pickNativeSavePath({ defaultPath: `${manifest.name}-${manifest.version}.zip`, filters: [{ name: "Plugin package", extensions: ["zip"] }] });
     if (selection.canceled || !selection.filePath) return null;
     await writeFile(selection.filePath, studioZip(files), { flag: "wx" });
     return selection.filePath;
@@ -112,7 +113,7 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
     return store.confirmConnectorCopy(string(name, "name"), id, await previewStudioConnector(deps.mcpManager, id), confirmation);
   });
   handle(channels.importPackage, async () => {
-    const selection = await dialog.showOpenDialog({ properties: ["openFile", "openDirectory"], filters: [{ name: "Plugin package", extensions: ["zip"] }] });
+    const selection = await pickNativeFiles({ properties: ["openFile", "openDirectory"], filters: [{ name: "Plugin package", extensions: ["zip"] }] });
     if (selection.canceled || !selection.filePaths[0]) return null;
     return store.importPackage(selection.filePaths[0]);
   });
@@ -139,7 +140,7 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
   handle(channels.exportToCheckout, async (name) => {
     const draftName = string(name, "name");
     const files = studioExportFiles(await store.reviewedFiles(draftName), false, await storedCredentials());
-    const selection = await dialog.showOpenDialog({ properties: ["openDirectory"], title: "Choose a marketplace checkout" });
+    const selection = await pickNativeFiles({ properties: ["openDirectory"], title: "Choose a marketplace checkout" });
     if (selection.canceled || !selection.filePaths[0]) return null;
     const root = selection.filePaths[0];
     const rootStat = await lstat(root);
@@ -165,7 +166,7 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
     return { path: target, steps: ["Run the repository checker", "Review and commit the package", "Open a pull request"] };
   });
   handle(channels.previewInstallFromFile, async () => {
-    const selection = await dialog.showOpenDialog({ properties: ["openFile", "openDirectory"], filters: [{ name: "Plugin package", extensions: ["zip"] }] });
+    const selection = await pickNativeFiles({ properties: ["openFile", "openDirectory"], filters: [{ name: "Plugin package", extensions: ["zip"] }] });
     if (selection.canceled || !selection.filePaths[0]) return null;
     const local = await readLocalAgentPlugin(selection.filePaths[0]);
     return preview(local.files);

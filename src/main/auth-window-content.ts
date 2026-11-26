@@ -1,3 +1,4 @@
+import { presentRequiredApproval } from "../permissions/approval-presentation.js";
 import { isBackgroundE2eRuntime } from "./e2e-window-presentation.js";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -282,11 +283,11 @@ export function attachAuthWindowContent(input: {
             webContents.close({ waitForBeforeUnload: false });
             throw new Error("Invalid auth popup session");
           }
-          const child = new BrowserWindow({
+          const child = presentRequiredApproval(() => new BrowserWindow({
             show: !isBackgroundE2eRuntime(),
             parent: window, x, y, width, height, autoHideMenuBar: true, ...authWindowChromeOptions(),
             webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webviewTag: false },
-          });
+          }));
           if (isBackgroundE2eRuntime()) child.showInactive();
           wireAuthWindowTheme(child);
           guardShell(child);

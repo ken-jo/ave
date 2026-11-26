@@ -1,8 +1,10 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import type { TemplateScope, TemplateVersion } from "../../shared/workflow-template-types.js";
 import { createRoutineScheduleTool } from "../../tools/routine-schedule.js";
+import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-workspaces.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 import { RoutinesScheduler } from "../routines-scheduler.js";
@@ -336,6 +338,105 @@ it.each(["scope-changed", "template-archived"] as const)("a fire refuses %s comm
     expect(f.h.children).toEqual([]);
   } finally {
     interleave.mockRestore();
+  }
+}));
+
+it("rolls back a fire revoked between the board write and beginStart", () => fixture(async f => {
+  const routine = await f.add();
+  const scope = project("/project/a");
+  const version = await f.h.confirm([autoStageOf("first")], { scope });
+  await f.attach(routine.id, version, scope);
+  const create = f.h.board.create.bind(f.h.board);
+  const interleave = vi.spyOn(f.h.board, "create").mockImplementationOnce(async input => {
+    const created = await create(input);
+    expect(created.status).toBe("created");
+    f.h.unauthorised.add("/project/a");
+    return created;
+  });
+  try {
+    await (await f.dispatch(routine.id)).result;
+    expect(interleave).toHaveBeenCalledOnce();
+    expect(f.store.list()[0].lastFailure).toMatchObject({ reason: "scope-not-authorised" });
+    expect(await f.rows()).toEqual([]);
+    expect(await f.h.board.runs.list()).toEqual({ status: "found", runs: [] });
+    expect(f.h.workspaceCalls.some(call => call.startsWith("open:"))).toBe(false);
+    expect(f.h.children).toEqual([]);
+  } finally {
+    interleave.mockRestore();
+  }
+}));
+
+it.each(["scope-not-authorised", "scope-changed", "attachment-detached"] as const)(
+  "rolls back the prepared workspace and run on %s before the first child links", async code => {
+    await fixture(async f => {
+      const projectRoot = join(f.h.dir, "project");
+      await mkdir(projectRoot);
+      const routine = await f.add();
+      const scope = project(projectRoot);
+      const version = await f.h.confirm([autoStageOf("first")], { scope });
+      const attachment = await f.attach(routine.id, version, scope);
+      let runRoot: string | undefined;
+      const updateRun = f.h.board.updateRun.bind(f.h.board);
+      const interleave = vi.spyOn(f.h.board, "updateRun").mockImplementation(async (...args) => {
+        const result = await updateRun(...args);
+        if (runRoot === undefined && result.status === "stored" && result.run.stageRuns.some(stage => stage.workspace)) {
+          runRoot = result.run.runWorkspace?.runRoot;
+          if (!runRoot) throw new Error("Run workspace was not stored");
+          await access(runRoot);
+          if (code === "scope-changed") {
+            await f.h.confirm([autoStageOf("replacement")], { id: version.templateId, scope: project(join(f.h.dir, "replacement")) });
+          } else if (code === "attachment-detached") {
+            await f.h.detach(attachment.id);
+          } else {
+            f.h.unauthorised.add(projectRoot);
+          }
+        }
+        return result;
+      });
+      try {
+        await (await f.dispatch(routine.id)).result;
+        expect(f.store.list()[0].lastFailure).toMatchObject({ reason: code });
+        expect(await f.rows()).toEqual([]);
+        expect(await f.h.board.runs.list()).toEqual({ status: "found", runs: [] });
+        expect(f.h.children).toEqual([]);
+        if (!runRoot) throw new Error("Expected a prepared workspace");
+        await expect(access(runRoot)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        interleave.mockRestore();
+      }
+    }, {
+      wiring: store => ({ workspace: createStageWorkspaceProvider({ plainCeiling: tmpdir(), removable: () => store.runsWithoutItem() }) }),
+    });
+  },
+);
+
+it("spawns the pinned child when an unconfirmed draft changes during the final check", () => fixture(async f => {
+  const routine = await f.add();
+  const scope = project("/project/a");
+  const version = await f.h.confirm([autoStageOf("first")], { scope });
+  await f.attach(routine.id, version, scope);
+  const read = f.h.templates.get.bind(f.h.templates);
+  const save = vi.fn(() => f.h.templates.draft(version.templateId, {
+    name: "Draft scope", scope: project("/project/b"), stages: [autoStageOf("draft")], edges: [],
+  }));
+  const get = vi.spyOn(f.h.templates, "get").mockImplementation(async id => {
+    const snapshot = await read(id);
+    const [row] = await f.rows();
+    if (row?.runId && (await f.h.stageRun(row.id, "first")).workspace && save.mock.calls.length === 0) await save();
+    return snapshot;
+  });
+  try {
+    const { result } = await f.dispatch(routine.id);
+    const [child] = await Promise.race([f.h.untilLive(1), result.then(() => {
+      throw new Error(JSON.stringify(f.store.list()[0].lastFailure));
+    })]);
+    expect(save).toHaveBeenCalledOnce();
+    expect(child.input.unattendedStage).toMatchObject({ stageId: "first" });
+    child.finish();
+    await result;
+    expect(f.store.list()[0].lastFailure).toBeUndefined();
+  } finally {
+    get.mockRestore();
   }
 }));
 

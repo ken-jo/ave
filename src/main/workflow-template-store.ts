@@ -94,16 +94,12 @@ export class WorkflowTemplateStore {
   async get(id: string): Promise<WorkflowTemplateRecord> { return structuredClone(this.find(await this.readFile(), id)); }
   /** Read the template, its versions and the referenced attachment together after preceding writes. */
   async readScheduleRunAuthority(templateId: string, attachmentId: string): Promise<ScheduleRunAuthority> {
-    return this.withScheduleRunAuthority(templateId, attachmentId, async snapshot => snapshot);
-  }
-  /** Keep template writers queued through the fire's authority decision and board item creation. */
-  async withScheduleRunAuthority<T>(templateId: string, attachmentId: string, use: (snapshot: ScheduleRunAuthority) => Promise<T>): Promise<T> {
     requireTemplate(isTemplateId(templateId) && isTemplateId(attachmentId));
     return withInProcessFileQueue(this.filePath, async () => {
       const { templates } = await this.readFile();
       const record = templates.find(entry => entry.template.id === templateId) ?? null;
       const attachment = templates.flatMap(entry => entry.scheduleAttachments ?? []).find(entry => entry.id === attachmentId) ?? null;
-      return use({ record, attachment });
+      return { record, attachment };
     });
   }
   async getTemplate(id: string): Promise<WorkflowTemplate | null> {

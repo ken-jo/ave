@@ -1,4 +1,5 @@
 import type { WorkBoardEngine } from "../core/work-board-engine.js";
+import type { EnvelopeToolRef } from "../shared/workflow-template-types.js";
 import type { RoutineRunOutcome } from "../shared/routines-types.js";
 import type { RoutinesStore, TemplateRoutineFire } from "./routines-store.js";
 import type { WorkBoardStore } from "./work-board-store.js";
@@ -12,6 +13,11 @@ interface ScheduledTemplateDeps {
 }
 
 const failed = (reason: string): RoutineRunOutcome => ({ ok: false, kind: "error", reason });
+
+function refusedFire(code: string, tool?: EnvelopeToolRef): RoutineRunOutcome {
+  return (code === "outward-effect-tool" || code === "tool-effect-unknown") && tool
+    ? { ok: false, kind: "template-skipped", skip: { code, tool } } : failed(code);
+}
 
 export async function fireScheduledTemplate(deps: ScheduledTemplateDeps, { routine, attachment }: TemplateRoutineFire): Promise<void> {
   const { routinesStore, workflowTemplateStore, workBoardStore, workBoardEngine } = deps;
@@ -40,14 +46,11 @@ export async function fireScheduledTemplate(deps: ScheduledTemplateDeps, { routi
     const { id: attachmentId, templateId, version, graphHash } = active;
     const started = await workBoardEngine.startScheduledTemplate({ kind: "schedule-attachment", attachmentId, pin: { templateId, version, graphHash }, firedAt }, current.title ?? templateId);
     if (started.ok) return { result: started.result };
-    if ((started.code === "outward-effect-tool" || started.code === "tool-effect-unknown") && started.tool) {
-      return { outcome: { ok: false, kind: "template-skipped", skip: { code: started.code, tool: started.tool } } satisfies RoutineRunOutcome };
-    }
-    return { outcome: failed(started.code) };
+    return { outcome: refusedFire(started.code, started.tool) };
   });
   if (!admitted) return;
   const result = admitted.result ? await admitted.result : undefined;
   const outcome = admitted.outcome ?? (result?.status === "completed" || result?.status === "awaiting_approval"
-    ? { ok: true } : failed(result?.reasonCode ?? "template-run-unavailable"));
+    ? { ok: true } : refusedFire(result?.reasonCode ?? "template-run-unavailable", result?.status === "error" ? result.reasonTool : undefined));
   await routinesStore.recordRunOutcome(id, firedAt, outcome);
 }

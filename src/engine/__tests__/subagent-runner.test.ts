@@ -17,6 +17,7 @@ import { createDynamicTool } from "../../tools/base.js";
 import { createReadToolResultChunkTool } from "../../tools/tool-result-chunk.js";
 import { ReadFileTool } from "../../tools/file-tools.js";
 import { sessionAuthorityWithheld } from "../../shared/turn-extension-policy.js";
+import { BROWSER_TOOL } from "../../shared/browser-tools.js";
 import { workBoardOriginSessionId } from "../../shared/work-board-types.js";
 import { makeSubagentLoopDeps as buildLoopDeps, patchLoopProvider } from "./support/subagent-loop-fixtures.js";
 import {
@@ -312,6 +313,7 @@ describe("SubAgentRunner — authorization terminal propagation", () => {
     { name: "web_search", flags: { arbitraryEgress: true }, input: { query: "fixture" } },
     { name: "mcp_resource_read", flags: { requiresMcpScope: true }, input: { serverId: "fixture", uri: "fixture://entry" } },
     { name: "agent_send", flags: {}, input: { message: "fixture" } },
+    ...Object.values(BROWSER_TOOL).map(name => ({ name, flags: {}, input: {} })),
   ])("a scheduled stage refuses an unadvertised $name call by name", async ({ name, flags, input }) => {
     const dir = mkdtempSync(join(tmpdir(), "ave-unattended-scope-"));
     const permissionManager = new PermissionManager(join(dir, "permissions.json"));

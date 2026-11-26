@@ -5,97 +5,139 @@ import { parseSourceTexts } from "../../../scripts/lib/ts7-ast.mjs";
 import { expect, it } from "vitest";
 
 const SRC = new URL("../../", import.meta.url);
+const PRESENTATION = "permissions/approval-presentation.ts";
+const NATIVE_DIALOG_MEMBER = /^show(?:(?:MessageBox|SaveDialog|OpenDialog)(?:Sync)?|ErrorBox)$/;
+const APPROVAL_CHANNEL = /^ave:(?:approval|ask-user-question):request$/;
+const ELECTRON_MODULE = /^electron(?:\/(?:main|common|renderer))?$/;
+const APPROVAL_CHANNEL_ALIAS = /^IPC_(?:APPROVAL|ASK_USER_QUESTION)_REQUEST$/;
 
-const APPROVAL_GATE_CALLERS = [
-  "boot/steps/plugin-tool-executor.ts",
-  "engine/subagent-runner.ts",
-  "engine/turn/query-loop.ts",
-  "hooks/hook-command-policy.ts",
-  "mcp/mcp-elicitation-resolver.ts",
-  "permissions/agent-action-approver.ts",
-  "permissions/effect-enforcement.ts",
-  "permissions/egress-approval.ts",
-  "permissions/extension-start-asker.ts",
-  "permissions/permission-mode-apply.ts",
-  "tools/invocation-authorization.ts",
-  "tools/invocation-execution.ts",
-  "tools/invocation-runner.ts",
-  "tools/pipeline/user-owned-surface.ts",
-  "tools/skill-load.ts",
-];
-
-// A new native presenter requires review as either a tool-owned ask or a user-operated window.
-const NATIVE_ASK_ENTRY_POINTS = {
-  "boot/desktop-host-runtime.ts": ["pickBrowserUploadFiles: async"],
-  "main/auth-partition-viewer-service.ts": ["export async function openAuthPartitionViewer"],
-  "main/auth-window-service.ts": ["export async function openAuthWindow", "export async function openOAuthInAuthWindow"],
-  "main/browser/browser-workspace-desktop.ts": ["promptPermission: async"],
-  "main/device-code-dialog.ts": ["async show(prompt, controller)"],
-  "main/host-api/pick-folders.ts": ["export async function pickFoldersForPlugin"],
-};
-
-const NON_ASK_NATIVE_PRESENTERS = [
-  "ipc/domains/attach.ts", "ipc/domains/chat.ts", "ipc/domains/git-marketplace.ts",
-  "ipc/domains/memory-map-runtime.ts", "ipc/domains/plugin-studio.ts", "ipc/domains/plugins.ts",
-  "ipc/domains/settings.ts", "ipc/domains/window.ts", "ipc/domains/workspace.ts",
-  "main/audio-capture-surface.ts", "main/auto-updater.ts", "main/floating-dock-surface.ts", "main/link-window-service.ts",
-  // A popup from the already guarded authentication window, never a second HostApi entry.
-  "main/auth-window-content.ts",
-];
-
-const GUARDS = {
-  ...NATIVE_ASK_ENTRY_POINTS,
-  "main/ask-user-question-gate.ts": ["  ask(input:"],
-  "main/browser/browser-upload.ts": ["export async function stageBrowserUpload"],
-  "main/browser/browser-page-prompts.ts": ["  ask<K extends"],
-  "permissions/approval-gate.ts": ["async requestAndWait(req:"],
-  "permissions/extension-start-consent.ts": ["function answer(entry:", "function deferExtensionStart(", "function takeExtensionStartGrant("],
-  "tools/invocation-execution.ts": ["authorizeBrowserSite: async"],
-  "tools/skill-load.ts": ["const skillName ="],
-};
-
-function enclosingFunctionBody(node: ts.Node, offset: number): ts.Block | undefined {
-  if (offset < node.getStart() || offset >= node.getEnd()) return undefined;
-  const inner = node.forEachChild(child => enclosingFunctionBody(child, offset));
-  if (inner) return inner;
-  if (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isArrowFunction(node)) {
-    return node.body && ts.isBlock(node.body) ? node.body : undefined;
-  }
-  if (ts.isPropertyAssignment(node) && ts.isArrowFunction(node.initializer) && ts.isBlock(node.initializer.body)) {
-    return node.initializer.body;
+function propertyOf(node: ts.Node): { name: string; owner: ts.Expression } | undefined {
+  if (ts.isPropertyAccessExpression(node)) return { name: node.name.text, owner: node.expression };
+  if (ts.isElementAccessExpression(node) && ts.isStringLiteral(node.argumentExpression)) {
+    return { name: node.argumentExpression.text, owner: node.expression };
   }
   return undefined;
 }
 
-it("routes every inventoried approval request and native ask through the unattended turn guard", () => {
-  const sources = new Map(readdirSync(fileURLToPath(SRC), { recursive: true, encoding: "utf8" }).map(path => path.replaceAll("\\", "/"))
-    .filter(path => path.endsWith(".ts") && !path.split("/").includes("__tests__") && !path.includes("/test-helpers.") && !path.startsWith("ui/"))
-    .map(path => [path, readFileSync(new URL(path, SRC), "utf8")]));
-  const filesUsing = (pattern: RegExp) => [...sources].filter(([, source]) => pattern.test(source)).map(([path]) => path).sort();
+function isElectronLoad(node: ts.Node): boolean {
+  if (!ts.isCallExpression(node) || node.arguments.length !== 1) return false;
+  const [module] = node.arguments;
+  return module !== undefined && ts.isStringLiteral(module) && ELECTRON_MODULE.test(module.text);
+}
 
-  expect(filesUsing(/\.requestAndWait!?\s*\(/)).toEqual([...APPROVAL_GATE_CALLERS].sort());
-  expect(filesUsing(/\.send\(\s*(?:IPC_APPROVAL_REQUEST|IPC_ASK_USER_QUESTION_REQUEST|CHANNELS\.(?:approval|askUserQuestion)\.request)\b/)).toEqual([
-    "main/ask-user-question-gate.ts", "permissions/approval-gate.ts",
-  ]);
-  expect(filesUsing(/\.(?:showOpenDialog|showMessageBox)(?:Sync)?\(|new BrowserWindow\(/)).toEqual([
-    ...Object.keys(NATIVE_ASK_ENTRY_POINTS), ...NON_ASK_NATIVE_PRESENTERS,
-  ].sort());
-  const guardedSources = new Map([...sources].filter(([path]) => Object.hasOwn(GUARDS, path)));
-  const parsed = parseSourceTexts(guardedSources) as Map<string, ts.SourceFile>;
-  for (const [path, entries] of Object.entries(GUARDS)) {
-    const source = sources.get(path);
-    if (source === undefined) throw new Error(`Missing approval surface source: ${path}`);
-    const syntax = parsed.get(path);
-    if (!syntax) throw new Error(`Could not parse approval surface: ${path}`);
-    for (const entry of entries) {
-      const start = source.indexOf(entry);
-      expect(start, entry).toBeGreaterThanOrEqual(0);
-      const offset = start + entry.search(/\S/);
-      const body = enclosingFunctionBody(syntax, offset);
-      expect(body?.getText(), entry).toContain("unattendedApprovalDenial()");
+function isApprovalRequestAccess(node: ts.Node): boolean {
+  const access = propertyOf(node);
+  if (access?.name !== "request") return false;
+  const owner = propertyOf(access.owner);
+  return owner?.name === "approval" || owner?.name === "askUserQuestion";
+}
+
+function isChannelDefinitionOrListener(path: string, node: ts.Node): boolean {
+  if (path === "contract/app-contract.ts" && ts.isPropertyAssignment(node.parent) && node.parent.initializer === node) return true;
+  const parent = node.parent;
+  return path.startsWith("preload/") && ts.isCallExpression(parent) && parent.arguments[0] === node
+    && ts.isPropertyAccessExpression(parent.expression) && ts.isIdentifier(parent.expression.expression)
+    && parent.expression.expression.text === "ipcRenderer"
+    && (parent.expression.name.text === "on" || parent.expression.name.text === "removeListener");
+}
+
+function violations(sources: Map<string, string>): string[] {
+  const candidates = new Map([...sources].filter(([path, source]) =>
+    path !== PRESENTATION && /electron|show(?:MessageBox|SaveDialog|OpenDialog|ErrorBox)|IPC_(?:APPROVAL|ASK_USER_QUESTION)_REQUEST|approval|askUserQuestion|ask-user-question|sendDecisionCard/i.test(source)));
+  const parsed = parseSourceTexts(candidates) as Map<string, ts.SourceFile>;
+  const found: string[] = [];
+  for (const path of candidates.keys()) {
+    const file = parsed.get(path);
+    if (!file) throw new Error(`Could not parse ${path}`);
+    const record = (node: ts.Node, capability: string) => {
+      const line = file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1;
+      found.push(`${path}:${line} ${capability}`);
+    };
+    const electronBindings = new Set<string>();
+    function findElectronBindings(node: ts.Node): void {
+      if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && ELECTRON_MODULE.test(node.moduleSpecifier.text)) {
+        if (node.importClause?.name) electronBindings.add(node.importClause.name.text);
+        const binding = node.importClause?.namedBindings;
+        if (binding && ts.isNamespaceImport(binding)) electronBindings.add(binding.name.text);
+      }
+      if (ts.isVariableDeclaration(node) && node.initializer) {
+        const value = ts.isAwaitExpression(node.initializer) ? node.initializer.expression : node.initializer;
+        if (isElectronLoad(value) && ts.isIdentifier(node.name)) electronBindings.add(node.name.text);
+      }
+      node.forEachChild(findElectronBindings);
     }
+    findElectronBindings(file);
+    const fromElectron = (node: ts.Expression): boolean => isElectronLoad(node)
+      || (ts.isAwaitExpression(node) && isElectronLoad(node.expression))
+      || (ts.isParenthesizedExpression(node) && fromElectron(node.expression))
+      || (ts.isIdentifier(node) && electronBindings.has(node.text));
+
+    function inspect(node: ts.Node): void {
+      if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+        const from = node.moduleSpecifier;
+        if (from && ts.isStringLiteral(from) && ELECTRON_MODULE.test(from.text)) {
+          const clause = ts.isImportDeclaration(node) ? node.importClause?.namedBindings : node.exportClause;
+          if (clause && (ts.isNamedImports(clause) || ts.isNamedExports(clause))) {
+            for (const entry of clause.elements) {
+              if ((entry.propertyName ?? entry.name).text === "dialog") record(entry, "electron dialog import");
+            }
+          }
+        }
+      }
+      if (ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+        if (NATIVE_DIALOG_MEMBER.test(node.text)) record(node, "native dialog");
+        if ((APPROVAL_CHANNEL.test(node.text) || APPROVAL_CHANNEL_ALIAS.test(node.text)) && !isChannelDefinitionOrListener(path, node)) {
+          const declaration = ts.isExportSpecifier(node.parent) ? node.parent.parent.parent : undefined;
+          const from = declaration && ts.isExportDeclaration(declaration) ? declaration.moduleSpecifier : undefined;
+          const exportFromGate = from && ts.isStringLiteral(from) && from.text.endsWith("approval-presentation.js");
+          if (!exportFromGate) record(node, "approval request channel");
+        }
+      }
+      if (isApprovalRequestAccess(node) && !isChannelDefinitionOrListener(path, node)) record(node, "approval request channel");
+      const property = propertyOf(node);
+      if (property?.name === "dialog" && fromElectron(property.owner)) record(node, "electron dialog access");
+      if (ts.isVariableDeclaration(node) && node.initializer && fromElectron(node.initializer) && ts.isObjectBindingPattern(node.name)) {
+        for (const entry of node.name.elements) {
+          const name = entry.propertyName ?? entry.name;
+          if (name && (ts.isIdentifier(name) || ts.isStringLiteral(name)) && name.text === "dialog") record(entry, "electron dialog import");
+        }
+      }
+      if (property?.name === "sendDecisionCard" && !ts.isTypeOfExpression(node.parent)) record(node, "remote approval card");
+      node.forEachChild(inspect);
+    }
+    inspect(file);
   }
-  const gate = sources.get("permissions/approval-gate.ts")?.split("async requestAndWait(req:")[1];
-  expect(gate?.indexOf("unattendedApprovalDenial()")).toBeLessThan(gate?.indexOf("this.pending.set") ?? -1);
-  expect(gate?.indexOf("unattendedApprovalDenial()")).toBeLessThan(gate?.indexOf("this.notifyPendingParked") ?? -1);
+  return found;
+}
+
+function productionSources(): Map<string, string> {
+  const paths = readdirSync(fileURLToPath(SRC), { recursive: true, encoding: "utf8" });
+  return new Map(paths.map(path => path.replaceAll("\\", "/"))
+    .filter(path => /\.[cm]?[jt]sx?$/.test(path) && !path.split("/").includes("__tests__") && !path.includes("/test-helpers."))
+    .map(path => [path, readFileSync(new URL(path, SRC), "utf8")]));
+}
+
+it("reserves native dialogs and approval request transports for the common presentation gate", () => {
+  expect(violations(productionSources())).toEqual([]);
+});
+
+it("rejects a raw native dialog in a virtual new file", () => {
+  const path = "main/new-picker.ts";
+  expect(violations(new Map([[path, `import { dialog as picker } from "electron";
+picker["showSaveDialogSync"]({});`]]))).toEqual([
+    `${path}:1 electron dialog import`,
+    `${path}:2 native dialog`,
+  ]);
+});
+
+it("rejects an extra native dialog and approval send in an existing presenter", () => {
+  const path = "main/browser/browser-workspace-desktop.ts";
+  const source = readFileSync(new URL(path, SRC), "utf8");
+  const line = source.split("\n").length + 1;
+  expect(violations(new Map([[path, `${source}
+async function added(win: Electron.WebContents) {
+  const platform = await import("electron");
+  platform.dialog.showMessageBox({});
+  win.send("ave:approval:request", {});
+}`]]))).toEqual([`${path}:${line + 2} electron dialog access`, `${path}:${line + 2} native dialog`, `${path}:${line + 3} approval request channel`]);
 });

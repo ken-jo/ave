@@ -84,9 +84,14 @@ describe("what the plugin gets back", () => {
 describe("one chooser per plugin", () => {
   it("refuses a second chooser while the first is still up", async () => {
     const { promise, resolve: release } = deferred<{ canceled: boolean; filePaths: string[] }>();
-    showOpenDialog.mockReturnValueOnce(promise);
+    const opened = deferred<void>();
+    showOpenDialog.mockImplementationOnce(() => {
+      opened.resolve();
+      return promise;
+    });
 
     const first = pickFoldersForPlugin("local-indexer", withWindow);
+    await opened.promise;
     await expect(pickFoldersForPlugin("local-indexer", withWindow)).rejects.toBeInstanceOf(
       FolderPickerBusyError,
     );

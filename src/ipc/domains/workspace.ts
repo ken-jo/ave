@@ -1,4 +1,5 @@
-import { dialog, ipcMain, shell } from "electron";
+import { pickNativeFiles } from "../../permissions/approval-presentation.js";
+import { ipcMain, shell } from "electron";
 import { t } from "../../i18n/index.js";
 import { promises as fs, type Dirent } from "node:fs";
 import { isAbsolute as isAbsolutePath, join, resolve as resolvePath } from "node:path";
@@ -941,11 +942,11 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
 
       const win = getMainWindow();
       const { filePaths, canceled } = win
-        ? await dialog.showOpenDialog(win, {
+        ? await pickNativeFiles(win, {
             title: t("chatPreviewRail.pickRootTitle"),
             properties: ["openDirectory", "createDirectory"],
           })
-        : await dialog.showOpenDialog({
+        : await pickNativeFiles({
             title: t("chatPreviewRail.pickRootTitle"),
             properties: ["openDirectory", "createDirectory"],
           });
