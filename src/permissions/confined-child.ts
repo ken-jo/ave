@@ -211,6 +211,7 @@ function assertMxcWorkerTransport(owner: WorkerEgressOwner, transport?: PluginWo
 interface NativeHolderBinding {
   readonly plan: object;
   active: boolean;
+  readonly descendantAdmission: AbortSignal;
   readonly children: Set<{ release(): Promise<void> }>;
   readonly footprint: LiveHolderFootprint;
 }
@@ -347,10 +348,11 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   if ([winPath.normalize(spec.cwd), cwdTarget].some((form) => isWindowsPathAtOrUnder(form, runtimeRoot)) && !isIssuedContainerHome(spec.cwd, spec.home)) {
     throw new MxcProcessContractError("Container working directory is inside the sandbox runtime root");
   }
+  const parent = spec.parent === undefined ? undefined : nativeHolderBindings.get(spec.parent);
+  const parentAdmission = parent?.descendantAdmission;
   const assertParent = (): void => {
     if (spec.parent === undefined) return;
-    const parent = nativeHolderBindings.get(spec.parent);
-    if (!parent?.active || parent.plan !== plan) throw new MxcProcessContractError("Extension parent backend is no longer admitted");
+    if (!parent?.active || parentAdmission?.aborted || parent.plan !== plan) throw new MxcProcessContractError("Extension parent backend is no longer admitted");
   };
   assertParent();
   spec.assertStillValid?.();
@@ -494,7 +496,12 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
           };
           const unsubscribe = [onMxcReleaseGateChanged(check), onWindowsContainerEvidenceChanged(check), onSandboxStatusChanged(check),
             onMxcHolderLifetimeAdmissionSealed(revoke)];
-          return () => { for (const stop of unsubscribe) stop(); };
+          parentAdmission?.addEventListener("abort", revoke, { once: true });
+          if (parentAdmission?.aborted) revoke();
+          return () => {
+            parentAdmission?.removeEventListener("abort", revoke);
+            for (const stop of unsubscribe) stop();
+          };
         },
       });
       return child.startEvidence;
@@ -506,7 +513,8 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     admitted.assertStillValid();
     assertManagedChildProcessAdmissionOpen(spec.label);
     if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed during native start");
-    binding = { plan, active: true, children: new Set(), footprint: ownRoots };
+    const descendantAdmission = parentAdmission === undefined ? signal : AbortSignal.any([signal, parentAdmission]);
+    binding = { plan, active: true, descendantAdmission, children: new Set(), footprint: ownRoots };
     const result: MxcConfinedChildSpawn = Object.freeze({ process: child, confinement: "windows-mxc", release: lifetime.release });
     nativeHolderBindings.set(result, binding);
     spec.signal?.addEventListener("abort", releaseOnAbort, { once: true });
