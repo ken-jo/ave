@@ -5224,6 +5224,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "shellExecution.blocked": "현재 실행 계획에서는 셸을 실행할 수 없습니다.",
   "shellExecution.cwdPinLost": "cwd-pin-lost: 명령과 명령이 시작한 모든 프로세스가 멈추기 전에 Ave가 작업 디렉터리 고정을 잃어, 이 실행은 실패로 처리됩니다.",
   "shellExecution.cwdPinStoppedBackground": "이 명령이 시작한 백그라운드 프로세스는 명령이 끝날 때 중지되었습니다(cwd 고정).",
+  "shellExecution.cwdPinUnconfirmed": "cwd-pin-unconfirmed: 작업 디렉터리를 고정한 동안 이 명령이 시작한 모든 프로세스가 멈췄는지 Ave가 확인하지 못해, 이 실행은 실패로 처리됩니다.",
   "shellExecution.homePrivacyHelperUnavailable": "시작할 때 Ave가 홈 폴더 보호를 확인하지 못해 셸 명령과 훅이 꺼져 있습니다. Ave를 다시 시작하세요. 문제가 계속되면 Ave를 다시 설치하세요.",
   "shellExecution.boundaryUnverifiedAsk": "시작할 때 Ave 홈 보호를 확인할 수 없어, 셸 명령은 승인한 뒤에만 OS 샌드박스 없이 실행됩니다. 한 번만 승인하거나, 홈 보호를 확인할 수 없는 동안 이 세션의 이후 셸 명령과 훅에 대한 샌드박스 승인을 면제할 수 있습니다. 다른 권한 검사는 계속 적용되며 다시 승인을 요청할 수 있습니다.",
   "shellExecution.boundaryUnverifiedOneTime": "시작할 때 Ave 홈 보호를 확인할 수 없어 이 명령은 OS 샌드박스 없이 실행됩니다. 이 명령을 한 번만 승인할 수 있습니다.",

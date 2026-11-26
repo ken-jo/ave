@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __resetManagedChildProcessesForTest, forceKillAndDrainManagedChildProcesses, getManagedChildProcessCount } from "../../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { ToolExecutionContext } from "../base.js";
-import { backgroundShellManager as manager, createBashOutputTool, MAX_OUTPUT_CHARS } from "../shell-tools.js";
+import { backgroundShellManager as manager, createBashKillTool, createBashOutputTool, MAX_OUTPUT_CHARS } from "../shell-tools.js";
 import { t } from "../../i18n/index.js";
 import type { WindowsHoldOutcome } from "../../shared/windows-path-facts.js";
 
@@ -238,23 +238,71 @@ describe("background completion waiting", () => {
 describe("background cwd pin outcome", () => {
   function pinned(pin: () => Promise<WindowsHoldOutcome | undefined>) {
     const child = new EventEmitter() as ChildProcess;
-    Object.assign(child, { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn(() => true), exitCode: null });
+    const stdout = new EventEmitter();
+    Object.assign(child, { stdout, stderr: new EventEmitter(), kill: vi.fn(() => true), exitCode: null });
     const shellId = manager.register({ child, sessionId: "owner", command: "work", startedAt: "t", cwdPin: pin });
-    return { child, shellId };
+    return { child, stdout, shellId };
   }
-  it("fails a background run whose pin was lost even when it exited 0", async () => {
-    const f = pinned(async () => ({ kind: "lost" }));
+  const settled = async (shellId: string) => {
+    const result = await read(shellId, 1000, undefined, "owner", "completion");
+    return { result, body: JSON.parse(result.output) as Record<string, unknown> };
+  };
+  const kill = (shellId: string) => createBashKillTool().execute({ shellId }, { metadata: { sessionId: "owner" } } as ToolExecutionContext);
+
+  it.each([
+    [{ kind: "lost" } as const, "shellExecution.cwdPinLost", { cwdPinLost: true }],
+    [{ kind: "unconfirmed" } as const, "shellExecution.cwdPinUnconfirmed", { cwdPinUnconfirmed: true }],
+  ] as const)("keeps the reason for a %o hold past saturated output", async (pin, key, metadata) => {
+    const f = pinned(async () => pin);
+    f.stdout.emit("data", Buffer.from("x".repeat(MAX_OUTPUT_CHARS + 10)));
     f.child.emit("close", 0);
-    await vi.waitFor(() => expect(manager.read("owner", f.shellId)).toMatchObject({ status: "failed", output: expect.stringContaining(t("shellExecution.cwdPinLost")) }));
+    const { result, body } = await settled(f.shellId);
+    expect(body).toMatchObject({ status: "failed", exitCode: 0, truncated: true, completion: t(key) });
+    expect(result).toMatchObject({ isError: true, metadata });
   });
-  it("names the background processes the pin stopped", async () => {
+  it("names the stopped background processes past saturated output, after an incremental read", async () => {
     const f = pinned(async () => ({ kind: "reaped", stopped: true }));
+    f.stdout.emit("data", Buffer.from("x".repeat(MAX_OUTPUT_CHARS + 10)));
+    expect(JSON.parse((await read(f.shellId)).output)).toMatchObject({ status: "running", truncated: true });
     f.child.emit("close", 0);
-    await vi.waitFor(() => expect(manager.read("owner", f.shellId)).toMatchObject({ status: "exited", output: expect.stringContaining(t("shellExecution.cwdPinStoppedBackground")) }));
+    const { result, body } = await settled(f.shellId);
+    expect(body).toMatchObject({ status: "exited", output: "", completion: t("shellExecution.cwdPinStoppedBackground") });
+    expect(result.isError).toBe(false);
+  });
+  it("leaves a command's own exit 125 alone when its hold reaped cleanly", async () => {
+    const f = pinned(async () => ({ kind: "reaped", stopped: false }));
+    f.child.emit("close", 125);
+    const { result, body } = await settled(f.shellId);
+    expect(body).toMatchObject({ status: "exited", exitCode: 125 });
+    expect(body).not.toHaveProperty("completion");
+    expect(result.isError).toBe(false);
+    expect(result).not.toHaveProperty("metadata");
   });
   it("treats a rejected pin outcome as lost", async () => {
     const f = pinned(async () => { throw new Error("helper gone"); });
     f.child.emit("close", 0);
-    await vi.waitFor(() => expect(manager.read("owner", f.shellId)?.status).toBe("failed"));
+    expect((await settled(f.shellId)).body).toMatchObject({ status: "failed", completion: t("shellExecution.cwdPinLost") });
+  });
+  it("reports a stopped held run only once its hold has reported", async () => {
+    let report!: (outcome: WindowsHoldOutcome) => void;
+    const f = pinned(() => new Promise((settle) => { report = settle; }));
+    const pending = kill(f.shellId);
+    f.child.emit("close", null);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(manager.read("owner", f.shellId)?.status).toBe("running");
+    report({ kind: "reaped", stopped: true });
+    const body = JSON.parse((await pending).output) as Record<string, unknown>;
+    expect(body.status).toBe("killed");
+    expect(body).not.toHaveProperty("completion");
+  });
+  it("keeps a lost hold's reason when the run was stopped first", async () => {
+    let report!: (outcome: WindowsHoldOutcome) => void;
+    const f = pinned(() => new Promise((settle) => { report = settle; }));
+    const pending = kill(f.shellId);
+    f.child.emit("close", null);
+    report({ kind: "lost" });
+    const result = await pending;
+    expect(JSON.parse(result.output)).toMatchObject({ status: "failed", completion: t("shellExecution.cwdPinLost") });
+    expect(result).toMatchObject({ isError: true, metadata: { cwdPinLost: true } });
   });
 });

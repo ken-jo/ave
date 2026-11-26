@@ -10,6 +10,8 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { holdHostShellSpawnDirectory, HostShellDirectoryHoldError, type HostShellSpawnDirectoryHold } from "../host-shell-execution-permit.js";
 import { captureShellWorkingDirectoryIdentity } from "../shell-working-directory-identity.js";
 import { resolveWindowsJobLauncher } from "../../main/windows-job-launcher.js";
+import type { ToolExecutionContext } from "../../tools/base.js";
+import { backgroundShellManager, createBashKillTool } from "../../tools/shell-tools.js";
 
 const helpers = vi.hoisted(() => ({ spawned: [] as import("node:child_process").ChildProcess[], binary: undefined as string | undefined }));
 vi.mock("node:child_process", async (importOriginal) => {
@@ -339,6 +341,23 @@ describe.runIf(process.platform === "win32")("host shell spawn directory hold", 
     const outcome = await held.outcome();
     expect(alive(descendant)).toBe(false);
     expect(outcome).toMatchObject({ kind: "reaped" });
+  });
+
+  it("reports a stopped held background run only once its hold has proven the tree gone", async () => {
+    const held = await holdLeaf();
+    const { child, output } = launchTree(held);
+    await vi.waitFor(() => expect(output()).toMatch(/^\d+/u), { timeout: 5000 });
+    const descendant = Number.parseInt(output(), 10);
+    let reported = false;
+    void held.outcome().then(() => { reported = true; });
+    const shellId = backgroundShellManager.register({ child, sessionId: "hold-kill", command: "tree", startedAt: "t", cwdPin: held.outcome });
+    try {
+      const result = await createBashKillTool().execute({ shellId }, { metadata: { sessionId: "hold-kill" } } as ToolExecutionContext);
+      await Promise.resolve();
+      expect(reported).toBe(true);
+      expect(alive(descendant)).toBe(false);
+      expect(JSON.parse(result.output)).toMatchObject({ status: "killed" });
+    } finally { backgroundShellManager._resetForTest(); }
   });
 
   it("fails a run whose helper cannot prove its job empty, and the launcher still stops the tree", async () => {

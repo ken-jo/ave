@@ -1643,17 +1643,22 @@ handle to a kill-on-close job. The command starts suspended through the job
 launcher and runs only after the helper has put it in that job. A helper that
 is gone refuses the launch before the command runs, and a helper that exits
 stops the whole tree through the OS. The helper admits only the launcher the
-host started, and only that launcher's own suspended child; every pipe step has
-a deadline, and neither job allows breakaway, so a wrapper (sandbox runner or
-container) and its payload stay in the job. After the root exits the helper
-stops the job, proves it empty and rechecks the held chain (the leaf reopened
-without following links must keep its file id and not be a reparse point); the
-launcher then proves its own job empty. The host reads the outcome from the
-helper, not from the exit code: a lost hold fails the run with a trusted
-`cwd-pin-lost` reason after the output (even after exit code 0, and never cut by
-output truncation), and a command's own exit 125 stays its own. Descendants
-still running when the root exits are stopped, and the result says so. Terminal
-tabs and launches without a permit are not held. The host also refuses before
+host started after it, and only that launcher's own suspended child, as one
+framed message; every pipe step has a deadline, and neither job allows
+breakaway, so a wrapper (sandbox runner or container) and its payload stay in
+the job. After the root or the launcher exits the helper stops the job, proves
+it empty and rechecks the held chain (the leaf reopened without following links
+must keep its file id and not be a reparse point); the launcher then proves its
+own job empty. The host reads the outcome from the helper, not from the exit
+code, and waits for it on every completion, including cancellation, timeout and
+a stopped background run: a lost or unconfirmed hold (or no outcome within the
+query deadline) fails the run with a trusted `cwd-pin-lost` or
+`cwd-pin-unconfirmed` reason carried outside the output (even after exit code
+0, and never cut by output truncation), and a command's own exit 125 stays its
+own. A refused pinned start fails the run and is never retried unpinned.
+Descendants still running when the root exits are stopped, and the result says
+so. Terminal tabs and launches without a permit are not held, and their
+processes in a held directory keep running. The host also refuses before
 spawn when the hold cannot be taken, no longer matches the approved identity,
 or has been observed lost. While held, rename, delete and share-checked opens
 that omit read sharing can be refused on the leaf and its ancestors. Residuals:

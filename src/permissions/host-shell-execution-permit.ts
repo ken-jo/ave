@@ -294,7 +294,7 @@ export interface HostShellSpawnDirectoryHold {
   readonly launcherArgs: readonly string[];
   /** Keep the hold until this child closes; only this child may put its command in the hold's job. */
   bind(child: ChildProcess): void;
-  /** Settles after the bound child closes: the helper's report, "lost" when it does not report in time, undefined without a hold. */
+  /** Settles after the bound child closes: the helper's report, "unconfirmed" when it does not report in time, undefined without a hold. */
   outcome(): Promise<WindowsHoldOutcome | undefined>;
   /** Release now unless a child was bound. */
   dispose(): void;
@@ -309,7 +309,7 @@ const NO_DIRECTORY_HOLD: HostShellSpawnDirectoryHold = Object.freeze({
  * against rename and delete from before its final check until the child closes. The hold helper owns the only handle to a
  * kill-on-close job; the command starts suspended through the job launcher and runs only once it is in that job, so a
  * helper that is gone refuses the launch and a helper that exits stops the whole tree. Only the bound launcher may
- * admit its command. `outcome` is the helper's own report, so a lost hold fails the run whatever the exit code.
+ * admit its command. `outcome` is the helper's own report, so a lost or unconfirmed hold fails the run whatever the exit code.
  * Acquisition failure, an identity mismatch or an observed loss refuses before spawn. Nothing is proven inside the
  * child, and a held leaf whose contents can be removed can still become a junction in place. */
 export async function holdHostShellSpawnDirectory(authorization: HostShellSpawnAuthorization | undefined): Promise<HostShellSpawnDirectoryHold> {
@@ -324,7 +324,7 @@ export async function holdHostShellSpawnDirectory(authorization: HostShellSpawnA
     bind(child) {
       if (child.pid !== undefined) held.admit(child.pid);
       bound = new Promise<void>((closed) => child.once("close", () => closed())).then(() => Promise.race([held.outcome(),
-        new Promise<WindowsHoldOutcome>((late) => setTimeout(() => late({ kind: "lost" }), TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs).unref())]))
+        new Promise<WindowsHoldOutcome>((late) => setTimeout(() => late({ kind: "unconfirmed" }), TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs).unref())]))
         .finally(held.release);
       // A started child can report an error and keep running; only a start without a process frees the hold early.
       child.on("error", () => { if (child.pid === undefined) held.release(); });

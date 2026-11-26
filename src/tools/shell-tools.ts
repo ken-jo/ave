@@ -282,12 +282,21 @@ function formatShellCompletion(output: string, empty: boolean, completion: Shell
   return empty ? `Shell command ${cause} without output.` : `Shell command ${cause}.\n${output}`;
 }
 
-/** The working-directory hold reports outside the command's output: a lost hold fails the run whatever the exit code, and
- * background processes it stopped at the end are named. */
-function withCwdPinOutcome<T extends { output: string; isError: boolean; metadata?: Record<string, unknown> }>(result: T, pin: WindowsHoldOutcome | undefined): T {
-  if (pin === undefined || (pin.kind === "reaped" && !pin.stopped)) return result;
-  if (pin.kind === "reaped") return { ...result, output: `${result.output}\n${t("shellExecution.cwdPinStoppedBackground")}` };
-  return { ...result, output: `${result.output}\n${t("shellExecution.cwdPinLost")}`, isError: true, metadata: { ...result.metadata, cwdPinLost: true } };
+/** The working-directory hold's report, kept outside the command's output: the reason a lost or unconfirmed hold fails
+ * the run, or the notice that background processes were stopped when an ordinary run ended. */
+function cwdPinCompletion(pin: WindowsHoldOutcome | undefined, stoppedEarly: boolean): { text: string; metadata?: Record<string, true> } | undefined {
+  if (pin === undefined) return undefined;
+  if (pin.kind === "lost") return { text: t("shellExecution.cwdPinLost"), metadata: { cwdPinLost: true } };
+  if (pin.kind !== "reaped") return { text: t("shellExecution.cwdPinUnconfirmed"), metadata: { cwdPinUnconfirmed: true } };
+  return pin.stopped && !stoppedEarly ? { text: t("shellExecution.cwdPinStoppedBackground") } : undefined;
+}
+
+/** `stoppedEarly`: the run was cancelled or timed out, so its own result already says it was stopped. */
+function withCwdPinOutcome<T extends { output: string; isError: boolean; metadata?: Record<string, unknown> }>(result: T, pin: WindowsHoldOutcome | undefined, stoppedEarly = false): T {
+  const completion = cwdPinCompletion(pin, stoppedEarly);
+  if (completion === undefined) return result;
+  if (completion.metadata === undefined) return { ...result, output: `${result.output}\n${completion.text}` };
+  return { ...result, output: `${result.output}\n${completion.text}`, isError: true, metadata: { ...result.metadata, ...completion.metadata } };
 }
 
 /** Keep a bounded UTF-8 prefix while continuing to drain both child pipes. */
@@ -562,6 +571,10 @@ interface BackgroundShellEntry {
   terminate: () => void;
   waiters: Set<() => void>;
   observation?: AgentTerminalObservationLease;
+  /** A held run stays running until its working-directory hold reports; the report is kept outside the output. */
+  pinned: boolean;
+  stopRequested: boolean;
+  pin?: WindowsHoldOutcome;
 }
 
 interface BackgroundShellReadResult {
@@ -1042,6 +1055,7 @@ function createManager(): BackgroundShellManager {
   const snapshot = (entry: BackgroundShellEntry): BackgroundShellReadResult => {
     const output = entry.output.slice(entry.readCursor);
     entry.readCursor = entry.output.length;
+    const pin = entry.status === "running" ? undefined : cwdPinCompletion(entry.pin, entry.stopRequested);
     return {
       shellId: entry.shellId,
       status: entry.status,
@@ -1050,6 +1064,8 @@ function createManager(): BackgroundShellManager {
       output,
       truncated: entry.outputTruncated,
       command: entry.command,
+      ...(pin === undefined ? {} : { completion: pin.text }),
+      ...(pin?.metadata === undefined ? {} : { isError: true, metadata: pin.metadata }),
     };
   };
 
@@ -1070,7 +1086,8 @@ function createManager(): BackgroundShellManager {
   const stopOwned = (sessionId: string, shellId: string): BackgroundShellEntry | undefined => {
     const entry = owned(sessionId, shellId);
     if (!entry) return undefined;
-    if (entry.status === "running") entry.status = "killed";
+    if (entry.pinned) entry.stopRequested ||= entry.status === "running";
+    else if (entry.status === "running") entry.status = "killed";
     entry.terminate();
     notify(entry);
     return entry;
@@ -1151,6 +1168,8 @@ function createManager(): BackgroundShellManager {
         terminate,
         waiters: new Set(),
         observation,
+        pinned: cwdPin !== undefined,
+        stopRequested: false,
       };
       shells.set(shellId, entry);
 
@@ -1172,15 +1191,9 @@ function createManager(): BackgroundShellManager {
         const settle = (pin: WindowsHoldOutcome | undefined): void => {
           entry.exitCode = code;
           entry.signal = signal;
-          if (pin?.kind === "lost" && entry.status === "running") {
-            entry.status = "failed";
-            append(entry, `\n${t("shellExecution.cwdPinLost")}\n`);
-          } else if (pin?.kind === "reaped" && pin.stopped) {
-            append(entry, `\n${t("shellExecution.cwdPinStoppedBackground")}\n`);
-          }
-          if (entry.status === "running") {
-            entry.status = signal === null ? "exited" : "killed";
-          }
+          entry.pin = pin;
+          if (pin !== undefined && pin.kind !== "reaped") entry.status = "failed";
+          else if (entry.status === "running") entry.status = signal === null && !entry.stopRequested ? "exited" : "killed";
           observation?.finish(code, entry.status === "killed" ? "cancelled" : entry.status === "failed" || code !== 0 ? "failed" : "completed");
           notify(entry);
         };
@@ -2763,12 +2776,12 @@ export async function spawnWithSandbox(
       )), command, lifecycleCleaned);
       outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || sandboxCleanupFailed ? "failed" : undefined);
       if (lifetime.timedOut) {
-        resolveResult(withReleaseFailures({
+        resolveResult(withCwdPinOutcome(withReleaseFailures({
           output: formatTimeoutOutput(formatted, command, timeoutSeconds),
           isError: true,
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: true, sandboxed: true,
             ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
-        }, released));
+        }, released), await directoryHold.outcome(), true));
       } else {
         const result = withCwdPinOutcome(withReleaseFailures({
           output: formatted,
@@ -2776,7 +2789,7 @@ export async function spawnWithSandbox(
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, sandboxed: true,
             ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
           ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
-        }, released), lifetime.aborted ? undefined : await directoryHold.outcome());
+        }, released), await directoryHold.outcome(), lifetime.aborted);
         resolveResult(!lifetime.aborted && code !== null && code !== 0
           ? await attachFilesystemBlock(result, egress.token, command, resolvedCwd) : result);
       }
@@ -2935,11 +2948,11 @@ async function spawnWithTimeout(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
       ));
       if (lifetime.timedOut) {
-        resolve({
+        resolve(withCwdPinOutcome({
           output: formatTimeoutOutput(formatted, command, timeoutSeconds),
           isError: true,
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: true },
-        });
+        }, await launchHold?.outcome(), true));
       } else {
         resolve(withCwdPinOutcome({
           output: rejected
@@ -2947,7 +2960,7 @@ async function spawnWithTimeout(
           isError: rejected || lifetime.aborted || code !== 0,
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code },
           ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
-        }, lifetime.aborted ? undefined : await launchHold?.outcome()));
+        }, await launchHold?.outcome(), lifetime.aborted));
       }
     };
 
@@ -3256,7 +3269,11 @@ export function createBashKillTool(
         return { output: `bash_kill: ${NOT_FOUND}.`, isError: true };
       }
       await manager.waitForLocalCleanup(sessionIdOf(ctx));
-      return present(result);
+      // A held run reports stopped only once its working-directory hold has proven its processes gone.
+      if (result.status !== "running") return present(result);
+      await manager.waitForOutput(sessionIdOf(ctx), shellId, 2 * TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs, undefined, "completion");
+      const settled = manager.read(sessionIdOf(ctx), shellId);
+      return present(settled === undefined ? result : { ...settled, output: result.output + settled.output });
     },
   });
   canonicalBrokerLifecycleTools.add(tool);
@@ -4166,7 +4183,7 @@ async function spawnPowerShellWithSandbox(
         metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut, sandboxed: true,
           ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
       }, released);
-      const pinned = lifetime.aborted || lifetime.timedOut ? result : withCwdPinOutcome(result, await cwdHold.outcome());
+      const pinned = withCwdPinOutcome(result, await cwdHold.outcome(), lifetime.aborted || lifetime.timedOut);
       resolveResult(!lifetime.aborted && !lifetime.timedOut && code !== null && code !== 0
         ? await attachFilesystemBlock(pinned, egress.token, command, cwd) : pinned);
     };
@@ -4468,7 +4485,7 @@ async function spawnPowerShellInMxc(
           },
           () => endObservation(code, watch.aborted ? "cancelled" : watch.timedOut || exitSignal !== null ? "failed" : undefined),
         ]);
-        const pinned = watch.aborted || watch.timedOut ? completed : withCwdPinOutcome(completed, await launchHold?.outcome());
+        const pinned = withCwdPinOutcome(completed, await launchHold?.outcome(), watch.aborted || watch.timedOut);
         const result = parserResponse === undefined && !watch.aborted && !watch.timedOut && code !== null && code !== 0
           ? await attachFilesystemBlock(pinned, egressToken, command, cwd) : pinned;
         return release(() => result, failures);
@@ -4546,7 +4563,7 @@ async function spawnPowerShell(
             ? `PowerShell spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}` : output,
         isError: rejected || lifetime.aborted || lifetime.timedOut || code !== 0,
         metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut },
-      }, lifetime.aborted || lifetime.timedOut ? undefined : await launchHold?.outcome()));
+      }, await launchHold?.outcome(), lifetime.aborted || lifetime.timedOut));
     };
 
     const fault = finalizationFault("tool:powershell", resolve, "PowerShell ");

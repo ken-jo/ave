@@ -1,15 +1,19 @@
-import { appendFileSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const boundary = vi.hoisted(() => ({ helper: undefined as ChildProcess | undefined, members: "" }));
+const boundary = vi.hoisted(() => ({ helper: undefined as ChildProcess | undefined, members: "", spawns: [] as string[][], refuseHold: false }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
     spawn: vi.fn((...args: Parameters<typeof actual.spawn>) => {
+      const argv = Array.isArray(args[1]) ? args[1].map(String) : [];
+      boundary.spawns.push([String(args[0]), ...argv]);
+      // A launcher pointed at a pipe no helper serves is refused its hold, as after a lost helper.
+      if (boundary.refuseHold && argv[0] === "--hold-pipe") args[1] = [argv[0], `${argv[1]}-gone`, ...argv.slice(2)];
       if (!String(args[0]).endsWith("ave-path-kind.exe") || !(args[1] as string[]).includes("--hold")) return actual.spawn(...args);
       const fixture = String(args[0]).replace(/ave-path-kind\.exe$/u, "ave-path-kind-hold-fixture.exe");
       const helper = actual.spawn(fixture, args[1] as string[], { ...(args[2] as object), stdio: ["pipe", "pipe", "pipe"] });
@@ -35,9 +39,9 @@ import { getVendoredSrtWinExePath, initializeAsrtSandbox, resetAsrtSandbox } fro
 
 const FIXTURE = resolve("resources", "windows-path-kind", process.arch, "ave-path-kind-hold-fixture.exe");
 
-async function approvedPowerShell(directory: string, command: string) {
+async function approvedPowerShell(directory: string, command: string, timeoutSeconds = 60) {
   const plan = getHostShellExecutionPlan();
-  const input = { command, timeoutSeconds: 60 };
+  const input = { command, timeoutSeconds };
   const binding = buildHostShellExecutionPermitBinding({
     plan, toolName: "powershell", toolUseId: "hold-wrapper", rawInput: input, executionCwd: directory, extraAllowedDirectories: [],
   });
@@ -77,7 +81,7 @@ describe.runIf(process.platform === "win32")("held working directory under the c
     __resetSandboxRequestedAtBootForTest();
     __resetWindowsSandboxSubstrateForTest();
     boundary.helper = undefined;
-    if (directory !== undefined) rmSync(directory, { recursive: true, force: true });
+    if (directory !== undefined) rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   });
 
   const containerRoute = async (skip: () => never): Promise<string> => {
@@ -96,15 +100,21 @@ describe.runIf(process.platform === "win32")("held working directory under the c
     return root;
   };
 
-  it("stops a background process the container payload left running and says so in the result", { timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async (testContext) => {
+  // The container's own teardown can stop the left process before the hold looks, so the stopped notice is not asserted here.
+  it("has stopped a background process the container payload left running by the time the result settles", { timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async (testContext) => {
     const root = await containerRoute(testContext.skip);
-    writeFileSync(join(root, "spin.cmd"), "@for /l %%i in (1,1,2000000000) do @rem\r\n");
-    writeFileSync(join(root, "leave.cmd"), "@start \"\" /b cmd.exe /d /c \"%~dp0spin.cmd\"\r\n@echo left\r\n");
+    writeFileSync(join(root, "leave.cmd"), [
+      "@start \"\" /b powershell.exe -NoProfile -Command \"Set-Content -LiteralPath '%~dp0spin.pid' -Value $PID; while ($true) { Start-Sleep -Seconds 1 }\"",
+      "@for /l %%i in (1,1,200) do @if not exist \"%~dp0spin.pid\" @for /l %%j in (1,1,20000) do @rem",
+      "@echo left", ""].join("\r\n"));
     const { input, context } = await approvedPowerShell(root, ".\\leave.cmd");
     const result = await new PowerShellTool().execute(input, context);
     evidence("container background result", { isError: result.isError, output: result.output.slice(0, 600), metadata: result.metadata });
+    const left = Number.parseInt(readFileSync(join(root, "spin.pid"), "utf8"), 10);
+    expect(Number.isInteger(left)).toBe(true);
+    expect(alive(left)).toBe(false);
     expect(result.isError, result.output).toBe(false);
-    expect(result.output.endsWith(t("shellExecution.cwdPinStoppedBackground"))).toBe(true);
+    expect(result.output.startsWith("left")).toBe(true);
     expect(result.metadata).not.toHaveProperty("cwdPinLost");
   });
 
@@ -112,25 +122,50 @@ describe.runIf(process.platform === "win32")("held working directory under the c
     directory = await containerRoute(testContext.skip);
     // The payload starts one descendant, a cmd.exe busy loop that outlives the test unless the job stops it.
     // Its output passes the capture limit first, so only a reason carried outside the output survives truncation.
-    writeFileSync(join(directory, "spin.cmd"), "@for /l %%i in (1,1,25000) do @echo 0123456789\r\n@for /l %%i in (1,1,2000000000) do @rem\r\n");
-    const command = ".\\spin.cmd";
-    const { input, context } = await approvedPowerShell(directory, command);
-    const pending = new PowerShellTool().execute(input, context);
+    writeFileSync(join(directory, "spin.cmd"), "@for /l %%i in (1,1,25000) do @echo 0123456789\r\n@echo.>\"%~dp0echoed\"\r\n@for /l %%i in (1,1,2000000000) do @rem\r\n");
+    const listed = await spinning(directory);
+    boundary.helper?.kill();
+    const result = await listed.pending;
+    evidence("container result", { isError: result.isError, output: result.output.slice(0, 600), metadata: result.metadata });
+    expect(listed.members.filter(({ pid }) => alive(pid))).toEqual([]);
+    expect(result.isError).toBe(true);
+    expect(result.output.indexOf("...[truncated]...")).toBeGreaterThan(-1);
+    expect(result.output.indexOf("...[truncated]...")).toBeLessThan(result.output.indexOf(t("shellExecution.cwdPinLost")));
+    expect(result.output.endsWith(t("shellExecution.cwdPinLost"))).toBe(true);
+    expect(result.metadata).toMatchObject({ cwdPinLost: true, returncode: 125 });
+  });
+
+  it.for(["abort", "timeout"] as const)("waits on %s for a hold that cannot prove its job empty and fails the run", { timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async (end, testContext) => {
+    directory = await containerRoute(testContext.skip);
+    writeFileSync(join(directory, "spin.cmd"), "@echo.>\"%~dp0echoed\"\r\n@for /l %%i in (1,1,2000000000) do @rem\r\n");
+    process.env.AVE_TEST_HOLD_UNCONFIRMED = "1";
+    const abort = new AbortController();
+    try {
+      const listed = await spinning(directory, end === "abort" ? { abortSignal: abort.signal } : { timeoutSeconds: 8 });
+      if (end === "abort") abort.abort();
+      const result = await listed.pending;
+      evidence(`container ${end} result`, { isError: result.isError, output: result.output.slice(0, 600), metadata: result.metadata });
+      expect(listed.members.filter(({ pid }) => alive(pid))).toEqual([]);
+      expect(result.isError).toBe(true);
+      expect(result.output.endsWith(t("shellExecution.cwdPinUnconfirmed"))).toBe(true);
+      expect(result.metadata).toMatchObject({ cwdPinUnconfirmed: true });
+    } finally { delete process.env.AVE_TEST_HOLD_UNCONFIRMED; }
+  });
+
+  // Starts spin.cmd under the container route and returns once it has written its marker and its cmd.exe is in the hold job.
+  const spinning = async (root: string, options: { abortSignal?: AbortSignal; timeoutSeconds?: number } = {}) => {
+    const approved = await approvedPowerShell(root, ".\\spin.cmd", options.timeoutSeconds);
+    const pending = new PowerShellTool().execute(approved.input, { ...approved.context, ...(options.abortSignal === undefined ? {} : { abortSignal: options.abortSignal }) });
     let listed: { pid: number; name: string }[] = [];
     const early = pending.then((r) => { throw new Error(`finished early: ${JSON.stringify(r).slice(0, 1500)}`); });
     await Promise.race([early, vi.waitFor(async () => {
+      expect(existsSync(join(root, "echoed"))).toBe(true);
       listed = processNames(await members());
       expect(listed.map(({ name }) => name)).toContain("cmd.exe");
     }, { timeout: 30000, interval: 500 })]);
     evidence("container hold job members", listed);
-    boundary.helper?.kill();
-    const result = await pending;
-    evidence("container result", { isError: result.isError, output: result.output.slice(0, 600), metadata: result.metadata });
-    expect(result.isError).toBe(true);
-    expect(result.output.endsWith(t("shellExecution.cwdPinLost"))).toBe(true);
-    expect(result.metadata).toMatchObject({ cwdPinLost: true, returncode: 125 });
-    await vi.waitFor(() => expect(listed.filter(({ pid }) => alive(pid))).toEqual([]), { timeout: 5000 });
-  });
+    return { pending, members: listed };
+  };
 });
 
 const srtWinProvisioned = (): boolean => {
