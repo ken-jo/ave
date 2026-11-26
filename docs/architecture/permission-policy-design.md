@@ -1640,10 +1640,10 @@ background, Windows sandbox and container wrappers), holds the approved
 directory and every ancestor open without delete sharing, from before the final
 check until the run's verdict. A helper process owns those handles and the only
 handle to a kill-on-close job. The job launcher is always the host's direct
-child. It reaches the helper only over a private channel the host relays
-between the two processes it started, joins the helper's job before it starts
-the command (the helper admits the process the launcher names only after that
-process signals an event duplicated into it), and runs the command in its own
+child. The binding rests on a private channel the host relays between the two
+processes it started. The host checks that the first request names its
+launcher's PID. The helper admits that process to its job after the process
+signals an event duplicated into it. The launcher then runs the command in its own
 nested job. A helper that is gone refuses the launch before the command runs,
 and a helper that exits stops the whole tree through the OS. Neither job
 allows breakaway, so a wrapper (sandbox runner or container) and its payload
@@ -1660,10 +1660,12 @@ reports exactly that record when it matches the exit code. Everything else
 (a spawn error, a route error, a missing or garbled record, a launcher that
 went with the job or never exits) is the single fail-closed result
 `cwd-pin-unconfirmed`; it is never reported as reaped and never as the
-command's code. Cancellation, timeout and a stopped background run all ask the
-launcher to stop by closing its input and wait for its verdict. One deadline of
-15 seconds starts at that stop request: when it passes, the host closes the
-helper, the OS stops the tree, and the result is `cwd-pin-unconfirmed`. A lost
+command's code. Cancellation, timeout, background stop and session teardown ask
+the launcher to stop by closing its input. Application quit does so for every
+held background launcher. A 15-second deadline starts at the stop request.
+When it expires, the host closes the helper, the OS stops the tree, and the
+result is `cwd-pin-unconfirmed`. If app shutdown cuts the wait short, it records
+pending runs as unconfirmed before the generic child kill. A lost
 or unconfirmed verdict fails the run with a trusted `cwd-pin-lost` or
 `cwd-pin-unconfirmed` reason carried outside the output (even after exit code
 0; it is not cut by output truncation, and an interrupted call keeps it after
@@ -1675,8 +1677,11 @@ so. Terminal tabs and launches without a permit are not held, and their
 processes in a held directory keep running. The host also refuses before
 spawn when the hold cannot be taken, no longer matches the approved identity,
 or has been observed lost. While held, rename, delete and share-checked opens
-that omit read sharing can be refused on the leaf and its ancestors. Residuals:
-pins only, with no child-side proof, so a held leaf whose contents can be
+that omit read sharing can be refused on the leaf and its ancestors. The plain
+route has a same-user handle duplication residual in the pins-only class. A
+same-user command can duplicate the event or verdict handle out of the launcher.
+Container payloads are denied access to the launcher process. With pins only
+and no child-side proof, a held leaf whose contents can be
 removed can still become a junction in place and be restored before the reap
 check; processes started through a system service (for example a scheduled
 task or WMI) are outside the job. On the plain

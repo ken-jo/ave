@@ -200,6 +200,9 @@ Notes that are part of the contract:
   and a top-level child created after enumeration is not covered by that projection; the next projection denies it. Entry names
   are case-folded, so case-distinct siblings in a case-sensitive directory are not supported and no coverage is claimed for them.
   A relocated Ave home gets the root deny.
+- The Windows shell working-directory pin binds its launcher through the private channel. The plain route has a pins-only
+  residual. A same-user command can duplicate the launcher event or verdict handle. Container payloads are denied access to
+  the launcher process. See [Permission Policy Design](permission-policy-design.md#route-neutral-execution-foundation).
 - Local memory inference uses the Windows system directory for its working directory. The sandbox account already has read access there,
   so inference needs no ACL grant for its fresh process HOME. The active model is under the denied Ave home models directory and the host streams its verified bytes. With no confinement backend, memory-map inference runs unconfined through its switch, which is on by default; with the switch off, inference is disabled (OQ-14 confirmed; owner decision 2026-11-25). Not yet implemented: until the Windows container backend flip (R-win) ships the switch, inference is refused (`local-runtime-unavailable`) when the OS sandbox is not active (owner decision 2026-11-25).
 - Unverified Ave home privacy at boot (any boot privacy failure: boundary-link, boundary-unlisted, the Windows ACL, ownership,

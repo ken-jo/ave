@@ -324,10 +324,11 @@ bool leaf_still_pinned(const PinnedPath& pinned) {
     && (current.tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
 }
 
-// The channel reaches only the launcher the host started: its other end was handed to that process at
-// creation. The launcher names its process id; the process opened under that id joins the job only
-// after it signals an event duplicated into it, which no other process can name. The launcher then runs
-// its command inside this job and, once its own job is empty, asks whether the held chain still stands.
+// The binding rests on the private channel relayed by the host. The process named by the launcher
+// joins the job after it signals the event duplicated into it. The plain route has a pins-only
+// residual: a same-user command can duplicate the event or verdict handle out of the launcher.
+// Container payloads are denied access to the launcher process. Once its own job is empty, the
+// launcher asks whether the held chain still stands.
 // This helper stops nothing and reports nothing else: its exit closes the job, which stops every member.
 DWORD WINAPI serve_hold_job(void* context) {
   auto* hold = static_cast<HoldJob*>(context);

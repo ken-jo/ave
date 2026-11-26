@@ -223,8 +223,8 @@ int wmain(int argc, wchar_t** argv) {
   startup.StartupInfo.hStdError = inherited[2];
   startup.lpAttributeList = attributes;
   if (held) {
-    // The helper opens the process named here and proves it is this one: only this process can signal
-    // the event the helper duplicates into it. 'A' follows once this process is in the helper's job.
+    // The helper challenges the process named on the private channel. 'A' follows once that process
+    // signals the duplicated event and joins the helper's job.
     static Deadline admission{CreateEventW(nullptr, TRUE, FALSE, nullptr), 10000, kLost};
     if (!admission.met || !CreateThread(nullptr, 0, enforceDeadline, &admission, 0, nullptr)) endHeld(kLost, 125);
     ULONGLONG proof = 0;
