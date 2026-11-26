@@ -1,10 +1,11 @@
 import { mkdtemp, readFile, writeFile, rm, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { tmpdir } from "node:os";
 import * as fileMentionContext from "../../handlers/file-mention-context.js";
 import { formatFileMentionReference } from "../../../shared/file-mention-reference.js";
 import { checkpointFileMutation, withCodeCheckpoint } from "../../../memory/code-checkpoints.js";
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { beforeAll, describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { sessionUuid } from "../../../__tests__/support/session-uuid.js";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../../../contract/app-contract.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
@@ -253,6 +254,8 @@ function fakeRenderer(): {
   const on = (name: string, fn: (...args: unknown[]) => void) => { (events[name] ??= []).push(fn); };
   return { window: { isDestroyed: () => false, webContents: { on } }, events };
 }
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("ave:chat:* with chat groups", () => {
   beforeEach(async () => {

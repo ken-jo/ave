@@ -2,7 +2,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import {
   clearWorkspaceFileSearchCache,
@@ -37,6 +38,8 @@ afterAll(async () => {
 });
 
 const paths = (r: { matches: Array<{ relativePath: string }> }) => r.matches.map((m) => m.relativePath);
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("searchWorkspaceFiles", () => {
   it("searches the named folder itself, so a large sibling cannot use up the match cap", async () => {
