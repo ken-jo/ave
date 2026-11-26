@@ -66,14 +66,15 @@ pub fn components(input: &[u16]) -> Option<Vec<Vec<u16>>> {
         if server == 2 {
             return None;
         }
-        let share = path[server + 1..]
+        let share_start = server + 1;
+        let root_end = path[share_start..]
             .iter()
             .position(|unit| *unit == SEPARATOR)
-            .map_or(path.len(), |offset| server + 2 + offset);
-        if share <= server + 1 {
+            .map_or(path.len(), |offset| share_start + offset + 1);
+        if root_end <= share_start {
             return None;
         }
-        share
+        root_end
     } else {
         return None;
     };
@@ -289,4 +290,37 @@ pub fn pin(input: &[u16], content: bool) -> Option<PinnedPath> {
         pinned.facts.push(facts);
     }
     verify(&pinned).then_some(pinned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unc_root_preserves_the_separator_after_the_share() {
+        for root in [r"\\server\share", r"\\server\share\"] {
+            assert_eq!(components(&ascii(root)), Some(vec![ascii(root)]));
+        }
+    }
+
+    #[test]
+    fn unc_descendants_keep_the_root_separator_and_resolve_relative_child_names() {
+        let root = ascii(r"\\server\share\");
+        let child = ascii(r"\\server\share\child");
+        let descendant = ascii(r"\\server\share\child\file");
+        for (input, expected) in [
+            (r"\\server\share\child\", vec![root.clone(), child.clone()]),
+            (
+                r"\\?\UNC\server\share\child\file",
+                vec![root, child, descendant],
+            ),
+        ] {
+            let parts = components(&ascii(input)).unwrap();
+            assert_eq!(parts, expected);
+            assert_eq!(child_name(&parts[0], &parts[1]), ascii("child"));
+            if parts.len() == 3 {
+                assert_eq!(child_name(&parts[1], &parts[2]), ascii("file"));
+            }
+        }
+    }
 }
