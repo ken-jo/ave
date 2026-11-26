@@ -288,6 +288,22 @@ describe('memory graph publication', () => {
     expect(await host.get(() => f.catalog)).toBeNull();
     expect(JSON.parse(await readFile(join(f.root, 'snapshot.json'), 'utf8')).cache).toEqual({});
   });
+  it('publishes the ready state in the step that replaces the stored graph', async () => {
+    const f = await fixture();
+    const childDir = f.namespace.childDir;
+    let publishing = false;
+    f.namespace.childDir = async name => { const path = await childDir(name); publishing = name === ''; return path; };
+    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model', runWorker: f.runWorker });
+    // The first catalog read after the directory step is the publication check. The request is superseded right behind it.
+    const readCatalog = () => {
+      if (publishing) { publishing = false; queueMicrotask(() => host.cancel()); }
+      return f.catalog;
+    };
+    await host.build(readCatalog).catch(() => {});
+    const stored: unknown = JSON.parse(await readFile(join(f.root, 'snapshot.json'), 'utf8')).snapshot;
+    expect(stored).not.toBeNull();
+    expect(await host.get(() => f.catalog)).toEqual(stored);
+  });
   it('refuses persisted identities outside the current authorized catalog', async () => {
     const f = await fixture(); const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model', runWorker: f.runWorker });
     const snapshot = await host.build(() => f.catalog);

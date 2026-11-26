@@ -8,6 +8,7 @@ import { openFeatureNamespace, writeFileAtomicAtPathIf, type FeatureNamespaceHan
 import { catalogRevision, LOCAL_NAMESPACE, vectorKey, type VectorCache } from './graph.js';
 import { runMemoryWorker, type MemoryWorkerRunner } from './worker-client.js';
 import type { MemoryMapCatalog, ReadMemoryMapCatalog } from './catalog.js';
+import { commitUnderAdmission } from '../../shared/admission-commit.js';
 import { MemoryMapHostError } from './errors.js';
 import { MAX_INFERENCE_TASK_BYTES } from './inference-request.js';
 import { registerModelBuild } from './model-manager.js';
@@ -195,12 +196,16 @@ export class MemoryMapHost {
         assertCurrent();
         assertLocalAdmission = await this.options.refreshLocalAdmission();
         assertCurrent();
-        assertLocalAdmission();
-        result = await this.runWorker<GraphBuildResult>('', {
+        const assertProjection = assertLocalAdmission;
+        let projecting!: Promise<GraphBuildResult>;
+        commitUnderAdmission(assertProjection, () => { projecting = this.runWorker<GraphBuildResult>('', {
           kind: 'project', input: { ...catalog, cache: vectors, namespace: LOCAL_NAMESPACE, jobId },
         }, controller.signal, progress => {
-          if (progress.phase !== 'embedding') report(progress);
-        });
+          if (progress.phase === 'embedding') return;
+          // A superseded projection reports nothing; its result is refused below.
+          try { commitUnderAdmission(assertProjection, () => report(progress)); } catch { /* Refused. */ }
+        }); });
+        result = await projecting;
         assertCurrent();
         assertLocalAdmission();
         assertLocalAdmission = await this.options.refreshLocalAdmission();
@@ -213,9 +218,11 @@ export class MemoryMapHost {
       if (!canPublish()) throw new MemoryMapHostError('request-stale');
       this.validateSnapshot(result.snapshot, catalog);
       await this.namespace.childDir('');
-      const committed = await writeFileAtomicAtPathIf(join(this.namespace.dir, 'snapshot.json'), JSON.stringify(result), canPublish);
-      if (!committed || !current()) throw new MemoryMapHostError('request-stale');
-      this.cache = result.cache; this.snapshot = result.snapshot; this.pending = null;
+      // The ready state is published in the step that replaces the file, under the same check.
+      const committed = await writeFileAtomicAtPathIf(join(this.namespace.dir, 'snapshot.json'), JSON.stringify(result), canPublish, () => {
+        this.cache = result.cache; this.snapshot = result.snapshot; this.pending = null;
+      });
+      if (!committed) throw new MemoryMapHostError('request-stale');
       return result.snapshot;
     } catch (error) {
       if (generation !== this.generation || controller.signal.aborted) throw new MemoryMapHostError('request-stale');
