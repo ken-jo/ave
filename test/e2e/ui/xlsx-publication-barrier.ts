@@ -55,9 +55,9 @@ export const FIXTURE_DEADLINES: FixtureDeadlines & { readonly startupMs: number;
 /** The longest settle() takes with a profile and home seeded: close, launch settlement, then each removal. */
 export const FIXTURE_CLEANUP_MS = FIXTURE_DEADLINES.shutdownMs + FIXTURE_DEADLINES.closeMs + FIXTURE_DEADLINES.launchMs
   + 3 * FIXTURE_DEADLINES.removeMs;
-/** settle(), the model server's close, the join of late close work, then the workspace removal. */
-export const FIXTURE_TEARDOWN_MS = FIXTURE_CLEANUP_MS + FIXTURE_DEADLINES.serverMs + FIXTURE_DEADLINES.shutdownMs
-  + FIXTURE_DEADLINES.closeMs + 2 * FIXTURE_DEADLINES.removeMs;
+/** settle(), the model server's close, the join of launch and close work, then the workspace removal. */
+export const FIXTURE_TEARDOWN_MS = FIXTURE_CLEANUP_MS + FIXTURE_DEADLINES.serverMs + FIXTURE_DEADLINES.launchMs
+  + FIXTURE_DEADLINES.shutdownMs + FIXTURE_DEADLINES.closeMs + 2 * FIXTURE_DEADLINES.removeMs;
 
 export interface TestBudget {
   readonly bodyMs: number;
@@ -268,13 +268,15 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
   let owned: OwnedLifetime | undefined;
   let phase: "open" | "settling" | "settled" = "open";
   let settleDeadlines: FixtureDeadlines = FIXTURE_DEADLINES;
-  let arrivalClose: Promise<unknown[]> | undefined;
-  const lateArrivals: { done: boolean; work: Promise<unknown[]> }[] = [];
-  const track = (work: Promise<unknown[]>) => {
+  type CloseWork = { done: boolean; work: Promise<unknown[]> };
+  const closeWork = (work: Promise<unknown[]>): CloseWork => {
     const entry = { done: false, work };
-    lateArrivals.push(entry);
     void work.finally(() => { entry.done = true; });
+    return entry;
   };
+  let arrival: (CloseWork & { joined: boolean; lifetime: OwnedLifetime }) | undefined;
+  const lateArrivals: CloseWork[] = [];
+  const track = (work: Promise<unknown[]>) => { lateArrivals.push(closeWork(work)); };
   const retainedPaths = () => [root, ...seededPaths.map((entry) => entry.path), workspace].filter((path) => existsSync(path)).join(", ");
   const reportLate = (message: string, failures: unknown[] = []): void => { console.error(message, ...failures); };
   const fence = (operation: string): void => {
@@ -339,22 +341,41 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
       }
       if (owned) throw new Error("The workbook fixture already owns an app");
       owned = ownLifetime(app, receipt);
-      if (phase === "settling") arrivalClose = closeOwned(owned, settleDeadlines);
+      if (phase === "settling") arrival = Object.assign(closeWork(closeOwned(owned, settleDeadlines)), { joined: false, lifetime: owned });
     },
     /** Reports from arrivals after settle, each bounded by the close deadlines. */
     async late(): Promise<unknown[]> {
       return (await Promise.all(lateArrivals.map((entry) => entry.work))).flat();
     },
-    /** Joins close work registered so far within a bound; unfinished work is reported with the retained paths. */
+    /**
+     * Joins the pending launch and every close registered after settle began, rechecking for new work, under one
+     * absolute deadline. What is still open then is reported with the current retained paths.
+     */
     async join(deadlines: FixtureDeadlines = FIXTURE_DEADLINES): Promise<unknown[]> {
-      const ms = deadlines.shutdownMs + deadlines.closeMs + deadlines.removeMs;
-      try { return (await withinDeadline(Promise.all(lateArrivals.map((entry) => entry.work)), ms, "Workbook late app close")).flat(); }
-      catch {
-        const pending = lateArrivals.filter((entry) => !entry.done).length;
-        const failure = new Error(`Workbook late app close unresolved after ${ms} ms (${pending} of ${lateArrivals.length} pending); retained paths: ${retainedPaths()}`);
-        reportLate(failure.message);
-        return [failure];
+      const ms = deadlines.launchMs + deadlines.shutdownMs + deadlines.closeMs + deadlines.removeMs;
+      const end = Date.now() + ms;
+      const closes = () => [...(arrival && !arrival.joined ? [arrival] : []), ...lateArrivals];
+      const open = () => [...(launch?.pending ? [launch.settled] : []), ...closes().filter((entry) => !entry.done).map((entry) => entry.work)];
+      for (let work = open(); work.length; work = open()) {
+        try { await withinDeadline(Promise.all(work), Math.max(0, end - Date.now()), "Workbook launch and close join"); }
+        catch {
+          const pending = closes().filter((entry) => !entry.done).length;
+          const failure = new Error(`Workbook launch or close unresolved after ${ms} ms (launch ${launch?.pending ? "pending" : "settled"}, ${
+            pending} of ${closes().length} closes pending); retained paths: ${retainedPaths()}`);
+          reportLate(failure.message);
+          return [failure];
+        }
       }
+      // Only finished work is read here, so nothing after the deadline is awaited.
+      const failures: unknown[] = [];
+      if (arrival && !arrival.joined && arrival.done) {
+        arrival.joined = true;
+        const closeFailures = await arrival.work;
+        reportLate(`Workbook app close after settlement ${arrival.lifetime.isClosed() ? "confirmed" : "not confirmed"}; retained paths: ${retainedPaths()}`, closeFailures);
+        failures.push(...closeFailures);
+      }
+      for (const entry of lateArrivals) if (entry.done) failures.push(...await entry.work);
+      return failures;
     },
     /**
      * Close the owned app through its handles within deadlines. The copy, profile and home are removed only after the
@@ -372,9 +393,11 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
         try { await withinDeadline(launch.settled, Math.min(deadlines.launchMs, remaining()), "Workbook app launch settlement"); }
         catch (error) { failures.push(error); }
       }
-      if (arrivalClose) {
-        try { failures.push(...await withinDeadline(arrivalClose, remaining(), "Workbook app close after a late arrival")); }
-        catch (error) { failures.push(error); }
+      if (arrival) {
+        try {
+          failures.push(...await withinDeadline(arrival.work, remaining(), "Workbook app close after a late arrival"));
+          arrival.joined = true;
+        } catch (error) { failures.push(error); }
       }
       phase = "settled";
       const reason = launch?.pending ? "the launch is still in progress"

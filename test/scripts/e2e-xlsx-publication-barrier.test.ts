@@ -473,7 +473,7 @@ describe("workbook publication build", () => {
 
     describe("bounded test run", () => {
       // Mirrors FIXTURE_TEARDOWN_MS at the quick deadlines.
-      const budget = { bodyMs: 100, diagnosticMs: 100, teardownMs: 6 * 200 + 200 + 2 * 200 + 2 * 200 };
+      const budget = { bodyMs: 100, diagnosticMs: 100, teardownMs: 6 * 200 + 200 + 3 * 200 + 2 * 200 };
       const deadlines = { ...quick, serverMs: 200 };
       async function listening() {
         const server = createServer((_request, response) => { response.writeHead(200); response.write("open"); });
@@ -593,7 +593,7 @@ describe("workbook publication build", () => {
           const kept = [fixture.root, ...seeds, fixture.workspace].join(", ");
           const messages = (failure as AggregateError).errors.map(String);
           expect(messages).toContain(`Error: Workbook fixture paths retained because the launch is still in progress: ${kept}`);
-          expect(messages.at(-1)).toBe(`Error: Workbook late app close unresolved after 600 ms (1 of 1 pending); retained paths: ${kept}`);
+          expect(messages.at(-1)).toBe(`Error: Workbook launch or close unresolved after 800 ms (launch settled, 1 of 1 closes pending); retained paths: ${kept}`);
           expect(calls.close).toBe(1);
         } finally {
           child.exit();
@@ -672,6 +672,70 @@ describe("workbook publication build", () => {
         } finally {
           server.closeAllConnections();
           await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
+      });
+
+      it("joins an app that arrives just after the join first looks, and returns its close result", async () => {
+        const fixture = prepared();
+        const seeds = seededDirectories();
+        const { app, calls } = fakeApp();
+        let arrive: () => void = () => {};
+        const server = { listening: true, closeAllConnections: () => {},
+          close: (callback: (error?: Error) => void) => { setTimeout(() => arrive(), 50); callback(); } };
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        try {
+          const failure = await runBoundedTest({
+            body: () => fixture.launch(async () => {
+              seedAll(fixture, seeds);
+              fixture.starting();
+              await new Promise<void>((resolve) => { arrive = resolve; });
+              fixture.own(app);
+            }).then(() => {}),
+            diagnose: async () => {},
+            teardown: () => teardownWorkbookTest(fixture, server, fixture.workspace, deadlines),
+          }, budget).catch((error: unknown) => error);
+          const kept = [fixture.root, ...seeds, fixture.workspace].join(", ");
+          const messages = (failure as AggregateError).errors.map(String);
+          expect(messages[0]).toBe("Error: Workbook test body exceeded 100 ms");
+          expect(messages.at(-1)).toBe(`Error: Workbook app arrived after its fixture was settled; retained paths: ${kept}`);
+          expect(messages.some((message) => message.includes("unresolved"))).toBe(false);
+          expect(calls.close).toBe(1);
+          expect(errors).toHaveBeenCalledWith(`Late workbook app close confirmed; retained paths: ${kept}`);
+        } finally {
+          errors.mockRestore();
+          for (const path of [fixture.root, ...seeds, fixture.workspace]) rmSync(path, { recursive: true, force: true });
+        }
+      });
+
+      it("joins a close that began during settlement and outlasted it", async () => {
+        const fixture = prepared();
+        const { app, child } = fakeApp(never);
+        // Holding kill past its slack makes this close outlast the settle budget it started in.
+        child.onKill = () => { const until = Date.now() + 250; while (Date.now() < until) { /* hold */ } };
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        try {
+          let arrive: () => void = () => {};
+          const launched = fixture.launch(async () => {
+            fixture.starting();
+            await new Promise<void>((resolve) => { arrive = resolve; });
+            fixture.own(app);
+          }).catch(String);
+          setTimeout(() => arrive(), 10);
+          const settled = await fixture.settle(quick);
+          expect(settled.closed).toBe(false);
+          expect(settled.failures.map(String).some((failure) => /close after a late arrival exceeded/.test(failure))).toBe(true);
+          const started = Date.now();
+          expect((await fixture.join(quick)).map(String)).toEqual(
+            ["Error: Workbook app close exceeded 200 ms", "Error: Workbook app pipe closure exceeded 200 ms"]);
+          expect(Date.now() - started).toBeLessThan(800);
+          expect(errors.mock.calls.map((call) => call[0])).toContain(
+            `Workbook app close after settlement not confirmed; retained paths: ${fixture.root}, ${fixture.workspace}`);
+          await launched;
+        } finally {
+          errors.mockRestore();
+          child.exit();
+          child.closePipes();
+          for (const path of [fixture.root, fixture.workspace]) rmSync(path, { recursive: true, force: true });
         }
       });
 
