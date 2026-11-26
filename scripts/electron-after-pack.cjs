@@ -300,6 +300,9 @@ function assertBetterSqlite3Binary(context) {
 }
 
 module.exports = async function afterPack(context) {
+  if (context.electronPlatformName === "darwin" && ARCH_DIR_BY_ENUM[context.arch] !== "arm64") {
+    throw new Error(`Unsupported macOS package architecture: ${context.arch}`);
+  }
   assertBundledRendererNotices(electronResourcesDir(context));
   const { assertMemoryRuntimeFiles, assertMemoryNotices } = require('./lib/memory-runtime-files.cjs');
   assertMemoryRuntimeFiles(join(electronResourcesDir(context), 'app.asar.unpacked', 'node_modules'), context.electronPlatformName, ARCH_DIR_BY_ENUM[context.arch]);

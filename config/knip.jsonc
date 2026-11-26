@@ -169,6 +169,8 @@
     "hdiutil",
     // Windows ACL inspection from the ave-home privacy regression.
     "icacls",
+    // The macOS release architecture audit reads Mach-O slices through the system tool.
+    "lipo",
     "lsof",
     "mountvol",
     "mkfifo",

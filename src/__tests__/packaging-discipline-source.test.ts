@@ -1241,12 +1241,13 @@ describe("installer smoke and packaging discipline", () => {
     // other version or asset falls through to a refusal. A .bun-version bump
     // without new pin rows fails here, and the script refuses it too.
     const bunVersion = readRepoFile(".bun-version").trim();
-    for (const asset of ["linux-x64", "linux-aarch64", "darwin-x64", "darwin-aarch64", "windows-x64", "windows-aarch64"]) {
+    for (const asset of ["linux-x64", "linux-aarch64", "darwin-aarch64", "windows-x64", "windows-aarch64"]) {
       expect(archiveScript).toMatch(new RegExp(
         `\\n {6}${bunVersion.replace(/\./gu, "\\.")}:bun-${asset}\\) pinned=[0-9a-f]{64} ;;\\n`,
         "u",
       ));
     }
+    expect(archiveScript).not.toContain(":bun-darwin-x64)");
     expect(archiveScript).toContain(
       '      *) echo "no pinned SHA-256 for $asset.zip of v$version" >&2; exit 1 ;;\n',
     );

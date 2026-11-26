@@ -14,8 +14,10 @@ const { assertRipgrepRuntimeFiles, RIPGREP_LICENSE_NOTICES } = createRequire(imp
 
 const repoRoot = resolve(__dirname, "../..");
 const read = (path: string) => readFileSync(join(repoRoot, path), "utf8");
-const RELEASE_TARGETS = ["darwin", "linux", "win32"].flatMap((platform) =>
-  ["x64", "arm64"].map((arch) => ({ platform, arch })));
+const RELEASE_TARGETS = [
+  { platform: "darwin", arch: "arm64" },
+  ...["linux", "win32"].flatMap((platform) => ["x64", "arm64"].map((arch) => ({ platform, arch }))),
+];
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -68,7 +70,8 @@ describe("ripgrep ships for every release target", () => {
     const modules = nodeModulesWith(platform, arch, "rg");
     expect(assertRipgrepRuntimeFiles(modules, platform, arch)).toMatch(/[\\/]bin[\\/]rg(\.exe)?$/);
     const otherArch = arch === "x64" ? "arm64" : "x64";
-    expect(() => assertRipgrepRuntimeFiles(modules, platform, otherArch)).toThrow("packaged ripgrep package missing");
+    expect(() => assertRipgrepRuntimeFiles(modules, platform, otherArch))
+      .toThrow(platform === "darwin" ? "unsupported ripgrep target" : "packaged ripgrep package missing");
   });
 
   it("rejects an empty, non-executable or unsupported binary", () => {

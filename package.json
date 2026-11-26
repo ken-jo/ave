@@ -448,8 +448,8 @@
       "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(darwin){,/**/*}"],
       "category": "public.app-category.productivity",
       "target": [
-        "dmg",
-        "zip"
+        { "target": "dmg", "arch": ["arm64"] },
+        { "target": "zip", "arch": ["arm64"] }
       ],
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",

@@ -7,7 +7,6 @@ const require = createRequire(import.meta.url);
 
 // Platform packages select the bundled binary; packaging assertions share this table through scripts/lib/ripgrep-runtime-files.cjs.
 export const RIPGREP_PLATFORM_PACKAGES = Object.freeze({
-  "darwin-x64": "@vscode/ripgrep-darwin-x64",
   "darwin-arm64": "@vscode/ripgrep-darwin-arm64",
   "linux-x64": "@vscode/ripgrep-linux-x64",
   "linux-arm64": "@vscode/ripgrep-linux-arm64",

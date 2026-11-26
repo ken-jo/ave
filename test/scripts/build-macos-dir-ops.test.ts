@@ -56,11 +56,11 @@ describe("buildMacosDirOps", () => {
   it("builds a missing helper for the requested architecture and the app's minimum macOS, with warnings as errors", () => {
     const root = fixtureRoot();
     const calls: string[][] = [];
-    const built = buildMacosDirOps({ root, arch: "x64", platform: "darwin", ifStale: true, spawn: compilerStub(calls), log: () => {} });
-    expect(built).toEqual([macosDirOpsOutput(root, "x64")]);
+    const built = buildMacosDirOps({ root, arch: "arm64", platform: "darwin", ifStale: true, spawn: compilerStub(calls), log: () => {} });
+    expect(built).toEqual([macosDirOpsOutput(root, "arm64")]);
     expect(calls).toEqual([[
-      "xcrun", "--sdk", "macosx", "clang", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-mmacosx-version-min=13.0", "-arch", "x86_64",
-      "-o", macosDirOpsOutput(root, "x64"), join(root, "native", "macos-dir-ops", "dir-ops.c"),
+      "xcrun", "--sdk", "macosx", "clang", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-mmacosx-version-min=13.0", "-arch", "arm64",
+      "-o", macosDirOpsOutput(root, "arm64"), join(root, "native", "macos-dir-ops", "dir-ops.c"),
     ]]);
   });
 
@@ -116,6 +116,9 @@ describe("buildMacosDirOps", () => {
   });
 
   it("fails clearly on an unsupported architecture or a failed compile", () => {
+    const calls: string[][] = [];
+    expect(() => buildMacosDirOps({ root: fixtureRoot(), arch: "x64", platform: "darwin", spawn: compilerStub(calls), log: () => {} })).toThrow(/unsupported macOS helper architecture: x64/);
+    expect(calls).toEqual([]);
     expect(() => buildMacosDirOps({ root: fixtureRoot(), arch: "ia32", platform: "darwin", log: () => {} })).toThrow(/unsupported macOS helper architecture: ia32/);
     expect(() => buildMacosDirOps({ root: fixtureRoot(), arch: "arm64", platform: "darwin", spawn: () => ({ status: 1 }), log: () => {} })).toThrow(/build failed \(exit 1\)/);
   });
@@ -123,6 +126,14 @@ describe("buildMacosDirOps", () => {
 
 describe("macOS download file helper wiring", () => {
   const packageJson = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+
+  it("restricts both installer formats to arm64 while preserving the OS floor", () => {
+    expect(packageJson.build.mac.target).toEqual([
+      { target: "dmg", arch: ["arm64"] },
+      { target: "zip", arch: ["arm64"] },
+    ]);
+    expect(packageJson.build.mac.minimumSystemVersion).toBe("13.0");
+  });
 
   it("builds the helper with the app and before tests, and its fault-injecting variants only for tests", () => {
     expect(packageJson.scripts.build).toContain("node scripts/build-macos-dir-ops.mjs --if-stale &&");

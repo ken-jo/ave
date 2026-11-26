@@ -5,7 +5,9 @@ const notices = require('./memory-runtime-notices.json');
 const PLATFORMS = ['darwin', 'linux', 'win32'];
 const ARCHES = ['x64', 'arm64'];
 function assertMemoryRuntimeFiles(nodeModules, platform, arch) {
-  if (!PLATFORMS.includes(platform) || !ARCHES.includes(arch)) throw new Error(`Unsupported memory runtime target: ${platform}/${arch}`);
+  if (!PLATFORMS.includes(platform) || !ARCHES.includes(arch) || (platform === 'darwin' && arch !== 'arm64')) {
+    throw new Error(`Unsupported memory runtime target: ${platform}/${arch}`);
+  }
   const root = join(nodeModules, 'onnxruntime-node/bin/napi-v6');
   for (const p of readdirSync(root)) {
     if (p !== platform) throw new Error(`Unexpected memory runtime platform: ${p}`);

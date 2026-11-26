@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { verifyDocumentEnginePlatformSignature, _verifyDocumentEngineReleaseSignatureForTest as verifyWithKey } from "../document-engine-signature.js";
-import { DOCUMENT_ENGINE_RELEASE_KEY } from "../document-engine-release-pins.js";
+import { DOCUMENT_ENGINE_RELEASE_KEY, documentEngineReleaseFor } from "../document-engine-release-pins.js";
 import { runDocumentEngineSystemCommand } from "../document-engine-system-command.js";
 
 vi.mock("../document-engine-system-command.js", () => ({ runDocumentEngineSystemCommand: vi.fn() }));
@@ -47,6 +47,11 @@ async function source(bytes: Buffer) {
 }
 
 describe("document engine release signatures", () => {
+  it("has a download pin for arm64 macOS only", () => {
+    expect(documentEngineReleaseFor("darwin", "x64")).toBeNull();
+    expect(documentEngineReleaseFor("darwin", "arm64")).toMatchObject({ platform: "darwin", arch: "arm64" });
+  });
+
   it("verifies a detached signature over streamed bytes using its exact pinned key", async () => {
     const bytes = Buffer.from("authenticated release bytes\n");
     const fixture = signedFixture(bytes);

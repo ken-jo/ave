@@ -2,9 +2,14 @@ import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { parse } from "yaml";
 import { describe, expect, it, vi } from "vitest";
-import { UV_TARGETS } from "../../scripts/uv-targets.mjs";
+import { installerUvTargetFor, UV_TARGETS } from "../../scripts/uv-targets.mjs";
 
 describe("bundled runtime release pins", () => {
+  it("refuses an x64 macOS installer host", () => {
+    expect(() => installerUvTargetFor("mac", "darwin", "x64")).toThrow(/Apple Silicon only/u);
+    expect(installerUvTargetFor("mac", "darwin", "arm64").archFlag).toBe("--arm64");
+  });
+
   it("uses the intended release tag for downloads", () => {
     const source = readFileSync(new URL("../../scripts/fetch-uv.mjs", import.meta.url), "utf8");
     expect(source).toContain('const DEFAULT_VERSION = "0.13.9";');

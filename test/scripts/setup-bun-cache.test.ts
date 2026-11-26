@@ -186,7 +186,6 @@ exit 97
   it.each([
     ["Linux", "X64", "bun-linux-x64"],
     ["Linux", "ARM64", "bun-linux-aarch64"],
-    ["macOS", "X64", "bun-darwin-x64"],
     ["macOS", "ARM64", "bun-darwin-aarch64"],
     ["Windows", "X64", "bun-windows-x64"],
     ["Windows", "ARM64", "bun-windows-aarch64"],
@@ -199,6 +198,13 @@ exit 97
     expect(written.asset).toBe(expected);
     expect(written.pinned).toMatch(/^[0-9a-f]{64}$/);
     expect(written.key).toBe(`bun-archive-v1-1.4.4-${written.asset}-${written.pinned}`);
+  });
+  it("refuses x64 macOS before selecting an archive", () => {
+    env.RUNNER_OS = "macOS";
+    env.RUNNER_ARCH = "X64";
+    const result = run("metadata");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("no pinned SHA-256");
   });
   it.each(["1.4.5", "latest", "1.4.4\ninvalid"])("refuses an unpinned version %s", (version) => {
     writeFileSync(versionFile, version);

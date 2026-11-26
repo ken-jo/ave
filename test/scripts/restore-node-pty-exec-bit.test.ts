@@ -18,7 +18,7 @@ const roots: string[] = [];
 function fixturePty(): string {
   const root = mkdtempSync(join(tmpdir(), "ave-node-pty-"));
   roots.push(root);
-  for (const dir of ["prebuilds/darwin-arm64", "prebuilds/darwin-x64", "build/Release"]) {
+  for (const dir of ["prebuilds/darwin-arm64", "build/Release"]) {
     mkdirSync(join(root, dir), { recursive: true });
     writeFileSync(join(root, dir, "spawn-helper"), "#!/bin/sh\n");
     chmodSync(join(root, dir, "spawn-helper"), 0o644);
@@ -35,9 +35,9 @@ afterEach(() => {
 describe("restore-node-pty-exec-bit", () => {
   it.runIf(process.platform !== "win32")("adds the execute bits to every shipped or built helper", () => {
     const root = fixturePty();
-    expect(findSpawnHelpers(root)).toHaveLength(3);
-    expect(nonExecutableSpawnHelpers(root)).toHaveLength(3);
-    expect(restoreSpawnHelperExecBit(root)).toHaveLength(3);
+    expect(findSpawnHelpers(root)).toHaveLength(2);
+    expect(nonExecutableSpawnHelpers(root)).toHaveLength(2);
+    expect(restoreSpawnHelperExecBit(root)).toHaveLength(2);
     for (const helper of findSpawnHelpers(root)) expect(statSync(helper).mode & 0o777).toBe(0o755);
     expect(restoreSpawnHelperExecBit(root)).toEqual([]);
   });
