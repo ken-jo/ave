@@ -1657,7 +1657,7 @@ describe("Windows job root hardening", () => {
         ...PRINCIPALS.map(sid => `*${sid}:(OI)(CI)F`)]],
     ]);
     assert.equal(run.mock.calls[3].arguments[0], "powershell.exe");
-    const options = { encoding: "utf8", windowsHide: true, stdio: "pipe", timeout: 10_000 };
+    const options = { encoding: "utf8", windowsHide: true, stdio: "pipe", timeout: 60_000 };
     for (const call of run.mock.calls.slice(0, 3)) assert.deepEqual(call.arguments[2], options);
     assert.deepEqual(run.mock.calls[3].arguments[2], { ...options, env: windowsPowerShellEnv() });
   });
