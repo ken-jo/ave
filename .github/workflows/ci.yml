@@ -675,7 +675,7 @@ jobs:
     # .required_status_checks.contexts). gate-core and mxc-pins report under
     # names that list does not contain, so only this job's explicit result
     # check below lets them block a merge; skipped or cancelled fails too.
-    needs: [build, vitest, vitest-tiers, windows-native-preparation, windows-permission-tests, windows-tier-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins]
+    needs: [build, vitest, vitest-tiers, windows-native-preparation, windows-payload-packaging, windows-script-tests, windows-dev-boot, windows-permission-tests, windows-tier-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins]
     if: always()
     # Every job in every workflow runs on a GitHub-hosted runner
     # (src/__tests__/support/workflow-runner-policy.ts fails on anything
@@ -704,6 +704,9 @@ jobs:
           DOCS_ONLY: ${{ needs.build.outputs.docs_only }}
           PLATFORM_CHECKS: ${{ needs.build.outputs.platform_checks }}
           WINDOWS_PREPARATION_RESULT: ${{ needs.windows-native-preparation.result }}
+          WINDOWS_PACKAGING_RESULT: ${{ needs.windows-payload-packaging.result }}
+          WINDOWS_SCRIPTS_RESULT: ${{ needs.windows-script-tests.result }}
+          WINDOWS_DEV_BOOT_RESULT: ${{ needs.windows-dev-boot.result }}
           WINDOWS_RESULT: ${{ needs.windows-permission-tests.result }}
           WINDOWS_ARM64_PATH_KIND: ${{ needs.build.outputs.windows_arm64_path_kind }}
           WINDOWS_ARM64_PATH_KIND_RESULT: ${{ needs.windows-arm64-path-kind.result }}
@@ -768,6 +771,12 @@ jobs:
             echo "::error::Windows native preparation ended $WINDOWS_PREPARATION_RESULT, expected $preparation"
             exit 1
           fi
+          for result in "$WINDOWS_PACKAGING_RESULT" "$WINDOWS_SCRIPTS_RESULT" "$WINDOWS_DEV_BOOT_RESULT"; do
+            if [ "$result" != "$preparation" ]; then
+              echo "::error::Windows validation ended $result, expected $preparation"
+              exit 1
+            fi
+          done
           for result in "$WINDOWS_RESULT" "$MACOS_RESULT" "$LINUX_RESULT"; do
             if [ "$result" != "$expected" ]; then
               echo "::error::native platform check ended $result, expected $expected"
@@ -805,7 +814,7 @@ jobs:
     # windows-2025, the image the release matrix builds the installer on, so
     # a windows-latest rollover cannot test one image and ship another.
     runs-on: windows-2025
-    env:
+    env: &windows-validation-env
       # Keep bun's package cache and Electron's download cache in the
       # workspace, under the cache keys below.
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
@@ -856,7 +865,8 @@ jobs:
       # stage-workspace regressions need at least the git release their hook
       # events were validated against; an older one fails here, not in a
       # test, and the exact version is logged.
-      - name: Require the validated git release or newer
+      - &windows-validated-git
+        name: Require the validated git release or newer
         if: steps.docs-impact.outputs.docs_only != 'true'
         shell: bash
         run: node ave/.github/scripts/require-validated-git.mjs
@@ -957,18 +967,6 @@ jobs:
           node .github/scripts/windows-preparation-cache.mjs verify-installed
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .github/scripts/run-in-job.mjs node scripts/test-windows-job.mjs
-      # Both checks build under the job root's temp tree, so they run in the
-      # containment launcher built by the previous step.
-      - name: Verify both Windows native payload packages
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        timeout-minutes: 10
-        shell: powershell
-        run: |
-          node .github/scripts/run-in-job.mjs bun run check:mxc-pins
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node .github/scripts/run-in-job.mjs bun run check:mxc-packaging
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # Folder sources classify a drive letter from its MS-DOS device mapping
       # without opening the drive (design multi-source-git-marketplace.md §18.4.1).
       - name: Verify Windows folder classification
@@ -1021,10 +1019,6 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or !$status.user.exists -or !$status.cred_present) {
             throw 'Native sandbox provisioning did not produce a usable account'
           }
-      - name: Run script tests
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        run: node .github/scripts/run-in-job.mjs bun run test:scripts
       - name: Prepare authenticated interpreter mirror
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1055,21 +1049,6 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 1
-
-      - name: Build Windows development desktop
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        timeout-minutes: 8
-        env:
-          AVE_BUILD_MINIFIER: esbuild
-        run: node .github/scripts/run-in-job.mjs bun run build
-      - name: Smoke test Windows development boot
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        timeout-minutes: 3
-        env:
-          AVE_CI_REQUIRE_EMPTY_JOB: '1'
-        run: node .github/scripts/run-in-job.mjs node scripts/smoke-windows-dev-boot.mjs
 
       # Only the default branch writes this cache. PR merge-ref caches cannot
       # cross into the base branch. Release tags build without this cache.
@@ -1138,7 +1117,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
@@ -1172,19 +1151,22 @@ jobs:
         with:
           name: windows-ci-plan
           path: ${{ runner.temp }}/windows-ci
-      - name: Download the checked Windows native helpers
+      - &windows-download-helpers
+        name: Download the checked Windows native helpers
         if: steps.docs-impact.outputs.docs_only != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: windows-native-helpers
           path: ave/.windows-native-inputs
-      - name: Download the interpreter mirror
+      - &windows-download-mirror
+        name: Download the interpreter mirror
         if: steps.docs-impact.outputs.docs_only != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: windows-interpreter-mirror
           path: ${{ runner.temp }}/python-release-mirror
-      - name: Verify and configure the shared test inputs
+      - &windows-restore-inputs
+        name: Verify and configure the shared test inputs
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node .github/scripts/restore-windows-ci-inputs.mjs
@@ -1301,6 +1283,126 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs
+      - *windows-cleanup
+
+  windows-payload-packaging:
+    name: Windows native payload packaging
+    concurrency:
+      group: ci-platform-${{ github.workflow }}-windows-payload-packaging-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    needs: [build, windows-native-preparation]
+    if: (needs.build.outputs.platform_checks == 'true' || needs.build.outputs.windows_tier_tests == 'true') && needs.windows-native-preparation.result == 'success'
+    runs-on: windows-2025
+    env: *windows-validation-env
+    steps:
+      - *windows-checkout
+      - *windows-node
+      - *windows-docs-impact
+      - *windows-bun
+      - *windows-home
+      - *windows-modules
+      - *windows-bun-cache
+      - *windows-runtime-cache
+      - *windows-electron-cache
+      - *windows-install
+      - *windows-validate-commands
+      - *windows-uv
+      - *windows-download-helpers
+      - *windows-download-mirror
+      - *windows-restore-inputs
+      # Both checks build under the job root's temp tree, so they run in the
+      # same-run containment launcher.
+      - name: Verify both Windows native payload packages
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        timeout-minutes: 10
+        shell: powershell
+        run: |
+          node .github/scripts/run-in-job.mjs bun run check:mxc-pins
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node .github/scripts/run-in-job.mjs bun run check:mxc-packaging
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - *windows-cleanup
+
+  windows-script-tests:
+    name: Windows script tests
+    concurrency:
+      group: ci-platform-${{ github.workflow }}-windows-script-tests-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    needs: [build, windows-native-preparation]
+    if: (needs.build.outputs.platform_checks == 'true' || needs.build.outputs.windows_tier_tests == 'true') && needs.windows-native-preparation.result == 'success'
+    runs-on: windows-2025
+    env: *windows-validation-env
+    steps:
+      - *windows-checkout
+      - *windows-node
+      - *windows-docs-impact
+      - *windows-bun
+      - *windows-validated-git
+      - *windows-home
+      - *windows-modules
+      - *windows-bun-cache
+      - *windows-runtime-cache
+      - *windows-electron-cache
+      - *windows-install
+      - *windows-validate-commands
+      - *windows-uv
+      - *windows-download-helpers
+      - *windows-download-mirror
+      - *windows-restore-inputs
+      # The script tests exercise the query-failure launcher fixture.
+      - name: Build the launcher query-failure fixture
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
+      - *windows-provision
+      - name: Run script tests
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node .github/scripts/run-in-job.mjs bun run test:scripts
+      - *windows-cleanup
+
+  windows-dev-boot:
+    name: Windows development build and boot smoke
+    concurrency:
+      group: ci-platform-${{ github.workflow }}-windows-dev-boot-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    needs: [build, windows-native-preparation]
+    if: (needs.build.outputs.platform_checks == 'true' || needs.build.outputs.windows_tier_tests == 'true') && needs.windows-native-preparation.result == 'success'
+    runs-on: windows-2025
+    env: *windows-validation-env
+    steps:
+      - *windows-checkout
+      - *windows-node
+      - *windows-docs-impact
+      - *windows-bun
+      - *windows-home
+      - *windows-modules
+      - *windows-bun-cache
+      - *windows-runtime-cache
+      - *windows-electron-cache
+      - *windows-install
+      - *windows-validate-commands
+      - *windows-uv
+      - *windows-download-helpers
+      - *windows-download-mirror
+      - *windows-restore-inputs
+      - *windows-provision
+      - name: Build Windows development desktop
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        timeout-minutes: 8
+        env:
+          AVE_BUILD_MINIFIER: esbuild
+        run: node .github/scripts/run-in-job.mjs bun run build
+      - name: Smoke test Windows development boot
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        timeout-minutes: 3
+        env:
+          AVE_CI_REQUIRE_EMPTY_JOB: '1'
+        run: node .github/scripts/run-in-job.mjs node scripts/smoke-windows-dev-boot.mjs
       - *windows-cleanup
 
   windows-arm64-path-kind:

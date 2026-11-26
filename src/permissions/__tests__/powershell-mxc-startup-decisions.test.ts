@@ -54,13 +54,13 @@ describe("confined native shell startup decisions", () => {
 
   it("pins the container command argv before its encoded payload", () => {
     const command = "Set-Content -Path x.txt -Value '-NoProfile'";
-    const line = powerShellMxcCommandLine("C:\\Windows", command);
+    const line = powerShellMxcCommandLine("C:\\Windows", command, project);
     const argv = line.match(/^"([^"]+)" (.*)$/)!;
     expect(argv[1]).toMatch(/WindowsPowerShell\\v1\.0\\powershell\.exe$/);
     const args = argv[2]!.split(" ");
     expect(args.slice(0, -2)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned"]);
     expect(args.at(-2)).toBe("-EncodedCommand");
-    expect(Buffer.from(args.at(-1)!, "base64").toString("utf16le")).toBe(command);
+    expect(Buffer.from(args.at(-1)!, "base64").toString("utf16le").endsWith(`\n${command}`)).toBe(true);
   });
 
   it.each(WRITES)("auto-approves an in-project write on the pinned route: %s", command => {

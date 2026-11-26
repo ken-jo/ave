@@ -225,7 +225,9 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     const held = await holdWindowsFilesystemGrant({ label: "watched-fresh-native", allowRead: [], allowWrite: [workspace] });
     try {
       expect(entriesBelow(root)).toEqual(before);
-      expect(watchedProtectedRows()).toContain(join(workspace, ".vscode"));
+      expect(watchedProtectedRows()).toEqual(expect.arrayContaining(
+        [".vscode", ".agents", ".ave/commands", ".ave/hooks"].map(name => join(workspace, name)),
+      ));
     } finally { held.release(); }
     // The profile root holds the helper's default ledger, so a write grant on it is refused before anything is stamped.
     expect(srtWinConfinementStatePaths()).toContain(join(root, "AppData", "Local", "sandbox-runtime"));
@@ -241,7 +243,6 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     const { workspace, held } = await grantedWorkspace();
     try {
       const { wrapped, invocation } = await runPlantingTasks(workspace);
-      expect(isHostGitWorkspaceAvailable(workspace)).toBe(false);
       vi.stubEnv("AVE_HOME", sameVolumeAveHome());
       invocation.release();
       const outcome = await wrapped.cleanupCompleted;
@@ -253,6 +254,20 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
       expect(entry).toMatchObject({ original: join(workspace, ".vscode"), row: join(workspace, ".vscode"), commandId: invocation.token });
       expect(readFileSync(join(entry?.quarantined ?? "", "tasks.json"), "utf8")).toContain("planted");
       expect(readFileSync(join(workspace, "allowed"), "utf8")).toContain("allowed");
+      expect(isHostGitWorkspaceAvailable(workspace)).toBe(true);
+    } finally { held.release(); }
+  }, 60_000);
+
+  it("refuses host Git while a command-created watched name is present, and moves it once", async () => {
+    const { workspace, held } = await grantedWorkspace();
+    try {
+      const { wrapped, invocation } = await runPlantingTasks(workspace);
+      vi.stubEnv("AVE_HOME", sameVolumeAveHome());
+      expect(isHostGitWorkspaceAvailable(workspace)).toBe(false);
+      invocation.release();
+      await wrapped.cleanupCompleted;
+      await vi.waitFor(() => expect(lstatSync(join(workspace, ".vscode"), { throwIfNoEntry: false })).toBeUndefined(), { timeout: 15_000 });
+      expect(listWatchedQuarantine()).toEqual([expect.objectContaining({ original: join(workspace, ".vscode") })]);
       expect(isHostGitWorkspaceAvailable(workspace)).toBe(true);
     } finally { held.release(); }
   }, 60_000);
@@ -407,6 +422,16 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     } finally { restoreWindowsAcl({ sandboxUserSid: sid, srtWin }); }
     expect(descriptor(dirname(directory))).not.toContain(sid);
     expect(descriptor(os.tmpdir())).not.toContain(sid);
+  }, 60_000);
+
+  it("refuses to stamp a deny target that does not exist and leaves it absent", () => {
+    const { sid, srtWin } = helper();
+    const target = join(container, "vanished", "hooks");
+    mkdirSync(dirname(target));
+    try {
+      expect(() => stampWindowsAcl({ sandboxUserSid: sid, srtWin, denyRead: [], denyWrite: [target] })).toThrow(/does not exist/);
+      expect(lstatSync(target, { throwIfNoEntry: false })).toBeUndefined();
+    } finally { restoreWindowsAcl({ sandboxUserSid: sid, srtWin }); }
   }, 60_000);
 
   it("diagnoses a legacy temp-root ACE without changing that ACL", () => {

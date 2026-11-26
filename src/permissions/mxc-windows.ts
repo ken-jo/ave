@@ -1,6 +1,7 @@
 // Each shell command gets its own container, filesystem policy and kernel-bound proxy listener; deny/read-only entries outrank write grants, but missing read-only targets do not protect future paths. Killing the launcher tears down descendants, and containers cannot terminate host processes (docs/architecture/architecture.md).
 // Use the signed CLI to relay stdio/exit while the embedded runtime lacks required native support. Plugin workers retain their separate sandbox because proxy mode forbids direct loopback control; terminals remain user-owned and need background descendants to survive.
 import { win32 as winPath } from "node:path";
+import { t } from "../i18n/index.js";
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
@@ -243,7 +244,7 @@ export async function probeMxcPowerShellStart(deps: DetectMxcSupportDeps): Promi
   if (wxcExec === undefined) return unavailable("unsupported-arch", `arch ${deps.arch}`);
   // A dry run proves the request is accepted, not that the shell starts. Start the real thing once: System32 Windows PowerShell 5.1 in a container of the shape every command gets (caller-owned reduced environment, proxy mode).
   const startRequest = buildMxcShellRequest({
-    commandLine: powerShellMxcCommandLine(deps.systemRoot, "exit 0"),
+    commandLine: powerShellMxcCommandLine(deps.systemRoot, "exit 0", deps.probeDirectory),
     cwd: deps.probeDirectory,
     grants: { readwrite: [deps.probeDirectory], readonly: [], denied: [] },
     env: {
@@ -273,7 +274,20 @@ export interface MxcFilesystemGrants {
   readonly readwrite: readonly string[];
   readonly readonly: readonly string[];
   readonly denied: readonly string[];
+  // Protected write denies whose parent is missing: nothing is created or denied, the name is checked after the run.
+  readonly watched?: readonly MxcWatchedRow[];
 }
+
+/** An absent protected name with the deepest existing folder above it, as admitted for this launch. */
+export interface MxcWatchedRow {
+  readonly path: string;
+  readonly anchor: string;
+  readonly volumeSerial: string;
+  readonly fileId: string;
+}
+
+/** The spelling ranker's result: it admits nothing, so its watched rows carry no identity and no launch accepts them. */
+export type MxcSpelledGrants = Omit<MxcFilesystemGrants, "watched"> & { readonly watched?: readonly string[] };
 
 function foldPath(path: string): string {
   const normalized = winPath.normalize(path).replace(/[\\/]+$/, "");
@@ -512,6 +526,7 @@ export interface MxcPolicyRows {
   readonly readDenies: readonly string[];
   // The write floor.
   readonly writeFloor: readonly string[];
+  readonly requiredWriteDenies: readonly string[];
   // The protected read floor (`secrets` rows). A grant at or beneath one is dropped.
   readonly protectedFloor: readonly string[];
   // Host-minted pierces. A grant at or beneath one is not dropped by the floor.
@@ -544,6 +559,7 @@ export function mxcPolicyRows(model: PolicyModel): MxcPolicyRows {
     readGrants: paths((row) => grant(row) && row.access === "ro"),
     readDenies: paths((row) => isPolicyFloorRow(row) && row.access === "denied" && row.reason !== "secrets" && row.reason !== "user-deny"),
     writeFloor: paths((row) => isPolicyFloorRow(row) && row.access === "ro"),
+    requiredWriteDenies: paths((row) => row.reason === "required-write-deny"),
     protectedFloor: paths((row) => row.reason === "secrets"),
     floorPierces: paths((row) => row.reason === "floor-pierce"),
     userDenies: paths((row) => row.reason === "user-deny"),
@@ -557,12 +573,13 @@ export function rankMxcRowsBySpelling(
   model: PolicyModel,
   exists: (path: string) => boolean,
   list?: (directory: string) => readonly MxcDirectoryEntry[],
-): MxcFilesystemGrants {
+): MxcSpelledGrants {
   const rows = mxcPolicyRows(model);
   // POSIX-rooted floor rows must not turn into current-drive paths.
   const windowsPaths = (paths: readonly string[]): readonly string[] => paths.filter((path) => !/^\/(?!\/)/.test(path));
   const protectedFloor = windowsPaths(rows.protectedFloor);
   const denyWrite = windowsPaths(rows.writeFloor);
+  const requiredWriteDenies = new Set(rows.requiredWriteDenies.map(foldPath));
   const pierces = rows.floorPierces;
   const userDenies = windowsPaths(rows.userDenies);
   // A relative row is unanchored, as a pattern is: it applies wherever the shell reads, so it is expanded rather than dropped.
@@ -618,16 +635,32 @@ export function rankMxcRowsBySpelling(
   }
   // A match removed since the walk needs no deny: checked once more as the policy is handed over.
   const presentMatches = patternMatches.filter((match) => allGrants.some((grant) => strictlyUnder(match, grant) || foldPath(match) === foldPath(grant)) && exists(match));
-  const raised = [...denied.map((deny) => {
-    if (exists(deny)) return deny;
+  const firstMissingOf = (deny: string): string => {
     let firstMissing = winPath.normalize(deny);
     for (;;) {
       const parent = winPath.dirname(firstMissing);
-      if (exists(parent)) break;
+      if (exists(parent)) return firstMissing;
       if (parent === firstMissing) throw new Error(`Windows sandbox policy cannot resolve missing deny: ${deny}`);
       firstMissing = parent;
     }
-    if (foldPath(firstMissing) === foldPath(deny)) return deny;
+  };
+  const inexact = (deny: string): boolean => !exists(deny) && foldPath(firstMissingOf(deny)) !== foldPath(deny);
+  const missingCarriers = new Set(dedupe(denied).filter((deny) => requiredWriteDenies.has(foldPath(deny)) && inexact(deny))
+    .map((deny) => foldPath(firstMissingOf(deny))));
+  const readDeniedExactly = new Set(literalDenies.map(foldPath));
+  const declaredDenies = new Set(denied.map(foldPath));
+  const watched: string[] = [];
+  const raised = [...dedupe(denied).flatMap((deny) => {
+    if (!inexact(deny)) return deny;
+    const firstMissing = firstMissingOf(deny);
+    // A missing parent cannot carry an exact deny, and a deny on the parent would take its other children: a protected name is
+    // watched, and any other deny there refuses the launch.
+    if (missingCarriers.has(foldPath(firstMissing))) {
+      if (declaredDenies.has(foldPath(firstMissing))) return [];
+      if (readDeniedExactly.has(foldPath(deny)) || !requiredWriteDenies.has(foldPath(deny))) throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: deny }));
+      watched.push(deny);
+      return [];
+    }
     if (allGrants.some((grant) => foldPath(firstMissing) === foldPath(grant)) ||
         !readwrite.some((grant) => strictlyUnder(firstMissing, grant))) {
       throw new Error(`Windows sandbox policy cannot raise missing deny within a writable grant: ${deny}`);
@@ -640,7 +673,14 @@ export function rankMxcRowsBySpelling(
     readonly: dedupe(readonlyOut).filter((path) => !readwrite.some((grant) => foldPath(grant) === foldPath(path))).map(withoutTrailingSeparator),
     denied: dedupe(raised).filter((path, index, paths) =>
       !paths.some((parent, parentIndex) => parentIndex !== index && isWindowsPathAtOrUnder(path, parent))).map(withoutTrailingSeparator),
+    ...withWatched(dedupe(watched), raised, path => path),
   };
+}
+
+// The watched rows no raised deny already covers.
+function withWatched<T>(watched: readonly T[], denied: readonly string[], pathOf: (row: T) => string): { readonly watched?: readonly T[] } {
+  const open = watched.filter(row => !denied.some(deny => isWindowsPathAtOrUnder(pathOf(row), deny)));
+  return open.length > 0 ? { watched: open } : {};
 }
 
 function expandMxcPolicyPath(path: string): string {
@@ -682,15 +722,20 @@ function* listMxcPatternDirectory(directory: string): Iterable<MxcDirectoryEntry
 // the launch is ranked.
 function obligationRowsOf(model: PolicyModel): {
   readonly rows: readonly ObligationRow[]; readonly patterns: readonly string[]; readonly userPatterns: readonly string[];
+  readonly required: ReadonlySet<string>;
 } {
   const rows: ObligationRow[] = [];
+  const required = new Set<string>();
   const patterns = new Set<string>();
   const userPatterns = new Set<string>();
   let sessionRoot: string | undefined;
   for (const row of model.rows) {
     const spelling = { path: expandMxcPolicyPath(row.path), literal: true } as const;
     if (isPolicyFloorRow(row)) {
-      if (row.access === "ro") rows.push({ spelling, polarity: { effect: "deny", access: "write" }, source: "per-command" });
+      if (row.access === "ro") {
+        rows.push({ spelling, polarity: { effect: "deny", access: "write" }, source: "per-command" });
+        if (row.reason === "required-write-deny") required.add(spelling.path);
+      }
       else if (isMxcReadPattern(row.path)) {
         patterns.add(stripExtendedPathPrefix(spelling.path));
         if (row.reason === "user-deny") userPatterns.add(stripExtendedPathPrefix(spelling.path));
@@ -706,7 +751,7 @@ function obligationRowsOf(model: PolicyModel): {
       rows.push({ spelling, polarity: { effect: "allow", access: row.access === "rw" ? "write" : "read" }, source: row.reason === "user-grant" ? "settings" : "per-command" });
     }
   }
-  return { rows, patterns: [...patterns], userPatterns: [...userPatterns] };
+  return { rows, patterns: [...patterns], userPatterns: [...userPatterns], required };
 }
 
 interface CanonicalPatternDeny extends SpelledPatternDeny {
@@ -777,6 +822,25 @@ export interface MxcDenyOutcomeInput {
   readonly result: MxcFilesystemGrants;
 }
 
+function isPinnedWatchedAncestor(grant: AdmittedObligation, deny: AdmittedObligation): boolean {
+  const identity = grant.identity;
+  return grant.kind === "dir" && identity !== null && deny.chain.some(ancestor =>
+    ancestor.volumeSerial === identity.volumeSerial && ancestor.fileId === identity.fileId);
+}
+
+function watchedHolds(deny: AdmittedObligation, input: MxcDenyOutcomeInput): boolean {
+  const { result, reach } = input;
+  if (deny.polarity.access !== "write" || deny.kind !== "missing" || !(result.watched ?? []).some(row =>
+    foldPath(row.path) === foldPath(deny.target) && foldPath(row.anchor) === foldPath(deny.anchorTarget)
+    && row.volumeSerial === deny.anchor.volumeSerial && row.fileId === deny.anchor.fileId)) return false;
+  const covering = result.readwrite.filter(path => isWindowsPathAtOrUnder(deny.target, path));
+  return covering.length > 0 && covering.every(path => {
+    const grants = reach.filter(grant => grant.polarity.effect === "allow" && grant.polarity.access === "write"
+      && foldPath(grant.target) === foldPath(path));
+    return grants.length > 0 && grants.every(grant => isPinnedWatchedAncestor(grant, deny));
+  });
+}
+
 function exceptionHolds(deny: AdmittedObligation, input: MxcDenyOutcomeInput): boolean {
   // The named grant row is in this launch's reach at the deny's own path, with an access the reason accepts.
   const granted = (row: unknown, access: readonly string[]) => typeof row === "string" && input.reach.some(grant =>
@@ -797,7 +861,8 @@ function exceptionHolds(deny: AdmittedObligation, input: MxcDenyOutcomeInput): b
 const DENY_EXCEPTION_REASONS: ReadonlySet<string> = new Set(["lifted-floor", "read-mask-carve-out"] satisfies MxcDenyException["reason"][]);
 
 // Every admitted deny row and every pattern row ends stamped (denied in the result), carried (no granted path reaches it),
-// excepted (a closed reason whose evidence this launch holds), or the launch is refused.
+// excepted (a closed reason whose evidence this launch holds), watched (an absent protected name recorded with its anchor's
+// identity), or the launch is refused.
 export function assertMxcDenyOutcomes(input: MxcDenyOutcomeInput): void {
   const { denies, patterns, outcomes, reachable, result } = input;
   const unheld = (row: string) => new Error(`Windows sandbox policy left a deny without an outcome: ${row}`);
@@ -813,7 +878,7 @@ export function assertMxcDenyOutcomes(input: MxcDenyOutcomeInput): void {
     // A grant beneath the deny reaches it too, except a read-mask carve-out or the read grant a floor pierce admits.
     const beneath = deny.origin.source === "read-mask" ? [] : deny.origin.source === "floor" ? result.readwrite : grants;
     const reached = grants.some(grant => isWindowsPathAtOrUnder(deny.target, grant)) || beneath.some(grant => strictlyUnder(grant, deny.target));
-    if (!stamped && reached && !exceptionHolds(deny, input)) throw unheld(deny.origin.row);
+    if (!stamped && reached && !watchedHolds(deny, input) && !exceptionHolds(deny, input)) throw unheld(deny.origin.row);
   }
   for (const { requested, pattern, prefix } of patterns) {
     const outcome = outcomes.get(requested);
@@ -828,8 +893,8 @@ export function assertMxcDenyOutcomes(input: MxcDenyOutcomeInput): void {
 // The Windows container adapter: policy rows in, the three container lists out. Every row is admitted to the object it names
 // first, and the ranking compares those objects, never spellings.
 export function rankMxcFilesystem(model: PolicyModel): MxcFilesystemGrants {
-  const { patterns, userPatterns } = obligationRowsOf(model);
-  return rankAdmittedMxcFilesystem(admitMxcFilesystem(model), patterns, userPatterns);
+  const { patterns, userPatterns, required } = obligationRowsOf(model);
+  return rankAdmittedMxcFilesystem(admitMxcFilesystem(model), patterns, userPatterns, required);
 }
 
 /** The model's literal rows admitted for one container launch; pattern denies are admitted when the launch is ranked. */
@@ -837,7 +902,9 @@ export function admitMxcFilesystem(model: PolicyModel): ObligationSet {
   return admitObligations({ purpose: "mxc-launch", principal: "mxc", rows: obligationRowsOf(model).rows });
 }
 
-function rankAdmittedMxcFilesystem(set: ObligationSet, requestedPatterns: readonly string[], userPatterns: readonly string[]): MxcFilesystemGrants {
+function rankAdmittedMxcFilesystem(
+  set: ObligationSet, requestedPatterns: readonly string[], userPatterns: readonly string[], required: ReadonlySet<string>,
+): MxcFilesystemGrants {
   requireEnforceable(set);
   if (set.scope.principal !== "mxc") throw new TypeError("Filesystem obligations were issued for another principal");
   const entries = consumeObligations(set, "mxc-launch");
@@ -905,11 +972,30 @@ function rankAdmittedMxcFilesystem(set: ObligationSet, requestedPatterns: readon
   for (const deny of readDenies) {
     if (!denied.includes(deny) && reads.some(grant => inside(grant, deny))) denied.push(deny);
   }
-  const raised = denied.map(deny => {
-    if (deny.kind !== "missing" || !writes.some(grant => inside(grant, deny))) return deny.target;
-    const first = winPath.relative(deny.anchorTarget, deny.target).split("\\")[0];
-    const firstMissing = winPath.join(deny.anchorTarget, first);
-    if (foldPath(firstMissing) === foldPath(deny.target)) return deny.target;
+  const firstMissingOf = (deny: AdmittedObligation): string =>
+    winPath.join(deny.anchorTarget, winPath.relative(deny.anchorTarget, deny.target).split("\\")[0] ?? "");
+  const inexact = (deny: AdmittedObligation): boolean => deny.kind === "missing" && writes.some(grant => inside(grant, deny))
+    && foldPath(firstMissingOf(deny)) !== foldPath(deny.target);
+  const missingCarriers = new Set(denied.filter(deny => deny.polarity.access === "write" && required.has(deny.origin.row) && inexact(deny))
+    .map(deny => foldPath(firstMissingOf(deny))));
+  const watched: AdmittedObligation[] = [];
+  const raised = denied.flatMap(deny => {
+    if (!inexact(deny)) return deny.target;
+    const firstMissing = firstMissingOf(deny);
+    // A missing parent cannot carry an exact deny, and a deny on the parent would take its other children: a protected name is
+    // watched, and any other deny there refuses the launch.
+    if (missingCarriers.has(foldPath(firstMissing))) {
+      // A separately declared deny can cover the carrier at its own path.
+      if (!allows.some(grant => isWindowsPathAtOrUnder(grant.target, firstMissing)) && denied.some(parent =>
+        parent.kind === "missing" && foldPath(parent.target) === foldPath(firstMissing)
+        && parent.anchor.volumeSerial === deny.anchor.volumeSerial && parent.anchor.fileId === deny.anchor.fileId)) return [];
+      if (deny.polarity.access !== "write" || !required.has(deny.origin.row)
+        || writes.some(grant => isWindowsPathAtOrUnder(deny.target, grant.target) && !isPinnedWatchedAncestor(grant, deny))) {
+        throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: deny.origin.row }));
+      }
+      watched.push(deny);
+      return [];
+    }
     if ([...writes, ...reads].some(grant => foldPath(firstMissing) === foldPath(grant.target))
       || !writes.some(grant => strictlyUnder(firstMissing, grant.target))) {
       throw new Error("Windows sandbox policy cannot raise missing deny within a writable grant");
@@ -923,6 +1009,8 @@ function rankAdmittedMxcFilesystem(set: ObligationSet, requestedPatterns: readon
     denied: dedupe(raised).filter((path, index, paths) =>
       !paths.some((parent, parentIndex) => parentIndex !== index && isWindowsPathAtOrUnder(path, parent)
         && !allows.some(grant => strictlyUnder(grant.target, parent) && isWindowsPathAtOrUnder(path, grant.target)))).map(withoutTrailingSeparator),
+    ...withWatched(watched.map(deny => ({ path: deny.target, anchor: deny.anchorTarget, volumeSerial: deny.anchor.volumeSerial, fileId: deny.anchor.fileId }))
+      .filter((row, index, rows) => rows.findIndex(other => foldPath(other.path) === foldPath(row.path)) === index), raised, row => row.path),
   };
   const exceptions: MxcDenyException[] = [
     ...lifted.flatMap(deny => baseAllows.filter(grant => grant.polarity.access === "read" && within(deny, grant) && !inside(deny, grant))
@@ -1071,9 +1159,31 @@ export async function openMxcRequestTransport(request: MxcContainerRequest, laun
   }
 }
 
-// The container command line for one PowerShell command. `-EncodedCommand` carries the command as UTF-16LE base64, so no quoting of the command's own text can change how the line splits.
-export function powerShellMxcCommandLine(systemRoot: string, command: string): string {
-  const encoded = Buffer.from(command, "utf16le").toString("base64");
+// The file-system provider can start at the system drive root even when Windows starts the process in the requested directory.
+export function powerShellMxcCommandLine(systemRoot: string, command: string, cwd: string): string {
+  const directory = Buffer.from(winPath.normalize(cwd), "utf16le").toString("base64");
+  const establishDirectory = [
+    "try { & {",
+    `$directory = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String('${directory}'));`,
+    "function Test-RequestedLocation([string] $location) {",
+    "[string]::Equals($location.TrimEnd('\\'), $directory.TrimEnd('\\'), [System.StringComparison]::OrdinalIgnoreCase)",
+    "};",
+    "$entries = [System.IO.Directory]::EnumerateFileSystemEntries($directory).GetEnumerator();",
+    "try { [void] $entries.MoveNext() } finally { $entries.Dispose() };",
+    "if (-not (Test-RequestedLocation ([System.Environment]::CurrentDirectory))) { [System.IO.Directory]::SetCurrentDirectory($directory) };",
+    // Set the verified leaf on its drive without the provider walking the masked ancestors.
+    "if (-not (Test-RequestedLocation $ExecutionContext.SessionState.Path.CurrentLocation.Path)) {",
+    "$root = [System.IO.Path]::GetPathRoot($directory);",
+    "[void] $ExecutionContext.SessionState.Path.SetLocation($root);",
+    "$ExecutionContext.SessionState.Drive.Current.CurrentLocation = $directory.Substring($root.Length);",
+    "Microsoft.PowerShell.Core\\Import-Module -Name ([System.IO.Path]::Combine($PSHOME, 'Modules', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop;",
+    "Microsoft.PowerShell.Utility\\Set-Variable -Scope Global -Name PWD -Value $ExecutionContext.SessionState.Path.CurrentLocation -Force -ErrorAction Stop;",
+    "if (-not (Test-RequestedLocation $PWD.Path)) { throw 'Location mismatch' }",
+    "}",
+    "} } catch { [System.Console]::Error.WriteLine('Shell working directory could not be established'); exit 1 };\n",
+  ].join(" ");
+  // Encode the entire script so its text cannot change how the command line splits.
+  const encoded = Buffer.from(establishDirectory + command, "utf16le").toString("base64");
   return `"${win32SystemBinary("WindowsPowerShell/v1.0/powershell", { SystemRoot: systemRoot })}" ${WIN32_POWERSHELL_STARTUP_ARGS.join(" ")} -EncodedCommand ${encoded}`;
 }
 

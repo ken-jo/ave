@@ -859,11 +859,11 @@ each admitted write root, taking precedence over grants:
   load, and `.ave/commands` and `.ave/hooks`, which Ave loads. Other agents'
   folders such as `.claude` and `.codex` are not on this floor, and the file
   tools do not ask about them: each host protects its own (owner decision
-  2026-11-25). On Linux these are entries beneath each write root. On macOS
+  2026-11-25). Linux and Windows carry a row for each of these exact paths at
+  each admitted write root. On macOS
   rules appended to the Seatbelt profile, anchored at the write roots, deny the
   same entries, and also refuse to create, remove or rename `.ave` directly
-  beneath a root, so its parts cannot be moved out from under their names. The
-  Windows floor does not carry these entries yet;
+  beneath a root, so its parts cannot be moved out from under their names;
 - configured `core.hooksPath` directories, including absent targets and their
   physical symlink targets;
 - Ave settings, permission settings, rules, policies and approval grants, with
@@ -893,9 +893,34 @@ Ave home or one of the confined processes' private roots, writes to that directo
 are denied except under the wrap's own write roots inside it. Linux masks both
 with a mount.
 
-The Windows MXC PowerShell container receives the same denies from the same
-policy builder: an existing protected entry inside a write grant becomes
-read-only and an absent one is denied, so it cannot be created.
+On Windows, both routes receive the three exact rows for each writable directory
+from the shared policy builder, including the physical targets of supported links. A link to the
+`.ave` directory, a write root, or an ancestor of either refuses the launch.
+The container makes a present entry read-only unless a read deny also applies.
+It denies a missing child by name when its parent exists. A project without
+`.ave` keeps its write grant, and `.ave/commands` and `.ave/hooks` end
+`watched`: no directory watch is armed, and no deny is placed on `.ave`.
+If either exists at shell exit, at holder release, or when a host-side
+consumer of the project is about to run, that child is quarantined,
+preserving the carrier and any siblings. The disposable process home
+and holder staging supply their own `.ave` so the two child denies can be
+exact there.
+
+Findings from holder release, a host consumer check, or a shell job whose
+result already returned are logged and can reach the user in a later
+Windows sandboxed command result when it runs the sweep. The receipt
+identifies the original and quarantine paths. After inspecting the entry
+and letting the sandboxed runs using the workspace end, a user can move the
+entry back to its original path. The list and restore handlers are exposed
+through host IPC, with user keyboard intent required for restore.
+
+The ACL-backed route requires existing entries so it can stamp write denies
+before admitting a covering grant. A missing entry refuses the grant with a
+message naming the path. Neither route creates a protected entry to carry a
+deny. If an already live ACL-backed writer can reach an entry that becomes
+absent, the [protected-name check](architecture.md#ave-home-boundary-and-protected-name-mechanics)
+remains a cleanup safeguard. Quarantine verifies the parent and moves only the
+protected child.
 
 Loader denies apply to isolated processes through the common filesystem policy,
 including the persistent conversation shell and worker confinement when enabled.
@@ -917,9 +942,10 @@ Git-metadata quarantine exception.
 
 The existing sensitive-write floor owns real-home startup-file protection; the
 root-relative policy does not maintain a second real-home filename list.
-Denies cover creation when a protected path does not yet exist, as well as
-modification of existing content, except for the Linux Git metadata policy
-below. Linux mounts only existing Git controls and quarantines newly created
+Denies cover creation when a protected path does not yet exist and modification
+of existing content wherever the backend can represent the path. The Windows
+missing-carrier case above and the Linux Git metadata policy below use quarantine
+after creation. Linux mounts only existing Git controls and quarantines newly created
 controls after the invocation. Startup-file and application-store denies retain
 their existing creation protection. The
 [write policy](../../src/permissions/sandbox-write-policy.ts) retains both a

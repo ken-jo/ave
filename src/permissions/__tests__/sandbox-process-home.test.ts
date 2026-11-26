@@ -256,6 +256,8 @@ describe("createSandboxProcessHome", () => {
         expect(path.toLowerCase().startsWith(`${home.path.toLowerCase()}`), path).toBe(true);
         expect(path.toLowerCase().startsWith(`${temp}\\`), path).toBe(false);
       }
+      expect(readdirSync(join(home.path, ".ave"))).toEqual([]);
+      expect(existsSync(join(home.path, ".agents"))).toBe(false);
       expect(existsSync(appOwnedSandboxHomeRoot())).toBe(false);
     } finally {
       home.cleanup();

@@ -81,7 +81,7 @@ describe.each([
       .toEqual(["log", "native", "log"]);
     expect(JSON.parse(readFileSync(fixture.request, "utf8"))).toEqual({
       args: ["acl", "stamp", "--holder-pid", String(process.pid), "--sandbox-user-sid", fixture.options.sandboxUserSid],
-      input: { denyRead: fixture.options.denyRead, denyWrite: fixture.options.denyWrite },
+      input: { denyRead: fixture.options.denyRead, denyWrite: fixture.options.denyWrite, existingOnly: true },
     });
   });
 
