@@ -136,16 +136,18 @@ export function createHookCommandAuthorizer(deps: {
       current = verdict.fresh;
       if (verdict.kind === "denied") return { decision: "deny", reason: current.reason };
       if (verdict.kind === "stale") return { decision: "deny", reason: t("be_executor.answerQuestionChanged") };
-      const refusal = (await saveStandingAnswerRule(card, approval)).refusal;
-      if (refusal !== undefined) return { decision: "deny", reason: refusal };
       answer = verdict.proof;
     } else {
       current = check();
       if (current.decision === "deny") return { decision: "deny", reason: current.reason };
     }
-    const policyEpoch = deps.permissionManager.getPolicyEpoch();
     if (effectIdentity(current) !== requestedEffect) return { decision: "deny", reason: "Hook command effect changed during approval" };
     if (!matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity)) return { decision: "deny", reason: "Hook working directory changed during approval" };
+    if (card && approval) {
+      const { refusal } = await saveStandingAnswerRule(card, approval);
+      if (refusal !== undefined) return { decision: "deny", reason: refusal };
+    }
+    const policyEpoch = deps.permissionManager.getPolicyEpoch();
     if (plan.requiresExplicitUserApproval) {
       // `current` carries the proof of a non-human pass of the sandbox-unavailable ask: the session grant or an exact saved rule.
       const permit = mintHostShellExecutionPermit({ plan, answer, allowRuleDecision: current, floorSessionDecision: current, permissionManager: deps.permissionManager, binding });

@@ -33,6 +33,7 @@ import type { ToolInvocationContext } from "../../permissions/reviewer/risk-clas
 import { shellRuleCoversCommand } from "../../permissions/rules/shell-rule-approval.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
 import { cardGate } from "../../__tests__/support/forced-shell-card.js";
+import * as workingDirectory from "../../permissions/shell-working-directory-identity.js";
 
 const sandboxedHost = vi.hoisted(() => ({ active: false }));
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
@@ -825,6 +826,39 @@ describe("hook command permission admission", () => {
     expect(result.decision).toBe(revoked ? "deny" : "allow");
     if (revoked) expect(result.rawStdout).toBe("");
     expect(gate.pendingCount).toBe(0);
+  });
+
+  it.each([
+    ["effect", "Hook command effect changed during approval"],
+    ["cwd", "Hook working directory changed during approval"],
+    ["neither", "user approved hook command"],
+  ] as const)("saves an approved hook rule only after validation when %s changes", async (change, reason) => {
+    const p = policy();
+    p.permissionManager.setMode("strict");
+    const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+    const gate = new ApprovalGate(wc as never);
+    const authorize = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
+    const pending = authorize({ ...hook, command: ["printf", "ready"] }, payload, p.root);
+    await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
+    const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+    const save = vi.fn(async () => {
+      const from = p.permissionManager.getPolicyEpoch();
+      p.permissionManager.addSessionRule(payload.sessionId, "Bash('printf' 'ready')");
+      return { ok: true, store: "rules", from, to: p.permissionManager.getPolicyEpoch(), scope: "session" } as const;
+    });
+    expect(gate.stageAllowSave(request.id, save)).toBe(true);
+    const check = p.permissionManager.checkDetailed.bind(p.permissionManager);
+    vi.spyOn(p.permissionManager, "checkDetailed").mockImplementationOnce((...args) => {
+      const now = check(...args);
+      if (change === "cwd") vi.spyOn(workingDirectory, "matchesShellWorkingDirectoryIdentity").mockReturnValue(false);
+      if (change === "effect" && now.pipelineRequest !== undefined) {
+        return { ...now, pipelineRequest: { ...now.pipelineRequest, secretRead: true } };
+      }
+      return now;
+    });
+    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, wc as never);
+    expect(await pending).toMatchObject({ decision: change === "neither" ? "allow" : "deny", reason });
+    expect(save).toHaveBeenCalledTimes(change === "neither" ? 1 : 0);
   });
 
   it("rejects a newly protected symlink target after review", async () => {
