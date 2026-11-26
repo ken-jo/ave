@@ -50,6 +50,8 @@ import type { ExtensionStartPresentation } from "./extension-start-consent.js";
 import type { PluginWorkerControl } from "../plugins/public-contract.js";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { registerMxcHolderLifetime } from "./mxc-holder-lifetime.js";
+import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
+import { assertIssuedContainerHomeInPlace, isIssuedContainerHome } from "./sandbox-home-registry.js";
 import { assertMxcHolderPrivateDirectories, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { isSandboxWrapperEnvKey } from "../tools/safe-env.js";
 import {
@@ -313,6 +315,8 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   }
   // Checked before filesystem admission, the egress invocation and the lease.
   assertMxcReleaseGateEvidence();
+  // A runtime root that was not proved private refuses every container start.
+  const runtimeRoot = requireMxcContainerStartRoot();
   spec = Object.freeze({ ...spec, args: Object.freeze([...spec.args]),
     baseEnv: Object.freeze({ ...spec.baseEnv }), egressOwner: Object.freeze({ ...spec.egressOwner }),
     holderEnv: Object.freeze({ ...(spec.holderEnv ?? {}) }),
@@ -321,6 +325,11 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     filesystemOwnership: Object.freeze({ readRoots: Object.freeze([...spec.filesystemOwnership.readRoots]),
       writeRoots: Object.freeze([...spec.filesystemOwnership.writeRoots]), hostStorageRoots: Object.freeze([...spec.filesystemOwnership.hostStorageRoots]) }),
   });
+  assertIssuedContainerHomeInPlace(spec.home);
+  // No working directory inside the runtime root except the launch's own issued HOME itself, by identity.
+  if (pathForms(spec.cwd).some((form) => isWindowsPathAtOrUnder(form, runtimeRoot)) && !isIssuedContainerHome(spec.cwd, spec.home)) {
+    throw new MxcProcessContractError("Container working directory is inside the sandbox runtime root");
+  }
   const assertParent = (): void => {
     if (spec.parent === undefined) return;
     const parent = nativeHolderBindings.get(spec.parent);

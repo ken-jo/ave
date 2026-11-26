@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -132,6 +132,26 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
         "the Ave home isolation guard is not in place: config/vitest.analysis.config.ts must resolve "
           + "src/shared/ave-home-test-guard.ts to src/__tests__/support/ave-home-isolation-guard.ts",
       );
+    }
+    if (process.platform === "win32") {
+      // Windows sandbox HOMEs live under the container runtime root. It is proved, and its HOME parent created, once here; each test file takes both as they stand.
+      // The host is spelled out: the default one reads the Ave home through the workers' guard, which has no worker here.
+      const { establishMxcSandboxHomesParent } = await import("../src/permissions/mxc-runtime-root.js");
+      const { WINDOWS_RUNTIME_HOST } = await import("../src/permissions/mxc-runtime-root-windows.js");
+      const { configureHostResources } = await import("../src/main/host-resources.js");
+      configureHostResources({ resourcePath: join(HERE, "resources"), isPackaged: false });
+      try {
+        const root = dirname(establishMxcSandboxHomesParent({
+          platform: "win32", cacheHome: join(sandboxBase, "mxc-cache"), uid: undefined, pid: process.pid, aveHome: aveHomeBase,
+          processExists: () => true, processStart: () => null, windows: WINDOWS_RUNTIME_HOST,
+        }));
+        // Workers take only the directory proved here, by its identity.
+        const proved = lstatSync(root, { bigint: true });
+        process.env.AVE_TEST_MXC_RUNTIME_ROOT = JSON.stringify([root, String(proved.dev), String(proved.ino)]);
+      } catch (error) {
+        // Without the native path helper nothing is proved here; a test that needs a sandbox HOME then reports it itself.
+        console.warn(`[vitest setup] container runtime root not established: ${(error as Error).message}`);
+      }
     }
     // Load app modules only after AVE_HOME is set; sweep dead runs and preserve live ones.
     // With an explicit root both roots are one directory; sweep it once.

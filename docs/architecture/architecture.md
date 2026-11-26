@@ -3459,6 +3459,12 @@ in its directory.
   reason in Settings (a proxy-only boot keeps its proxy). A PowerShell start that
   fails with `STATUS_DLL_INIT_FAILED` (`0xC0000142`), which a non-interactive
   session such as SSH causes, is reported as `unverified-session`, not as MXC.
+  A container runtime root that was not proved private is reported as
+  `runtime-root-unproved`, whatever the container prerequisites, and the probe
+  starts no container. Sandbox HOMEs live under that root, so every sandboxed
+  process (terminal, shells, MCP servers, workers, extensions, the memory map) is
+  then unavailable, each with that named reason, until a restart or an install
+  repair.
 - **Integrity.** Detection hashes the launcher at boot, and the first command
   hashes it again before its launch; that result is cached for the process. A
   mismatch at boot leaves the shells off MXC (`launcher-mismatch`); at launch
@@ -3492,7 +3498,9 @@ in its directory.
   is no managed MXC shell job, so background processes in that container end
   with the invocation's containment.
 
-- **Filesystem.** The per-command ASRT lists are ranked for MXC
+- **Filesystem.** A container working directory inside the runtime root is
+  refused, except the launch's own issued HOME (matched by path and file identity).
+  The per-command ASRT lists are ranked for MXC
   (`rankMxcFilesystem`): the protected read floor drops grants not under a
   pierce, a write grant under a `denyWrite` path becomes read-only, a deny
   strictly inside a grant becomes an explicit `denied` entry when the path

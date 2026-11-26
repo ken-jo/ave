@@ -145,6 +145,7 @@ let homeParent = "";
 let createdHomes: string[] = [];
 const sandboxHomeCleanupMock = vi.fn();
 vi.mock("../../../permissions/sandbox-process-home.js", () => ({
+  isSandboxHomeUnavailable: (error: unknown) => (error as { code?: unknown } | undefined)?.code === "sandbox-home-unavailable",
   createSandboxProcessHome: () => {
     const path = mkdtempSync(join(homeParent, "home-"));
     createdHomes.push(path);
@@ -1207,6 +1208,22 @@ describe("pty-manager command blocks", () => {
     expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
     expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
     expect(getTerminalBlockTracker("terminal:0000000a-1")).toBeUndefined();
+  });
+
+  it("refuses the spawn with the named reason when no sandbox HOME can be made", async () => {
+    const home = await import("../../../permissions/sandbox-process-home.js");
+    const create = vi.spyOn(home, "createSandboxProcessHome");
+    create.mockImplementationOnce(() => {
+      throw Object.assign(new Error("sandboxed processes are unavailable"), { code: "sandbox-home-unavailable" });
+    });
+    let res: Awaited<ReturnType<typeof spawnTerminal>>;
+    try {
+      res = await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    } finally {
+      create.mockRestore();
+    }
+    expect(res).toEqual({ ok: false, reason: "sandbox-unavailable", message: "sandboxed processes are unavailable" });
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
   });
 });
 

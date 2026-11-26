@@ -503,6 +503,7 @@ export async function spawnConfinedPluginChild(
         allowWrite,
         // Refuses a turn that starts after the factory deadline, before any holder or ACL change.
         assertStillValid: () => spec.assertStillValid?.(),
+        sandboxHome: sandboxHome.path,
       });
       // The deadline may also pass during the turn; a refusal here releases the grant.
       spec.assertStillValid?.();
