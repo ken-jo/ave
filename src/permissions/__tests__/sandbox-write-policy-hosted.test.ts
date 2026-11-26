@@ -117,8 +117,8 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js", async ori
 });
 
 // The package runs outside the module mocks and expands on the host's own fs, where a drive spelling is one over-long relative name.
-// On a POSIX host each drive-spelled row is expanded at its backing file and named back on the drive. A host-spelled row is no win32
-// policy row, so it passes through unexpanded.
+// On a POSIX host each drive-spelled row is expanded at its backing file and named back on the drive. A host-spelled row is one the
+// test spells at the backing files itself, and is expanded there as given.
 vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", async original => {
   const actual = await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>();
   const onDrive = (path: string): boolean => /^[A-Za-z]:[\\/]/u.test(path);
@@ -126,7 +126,7 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", a
     if (!driveFixture.enabled || driveFixture.nativeHost === "win32") return actual.expandWindowsFsPaths(patterns, opts);
     return [...new Set([...patterns].flatMap(entry => {
       const path = typeof entry === "string" ? entry : entry.path;
-      if (!onDrive(path)) return [path];
+      if (!onDrive(path)) return actual.expandWindowsFsPaths([entry], opts);
       // An admitted row is already its final drive path and is taken without a lookup.
       if (typeof entry !== "string" && "admitted" in entry) return actual.expandWindowsFsPaths([entry], opts);
       const host = driveFixture.toHost(path);
@@ -360,7 +360,8 @@ describe("hosted write policy spellings", () => {
       }).grantWrite;
       const patternDeny = expandWindowsFsPaths([driveFixture.toHost(join(root, "pattern*"))], { mode: "deny" });
       expect(patternDeny.length).toBeGreaterThan(0);
-      expect(grantedWrites(join(root, "pattern-files", "key"), patternDeny)).toEqual([]);
+      const patternProbe = join(root, "pattern-files", "key");
+      expect(grantedWrites(patternProbe, patternDeny), JSON.stringify({ patternDeny, probe: driveFixture.toHost(patternProbe) })).toEqual([]);
       const literalDeny = expandWindowsFsPaths([{ path: driveFixture.toHost(join(literalRoot, ".vscode")), literal: true }], { mode: "deny" });
       expect(grantedWrites(join(literalRoot, ".vscode"), literalDeny)).toEqual([]);
       const bracketSibling = join(root, "literal1", "temp-directory", ".vscode");
