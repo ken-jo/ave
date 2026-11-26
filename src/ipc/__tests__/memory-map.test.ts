@@ -184,7 +184,7 @@ describe('memory map host boundary', () => {
     const shared = deferred<{ areSwitchesAvailable: () => boolean }>();
     state.refreshAdmission.mockReturnValue(shared.promise);
     const startHost = vi.fn();
-    state.runWorker.mockImplementationOnce(async (_folder, _task, _signal, _progress, preference: boolean | (() => boolean)) => {
+    state.runWorker.mockImplementationOnce(async (_folder, _task, _signal, _progress, _onAdmission, preference: boolean | (() => boolean)) => {
       const admission = await shared.promise;
       if (admission.areSwitchesAvailable() && (typeof preference === 'function' ? preference() : preference)) startHost();
     });

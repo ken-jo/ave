@@ -112,7 +112,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     provider,
     watchAuthority,
     refreshLocalAdmission,
-    runWorker: (folder, task, signal, onProgress) => runMemoryWorker(folder, task, signal, onProgress, localInferencePreference),
+    runWorker: (folder, task, signal, onProgress, onAdmission) => runMemoryWorker(folder, task, signal, onProgress, onAdmission, localInferencePreference),
     validatedModelPath: async (signal) => {
       const admission = await refreshLocalInferenceAdmission();
       signal.throwIfAborted();

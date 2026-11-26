@@ -21,7 +21,7 @@ import { MemoryMapHostError } from './errors.js';
 import { checkedInferenceFrameBytes, INFERENCE_FILES, INFERENCE_PREFIX_BYTES } from './inference-request.js';
 import { assertLocalEmbeddingRuntime, bindLocalEmbeddingRuntime, refreshLocalInferenceAdmission, type LocalInferenceRoute } from './local-runtime.js';
 import type { ModelFile } from './model-manifest.js';
-import type { MemoryInferenceTask } from './worker-client.js';
+import type { MemoryInferenceTask, OnInferenceAdmission } from './worker-client.js';
 
 // Set in the process environment at creation, where the native runtime reads it; the network block is the boundary, this is defense in depth.
 const TELEMETRY_OPT_OUT = { ORT_DISABLE_TELEMETRY: '1' } as const;
@@ -190,7 +190,8 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
 }
 
 export async function runInferenceChild<T>(folder: string, task: MemoryInferenceTask, signal: AbortSignal,
-  onProgress?: (progress: MemoryMapProgress) => void, readLocalInferencePreference?: () => boolean): Promise<T> {
+  onProgress?: (progress: MemoryMapProgress) => void, readLocalInferencePreference?: () => boolean,
+  onAdmission?: OnInferenceAdmission): Promise<T> {
   signal.throwIfAborted();
   const admission = await refreshLocalInferenceAdmission();
   const readRoute = () => assertLocalEmbeddingRuntime(readLocalInferencePreference?.(), admission);
@@ -214,7 +215,12 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
         () => {
           if (error) { reject(error); return; }
           // Cleanup yielded, so the result leaves under the receipt as it stands now.
-          try { commitUnderAdmission(assertStillValid, () => resolve(value as T)); } catch (refusal) { reject(refusal as Error); }
+          try {
+            commitUnderAdmission(assertStillValid, () => {
+              onAdmission?.(assertStillValid);
+              resolve(value as T);
+            });
+          } catch (refusal) { reject(refusal as Error); }
         },
         (cleanupError: unknown) => reject(error ?? cleanupError),
       );

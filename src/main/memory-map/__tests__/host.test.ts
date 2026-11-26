@@ -1,3 +1,5 @@
+import * as atomicFile from '../../../lib/atomic-file.js';
+import { deferred } from '../../../__tests__/support/deferred.js';
 import { createHash } from 'node:crypto';
 import { lstat, mkdtemp, mkdir, open, readFile, realpath, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -290,16 +292,17 @@ describe('memory graph publication', () => {
   });
   it('publishes the ready state in the step that replaces the stored graph', async () => {
     const f = await fixture();
-    const childDir = f.namespace.childDir;
-    let publishing = false;
-    f.namespace.childDir = async name => { const path = await childDir(name); publishing = name === ''; return path; };
     const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model', runWorker: f.runWorker });
-    // The first catalog read after the directory step is the publication check. The request is superseded right behind it.
-    const readCatalog = () => {
-      if (publishing) { publishing = false; queueMicrotask(() => host.cancel()); }
-      return f.catalog;
-    };
-    await host.build(readCatalog).catch(() => {});
+    const atomicReplace = atomicFile.replaceUtf8FileAtomicSyncIf;
+    const replace = vi.spyOn(atomicFile, 'replaceUtf8FileAtomicSyncIf').mockImplementationOnce((path, body, canCommit, mode) =>
+      atomicReplace(path, body, () => {
+        const allowed = canCommit();
+        queueMicrotask(() => host.cancel());
+        return allowed;
+      }, mode));
+    try {
+      await expect(host.build(() => f.catalog)).rejects.toMatchObject({ code: 'request-stale' });
+    } finally { replace.mockRestore(); }
     const stored: unknown = JSON.parse(await readFile(join(f.root, 'snapshot.json'), 'utf8')).snapshot;
     expect(stored).not.toBeNull();
     expect(await host.get(() => f.catalog)).toEqual(stored);
@@ -315,9 +318,11 @@ describe('memory graph publication', () => {
   it('drops a stale question when a newer query completes first', async () => {
     const f = await fixture(); let release!: () => void; const wait = new Promise<void>(resolve => { release = resolve; });
     let started!: () => void; const start = new Promise<void>(resolve => { started = resolve; });
-    const runner: MemoryWorkerRunner = async <T>(folder: string, task: Parameters<MemoryWorkerRunner>[1], signal: AbortSignal) => {
+    const runner: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
+      const [folder, task, signal, , onAdmission] = args;
       if (task.kind !== 'embed') return f.runWorker<T>(folder, task, signal);
       if (task.text === 'first') { started(); await wait; }
+      onAdmission?.(() => {});
       return [1, ...Array<number>(383).fill(0)] as T;
     };
     const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model', runWorker: runner });
@@ -325,6 +330,30 @@ describe('memory graph publication', () => {
     const old = host.retrieve(() => f.catalog, { question: 'first', filters: {}, queryId: 'first', snapshotId: snapshot.snapshotId }); await start;
     const answer = await host.retrieve(() => f.catalog, { question: 'second', filters: {}, queryId: 'second', snapshotId: snapshot.snapshotId });
     expect(answer.queryId).toBe('second'); release(); await expect(old).rejects.toThrow('request-stale');
+  });
+  it('refuses an answer whose inference receipt expired after vector production', async () => {
+    const f = await fixture();
+    const vectorProduced = deferred<void>();
+    const deliver = deferred<void>();
+    let current = true;
+    const assertInference = () => { if (!current) throw new MemoryMapHostError('local-runtime-unavailable'); };
+    const runner: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
+      const [folder, task, signal, , onAdmission] = args;
+      if (task.kind !== 'embed') return f.runWorker<T>(folder, task, signal);
+      const vector = [1, ...Array<number>(383).fill(0)];
+      assertInference();
+      onAdmission?.(assertInference);
+      vectorProduced.resolve();
+      await deliver.promise;
+      return vector as T;
+    };
+    const host = new MemoryMapHost({ namespace: f.namespace, refreshLocalAdmission: allowLocal, validatedModelPath: async () => 'model', runWorker: runner });
+    const snapshot = await host.build(() => f.catalog);
+    const pending = host.retrieve(() => f.catalog, { question: 'Question', filters: {}, snapshotId: snapshot.snapshotId, queryId: 'question' });
+    await vectorProduced.promise;
+    current = false;
+    deliver.resolve();
+    await expect(pending).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
   });
   it('drops a completed old build on cancellation or scope change', async () => {
     const f = await fixture(); let release!: () => void; const wait = new Promise<void>(resolve => { release = resolve; });

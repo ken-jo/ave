@@ -223,6 +223,7 @@ export class MemoryMapHost {
         this.cache = result.cache; this.snapshot = result.snapshot; this.pending = null;
       });
       if (!committed) throw new MemoryMapHostError('request-stale');
+      assertCurrent();
       return result.snapshot;
     } catch (error) {
       if (generation !== this.generation || controller.signal.aborted) throw new MemoryMapHostError('request-stale');
@@ -250,11 +251,20 @@ export class MemoryMapHost {
     };
     const stopWatching = selected.source === 'provider' ? this.options.watchAuthority?.(() => controller.abort()) : undefined;
     let vector: number[];
-    try { vector = selected.source === 'provider' ? (await (this.options.provider as ProviderEmbeddings).embed(selected, [request.question], controller.signal, assertAuthority))[0] : await this.runWorker<number[]>(folder, { kind: 'embed', text: request.question }, controller.signal); }
+    let assertInference: (() => void) | undefined;
+    try {
+      vector = selected.source === 'provider'
+        ? (await (this.options.provider as ProviderEmbeddings).embed(selected, [request.question], controller.signal, assertAuthority))[0]
+        : await this.runWorker<number[]>(folder, { kind: 'embed', text: request.question }, controller.signal, undefined,
+          (assertStillValid) => { assertInference = assertStillValid; });
+    }
     catch (error) { if (controller.signal.aborted || queryGeneration !== this.queryGeneration) throw new MemoryMapHostError('request-stale'); throw error; }
     finally { stopWatching?.(); }
     if (controller.signal.aborted || queryGeneration !== this.queryGeneration || snapshot !== this.snapshot || catalogRevision(catalog.records) !== catalogRevision(readCatalog().records) || catalog.authorizationScopeId !== readCatalog().authorizationScopeId) throw new MemoryMapHostError('request-stale');
-    return retrieveMatches(catalog.records, this.cache, vector, request.filters, { snapshotId: snapshot.snapshotId, catalogRevision: snapshot.catalogRevision, queryId: request.queryId }, selected);
+    const answer = () => retrieveMatches(catalog.records, this.cache, vector, request.filters, { snapshotId: snapshot.snapshotId, catalogRevision: snapshot.catalogRevision, queryId: request.queryId }, selected);
+    if (selected.source === 'provider') return answer();
+    if (assertInference === undefined) throw new MemoryMapHostError('local-runtime-unavailable');
+    return commitUnderAdmission(assertInference, answer);
   }
 
 }

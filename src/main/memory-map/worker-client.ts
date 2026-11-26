@@ -6,11 +6,14 @@ import type { MemoryMapProgress } from '../../shared/memory-map.js';
 import type { GraphBuildInput } from './graph.js';
 export type MemoryInferenceTask = { kind: 'embed-batch'; texts: string[]; jobId: string } | { kind: 'embed'; text: string };
 export type MemoryWorkerTask = MemoryInferenceTask | { kind: 'project'; input: GraphBuildInput };
-export type MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void) => Promise<T>;
-export const runMemoryWorker = async <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void, readLocalInferencePreference?: () => boolean): Promise<T> => {
+export type OnInferenceAdmission = (assertStillValid: () => void) => void;
+export type MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal,
+  onProgress?: (progress: MemoryMapProgress) => void, onAdmission?: OnInferenceAdmission) => Promise<T>;
+export const runMemoryWorker = async <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal,
+  onProgress?: (progress: MemoryMapProgress) => void, onAdmission?: OnInferenceAdmission, readLocalInferencePreference?: () => boolean): Promise<T> => {
   signal.throwIfAborted();
   // The local model loads only in the inference child. This thread projects cached vectors.
-  if (task.kind !== 'project') return runInferenceChild<T>(folder, task, signal, onProgress, readLocalInferencePreference);
+  if (task.kind !== 'project') return runInferenceChild<T>(folder, task, signal, onProgress, readLocalInferencePreference, onAdmission);
   const entry = join(mainDir, 'memory-map-worker.js');
   const worker = new Worker(entry, { workerData: { task } });
   return new Promise<T>((resolve, reject) => {
