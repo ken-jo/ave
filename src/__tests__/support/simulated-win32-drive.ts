@@ -96,12 +96,13 @@ export async function simulatedSandboxProcessHome(actual: typeof SandboxProcessH
 /** The cache home of the runtime root a simulated win32 process denies: the run directory is spelled by this kernel, and no Windows path names it. */
 export const SIMULATED_MXC_CACHE_HOME = "C:\\runtime-cache";
 
-/** While win32 is simulated, the runtime root's floor row is on the simulated drive. An explicit cache home is passed through. */
+/** While win32 is simulated, the runtime root's floor row is on the simulated drive, and that root is the proved one a
+ * container start requires. An explicit cache home is passed through. */
 export function simulatedRuntimeRoot(actual: typeof RuntimeRoot, nativeHost = host): typeof RuntimeRoot {
   if (nativeHost === "win32") return actual;
   const mxcRuntimeRootFloorPath: typeof actual.mxcRuntimeRootFloorPath = (cacheHome, platform = process.platform) =>
     actual.mxcRuntimeRootFloorPath(cacheHome ?? (platform === "win32" ? SIMULATED_MXC_CACHE_HOME : undefined), platform);
-  return { ...actual, mxcRuntimeRootFloorPath };
+  return { ...actual, mxcRuntimeRootFloorPath, requireMxcContainerStartRoot: () => mxcRuntimeRootFloorPath(SIMULATED_MXC_CACHE_HOME, "win32") };
 }
 
 /** Drive-path arguments use win32 path operations while the simulated platform is win32. */

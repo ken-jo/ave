@@ -89,6 +89,7 @@ describe("spawnWindowsBundledProcess", () => {
       label: "hook:alpha:asrt-win-acl",
       allowRead: [SANDBOX_HOME, "C:\\p\\data", "C:\\p\\gen"],
       allowWrite: [SANDBOX_HOME, "C:\\p\\data"],
+      sandboxHome: SANDBOX_HOME,
     });
     const spec = confinedSpawn.mock.calls[0]![0];
     expect(spec).toMatchObject({

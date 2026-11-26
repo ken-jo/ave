@@ -11,12 +11,26 @@ const h = vi.hoisted(() => ({
   openRelay: vi.fn(),
   floor: vi.fn(() => [] as string[]),
   boundary: vi.fn((_path: string): string | undefined => undefined),
+  privateRoots: vi.fn(() => [] as string[]),
+  liveHomes: new Set<string>(),
   wxcExec: vi.fn(async () => String.raw`C:\Ave\resources\mxc\x64\wxc-exec.exe`),
   registerPort: vi.fn(),
   recordRefusal: vi.fn(),
   closeRelay: vi.fn(async () => {}),
   readdir: vi.fn(),
   lstat: vi.fn(),
+  // The runtime root start-up proved, or the refusal of one that was not.
+  startRoot: vi.fn((): string => "C:\\Users\\alice\\AppData\\Local\\ai.agent-connector.ave\\mxc-runtime"),
+  // Stands for the issued-HOME identity check (its own suite runs it on real directories): the invocation's HOME itself.
+  issuedHome: vi.fn((cwd: string, home: string | undefined): boolean => cwd === home),
+}));
+vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../permissions/mxc-runtime-root.js")>(),
+  requireMxcContainerStartRoot: () => h.startRoot(),
+}));
+vi.mock("../../permissions/sandbox-home-registry.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../permissions/sandbox-home-registry.js")>(),
+  isIssuedContainerHome: (cwd: string, home: string | undefined) => h.issuedHome(cwd, home),
 }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -30,6 +44,12 @@ vi.mock("../../permissions/egress-host-listener.js", () => ({
 
 vi.mock("../../permissions/asrt-sandbox.js", () => ({
   aveHomeReadBoundaryCovering: h.boundary,
+  appOwnedSandboxPrivateRoots: h.privateRoots,
+  // Stand-ins with the real functions' meaning: a path at or under a root, and a path at or inside a HOME the host still holds.
+  protectedReadDenyMatcher: (roots: readonly string[]) => (path: string) =>
+    roots.find((root) => `${path.toLowerCase()}\\`.startsWith(root.toLowerCase())),
+  insideOwnWindowsSandboxHome: (path: string, home: string | undefined) =>
+    home !== undefined && h.liveHomes.has(home) && (path === home || path.startsWith(`${home}\\`)),
   getProtectedReadDenyFloor: h.floor,
   getWindowsProxyPortRange: () => [60080, 60089],
 }));
@@ -38,7 +58,7 @@ vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
   resolveHostWxcExecPath: h.wxcExec,
 }));
 
-import { prepareMxcShellLaunch } from "../mxc-shell-launch.js";
+import { prepareMxcShellLaunch, type PrepareMxcShellLaunchInput } from "../mxc-shell-launch.js";
 import { createContainedShellLifecycle } from "../contained-shell-lifecycle.js";
 import { MXC_REQUEST_CHARACTER_LIMIT } from "../../permissions/mxc-windows.js";
 import { mxcConfinementStatePaths } from "../../permissions/mxc-runtime-root.js";
@@ -218,6 +238,101 @@ describe("prepareMxcShellLaunch", () => {
       try {
         const launch = await prepareMxcShellLaunch({ ...INPUT, filesystem: { ...INPUT.filesystem, allowRead: [runtimeRoot()] } }, lifecycle);
         expect(decodeRequest(launch.argv).filesystem.readwritePaths).toEqual([WS]);
+      } finally {
+        expect(await lifecycle.dispose()).toEqual([]);
+      }
+    });
+  });
+
+  describe("the container runtime root", () => {
+    const ROOT = String.raw`C:\Users\alice\AppData\Local\ai.agent-connector.ave\mxc-runtime`;
+    const HOMES = `${ROOT}\\homes`;
+    const OWN = `${HOMES}\\ave-sandbox-home-own`;
+    const SIBLING = `${HOMES}\\ave-sandbox-home-sibling`;
+    const STAGING = `${ROOT}\\staging`;
+    const CLOSED = [ROOT, HOMES, SIBLING, `${SIBLING}\\AppData`, `${SIBLING}.owner`, STAGING, `${STAGING}\\0123456789abcdef0123456789abcdef`];
+    beforeEach(() => {
+      relay();
+      h.privateRoots.mockReturnValue([`${ROOT}\\`]);
+      h.liveHomes.add(OWN);
+    });
+    afterEach(() => {
+      h.privateRoots.mockReturnValue([]);
+      h.liveHomes.clear();
+    });
+    const launchWith = async (input: Partial<PrepareMxcShellLaunchInput>) => {
+      const lifecycle = createContainedShellLifecycle();
+      try {
+        return decodeRequest((await prepareMxcShellLaunch({ ...INPUT, ...input }, lifecycle)).argv).filesystem;
+      } finally {
+        expect(await lifecycle.dispose()).toEqual([]);
+      }
+    };
+
+    it("grants only this invocation's own HOME there, for writes and reads alike", async () => {
+      const filesystem = await launchWith({ sandboxHome: OWN, filesystem: {
+        allowWrite: [WS, ...CLOSED, OWN], allowRead: [...CLOSED, `${OWN}\\AppData`], denyRead: [], denyWrite: [],
+      } });
+      expect(filesystem.readwritePaths).toEqual([WS, OWN]);
+      expect(filesystem.readonlyPaths ?? []).toEqual([`${OWN}\\AppData`]);
+      expect(JSON.stringify(filesystem)).not.toMatch(/sibling|staging|homes"|mxc-runtime"/u);
+    });
+
+    it("keeps the root denied beneath a granted ancestor, whatever is asked for inside it", async () => {
+      const profile = String.raw`C:\Users\alice`;
+      const filesystem = await launchWith({ cwd: profile, filesystem: {
+        allowWrite: [profile, ...CLOSED], allowRead: CLOSED, denyRead: [], denyWrite: [],
+      } });
+      expect(filesystem.readwritePaths).toEqual([profile]);
+      expect(filesystem.deniedPaths).toEqual([ROOT]);
+    });
+
+    it("grants no HOME the host does not hold, and none without a HOME of its own", async () => {
+      for (const sandboxHome of [SIBLING, HOMES, ROOT, undefined]) {
+        const filesystem = await launchWith({ ...(sandboxHome === undefined ? {} : { sandboxHome }), filesystem: {
+          allowWrite: [WS, SIBLING, OWN], allowRead: [SIBLING, OWN], denyRead: [], denyWrite: [],
+        } });
+        expect(filesystem.readwritePaths, String(sandboxHome)).toEqual([WS]);
+      }
+    });
+
+    it("refuses the launch before anything is allocated while the root is not proved", async () => {
+      h.startRoot.mockImplementationOnce(() => { throw new Error("Container runtime root was not established when the sandbox started"); });
+      const lifecycle = createContainedShellLifecycle();
+      try {
+        await expect(prepareMxcShellLaunch({ ...INPUT, sandboxHome: OWN }, lifecycle)).rejects.toThrow(/not established/u);
+        expect(h.wxcExec).not.toHaveBeenCalled();
+        expect(h.openRelay).not.toHaveBeenCalled();
+      } finally {
+        expect(await lifecycle.dispose()).toEqual([]);
+      }
+    });
+
+    it("admits a working directory beside it", async () => {
+      const sibling = `${ROOT}-other\\repo`;
+      const filesystem = await launchWith({ cwd: sibling, sandboxHome: OWN, filesystem: { allowWrite: [sibling, OWN], allowRead: [], denyRead: [], denyWrite: [] } });
+      expect(filesystem.readwritePaths).toEqual([sibling, OWN]);
+    });
+
+    it("admits its own issued HOME itself, asking with this invocation's HOME", async () => {
+      const filesystem = await launchWith({ cwd: OWN, sandboxHome: OWN, filesystem: { allowWrite: [OWN], allowRead: [], denyRead: [], denyWrite: [] } });
+      expect(filesystem.readwritePaths).toEqual([OWN]);
+      expect(h.issuedHome).toHaveBeenCalledWith(OWN, OWN);
+    });
+
+    it("refuses its own HOME by name once it is no longer the directory issued", async () => {
+      h.issuedHome.mockReturnValueOnce(false);
+      await expect(launchWith({ cwd: OWN, sandboxHome: OWN, filesystem: { allowWrite: [OWN], allowRead: [], denyRead: [], denyWrite: [] } }))
+        .rejects.toThrow(/working directory is inside the sandbox runtime root/u);
+    });
+
+    it.each([...CLOSED, `${OWN}\\work`])("refuses a working directory inside it: %s", async (cwd) => {
+      const lifecycle = createContainedShellLifecycle();
+      try {
+        await expect(prepareMxcShellLaunch({ ...INPUT, cwd, sandboxHome: OWN,
+          filesystem: { allowWrite: [cwd, OWN], allowRead: [], denyRead: [], denyWrite: [] } }, lifecycle))
+          .rejects.toThrow(/working directory is inside the sandbox runtime root/u);
+        expect(h.openRelay).not.toHaveBeenCalled();
       } finally {
         expect(await lifecycle.dispose()).toEqual([]);
       }

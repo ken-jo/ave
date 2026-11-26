@@ -194,6 +194,7 @@ const MXC_UNAVAILABLE_REASON_KEY = {
   "launcher-mismatch": "permissionsTab.osSandboxWindowsMxcReasonLauncherMismatch",
   "powershell-start-failed": "permissionsTab.osSandboxWindowsMxcReasonPowershellStartFailed",
   "unverified-session": "permissionsTab.osSandboxWindowsMxcReasonUnverifiedSession",
+  "runtime-root-unproved": "permissionsTab.osSandboxWindowsMxcReasonRuntimeRootUnproved",
 } as const satisfies Record<SandboxMxcUnavailableReason, string>;
 
 /** Every reason the shared extension plan can carry, so no reason renders as a raw key. */
@@ -1282,6 +1283,16 @@ export function PermissionsTab({
               className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning"
             >
               {t("permissionsTab.osSandboxUnavailable", { platform: sandboxCapability.platform })}
+            </p>
+          ) : null}
+          {/* Shown whatever the sandbox setting; the substrate row below already names it when boot recorded the same reason. */}
+          {sandboxCapability?.sandboxHomesUnavailable && !(windowsSubstrate?.mxc.state === "unavailable" && windowsSubstrate.mxc.reason === "runtime-root-unproved") ? (
+            <p
+              role="alert"
+              data-testid="os-sandbox-windows-homes-unavailable"
+              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning"
+            >
+              {t("permissionsTab.osSandboxWindowsMxcReasonRuntimeRootUnproved")}
             </p>
           ) : null}
           {sandboxCapability && sandboxCapability.available ? (

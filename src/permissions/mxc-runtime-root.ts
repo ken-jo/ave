@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync,
-  type Stats,
+  type BigIntStats, type Stats,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { posix as posixPath, win32 as winPath } from "node:path";
@@ -499,6 +499,7 @@ export function establishMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntime
 export function _forgetMxcRuntimeRootForTest(cacheHome: string): void {
   established.delete(cacheHome);
   establishFailures.delete(cacheHome);
+  homesParents.clear();
 }
 
 /**
@@ -550,6 +551,84 @@ export function mxcStagingParent(platform: NodeJS.Platform = process.platform, h
   }
   return ensurePrivateDirectory(posixPath.join(requireMxcRuntimeRoot(current), "staging"), posixUid(current), "Container staging parent");
 }
+
+/** Under the test runner only: the root the run's set-up proved and published by identity
+ * (`config/vitest.globalSetup.ts`), taken by a test file that has not established one itself. Each file loads this
+ * module anew, and the proof starts PowerShell. A root the set-up refused is published by nobody: a file establishes its own or is refused. */
+function rootOfThisTestRun(host: MxcRuntimeHost): string | undefined {
+  if (!AVE_HOME_ISOLATION_GUARD_ACTIVE || established.has(host.cacheHome)) return undefined;
+  const planned = plannedWindowsRuntimeRoot(host);
+  let published: unknown;
+  try {
+    published = JSON.parse(process.env.AVE_TEST_MXC_RUNTIME_ROOT ?? "null");
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(published) || published[0] !== planned) return undefined;
+  const entry = lstatSync(planned, { bigint: true, throwIfNoEntry: false });
+  return entry?.isDirectory() === true && !entry.isSymbolicLink()
+    && String(entry.dev) === published[1] && String(entry.ino) === published[2] ? planned : undefined;
+}
+
+/**
+ * The Windows runtime root every container start requires: the one sandbox start-up proved private (under the test
+ * runner, the one the run's set-up proved), still the same directory. It creates and proves nothing: a root that was
+ * refused, never established, removed or replaced refuses the start.
+ */
+export function requireMxcContainerStartRoot(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
+  if (host.platform !== "win32") refuse("Container starts require the Windows container runtime root");
+  return rootOfThisTestRun(host) ?? requireMxcRuntimeRoot(host);
+}
+
+/**
+ * Sandbox start-up only: establish the runtime root by its proof and create `<runtime root>\homes`, beside `staging`,
+ * where Windows sandbox HOMEs and their owner markers go. It inherits the root's access, so only this account reaches
+ * it; a confined process is granted its own HOME inside it and nothing else, and the markers sit where no confined
+ * process is granted.
+ */
+export function establishMxcSandboxHomesParent(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
+  if (host.platform !== "win32") refuse("Sandbox HOMEs live under the container runtime root on Windows only");
+  const root = rootOfThisTestRun(host) ?? establishMxcRuntimeRoot(host);
+  ensureWindowsDirectory(winPath.join(root, "homes"), "Sandbox HOME parent");
+  // Again once it exists: a path swapped while it was created is refused before a HOME is placed in it.
+  assertWindowsRuntimeRootUnmoved(root);
+  return verifiedHomesParent(root);
+}
+
+/**
+ * The sandbox HOME parent start-up established (under the test runner, the one the run's set-up created), still the
+ * same directory. It creates and proves nothing: without a root and HOME parent from start-up every HOME is refused,
+ * and nothing falls back to the host temp directory.
+ */
+export function mxcSandboxHomesParent(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
+  if (host.platform !== "win32") refuse("Sandbox HOMEs live under the container runtime root on Windows only");
+  const root = requireMxcContainerStartRoot(host);
+  if (!homesParents.has(root) && rootOfThisTestRun(host) !== root) refuse("Sandbox HOME parent was not established when the sandbox started");
+  return verifiedHomesParent(root);
+}
+
+function verifiedHomesParent(root: string): string {
+  const homes = winPath.join(root, "homes");
+  let entry: BigIntStats;
+  let real: string;
+  try {
+    entry = lstatSync(homes, { bigint: true });
+    real = realpathSync.native(homes);
+  } catch (error) {
+    return refuse("Sandbox HOME parent could not be inspected", error);
+  }
+  // The directory this process first saw there, for as long as it runs: a caller asks again after it creates a HOME
+  // and before the sweep removes one, and a replaced parent is refused.
+  const known = homesParents.get(root) ?? { dev: entry.dev, ino: entry.ino };
+  if (entry.isSymbolicLink() || !entry.isDirectory() || entry.dev !== known.dev || entry.ino !== known.ino
+    || real.toLowerCase() !== homes.toLowerCase()) {
+    refuse("Sandbox HOME parent is no longer the directory first used under the container runtime root");
+  }
+  homesParents.set(root, known);
+  return homes;
+}
+
+const homesParents = new Map<string, { dev: bigint; ino: bigint }>();
 
 /** One run's directories on macOS and Linux. `root` is the run's only write grant; `home` and `temp` lie inside it. */
 export interface MxcRunStaging {
