@@ -1,5 +1,4 @@
 import { crc32 } from "node:zlib";
-import type { SKRSContext2D } from "@napi-rs/canvas";
 import type { Sharp } from "sharp";
 import { BROWSER_CAPTURE_LIMITS, type BrowserCaptureScroll, type BrowserViewportImage } from "../../shared/browser-capture.js";
 import { BrowserActionError, throwIfAborted, type CdpSession } from "./browser-action-guard.js";
@@ -7,7 +6,6 @@ import { captureScrollContext, scrollBrowserCapture } from "./browser-capture-sc
 
 const PNG_COLOR_CHUNKS = new Set(["cHRM", "cICP", "gAMA", "iCCP", "sRGB"]);
 const PNG_HEADER_BYTES = 33;
-const CAPTURE_STRIP_BYTES = 1024 * 1024;
 const CAPTURE_DECODE_PIXELS = BROWSER_CAPTURE_LIMITS.pixels / 2;
 
 function captureColorChunks(png: Buffer, keepPrefix = false): { color: Buffer; prefix: Buffer[]; imageOffset: number } {
@@ -40,67 +38,83 @@ function footprintEnd(origin: number, step: number, index: number, size: number,
   return step >= 1 ? Math.min(size, origin + (index + 1) * step) : start + 1;
 }
 
+function repeatedSourceRow(pixels: Buffer, start: number, end: number, stride: number): Buffer | undefined {
+  const row = pixels.subarray(start, start + stride);
+  for (let offset = start + stride; offset < end; offset += stride) {
+    if (row.compare(pixels, offset, offset + stride) !== 0) return undefined;
+  }
+  return row;
+}
+
 function copyCaptureTile(
-  context: SKRSContext2D, pixels: Buffer, pixelWidth: number, channels: 3 | 4,
+  target: Buffer, pixels: Buffer, pixelWidth: number, channels: 3 | 4,
   sourceTop: number, stepX: number, stepY: number, width: number, copied: number, rows: number,
   tileHeight: number, sectionTop: number, sectionStart: number,
 ): void {
-  const strip = context.createImageData(width, Math.min(rows, Math.max(1, Math.floor(CAPTURE_STRIP_BYTES / (width * 4)))));
-  const target = strip.data;
   const hasAlpha = channels === 4;
-  for (let start = 0; start < rows; start += strip.height) {
-    const count = Math.min(rows - start, strip.height);
-    for (let y = 0; y < count; y += 1) {
-      const row = sectionStart + start + y;
-      const top = footprintStart(sourceTop, stepY, row, tileHeight);
-      const bottom = footprintEnd(sourceTop, stepY, row, tileHeight, top);
-      if (stepX === 1 && Number.isInteger(top) && bottom - top === 1) {
-        const left = (top - sectionTop) * pixelWidth * channels;
-        const out = y * width * 4;
-        if (hasAlpha) target.set(pixels.subarray(left, left + width * channels), out);
-        else {
-          for (let x = 0; x < width; x += 1) {
-            const source = left + x * 3;
-            const dest = out + x * 4;
-            target[dest] = pixels[source] ?? 0;
-            target[dest + 1] = pixels[source + 1] ?? 0;
-            target[dest + 2] = pixels[source + 2] ?? 0;
-            target[dest + 3] = 255;
-          }
+  const stride = pixelWidth * channels;
+  const outputStride = width * 4;
+  let previousRepeat: Buffer | undefined;
+  let previousOutput = 0;
+  for (let y = 0; y < rows; y += 1) {
+    const row = sectionStart + y;
+    const outputRow = (copied + y) * outputStride;
+    const top = footprintStart(sourceTop, stepY, row, tileHeight);
+    const bottom = footprintEnd(sourceTop, stepY, row, tileHeight, top);
+    if (stepX === 1 && Number.isInteger(top) && bottom - top === 1) {
+      const left = (top - sectionTop) * stride;
+      if (hasAlpha) pixels.copy(target, outputRow, left, left + width * channels);
+      else {
+        for (let x = 0; x < width; x += 1) {
+          const source = left + x * 3;
+          const dest = outputRow + x * 4;
+          target[dest] = pixels[source] ?? 0;
+          target[dest + 1] = pixels[source + 1] ?? 0;
+          target[dest + 2] = pixels[source + 2] ?? 0;
+          target[dest + 3] = 255;
         }
-        continue;
       }
-      const firstY = Math.floor(top), endY = Math.ceil(bottom);
-      for (let x = 0; x < width; x += 1) {
-        const left = footprintStart(0, stepX, x, pixelWidth);
-        const right = footprintEnd(0, stepX, x, pixelWidth, left);
-        const firstX = Math.floor(left), endX = Math.ceil(right);
-        let red = 0, green = 0, blue = 0, opacity = 0;
-        for (let sy = firstY; sy < endY; sy += 1) {
-          const yCoverage = Math.min(sy + 1, bottom) - Math.max(sy, top);
-          let source = ((sy - sectionTop) * pixelWidth + firstX) * channels;
-          for (let sx = firstX; sx < endX; sx += 1, source += channels) {
-            const coverage = (Math.min(sx + 1, right) - Math.max(sx, left)) * yCoverage;
-            const weight = hasAlpha ? coverage * (pixels[source + 3] ?? 0) : coverage;
-            opacity += weight;
-            red += (pixels[source] ?? 0) * weight;
-            green += (pixels[source + 1] ?? 0) * weight;
-            blue += (pixels[source + 2] ?? 0) * weight;
-          }
-        }
-        const out = (y * width + x) * 4;
-        target[out] = opacity === 0 ? 0 : Math.round(red / opacity);
-        target[out + 1] = opacity === 0 ? 0 : Math.round(green / opacity);
-        target[out + 2] = opacity === 0 ? 0 : Math.round(blue / opacity);
-        target[out + 3] = hasAlpha ? Math.round(opacity / ((right - left) * (bottom - top))) : 255;
-      }
+      continue;
     }
-    context.putImageData(strip, 0, copied + start, 0, 0, width, count);
+    const firstY = Math.floor(top), endY = Math.ceil(bottom);
+    // When the source rows are identical, the vertical weights cancel.
+    const repeat = repeatedSourceRow(pixels, (firstY - sectionTop) * stride, (endY - sectionTop) * stride, stride);
+    if (repeat && previousRepeat?.equals(repeat)) {
+      target.copy(target, outputRow, previousOutput, previousOutput + outputStride);
+      continue;
+    }
+    previousRepeat = repeat;
+    previousOutput = outputRow;
+    const sampleEndY = repeat ? firstY + 1 : endY;
+    const spanY = repeat ? 1 : bottom - top;
+    for (let x = 0; x < width; x += 1) {
+      const left = footprintStart(0, stepX, x, pixelWidth);
+      const right = footprintEnd(0, stepX, x, pixelWidth, left);
+      const firstX = Math.floor(left), endX = Math.ceil(right);
+      let red = 0, green = 0, blue = 0, opacity = 0;
+      for (let sy = firstY; sy < sampleEndY; sy += 1) {
+        const yCoverage = repeat ? 1 : Math.min(sy + 1, bottom) - Math.max(sy, top);
+        let source = ((sy - sectionTop) * pixelWidth + firstX) * channels;
+        for (let sx = firstX; sx < endX; sx += 1, source += channels) {
+          const coverage = (Math.min(sx + 1, right) - Math.max(sx, left)) * yCoverage;
+          const weight = hasAlpha ? coverage * (pixels[source + 3] ?? 0) : coverage;
+          opacity += weight;
+          red += (pixels[source] ?? 0) * weight;
+          green += (pixels[source + 1] ?? 0) * weight;
+          blue += (pixels[source + 2] ?? 0) * weight;
+        }
+      }
+      const out = outputRow + x * 4;
+      target[out] = opacity === 0 ? 0 : Math.round(red / opacity);
+      target[out + 1] = opacity === 0 ? 0 : Math.round(green / opacity);
+      target[out + 2] = opacity === 0 ? 0 : Math.round(blue / opacity);
+      target[out + 3] = hasAlpha ? Math.round(opacity / ((right - left) * spanY)) : 255;
+    }
   }
 }
 
 async function decodeCaptureTile(
-  input: Sharp, context: SKRSContext2D, signal: AbortSignal, pixelWidth: number, pixelHeight: number,
+  input: Sharp, target: Buffer, signal: AbortSignal, pixelWidth: number, pixelHeight: number,
   scale: number, skip: number, width: number, copied: number, rows: number,
 ): Promise<void> {
   const sourceTop = skip * scale;
@@ -120,7 +134,7 @@ async function decodeCaptureTile(
     if (info.width !== pixelWidth || info.height !== height || (info.channels !== 3 && info.channels !== 4)) {
       throw new BrowserActionError("screenshot-unavailable", "the tile has an unsupported pixel format");
     }
-    copyCaptureTile(context, data, pixelWidth, info.channels, sourceTop, stepX, stepY, width, copied + start, count, pixelHeight, top, start);
+    copyCaptureTile(target, data, pixelWidth, info.channels, sourceTop, stepX, stepY, width, copied + start, count, pixelHeight, top, start);
   }
 }
 
@@ -134,9 +148,9 @@ export async function captureBrowserTiles(
   const executionContextId = await captureScrollContext(cdp);
   throwIfAborted(signal);
   onRestore({ executionContextId, x: original.pageX, y: original.pageY });
-  const [{ createCanvas }, { default: sharp }] = await Promise.all([import("@napi-rs/canvas"), import("sharp")]);
+  const { default: sharp } = await import("sharp");
   throwIfAborted(signal);
-  const canvas = createCanvas(width, height), context = canvas.getContext("2d");
+  const pixels = Buffer.alloc(width * height * 4);
   let copied = 0;
   let initialScale: number | undefined;
   let colorProfile: Buffer | undefined;
@@ -176,10 +190,12 @@ export async function captureBrowserTiles(
     colorProfile ??= color;
     // Keep the encoded color values through resampling and restore their color tags after encoding.
     const input = sharp(bytes, { ignoreIcc: true, limitInputPixels: BROWSER_CAPTURE_LIMITS.pixels });
-    await decodeCaptureTile(input, context, signal, pixelWidth, pixelHeight, scale, skip, width, copied, rows);
+    await decodeCaptureTile(input, pixels, signal, pixelWidth, pixelHeight, scale, skip, width, copied, rows);
     copied += rows;
   }
-  const bytes = await canvas.encode("png");
+  // The PNG encoder reads straight RGBA, including low-alpha channel values.
+  const bytes = await sharp(pixels, { raw: { width, height, channels: 4 } })
+    .png({ adaptiveFiltering: true }).toBuffer();
   throwIfAborted(signal);
   const { prefix, imageOffset } = captureColorChunks(bytes, true);
   const png = Buffer.concat([...prefix, colorProfile ?? Buffer.alloc(0), bytes.subarray(imageOffset)]);

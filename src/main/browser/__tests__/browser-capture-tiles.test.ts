@@ -30,6 +30,14 @@ async function tile(pageY: number): Promise<string> {
   return (await sharp(pixels, { raw: { width: WIDTH, height: VIEWPORT_HEIGHT, channels: 3 } }).png().toBuffer()).toString("base64");
 }
 
+async function tagWideGamut(png: Buffer): Promise<Buffer> {
+  const tagged = await sharp({ create: { width: 1, height: 1, channels: 3, background: "white" } })
+    .withIccProfile("p3").png().toBuffer();
+  const start = tagged.indexOf("iCCP") - 4;
+  const profile = tagged.subarray(start, start + 12 + tagged.readUInt32BE(start));
+  return Buffer.concat([png.subarray(0, 33), profile, png.subarray(33)]);
+}
+
 function tiledSession(pixelRatio = 1, zoom = 1, captureTile?: (pageY: number) => Promise<Buffer>, contentHeight = CONTENT_HEIGHT) {
   let pageY = 0;
   const restore = vi.fn(async () => {});
@@ -142,22 +150,31 @@ describe("browser capture tiles", () => {
   });
 
   it("retains the embedded wide-gamut profile and pixel values", async () => {
-    const tagged = await sharp({ create: { width: 1, height: 1, channels: 3, background: "white" } })
-      .withIccProfile("p3").png().toBuffer();
-    const profileStart = tagged.indexOf("iCCP") - 4;
-    const profile = tagged.subarray(profileStart, profileStart + 12 + tagged.readUInt32BE(profileStart));
     const color = [230, 102, 26];
     const width = WIDTH * 2.5, height = VIEWPORT_HEIGHT * 2.5;
     const png = await sharp(Buffer.alloc(width * height * 3).fill(Buffer.from(color)), {
       raw: { width, height, channels: 3 },
     }).png().toBuffer();
-    const data = Buffer.concat([png.subarray(0, 33), profile, png.subarray(33)]);
+    const data = await tagWideGamut(png);
     const { cdp, captureViewport } = tiledSession(2.5, 1, async () => data);
     const result = await captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport);
     const output = Buffer.from(result.data, "base64");
     expect((await sharp(output).metadata()).icc).toEqual((await sharp(data).metadata()).icc);
     const actual = await sharp(output, { ignoreIcc: true }).raw().toBuffer();
     expect(actual).toEqual(Buffer.alloc(WIDTH * CONTENT_HEIGHT * 4).fill(Buffer.from([...color, 255])));
+  });
+
+  it("round-trips straight low-alpha and transparent pixels with their embedded wide-gamut profile", async () => {
+    const row = Buffer.from([230, 102, 26, 8, 37, 151, 223, 1, 15, 171, 93, 0, 63, 143, 227, 255]);
+    const pixels = Buffer.alloc(WIDTH * VIEWPORT_HEIGHT * 4).fill(row);
+    const png = await sharp(pixels, { raw: { width: WIDTH, height: VIEWPORT_HEIGHT, channels: 4 } }).png().toBuffer();
+    const tagged = await tagWideGamut(png);
+    const { cdp, captureViewport } = tiledSession(1, 1, async () => tagged);
+    const result = await captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport);
+    const output = Buffer.from(result.data, "base64");
+    expect((await sharp(output).metadata()).icc).toEqual((await sharp(tagged).metadata()).icc);
+    expect(await sharp(output, { ignoreIcc: true }).raw().toBuffer())
+      .toEqual(Buffer.alloc(WIDTH * CONTENT_HEIGHT * 4).fill(row));
   });
 
   it("rejects a change in the tile color profile instead of mixing encoded gamuts", async () => {
