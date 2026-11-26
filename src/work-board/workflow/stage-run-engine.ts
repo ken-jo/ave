@@ -179,21 +179,28 @@ interface RunState {
 }
 
 /** A scheduler event a run write held, with its identity: its stage or join (null for a run-wide event), its attempt and its kind. */
-interface Held { stage: string | null; attempt: number; kind: RunEvent["type"]; event: RunEvent; effects: Set<string> }
+interface Held {
+  stage: string | null;
+  attempt: number;
+  kind: RunEvent["type"];
+  event: RunEvent;
+  effects: Set<string>;
+  notifications: Set<string>;
+}
 
 /** The event with its identity: an event without an attempt takes the attempt the run shows for its stage, else 0. */
 function heldOf(event: RunEvent, record?: RunRecord, knownAttempt?: number): Held {
   const stage = "stageId" in event ? event.stageId : "joinId" in event ? event.joinId : null;
   const attempt = "attempt" in event ? event.attempt : knownAttempt ?? ("stageId" in event ? record?.stageRuns.find(run => run.stageId === stage)?.attempt ?? 0 : 0);
-  return { stage, attempt, kind: event.type, event, effects: new Set() };
+  return { stage, attempt, kind: event.type, event, effects: new Set(), notifications: new Set() };
 }
 const sameHeld = (a: Held) => (b: Held): boolean => a.stage === b.stage && a.attempt === b.attempt && a.kind === b.kind;
 
-/** Each replay effect claims its event token at its application boundary, including notifications. */
-function claimEffect(held: Held | undefined, key: string): boolean {
-  if (!held) return true;
-  if (held.effects.has(key)) return false;
-  held.effects.add(key);
+/** Each replay claims its token at the application boundary. */
+function claimReplay(claims: Set<string> | undefined, key: string): boolean {
+  if (!claims) return true;
+  if (claims.has(key)) return false;
+  claims.add(key);
   return true;
 }
 
@@ -457,6 +464,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
             await handle(state, first.event, undefined, first);
           } catch (error) {
             log.warn("held stage run event threw (id=%d, event=%s): %s", state.itemId, first.kind, errorMessage(error));
+            // A progress notification can precede a gate that throws before claiming its effect.
             if (first.effects.size === 0) break;
           }
           if (state.heldAgain) break;
@@ -784,7 +792,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     for (const run of record.stageRuns) {
       const prior = before.find(candidate => candidate.stageId === run.stageId);
       if (prior?.status === run.status && prior.attempt === run.attempt) continue;
-      if (!claimEffect(replay, `stage:${run.stageId}`)) continue;
+      if (!claimReplay(replay?.notifications, `stage:${run.stageId}`)) continue;
       shown = true;
       const about = { itemId: state.itemId, stageId: run.stageId, attempt: run.attempt, ...(run.gate?.judgedBy === "model" ? { judgedBy: run.gate.judgedBy } : {}) };
       if (run.status === "awaiting_gate") emit({ ...about, phase: "stage_gate" });
@@ -793,7 +801,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     }
     const joinChanged = event.type === "join_conflict" || event.type === "join_decided" || event.type === "join_integrated";
     if ((shown || joinChanged || event.type === "stage_linked" || event.type === "stage_ended" || event.type === "gate_decided")
-      && claimEffect(replay, "run-snapshot") && canShowRun(state)) {
+      && claimReplay(replay?.notifications, "run-snapshot") && canShowRun(state)) {
       emit({
         itemId: state.itemId, phase: "executing",
         workflowRun: projectWorkflowRun(record, version, stage =>
@@ -801,7 +809,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
             ? { breaker: deps.readBreaker?.(stage.childSessionId) } : {}),
       });
     }
-    if ((shown || joinChanged || (record.stageJoins ?? []).some(join => join.status === "conflict")) && deps.itemChanged && claimEffect(replay, "item-changed")) notifyItemChanged(state.itemId);
+    if ((shown || joinChanged || (record.stageJoins ?? []).some(join => join.status === "conflict")) && deps.itemChanged && claimReplay(replay?.notifications, "item-changed")) notifyItemChanged(state.itemId);
     const seals = pendingSeals(state, record).filter(seal => !effects.some(effect => effect.type === "seal" && effect.stageId === seal.stageId));
     await runEffects(state, record, version, [...effects, ...seals], replay);
     return null;
@@ -843,7 +851,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     for (const [index, effect] of effects.entries()) {
       const key = `effect:${index}`;
       if (replay?.effects.has(key)) continue;
-      if (effect.type !== "evaluate_gate" && !claimEffect(replay, key)) continue;
+      if (effect.type !== "evaluate_gate" && !claimReplay(replay?.effects, key)) continue;
       switch (effect.type) {
         case "spawn":
           state.due.add(`${effect.stageId}#${effect.attempt}`);
@@ -854,9 +862,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           const stage = version.stages.find(candidate => candidate.id === effect.stageId);
           const result = state.results.get(effect.stageId);
           const verdict = stage?.gate.type === "auto" && result
-            ? await deps.passConditions.evaluate(stage.gate.pass, { result, stage, claimEffect: () => claimEffect(replay, key), effectConsumed: () => replay?.effects.has(key) ?? false })
+            ? await deps.passConditions.evaluate(stage.gate.pass, { result, stage, claimEffect: () => claimReplay(replay?.effects, key), effectConsumed: () => replay?.effects.has(key) ?? false })
             : { passed: false, evidence: "the stage result is not available to the host", judgedBy: "host" as const };
-          claimEffect(replay, key);
+          claimReplay(replay?.effects, key);
           post(state, { type: "gate_evaluated", stageId: effect.stageId, attempt: effect.attempt, ...verdict });
           break;
         }

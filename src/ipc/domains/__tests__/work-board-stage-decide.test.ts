@@ -9,6 +9,7 @@ import type { MainWindow } from "../../../main/main-window-host.js";
 import * as permissionSettings from "../../../permissions/permission-settings-store.js";
 import { workBoardDecisionKey, type WorkBoardDecisionChannel } from "../../../shared/work-board-decision-intent.js";
 import { captureWorkBoardTestGesture, pressWorkBoardTestKey, workBoardTestSender } from "../../../__tests__/support/work-board-ipc.js";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { registerPermissionsHandlers } from "../permissions.js";
 import { registerWorkApprovalsHandlers } from "../work-approvals.js";
 import { AuditLogger } from "../../../audit/audit-logger.js";
@@ -674,12 +675,28 @@ it("keeps a B stage and its descendant approval details out of the launching A w
       updateApprovalSurface({ kind: "release", sessionId: descendant });
       updateApprovalSurface({ kind: "release", sessionId: stage.sessionId });
     };
-    const ask = (sessionId: string, id: string) => gate.requestAndWait({
-      id, sessionId, category: "tool", source: "builtin", toolName: "write_file", toolCategory: "write",
-      args: { path: "B-private.md", text: "B approval details" }, reason: "B stage write", createdAt: Date.now(),
-    });
-    asks.push(ask(stage.sessionId, "parked-stage"));
-    await vi.waitFor(() => expect(gate.pendingCount).toBe(1));
+    const ask = async (sessionId: string, id: string) => {
+      const pending = deferred<void>();
+      const unsubscribe = gate.observePendingApprovals({
+        onPending: ({ requestId }) => { if (requestId === id) pending.resolve(); },
+        onSettled: () => undefined,
+      });
+      try {
+        const decision = gate.requestAndWait({
+          id, sessionId, category: "tool", source: "builtin", toolName: "write_file", toolCategory: "write",
+          args: { path: "B-private.md", text: "B approval details" }, reason: "B stage write", createdAt: Date.now(),
+        });
+        asks.push(decision);
+        await Promise.race([
+          pending.promise,
+          decision.then(() => { throw new Error(`Approval ${id} settled before it became pending`); }),
+        ]);
+      } finally {
+        unsubscribe();
+      }
+    };
+    await ask(stage.sessionId, "parked-stage");
+    expect(gate.pendingCount).toBe(1);
     expect(ownerA.send).not.toHaveBeenCalledWith(IPC_APPROVAL_REQUEST, expect.anything());
     expect(await handler(PERMISSIONS.approvalPending)(eventA)).toEqual([]);
     expect(await handler(PERMISSIONS.approvalPending)(eventB)).toEqual([]);
@@ -688,8 +705,8 @@ it("keeps a B stage and its descendant approval details out of the launching A w
     expect(ownerB.send).toHaveBeenCalledWith(IPC_APPROVAL_REQUEST, expect.objectContaining({
       id: "parked-stage", workBoardProjectApproval: expect.objectContaining({ parked: true }),
     }));
-    asks.push(ask(descendant, "live-descendant"));
-    await vi.waitFor(() => expect(gate.pendingCount).toBe(2));
+    await ask(descendant, "live-descendant");
+    expect(gate.pendingCount).toBe(2);
     expect(ownerB.send).toHaveBeenCalledWith(IPC_APPROVAL_REQUEST, expect.objectContaining({
       id: "live-descendant", args: { path: "B-private.md", text: "B approval details" },
     }));

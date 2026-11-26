@@ -320,6 +320,7 @@ export async function stageRunHarness(opts: {
         if (engine === wrapped) {
           if (phase === "stage_failed") {
             const prior = own.findLast(candidate => candidate.itemId === itemId && candidate.phase === "executing"
+              && candidate.workflowRun === undefined && candidate.stageActivity === undefined
               && (candidate.stageId === undefined ? candidate.message === undefined : candidate.stageId === stageId && candidate.attempt === attempt));
             if (!prior?.runSessionId) {
               fail(`${phase}: ${event.message ?? "child did not register"}`, workBoardOriginSessionId(itemId));

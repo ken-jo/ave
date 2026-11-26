@@ -291,8 +291,8 @@ const CLASSIFIED: Record<string, Classified> = {
     classification: "preload gesture tokens: minted only during an active gesture, consumed once",
   },
   "preload/internal-api-surface.ts": {
-    sites: { userKeyboardLiteral: 2 },
-    classification: "side-chat send bridge and work-board steer: each reports userActivation from the consumed token only (side-chat: queue-auto otherwise; steer: main refuses without it)",
+    sites: { userKeyboardLiteral: 1 },
+    classification: "side-chat send bridge reports userActivation only from its consumed token and otherwise sends queue-auto. Work-board steer claims no keyboard origin and main verifies native input before accepting the guidance.",
   },
   "preload/public-surface.ts": {
     sites: { userKeyboardLiteral: 5 },

@@ -22,13 +22,30 @@ function requireSurface(owner: WebContents | null): void {
   }
 }
 
+function resolveSessionOwner(
+  sessions: ReadonlyMap<string, ApprovalOwner>,
+  sessionId: string,
+): Exclude<ApprovalOwner, { parentSessionId: string }> | undefined {
+  requireIdentity(sessionId);
+  const visited = new Set<string>();
+  let cursor = sessionId;
+  for (;;) {
+    if (visited.has(cursor)) throw new Error("approval-surface: cyclic parent registration");
+    visited.add(cursor);
+    const owner = sessions.get(cursor);
+    if (!owner || !("parentSessionId" in owner)) return owner;
+    cursor = owner.parentSessionId;
+  }
+}
+
 /** Store explicit delivery attachments without borrowing another run's surface. */
 export class ApprovalSurfaceRegistry {
-  private readonly sessions = new Map<string, ApprovalOwner>();
   private readonly terminals = new Map<string, WebContents | null>();
   private readonly terminalSessions = new Map<string, string>();
   private unattributed: WebContents | null = null;
   private readonly ownerReleaseListeners = new Set<(owner: WebContents) => void>();
+
+  constructor(private readonly sessions = new Map<string, ApprovalOwner>()) {}
 
   observeOwnerReleased(listener: (owner: WebContents) => void): void {
     this.ownerReleaseListeners.add(listener);
@@ -132,24 +149,6 @@ export class ApprovalSurfaceRegistry {
     for (const listener of [...this.ownerReleaseListeners]) listener(owner);
   }
 
-  private sessionOwner(sessionId: string): Exclude<ApprovalOwner, { parentSessionId: string }> | undefined {
-    requireIdentity(sessionId);
-    const visited = new Set<string>();
-    let cursor = sessionId;
-    for (;;) {
-      if (visited.has(cursor)) throw new Error("approval-surface: cyclic parent registration");
-      visited.add(cursor);
-      const owner = this.sessions.get(cursor);
-      if (!owner || !("parentSessionId" in owner)) return owner;
-      cursor = owner.parentSessionId;
-    }
-  }
-
-  projectOf(sessionId: string | undefined): WorkBoardApprovalProject | undefined {
-    const owner = sessionId === undefined ? undefined : this.sessionOwner(sessionId);
-    return owner && "project" in owner ? owner.project : undefined;
-  }
-
   resolve(sessionId: string | undefined, terminalTabId?: string): WebContents | null {
     let surface: WebContents | null;
     if (terminalTabId !== undefined) {
@@ -163,7 +162,7 @@ export class ApprovalSurfaceRegistry {
     } else if (sessionId === undefined) {
       surface = this.unattributed;
     } else {
-      const owner = this.sessionOwner(sessionId);
+      const owner = resolveSessionOwner(this.sessions, sessionId);
       surface = owner && "surface" in owner ? owner.surface : null;
     }
     return surface && !surface.isDestroyed() ? surface : null;
@@ -184,15 +183,21 @@ export type ApprovalSurfaceUpdate =
   | { kind: "observe-owner-release" | "unobserve-owner-release"; listener: (owner: WebContents) => void;
       registry?: Readonly<Pick<ApprovalSurfaceRegistry, "observeOwnerReleased" | "unobserveOwnerReleased">> };
 
-const registeredApprovalSurfaces = new ApprovalSurfaceRegistry();
+const registeredSessions = new Map<string, ApprovalOwner>();
+const registeredApprovalSurfaces = new ApprovalSurfaceRegistry(registeredSessions);
 
 /** Read-only delivery and terminal-binding lookups; all attachment and lifecycle updates use one host function. */
-export const approvalSurfaceRegistry: Readonly<Pick<ApprovalSurfaceRegistry, "resolve" | "terminalSessionId" | "projectOf">> = Object.freeze({
+export const approvalSurfaceRegistry: Readonly<Pick<ApprovalSurfaceRegistry, "resolve" | "terminalSessionId">> = Object.freeze({
   resolve: (sessionId: string | undefined, terminalTabId?: string) =>
     registeredApprovalSurfaces.resolve(sessionId, terminalTabId),
   terminalSessionId: (tabId: string) => registeredApprovalSurfaces.terminalSessionId(tabId),
-  projectOf: (sessionId: string | undefined) => registeredApprovalSurfaces.projectOf(sessionId),
 });
+
+/** Look up the work-board delivery scope through the same live parent links as window delivery. */
+export function workBoardApprovalProjectOf(sessionId: string | undefined): WorkBoardApprovalProject | undefined {
+  const owner = sessionId === undefined ? undefined : resolveSessionOwner(registeredSessions, sessionId);
+  return owner && "project" in owner ? owner.project : undefined;
+}
 
 /**
  * App windows are one trust level; a defense against a compromised app renderer
