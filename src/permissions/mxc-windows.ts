@@ -12,6 +12,7 @@ import { sessionStorePath } from "../shared/session-store-path.js";
 import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { expandWindowsEnvRefs, stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
+import { parseStrictJson } from "../shared/strict-json.js";
 import { openMxcPolicyPipe } from "./mxc-policy-pipe.js";
 import { isPolicyFloorRow, userDenyCoversPierce, type PolicyModel, type PolicyRow } from "./policy-model.js";
 import {
@@ -95,13 +96,14 @@ const MxcProbeSchema = z.strictObject({
   ? error !== undefined && needsDaclAugmentation === undefined
   : needsDaclAugmentation !== undefined && error === undefined);
 
+const MXC_MAX_LAUNCHER_OUTPUT_BYTES = 1024 * 1024;
 const MXC_HOST_ABSENCE_DIAGNOSTIC = "Windows ProcessContainer is unavailable: PSEC is not enabled";
 
 // Parse `wxc-exec --probe` stdout (one JSON object), or undefined when it is not one.
 export function parseMxcProbeOutput(stdout: string): ProbeOutput | undefined {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stdout);
+    parsed = parseStrictJson(Buffer.from(stdout), { maxBytes: MXC_MAX_LAUNCHER_OUTPUT_BYTES });
   } catch {
     return undefined;
   }
@@ -1163,7 +1165,7 @@ async function withHostMxcDeps(step: HostProbe): Promise<MxcSupport> {
       systemRoot: process.platform === "win32" ? windowsSystemRoot() : "",
       run: (file, args, timeoutMs) =>
         new Promise((resolve, reject) => {
-          execFile(file, [...args], { cwd: path.dirname(file), timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+          execFile(file, [...args], { cwd: path.dirname(file), timeout: timeoutMs, windowsHide: true, maxBuffer: MXC_MAX_LAUNCHER_OUTPUT_BYTES }, (error, stdout, stderr) => {
             const code = error === null ? 0 : typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : null;
             if (error !== null && code === null) {
               reject(error);

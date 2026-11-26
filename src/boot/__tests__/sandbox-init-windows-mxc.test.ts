@@ -431,6 +431,9 @@ it.each([
   { label: "contradictory proxy support", response: { ...HOST_CONTAINER_ABSENCE_PROBE,
     probes: { ...ABSENCE_FACTS, baseContainerSupportsIdentitylessLoopbackProxy: true } } },
   { label: "generic detector error", response: { ...HOST_CONTAINER_ABSENCE_PROBE, error: "host capability query failed" } },
+  { label: "duplicate raw API fact", response: JSON.stringify(HOST_CONTAINER_ABSENCE_PROBE).replace(
+    '"baseContainerApiPresent":false', '"baseContainerApiPresent":true,"baseContainerApiPresent":false',
+  ) },
   { label: "definitive host absence", response: HOST_CONTAINER_ABSENCE_PROBE, available: true },
   { label: "container API present", mxc: { ...MXC_OLD, baseContainerApiPresent: true }, deps: NO_ACCOUNT_BACKEND },
   { label: "container API fact missing", mxc: MXC_OLD, deps: NO_ACCOUNT_BACKEND },
@@ -452,7 +455,9 @@ it.each([
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
     if (rootFailed) h.establishHomesError = new Error("root not private");
     h.checkDeps.mockResolvedValue(deps ?? NO_ACCOUNT_BACKEND);
-    const run = vi.fn(async () => ({ code: 0, stdout: JSON.stringify(response), stderr: "" }));
+    const run = vi.fn(async () => ({
+      code: 0, stdout: typeof response === "string" ? response : JSON.stringify(response), stderr: "",
+    }));
     if (response) {
       h.detectMxc.mockImplementation(() => detectMxcPrerequisites({
         platform: "win32", arch: "x64", resourcePath: "C:\\example\\resources", windowsBuild: null,

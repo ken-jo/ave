@@ -240,6 +240,20 @@ describe("detectMxcSupport", () => {
   });
 
   it.each([
+    ["a duplicate API fact", '"baseContainerApiPresent":false', '"baseContainerApiPresent":true,"baseContainerApiPresent":false'],
+    ["a duplicate nested capability", '"canBlockClipboardRead":false', '"canBlockClipboardRead":true,"canBlockClipboardRead":false'],
+    ["an escaped duplicate member", '"canBlockClipboardRead":false', '"canBlockClipboard\\u0052ead":true,"canBlockClipboardRead":false'],
+    ["a duplicate top-level member", '"warnings":[]', '"warnings":["conflict"],"warnings":[]'],
+  ])("rejects raw probe JSON with %s before using its host facts", async (_label, member, duplicate) => {
+    const stdout = PROBE_NO_TIER(false).replace(member, duplicate);
+    const d = deps({ runs: { "--probe": { code: 0, stdout, stderr: "" } } });
+    await expect(detectMxcPrerequisites(d)).resolves.toStrictEqual({
+      state: "unavailable", reason: "probe-failed", windowsBuild: "10.0.26300", detail: "--probe exit 0",
+    });
+    expect(d.calls.map((c) => c[0])).toEqual(["--probe"]);
+  });
+
+  it.each([
     ["no error string", PROBE_NO_TIER(false, { code: "malformed_request" })],
     ["no host facts or error string", JSON.stringify({ error: { code: "malformed_request", message: "failed to load probe config" } })],
     ["a legacy tier name", PROBE_BASE_CONTAINER.replace("base-container", "appcontainer-dacl").replace('"baseContainerApiPresent": true', '"baseContainerApiPresent": false')],
