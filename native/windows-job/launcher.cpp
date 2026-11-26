@@ -225,7 +225,7 @@ int wmain(int argc, wchar_t** argv) {
   if (held) {
     // The helper opens the process named here and proves it is this one: only this process can signal
     // the event the helper duplicates into it. 'A' follows once this process is in the helper's job.
-    Deadline admission{CreateEventW(nullptr, TRUE, FALSE, nullptr), 10000, kLost};
+    static Deadline admission{CreateEventW(nullptr, TRUE, FALSE, nullptr), 10000, kLost};
     if (!admission.met || !CreateThread(nullptr, 0, enforceDeadline, &admission, 0, nullptr)) endHeld(kLost, 125);
     ULONGLONG proof = 0;
     const bool admitted = holdAsk(hold, 0x32485641, GetCurrentProcessId(), &proof) == 'C' &&
@@ -277,7 +277,7 @@ int wmain(int argc, wchar_t** argv) {
   }
   if (held) {
     // Teardown is bounded as a whole; a stalled helper or job query ends the run unconfirmed.
-    Deadline teardown{CreateEventW(nullptr, TRUE, FALSE, nullptr), 10000, kUnconfirmed};
+    static Deadline teardown{CreateEventW(nullptr, TRUE, FALSE, nullptr), 10000, kUnconfirmed};
     if (!teardown.met || !CreateThread(nullptr, 0, enforceDeadline, &teardown, 0, nullptr)) endHeld(kUnconfirmed, 125);
     const bool stopped = result == WAIT_OBJECT_0 && jobHasDescendants(job, child.dwProcessId);
     // Every process the command started is in this job, so its emptiness is the whole reap.
