@@ -186,6 +186,9 @@ describe("Windows path helper build", () => {
   it.each([
     ["VCRUNTIME140.dll", false],
     ["api-ms-win-crt-runtime-l1-1-0.dll", true],
+    ["ucrtbase", true],
+    ["api-ms-win-crt-runtime-l1-1-0", true],
+    ["C:/Windows\\System32/ExT-Ms-Win-CrT-Runtime-L1-1-0", true],
     ["C:\\Windows\\System32\\VcRuNtImE140.DlL", false],
     ["C:/Windows/System32/UcRtBaSe.DlL", true],
   ] as const)("rejects receipt creation and verification for an executable importing %s", (dll, delayed) => {

@@ -205,7 +205,9 @@ function assertStaticCrt(bytes) {
       const end = name.indexOf(0);
       if (end <= 0) throw invalid();
       const dll = name.toString("latin1", 0, end);
-      if (CRT_DLL.test(win32.basename(dll))) throw new Error(`Windows path helper imports a dynamic CRT: ${dll}`);
+      const basename = win32.basename(dll).replace(/[ .]+$/u, "");
+      const moduleName = win32.extname(basename) ? basename : `${basename}.dll`;
+      if (CRT_DLL.test(moduleName)) throw new Error(`Windows path helper imports a dynamic CRT: ${dll}`);
     }
     if (offset + descriptorSize > size) throw invalid();
   }
