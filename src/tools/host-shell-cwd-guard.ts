@@ -9,7 +9,7 @@ export function hostShellWorkingDirectoryPrelude(
   dialect: "bash" | "powershell",
   platform: NodeJS.Platform,
 ): string | undefined {
-  // Windows binds physical cwd but lacks a matching child-side inode check; rename/replacement after host validation remains possible.
+  // Windows has no child-side check: a permit-bearing launch runs in a job tied to a host-held directory chain until the child closes (holdHostShellSpawnDirectory); a leaf whose contents can be removed can still become a junction in place.
   if (platform !== "darwin" && platform !== "linux") return undefined;
   const statArgs = platform === "darwin" ? ["-f", "%d:%i", "."] : ["-L", "-c", "%d:%i", "--", "."];
   const expected = `${identity.dev}:${identity.ino}`;

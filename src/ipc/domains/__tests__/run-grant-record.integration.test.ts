@@ -4,6 +4,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../../__tests__/support/source-host-resources.js";
 import { AuditLogger } from "../../../audit/audit-logger.js";
 import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
 import { PermissionTestResources } from "../../../permissions/__tests__/test-resources.js";
@@ -372,3 +373,5 @@ describe("Allow for this run, from the card to node R", () => {
   });
 });
 import { requestBoundShellCard } from "../../../__tests__/support/host-shell-approval.js";
+
+withSourceHostResources();

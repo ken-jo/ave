@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFile
 import { join } from "node:path";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../../__tests__/support/source-host-resources.js";
 import { AuditLogger } from "../../../audit/audit-logger.js";
 import { t } from "../../../i18n/runtime.js";
 import { makeSubAgentApprovalAdapter } from "../../../engine/subagent-runner.js";
@@ -1388,3 +1389,5 @@ describe("live native approval ownership", () => {
   });
 });
 import { requestBoundShellCard } from "../../../__tests__/support/host-shell-approval.js";
+
+withSourceHostResources();

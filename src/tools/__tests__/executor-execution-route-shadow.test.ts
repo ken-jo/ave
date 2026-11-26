@@ -2,6 +2,7 @@ import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-ju
 import { PATH_POLICY_DECISION_MISMATCH_ERROR } from "../../permissions/execution-router.js";
 import * as executionRouter from "../../permissions/execution-router.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,8 @@ import { ToolRegistry } from "../registry.js";
 import { BashTool } from "../shell-tools.js";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
 import type { OperatorContainerCapability } from "../../permissions/operator-container-attestation.js";
+
+withSourceHostResources();
 
 const operatorHarness = vi.hoisted(() => ({
   current: null as object | null,

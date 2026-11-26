@@ -3,6 +3,7 @@ import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Admission denials and forced approvals must precede tool execution.
 import { afterEach, describe, it, expect, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
 import childProcess, { ChildProcess } from "node:child_process";
@@ -68,6 +69,8 @@ import {
 import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host-shell-execution-plan.js";
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { approvalCacheKeyFor } from "../pipeline/display-mask.js";
+
+withSourceHostResources();
 
 async function waitForApprovalPayload<T>(
   wc: ReturnType<typeof makeMockWebContents>,

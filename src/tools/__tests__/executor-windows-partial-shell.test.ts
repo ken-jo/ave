@@ -7,6 +7,7 @@ import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -65,6 +66,8 @@ import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host
 import { userPermissionContext as permissionContext } from "./tool-context-fixture.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { makeSubAgentApprovalAdapter } from "../../engine/subagent-runner.js";
+
+withSourceHostResources();
 
 const ORIGINAL_PLATFORM = process.platform;
 let testRoot: string;
@@ -321,6 +324,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const context = origin === "headless" ? { headless: true } : { remoteControllerAuthority: { kind: "tailnet-controller" as const, actorId: "tailnet:fixture" as const } };
     const result = await executor.executeAll([{ id: "unavailable-host", name: "bash", input: { command: "echo host", cwd: "/outside-host-request", executionMode: "host", justification: "Use the host environment" } }], { sessionId: "executor-windows-partial-shell-session", permissionContext: permissionContext(context) });
     expect(result[0].is_error).toBe(true);
+    expect(result[0].content.toLowerCase()).toMatch(/one-shot host approval permit|remote controller|remote-controller/);
     if (origin === "headless") expect(result[0].content).toContain(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
     else expect(result[0].content.toLowerCase()).toMatch(/remote controller|remote-controller/);
     expect(send).not.toHaveBeenCalled();
@@ -792,6 +796,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(request?.executionPlan).toBeDefined();
     expect(result[0]?.is_error).toBe(true);
     expect(result[0]?.content).toContain(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
+    expect(result[0]?.content).toContain("one-shot host approval permit");
     expect(result[0]?.executionPlan).toBe(request!.executionPlan);
     expect(endMetas).toHaveLength(1);
     expect(endMetas[0]?.executionPlan).toBe(request!.executionPlan);

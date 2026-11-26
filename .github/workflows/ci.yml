@@ -945,6 +945,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind -HoldFixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify native background process ownership
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1037,6 +1039,7 @@ jobs:
           path: |
             ave/resources/windows-job/x64/ave-job.exe
             ave/resources/windows-path-kind/x64/ave-path-kind.exe
+            ave/resources/windows-path-kind/x64/ave-path-kind-hold-fixture.exe
             ave/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/*/*.exe
             ave/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/*/build-receipt.json
             ave/src/permissions/generated/srt-win-build-receipts.*

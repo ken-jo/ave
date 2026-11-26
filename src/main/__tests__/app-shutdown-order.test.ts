@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { afterQueuedCallbacks, deferred } from "../../__tests__/support/deferred.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 const calls: string[] = [];
 const hostExit = vi.fn();
@@ -47,6 +48,7 @@ const waitForAllBrokerCleanup = vi.fn(async () => {
   calls.push("waitBrokerCleanup");
   return brokerCleanupReports;
 });
+const stopAllHeldShells = vi.fn(async (_signal: AbortSignal) => {});
 
 vi.mock("electron", () => ({ app: { exit: vi.fn() }, ipcMain: { handle: vi.fn() } }));
 vi.mock("../../lib/logger.js", () => ({
@@ -84,6 +86,7 @@ vi.mock("../terminal/pty-manager.js", () => ({
 }));
 vi.mock("../../tools/shell-tools.js", () => ({
   backgroundShellManager: {
+    stopAllHeldShells: (signal: AbortSignal) => stopAllHeldShells(signal),
     disposeAllBrokerShells: (signal?: AbortSignal) => disposeAllBrokerShells(signal),
     waitForAllBrokerCleanup: () => waitForAllBrokerCleanup(),
   },
@@ -294,6 +297,31 @@ describe("OS sandbox release at quit", () => {
 });
 
 describe("runAppShutdownCleanup ordering (critic M1)", () => {
+  it("starts the held launcher deadline at quit and waits for its verdict before draining children", async () => {
+    getServices.mockReturnValue(makeServices());
+    const shutdown = await configuredShutdown();
+    const reported = vi.fn();
+    vi.useFakeTimers();
+    stopAllHeldShells.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      setTimeout(() => { reported("cwd-pin-unconfirmed"); resolve(); }, TOOL_TIMEOUT_POLICY.windowsHoldStopMs);
+    }));
+    const quitting = shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false });
+    try {
+      expect(stopAllHeldShells).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsHoldStopMs - 1);
+      expect(forceKillAndDrainManagedChildProcesses).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(reported).toHaveBeenCalledWith("cwd-pin-unconfirmed");
+      await expect(quitting).resolves.toBe("completed");
+      expect(forceKillAndDrainManagedChildProcesses).toHaveBeenCalledOnce();
+    } finally {
+      await vi.runAllTimersAsync();
+      await quitting;
+      stopAllHeldShells.mockReset();
+      vi.useRealTimers();
+    }
+  });
+
   it.each(["normal", "incomplete"] as const)("waits for marketplace construction and close during %s shutdown", async (mode) => {
     getServices.mockReturnValue(mode === "normal" ? makeServices() : undefined);
     vi.resetModules();

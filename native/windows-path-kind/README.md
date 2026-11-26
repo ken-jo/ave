@@ -310,6 +310,39 @@ each echoed operand before using the facts.
 Build both facts modes with `scripts/build-windows-job.ps1 -Helper path-kind`
 and run `scripts/test-windows-path-kind.mjs` and the shared facts Vitest suite.
 
+## Held working directory
+
+`ave-path-kind.exe --hold <directory>` pins the directory and every ancestor
+(traverse access, read and write sharing, no delete sharing), writes the
+`--pin` row in binary mode (at most 8 MiB on the wire, LF included), and keeps
+the handles until stdin closes. It also owns the only handle to a kill-on-close
+job. The handle is not inheritable, and the helper starts no processes.
+
+Its fourth standard handle is a private channel. The host started both this
+helper and the job launcher and relays bytes between their channel ends, so the
+channel reaches only that launcher. Frames are 8 bytes (a kind and a value) and
+replies 9 bytes (a kind and a value):
+
+- `AVH2` and a process id: the helper opens that process, duplicates an event
+  into it and answers `C` with the event's handle value. The process joins the
+  job only after it signals that event, which no other process can name; the
+  helper then answers `A`. Anything else, or a failed step, answers `F`.
+- `AVHQ`, after admission: the helper rechecks every held handle and reopens
+  the leaf by name without following links (same file id, not a reparse point),
+  and answers `P`, or `X` when any of that fails.
+
+The helper stops nothing and reports no result: the launcher bounds its own
+waits and decides the run. The helper's exit closes the job, which stops
+everything in it.
+
+Build `-Helper path-kind -HoldFixture` for `ave-path-kind-hold-fixture.exe`,
+which is never packaged. It reads the reply limit from
+`AVE_TEST_HOLD_REPLY_LIMIT`. With `AVE_TEST_HOLD_RECHECK=lost` it answers
+every recheck `X`, and with `stall` it never answers one. An `L` on stdin
+prints the job's member process ids as one JSON line on stderr.
+`--breakaway <executable>` tries to start that executable outside every job and
+prints `breakaway refused <error>` (exit 0) or `breakaway allowed` (exit 1).
+
 ## Compatibility deny evidence
 
 `ave-path-kind.exe --deny-acls <SID> <absolute-path>...` returns a JSON array

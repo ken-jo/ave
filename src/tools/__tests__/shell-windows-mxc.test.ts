@@ -36,6 +36,10 @@ vi.mock("../mxc-shell-launch.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../mxc-shell-launch.js")>(),
   prepareMxcShellLaunch: mxcLaunchMock.prepare,
 }));
+vi.mock("../../permissions/host-shell-execution-permit.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../permissions/host-shell-execution-permit.js")>();
+  return { ...actual, holdHostShellSpawnDirectory: vi.fn(actual.holdHostShellSpawnDirectory) };
+});
 // Mock Windows profile creation on POSIX so backslash paths cannot become entries in the working tree.
 vi.mock("../../permissions/sandbox-process-home.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../permissions/sandbox-process-home.js")>();
@@ -73,6 +77,8 @@ import * as egressHostListener from "../../permissions/egress-host-listener.js";
 import { egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../../permissions/egress-invocations.js";
 import * as mxcWindows from "../../permissions/mxc-windows.js";
 import * as mxcPolicyPipe from "../../permissions/mxc-policy-pipe.js";
+import { holdHostShellSpawnDirectory } from "../../permissions/host-shell-execution-permit.js";
+import type { WindowsHoldVerdict } from "../../shared/windows-path-facts.js";
 import * as asrtSandbox from "../../permissions/asrt-sandbox.js";
 import { AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
 import * as chatOrigin from "../../shared/chat-origin.js";
@@ -260,6 +266,7 @@ describe("builtin shell — Windows MXC containers", () => {
     sandboxHomeMock.onCreate.mockReset();
     sandboxHomeMock.onCleanup.mockReset();
     installationMock.resolve.mockReset();
+    vi.mocked(holdHostShellSpawnDirectory).mockReset();
     vi.restoreAllMocks();
   });
 
@@ -545,6 +552,49 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
     expect(result.output).toBe("PowerShell spawn failed: container launcher error ENOENT");
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a held launcher that never starts as an unconfirmed container spawn failure", async () => {
+    bootMxcShells();
+    const verdict = deferred<WindowsHoldVerdict>();
+    const hold = vi.mocked(holdHostShellSpawnDirectory);
+    const holdDirectory = hold.getMockImplementation();
+    if (holdDirectory === undefined) throw new Error("no hold implementation");
+    hold.mockImplementation(async (authorization) => ({
+      ...await holdDirectory(authorization),
+      bind: (child) => {
+        if (child.pid !== undefined) return undefined;
+        child.once("error", () => { verdict.resolve({ kind: "unconfirmed" }); });
+        return { verdict: verdict.promise, stop: () => verdict.promise };
+      },
+    }));
+    childProcessMock.spawn.mockImplementation((_command: string, args: readonly string[]) =>
+      args.includes(PARSER_REQUEST) ? fakeChild(PARSED, 0) : childWithSpawnError(Object.assign(new Error("spawn failed"), { code: "ENOENT" })));
+
+    const result = await executePowerShell(context("held-launcher-spawn-error"));
+    expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE, notice: expect.stringContaining("cwd-pin-unconfirmed") });
+    expect(result.output).toMatch(/^PowerShell spawn failed: container launcher error ENOENT\ncwd-pin-unconfirmed:/u);
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["parser", "command"] as const)("omits the launcher exit code when the held container %s has no verdict", async (phase) => {
+    bootMxcShells();
+    const hold = vi.mocked(holdHostShellSpawnDirectory);
+    const holdDirectory = hold.getMockImplementation();
+    if (holdDirectory === undefined) throw new Error("no hold implementation");
+    if (phase === "command") hold.mockImplementationOnce(holdDirectory);
+    hold.mockImplementationOnce(async (authorization) => ({
+      ...await holdDirectory(authorization),
+      bind: (child) => {
+        const verdict = deferred<WindowsHoldVerdict>();
+        child.once("exit", () => { verdict.resolve({ kind: "unconfirmed" }); });
+        return { verdict: verdict.promise, stop: () => verdict.promise };
+      },
+    }));
+    const result = await executePowerShell(context("held-container-unconfirmed"));
+    expect(result).toMatchObject({ isError: true, notice: expect.stringContaining("cwd-pin-unconfirmed") });
+    expect(result.metadata).not.toHaveProperty("returncode");
+    expect(result.output).not.toMatch(/exited with code|terminated by signal/u);
   });
 
   it("keeps a running launcher's abort watch after an error and releases only on close", async () => {

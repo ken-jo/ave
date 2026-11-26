@@ -113,6 +113,8 @@ export interface ToolExecutionResult {
   output: string;
   isError: boolean;
   metadata?: Record<string, unknown>;
+  /** A host notice already stated in `output`. An executor that cuts `output` appends it whole after the cut. */
+  notice?: string;
   /** Optional image for the model to see; see {@link ToolResultImage}. */
   image?: ToolResultImage;
   /** Display-only page thumbnail for the user; never sent to the model. Honored for builtin tools only. */
