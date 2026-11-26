@@ -5,6 +5,7 @@ import {
   admitApprovalAnswer,
   approvalFailureKind,
   type ApprovalDecision,
+  type ApprovalFailureKind,
   type PendingApprovalObserver,
   type PendingApprovalView,
 } from "../permissions/approval-gate.js";
@@ -47,6 +48,14 @@ const CARD_TEXT = Object.freeze({
   ackDenied: "Denied",
   ackStale: "This approval is no longer active",
 });
+
+const APPROVAL_FAILURE_TEXT = {
+  denied: { card: "was denied", ack: CARD_TEXT.ackDenied },
+  rejected: { card: "was refused by the host", ack: "The host refused this approval" },
+  expired: { card: "timed out", ack: "This approval timed out" },
+  unavailable: { card: "had no available approver", ack: "No approver was available" },
+  cancelled: { card: "was cancelled", ack: "This approval was cancelled" },
+} satisfies Record<ApprovalFailureKind, { card: string; ack: string }>;
 
 // The narrow slice of the approval gate this feature is allowed to touch: observe what is parked, and answer through the one shared resolve chokepoint
 // as the `"platform-bridge"` answerer.
@@ -140,6 +149,7 @@ interface RemoteApprovalCard {
   messageId?: number;
   // Set at settlement; applied as soon as a message id exists.
   finalText?: string;
+  failureOutcome?: ApprovalFailureKind;
 }
 
 export function createTelegramRemoteApprovalCoordinator(
@@ -196,7 +206,10 @@ export function createTelegramRemoteApprovalCoordinator(
       return CARD_TEXT.expired(card.toolIdentifier);
     }
     const outcome = approvalFailureKind(decision);
-    if (outcome !== undefined && outcome !== "denied") return CARD_TEXT.expired(card.toolIdentifier);
+    if (outcome !== undefined) {
+      card.failureOutcome = outcome;
+      if (outcome !== "denied") return `Ave: the approval for tool ${card.toolIdentifier} ${APPROVAL_FAILURE_TEXT[outcome].card}`;
+    }
     // A row card shows its own start's answer. An answer that names no row is for the whole ask: a dismissed desk card, or the one start of a one-start card.
     const rowAnswer = card.row === undefined ? undefined : decision.extensionStartChoices?.[card.row];
     const approved = rowAnswer === undefined ? answer?.decision === "allow" : rowAnswer === "yes";
@@ -317,8 +330,8 @@ export function createTelegramRemoteApprovalCoordinator(
         "platform-bridge",
       );
       if (decision === null) {
-        // Raced by a local decision between lookup and resolve.
-        await acknowledge(callback.callbackQueryId, CARD_TEXT.ackStale);
+        const outcome = binding.card.failureOutcome;
+        await acknowledge(callback.callbackQueryId, outcome === undefined ? CARD_TEXT.ackStale : APPROVAL_FAILURE_TEXT[outcome].ack);
         return;
       }
       const partialRow = binding.card.row !== undefined && cardsByToken.get(callback.data) === binding;
@@ -331,7 +344,7 @@ export function createTelegramRemoteApprovalCoordinator(
       }
       const outcome = approvalFailureKind(decision);
       if (outcome !== undefined && outcome !== "denied") {
-        await acknowledge(callback.callbackQueryId, CARD_TEXT.ackStale);
+        await acknowledge(callback.callbackQueryId, APPROVAL_FAILURE_TEXT[outcome].ack);
         return;
       }
       if (partialRow) {
