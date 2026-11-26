@@ -55,7 +55,7 @@ export interface PolicyFloorRow extends PolicyRowPath {
 }
 
 /** The children of a project `.ave` carrier that a launch may watch while the carrier is missing. */
-export const WATCHABLE_CARRIER_CHILDREN: readonly string[] = ["commands", "hooks"];
+const WATCHABLE_CARRIER_CHILDREN: readonly string[] = ["commands", "hooks"];
 
 /** Whether `path` is spelled `...\.ave\commands` or `...\.ave\hooks`. */
 export function isCarrierChildSpelling(path: string): boolean {
