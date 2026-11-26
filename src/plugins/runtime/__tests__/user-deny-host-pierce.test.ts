@@ -234,8 +234,11 @@ describe.runIf(hostPlatform === "win32")("a user's read deny over a plugin's cer
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true, denyRead: [corp], windows: { externalConfinement: true } });
     spawnNativeChild.mockReset().mockImplementation(async () => ownedChild());
     const tagged = `[${CERTS_PLUGIN}] Your read deny ${corp} applies inside ${certs()}, which this launch reads; the launch keeps the rest of it and cannot read what the deny matches.`;
-    for (const refused of [true, false]) {
-      admission.refused = refused;
+    // Refused at preparation, then at the native spawn after the holder admission, then admitted.
+    for (const stage of ["prepare", "spawn", undefined] as const) {
+      const refused = stage !== undefined;
+      admission.refused = stage === "prepare";
+      if (stage === "spawn") spawnNativeChild.mockRejectedValueOnce(new Error("native spawn refused"));
       const runtime = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: installedDir });
       routeNative(runtime);
       try {

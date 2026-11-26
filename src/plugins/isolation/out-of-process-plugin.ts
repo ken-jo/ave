@@ -852,8 +852,6 @@ export function createOutOfProcessPluginFactory(
           baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }) };
         const floorPierces = declaredHostDirectoryFloorPierces(spec.manifest.sandbox);
         const launch = await spec.prepareMxcChild({ ...intent, pluginDataDir: context.pluginDataDir, envelope });
-        // Named only once admission succeeded, so a refused child records no notice.
-        logUserDeniesInsidePierces(pluginId, floorPierces);
         // The incumbent may have begun terminating, or been quarantined, while admission was awaited:
         // recheck synchronously right before spawn (and again after it) through the registration.
         const native = await spawnMxcPluginChild({
@@ -872,6 +870,8 @@ export function createOutOfProcessPluginFactory(
           registration?.terminating();
         });
         child = native;
+        // Named only once the child is admitted and running, so a refused launch records no notice.
+        logUserDeniesInsidePierces(pluginId, floorPierces);
         // Whoever starts termination (teardown, a transport fault, revocation or the child's own exit), the
         // registration learns at once, and an unverified result quarantines it without waiting for onClosed,
         // which a fault-driven termination never reaches.
