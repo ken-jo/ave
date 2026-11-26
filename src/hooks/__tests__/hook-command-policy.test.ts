@@ -8,6 +8,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, unlinkSync } from "
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { t } from "../../i18n/runtime.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { createHookCommandAuthorizer, type HookCommandAuthorizer } from "../hook-command-policy.js";
@@ -411,7 +412,7 @@ describe("hook command permission admission", () => {
     const exactHook = { ...hook, command: ["printf", "ready"] };
     const exactHookRule = "Bash('printf' 'ready')";
 
-    async function admitOnGate(p: ReturnType<typeof policy>, answer: "allow-session" | "deny-once", admitted: RunnableHook = hook, input: ScriptHookStdin = payload) {
+    async function admitOnGate(p: ReturnType<typeof policy>, answer: "allow-session" | "deny-once", admitted: RunnableHook = hook, input: ScriptHookStdin = payload, beforeAnswer?: () => void) {
       const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
       const gate = new ApprovalGate(wc as never);
       const authorizeCommand = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
@@ -435,6 +436,7 @@ describe("hook command permission admission", () => {
           .toMatchObject({ ok: true, scope: "session" });
         gate.completeApprovalRuleSave(token, p.permissionManager.getPolicyEpoch(), "session");
       }
+      beforeAnswer?.();
       gate.resolveFromDesktopRenderer(request.id, {
         requestId: request.id, choice: answer === "allow-session" ? "allow-once" : "deny-once", nonce: request.nonce, hmac: request.hmac,
       }, wc as never);
@@ -468,6 +470,29 @@ describe("hook command permission admission", () => {
       p.permissionManager.endSession("hook-policy-session");
       expect((await admitOnGate(p, "deny-once", exactHook)).result.decision).toBe("deny");
       expect((await admitOnGate(allowAll(), "deny-once")).result.decision).toBe("deny");
+    });
+
+    it.each([
+      ["the floor lost its session eligibility", { floorSessionEligible: undefined }],
+      ["another floor now stands behind it, eligibility fixed", { competingFloor: { code: "protected-path" as const, reason: "Protected." } }],
+    ] as const)("refuses the card's own save answer when %s, with the effect unchanged", async (_label, change) => {
+      publish();
+      const p = allowAll();
+      const check = p.permissionManager.checkDetailed.bind(p.permissionManager);
+      const transition = vi.fn();
+      let changed: { mockRestore(): void } | undefined;
+      const first = await admitOnGate(p, "allow-session", hook, payload, () => {
+        changed = vi.spyOn(p.permissionManager, "checkDetailed").mockImplementation((...args) => {
+          const now = check(...args);
+          transition(now.reasonCode);
+          return { ...now, decision: "ask", forceModal: true, reasonCode: "sandbox-unavailable",
+            pipelineRequest: { ...now.pipelineRequest, floorSessionEligible: true, ...change } } as typeof now;
+        });
+      });
+      changed?.mockRestore();
+      expect(transition).toHaveBeenCalled();
+      expect(first.result).toMatchObject({ decision: "deny", reason: t("be_executor.answerQuestionChanged") });
+      expect(permits).toMatchObject({ minted: 0, consumed: [] });
     });
 
     it("does not pass the floor with an ordinary session allow made earlier", async () => {

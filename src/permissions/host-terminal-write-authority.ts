@@ -1,16 +1,10 @@
 import type { PermissionCheckResult, PermissionManager } from "./permission-manager.js";
-import { answerEpochsOf, personAnswerStands } from "./pending-answer-policy.js";
+import { answerEpochsOf, permissionQuestionOf, personAnswerStands, samePermissionQuestion } from "./pending-answer-policy.js";
 
 export const HOST_TERMINAL_PERMISSION_CHANGED = "Host terminal permission changed before typing.";
 
 export interface HostTerminalWriteAuthority {
   refusal(): string | undefined;
-}
-
-/** Whether the floor stands alone ("This session" may answer it) and which floor it stands in front of. */
-function floorShapeOf(result: PermissionCheckResult): string {
-  const request = result.pipelineRequest;
-  return JSON.stringify([request?.floorSessionEligible === true, request?.competingFloor?.code, request?.competingFloor?.reason]);
 }
 
 export function issueHostTerminalWriteAuthority(input: {
@@ -26,8 +20,7 @@ export function issueHostTerminalWriteAuthority(input: {
   const opened = answerEpochsOf(input.manager);
   const sealed = {
     backend: input.decidedBackend,
-    forcedReason: input.settled.pipelineRequest?.floor?.code,
-    floorShape: floorShapeOf(input.settled),
+    question: permissionQuestionOf(input.settled),
     source: input.human ? "person" : input.reviewed ? "ask:user-owned-surface-review" : `allow:${input.settled.reasonCode}`,
   };
   const authority: HostTerminalWriteAuthority = {
@@ -35,9 +28,8 @@ export function issueHostTerminalWriteAuthority(input: {
       const now = input.check();
       if (now.decision === "deny") return now.reason;
       const backend = input.backendIdentity();
-      const forcedReason = now.pipelineRequest?.floor?.code;
       const source = input.human ? "person" : `${now.decision}:${now.reasonCode}`;
-      if (backend !== sealed.backend || forcedReason !== sealed.forcedReason || floorShapeOf(now) !== sealed.floorShape || source !== sealed.source) {
+      if (backend !== sealed.backend || !samePermissionQuestion(permissionQuestionOf(now), sealed.question) || source !== sealed.source) {
         return HOST_TERMINAL_PERMISSION_CHANGED;
       }
       return personAnswerStands(input.manager, opened, input.cardForced, () => now)

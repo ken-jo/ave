@@ -23,6 +23,7 @@ import {
 import type { PermissionEvaluationContext } from "./evaluation-context.js";
 import { matchesReviewerApprovalBasis, type ReviewerApprovalBasis, type ReviewerDispatchOutcome } from "./permission-manager.js";
 import { matchesApprovalRuleBasis, type ApprovalRuleBasis } from "./approval-rule-evidence.js";
+import { describePermissionQuestion, type PermissionQuestion, type StaleAnswerOutcome } from "./pending-answer-policy.js";
 import { NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { isIssuedToolApprovalWait, withToolApprovalWait, type ToolApprovalWait } from "../tools/executor-ceiling.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
@@ -864,6 +865,8 @@ export class ApprovalGate {
   private readonly pending = new Map<string, PendingEntry>();
   private readonly ruleSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
   private readonly approvedPolicyTransitions = new WeakMap<ApprovalDecision, { from: string; to: string }>();
+  // The card each decided answer settled, for the stale-answer audit row.
+  private readonly decidedCards = new WeakMap<ApprovalDecision, { requestId: string; sessionId: string; fields: string }>();
   private readonly approvedPolicyMutations = new WeakMap<ApprovalDecision, ApprovalPolicyMutation>();
   private readonly authenticatedDirectoryAnswers = new WeakSet<ApprovalDecision>();
   private readonly exactSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
@@ -962,6 +965,18 @@ export class ApprovalGate {
       afterParts[1] !== String(revision + (scope === "project" ? 1 : 0)) ||
       afterParts[2] !== beforeParts[2]) transition.valid = false;
     transition.to = after;
+  }
+
+  /** Audit the owner's verdict that a person's Allow answered a question the call no longer asks (pending-answer-policy.ts). No authority follows it. */
+  recordStaleAnswer(decision: ApprovalDecision, outcome: StaleAnswerOutcome, from: PermissionQuestion, to: PermissionQuestion): void {
+    const card = this.decidedCards.get(decision);
+    if (!card) return;
+    this.auditLogger?.log({
+      timestamp: new Date().toISOString(),
+      sessionId: card.sessionId,
+      type: "approval",
+      output: `[approval:answer-stale] ${card.requestId} ${card.fields} choice=${decision.choice} outcome=${outcome} authority=none question=${describePermissionQuestion(from)} -> ${describePermissionQuestion(to)}`,
+    });
   }
 
   /** Consume the exact authenticated answer's same-card policy transition once. */
@@ -2199,6 +2214,8 @@ export class ApprovalGate {
         entry.hostShellExecutionPermitBinding,
       );
     }
+    this.decidedCards.set(resolvedDecision, { requestId, sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+      fields: formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan) });
     // Derive answeredBy from the host caller, never response fields; renderer/plugin responses cannot forge the audit answerer.
     this.auditLogger?.log({
       timestamp: new Date().toISOString(),

@@ -1,4 +1,4 @@
-import { answerEpochsOf, forcedQuestionOf, personAnswerStands } from "../permissions/pending-answer-policy.js";
+import { openPendingAnswerCard, personAnswerStands } from "../permissions/pending-answer-policy.js";
 import { RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
@@ -946,9 +946,9 @@ export async function authorizeToolInvocation(
           });
         const approvalRuleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true && !permissionResult.pipelineRequest?.userOwnedSurface
           ? classifyCurrentRule() : undefined;
-        const approvalAnswerEpochs = services.permissionManager ? answerEpochsOf(services.permissionManager) : undefined;
-        const approvalPolicyEpoch = approvalAnswerEpochs?.epoch;
-        const approvalQuestion = forcedQuestionOf(permissionResult);
+        const approvalCard = services.permissionManager ? openPendingAnswerCard(services.permissionManager, permissionResult,
+          () => checkCurrentPermission?.() ?? { decision: "deny", reason: "Permission manager is unavailable" }, "stale-refused") : undefined;
+        const approvalPolicyEpoch = approvalCard?.epochs.epoch;
         const readjudicationAssessment = source === "plugin" && context.pluginRuntimeInstance !== undefined &&
           permissionResult.forceModal !== true && !evaluationContext.headless &&
           !permissionResult.pipelineRequest?.userOwnedSurface &&
@@ -1208,27 +1208,21 @@ export async function authorizeToolInvocation(
         // This is intentionally immediately after the local decision. A P2
         // share revoke that won while the modal was visible must beat the
         // newly returned allow-once before it can reach the execution stage.
-        const sameCardTransition: { denial?: string } = {};
-        const recheckAnsweredPermission = (): PermissionCheckResult => {
-          permissionResult = checkCurrentPermission();
-          return permissionResult;
-        };
-        const answerOutdated = services.permissionManager !== undefined && approvalAnswerEpochs !== undefined &&
-          !personAnswerStands(services.permissionManager, approvalAnswerEpochs, permissionResult.forceModal === true, recheckAnsweredPermission, {
-            gate: services.approvalGate,
-            decision,
-            ...(approvalQuestion === undefined ? {} : { question: approvalQuestion }),
-            onTransition: () => {
-              const current = recheckAnsweredPermission();
-              if (current.decision === "deny") sameCardTransition.denial = current.reason;
-              return current;
-            },
-          });
-        const approvalInvalidationReason = answerOutdated
+        let answerVerdict: NonNullable<typeof approvalCard>["verdict"];
+        if (services.permissionManager && approvalCard) {
+          const policyMoved = services.permissionManager.getPolicyEpoch() !== approvalCard.epochs.epoch;
+          personAnswerStands(services.permissionManager, approvalCard, { gate: services.approvalGate, decision });
+          answerVerdict = approvalCard.verdict ?? { kind: "policy-changed" };
+          if (answerVerdict.kind !== "policy-changed" && (policyMoved || answerVerdict.kind === "stale")) permissionResult = answerVerdict.fresh;
+        }
+        // A stale Allow refuses this call and names why; a stale Deny is reported as the person's Deny below.
+        const staleAllow = answerVerdict?.kind === "stale" && decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision);
+        const approvalInvalidationReason = answerVerdict?.kind === "policy-changed"
           ? "Permission policy changed while approval was pending"
           : !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)
             ? "remote-controller-revoked"
-            : sameCardTransition.denial;
+            : answerVerdict?.kind === "denied" ? answerVerdict.fresh.reason
+              : staleAllow ? t("be_executor.answerQuestionChanged") : undefined;
         if (approvalInvalidationReason !== undefined) {
           const reason = approvalInvalidationReason;
           const msg = t("be_executor.permBlockDeny", {

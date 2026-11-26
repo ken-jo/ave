@@ -887,6 +887,7 @@ export const en = {
   "be_executor.permBlockDeny": "[Permission blocked] Tool '{name}' ({source}, trust:{trust}) — {reason}",
   "be_executor.permBlockHeadlessDeny": "[Permission blocked — headless] Tool '{name}' ({source}) — {reason}",
   "be_executor.hookPermissionBlock": "[Hook permission blocked] {reason}",
+  "be_executor.answerQuestionChanged": "The question changed after you answered; run it again to see the new question.",
   "be_executor.approvalGateError": "[Approval error] Tool '{name}' — approval gate internal error: {error}",
   "be_executor.approvalDeniedByUser": "[Approval denied] Tool '{name}' — user denied execution.",
   "be_executor.approvalRejectedByHost": "[Approval blocked by host] Tool '{name}' did not run: {reason}",

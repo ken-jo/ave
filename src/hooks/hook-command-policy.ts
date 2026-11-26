@@ -8,7 +8,8 @@ import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, min
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { buildPermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
-import { answerEpochsOf, personAnswerStands } from "../permissions/pending-answer-policy.js";
+import { openPendingAnswerCard, personAnswerStands } from "../permissions/pending-answer-policy.js";
+import { t } from "../i18n/index.js";
 import { shellQuote } from "../lib/shell-resolver.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import type { RunnableHook } from "./script-hook-runner.js";
@@ -27,7 +28,7 @@ export type HookCommandAuthorizer = (
 // Enrollment supplies executable identity; the shared pipeline supplies authority.
 export function createHookCommandAuthorizer(deps: {
   permissionManager: Pick<PermissionManager, "ensureProjectRulesLoaded" | "checkDetailed" | "dispatchReviewer" | "resolveReviewedPermission" | "getPolicyEpoch" | "getPolicyContextEpoch" | "getMode">;
-  approvalGate: Pick<ApprovalGate, "requestAndWait"> & Partial<Pick<ApprovalGate, "allowsPolicyTransition">>;
+  approvalGate: Pick<ApprovalGate, "requestAndWait"> & Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer">>;
 }): HookCommandAuthorizer {
   return async (hook, payload, cwd, projectDir = cwd, attachWorkingDirectory) => {
     const command = hook.command.map(expandLeadingTilde).map(shellQuote).join(" ");
@@ -97,7 +98,8 @@ export function createHookCommandAuthorizer(deps: {
     try {
     let approval: ApprovalDecision | undefined;
     const humanApproved = result.decision === "ask";
-    const opened = humanApproved ? answerEpochsOf(deps.permissionManager) : undefined;
+    const card = humanApproved ? openPendingAnswerCard(deps.permissionManager, result, check, "stale-refused") : undefined;
+    const opened = card?.epochs;
     if (humanApproved) {
       approval = await deps.approvalGate.requestAndWait({
         id, category: "tool", toolName: "bash", toolCategory: "shell",
@@ -122,12 +124,19 @@ export function createHookCommandAuthorizer(deps: {
       }
     }
     if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId) || !controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
-    const current = check();
+    let current: PermissionCheckResult;
+    if (card && approval) {
+      personAnswerStands(deps.permissionManager, card, { gate: deps.approvalGate, decision: approval });
+      const verdict = card.verdict ?? { kind: "policy-changed" as const };
+      if (verdict.kind === "policy-changed") return { decision: "deny", reason: "Permission policy changed while approval was pending" };
+      current = verdict.fresh;
+      if (verdict.kind === "denied") return { decision: "deny", reason: current.reason };
+      if (verdict.kind === "stale") return { decision: "deny", reason: t("be_executor.answerQuestionChanged") };
+    } else {
+      current = check();
+      if (current.decision === "deny") return { decision: "deny", reason: current.reason };
+    }
     const policyEpoch = deps.permissionManager.getPolicyEpoch();
-    if (current.decision === "deny") return { decision: "deny", reason: current.reason };
-    if (opened && approval && !personAnswerStands(deps.permissionManager, opened, result.forceModal === true, () => current, {
-      gate: deps.approvalGate, decision: approval,
-    })) return { decision: "deny", reason: "Permission policy changed while approval was pending" };
     if (effectIdentity(current) !== requestedEffect) return { decision: "deny", reason: "Hook command effect changed during approval" };
     if (!matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity)) return { decision: "deny", reason: "Hook working directory changed during approval" };
     if (plan.requiresExplicitUserApproval) {

@@ -133,15 +133,19 @@ it.each(["ordinary card", "reviewed exact rule"] as const)("keeps only the perso
     else expect(refusal()).toEqual(expect.any(String));
   }));
 
+const eligible = { floorSessionEligible: true as const };
+const behind = (reason: string) => ({ competingFloor: { code: "protected-path" as const, reason } });
 it.each([
-  ["the floor lost its session eligibility", { floorSessionEligible: undefined }],
-  ["another floor now stands behind it", { floorSessionEligible: undefined, competingFloor: { code: "protected-path" as const, reason: "Protected." } }],
-])("refuses a forced card's authority when %s", (_label, change) => {
+  ["the floor lost its session eligibility", eligible, { floorSessionEligible: undefined }],
+  ["another floor now stands behind it", eligible, { floorSessionEligible: undefined, ...behind("Protected.") }],
+  ["only the primary floor reason changed", eligible, { ...eligible, floor: { code: "sandbox-unavailable" as const, reason: "Other." } }],
+  ["only the floor behind it changed, eligibility fixed", behind("Protected."), { ...behind("Protected elsewhere.") }],
+])("refuses a forced card's authority when %s", (_label, opened, change) => {
   const epochs = { getPolicyEpoch: () => "1:0:0", getPolicyContextEpoch: () => "1" } as unknown as PermissionManager;
   const request = { tool: { name: "terminal_run", source: "builtin" as const, kind: "shell" as const }, mode: "default" as const, headless: false,
     floor: { code: "sandbox-unavailable" as const, reason: "No sandbox." } };
   let now: ReturnType<PermissionManager["checkDetailed"]> = { decision: "ask", reason: "No sandbox.", reasonCode: "sandbox-unavailable", forceModal: true,
-    pipelineRequest: { ...request, floorSessionEligible: true } };
+    pipelineRequest: { ...request, ...opened } };
   const authority = issueHostTerminalWriteAuthority({
     manager: epochs, human: true, cardForced: true, reviewed: false, decidedBackend: "host", backendIdentity: () => "host", check: () => now,
     settled: { ...now, decision: "allow", reason: "user approved approval request (allow-once)" },

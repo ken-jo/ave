@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuditLogger } from "../../../audit/audit-logger.js";
+import { t } from "../../../i18n/runtime.js";
 import { terminalSessionFixture } from "../../../__tests__/support/terminal-session-fixtures.js";
 import { TERMINAL_TEST_NONCE, terminalMarker } from "../../../__tests__/support/terminal-markers.js";
 import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
@@ -341,6 +342,7 @@ describe("live native approval ownership", () => {
         expect(transition).toHaveReturnedWith(true);
         expect(result?.is_error).toBe(true);
         expect(f.cards(f.windowA)).toEqual([first, card]);
+        expect(f.auditLog.mock.calls.some(([entry]) => entry.output?.startsWith("[approval:answer-stale]"))).toBe(false);
         expect(issueWriteAuthority).not.toHaveBeenCalled();
         expect(f.write).not.toHaveBeenCalled();
         return;
@@ -357,6 +359,9 @@ describe("live native approval ownership", () => {
         expect(fresh.id).not.toBe(card.id);
         expect(fresh).toMatchObject({ args: { command }, reason: card.reason, allowedChoices: ["allow-once", "deny-once"] });
         expect(fresh.shellRule?.sessionAllowed).not.toBe(true);
+        const stale = f.auditLog.mock.calls.map(([entry]) => entry.output ?? "").filter(output => output.startsWith("[approval:answer-stale]"));
+        expect(stale).toEqual([expect.stringContaining(`[approval:answer-stale] ${card.id} `)]);
+        expect(stale[0]).toMatch(/ choice=allow-once outcome=stale-reasked authority=none question=\[.*,true,null\] -> \[.*,false,"protected-path: /);
         expect(invoke(PERMISSIONS.approvalPending, frame)).toEqual([fresh]);
         await invoke(PERMISSIONS.approvalRespond, frame, allowOnceCardAnswer(card));
         expect(invoke(PERMISSIONS.approvalPending, frame)).toEqual([fresh]);
@@ -386,7 +391,7 @@ describe("live native approval ownership", () => {
     });
   });
 
-  it("refuses the terminal floor card's answer when its save left another forced question", async () => {
+  it.each(["allow-once", "deny-once"] as const)("refuses the terminal floor card's %s when its save left another forced question", async choice => {
     const f = await terminalFloorSubject();
     const command = "printf ready > output/result.txt";
     const outputDir = join(f.cwd, "output");
@@ -401,10 +406,18 @@ describe("live native approval ownership", () => {
     expect(await f.recordTerminalWaiver(card)).toEqual({ ok: true });
     renameSync(outputDir, join(f.cwd, "former-output"));
     symlinkSync(protectedDir, outputDir, "junction");
-    await invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+    await invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { ...allowOnceCardAnswer(card), choice });
     const [result] = await pending;
     expect(transition).toHaveReturnedWith(true);
-    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("Permission policy changed while approval was pending") });
+    const stale = f.auditLog.mock.calls.map(([entry]) => entry.output ?? "").filter(output => output.startsWith("[approval:answer-stale]"));
+    if (choice === "allow-once") {
+      expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(t("be_executor.answerQuestionChanged")) });
+      expect(stale).toEqual([expect.stringContaining(`[approval:answer-stale] ${card.id} `)]);
+      expect(stale[0]).toMatch(/ choice=allow-once outcome=stale-refused authority=none question=\[.*,true,null\] -> \[.*,false,"protected-path: /);
+    } else {
+      expect(result).toMatchObject({ is_error: true, content: t("be_executor.approvalDeniedByUser", { name: "terminal_run" }) });
+      expect(stale).toEqual([]);
+    }
     expect(issueWriteAuthority).not.toHaveBeenCalled();
     expect(f.write).not.toHaveBeenCalled();
   });

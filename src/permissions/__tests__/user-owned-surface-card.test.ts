@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { t } from "../../i18n/runtime.js";
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { ApprovalGate, type ApprovalDecision, type ApprovalRequest, type ApprovalRequestInput } from "../approval-gate.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
@@ -193,7 +194,7 @@ describe("authenticated user-owned surface choices", () => {
         await expect(resolved).resolves.toMatchObject({ humanApproved: true });
         expect(recheck).toHaveBeenLastCalledWith(permission, { acrossMemoryRuleChanges: true });
       } else {
-        await expect(resolved).rejects.toThrow(change === "fresh deny" ? "Current deny" : "Permission policy changed");
+        await expect(resolved).rejects.toThrow(change === "fresh deny" ? "Current deny" : change === "forced ask" ? t("be_executor.answerQuestionChanged") : "Permission policy changed");
       }
     },
   );

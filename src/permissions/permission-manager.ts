@@ -1611,7 +1611,9 @@ export class PermissionManager {
     const surface: UserOwnedSurface | undefined = hostTerminalContext?.hostTerminalTurn ? "host-terminal" : browser && isIssuedUserOwnedBrowserScope(browser) && browser.tabOpener === "user" ? "browser" : undefined;
     if (surface && !evidence.sessionId?.trim()) admissionDenial ??= { code: "user-owned-session", reason: NO_APPROVER_MESSAGE };
     const permissionStoreError = this.refreshPermissionStoreError();
-    const { automationPause: _previousPause, ...currentEvidence } = evidence;
+    const { automationPause: _previousPause, floorSessionEligible: _eligible, competingFloor: _competing, ...currentEvidence } = evidence;
+    // Sandbox-unavailable metadata describes only that floor; a promotion to another floor (other-principal) drops it.
+    const sandboxFloor = floor?.code === "sandbox-unavailable";
     const pause = this.getAutomatedApprovalPauseReason(evidence.sessionId);
     const request: PermissionDecisionRequest = Object.freeze({ ...currentEvidence,
       ...(hostTerminalContext?.agentBrowser ? { agentBrowser: true as const } : {}),
@@ -1625,6 +1627,8 @@ export class PermissionManager {
       ...(evidence.paths ? { paths: Object.freeze(evidence.paths.map((path) => Object.freeze({ ...path }))) } : {}),
       ...(evidence.rules ? { rules: Object.freeze({ ...evidence.rules }) } : {}),
       ...(floor ? { floor: Object.freeze({ ...floor }) } : {}),
+      ...(sandboxFloor && evidence.competingFloor ? { competingFloor: Object.freeze({ ...evidence.competingFloor }) } : {}),
+      ...(sandboxFloor && evidence.floorSessionEligible && !evidence.competingFloor ? { floorSessionEligible: true as const } : {}),
       ...(evidence.exfiltration ? { exfiltration: Object.freeze({ ...evidence.exfiltration }) } : {}),
       ...(admissionDenial ? { admissionDenial: Object.freeze({ ...admissionDenial }) } : {}),
       ...(evidence.shell ? { shell: Object.freeze({ ...evidence.shell }) } : {}),

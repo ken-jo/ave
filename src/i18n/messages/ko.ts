@@ -889,6 +889,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_executor.permBlockDeny": "[권한 차단] 도구 '{name}' ({source}, trust:{trust}) — {reason}",
   "be_executor.permBlockHeadlessDeny": "[권한 차단 — headless] 도구 '{name}' ({source}) — {reason}",
   "be_executor.hookPermissionBlock": "[Hook Permission 차단] {reason}",
+  "be_executor.answerQuestionChanged": "답한 뒤 질문이 바뀌었습니다. 새 질문을 보려면 다시 실행하세요.",
   "be_executor.approvalGateError": "[승인 오류] 도구 '{name}' — 승인 게이트 내부 오류: {error}",
   "be_executor.approvalDeniedByUser": "[승인 거부] 도구 '{name}' — 사용자가 실행을 거부했습니다.",
   "be_executor.approvalRejectedByHost": "[호스트가 승인 차단] 도구 '{name}'을 실행하지 않았습니다: {reason}",

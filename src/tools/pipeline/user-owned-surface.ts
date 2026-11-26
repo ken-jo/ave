@@ -1,5 +1,5 @@
 import { t } from "../../i18n/runtime.js";
-import { answerEpochsOf, personAnswerStands } from "../../permissions/pending-answer-policy.js";
+import { openPendingAnswerCard, personAnswerStands } from "../../permissions/pending-answer-policy.js";
 import { randomUUID } from "node:crypto";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { isHostApprovalRejectedDecision } from "../../permissions/approval-gate.js";
@@ -53,7 +53,9 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   if (permission.reviewer && permission.decision === "ask") permission = await input.review(permission);
   if (permission.decision === "deny") throw new Error(permission.reason);
   if (permission.decision === "allow") return { permission, decision, humanApproved: false };
-  const opened = answerEpochsOf(manager);
+  const openedEpoch = manager.getPolicyEpoch();
+  const card = openPendingAnswerCard(manager, permission, () => manager.getPolicyEpoch() === openedEpoch
+    ? manager.recheckPermission(permission) : manager.recheckPermission(permission, { acrossMemoryRuleChanges: true }), "stale-refused");
   const fallback: ApprovalRequestInput = {
     ...request,
     id: randomUUID(),
@@ -65,13 +67,12 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   decision = await gate.requestAndWait(fallback);
   if (request.abortSignal?.aborted && decision.choice.startsWith("deny")) return { permission, decision, humanApproved: false };
   request.abortSignal?.throwIfAborted();
-  let memoryRecheck: PermissionCheckResult | undefined;
-  if (!personAnswerStands(manager, opened, fallback.forceExplicit === true, () => {
-    memoryRecheck = manager.recheckPermission(permission, { acrossMemoryRuleChanges: true });
-    return memoryRecheck;
-  }, { gate, decision })) throw new Error("Permission policy changed while approval was pending.");
-  permission = memoryRecheck ?? manager.recheckPermission(permission);
+  personAnswerStands(manager, card, { gate, decision });
+  const verdict = card.verdict ?? { kind: "policy-changed" as const };
+  if (verdict.kind === "policy-changed") throw new Error("Permission policy changed while approval was pending.");
+  permission = verdict.fresh;
   if (permission.decision === "deny") throw new Error(permission.reason);
+  if (verdict.kind === "stale" && decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision)) throw new Error(t("be_executor.answerQuestionChanged"));
   if (decision.choice.startsWith("deny") && !isHostApprovalRejectedDecision(decision)) return personDenied(decision);
   return { permission, decision, humanApproved: decision.choice === "allow-once" && !isHostApprovalRejectedDecision(decision) };
 }

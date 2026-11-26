@@ -1,6 +1,7 @@
 /** The review fallback card of a user-owned surface, answered while the policy moves (pending-answer-policy.ts): a sibling stage's
  * "Allow for this run" leaves the answer standing; any other change, and a call the policy now denies or forces, refuses it. */
 import { describe, expect, it, vi } from "vitest";
+import { t } from "../../../i18n/runtime.js";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../../permissions/approval-gate.js";
 import type { PermissionCheckResult, PermissionManager } from "../../../permissions/permission-manager.js";
 import { resolveUserOwnedSurfaceApproval, userOwnedSurfaceCardFacts } from "../user-owned-surface.js";
@@ -81,11 +82,11 @@ describe("a user-owned surface's review fallback card", () => {
   });
 
   it.each([
-    ["denies", { decision: "deny" as const, reason: "now denied" }],
-    ["asks under a forced card the person was not shown", { forceModal: true }],
-  ])("across a sibling's run rule an answer is refused when the policy now %s", async (_name, rechecked) => {
+    ["denies", { decision: "deny" as const, reason: "now denied" }, "now denied"],
+    ["asks under a forced card the person was not shown", { forceModal: true }, t("be_executor.answerQuestionChanged")],
+  ])("across a sibling's run rule an answer is refused when the policy now %s", async (_name, rechecked, refusal) => {
     const { resolving } = await answerFallback("memory rule", rechecked);
-    await expect(resolving).rejects.toThrow("Permission policy changed while approval was pending.");
+    await expect(resolving).rejects.toThrow(refusal);
   });
 
   it("the person's Deny on the fallback card stands across a sibling's run rule", async () => {
