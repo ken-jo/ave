@@ -135,7 +135,7 @@ describe("missing deny parents", () => {
       expect(replacement[0]?.target).toBe(reach[0]?.target);
       expect(replacement[0]?.identity).not.toEqual(reach[0]?.identity);
       expect(() => assertMxcDenyOutcomes({ ...outcome, reachable: replacement, reach: replacement }))
-        .toThrow("Windows sandbox policy left a deny without an outcome: " + hooks);
+        .toThrow(`Windows sandbox policy left a deny without an outcome: ${hooks}`);
     });
   });
 
@@ -146,7 +146,7 @@ describe("missing deny parents", () => {
       const pin = facts.pinWindowsPaths;
       const replaced = vi.fn((paths: readonly string[]) => pin(paths).map((entry, index) => {
         if (paths[index] !== workspace) return entry;
-        const fileId = "0x" + "0".repeat(32);
+        const fileId = `0x${"0".repeat(32)}`;
         return { ...entry, fileId, fileIndex: fileId };
       }));
       vi.spyOn(facts, "pinWindowsPaths").mockImplementation(replaced);

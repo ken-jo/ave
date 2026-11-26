@@ -3303,7 +3303,31 @@ The [decision tree](permission-decision-tree.md) states the policy: what is priv
 
 Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home): Linux bind masks and Windows ACL stamps are bound to the file object present at spawn, so a long-lived confined child can read a file the host replaces by rename-over. A file absent at spawn has no object to bind; it is held only by that backend's absent-path handling, which this boundary does not change. macOS seatbelt rules are path-based, so neither case reopens a denied path there. Per-exec shells re-apply masks and stamps on every spawn.
 
-Absent protected names on Windows (owner decision 2026-11-24): an ACL can only deny an existing object, and Ave never creates a placeholder in the user's workspace or home to carry a deny. A protected name (for example `.vscode`, `.idea`, `.git/hooks`) that is absent at launch is watched instead: when a sandboxed command ends, a worker or holder is released, or a host-side consumer is about to act on that workspace, a watched name that now exists is moved to quarantine under the Ave home, the command result carries a named violation, and the user is told and may restore it. No directory watch is involved: each of the three is a fresh existence check beneath the recorded folder, which must still be the recorded object. The host-side consumers are host Git, the project command list and lookup, project hook discovery and dispatch, and stage-folder seeding; all ask one gate (`isHostWorkspaceConsumable`). A failed move, or a check that cannot be made, refuses those consumers for that workspace. A violation found where no command result exists (a holder's release, a background shell's exit, a check made for a host consumer) is logged and carried by the next sandboxed command's result. Restoring an entry while another launch still claims its name keeps that claim: host consumers stay refused until that launch is released, and its release checks the name again. macOS seatbelt rules are patterns and cover absent names without this.
+Absent protected names on Windows (owner decision 2026-11-24): an ACL can
+only deny an existing object, and Ave never creates a placeholder in the
+user's workspace or home to carry a deny. A protected name (for example
+`.vscode`, `.idea`, `.git/hooks`) that is absent at launch can have a watched
+outcome. At sandboxed command end, worker or holder release, and before a
+host-side consumer acts, Ave checks the name afresh beneath the recorded
+folder and verifies that folder's identity. Ave moves a found entry to
+quarantine under the Ave home and reports the original and quarantine
+paths. Host Git, project commands, project hooks and stage-folder seeding
+share `isHostWorkspaceConsumable`. An unverifiable location or failed move
+makes the gate refuse the affected operations.
+
+A shell result can include the notice when its job exits before the result
+is returned. Receipts from holder release, host consumer checks and shell
+jobs whose results have already returned can be delivered in a later
+Windows sandboxed command result when that command runs the sweep. Deferred
+receipts remain queued until such a result can carry them.
+
+To restore an inspected entry, move it from the shown quarantine path to
+its original path after the sandboxed runs using the workspace have ended.
+The host also exposes list and restore handlers through IPC, with user
+keyboard intent required for restore. The restore handler preserves any
+remaining holder claim. While that holder is active, the gate refuses
+consumers of the restored name and the holder checks the name again at
+release. macOS seatbelt patterns cover absent names directly.
 
 **Local memory inference.** Local memory inference uses the Windows system directory for its working directory. The sandbox account already has read access there, so inference needs no ACL grant for its fresh process HOME. The active model is under the denied Ave home models directory and the host streams its verified bytes.
 

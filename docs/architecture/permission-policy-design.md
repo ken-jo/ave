@@ -875,11 +875,13 @@ preserving the carrier and any siblings. The disposable process home
 and holder staging supply their own `.ave` so the two child denies can be
 exact there.
 
-A holder has no command result. After it releases, successful protected-path
-moves and failed ones are recorded in the host log and carried by the next
-sandboxed command's result, as are those found for a host-side consumer or
-at a background shell's exit. Holder status in the UI covers admission and
-lifecycle state. The quarantine list shows entries that were moved.
+Findings from holder release, a host consumer check, or a shell job whose
+result already returned are logged and can reach the user in a later
+Windows sandboxed command result when it runs the sweep. The receipt
+identifies the original and quarantine paths. After inspecting the entry
+and letting the sandboxed runs using the workspace end, a user can move the
+entry back to its original path. The list and restore handlers are exposed
+through host IPC, with user keyboard intent required for restore.
 
 The ACL-backed route requires existing entries so it can stamp write denies
 before admitting a covering grant. A missing entry refuses the grant with a

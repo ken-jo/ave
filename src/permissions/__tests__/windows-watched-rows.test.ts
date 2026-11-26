@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { t } from "../../i18n/index.js";
+import { getLocale, loadLocaleMessages, setLocale, t, type Locale } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { rankAdmittedMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 import { isHostWorkspaceConsumable } from "../../shared/host-workspace-gate.js";
@@ -33,13 +33,33 @@ function ranked(path: string, anchor: string): MxcWatchedRow {
   return { path, anchor, volumeSerial: entry.dev.toString(16), fileId: entry.ino.toString(16) };
 }
 
+const RECEIPT_LOCALES = ["en", "ko"] as const;
+const RECEIPT_WORDING = {
+  en: {
+    found: "Ave found an entry at a protected path",
+    restore: "move it from the shown quarantine path back to its original path",
+    failed: "but could not move it to quarantine",
+    unverified: "Ave could not verify the identity of the protected location",
+    recover: "move any unexpected entry away from its protected path",
+  },
+  ko: {
+    found: /Ave 가 보호 경로.*에서 항목을 발견/u,
+    restore: "표시된 격리 경로에서 원래 경로로 옮겨 복원",
+    failed: "격리 위치로 옮기지 못했습니다",
+    unverified: "Ave 가 보호 경로의 위치가 기존과 같은지 확인하지 못했습니다",
+    recover: "예상하지 못한 항목이 있다면 보호 경로 밖으로 옮기세요",
+  },
+} as const;
+
 describe("watched protected rows", () => {
   let container: string;
   let workspace: string;
   let home: string;
+  let previousLocale: Locale;
   let tasks: string;
 
   beforeEach(() => {
+    previousLocale = getLocale();
     container = mkdtempSync(join(tmpdir(), "watched-rows-"));
     workspace = join(container, "workspace");
     home = join(container, "home");
@@ -54,6 +74,7 @@ describe("watched protected rows", () => {
     pin.fail = undefined;
     // Drain a check a host consumer started and the receipts no result took.
     await sweepWatchedRows({ commandId: "teardown" }).catch(() => undefined);
+    setLocale(previousLocale);
     vi.unstubAllEnvs();
     await cleanupTmpDir(container);
     resetWatchedRows();
@@ -68,17 +89,22 @@ describe("watched protected rows", () => {
     expect(watchedProtectedRows()).not.toContain(tasks);
   });
 
-  it("quarantines a created row with its manifest and violation, refuses host consumers until then, and restores on request", async () => {
+  it.each(RECEIPT_LOCALES)("uses %s receipt wording for a quarantined entry with a manifest and restore locations", async locale => {
+    await loadLocaleMessages(locale);
+    setLocale(locale);
     watchAbsentProtectedRow(tasks, [workspace]);
     mkdirSync(join(workspace, ".vscode"));
     writeFileSync(tasks, "planted");
     const notice = await sweepWatchedRows({ commandId: "fixture-command", command: "echo planted" });
     expect(notice).toContain(WATCHED_ROW_VIOLATION);
+    expect(notice).toMatch(RECEIPT_WORDING[locale].found);
+    expect(notice).toContain(RECEIPT_WORDING[locale].restore);
     expect(lstatSync(join(workspace, ".vscode"), { throwIfNoEntry: false })).toBeUndefined();
     const [entry, ...rest] = listWatchedQuarantine();
     expect(rest).toEqual([]);
     expect(entry).toMatchObject({ original: join(workspace, ".vscode"), row: tasks, commandId: "fixture-command", command: "echo planted" });
     if (entry === undefined) throw new Error("No quarantine entry");
+    expect(notice).toContain(`${JSON.stringify(entry.original)} -> ${JSON.stringify(entry.quarantined)}`);
     expect(readFileSync(join(entry.quarantined, "tasks.json"), "utf8")).toBe("planted");
     expect(isWatchedWorkspaceConsumable(workspace)).toBe(true);
     await expect(restoreWatchedQuarantine(entry.slot, entry.index)).resolves.toEqual({ restored: join(workspace, ".vscode") });
@@ -225,14 +251,20 @@ describe("watched protected rows", () => {
     expect(watchedProtectedRows()).not.toContain(hooks);
   });
 
-  it("refuses host consumers while a started launch's folder cannot be verified", async () => {
+  it.each(RECEIPT_LOCALES)("uses %s receipt wording when a started launch's folder cannot be verified and the entry is absent", async locale => {
+    await loadLocaleMessages(locale);
+    setLocale(locale);
     const hooks = join(workspace, ".ave", "hooks");
     const claim = claimMxcWatchedRows([ranked(hooks, workspace)], { commandId: "unverifiable" });
     claim.start();
     renameSync(workspace, join(container, "moved"));
     mkdirSync(workspace);
     expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
-    await expect(claim.release()).rejects.toThrow(/changed identity/);
+    expect(lstatSync(hooks, { throwIfNoEntry: false })).toBeUndefined();
+    const released = claim.release();
+    await expect(released).rejects.toThrow(/changed identity/);
+    await expect(released).rejects.toThrow(RECEIPT_WORDING[locale].unverified);
+    await expect(released).rejects.toThrow(RECEIPT_WORDING[locale].recover);
     expect(isWatchedWorkspaceConsumable(workspace)).toBe(true);
   });
 
@@ -285,12 +317,18 @@ describe("watched protected rows", () => {
     expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
   });
 
-  it("fails closed without deleting anything when the quarantine cannot be created", async () => {
+  it.each(RECEIPT_LOCALES)("uses %s receipt wording when a found entry cannot be quarantined", async locale => {
+    await loadLocaleMessages(locale);
+    setLocale(locale);
     writeFileSync(join(home, "sandbox-quarantine"), "");
     watchAbsentProtectedRow(tasks, [workspace]);
     mkdirSync(join(workspace, ".vscode"));
     writeFileSync(tasks, "planted");
-    await expect(sweepWatchedRows({ commandId: "fixture-command" })).rejects.toThrow(JSON.stringify(join(workspace, ".vscode")));
+    const sweep = sweepWatchedRows({ commandId: "fixture-command" });
+    await expect(sweep).rejects.toThrow(JSON.stringify(join(workspace, ".vscode")));
+    await expect(sweep).rejects.toThrow(RECEIPT_WORDING[locale].found);
+    await expect(sweep).rejects.toThrow(RECEIPT_WORDING[locale].failed);
+    await expect(sweep).rejects.toThrow(RECEIPT_WORDING[locale].recover);
     expect(readFileSync(tasks, "utf8")).toBe("planted");
     expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
     expect(isWatchedWorkspaceConsumable(join(container, "elsewhere"))).toBe(true);

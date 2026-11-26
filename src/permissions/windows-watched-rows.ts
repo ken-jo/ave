@@ -14,7 +14,7 @@ const log = createLogger("sandbox-watched-rows");
 /** Closed outcome of one protected deny row reachable from a Windows write root. */
 export type WindowsProtectedRowOutcome = "stamped" | "carried" | "excepted" | "watched" | "refused";
 
-/** The named violation a command result carries when it created a watched row. */
+/** The named violation a command result carries when a watched entry is quarantined. */
 export const WATCHED_ROW_VIOLATION = "sandbox-watched-path-created";
 
 /** A localized sweep failure that can include the restore locations of successful moves. */
@@ -329,9 +329,11 @@ async function quarantineCreatedRowsNow(context: WatchedSweepContext, holder: sy
   try { quarantine = await createSandboxQuarantine(context.commandId); }
   catch (error) { failures.push(errorMessage(error)); }
   for (const [id, { original, row }] of entries) {
+    let found = false;
     try {
       if (!sameIdentity(row.anchor, row.anchorIdentity)) throw new Error(`the folder ${JSON.stringify(row.anchor)} changed identity`);
       if (entryAt(original) === undefined) continue;
+      found = true;
       if (quarantine === undefined) throw new Error(failures[0]);
       const parent = lstatSync(dirname(original));
       if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error("Sandbox quarantine parent is not a plain directory");
@@ -345,7 +347,8 @@ async function quarantineCreatedRowsNow(context: WatchedSweepContext, holder: sy
       }
     } catch (error) {
       failClosed.set(id, { path: original, roots: [...row.roots, row.anchor] });
-      failures.push(t("sandboxPolicy.watchedQuarantineFailed", { path: JSON.stringify(original), reason: errorMessage(error) }));
+      const messageKey = found ? "sandboxPolicy.watchedQuarantineFailed" : "sandboxPolicy.watchedQuarantineUnverified";
+      failures.push(`${t(messageKey, { path: JSON.stringify(original), reason: errorMessage(error) })}\n${t("sandboxPolicy.watchedQuarantineRecovery")}`);
     }
   }
   const first = moved[0];
