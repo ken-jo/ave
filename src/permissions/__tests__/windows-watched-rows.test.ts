@@ -440,6 +440,21 @@ describe("watched protected rows", () => {
     expect(hasWatchedWork()).toBe(false);
   });
 
+  it.runIf(process.platform === "win32")("retains an undelivered receipt when the sweep cannot judge locality", async () => {
+    watchAbsentProtectedRow(tasks, [workspace]);
+    deferWatchedReceipt("receipt from a released holder");
+    const failure = new Error("Watched drive query failed");
+    setWindowsDriveQueryForTest(() => { throw failure; });
+    try {
+      await expect(sweepWatchedRows({ commandId: "failed-sweep" })).rejects.toBe(failure);
+    } finally {
+      setWindowsDriveQueryForTest();
+    }
+    resetWatchedRows();
+    expect(hasWatchedWork()).toBe(true);
+    await expect(sweepWatchedRows({ commandId: "next-sweep" })).resolves.toBe("receipt from a released holder");
+  });
+
   it("refuses to move a protected child through a replacement carrier link", async () => {
     const carrier = join(workspace, ".ave");
     const target = join(container, "external");

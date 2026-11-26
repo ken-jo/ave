@@ -5,7 +5,7 @@ import { createLogger } from "../lib/logger.js";
 import { renameFileOnce, renameFileOnceSync } from "../lib/transient-fs-lock-retry.js";
 import { errorMessage } from "../shared/error-message.js";
 import { setHostWorkspaceGuard } from "../shared/host-workspace-gate.js";
-import { admitLocalPath, admitLocalRoute, assertLocalityDecisionUsable, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
+import { admitLocalPath, admitLocalRoute, assertLocalityDecisionUsable, isLocalityFailure, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { admitWindowsReparse, pinWindowsPaths } from "../shared/windows-path-facts.js";
 import type { MxcWatchedRow } from "./mxc-windows.js";
 import { createSandboxQuarantine, sandboxQuarantineRoot } from "./sandbox-quarantine.js";
@@ -420,6 +420,7 @@ export async function sweepWatchedRows(context: WatchedSweepContext): Promise<st
   let notice: string | undefined;
   try { notice = await quarantineCreatedRows(context); }
   catch (error) {
+    if (process.platform === "win32" && isLocalityFailure(error)) throw error;
     const receipts = pending();
     if (error instanceof WatchedQuarantineError && receipts.length > 0) throw new WatchedQuarantineError([...new Set([error.message, ...receipts])].join("\n"));
     throw error;
