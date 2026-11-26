@@ -1659,7 +1659,7 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(cleanup).toContain(
       "[System.IO.File]::Move($shortcutPath, $quarantinePath)",
     );
-    expect(cleanup).toContain("[System.IO.File]::Delete($quarantinePath)");
+    expect(cleanup).toContain("[System.IO.File]::Delete($entry.Path)");
     expect(cleanup).toContain(
       "[System.IO.File]::Move($quarantinePath, $shortcutPath)",
     );
@@ -1721,7 +1721,7 @@ describe("Windows NSIS installer smoke contracts", () => {
     );
     expect(finalShortcutCheck).toBeGreaterThanOrEqual(0);
     expect(finalToastCheck).toBeGreaterThan(finalShortcutCheck);
-    expect(cleanup.indexOf("[System.IO.File]::Delete($quarantinePath)")).toBeGreaterThan(
+    expect(cleanup.indexOf("[System.IO.File]::Delete($entry.Path)")).toBeGreaterThan(
       finalToastCheck,
     );
 

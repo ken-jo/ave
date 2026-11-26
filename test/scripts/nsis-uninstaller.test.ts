@@ -138,6 +138,18 @@ describe("machine uninstaller removal", () => {
     expectGuardedToastCleanup(hook);
   });
 
+  it("continues only on the cleanup exit that reports an unattributable quarantine entry", () => {
+    const uninstall = hook.split("!macro customUnInstall\n")[1].split("!macroend")[0];
+    const outcome = uninstall.slice(uninstall.indexOf(cleanupDispatch) + cleanupDispatch.length);
+    expect(outcome).toMatch(
+      /^(?:\s*;[^\n]*)+\s+\$\{if\} \$R4 == 2\s+DetailPrint "[^"\n]+unattributable quarantine entry[^"\n]+"\s+StrCpy \$R4 "0"\s+\$\{endif\}\s+DetailPrint "\$R5"\s+\$\{if\} \$R4 != 0\s+SetErrorLevel 1\s+Abort /,
+    );
+    expect(uninstall.match(/StrCpy \$R4 "0"/g)).toHaveLength(1);
+    const cleanup = readRepoFile("build/uninstall-windows-notification-artifacts.ps1");
+    expect(cleanup.match(/^\s*exit \d+$/gm)?.map((line) => line.trim())).toEqual(["exit 2", "exit 0", "exit 1"]);
+    expect(cleanup).toMatch(/if \(\$unattributedQuarantine\) \{\s+#[^\n]+\s+exit 2\s+\}\s+exit 0\s+\}\s+catch \{/);
+  });
+
   it("rejects an updater jump target before notification dispatch", () => {
     const earlySkip = hook.replace(`  ${skipLabel}\n`, "").replace(
       cleanupDispatch,

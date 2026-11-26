@@ -23,6 +23,7 @@ const mockedElectron = vi.hoisted(() => ({
     userAgentFallback: "",
     setAppUserModelId: vi.fn(),
     setToastActivatorCLSID: vi.fn(),
+    exit: vi.fn(),
     getPath: vi.fn(() => ""),
     dock: { setIcon: vi.fn() },
     isPackaged: false,
@@ -30,6 +31,7 @@ const mockedElectron = vi.hoisted(() => ({
   protocol: { registerSchemesAsPrivileged: vi.fn() },
   shell: { readShortcutLink: vi.fn((): { toastActivatorClsid?: string } => ({})) },
   ensureWorkspaceCwd: vi.fn(() => "/tmp/ave-workspace"),
+  cleanupInProgress: vi.fn((_appData: string) => false),
 }));
 
 vi.mock("electron", () => ({
@@ -39,6 +41,9 @@ vi.mock("electron", () => ({
 }));
 vi.mock("../ensure-workspace-cwd.js", () => ({
   ensureWorkspaceCwd: mockedElectron.ensureWorkspaceCwd,
+}));
+vi.mock("../windows-notification-cleanup-lock.js", () => ({
+  isWindowsNotificationCleanupInProgress: mockedElectron.cleanupInProgress,
 }));
 vi.mock("../app-icon.js", () => ({ resolveAppIconPath: () => "/tmp/app-icon.png" }));
 
@@ -127,6 +132,26 @@ describe("runEarlyBootEnv", () => {
     } finally { mockedElectron.app.isPackaged = false; }
     expect(mockedElectron.app.setAppUserModelId).toHaveBeenLastCalledWith("ai.agent-connector.ave");
     expect(mockedElectron.app.setToastActivatorCLSID).toHaveBeenLastCalledWith("{62FD3EFB-B3D2-4235-9402-6979F52C0286}");
+  });
+
+  it("exits a packaged Windows boot before notification setup while uninstall cleanup holds the user's lock", () => {
+    setProcessPlatform("win32");
+    mockedElectron.cleanupInProgress.mockReturnValue(true);
+    mockedElectron.app.setToastActivatorCLSID.mockClear();
+    mockedElectron.app.isPackaged = true;
+    try {
+      expect(() => runEarlyBootEnv()).toThrow("Ave is being uninstalled for this user");
+    } finally {
+      mockedElectron.app.isPackaged = false;
+      mockedElectron.cleanupInProgress.mockReturnValue(false);
+    }
+    expect(mockedElectron.cleanupInProgress).toHaveBeenLastCalledWith(userDataPath);
+    expect(mockedElectron.app.exit).toHaveBeenCalledWith(1);
+    expect(mockedElectron.app.setToastActivatorCLSID).not.toHaveBeenCalled();
+
+    mockedElectron.app.exit.mockClear();
+    runEarlyBootEnv();
+    expect(mockedElectron.app.exit).not.toHaveBeenCalled();
   });
 
   describe("a dev run's Electron.lnk", () => {

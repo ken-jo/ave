@@ -577,6 +577,13 @@ FunctionEnd
   ${else}
     Call un.aveCleanupCurrentUserNotificationArtifacts
   ${endif}
+  ; Exit 2: every attributable artifact is verified removed, and a
+  ; quarantine-named entry that cleanup could not attribute was left untouched.
+  ; Report it and continue; any other nonzero exit aborts below.
+  ${if} $R4 == 2
+    DetailPrint "Ave: notification cleanup left an unattributable quarantine entry untouched"
+    StrCpy $R4 "0"
+  ${endif}
   DetailPrint "$R5"
   ${if} $R4 != 0
     SetErrorLevel 1

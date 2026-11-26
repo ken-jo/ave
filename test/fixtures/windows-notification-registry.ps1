@@ -1,7 +1,7 @@
 class FixtureRegistryKey {
   static [object] $State
   static [bool] $Deleted
-  static [bool] $WroteDuringScan
+  static [bool] $ProductStarted
   static [int] $FinalScanCount
   [string] $Role
   [bool] $FinalView
@@ -71,22 +71,28 @@ class FixtureRegistryKey {
   [void] BeforeRead([string]$name) {
     if ($this.FinalView -and [FixtureRegistryKey]::FinalScanCount -gt 0) {
       $scenario = $env:AVE_FIXTURE_SCENARIO
-      if ($scenario -eq "final-read-error" -and [FixtureRegistryKey]::FinalScanCount -eq 2) {
+      if ($scenario -eq "final-read-error") {
         [Console]::Error.WriteLine("fixture exercised final-read-error")
         throw [System.UnauthorizedAccessException]::new("fixture denied the final scan read")
       }
-      if ($this.Role -eq "server" -and $name -eq "" -and -not [FixtureRegistryKey]::WroteDuringScan) {
-        $root = [FixtureRegistryKey]::State.root
-        if ($scenario -eq "final-owned-write") {
-          $root | Add-Member -NotePropertyName defaultValue -NotePropertyValue "Electron Notification Activator"
+      # The last read of the last scan: only the cleanup lock can stop an Ave start here from provisioning.
+      if (
+        $scenario -eq "product-start" -and $this.Role -eq "server" -and $name -eq "" -and
+        [FixtureRegistryKey]::FinalScanCount -eq [int]$env:AVE_FIXTURE_FINAL_SCANS -and
+        -not [FixtureRegistryKey]::ProductStarted
+      ) {
+        [FixtureRegistryKey]::ProductStarted = $true
+        [System.IO.File]::WriteAllText($env:AVE_FIXTURE_SIGNAL, "started")
+        $deadline = [DateTime]::UtcNow.AddSeconds(20)
+        while (-not [System.IO.File]::Exists("$($env:AVE_FIXTURE_SIGNAL).ack")) {
+          if ([DateTime]::UtcNow -gt $deadline) { throw "fixture product start was not acknowledged" }
+          Start-Sleep -Milliseconds 50
         }
-        elseif ($scenario -eq "final-foreign-write") {
-          $root | Add-Member -NotePropertyName CustomActivator -NotePropertyValue "foreign data"
+        if ([System.IO.File]::ReadAllText("$($env:AVE_FIXTURE_SIGNAL).ack") -eq "provisioned") {
+          [FixtureRegistryKey]::State.root |
+            Add-Member -NotePropertyName defaultValue -NotePropertyValue "Electron Notification Activator"
+          [FixtureRegistryKey]::Save()
         }
-        else { return }
-        [FixtureRegistryKey]::WroteDuringScan = $true
-        [FixtureRegistryKey]::Save()
-        [Console]::Error.WriteLine("fixture exercised $scenario")
       }
     }
   }
@@ -112,6 +118,12 @@ class FixtureRegistryKey {
     $key.PSObject.Properties.Remove($this.ValueSlot($name))
     [FixtureRegistryKey]::Deleted = $true
     [FixtureRegistryKey]::Save()
+    if ($env:AVE_FIXTURE_SCENARIO -eq "foreign-replace" -and $this.Role -eq "server") {
+      [FixtureRegistryKey]::State.root.PSObject.Properties.Remove("CustomActivator")
+      [FixtureRegistryKey]::State.root | Add-Member -NotePropertyName CustomActivator -NotePropertyValue "foreign data"
+      [FixtureRegistryKey]::Save()
+      [Console]::Error.WriteLine("fixture exercised foreign-replace")
+    }
     if ($env:AVE_FIXTURE_SCENARIO -eq "overlap" -and $this.Role -eq "server") {
       $this.RunOverlappingCleanup()
       throw [System.UnauthorizedAccessException]::new("fixture stopped the first cleanup")
@@ -148,10 +160,7 @@ function Get-CimInstance {
   if ($ClassName -ne "Win32_Process" -or $Filter -ne "Name = 'Ave.exe'") {
     throw "unexpected process lookup: $ClassName $Filter"
   }
-  if (
-    $env:AVE_FIXTURE_SCENARIO -in @("app-running", "other-user-app", "owner-lookup-error") -or
-    ($env:AVE_FIXTURE_SCENARIO -eq "app-restarted" -and [FixtureRegistryKey]::Deleted)
-  ) {
+  if ($env:AVE_FIXTURE_SCENARIO -in @("app-running", "other-user-app", "owner-lookup-error")) {
     [PSCustomObject]@{ ProcessId = 1234 }
   }
 }
@@ -164,7 +173,7 @@ function Invoke-CimMethod {
   if ($env:AVE_FIXTURE_SCENARIO -eq "owner-lookup-error") {
     return [PSCustomObject]@{ ReturnValue = 2; Sid = $null }
   }
-  $sid = if ($env:AVE_FIXTURE_SCENARIO -in @("app-running", "app-restarted")) {
+  $sid = if ($env:AVE_FIXTURE_SCENARIO -eq "app-running") {
     [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   }
   else { "S-1-5-21-1-2-3-4" }
@@ -173,15 +182,23 @@ function Invoke-CimMethod {
 
 function Get-ShortcutRecord {
   param([string]$Path)
-  if ([System.IO.File]::ReadAllText($Path) -ne "fixture shortcut evidence") {
+  $content = [System.IO.File]::ReadAllText($Path)
+  $clsids = @{
+    "fixture shortcut evidence" = $env:AVE_FIXTURE_CLSID
+    "fixture product shortcut" = "{62FD3EFB-B3D2-4235-9402-6979F52C0286}"
+    "fixture foreign shortcut" = "{11111111-2222-4333-8444-555555555555}"
+  }
+  if (-not $clsids.ContainsKey($content)) {
     throw "unexpected shortcut fixture content"
   }
+  $directory = $env:AVE_FIXTURE_DIRECTORY
+  if ($content -eq "fixture foreign shortcut") { $directory = Join-Path $directory "elsewhere" }
   return [PSCustomObject]@{
-    Target = Join-Path $env:AVE_FIXTURE_DIRECTORY "Ave.exe"
-    WorkingDirectory = $env:AVE_FIXTURE_DIRECTORY
+    Target = Join-Path $directory "Ave.exe"
+    WorkingDirectory = $directory
     Arguments = ""
     Description = "Ave"
     AppUserModelId = "ai.example.toast"
-    ToastClsid = $env:AVE_FIXTURE_CLSID
+    ToastClsid = $clsids[$content]
   }
 }
