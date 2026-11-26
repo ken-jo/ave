@@ -35,6 +35,11 @@ class Decision {
 
 let active: Decision | undefined;
 
+/** Propagate a failed drive query before continuing with native filesystem work. */
+export function assertLocalityDecisionUsable(): void {
+  active?.assertUsable();
+}
+
 /** Reuse an enclosing synchronous judgment or open a fresh one. */
 export function withLocalityDecision<T>(fn: () => T): T {
   const chosen = active ?? new Decision();
@@ -415,6 +420,7 @@ export function routeLocality(path: string): "local" | "refused" | "incomplete" 
     withLocalityDecision(() => admitLocalRoute(path));
     return "local";
   } catch (error) {
+    assertLocalityDecisionUsable();
     const { code, incomplete } = error as { code?: unknown; incomplete?: unknown };
     return code === "ENETWORKSHAREPATH" && incomplete !== true ? "refused" : "incomplete";
   }

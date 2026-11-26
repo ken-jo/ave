@@ -1,4 +1,12 @@
 import { withLocalityDecision } from "../../shared/local-path-io.js";
+import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
+
+const localDrive = vi.hoisted(() => () => String.raw`\Device\HarddiskVolume1`);
+vi.mock("../../shared/windows-drive-locality.js", async original => {
+  const locality = await original<typeof import("../../shared/windows-drive-locality.js")>();
+  locality.setWindowsDriveQueryForTest(localDrive);
+  return locality;
+});
 const factsOverride = vi.hoisted(() => new Map<string, { reparseTag: number; attributes: number }>());
 // The first path of every native pin, so a test can count the helper calls one composition makes.
 const pinnedFirstPaths = vi.hoisted(() => [] as string[]);
@@ -362,6 +370,18 @@ describe("a profile-child Ave home on Windows", () => {
     const floor = getDefaultSensitiveReadDenyPaths();
     noProfileRootRow(floor);
     for (const row of ["settings.json", "plugins/registry.json"]) expect(floor).toContain(join(original, ...row.split("/")));
+  });
+
+  it.runIf(HOST_PLATFORM === "win32")("does not pin the profile home after a drive query reports ENOENT", () => {
+    const failure = windowsPathKindHelperUnavailable("Drive query failed", "ENOENT");
+    pinnedFirstPaths.length = 0;
+    setWindowsDriveQueryForTest(() => { throw failure; });
+    try {
+      expect(() => getDefaultSensitiveReadDenyPaths()).toThrow(failure);
+      expect(pinnedFirstPaths).toEqual([]);
+    } finally {
+      setWindowsDriveQueryForTest(localDrive);
+    }
   });
 
   it("refuses a linked top-level child that is not re-allowed, and keeps a linked re-allowed child", async ({ onTestFinished }) => {

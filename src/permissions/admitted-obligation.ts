@@ -2,7 +2,7 @@ import { sep, win32 } from "node:path";
 import { expandWindowsEnvRefs, stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { createLogger } from "../lib/logger.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
-import { admitLocalPath, admitLocalRoute, decisionMemo, type LocalFilesystemFacts, localFs, withLocalityDecision } from "../shared/local-path-io.js";
+import { admitLocalPath, admitLocalRoute, assertLocalityDecisionUsable, decisionMemo, type LocalFilesystemFacts, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { isWindowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
 import { admitWindowsReparse, isWindowsPathFactsPathFailure, pinWindowsPaths, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { WINDOWS_COMMAND_LINE_LIMIT } from "../shared/windows-command-line.js";
@@ -211,6 +211,7 @@ function driveRefusal(path: string): UnresolvedReason | undefined {
     admitLocalPath(`${path.slice(0, 2)}\\`);
     return undefined;
   } catch (error) {
+    assertLocalityDecisionUsable();
     // Only a locality refusal names a reason; anything else is a broken contract and fails as itself.
     if ((error as { code?: unknown }).code !== "ENETWORKSHAREPATH") throw error;
     if (isWindowsPathKindHelperUnavailable(error)) return "helper-unavailable";
@@ -228,6 +229,7 @@ function walkRoute(path: string, facts: LocalFilesystemFacts, preview = false): 
     const { physical, followedLink } = admitLocalRoute(path, { projectMissing: true, rejectDanglingLink: preview, facts });
     return physical === undefined ? { reason: "incomplete-walk" } : { physical, followedLink };
   } catch (error) {
+    assertLocalityDecisionUsable();
     const { code, incomplete, cause } = error as { code?: unknown; incomplete?: unknown; cause?: unknown };
     if (preview && code !== "ENETWORKSHAREPATH") throw error;
     if (preview && cause instanceof TypeError) throw cause;

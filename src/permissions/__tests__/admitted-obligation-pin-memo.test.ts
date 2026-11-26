@@ -5,8 +5,15 @@ import { join, resolve } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { takeWindowsHelperLaunches } from "../../__tests__/support/windows-helper-spawns.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { withLocalityDecision } from "../../shared/local-path-io.js";
+import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
 import { admitObligations, admitWindowsLookupPaths } from "../admitted-obligation.js";
+
+vi.unmock("../../shared/windows-drive-locality.js");
+
+const localDrive = () => String.raw`\Device\HarddiskVolume1`;
+setWindowsDriveQueryForTest(localDrive);
 
 const failNextPin = vi.hoisted(() => ({ armed: false }));
 vi.mock("node:child_process", async (importOriginal) => {
@@ -72,5 +79,26 @@ describe.runIf(process.platform === "win32")("pin facts within one decision", ()
     const grant = () => admitObligations({ purpose: "worker-grant", principal: "srt-sandbox", rows: [{ spelling: a, polarity: { effect: "allow", access: "read" }, source: "worker-request" }] });
     withLocalityDecision(() => { grant(); grant(); });
     expect(pins()).toBe(2);
+  });
+
+  it("does not start native obligation pins after a later drive query fails", () => {
+    const firstDrive = root.slice(0, 2).toUpperCase();
+    const laterDrive = firstDrive === "Q:" ? "R:" : "Q:";
+    const failure = windowsPathKindHelperUnavailable("Drive query failed", "ENETWORKSHAREPATH");
+    const query = vi.fn((drive: string) => {
+      if (drive === laterDrive) throw failure;
+      return localDrive();
+    });
+    setWindowsDriveQueryForTest(query);
+    try {
+      expect(() => admitObligations({
+        purpose: "worker-grant", principal: "srt-sandbox",
+        rows: [a, laterDrive + "/later-target"].map(path => ({ spelling: path, polarity: { effect: "allow", access: "read" }, source: "worker-request" })),
+      })).toThrow(failure);
+      expect(query.mock.calls).toEqual([[firstDrive], [laterDrive]]);
+      expect(pins()).toBe(0);
+    } finally {
+      setWindowsDriveQueryForTest(localDrive);
+    }
   });
 });

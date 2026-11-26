@@ -40,7 +40,7 @@ import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets, testSandboxP
 import { expandLeadingTilde, leadingTildeHome } from "../shared/home-tilde.js";
 import { holdSandboxGitWrites, setHostGitWorkspaceGuard } from "../shared/host-git.js";
 import { projectLocalWindowsFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
-import { admitLocalRoute, decisionMemo, localFs, withLocalityDecision } from "../shared/local-path-io.js";
+import { admitLocalRoute, assertLocalityDecisionUsable, decisionMemo, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { admitObligations, consumeObligations, ObligationRefusedError, type ObligationRow, type ObligationSource, obligationWithin, POSIX_CRON_DENIES, posixOnlyDenyPaths, requireEnforceable, windowsObligationsApply } from "./admitted-obligation.js";
 import { compileGlobMatcher, globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
@@ -1493,6 +1493,7 @@ function projectAveHomeProfileChildren(roots: readonly string[]): ReadonlyMap<st
       // A configured home is listed and pinned only once its route is proven local; any other spelling is unlisted.
       names = withLocalityDecision(() => localFs.readdir(admitLocalRoute(root).verdict));
     } catch (error) {
+      assertLocalityDecisionUsable();
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw new AveHomeBoundaryUnverifiedError("unlisted", root, `${root} cannot be enumerated (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`, { cause: error });
       }
