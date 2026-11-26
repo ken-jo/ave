@@ -19,12 +19,14 @@ const h = vi.hoisted(() => ({
   initialize: vi.fn(),
   checkDeps: vi.fn(),
   offlineConfinement: vi.fn(),
+  runtimeActive: vi.fn(),
   detectMxc: vi.fn(),
   startProbe: vi.fn(),
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   homesCalls: [] as string[],
   establishHomesError: undefined as Error | undefined,
+  homesParentError: undefined as Error | undefined,
 }));
 
 vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => {
@@ -37,9 +39,10 @@ vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => {
       if (h.establishHomesError !== undefined) throw h.establishHomesError;
       return "C:/example/ave-runtime/homes";
     },
-    mxcSandboxHomesParent: (...args: Parameters<typeof actual.mxcSandboxHomesParent>) => {
+    mxcSandboxHomesParent: () => {
       h.homesCalls.push("parent");
-      return actual.mxcSandboxHomesParent(...args);
+      if (h.homesParentError !== undefined) throw h.homesParentError;
+      return "C:/example/ave-runtime/homes";
     },
   };
 });
@@ -66,6 +69,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
   const roots = join(tmpdir(), SANDBOX_ROOT_NAME);
   return {
     appOwnedSandboxTempRoot: () => join(roots, "tmp"),
+    isAsrtSandboxActive: h.runtimeActive,
     isOfflineProcessConfinementActive: h.offlineConfinement,
     appOwnedSandboxHomeRoot: () => join(roots, "home"),
     sandboxTempPrincipalDirsInUse: () => new Set<string>(),
@@ -115,6 +119,8 @@ import {
   getSandboxBootOutcome,
   getWindowsSandboxSubstrate,
   markSandboxGatePendingAtBoot,
+  markSandboxHomesUnavailable,
+  setShellSandboxRequestedAtBoot,
   setSandboxStatusChangeListener,
 } from "../../permissions/sandbox-capability.js";
 
@@ -143,12 +149,14 @@ beforeEach(() => {
   h.initialize.mockReset();
   h.initialize.mockResolvedValue(undefined);
   h.offlineConfinement.mockReset().mockReturnValue(false);
+  h.runtimeActive.mockReset().mockReturnValue(true);
   h.checkDeps.mockReset();
   h.detectMxc.mockReset();
   h.startProbe.mockReset();
   h.startProbe.mockResolvedValue({ state: "available", windowsBuild: "10.0.26300.9711" });
   h.homesCalls.length = 0;
   h.establishHomesError = undefined;
+  h.homesParentError = undefined;
   vi.stubEnv("AVE_SANDBOX_ENABLED", "");
   vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", "");
 });
@@ -290,6 +298,64 @@ it.each([
       isolated.closeSearchIndex();
     }
   } finally {
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  ["published HOME refusal", () => markSandboxHomesUnavailable()],
+  ["HOME parent identity loss", () => { h.homesParentError = new Error("HOME parent changed identity"); }],
+  ["withdrawn shell route", () => setShellSandboxRequestedAtBoot(false)],
+  ["stopped proxy runtime", () => h.runtimeActive.mockReturnValue(false)],
+] as const)("preserves the host index after a live container route loses health: %s", async (_label, revoke) => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const indexPath = join(dir, "search", "index.db");
+  const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const projectRoot = "C:/example/workspace";
+  const repository = new SessionRepository({ aveDir: dir, getSearchIndexPolicy: () => sessionSearchIndexPolicy(false) });
+  try {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    await initSandboxGate(harness.context(true, false));
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()?.shells).toBe("mxc"));
+    expect(getHostShellExecutionPlan()).toMatchObject({ substrate: "mxc", sandboxed: true });
+    await repository.saveSession(sessionId, [{ role: "user", content: "indexed before refusal" }]);
+    await repository.saveSessionMetadata(sessionId, { projectRoot });
+    expect(repository.searchSessions("indexed before refusal", { projectRoot })).toHaveLength(1);
+    const originalIndex = readFileSync(indexPath);
+
+    revoke();
+    const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
+    const rebuildIndex = vi.spyOn(SessionSearchIndex.prototype, "writeRebuiltSessions");
+    const updateIndex = vi.spyOn(SessionSearchIndex.prototype, "upsertSession");
+    const deleteRow = vi.spyOn(SessionSearchIndex.prototype, "deleteSession");
+    const discardIndex = vi.spyOn(SessionSearchIndex.prototype, "discard");
+    try {
+      await repository.verifyOrRebuildSearchIndex();
+      expect.soft(repository.searchSessions("indexed before refusal")).toEqual([]);
+      await repository.saveSession(sessionId, [{ role: "user", content: "changed after refusal" }]);
+      await repository.saveSessionMetadata(sessionId, { projectRoot, title: "Changed title" });
+      await expect(repository.detachSessionsFromProject(projectRoot)).resolves.toBe(1);
+      await repository.deleteSession(sessionId);
+      expect.soft(sessionSearchIndexPolicy(false)).toBe("inactive");
+      expect.soft(openIndex).toHaveBeenCalledTimes(0);
+      expect.soft(rebuildIndex).toHaveBeenCalledTimes(0);
+      expect.soft(updateIndex).toHaveBeenCalledTimes(0);
+      expect.soft(deleteRow).toHaveBeenCalledTimes(0);
+      expect.soft(discardIndex).toHaveBeenCalledTimes(0);
+      expect(readFileSync(indexPath).equals(originalIndex)).toBe(true);
+    } finally {
+      openIndex.mockRestore();
+      rebuildIndex.mockRestore();
+      updateIndex.mockRestore();
+      deleteRow.mockRestore();
+      discardIndex.mockRestore();
+    }
+  } finally {
+    repository.closeSearchIndex();
     unregister();
     rmSync(dir, { recursive: true, force: true });
   }

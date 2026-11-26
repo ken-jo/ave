@@ -10,8 +10,14 @@ const state = vi.hoisted(() => ({
   plan: undefined as Pick<SandboxWindowsExtensionPlan, 'selectedBackend' | 'readiness' | 'reason'> | undefined,
   substrate: undefined as Pick<SandboxWindowsSubstrateInfo, 'mxc' | 'srtWinReady' | 'accountBackendAbsent' | 'shells'> | undefined,
 }));
-vi.mock('../../../permissions/asrt-sandbox.js', () => ({ isOfflineProcessConfinementActive: () => state.confined }));
+vi.mock('../../../permissions/asrt-sandbox.js', () => ({
+  isAsrtSandboxActive: () => state.confined || state.substrate?.shells === 'mxc',
+  isOfflineProcessConfinementActive: () => state.confined,
+}));
+vi.mock('../../../permissions/mxc-runtime-root.js', () => ({ mxcSandboxHomesParent: () => 'C:/example/ave-runtime/homes' }));
 vi.mock('../../../permissions/sandbox-capability.js', () => ({
+  detectMxcShellCapability: () => state.substrate?.shells === 'mxc' ? { confidence: 'verified' } : undefined,
+  getSandboxHomesUnavailable: () => false,
   getWindowsExtensionBackendPlan: () => state.plan,
   getWindowsSandboxSubstrate: () => state.substrate,
   isSandboxGateUndecidedAtBoot: () => false,
