@@ -9,6 +9,7 @@ const PNG_COLOR_CHUNKS = new Set(["cHRM", "cICP", "gAMA", "iCCP", "sRGB"]);
 const PNG_HEADER_BYTES = 33;
 const CAPTURE_DECODE_PIXELS = BROWSER_CAPTURE_LIMITS.pixels / 2;
 const LITTLE_ENDIAN = endianness() === "LE";
+const AREA_FILTER_COLUMNS = 4096;
 
 function captureColorChunks(png: Buffer, keepPrefix = false): { color: Buffer; prefix: Buffer[]; imageOffset: number } {
   const color: Buffer[] = [];
@@ -40,10 +41,10 @@ function footprintEnd(origin: number, step: number, index: number, size: number,
   return step >= 1 ? Math.min(size, origin + (index + 1) * step) : start + 1;
 }
 
-function repeatedSourceRow(pixels: Buffer, start: number, end: number, stride: number): Buffer | undefined {
-  const row = pixels.subarray(start, start + stride);
+function repeatedSourceRow(pixels: Buffer, start: number, end: number, stride: number, rowBytes: number): Buffer | undefined {
+  const row = pixels.subarray(start, start + rowBytes);
   for (let offset = start + stride; offset < end; offset += stride) {
-    if (row.compare(pixels, offset, offset + stride) !== 0) return undefined;
+    if (row.compare(pixels, offset, offset + rowBytes) !== 0) return undefined;
   }
   return row;
 }
@@ -78,30 +79,128 @@ function copyAlignedAreaRow(
   }
 }
 
-function copyCaptureTile(
-  target: Buffer, pixels: Buffer, pixelWidth: number, channels: 3 | 4,
-  sourceTop: number, stepX: number, stepY: number, width: number, copied: number, rows: number,
-  tileHeight: number, sectionTop: number, sectionStart: number,
+interface AreaRange {
+  start: number;
+  first: number;
+  end: number;
+  leading: number;
+  trailing: number;
+  span: number;
+}
+
+function areaRange(start: number, stop: number): AreaRange {
+  const first = Math.floor(start), end = Math.ceil(stop);
+  return { start, first, end, leading: Math.min(first + 1, stop) - start, trailing: stop - (end - 1), span: stop - start };
+}
+
+function filterAreaSourceRow(
+  pixels: Buffer, offset: number, channels: 3 | 4, columns: AreaRange[], sums: Float64Array,
 ): void {
   const hasAlpha = channels === 4;
+  let out = 0;
+  for (const { first, end, leading, trailing } of columns) {
+    let red = 0, green = 0, blue = 0, opacity = 0;
+    let source = offset + first * channels;
+    for (let x = first; x < end; x += 1, source += channels) {
+      const coverage = x === first ? leading : x === end - 1 ? trailing : 1;
+      const weight = hasAlpha ? pixels[source + 3] * coverage : coverage;
+      red += pixels[source] * weight;
+      green += pixels[source + 1] * weight;
+      blue += pixels[source + 2] * weight;
+      opacity += weight;
+    }
+    sums[out++] = red;
+    sums[out++] = green;
+    sums[out++] = blue;
+    sums[out++] = opacity;
+  }
+}
+
+function createAreaFilter(firstColumn: number, width: number, step: number, pixelWidth: number) {
+  const columns = Array.from({ length: width }, (_, index) => {
+    const x = firstColumn + index;
+    const left = footprintStart(0, step, x, pixelWidth);
+    return areaRange(left, footprintEnd(0, step, x, pixelWidth, left));
+  });
+  // Adjacent footprints can share source rows, including two rows when enlarging.
+  const even = { source: -1, sums: new Float64Array(width * 4) };
+  const odd = { source: -1, sums: new Float64Array(width * 4) };
+  return { columns, even, odd, sums: new Float64Array(width * 4) };
+}
+
+function copyFilteredAreaRow(
+  target: Buffer, output: number, pixels: Buffer, channels: 3 | 4, stride: number,
+  sectionTop: number, vertical: AreaRange, repeat: boolean, filter: ReturnType<typeof createAreaFilter>,
+): void {
+  const { columns, even, odd, sums } = filter;
+  sums.fill(0);
+  const end = repeat ? vertical.first + 1 : vertical.end;
+  for (let y = vertical.first; y < end; y += 1) {
+    const row = y % 2 === 0 ? even : odd;
+    if (row.source !== y) {
+      filterAreaSourceRow(pixels, (y - sectionTop) * stride, channels, columns, row.sums);
+      row.source = y;
+    }
+    const coverage = repeat ? 1 : y === vertical.first ? vertical.leading : y === end - 1 ? vertical.trailing : 1;
+    for (let i = 0; i < sums.length; i += 1) sums[i] += row.sums[i] * coverage;
+  }
+
+  const spanY = repeat ? 1 : vertical.span;
+  let i = 0;
+  for (const { span } of columns) {
+    const opacity = sums[i + 3];
+    const divisor = opacity || 1;
+    target[output++] = Math.round(sums[i++] / divisor);
+    target[output++] = Math.round(sums[i++] / divisor);
+    target[output++] = Math.round(sums[i++] / divisor);
+    target[output++] = channels === 4 ? Math.round(opacity / (span * spanY)) : 255;
+    i += 1;
+  }
+}
+
+interface CaptureSection {
+  sourceTop: number;
+  stepX: number;
+  stepY: number;
+  width: number;
+  copied: number;
+  rows: number;
+  tileHeight: number;
+  sectionTop: number;
+  sectionStart: number;
+}
+
+function captureRowRange(section: CaptureSection, index: number): AreaRange {
+  const row = section.sectionStart + index;
+  const { sourceTop, stepY, tileHeight } = section;
+  const top = footprintStart(sourceTop, stepY, row, tileHeight);
+  return areaRange(top, footprintEnd(sourceTop, stepY, row, tileHeight, top));
+}
+
+function copyCaptureColumns(
+  target: Buffer, pixels: Buffer, channels: 3 | 4, pixelWidth: number,
+  section: CaptureSection, firstColumn: number, columnCount: number, alignedRgba: Uint32Array | undefined,
+  rowRanges: AreaRange[] | undefined,
+): void {
+  const { stepX, width, copied, rows, sectionTop } = section;
   const stride = pixelWidth * channels;
-  const outputStride = width * 4;
-  const alignedRgba = hasAlpha && LITTLE_ENDIAN && pixels.byteOffset % 4 === 0
-    && stepX >= 1 && stepY >= 1 && Number.isInteger(stepX) && Number.isInteger(stepY) && Number.isInteger(sourceTop)
-    ? new Uint32Array(pixels.buffer, pixels.byteOffset, pixels.byteLength / 4)
-    : undefined;
+  const outputBytes = columnCount * 4;
+  const firstSource = Math.floor(footprintStart(0, stepX, firstColumn, pixelWidth)) * channels;
+  const lastColumn = firstColumn + columnCount - 1;
+  const lastStart = footprintStart(0, stepX, lastColumn, pixelWidth);
+  const rowBytes = firstColumn === 0 && columnCount === width ? stride
+    : Math.ceil(footprintEnd(0, stepX, lastColumn, pixelWidth, lastStart)) * channels - firstSource;
+  let filter: ReturnType<typeof createAreaFilter> | undefined;
   let previousRepeat: Buffer | undefined;
   let previousOutput = 0;
   for (let y = 0; y < rows; y += 1) {
-    const row = sectionStart + y;
-    const outputRow = (copied + y) * outputStride;
-    const top = footprintStart(sourceTop, stepY, row, tileHeight);
-    const bottom = footprintEnd(sourceTop, stepY, row, tileHeight, top);
-    if (stepX === 1 && Number.isInteger(top) && bottom - top === 1) {
-      const left = (top - sectionTop) * stride;
-      if (hasAlpha) pixels.copy(target, outputRow, left, left + width * channels);
+    const outputRow = ((copied + y) * width + firstColumn) * 4;
+    const vertical = rowRanges?.[y] ?? captureRowRange(section, y);
+    if (stepX === 1 && Number.isInteger(vertical.start) && vertical.span === 1) {
+      const left = (vertical.first - sectionTop) * stride + firstSource;
+      if (channels === 4) pixels.copy(target, outputRow, left, left + outputBytes);
       else {
-        for (let x = 0; x < width; x += 1) {
+        for (let x = 0; x < columnCount; x += 1) {
           const source = left + x * 3;
           const dest = outputRow + x * 4;
           target[dest] = pixels[source] ?? 0;
@@ -112,44 +211,41 @@ function copyCaptureTile(
       }
       continue;
     }
-    const firstY = Math.floor(top), endY = Math.ceil(bottom);
+    const { first: firstY, end: endY } = vertical;
+    const start = (firstY - sectionTop) * stride + firstSource;
+    const end = (endY - sectionTop) * stride + firstSource;
     // When the source rows are identical, the vertical weights cancel.
-    const repeat = repeatedSourceRow(pixels, (firstY - sectionTop) * stride, (endY - sectionTop) * stride, stride);
+    const repeat = repeatedSourceRow(pixels, start, end, stride, rowBytes);
     if (repeat && previousRepeat?.equals(repeat)) {
-      target.copy(target, outputRow, previousOutput, previousOutput + outputStride);
+      target.copy(target, outputRow, previousOutput, previousOutput + outputBytes);
       continue;
     }
     previousRepeat = repeat;
     previousOutput = outputRow;
-    const sampleEndY = repeat ? firstY + 1 : endY;
-    const spanY = repeat ? 1 : bottom - top;
     if (alignedRgba) {
-      copyAlignedAreaRow(target, outputRow, alignedRgba, (firstY - sectionTop) * pixelWidth, pixelWidth, width, stepX, spanY);
+      copyAlignedAreaRow(target, outputRow, alignedRgba, (firstY - sectionTop) * pixelWidth, pixelWidth, width, stepX, repeat ? 1 : vertical.span);
       continue;
     }
-    for (let x = 0; x < width; x += 1) {
-      const left = footprintStart(0, stepX, x, pixelWidth);
-      const right = footprintEnd(0, stepX, x, pixelWidth, left);
-      const firstX = Math.floor(left), endX = Math.ceil(right);
-      let red = 0, green = 0, blue = 0, opacity = 0;
-      for (let sy = firstY; sy < sampleEndY; sy += 1) {
-        const yCoverage = repeat ? 1 : Math.min(sy + 1, bottom) - Math.max(sy, top);
-        let source = ((sy - sectionTop) * pixelWidth + firstX) * channels;
-        for (let sx = firstX; sx < endX; sx += 1, source += channels) {
-          const coverage = (Math.min(sx + 1, right) - Math.max(sx, left)) * yCoverage;
-          const weight = hasAlpha ? coverage * (pixels[source + 3] ?? 0) : coverage;
-          opacity += weight;
-          red += (pixels[source] ?? 0) * weight;
-          green += (pixels[source + 1] ?? 0) * weight;
-          blue += (pixels[source + 2] ?? 0) * weight;
-        }
-      }
-      const out = outputRow + x * 4;
-      target[out] = opacity === 0 ? 0 : Math.round(red / opacity);
-      target[out + 1] = opacity === 0 ? 0 : Math.round(green / opacity);
-      target[out + 2] = opacity === 0 ? 0 : Math.round(blue / opacity);
-      target[out + 3] = hasAlpha ? Math.round(opacity / ((right - left) * spanY)) : 255;
-    }
+    filter ??= createAreaFilter(firstColumn, columnCount, stepX, pixelWidth);
+    copyFilteredAreaRow(target, outputRow, pixels, channels, stride, sectionTop, vertical, repeat !== undefined, filter);
+  }
+}
+
+function copyCaptureTile(
+  target: Buffer, pixels: Buffer, pixelWidth: number, channels: 3 | 4,
+  sourceTop: number, stepX: number, stepY: number, width: number, copied: number, rows: number,
+  tileHeight: number, sectionTop: number, sectionStart: number,
+): void {
+  const alignedRgba = channels === 4 && LITTLE_ENDIAN && pixels.byteOffset % 4 === 0
+    && stepX >= 1 && stepY >= 1 && Number.isInteger(stepX) && Number.isInteger(stepY) && Number.isInteger(sourceTop)
+    ? new Uint32Array(pixels.buffer, pixels.byteOffset, pixels.byteLength / 4)
+    : undefined;
+  const section = { sourceTop, stepX, stepY, width, copied, rows, tileHeight, sectionTop, sectionStart };
+  const columnsPerPass = alignedRgba ? width : AREA_FILTER_COLUMNS;
+  // Wide captures use bounded column bands. The pixel limit bounds their row table.
+  const rowRanges = width > columnsPerPass ? Array.from({ length: rows }, (_, y) => captureRowRange(section, y)) : undefined;
+  for (let first = 0; first < width; first += columnsPerPass) {
+    copyCaptureColumns(target, pixels, channels, pixelWidth, section, first, Math.min(columnsPerPass, width - first), alignedRgba, rowRanges);
   }
 }
 
@@ -192,6 +288,7 @@ export async function captureBrowserTiles(
   throwIfAborted(signal);
   const pixels = Buffer.alloc(width * height * 4);
   let copied = 0;
+  let pendingDecode: Promise<void> | undefined;
   let initialScale: number | undefined;
   let colorProfile: Buffer | undefined;
   while (copied < height) {
@@ -230,9 +327,22 @@ export async function captureBrowserTiles(
     colorProfile ??= color;
     // Keep the encoded color values through resampling and restore their color tags after encoding.
     const input = sharp(bytes, { ignoreIcc: true, limitInputPixels: BROWSER_CAPTURE_LIMITS.pixels });
-    await decodeCaptureTile(input, pixels, signal, pixelWidth, pixelHeight, scale, skip, width, copied, rows);
+    const decode = () => decodeCaptureTile(input, pixels, signal, pixelWidth, pixelHeight, scale, skip, width, copied, rows);
+    // Two small fractional tiles can decode concurrently within the raw-pixel budget.
+    if (!Number.isInteger(scale) && pixelWidth * pixelHeight <= CAPTURE_DECODE_PIXELS / 2) {
+      const previousDecode = pendingDecode;
+      pendingDecode = decode();
+      void pendingDecode.catch(() => {}); // The next iteration or final encode joins this decode.
+      await previousDecode;
+    } else {
+      await pendingDecode;
+      pendingDecode = undefined;
+      await decode();
+    }
     copied += rows;
   }
+  await pendingDecode;
+  throwIfAborted(signal);
   // The PNG encoder reads straight RGBA, including low-alpha channel values.
   const bytes = await sharp(pixels, { raw: { width, height, channels: 4 } })
     .png({ adaptiveFiltering: true }).toBuffer();
