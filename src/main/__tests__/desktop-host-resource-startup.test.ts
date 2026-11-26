@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { win32 } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { helperImage } from "../../__tests__/support/windows-helper-image.js";
 import type { BootHost } from "../../boot/host-runtime.js";
 import type { HostResources } from "../host-resources.js";
 import { windowsPeImageDigest } from "../../../scripts/lib/windows-path-kind-image-digest.mjs";
@@ -78,17 +79,6 @@ vi.mock("../../data/settings-store.js", () => ({
 
 const PROJECT_ROOT = "C:\\project";
 const PACKAGED_RESOURCES = "C:\\bundle\\resources";
-function helperImage(marker: string): Buffer {
-  const image = Buffer.alloc(0x400);
-  image.writeUInt16LE(0x5a4d);
-  image.writeUInt32LE(64, 60);
-  image.writeUInt32LE(0x4550, 64);
-  image.writeUInt16LE(240, 84);
-  image.writeUInt16LE(0x20b, 88);
-  image.writeUInt32LE(16, 88 + 108);
-  image.write(marker, 0x200);
-  return image;
-}
 const BUILT_HELPER = helperImage("fresh build output");
 const BUILT_HELPER_SHA256 = windowsPeImageDigest(BUILT_HELPER);
 

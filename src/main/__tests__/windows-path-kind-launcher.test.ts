@@ -1,6 +1,7 @@
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { helperImage } from "../../__tests__/support/windows-helper-image.js";
 
 const mocks = vi.hoisted(() => ({
   execFile: vi.fn(), execFileSync: vi.fn(), existsSync: vi.fn(), access: vi.fn(), readFileSync: vi.fn(), lockWindowsExecutableAsync: vi.fn(),
@@ -21,19 +22,6 @@ import { sleepingHelper } from "../../__tests__/support/sleeping-helper.js";
 import { configureHostResources } from "../host-resources.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { windowsPeImageDigest } from "../../../scripts/lib/windows-path-kind-image-digest.mjs";
-
-/** A minimal PE32+ image whose only content is `marker`. */
-function helperImage(marker: string): Buffer {
-  const image = Buffer.alloc(0x400);
-  image.writeUInt16LE(0x5a4d);
-  image.writeUInt32LE(64, 60);
-  image.writeUInt32LE(0x4550, 64);
-  image.writeUInt16LE(240, 84);
-  image.writeUInt16LE(0x20b, 88);
-  image.writeUInt32LE(16, 88 + 108);
-  image.write(marker, 0x200);
-  return image;
-}
 
 /** The image as a signer leaves it: a new checksum and a certificate table appended at the end. */
 function signedImage(image: Buffer): Buffer {

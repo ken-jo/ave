@@ -20,6 +20,7 @@ import {
   verifyWindowsPathKindReceipt,
 } from "../../scripts/lib/windows-path-kind-build.mjs";
 import { windowsPeImageDigest } from "../../scripts/lib/windows-path-kind-image-digest.mjs";
+import { contentHash as sha256 } from "../../src/__tests__/support/content-hash.js";
 
 const roots: string[] = [];
 const OLD = new Date("2026-01-01T00:00:00Z");
@@ -732,8 +733,6 @@ describe("Windows path helper packaging", () => {
 });
 
 describe("Windows CI path helper restore", () => {
-  const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
-
   function restoreFixture() {
     const root = fixtureRoot();
     const inputs = join(root, ".windows-native-inputs");
