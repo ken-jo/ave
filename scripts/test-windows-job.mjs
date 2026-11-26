@@ -29,9 +29,11 @@ function launch(exe, args, binary = helper, receipt, env = process.env) {
   child.on('error',()=>{});
   return {child,done};
 }
-async function deadline(promise) {
+// Leave room for both five-second launcher waits and the close event.
+const STRICT_CLOSE_TIMEOUT_MS = 15_000;
+async function deadline(promise, timeoutMs = 10_000) {
   let timer;
-  try { return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Timed out')),10000)})]); }
+  try { return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Timed out')),timeoutMs)})]); }
   finally {clearTimeout(timer)}
 }
 async function gone(pid) {
@@ -127,14 +129,14 @@ try {
   const strictEnv = { ...process.env, AVE_CI_REQUIRE_EMPTY_JOB: '1' };
   const cleanReceipt = join(directory, 'clean-exit.receipt');
   writeFileSync(cleanReceipt, registered);
-  result = await deadline(launch(process.execPath, ['-e', ''], helper, cleanReceipt, strictEnv).done);
+  result = await deadline(launch(process.execPath, ['-e', ''], helper, cleanReceipt, strictEnv).done, STRICT_CLOSE_TIMEOUT_MS);
   assert.equal(result.code, 0);
   assert.equal(readFileSync(cleanReceipt, 'utf8'), `${registered}0`);
   const leftoverReceipt = join(directory, 'leftover.receipt');
   writeFileSync(leftoverReceipt, registered);
   run = launch(process.execPath, [fixture, 'root-exit-zero'], helper, leftoverReceipt, strictEnv);
   const [leftoverOutput] = await deadline(once(run.child.stdout, 'data'));
-  result = await deadline(run.done);
+  result = await deadline(run.done, STRICT_CLOSE_TIMEOUT_MS);
   assert.equal(result.code, 125);
   assert.match(result.stderr, /job processes did not exit/);
   await gone(Number(leftoverOutput.toString().trim()));
