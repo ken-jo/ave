@@ -37,6 +37,7 @@ import {
   type ApprovalRequest,
 } from "../../permissions/approval-gate.js";
 import {
+  HOST_SHELL_AUTHORIZATION_REVOKED_ERROR,
   canonicalizeHostShellAllowedDirectories,
   consumeHostShellExecutionPermit,
   resolveHostShellWorkingDirectory,
@@ -320,7 +321,8 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const context = origin === "headless" ? { headless: true } : { remoteControllerAuthority: { kind: "tailnet-controller" as const, actorId: "tailnet:fixture" as const } };
     const result = await executor.executeAll([{ id: "unavailable-host", name: "bash", input: { command: "echo host", cwd: "/outside-host-request", executionMode: "host", justification: "Use the host environment" } }], { sessionId: "executor-windows-partial-shell-session", permissionContext: permissionContext(context) });
     expect(result[0].is_error).toBe(true);
-    expect(result[0].content.toLowerCase()).toMatch(/host policy authorization|remote controller|remote-controller/);
+    if (origin === "headless") expect(result[0].content).toContain(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
+    else expect(result[0].content.toLowerCase()).toMatch(/remote controller|remote-controller/);
     expect(send).not.toHaveBeenCalled();
     expect(executed).not.toHaveBeenCalled();
   });
@@ -789,7 +791,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(requestAndWait).toHaveBeenCalledTimes(1);
     expect(request?.executionPlan).toBeDefined();
     expect(result[0]?.is_error).toBe(true);
-    expect(result[0]?.content).toContain("no host policy authorization or verified approval receipt");
+    expect(result[0]?.content).toContain(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
     expect(result[0]?.executionPlan).toBe(request!.executionPlan);
     expect(endMetas).toHaveLength(1);
     expect(endMetas[0]?.executionPlan).toBe(request!.executionPlan);

@@ -67,8 +67,9 @@ describe("shell execution environment", () => {
       } as const;
       const partial = buildHostShellExecutionPlan(input);
       const partialVerified = buildHostShellExecutionPlan({ ...input, homePrivacyVerified: true });
-      expect(shellExecutionEnvironmentLines(partial, { sessionOffered: true })[0]).toBe(t("shellExecution.shellNotContainedAsk"));
-      expect(shellExecutionEnvironmentLines(partial, { sessionOffered: false })[0]).toBe(t("shellExecution.shellNotContainedOneTime"));
+      const uncontainedDefault = buildHostShellExecutionPlan({ ...input, executionMode: "default" });
+      expect(shellExecutionEnvironmentLines(uncontainedDefault, { sessionOffered: true })[0]).toBe(t("shellExecution.shellNotContainedAsk"));
+      expect(shellExecutionEnvironmentLines(uncontainedDefault, { sessionOffered: false })[0]).toBe(t("shellExecution.shellNotContainedOneTime"));
       const privacy = buildHostShellExecutionPlan({ ...input, requestedSandbox: false, unavailableSandboxRequiresAsk: true });
       const missingInput = { ...input, activeCapability: { ...input.activeCapability, kind: "none" as const } };
       const missing = buildHostShellExecutionPlan({ ...missingInput, homePrivacyVerified: true });

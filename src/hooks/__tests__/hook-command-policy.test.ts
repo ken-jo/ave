@@ -357,7 +357,7 @@ describe("hook command permission admission", () => {
     const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
     p.permissionManager.setMode("allow");
     gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
-    expect(await pending).toMatchObject({ decision: "deny", reason: "Permission policy changed during hook approval" });
+    expect(await pending).toMatchObject({ decision: "deny", reason: "Permission policy changed while approval was pending" });
   });
 
   describe.each(["boundary-link", "boundary-unlisted"] as const)("worker-only boot with an unverifiable boundary (%s)", (category) => {
