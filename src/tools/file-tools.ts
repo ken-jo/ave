@@ -1733,9 +1733,6 @@ export class CopyPathTool extends FileTool<typeof CopyPathInputSchema> {
         requireRegularSource: checkpointSupported,
         expectedSource,
         assertPath: assertProjectWritePath,
-        onLocalityFailure: (destinationCreated) => {
-          if (destinationCreated) recordEffect?.(destinationPath);
-        },
       });
       if (result.ok || result.cleanup === "incomplete") recordEffect?.(destinationPath);
       return fileTransferExecutionResult(result);

@@ -1,15 +1,19 @@
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
-import { beforeAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { createHash } from "node:crypto";
 import { chmod, lstat, link, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
+import { admitLocalPath, withLocalityDecision } from "../../shared/local-path-io.js";
+import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
 import { copyPath, runOwnedTransfer } from "../guarded-file-transfer.js";
 import { FILE_TRANSFER_LIMITS } from "../file-transfer-policy.js";
 import type { FileTransferLimits, TransferSession } from "../file-transfer-types.js";
 import type { ToolExecutionContext } from "../types.js";
 import { readTestFileSnapshot } from "./file-snapshot-fixture.js";
+
+vi.unmock("../../shared/windows-drive-locality.js");
 
 let root: string;
 let source: string;
@@ -264,6 +268,36 @@ describe("bounded sink accounting", () => {
 });
 
 describe("owned rollback and settlement", () => {
+  it.runIf(process.platform === "win32").each(["removed", "incomplete"] as const)(
+    "reports %s cleanup after a failed source-drive query",
+    async (cleanup) => {
+      const destinationDrive = parse(destination).root.slice(0, 2).toUpperCase();
+      const sourceDrive = destinationDrive === "Z:" ? "Y:" : "Z:";
+      const query = vi.fn((drive: string) => {
+        if (drive === sourceDrive) throw new Error("Source drive query failed");
+        if (drive === destinationDrive) return "\\Device\\HarddiskVolume1";
+        return null;
+      });
+      try {
+        const result = await transfer(async ({ sink, destinationPath }) => {
+          await sink.file("owned", chunks(bytes), { expectedBytes: bytes.length, ownerExecutable: false });
+          if (cleanup === "incomplete") await writeFile(join(destinationPath, "foreign"), "preserve");
+          setWindowsDriveQueryForTest(query);
+          withLocalityDecision(() => admitLocalPath(sourceDrive + "\\input.bin"));
+        });
+        expect(result).toMatchObject({ ok: false, code: "io-error", message: "Source drive query failed", cleanup });
+        expect(query.mock.calls.filter(([drive]) => drive === sourceDrive)).toHaveLength(1);
+        await absent(join(destination, "owned"));
+        if (cleanup === "removed") await absent(destination);
+        else {
+          expect(result).toMatchObject({ residualPaths: [destination], cleanupErrors: [expect.any(String)] });
+          expect(await readFile(join(destination, "foreign"), "utf8")).toBe("preserve");
+        }
+      } finally {
+        setWindowsDriveQueryForTest();
+      }
+    },
+  );
   it("preserves foreign additions and reports incomplete cleanup", async () => {
     const result = await transfer(async ({ sink, destinationPath }) => {
       await sink.file("owned", chunks(bytes), { expectedBytes: bytes.length, ownerExecutable: false });

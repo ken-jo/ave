@@ -1,6 +1,6 @@
-import { isLocalityFailure, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
+import { admitLocalPath, isLocalityFailure, localFs, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { terminalFileEvidence, writtenFileIdentity, type WrittenFileIdentity } from "../main/terminal/changed-file-evidence.js";
-import { constants, createReadStream, read, type BigIntStats, type ReadStream } from "node:fs";
+import { constants, createReadStream, read, rmdirSync, unlinkSync, type BigIntStats, type ReadStream } from "node:fs";
 import { lstat, mkdir, open, opendir, realpath, rmdir, unlink, type FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
@@ -33,7 +33,6 @@ type TransferRequest = {
   destinationPath: string;
   destinationKind: EntryKind;
   assertPath?: (path: string) => void;
-  onLocalityFailure?: (destinationCreated: boolean) => void;
 };
 
 const REPORT_PATH_LIMIT = 20;
@@ -595,32 +594,83 @@ class OwnedTransfer {
   async rollback(): Promise<Pick<Extract<TransferResult, { ok: false }>, "cleanup" | "residualPaths" | "cleanupErrors">> {
     const residualPaths: string[] = [];
     let incomplete = this.cleanupErrors.length > 0;
-    for (const entry of [...this.ledger].reverse()) {
-      const path = this.entryPath(entry);
-      try {
-        await this.verifyOwned(entry);
-        if (entry.kind === "file") await unlink(path);
-        else await rmdir(path);
-      } catch (error) {
-        rethrowLocalityFailure(error);
+    const pending = [...this.ledger].reverse();
+    let next = 0;
+    try {
+      this.assertLocality();
+      for (; next < pending.length; next += 1) {
+        const entry = pending[next]!;
+        const path = this.entryPath(entry);
+        try {
+          await this.verifyOwned(entry);
+          if (entry.kind === "file") await unlink(path);
+          else await rmdir(path);
+        } catch (error) {
+          rethrowLocalityFailure(error);
+          incomplete = true;
+          this.addCleanupError(`Cleanup preserved ${path}: ${errorMessage(error)}`);
+          // Inspect ancestors first, so residual reporting never follows a detected substitute.
+          try {
+            await verifyAnchors(this.destinationAnchors, this.assertLocality);
+            for (const owned of this.ownedChain(entry)) {
+              const observedPath = this.entryPath(owned);
+              this.assertAccess(observedPath);
+              const stats = await lstat(observedPath, { bigint: true });
+              if (owned === entry || !owned.identity || !stats.isDirectory() || !sameFileIdentity(stats, owned.identity)) {
+                if (residualPaths.length < REPORT_PATH_LIMIT && !residualPaths.includes(observedPath)) residualPaths.push(observedPath);
+                break;
+              }
+            }
+          } catch (observationError) {
+            rethrowLocalityFailure(observationError);
+            if (!hasErrno(observationError, "ENOENT")) this.addCleanupError(`Cannot inspect residual ${path}: ${errorMessage(observationError)}`);
+          }
+        }
+      }
+    } catch (error) {
+      if (process.platform !== "win32" || !isLocalityFailure(error)) throw error;
+      const preserve = (path: string, error: unknown, residual?: string): void => {
         incomplete = true;
         this.addCleanupError(`Cleanup preserved ${path}: ${errorMessage(error)}`);
-        // Inspect ancestors first, so residual reporting never follows a detected substitute.
-        try {
-          await verifyAnchors(this.destinationAnchors, this.assertLocality);
-          for (const owned of this.ownedChain(entry)) {
-            const observedPath = this.entryPath(owned);
-            this.assertAccess(observedPath);
-            const stats = await lstat(observedPath, { bigint: true });
-            if (owned === entry || !owned.identity || !stats.isDirectory() || !sameFileIdentity(stats, owned.identity)) {
-              if (residualPaths.length < REPORT_PATH_LIMIT && !residualPaths.includes(observedPath)) residualPaths.push(observedPath);
-              break;
+        if (residual !== undefined && residualPaths.length < REPORT_PATH_LIMIT && !residualPaths.includes(residual)) {
+          residualPaths.push(residual);
+        }
+      };
+      // A poisoned transfer cannot authorize I/O. Recover only via the destination's recorded ownership chain.
+      try {
+        withLocalityDecision(() => {
+          for (; next < pending.length; next += 1) {
+            const entry = pending[next]!;
+            const path = this.entryPath(entry);
+            let residual: string | undefined;
+            try {
+              for (const anchor of this.destinationAnchors) {
+                const stats = localFs.lstatBigint(admitLocalPath(anchor.path));
+                if (!stats?.isDirectory() || !sameFileIdentity(stats, anchor.identity)) {
+                  throw transferError(`Parent directory changed: ${anchor.path}`);
+                }
+              }
+              for (const owned of this.ownedChain(entry)) {
+                const observedPath = this.entryPath(owned);
+                const stats = localFs.lstatBigint(admitLocalPath(observedPath));
+                if (stats !== undefined) residual = observedPath;
+                if (!stats || !owned.identity || !sameFileIdentity(stats, owned.identity) ||
+                    (owned.kind === "file" ? !stats.isFile() || stats.nlink !== 1n : !stats.isDirectory())) {
+                  throw transferError(`Owned destination entry changed: ${observedPath}`);
+                }
+                if (owned !== entry) residual = undefined;
+              }
+              if (entry.kind === "file") unlinkSync(path);
+              else rmdirSync(path);
+            } catch (error) {
+              rethrowLocalityFailure(error);
+              preserve(path, error, residual);
             }
           }
-        } catch (observationError) {
-          rethrowLocalityFailure(observationError);
-          if (!hasErrno(observationError, "ENOENT")) this.addCleanupError(`Cannot inspect residual ${path}: ${errorMessage(observationError)}`);
-        }
+        });
+      } catch (error) {
+        if (!isLocalityFailure(error)) throw error;
+        if (next < pending.length) preserve(this.entryPath(pending[next]!), error);
       }
     }
     return {
@@ -672,14 +722,9 @@ class OwnedTransfer {
       if (error instanceof FileTransferCleanupError) this.addCleanupError(error.message);
       this.stop(error);
       await this.settle();
-      try {
-        this.assertLocality();
-        const failure = this.signal.aborted ? new FileTransferError("cancelled", "File transfer was cancelled") : this.firstFailure ?? error;
-        return { ...failedResult(failure, "not-created"), ...await this.rollback() };
-      } catch (cleanupError) {
-        if (isLocalityFailure(cleanupError)) this.request.onLocalityFailure?.(this.ledger.length > 0);
-        throw cleanupError;
-      }
+      const failure = this.signal.aborted && !isLocalityFailure(this.firstFailure)
+        ? new FileTransferError("cancelled", "File transfer was cancelled") : this.firstFailure ?? error;
+      return { ...failedResult(failure, "not-created"), ...await this.rollback() };
     } finally {
       this.accepting = false;
       this.signal.removeEventListener("abort", this.onAbort);
@@ -713,7 +758,6 @@ export async function copyPath(
     requireRegularSource?: boolean;
     expectedSource?: BigIntStats;
     assertPath?: (path: string) => void;
-    onLocalityFailure?: (destinationCreated: boolean) => void;
   } = {},
 ): Promise<TransferResult> {
   try {
@@ -729,7 +773,6 @@ export async function copyPath(
       ...input,
       destinationKind: source.stats.isDirectory() ? "directory" : "file",
       assertPath: options.assertPath,
-      onLocalityFailure: options.onLocalityFailure,
     }, context, async (session) => {
       const check = (): void => {
         if (session.signal.aborted) throw new FileTransferError("cancelled", "File transfer was cancelled");
