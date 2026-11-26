@@ -7505,12 +7505,7 @@
     {
       "file": "src/permissions/windows-stamp-targets.ts",
       "category": "lint/style/noNonNullAssertion",
-      "count": 13
-    },
-    {
-      "file": "src/permissions/windows-stamp-targets.ts",
-      "category": "lint/suspicious/noControlCharactersInRegex",
-      "count": 2
+      "count": 9
     },
     {
       "file": "src/permissions/windows-stamp-targets.ts",
@@ -9046,6 +9041,16 @@
       "file": "src/shared/windows-path-facts.ts",
       "category": "lint/style/noNonNullAssertion",
       "count": 1
+    },
+    {
+      "file": "src/shared/windows-path-spelling.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 4
+    },
+    {
+      "file": "src/shared/windows-path-spelling.ts",
+      "category": "lint/suspicious/noControlCharactersInRegex",
+      "count": 2
     },
     {
       "file": "src/shared/windows-read-deny-evidence.ts",
