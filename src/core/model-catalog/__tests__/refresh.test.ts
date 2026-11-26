@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { arrivalBeforeCompletion } from "../../../__tests__/support/arrival-before-completion.js";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { requireSymlinkCapability } from "../../../__tests__/support/symlink-capability.js";
 import { buildModelCatalogDocument } from "../document-builder.js";
 import { selectBootModelCatalog } from "../bundled.js";
@@ -348,24 +350,34 @@ describe("refreshModelCatalogCache", () => {
     });
 
     it("bounds a stalled DNS lookup by the total deadline", async () => {
-      let releaseLookup: ((answers: Array<{ address: string; family: number }>) => void) | undefined;
-      let enteredLookup!: () => void;
-      const entered = new Promise<void>((resolve) => { enteredLookup = resolve; });
-      lookupMock.mockImplementationOnce(() => new Promise((resolve) => { releaseLookup = resolve; enteredLookup(); }));
-      const { fetchImpl } = respondWith(() => json(rawDocument()));
-      let settled: unknown;
-      const pending = refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, timeoutMs: 30 })
-        .then((result) => { settled = result; return result; });
+      const sha256 = await seedGoodCopy();
+      const before = cacheFiles();
+      const entered = deferred<void>();
+      const lookup = deferred<Array<{ address: string; family: number }>>();
+      lookupMock.mockImplementationOnce(() => {
+        entered.resolve();
+        return lookup.promise;
+      });
+      const { fetchImpl } = respondWith(() => json(rawDocument(800_000)));
+      const caller = new AbortController();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const pending = refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => STALE, timeoutMs: 30, signal: caller.signal });
       try {
-        await Promise.race([entered, pending.then(() => { throw new Error("download settled before the DNS fixture started"); })]);
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        expect(settled).toMatchObject({ status: "failed", reason: expect.stringMatching(/30 ms/) });
+        await arrivalBeforeCompletion(entered.promise, pending);
+        await vi.advanceTimersByTimeAsync(30);
+        // Let a missing deadline report caller cancellation while DNS is still blocked.
+        caller.abort();
+        expect(await pending).toMatchObject({ status: "failed", reason: expect.stringMatching(/within 30 ms/) });
       } finally {
-        releaseLookup?.([{ address: "93.184.215.14", family: 4 }]);
-        await pending;
+        lookup.resolve([{ address: "93.184.215.14", family: 4 }]);
+        try {
+          await pending;
+        } finally {
+          vi.useRealTimers();
+        }
       }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(cacheFiles()).toEqual({});
+      expect(cacheFiles()).toEqual(before);
+      expect(await selectBootModelCatalog({ env: {}, dir, loadBundled })).toMatchObject({ origin: "cache", document: { sha256 } });
     });
 
     it("does not wait for a stalled cancellation after the deadline", async () => {
