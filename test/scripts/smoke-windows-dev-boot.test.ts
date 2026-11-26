@@ -1,7 +1,10 @@
 import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, expect, it, vi } from "vitest";
-import { checkDevBoot } from "../../scripts/smoke-windows-dev-boot.mjs";
+import { checkDevBoot, createDevBootDirectories } from "../../scripts/smoke-windows-dev-boot.mjs";
 
 const INSPECTOR_URL = "ws://127.0.0.1:49152/01234567-89ab-cdef-0123-456789abcdef";
 const READY = JSON.stringify({ msg: "main interface loaded", reason: "bootstrap-complete" });
@@ -28,6 +31,24 @@ function fixture(bootTimeoutMs = 5_000, quitTimeoutMs = 5_000) {
 }
 
 afterEach(() => vi.useRealTimers());
+
+it("places the profile and Ave home under the isolated job temp", () => {
+  const runnerTemp = mkdtempSync(join(tmpdir(), "ave-boot-placement-"));
+  try {
+    const jobRoot = join(runnerTemp, "job");
+    const jobTemp = join(jobRoot, "tmp");
+    mkdirSync(jobTemp, { recursive: true });
+    vi.stubEnv("RUNNER_TEMP", runnerTemp);
+    const { root, home, profile } = createDevBootDirectories(jobRoot);
+    expect(dirname(root)).toBe(jobTemp);
+    expect(home).toBe(join(root, "home"));
+    expect(profile).toBe(join(root, "profile"));
+    expect(() => createDevBootDirectories("relative")).toThrow("isolated Windows CI job");
+  } finally {
+    vi.unstubAllEnvs();
+    rmSync(runnerTemp, { recursive: true, force: true });
+  }
+});
 
 it("requires the complete interface log and a per-launch loopback inspector before quitting", async () => {
   const { child, requestQuit, onLine, result, exit } = fixture();

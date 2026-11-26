@@ -129,16 +129,22 @@ async function requestInspectorQuit(url, signal) {
   }
 }
 
-async function smokeWindowsDevBoot() {
-  const runnerTemp = process.env.RUNNER_TEMP;
-  if (process.platform !== "win32" || !runnerTemp || !isAbsolute(runnerTemp)
-    || !process.env.AVE_CI_JOB_ROOT || process.env.AVE_CI_REQUIRE_EMPTY_JOB !== "1") {
+export function createDevBootDirectories(jobRoot) {
+  if (!jobRoot || !isAbsolute(jobRoot)) {
     throw new Error("Development desktop smoke requires the isolated Windows CI job");
   }
-  const root = mkdtempSync(join(runnerTemp, "ave-dev-boot-"));
+  const root = mkdtempSync(join(jobRoot, "tmp", "ave-dev-boot-"));
+  return { root, home: join(root, "home"), profile: join(root, "profile") };
+}
+
+async function smokeWindowsDevBoot() {
+  if (process.platform !== "win32" || process.env.AVE_CI_REQUIRE_EMPTY_JOB !== "1") {
+    throw new Error("Development desktop smoke requires the isolated Windows CI job");
+  }
+  const { home, profile } = createDevBootDirectories(process.env.AVE_CI_JOB_ROOT);
   const env = prepareElectronLaunchEnv({
     ...process.env,
-    AVE_HOME: join(root, "home"),
+    AVE_HOME: home,
     AVE_LOG_FORMAT: "json",
     LOG_LEVEL: "info",
     NODE_ENV: "development",
@@ -146,7 +152,7 @@ async function smokeWindowsDevBoot() {
   const args = prepareElectronLaunchArgs([
     "--inspect=127.0.0.1:0",
     join(REPOSITORY, "dist/src/main/main.js"),
-    `--user-data-dir=${join(root, "profile")}`,
+    `--user-data-dir=${profile}`,
   ], env);
   const { default: executable } = await import("electron");
   const child = spawn(executable, args, { cwd: REPOSITORY, env, stdio: ["ignore", "pipe", "pipe"] });
