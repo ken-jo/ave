@@ -658,6 +658,29 @@ describe("ConversationLoop onTurnSummary", () => {
       expect(summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([unavailable]);
     });
 
+    it.each([
+      { list: "the default route's own list", listedAt: "https://api.openai.com/v1/models", priced: true },
+      // A refresh that raced a settings save: read at a tenant path, filed under the blank-base key.
+      { list: "a tenant path's list filed under the default route", listedAt: "https://api.openai.com/v1/tenant-a/models", priced: false },
+    ])("prices a default-route request from $list: $priced", async ({ listedAt, priced }) => {
+      const model = "lab/unlisted-model";
+      const settings = fakeLlmSettings({ provider: "openai", model });
+      expect(settings.vendors.openai.baseUrl).toBeUndefined();
+      settings.modelListCache = {
+        [llmModelListCacheKey("openai", "")]: {
+          vendor: "openai", endpoint: listedAt, models: [model],
+          modelEntries: [{ id: model, pricing: { prompt: "0.000003", completion: "0.000004" } }],
+          fetchedAt: "2026-10-13T00:00:00.000Z",
+        },
+      };
+      const transport = vi.fn<typeof fetch>(async () => chatAnswer(model));
+      const { summary } = await runOn(new VercelUnifiedProvider("openai", "fixture-key", undefined, transport), settings);
+      expect(String(transport.mock.calls[0]?.[0])).toBe("https://api.openai.com/v1/chat/completions");
+      const expected = priced ? { source: "endpoint-report", rates: { inputPer1M: 3, outputPer1M: 4 } } : unavailable;
+      expect(summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([expected]);
+      expect(summary?.modelSettings?.pricing).toEqual(expected);
+    });
+
     it("applies a configured path's report only to answers from under that path, on a vendor's own host too", async () => {
       // No catalog entry: only the endpoint's own list can price it.
       const model = "lab/unlisted-model";

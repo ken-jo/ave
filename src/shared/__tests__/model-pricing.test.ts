@@ -531,6 +531,28 @@ describe("resolveModelPricing — the route a request was served on decides its 
     expect(resolveModelPricing("openai", "gpt-5.4", [], { ...listed, served: { kind: "vendor-native" } }).source).toBe("model-catalog");
   });
 
+  it("does not take a tenant path's list, filed under the vendor's default route, as that route's report", () => {
+    const model = "lab/unlisted-model";
+    const served = native("openai", "https://api.openai.com/v1/chat/completions");
+    // Read at /v1/tenant-a/models while that base was being saved; filed under the blank-base key.
+    const tenantList = { reported: report, reportedAt: "https://api.openai.com/v1/tenant-a/models" };
+    expect(resolveModelPricing("openai", model, [], tenantList)).toEqual(unavailable);
+    expect(resolveModelPricing("openai", model, [], { ...tenantList, served })).toEqual(unavailable);
+    // The default route's own list still prices the model, before and after dispatch.
+    const ownList = { reported: report, reportedAt: "https://api.openai.com/v1/models" };
+    expect(resolveModelPricing("openai", model, [], ownList)).toEqual(priced);
+    expect(resolveModelPricing("openai", model, [], { ...ownList, served })).toEqual(priced);
+    // A configured base is held to the same rule: its own list, not one beneath it.
+    const proxy = "https://proxy.invalid/v1";
+    expect(resolveModelPricing("openai-compatible", model, [], { baseUrl: proxy, reported: report, reportedAt: `${proxy}/tenant-a/models` }))
+      .toEqual(unavailable);
+    expect(resolveModelPricing("openai-compatible", model, [], {
+      baseUrl: proxy, reported: report, reportedAt: `${proxy}/tenant-a/models`, served: { kind: "report-endpoint", base: proxy },
+    })).toEqual(unavailable);
+    expect(resolveModelPricing("openai-compatible", model, [], { baseUrl: `${proxy}/`, reported: report, reportedAt: `${proxy}/models` }))
+      .toEqual(priced);
+  });
+
   it("keeps a list filed under another endpoint than the one it was read from out of pricing, before and after dispatch", () => {
     const model = "lab/unlisted-model";
     const proxy = "https://proxy.invalid/v1";

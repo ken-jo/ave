@@ -72,16 +72,19 @@ describe("useSettings", () => {
   });
 
   it.each([
-    { filed: "under the endpoint it was read from", baseUrl: "https://proxy.invalid/v1", known: true },
+    { filed: "under the endpoint it was read from", baseUrl: "https://proxy.invalid/v1", listedAt: "https://proxy.invalid/v1/models", known: true },
     // A refresh that raced a settings save: filed under the default route, read from a proxy.
-    { filed: "under another endpoint than it was read from", baseUrl: undefined, known: false },
-  ])("prices the composer estimate from a cached model list filed $filed: $known", async ({ baseUrl, known }) => {
+    { filed: "under another endpoint than it was read from", baseUrl: undefined, listedAt: "https://proxy.invalid/v1/models", known: false },
+    { filed: "under the default route it was read from", baseUrl: undefined, listedAt: "https://api.openai.com/v1/models", known: true },
+    // The same race on the vendor's own host: a tenant path's list is not the default route's.
+    { filed: "under the default route, read from a tenant path of the same host", baseUrl: undefined, listedAt: "https://api.openai.com/v1/tenant-a/models", known: false },
+  ])("prices the composer estimate from a cached model list filed $filed: $known", async ({ baseUrl, listedAt, known }) => {
     const model = "lab/unlisted-model";
     const settings = makeSettings();
     settings.llm.vendors.openai = { model, enableThinking: false, thinkingBudgetTokens: 0, ...(baseUrl ? { baseUrl } : {}) };
     settings.llm.modelListCache = {
       [llmModelListCacheKey("openai", baseUrl ?? "")]: {
-        vendor: "openai", ...(baseUrl ? { baseUrl } : {}), endpoint: "https://proxy.invalid/v1/models", models: [model],
+        vendor: "openai", ...(baseUrl ? { baseUrl } : {}), endpoint: listedAt, models: [model],
         modelEntries: [{ id: model, pricing: { prompt: "0.000003", completion: "0.000004" } }],
         fetchedAt: "2026-01-01T00:00:00.000Z",
       },
@@ -98,7 +101,7 @@ describe("useSettings", () => {
     });
     await waitFor(() => expect(result.current.selected.settingsLoaded).toBe(true));
     // The listing is there either way; only its use as a price depends on where it was read.
-    expect(result.current.selected.llmRoutePricing.reportedAt).toBe("https://proxy.invalid/v1/models");
+    expect(result.current.selected.llmRoutePricing.reportedAt).toBe(listedAt);
     expect(result.current.costEstimate.pricingKnown).toBe(known);
     expect(result.current.costEstimate.pricingSource).toBe(known ? "endpoint-report" : undefined);
   });

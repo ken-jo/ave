@@ -63,6 +63,27 @@ export function urlIsUnderBase(url: string, base: string): boolean {
   return target.pathname === prefix || target.pathname.startsWith(`${prefix}/`);
 }
 
+/**
+ * The address discovery reads a base's model list from, as it writes it to the cache row:
+ * `<base>/models`, without a trailing slash, query or fragment. Discovery refuses a base
+ * that embeds credentials, so such a base has no list.
+ */
+function modelListAddress(base: string): string | undefined {
+  const url = parsedUrl(`${base.trim().replace(/\/+$/u, "")}/`);
+  if (url === undefined || (url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) return undefined;
+  const pathname = url.pathname.replace(/\/+$/u, "");
+  url.pathname = pathname.endsWith("/models") ? pathname : `${pathname}/models`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+/** Whether `listedAt` is the model list of `base` itself: the same address, not one beneath it. */
+export function isModelListOfBase(listedAt: string, base: string): boolean {
+  const listed = parsedUrl(listedAt);
+  return listed !== undefined && listed.toString() === modelListAddress(base);
+}
+
 /** The default API base of each first-party SDK; regional hosts serve the same path. */
 const DEFAULT_NATIVE_API_BASES: Partial<Record<LLMVendor, string>> = {
   openai: "https://api.openai.com/v1",
@@ -254,14 +275,15 @@ export function resolveModelPricing(
     : allowsImplicitModelLimits(vendor, route?.baseUrl);
   const needsEndpointPrice = !routeEstablishesModel
     || (route !== undefined && (!isLLMVendor(vendor) || !vendorHasCatalogProvider(vendor)));
-  // A report prices only the endpoint that listed it: the list's own address must lie
-  // under the base that served, or before dispatch under the base the route projects.
-  // A list filed under one endpoint but read from another is kept for everything else
-  // and is simply not price evidence.
+  // A report prices only the endpoint that listed it: its list must have been read at the
+  // model-list address of the base that served, or before dispatch of the base the route
+  // projects. A list from beneath that base (another tenant's path) is not that base's
+  // list. A list filed under one endpoint but read from another is kept for everything
+  // else and is simply not price evidence.
   const reportBase = served === undefined
     ? route?.baseUrl?.trim() || vendorDefaultApiBase(vendor)
     : served.kind === "unknown" ? undefined : served.base;
-  const reportApplies = route?.reportedAt !== undefined && reportBase !== undefined && urlIsUnderBase(route.reportedAt, reportBase);
+  const reportApplies = route?.reportedAt !== undefined && reportBase !== undefined && isModelListOfBase(route.reportedAt, reportBase);
   const reportedRates = route?.reported !== undefined && reportApplies
     ? endpointTokenRates(route.reported)
     : undefined;

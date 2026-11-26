@@ -546,12 +546,16 @@ decides:
 
 - **Catalog rates** apply only to `vendor-native`.
 - **A report applies** only when the address its model list was read from
-  (`reportedPricingEndpoint`, the cache row's `endpoint`) lies under the base that
-  served, or before dispatch under the endpoint the row is filed under: same origin,
-  whole path segments. A row filed under one endpoint but read from another (a refresh
-  that raced a settings save can write one) stays in the cache for discovery, the
-  judge's model chooser and every other reader; it is only not price evidence. Where
-  nothing else prices the model the result is `endpoint-price-unavailable`.
+  (`reportedPricingEndpoint`, the cache row's `endpoint`) **is** the model-list address
+  of the base that served, or before dispatch of the endpoint the row is filed under:
+  `<base>/models` as discovery normalizes it, compared whole (`isModelListOfBase`). A
+  list read from beneath that base, such as `/v1/tenant-a/models` against the default
+  `/v1`, is another endpoint's. A row filed under one endpoint but read from another
+  (a refresh that raced a settings save can write one) stays in the cache for
+  discovery, the judge's model chooser and every other reader; it is only not price
+  evidence. Where nothing else prices the model the result is
+  `endpoint-price-unavailable`. Pricing keeps its own copy of discovery's
+  normalization; `model-list.test.ts` holds the two to the same answer.
   A report passed without the address it was listed at is not evidence either; the
   composer's pre-send estimate and the query loop both pass it.
 - A fallback's own cached report is not looked up; off its vendor's own base it is

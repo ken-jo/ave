@@ -17,6 +17,7 @@ import { llmRouteCatalogAddress, resolveContextWindowForRoute } from "../../../s
 import { freshAllVendorBlocks } from "../../../shared/llm-vendor-defaults.js";
 import { marketplaceProviderPresetSecretKey } from "../../../shared/marketplace-package-assets.js";
 import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stubs.js";
+import { isModelListOfBase } from "../../../shared/model-pricing.js";
 
 function makeSettingsService(overrides: {
   provider?: string;
@@ -129,6 +130,28 @@ describe("LLM model list sync", () => {
     expect(() =>
       modelListEndpointFromBaseUrl("https://user:pass@proxy.example/v1"),
     ).toThrow(/embedded credentials/);
+  });
+
+  it.each([
+    "https://api.openai.com/v1",
+    "https://api.openai.com/v1/",
+    " https://API.OpenAI.com/v1/tenant-a ",
+    "https://proxy.example/v1/models",
+    "https://proxy.example:8443/gateway//v1?key=fixture#part",
+    "http://localhost:11434/v1/",
+    "https://fixture.services.ai.azure.com/api/projects/project-a/openai/v1",
+  ])("gives pricing the same model-list address for %s, and only that address", (base) => {
+    const listedAt = modelListEndpointFromBaseUrl(base);
+    expect(isModelListOfBase(listedAt, base)).toBe(true);
+    // A list from beneath the base, or beside it, is another endpoint's.
+    expect(isModelListOfBase(listedAt.replace(/\/models$/u, "/tenant-a/models"), base)).toBe(false);
+    expect(isModelListOfBase(listedAt.replace(/\/models$/u, "-b/models"), base)).toBe(false);
+    expect(isModelListOfBase(`${listedAt}?page=2`, base)).toBe(false);
+  });
+
+  it("gives pricing no model-list address for a base discovery refuses", () => {
+    expect(isModelListOfBase("https://proxy.example/v1/models", "https://user:pass@proxy.example/v1")).toBe(false);
+    expect(isModelListOfBase("ftp://proxy.example/v1/models", "ftp://proxy.example/v1")).toBe(false);
   });
 
   it("parses standard model list responses and keeps free router model ids", () => {
