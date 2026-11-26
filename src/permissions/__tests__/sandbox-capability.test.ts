@@ -524,7 +524,7 @@ describe("sandbox-capability — boot-sealed host shell plan", () => {
     const plan = getHostShellExecutionPlan();
     expect(plan).toMatchObject({
       mode: "plain",
-      fallbackReason: "windows-partial-shell-acl-unsafe",
+      fallbackReason: "active-sandbox-not-shell-contained",
       requiresExplicitUserApproval: true,
       capability: {
         kind: "none",

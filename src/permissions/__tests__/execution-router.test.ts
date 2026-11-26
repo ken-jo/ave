@@ -225,7 +225,7 @@ describe("execution router", () => {
       platform: "linux", requestedSandbox: false, activeCapability: noSandbox,
     });
     const blocked = buildHostShellExecutionPlan({
-      platform: "linux", requestedSandbox: true,
+      platform: "linux", requestedSandbox: true, unconfinedShellDenied: true,
       activeCapability: {
         ...fullAsrt,
         kind: "fs-only" as const,
@@ -274,8 +274,8 @@ describe("execution router", () => {
         reason: "legacy fixture without declared confinement",
       });
       const legacyPlan = getHostShellExecutionPlan();
-      expect(legacyPlan).toMatchObject({ mode: "blocked", sandboxed: false, fallbackReason: "active-sandbox-not-shell-contained" });
-      expect(executionRouteForHostShellPlan(legacyPlan)).toBeNull();
+      expect(legacyPlan).toMatchObject({ mode: "plain", sandboxed: false, requiresExplicitUserApproval: true, fallbackReason: "active-sandbox-not-shell-contained" });
+      expect(executionRouteForHostShellPlan(legacyPlan)).toBe("host");
 
       expect(buildHostShellExecutionRouteProjection({
         legacyPlan,
@@ -285,8 +285,8 @@ describe("execution router", () => {
         timeoutSeconds: 120,
         background: false,
       })).toMatchObject({
-        decision: "blocked",
-        route: null,
+        decision: "approval-required",
+        route: "host",
         fallback: "active-sandbox-not-shell-contained",
       });
     } finally {

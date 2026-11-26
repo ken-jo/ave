@@ -1246,18 +1246,25 @@ export class PermissionManager {
     }
   }
 
+  async ensurePermissionRulesLoaded(projectCwd: string): Promise<void> {
+    await this.refreshUserRulesIfChanged();
+    await this.ensureProjectRulesLoaded(projectCwd);
+  }
+
+  areLoadedPermissionRulesCurrent(projectCwd?: string): boolean {
+    const versions = [this.userRulesVersion];
+    if (projectCwd !== undefined) versions.push(this.projectRuleScopes.policyVersionFor(projectCwd));
+    return versions.every(version => version !== undefined && isPersistedPolicyVersionCurrent(version));
+  }
+
   // Re-evaluate the live scopes at the resolved connection boundary, without another wait.
   checkLoadedNetworkPermission(destination: NetworkPermissionDestination, context: PermissionCheckContext): NetworkPermissionEvaluation {
     const subject = this.networkRuleSubject(destination, context);
-    if (subject !== undefined) {
-      const versions = [this.userRulesVersion];
-      if (subject.projectCwd !== undefined) versions.push(this.projectRuleScopes.policyVersionFor(subject.projectCwd));
-      if (versions.some(version => version === undefined || !isPersistedPolicyVersionCurrent(version))) {
-        return this.evaluateNetworkPermission(destination, {
-          ...context,
-          admissionDenial: context.admissionDenial ?? STALE_PERMISSION_POLICY,
-        }, subject, undefined);
-      }
+    if (subject !== undefined && !this.areLoadedPermissionRulesCurrent(subject.projectCwd)) {
+      return this.evaluateNetworkPermission(destination, {
+        ...context,
+        admissionDenial: context.admissionDenial ?? STALE_PERMISSION_POLICY,
+      }, subject, undefined);
     }
     try {
       const rule = subject === undefined ? undefined : this.matchLoadedNetworkRule(subject);
@@ -1579,7 +1586,9 @@ export class PermissionManager {
         if (!trusted || !hostTurn || hostTurn.turnId !== scope.turnId || context.sessionId !== scope.sessionId || hostTurn.otherPrincipalGuidance()) {
           admissionDenial ??= { code: "host-terminal-turn", reason: "Host terminal typing is available only to the user's own turn in its pane chat" };
         }
-        if (externalContent) floor ??= { code: "other-principal", reason: "Host terminal command after external content in this turn; saved rules do not apply" };
+        if (externalContent && (floor === undefined || floor.code === "sandbox-unavailable")) {
+          floor = { code: "other-principal", reason: "Host terminal command after external content in this turn; saved rules do not apply" };
+        }
       }
     }
     return { admissionDenial, floor };
@@ -1874,18 +1883,18 @@ export class PermissionManager {
         : "The OS sandbox is unavailable, so this shell command would run without isolation; it needs your approval once or for this session." };
     }
     const floorSessionEligible = sandboxUnavailableAsk && !competingFloor;
+    const terminalFloorSubject = source === "builtin" && toolName === "terminal_run" && context.hostTerminalTurn !== undefined;
     const floorSessionGranted = floorSessionEligible && context.hostShellExecutionPlan !== undefined && requestedRuleSubject !== undefined &&
-      (requestedRuleSubject.dialect === "bash" || requestedRuleSubject.dialect === "powershell") && requestedRuleSubject.dialect === toolName &&
+      (requestedRuleSubject.dialect === toolName || terminalFloorSubject) &&
       this.holdsFloorSessionGrant(context.sessionId);
     const sessionRules = this.sessionRulesInScope(context.sessionId);
     const shellRules = !analysisLimited && parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true,
         ...(ruleSubject?.hostTerminal === undefined ? {} : { hostTerminal: ruleSubject.hostTerminal }) }, this.rules, projectRules, sessionRules)
       : !analysisLimited && parsedPowerShell ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject?.cwd, hostShellExecutionPlan: context.hostShellExecutionPlan, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true }, this.rules, projectRules, sessionRules) : undefined;
-    // Tree T:128, T:259: a saved rule that is exactly this command passes the sandbox-unavailable ask when the plan asks only for the missing
-    // backend (boot home privacy verified) and no other floor applies. Session rules are not saved; a prefix rule, a tool-name rule and a
-    // compound command keep the ask. It is offered only when its rule proof can be issued, so a pass never ends as a refused spawn.
+    // Tree T:151, T:232: only a saved exact rule with verified boot home privacy can answer this floor.
+    // The host terminal can use that rule here. Its ordinary policy still uses the surface choice.
     const exactRuleCwdIdentity = floorSessionEligible && exactRulePassesUnsandboxedShellAsk(context.hostShellExecutionPlan) && !analysisLimited &&
-      ruleSubject !== undefined && requestedRuleSubject?.cwd !== undefined && ruleSubject.dialect === toolName && ruleSubject.hostTerminal === undefined
+      ruleSubject !== undefined && requestedRuleSubject?.cwd !== undefined && ((ruleSubject.dialect === toolName && ruleSubject.hostTerminal === undefined) || terminalFloorSubject)
       ? cwdIdentity ?? captureShellWorkingDirectoryIdentity(requestedRuleSubject.cwd) : undefined;
     const exactRuleProjectVersion = exactRuleCwdIdentity === undefined ? undefined : projectPolicyVersion ?? this.projectRuleScopes.policyVersionFor(exactRuleCwdIdentity.realpath);
     const exactRuleVersions = this.userRulesVersion && this.userRulesVersion.withheld !== true && exactRuleProjectVersion && exactRuleProjectVersion.withheld !== true &&

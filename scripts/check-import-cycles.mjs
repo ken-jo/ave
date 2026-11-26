@@ -7,18 +7,26 @@ import {
   isStringLiteral,
 } from "typescript/unstable/ast";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, relative, resolve, parse, sep } from "node:path";
+import { isBuiltin } from "node:module";
+import { dirname, extname, relative, resolve, parse, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseSourceFiles } from "./lib/ts7-ast.mjs";
 
-function collectTypeScriptFiles(root) {
+const SOURCE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
+const EXTENSION_ALIASES = new Map([
+  [".js", [".ts", ".tsx", ".js"]],
+  [".mjs", [".mts", ".mjs"]],
+  [".cjs", [".cts", ".cjs"]],
+]);
+
+function collectSourceFiles(root) {
   const files = [];
   const walk = (dir) => {
     for (const name of readdirSync(dir)) {
       const path = resolve(dir, name);
       const stat = statSync(path);
       if (stat.isDirectory()) walk(path);
-      else if (/\.(?:ts|tsx)$/u.test(name) && !name.endsWith(".d.ts")) files.push(path);
+      else if (/\.(?:[cm]?[jt]s|[jt]sx)$/u.test(name) && !/\.d\.[cm]?ts$/u.test(name)) files.push(path);
     }
   };
   walk(root);
@@ -94,41 +102,37 @@ function resolveLocalImport(from, specifier, fileSet, packageConfig) {
     ? [resolve(dirname(from), specifier)]
     : resolvePackageImport(specifier, packageConfig);
   if (bases.length === 0) return null;
-  const candidates = bases.flatMap((base) => [
-    base,
-    `${base}.ts`,
-    `${base}.tsx`,
-    base.replace(/\.js$/u, ".ts"),
-    base.replace(/\.js$/u, ".tsx"),
-    resolve(base, "index.ts"),
-    resolve(base, "index.tsx"),
-  ]);
+  const candidates = bases.flatMap((base) => {
+    const extension = extname(base);
+    const aliases = EXTENSION_ALIASES.get(extension);
+    if (aliases) return aliases.map((alias) => base.slice(0, -extension.length) + alias);
+    return [base, ...SOURCE_EXTENSIONS.map((suffix) => base + suffix),
+      ...SOURCE_EXTENSIONS.map((suffix) => resolve(base, `index${suffix}`))];
+  });
   return candidates.find((path) => fileSet.has(path)) ?? null;
 }
 
 // Type-only imports and exports do not create runtime graph edges.
-export function buildRuntimeImportGraph(rootInput) {
+export function buildRuntimeImportGraph(rootInput, { includeBuiltins = false } = {}) {
   const root = resolve(rootInput);
-  const files = collectTypeScriptFiles(root);
+  const files = collectSourceFiles(root);
   const fileSet = new Set(files);
   const packageConfig = findPackageConfig(root);
+  /** @type {Map<string, Set<string>>} */
   const graph = new Map(files.map((file) => [file, new Set()]));
   const sources = parseSourceFiles(files);
   for (const file of files) {
     const source = sources.get(file);
     if (!source) continue;
     for (const node of source.statements) {
-      if (isImportDeclaration(node) && isStringLiteral(node.moduleSpecifier)) {
-        if (isTypeOnlyImport(node)) continue;
-        const target = resolveLocalImport(file, node.moduleSpecifier.text, fileSet, packageConfig);
-        if (target) graph.get(file).add(target);
-        continue;
-      }
-      if (isExportDeclaration(node) && node.moduleSpecifier
-        && isStringLiteral(node.moduleSpecifier) && !isTypeOnlyExport(node)) {
-        const target = resolveLocalImport(file, node.moduleSpecifier.text, fileSet, packageConfig);
-        if (target) graph.get(file).add(target);
-      }
+      const importsAtRuntime = isImportDeclaration(node) && !isTypeOnlyImport(node);
+      const exportsAtRuntime = isExportDeclaration(node) && !isTypeOnlyExport(node);
+      if (!(importsAtRuntime || exportsAtRuntime) || !node.moduleSpecifier || !isStringLiteral(node.moduleSpecifier)) continue;
+      const specifier = node.moduleSpecifier.text;
+      const target = includeBuiltins && (specifier.startsWith("node:") || isBuiltin(specifier))
+        ? specifier
+        : resolveLocalImport(file, specifier, fileSet, packageConfig);
+      if (target) graph.get(file).add(target);
     }
   }
   return graph;

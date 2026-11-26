@@ -106,7 +106,7 @@ export type SandboxStartFailureCause =
   | "init-failed";
 
 /** Why the shell sandbox is requested for this session but host shells still run without it: a start failure, a platform without a sandbox, a Windows sandbox that is active
- * but cannot contain one-shot shells, or (`shell-not-contained`) an active sandbox that cannot contain shells at all, in which case shell commands are blocked rather than run. */
+ * but cannot contain one-shot shells, or (`shell-not-contained`) an active sandbox that cannot contain shells at all, in which case shell commands ask for approval and run without it. */
 export type ShellSandboxUnavailableCause =
   | SandboxStartFailureCause
   | "platform-unsupported"

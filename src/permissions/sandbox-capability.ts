@@ -327,7 +327,7 @@ export function detectPluginWorkerSandboxCapability(): SandboxCapability {
     reason: "extension confinement not requested at boot (features.pluginWorkerConfinement off)",
   };
 }
-// Resolve the boot-sealed execution plan for builtin host shell tools. It is intentionally separate from detectSandboxCapability: Windows Plan B selects a plain child and must not present the process-global partial ASRT capability as if it confined that child.
+// Resolve the boot-sealed shell plan from the capability that applies to the selected child.
 export function getHostShellExecutionPlan(executionMode: HostShellExecutionRequest = "default"): HostShellExecutionPlan {
   const generation = getSandboxGeneration();
   const mxc = detectMxcShellCapability();

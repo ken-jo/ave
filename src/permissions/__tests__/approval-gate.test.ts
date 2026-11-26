@@ -320,7 +320,7 @@ describe("ApprovalGate", () => {
     });
     const binding: HostShellExecutionPermitBinding = Object.freeze({
       plan,
-      planIdentity: "host-shell-execution-plan/v4:win32:windows-partial-shell-acl-unsafe",
+      planIdentity: plan.identity,
       toolName: "bash",
       toolUseId: "receipt-tool-use",
       command: "echo receipt",
@@ -370,7 +370,7 @@ describe("ApprovalGate", () => {
     expect(auditText).toContain(`executionPlan.identity=${plan.identity}`);
     expect(auditText).toContain("executionPlan.requestedSandbox=true");
     expect(auditText).toContain("executionPlan.mode=plain");
-    expect(auditText).toContain("executionPlan.fallbackReason=windows-partial-shell-acl-unsafe");
+    expect(auditText).toContain(`executionPlan.fallbackReason=${plan.fallbackReason}`);
     expect(auditText).toContain("executionPlan.capability.kind=none");
     expect(auditText).not.toContain(binding.command);
     expect(auditText).not.toContain(binding.requestedCwd!);

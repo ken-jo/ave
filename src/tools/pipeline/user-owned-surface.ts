@@ -1,5 +1,5 @@
 import { t } from "../../i18n/runtime.js";
-import { answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince } from "../../permissions/pending-answer-policy.js";
+import { answerEpochsOf, personAnswerStands } from "../../permissions/pending-answer-policy.js";
 import { randomUUID } from "node:crypto";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { isHostApprovalRejectedDecision } from "../../permissions/approval-gate.js";
@@ -9,8 +9,9 @@ export function userOwnedSurfaceCardFacts(
   permission: PermissionCheckResult,
 ): Pick<ApprovalRequestInput, "userOwnedSurface" | "userOwnedSurfaceReviewFallback" | "reasonCode"> {
   const request = permission.pipelineRequest;
-  if (!request?.userOwnedSurface || permission.forceModal || request.floor || request.manualRerun) return {};
-  const reviewFallback = request.exfiltration !== undefined || request.userOwnedSurface.choice === "auto" && request.reviewer !== undefined;
+  if (!request?.userOwnedSurface || permission.forceModal || request.manualRerun) return {};
+  const reviewFallback = request.exfiltration !== undefined || request.userOwnedSurface.choice === "auto" &&
+    (request.reviewer !== undefined || request.userOwnedSurface.kind === "host-terminal" && request.automationPause !== undefined);
   return {
     userOwnedSurface: request.userOwnedSurface.kind,
     // The surface card shows its own sentence for the decision that asked; no other card reads it, so no other card is sent it. A review fallback
@@ -67,9 +68,10 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   request.abortSignal?.throwIfAborted();
   if (epoch !== manager.getPolicyEpoch() && !gate.allowsPolicyTransition(decision, epoch, manager.getPolicyEpoch())) {
     // Another conversation's or run's memory-only allow rule leaves the answer standing; any other change refuses it.
-    if (!onlyMemoryRulesChangedSince(manager, opened)) throw new Error("Permission policy changed while approval was pending.");
-    permission = manager.recheckPermission(permission, { acrossMemoryRuleChanges: true });
-    if (!answerSurvivesRecheck(permission, fallback.forceExplicit === true)) throw new Error("Permission policy changed while approval was pending.");
+    if (!personAnswerStands(manager, opened, fallback.forceExplicit === true, () => {
+      permission = manager.recheckPermission(permission, { acrossMemoryRuleChanges: true });
+      return permission;
+    })) throw new Error("Permission policy changed while approval was pending.");
   } else permission = manager.recheckPermission(permission);
   if (permission.decision === "deny") throw new Error(permission.reason);
   if (decision.choice.startsWith("deny") && !isHostApprovalRejectedDecision(decision)) return personDenied(decision);

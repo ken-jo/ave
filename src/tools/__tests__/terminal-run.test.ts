@@ -150,7 +150,7 @@ const ctxFor = (scope: ApprovalMemoryScope | undefined, sessionId = "main", sign
     ...(scope === undefined ? {} : { [APPROVAL_MEMORY_SCOPE_METADATA_KEY]: scope }),
   },
   // The sealed host execution route the invocation runner hands a host command (ignored by the isolated lane).
-  hostTerminalRoute: { recheck },
+  hostTerminalRoute: { recheck, refusal: () => undefined, onLeaseAbandoned: () => false },
   ...(signal ? { abortSignal: signal } : {}),
 }) as unknown as ToolExecutionContext;
 
@@ -1024,6 +1024,26 @@ describe("terminal_run into a pane chat's own host terminal", () => {
     expect(hostTyped).toEqual([]);
   });
 
+  it.each(["en", "ko"] as const)("reports a withdrawn host-terminal paste as unsubmitted in %s", async (locale) => {
+    const previous = getLocale();
+    try {
+      await loadLocaleMessages(locale);
+      setLocale(locale);
+      const { deps, tool } = hostDeps();
+      const message = "the terminal's editable command buffer did not match the approved line; Enter was not pressed";
+      vi.spyOn(deps.host, "typeCommand").mockResolvedValue({ ok: false, reason: "edit-line-mismatch", message });
+      const waitDisclosure = vi.spyOn(deps.host, "waitDisclosure");
+
+      const scope = await tool.approvalMemoryScope?.({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
+      const result = await tool.execute({ command: "npm test" }, ctxFor(scope));
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.output as string).error).toBe(locale === "ko"
+        ? `터미널 ${HOST}에 명령을 제출하지 못했습니다. 사유: ${message}`
+        : `The command was not submitted in terminal ${HOST}: ${message}`);
+      expect(waitDisclosure).not.toHaveBeenCalled();
+    } finally { setLocale(previous); }
+  });
+
   it("refuses a host command that reaches execute without its sealed execution route", async () => {
     const { tool, hostTyped } = hostDeps();
     const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
@@ -1041,7 +1061,7 @@ it("refuses a remote terminal write when identity changes during the native shel
   const binding = { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" };
   const refreshCurrent = vi.fn(async () => current);
   const authority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:owner", pairedShare: binding, pairedShareGuard: { isCurrent: () => true, refreshCurrent } }, "main");
-  const write = vi.fn();
+  const write = vi.fn(() => true);
   const result = await runWithEffectGateContext({ headless: false, toolName: "terminal_run", sessionId: "main", permissionContext: { remoteControllerAuthority: authority } }, () => typeLineAtPrompt({ blocks: tracker, isLive: () => true, write, verify: async () => { current = false; return { ok: true, cwd: "/repo" }; }, missing: "no terminal" }, "ls"));
   expect(result).toMatchObject({ ok: false, reason: "effect-refused", message: "remote-controller-revoked" });
   expect(refreshCurrent).toHaveBeenCalledOnce();

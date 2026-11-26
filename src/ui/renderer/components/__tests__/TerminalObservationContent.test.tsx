@@ -108,9 +108,9 @@ describe("agent terminal observation view", () => {
       outputAvailability: "withheld-user-input" })]));
     const row = screen.getByTestId("terminal-observation-command-row");
     // Visible on the collapsed row, before the details are opened.
-    expect(within(row).getByTestId("terminal-observation-withheld-marker").textContent).toBe(ko["terminalObservation.outputWithheldShort"]);
+    expect(within(row).getByTestId("terminal-observation-withheld-marker").textContent).toBe("출력 숨김");
     fireEvent.click(within(row).getByText("bun test"));
-    expect(within(row).getByTestId("terminal-observation-withheld").textContent).toBe(ko["terminalObservation.outputWithheldUserInput"]);
+    expect(within(row).getByTestId("terminal-observation-withheld").textContent).toBe("이 터미널에 직접 입력한 적이 있어 출력과 네트워크 판정을 표시하지 않습니다. 직접 시작한 프로세스가 이 터미널에 출력하거나 네트워크를 쓸 수 있기 때문입니다.");
     expect(within(row).queryByTestId("terminal-observation-output")).toBeNull();
     expect(within(row).queryByTestId("terminal-observation-decisions")).toBeNull();
     expect(en["terminalObservation.outputWithheldUserInput"]).toContain("you typed in this terminal");
@@ -319,8 +319,8 @@ describe("conversation-owned inline terminal commands", () => {
   it("labels confined and explicitly approved host commands with their actual execution domain", async () => {
     await open();
     await emit(snapshot(1, [command(), command({ id: "host", toolUseId: "host-tool", command: "approved-host-command", sandbox: { mode: "unconfined", detail: "approved host execution" } })]));
-    expect(screen.getByTestId("terminal-isolated-identity").textContent).toBe(ko["terminalObservation.isolatedLabel"]);
-    expect(screen.getByTestId("terminal-approved-host-identity").textContent).toBe(ko["terminalObservation.approvedHostLabel"]);
+    expect(screen.getByTestId("terminal-isolated-identity").textContent).toBe("에이전트 (격리)");
+    expect(screen.getByTestId("terminal-approved-host-identity").textContent).toBe("에이전트 (승인된 호스트 명령)");
     expect(screen.getByTestId("terminal-isolated-identity").closest("li")!.className).toContain("border-l-agent");
     expect(screen.getByTestId("terminal-approved-host-identity").closest("li")!.className).toContain("border-l-primary");
   });
