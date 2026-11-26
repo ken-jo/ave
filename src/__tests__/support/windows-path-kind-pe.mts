@@ -1,4 +1,4 @@
-export function pathKindPe(dll = "KERNEL32.dll", delayed = false) {
+export function pathKindPe(dll = "KERNEL32.dll", delayed = false): Buffer {
   const binary = Buffer.alloc(0x400);
   binary.writeUInt16LE(0x5a4d);
   binary.writeUInt32LE(64, 60);

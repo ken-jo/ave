@@ -8,7 +8,7 @@ import { describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
 import { windowsJobLauncherPath, windowsJobSources } from "../../scripts/prepare-windows-job.mjs";
 import { windowsPathKindPath, windowsPathKindReceiptPath, verifyWindowsPathKindReceipt } from "../../scripts/lib/windows-path-kind-build.mjs";
-import { pathKindPe } from "../../src/__tests__/support/windows-path-kind-pe.mjs";
+import { pathKindPe } from "../../src/__tests__/support/windows-path-kind-pe.mts";
 
 function pathKindBuildFixture(t) {
   const root = mkdtempSync(join(tmpdir(), "ave-windows-job-"));
