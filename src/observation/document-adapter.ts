@@ -16,6 +16,7 @@ import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { MAX_TEXT_FILE_BYTES } from "../tools/file-read-core.js";
 import type { DocumentEditJournalRecord } from "../shared/document-edit-journal.js";
 import { readPreviewDocumentInput } from "../tools/preview-document-input.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { ObservationDaemon } from "./daemon.js";
 import { DocumentJournalReader } from "./journal-reader.js";
 import { observedSelectionIndex, readObservedDocument } from "./observed-document.js";
@@ -230,7 +231,7 @@ export class DocumentObservationAdapter {
     });
     const poll = (): void => {
       if (stopped || failed) return;
-      try { reader.poll(); }
+      try { withLocalityDecision(() => reader.poll()); }
       catch { fail(); }
     };
     const timer = setInterval(poll, OBSERVATION_LIMITS.pollMs);
@@ -248,7 +249,7 @@ export class DocumentObservationAdapter {
       finish: () => {
         finished ??= (async () => {
           if (!stopped && !failed) {
-            try { reader.drain(); }
+            try { withLocalityDecision(() => reader.drain()); }
             catch { fail(); }
           }
           stop();

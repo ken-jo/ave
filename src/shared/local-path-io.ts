@@ -11,6 +11,12 @@ import { classifyWindowsSpelling, normalizeWindowsPathSpelling, windowsVolumeRoo
  *     parent a lookup answers with, and admits any lookup of the path or an ancestor (`admitRouteAncestor`).
  * A share, device, ambiguous or unproven spelling is refused (`ENETWORKSHAREPATH`) before anything is opened, and so is a
  * walk that cannot finish. A verdict serves only the decision that issued it.
+ *
+ * A decision computes and returns what it found; authority-bearing live state (grants, allow-lists, revocations) is
+ * changed after it returns, so a failed drive query, which fails the whole decision at its exit, never leaves a
+ * half-applied change behind. A failed drive query poisons its decision: a catch that turns lookup errors into "no
+ * answer" calls `rethrowLocalityFailure` first, and nothing filesystem-backed runs on the poisoned decision afterwards.
+ * Facts drawn from the filesystem are memoized only through `decisionMemo`, never across decisions.
  */
 
 class Decision {
@@ -34,6 +40,32 @@ class Decision {
 }
 
 let active: Decision | undefined;
+const driveQueryFailures = new WeakSet<object>();
+
+/** Whether `error` is a failed drive query: no fallback, default or provider path may stand in for its decision. */
+export function isLocalityFailure(error: unknown): boolean {
+  return typeof error === "object" && error !== null && driveQueryFailures.has(error);
+}
+
+/** For a catch that maps lookup errors to "no answer": a failed drive query, or any error inside a failed decision, propagates. */
+export function rethrowLocalityFailure(error: unknown): void {
+  if (isLocalityFailure(error)) throw error;
+  active?.assertUsable();
+}
+
+/**
+ * A yes/no judgment for a caller that has no decision of its own (a timer, an event callback): a failed drive query
+ * answers no. Inside a running decision the failure propagates to that decision instead.
+ */
+export function judgeOrRefuse(judge: () => boolean): boolean {
+  if (active !== undefined) return withLocalityDecision(judge);
+  try {
+    return withLocalityDecision(judge);
+  } catch (error) {
+    if (isLocalityFailure(error)) return false;
+    throw error;
+  }
+}
 
 /** Propagate a failed drive query before continuing with native filesystem work. */
 export function assertLocalityDecisionUsable(): void {
@@ -134,6 +166,7 @@ function driveIdentity(drive: string, decision: Decision): DriveIdentity {
       identity = queryDriveIdentity(drive);
       if (!identity.local && identity.unavailable !== undefined) throw identity.unavailable;
     } catch (error) {
+      if (typeof error === "object" && error !== null) driveQueryFailures.add(error);
       decision.failure = { error };
       throw error;
     }
