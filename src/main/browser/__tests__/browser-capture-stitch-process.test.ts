@@ -3,6 +3,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { crc32 } from "node:zlib";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildMainBoundaryBundle, repositoryRoot } from "../../../plugins/isolation/__tests__/child-entry-bundle.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
@@ -40,6 +41,7 @@ vi.mock("sharp", async (importOriginal) => {
 import sharp from "sharp";
 import { captureBrowserPage, captureBrowserViewport } from "../browser-capture.js";
 import { startCaptureStitcher } from "../browser-capture-stitch-process.js";
+import { captureStitchFrames, type CaptureStitchRequest } from "../browser-capture-stitch-protocol.js";
 import { getManagedChildProcessCount } from "../../managed-child-processes.js";
 import { BROWSER_CAPTURE_LIMITS } from "../../../shared/browser-capture.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
@@ -48,6 +50,7 @@ const ENTRY = "browser-capture-stitch-child.js";
 const WIDTH = 4;
 const VIEWPORT_HEIGHT = 4;
 const CONTENT_HEIGHT = 10;
+const PNG_HEADER_BYTES = 33;
 /** A reclaimed child frees its guest within this bound: the capture deadline is unchanged and release follows the confirmed exit. */
 const RECOVERY_BOUND_MS = 5_000;
 const STALLED_ENTRY = "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);\n";
@@ -84,7 +87,7 @@ function observeStitcherCompletion(pid?: number) {
   return { child, events, job, closed };
 }
 
-function replyFrame(message: unknown, payload = Buffer.alloc(0)): Buffer {
+function replyFrame(message: unknown, payload: Buffer = Buffer.alloc(0)): Buffer {
   const json = Buffer.from(JSON.stringify(message));
   const header = Buffer.alloc(8);
   header.writeUInt32BE(json.length, 0);
@@ -103,25 +106,40 @@ setInterval(() => {}, 1000);
 `;
 }
 
-function encodeReplyEntry(png: Buffer): string {
-  return `let pending = Buffer.alloc(0);
-process.stdin.on("data", (chunk) => {
-  pending = Buffer.concat([pending, chunk]);
-  while (pending.length >= 8) {
-    const jsonEnd = 8 + pending.readUInt32BE(0);
-    const end = jsonEnd + pending.readUInt32BE(4);
-    if (pending.length < end) return;
-    const { id, tile } = JSON.parse(pending.toString("utf8", 8, jsonEnd));
-    pending = pending.subarray(end);
-    const payload = tile ? Buffer.alloc(0) : Buffer.from("${png.toString("base64")}", "base64");
-    const json = Buffer.from(JSON.stringify({ id }));
-    const header = Buffer.alloc(8);
-    header.writeUInt32BE(json.length, 0);
-    header.writeUInt32BE(payload.length, 4);
-    process.stdout.write(Buffer.concat([header, json, payload]));
-  }
-});
-`;
+function withIhdrByte(png: Buffer, offset: number, value: number): Buffer {
+  png[offset] = value;
+  png.writeUInt32BE(crc32(png.subarray(12, 29)), 29);
+  return png;
+}
+
+function pngChunk(type: string, data: Buffer = Buffer.alloc(0)): Buffer {
+  const chunk = Buffer.alloc(data.length + 12);
+  chunk.writeUInt32BE(data.length);
+  chunk.write(type, 4, "latin1");
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(chunk.subarray(4, -4)), chunk.length - 4);
+  return chunk;
+}
+
+function splitImageData(png: Buffer, separateWithDensity = false): Buffer {
+  const imageOffset = PNG_HEADER_BYTES + png.readUInt32BE(PNG_HEADER_BYTES) + 12;
+  const dataEnd = imageOffset + 8 + png.readUInt32BE(imageOffset);
+  const data = png.subarray(imageOffset + 8, dataEnd);
+  const midpoint = Math.floor(data.length / 2);
+  const density = png.subarray(PNG_HEADER_BYTES, imageOffset);
+  return Buffer.concat([
+    png.subarray(0, separateWithDensity ? PNG_HEADER_BYTES : imageOffset),
+    pngChunk("IDAT", data.subarray(0, midpoint)),
+    ...(separateWithDensity ? [density] : []),
+    pngChunk("IDAT", data.subarray(midpoint)),
+    png.subarray(dataEnd + 4),
+  ]);
+}
+
+function encodeTestPng(): Promise<Buffer> {
+  const pixels = Buffer.alloc(WIDTH * CONTENT_HEIGHT * 4, 255);
+  return sharp(pixels, { raw: { width: WIDTH, height: CONTENT_HEIGHT, channels: 4 } })
+    .png({ adaptiveFiltering: true }).toBuffer();
 }
 
 async function builtEntryDir(): Promise<string> {
@@ -328,18 +346,41 @@ describe("browser capture stitch process", () => {
     }
   });
 
-  it.each(["missing IEND", "wrong dimensions", "bad IDAT CRC", "trailing bytes"])(
-    "drains an invalid encode PNG with %s before readmitting the tab", async (fault) => {
+  it.each<[string, (png: Buffer) => Buffer]>([
+    ["missing IEND", (png) => png.subarray(0, -12)],
+    ["wrong width", (png) => withIhdrByte(png, 19, WIDTH + 1)],
+    ["wrong height", (png) => withIhdrByte(png, 23, CONTENT_HEIGHT + 1)],
+    ["bad IDAT CRC", (png) => { png[png.length - 13] ^= 1; return png; }],
+    ["trailing bytes", (png) => Buffer.concat([png, Buffer.from([0])])],
+    ["invalid IHDR bit depth", (png) => withIhdrByte(png, 24, 16)],
+    ["invalid IHDR color type", (png) => withIhdrByte(png, 25, 2)],
+    ["invalid IHDR compression", (png) => withIhdrByte(png, 26, 1)],
+    ["invalid IHDR filter", (png) => withIhdrByte(png, 27, 1)],
+    ["invalid IHDR interlace", (png) => withIhdrByte(png, 28, 1)],
+    ["noncontiguous IDAT", (png) => splitImageData(png, true)],
+    ["empty IDAT", (png) => Buffer.concat([png.subarray(0, -12), pngChunk("IDAT"), png.subarray(-12)])],
+    ["unexpected critical chunk", (png) => Buffer.concat([
+      png.subarray(0, PNG_HEADER_BYTES), pngChunk("ABCD"), png.subarray(PNG_HEADER_BYTES),
+    ])],
+    ["unexpected ancillary chunk", (png) => Buffer.concat([
+      png.subarray(0, PNG_HEADER_BYTES), pngChunk("tEXt", Buffer.from("note\0example")), png.subarray(PNG_HEADER_BYTES),
+    ])],
+    ["unexpected density", (png) => Buffer.concat([
+      png.subarray(0, PNG_HEADER_BYTES), pngChunk("pHYs", Buffer.alloc(9)), png.subarray(PNG_HEADER_BYTES + 21),
+    ])],
+  ])(
+    "drains an invalid encode PNG with %s before readmitting the tab", async (_fault, alter) => {
       const healthyEntry = await builtEntryDir();
-      const width = fault === "wrong dimensions" ? WIDTH + 1 : WIDTH;
-      let png = await sharp({ create: { width, height: CONTENT_HEIGHT, channels: 3, background: "white" } }).png().toBuffer();
-      if (fault === "missing IEND") png = png.subarray(0, png.length - 12);
-      if (fault === "bad IDAT CRC") png[png.length - 13] ^= 1;
-      if (fault === "trailing bytes") png = Buffer.concat([png, Buffer.from([0])]);
-      runtime.mainDir = entryDir(encodeReplyEntry(png));
+      const png = alter(await encodeTestPng());
+      const child = mockStitchChild(42);
+      child.stdin?.on("data", captureStitchFrames((message) => {
+        const { id, tile } = message as CaptureStitchRequest;
+        child.stdout?.emit("data", replyFrame({ id }, tile ? undefined : png));
+      }));
       const session = tiledSession();
       const release = deferred<void>();
-      termination.hold = () => release.promise;
+      const kill = vi.fn(() => release.promise);
+      termination.hold = kill;
       try {
         const result = await session.capture({ fullPage: true }, 2_000).then(
           (image) => ({ image }), (error: unknown) => ({ error }),
@@ -347,24 +388,30 @@ describe("browser capture stitch process", () => {
         expect(result).toEqual({ error: expect.objectContaining({ code: "screenshot-failed" }) });
         expect(session.restore).toHaveBeenCalledOnce();
         expect(session.position()).toBe(session.initial.y);
-        expect(getManagedChildProcessCount()).toBe(1);
+        expect(kill).toHaveBeenCalledExactlyOnceWith(child);
+        await expect(session.capture({ fullPage: true })).rejects.toMatchObject({ code: "screenshot-busy" });
+        child.emit("close", 1, null);
+        await new Promise<void>((resolve) => setImmediate(resolve));
         await expect(session.capture({ fullPage: true })).rejects.toMatchObject({ code: "screenshot-busy" });
       } finally {
         termination.hold = undefined;
         release.resolve();
-        await expect.poll(getManagedChildProcessCount).toBe(0);
+        child.emit("close", 1, null);
+        runtime.child = undefined;
       }
       await recovered(session);
       expect(session.restore).toHaveBeenCalledOnce();
       runtime.mainDir = healthyEntry;
-      await expect(session.capture({ fullPage: true })).resolves.toMatchObject({ height: CONTENT_HEIGHT });
+      await expect(session.capture({ fullPage: true })).resolves.toMatchObject({
+        mimeType: "image/png", width: WIDTH, height: CONTENT_HEIGHT, data: expect.any(String),
+      });
       await expect.poll(getManagedChildProcessCount).toBe(0);
     },
   );
 
   it.each(["tile acknowledgement", "encode acknowledgement", "error reply"])(
     "retains ownership while settling a valid %s", async (kind) => {
-      const png = await sharp({ create: { width: WIDTH, height: CONTENT_HEIGHT, channels: 3, background: "white" } }).png().toBuffer();
+      const png = splitImageData(await encodeTestPng());
       const frame = kind === "error reply" ? replyFrame({ id: 0, error: { message: "decode failed" } })
         : replyFrame({ id: 0 }, kind === "encode acknowledgement" ? png : undefined);
       const child = mockStitchChild();
