@@ -349,6 +349,11 @@ module.exports = async function afterPack(context) {
     const { finalizePackagedMxcSdk } = await import("./lib/mxc-sdk-packaging.mjs");
     finalizePackagedMxcSdk(electronResourcesDir(context), ARCH_DIR_BY_ENUM[context.arch], join(context.appOutDir, `${context.packager.appInfo.productFilename}.exe`));
   } else {
-    rmSync(join(electronResourcesDir(context), "app.asar.unpacked", "node_modules", "@microsoft", "mxc-sdk", "bin"), { recursive: true, force: true });
+    const resources = electronResourcesDir(context);
+    rmSync(join(resources, "app.asar.unpacked", "node_modules", "@microsoft", "mxc-sdk", "bin"), { recursive: true, force: true });
+    if (context.electronPlatformName === "darwin" || context.electronPlatformName === "linux") {
+      const { assertPackagedLauncher } = await import("./lib/mxc-sdk-packaging.mjs");
+      assertPackagedLauncher(resources, `${context.electronPlatformName}-${ARCH_DIR_BY_ENUM[context.arch]}`);
+    }
   }
 };

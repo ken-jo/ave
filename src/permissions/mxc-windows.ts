@@ -21,7 +21,8 @@ import { errorMessage } from "../shared/error-message.js";
 import { compileGlobMatcher, globToRegExp } from "../lib/glob-matcher.js";
 import { isPlainWindowsPathComponent } from "./windows-stamp-targets.js";
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
-import MXC_PINS from "./mxc-launcher-pins.json" with { type: "json" };
+import { containerTarget } from "../shared/container-platform.js";
+import { launcherPathFor, pinnedLauncherSha256 } from "./mxc-launcher.js";
 
 // The stable MXC configuration schema version every request is written in. The launcher is `@microsoft/mxc-sdk` 1.1.0's, pinned by scripts/fetch-mxc.mjs.
 const MXC_CONFIG_SCHEMA_VERSION = "1.0.0";
@@ -41,19 +42,15 @@ export type MxcSupport =
       readonly baseContainerApiPresent?: boolean;
     };
 
-// The architectures MXC ships `wxc-exec.exe` for.
-const MXC_ARCHES = new Set(["x64", "arm64"]);
-
 // The pinned sha256 of the launcher for `arch` (`mxc-launcher-pins.json`, the same file scripts/fetch-mxc.mjs stages against), or undefined for an arch MXC does not ship.
 export function pinnedWxcExecSha256(arch: string): string | undefined {
-  const pins: Readonly<Record<string, string>> = MXC_PINS.wxcExecSha256;
-  return MXC_ARCHES.has(arch) ? pins[arch] : undefined;
+  const target = containerTarget("win32", arch);
+  return target === undefined ? undefined : pinnedLauncherSha256(target);
 }
 
 // `<resources>/mxc/<arch>/wxc-exec.exe`, or undefined for an arch MXC does not ship.
 export function wxcExecPathFor(resourcePath: string, arch: string): string | undefined {
-  if (!MXC_ARCHES.has(arch)) return undefined;
-  return winPath.join(resourcePath, "mxc", arch, "wxc-exec.exe");
+  return launcherPathFor(resourcePath, "win32", arch);
 }
 
 // The fields of `wxc-exec --probe` Ave reads.

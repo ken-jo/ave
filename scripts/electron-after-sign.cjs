@@ -3,6 +3,11 @@ const { readdirSync } = require("node:fs");
 const { assertSrtWinVendor } = require("./lib/srt-win-integrity.cjs");
 
 module.exports = async function afterSign(context) {
+  if (context.electronPlatformName === "darwin") {
+    const { assertPackagedLauncher } = await import("./lib/mxc-sdk-packaging.mjs");
+    assertPackagedLauncher(join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, "Contents", "Resources"), "darwin-arm64");
+    return;
+  }
   if (context.electronPlatformName !== "win32") return;
   const { assertPackagedMxcSdk, recordMxcSupervisorRuntime } = await import("./lib/mxc-sdk-packaging.mjs");
   recordMxcSupervisorRuntime(join(context.appOutDir, "resources"), { 1: "x64", 3: "arm64" }[context.arch], join(context.appOutDir, `${context.packager.appInfo.productFilename}.exe`));

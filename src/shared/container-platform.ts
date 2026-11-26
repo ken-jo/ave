@@ -34,3 +34,9 @@ export function containerTarget(platform: NodeJS.Platform, arch: string): Contai
   const supported = containerPlatform(platform)?.arches.find((candidate) => candidate === arch);
   return supported === undefined ? undefined : `${platform}-${supported}` as ContainerTarget;
 }
+
+/** Targets that must have a launcher pin. */
+export function containerTargets(): ContainerTarget[] {
+  return (Object.keys(CONTAINER_PLATFORMS) as NodeJS.Platform[]).flatMap((platform) =>
+    containerPlatform(platform)?.arches.map((arch) => `${platform}-${arch}` as ContainerTarget) ?? []);
+}

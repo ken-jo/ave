@@ -454,10 +454,19 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "minimumSystemVersion": "13.0",
+      "signIgnore": ["/Contents/Resources/mxc/arm64/mxc-exec-mac$"],
       "extraResources": [
         {
           "from": "resources/macos-dir-ops/${arch}/ave-dir-ops",
           "to": "macos-dir-ops/${arch}/ave-dir-ops"
+        },
+        {
+          "from": "resources/mxc/${arch}/mxc-exec-mac",
+          "to": "mxc/${arch}/mxc-exec-mac"
+        },
+        {
+          "from": "resources/licenses/mxc",
+          "to": "licenses/mxc"
         }
       ]
     },
@@ -489,6 +498,16 @@
         "AppImage",
         "deb",
         "rpm"
+      ],
+      "extraResources": [
+        {
+          "from": "resources/mxc/${arch}/lxc-exec",
+          "to": "mxc/${arch}/lxc-exec"
+        },
+        {
+          "from": "resources/licenses/mxc",
+          "to": "licenses/mxc"
+        }
       ]
     },
     "appImage": {

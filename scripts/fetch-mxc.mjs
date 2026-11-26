@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -17,34 +17,48 @@ const PINS = JSON.parse(await readFile(path.join(PROJECT_ROOT, "src", "permissio
 export const MXC_PACKAGE_VERSION = PINS.version;
 const TARBALL_URL = `https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-${MXC_PACKAGE_VERSION}.tgz`;
 const TARBALL_SHA512_BASE64 = PINS.tarballSha512Base64;
-export const WXC_EXEC_SHA256 = Object.freeze({ ...PINS.wxcExecSha256 });
 const LICENSE_SHA256 = PINS.licenseSha256;
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-// postinstall stages the launcher for the host arch on Windows only, so a dev checkout runs MXC tests like CI.
-export function currentMxcArch(platform = process.platform, arch = process.arch) {
-  if (platform !== "win32") return null;
-  if (!Object.hasOwn(WXC_EXEC_SHA256, arch)) throw new Error(`fetch-mxc: no pinned launcher for win32-${arch}`);
-  return arch;
+export function mxcLauncherForTarget(target) {
+  if (!Object.hasOwn(PINS.targets, target)) throw new Error(`fetch-mxc: no pinned launcher for ${target}`);
+  const [platform, arch] = target.split("-");
+  const { launcher } = PINS.targets[target];
+  if (!launcher || !/^[0-9a-f]{64}$/.test(launcher.sha256)
+      || !new RegExp(`^bin/${arch}/[a-z0-9.-]+$`).test(launcher.member)) {
+    throw new Error(`fetch-mxc: malformed launcher pin for ${target}`);
+  }
+  return { ...launcher, platform, arch, name: path.posix.basename(launcher.member) };
+}
+
+export function currentMxcTarget(platform = process.platform, arch = process.arch) {
+  if (platform === "darwin" && arch === "x64") {
+    process.stderr.write("fetch-mxc: x64 macOS is not a supported build host\n");
+    return null;
+  }
+  if (!Object.keys(PINS.targets).some((target) => target.startsWith(`${platform}-`))) return null;
+  const target = `${platform}-${arch}`;
+  mxcLauncherForTarget(target);
+  return target;
 }
 
 function parseArgs(argv) {
-  let arch;
+  let target;
   let tarball;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === "--arch") arch = argv[++i];
-    else if (arg === "--current") arch = currentMxcArch() ?? "";
-    else if (arg === "--tarball") tarball = argv[++i];
-    else throw new Error(`fetch-mxc: unknown argument ${arg}`);
+    if (arg === "--target") target = argv[++i];
+    else if (arg === "--current") target = currentMxcTarget();
+    else if (arg === "--tarball" && argv[i + 1]) tarball = argv[++i];
+    else throw new Error(`fetch-mxc: unknown or incomplete argument ${arg}`);
   }
-  if (!Object.hasOwn(WXC_EXEC_SHA256, arch ?? "")) {
-    throw new Error(`fetch-mxc: --arch must be one of ${Object.keys(WXC_EXEC_SHA256).join(", ")}`);
+  if (target !== null && !Object.hasOwn(PINS.targets, target)) {
+    throw new Error(`fetch-mxc: --target must be one of ${Object.keys(PINS.targets).join(", ")}`);
   }
-  return { arch, tarball };
+  return { target, tarball };
 }
 
 async function tarballBytes(localPath) {
@@ -55,14 +69,27 @@ async function tarballBytes(localPath) {
   });
 }
 
-export async function stageMxcLauncher({ arch, tarball, projectRoot = PROJECT_ROOT }) {
-  const expected = WXC_EXEC_SHA256[arch];
-  const target = path.join(projectRoot, "resources", "mxc", arch, "wxc-exec.exe");
+export async function stageMxcLauncher({ target, tarball, projectRoot = PROJECT_ROOT }) {
+  const pin = mxcLauncherForTarget(target);
+  const destination = path.join(projectRoot, "resources", "mxc", pin.arch, pin.name);
   const licensePath = path.join(projectRoot, "resources", "licenses", "mxc", "LICENSE.md");
   if (sha256(await readFile(licensePath)) !== LICENSE_SHA256) {
     throw new Error(`fetch-mxc: ${licensePath} differs from the MIT license shipped in mxc-sdk ${MXC_PACKAGE_VERSION}`);
   }
-  if (existsSync(target) && sha256(await readFile(target)) === expected) return target;
+  const makeExecutable = async () => {
+    if (pin.platform !== "win32") await chmod(destination, 0o755);
+    return destination;
+  };
+  if (existsSync(destination) && sha256(await readFile(destination)) === pin.sha256) return makeExecutable();
+
+  const installed = path.join(projectRoot, "node_modules", PINS.package, pin.member);
+  const copyVerified = async (file) => {
+    if (sha256(await readFile(file)) !== pin.sha256) throw new Error(`fetch-mxc: ${file} sha256 mismatch`);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await copyFile(file, destination);
+    return makeExecutable();
+  };
+  if (existsSync(installed)) return copyVerified(installed);
 
   const bytes = await tarballBytes(tarball);
   const integrity = createHash("sha512").update(bytes).digest("base64");
@@ -72,19 +99,12 @@ export async function stageMxcLauncher({ arch, tarball, projectRoot = PROJECT_RO
   const work = await mkdtemp(path.join(tmpdir(), "ave-mxc-"));
   try {
     await writeFile(path.join(work, "mxc.tgz"), bytes);
-    const member = `package/bin/${arch}/wxc-exec.exe`;
-    // Relative paths work with both supported tar implementations.
+    const member = `package/${pin.member}`;
     execFileSync("tar", ["-xzf", "mxc.tgz", member], { cwd: work, stdio: "inherit" });
-    const extracted = path.join(work, ...member.split("/"));
-    if (sha256(await readFile(extracted)) !== expected) {
-      throw new Error(`fetch-mxc: ${member} sha256 mismatch`);
-    }
-    await mkdir(path.dirname(target), { recursive: true });
-    await copyFile(extracted, target);
+    return await copyVerified(path.join(work, ...member.split("/")));
   } finally {
     await rm(work, { recursive: true, force: true });
   }
-  return target;
 }
 
 // Cross-architecture packaging cannot assume optional addons for the target
@@ -129,7 +149,8 @@ export async function stageMxcSdkAddon({ arch, tarball, projectRoot = PROJECT_RO
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
-  if (process.argv.includes("--current") && currentMxcArch() === null) process.exit(0);
-  const staged = await stageMxcLauncher(parseArgs(process.argv.slice(2)));
+  const options = parseArgs(process.argv.slice(2));
+  if (options.target === null) process.exit(0);
+  const staged = await stageMxcLauncher(options);
   process.stdout.write(`fetch-mxc: ${path.relative(PROJECT_ROOT, staged)} (mxc-sdk ${MXC_PACKAGE_VERSION})\n`);
 }

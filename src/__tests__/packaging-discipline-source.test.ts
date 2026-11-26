@@ -1687,25 +1687,37 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 
-  it("requires both Windows packaging targets in the cached required CI check", () => {
+  it("requires both Windows and Linux packaging targets in the cached CI check", () => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
       jobs: Record<string, { "runs-on": string; env: Record<string, string>; steps: Record<string, unknown>[]; "continue-on-error"?: boolean }>;
     };
-    const job = workflow.jobs["mxc-pins"]!;
+    const job = workflow.jobs["mxc-pins"];
+    if (!job) throw new Error("Expected mxc-pins CI job");
     expect(job["runs-on"]).toBe("ubuntu-24.04-arm");
     expect(job["continue-on-error"]).not.toBe(true);
-    const command = "bun run check:mxc-pins && bun run check:mxc-packaging";
-    const step = job.steps.find((entry) => entry.run === command)!;
-    expect(step).toBeDefined();
+    const step = job.steps.find((entry) => entry.name === "Verify SDK pins and package both Windows targets");
+    const linux = job.steps.find((entry) => entry.name === "Verify Linux launcher packaging on both architectures");
+    const cache = job.steps.find((entry) => entry.name === "Cache launcher packaging runtime archives");
+    if (!step || !linux || !cache) throw new Error("Expected both packaging steps and their runtime cache");
     expect(step["continue-on-error"]).not.toBe(true);
     expect(step.if).toBeUndefined();
     expect(step["working-directory"]).toBe("ave");
-    expect(job.env.ELECTRON_CACHE).toBe("${{ github.workspace }}/.cache/electron-win");
-    const cache = job.steps.find((entry) => entry.name === "Cache Windows runtime archives")!;
-    expect(cache).toBeDefined();
+    expect(step.run).toBe("bun run check:mxc-pins\nbun run check:mxc-packaging --target win32-x64\nbun run check:mxc-packaging --target win32-arm64\n");
+    expect(linux.run).toBe("bun run check:mxc-packaging --target linux-arm64\nbun run check:mxc-packaging --target linux-x64\n");
+    expect(job.env.ELECTRON_CACHE).toBe("${{ github.workspace }}/.cache/electron-mxc");
     expect(cache.uses).toMatch(/^actions\/cache@/);
-    expect(cache.with).toMatchObject({ path: ".cache/electron-win", key: "ci-win-electron-${{ hashFiles('ave/bun.lock') }}" });
+    expect(cache.with).toMatchObject({ path: ".cache/electron-mxc", key: "ci-mxc-electron-${{ hashFiles('ave/bun.lock') }}" });
     expect(job.steps.indexOf(cache)).toBeLessThan(job.steps.indexOf(step));
+    expect(job.steps.indexOf(cache)).toBeLessThan(job.steps.indexOf(linux));
+
+    const mac = workflow.jobs["macos-permission-tests"];
+    expect(mac?.["runs-on"]).toBe("macos-15");
+    const macStep = mac?.steps.find((entry) => entry.name === "Verify SDK pins and package the macOS launcher");
+    expect(macStep?.run).toBe("bun run check:mxc-pins\nbun run check:mxc-packaging\n");
+    const regressions = mac?.steps.find((entry) => entry.name === "Run macOS permission regressions");
+    for (const name of ["container-platform", "container-route-unswitched", "host-shell-execution-plan", "mxc-launcher", "mxc-posix-ranking"]) {
+      expect(regressions?.run).toContain(`/${name}.test.ts`);
+    }
   });
 
   it("also verifies both payload targets with the production collector on the native host", () => {

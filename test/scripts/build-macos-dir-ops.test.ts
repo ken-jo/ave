@@ -136,7 +136,7 @@ describe("macOS download file helper wiring", () => {
 
   it("packages only the production helper, at the path the host resolves, and builds it for the packaged architecture", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: electron-builder's own arch macro, as package.json spells it.
-    expect(packageJson.build.mac.extraResources).toEqual([{ from: "resources/macos-dir-ops/${arch}/ave-dir-ops", to: "macos-dir-ops/${arch}/ave-dir-ops" }]);
+    expect(packageJson.build.mac.extraResources).toContainEqual({ from: "resources/macos-dir-ops/${arch}/ave-dir-ops", to: "macos-dir-ops/${arch}/ave-dir-ops" });
     expect(packageJson.build.files.some((pattern: string) => pattern.startsWith("resources"))).toBe(false);
     expect(readFileSync(resolve("src/main/browser/browser-download-files.ts"), "utf8"))
       .toContain('join(resourcePath, "macos-dir-ops", process.arch, "ave-dir-ops")');
