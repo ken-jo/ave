@@ -6,6 +6,7 @@ const filesystem = vi.hoisted(() => ({
   entries: new Map<string, { path: string; directory: boolean; target?: string }>(),
   acquire: vi.fn(),
   execute: vi.fn(),
+  observeLstat: undefined as ((path: string) => void) | undefined,
 }));
 
 vi.mock("node:path", async (original) => {
@@ -42,6 +43,7 @@ vi.mock("node:fs", async (original) => {
     },
     lstatSync: (path: Parameters<typeof actual.lstatSync>[0], options?: { throwIfNoEntry?: boolean }) => {
       if (!isVirtual(path)) return actual.lstatSync(path, options as never);
+      filesystem.observeLstat?.(win32.normalize(path).toLowerCase());
       const entry = filesystem.entries.get(win32.normalize(path).toLowerCase());
       if (!entry) {
         if (options?.throwIfNoEntry === false) return undefined;
@@ -65,6 +67,7 @@ vi.mock("node:fs", async (original) => {
 });
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+vi.unmock("../../shared/windows-drive-locality.js");
 vi.mock("../../workload/runtime.js", async original => ({ ...await original<typeof import("../../workload/runtime.js")>(),
   isWorkloadBrokerActive: () => filesystem.brokerActive,
   isActiveWorkloadBrokerCwd: () => filesystem.brokerActive,
@@ -76,6 +79,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AuditLogger } from "../../audit/audit-logger.js";
+import { t } from "../../i18n/index.js";
+import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { caseFoldForMatch, createProjectMembership, foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
@@ -91,6 +96,7 @@ const ORIGINAL_PLATFORM = process.platform;
 const PROJECT = String.raw`D:\Fixture\Project`;
 const OUTSIDE = String.raw`D:\Fixture\Outside-Target.txt`;
 const LINKED_ROOT = String.raw`D:\Fixture\Linked-Root`;
+const LOCAL_DRIVE = String.raw`\Device\HarddiskVolume1`;
 let root: string;
 let audit: AuditLogger;
 let manager: PermissionManager;
@@ -100,6 +106,7 @@ function entry(path: string, directory: boolean, target?: string) {
   filesystem.entries.set(path.toLowerCase(), { path, directory, target });
 }
 beforeEach(() => {
+  setWindowsDriveQueryForTest(() => LOCAL_DRIVE);
   root = mkdtempSync(join(tmpdir(), "ave-windows-file-paths-"));
   vi.stubEnv("AVE_HOME", join(root, "profile"));
   audit = new AuditLogger(join(root, "audit"));
@@ -121,6 +128,7 @@ beforeEach(() => {
   setProcessPlatform("win32");
 });
 afterEach(async () => {
+  filesystem.observeLstat = undefined;
   filesystem.active = false;
   filesystem.brokerActive = false;
   setProcessPlatform(ORIGINAL_PLATFORM);
@@ -128,6 +136,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   rmSync(root, { recursive: true, force: true });
+  setWindowsDriveQueryForTest();
 });
 
 async function run(tool: Tool, input: Record<string, unknown>, cwd = PROJECT, additionalDirectories: string[] = []) {
@@ -190,16 +199,82 @@ describe("native Windows file permission targets", () => {
       canonicalPath: `d:/fixture/project/${path}`,
       runtimePath: targets.get(path),
     })));
-    // Only the sealed resolved targets reach the deny; every lexical operand is public.
+    // Only the resolved targets reach the deny; every lexical operand is public.
     const publicPaths = subject.paths.map((_, index) => `src/public-${index}.txt`);
     const readRuntimePath = vi.fn(() => String.raw`Z:\Public\Unrelated.txt`);
-    const matchingTargets = subject.targets?.map((target, index) => Object.defineProperty({
-      filePath: `${PROJECT}\\src\\public-${index}.txt`, canonicalPath: target.canonicalPath,
-    }, "runtimePath", {
-      get: readRuntimePath,
-    }));
+    const matchingTargets = subject.targets?.map((target, index) => {
+      const filePath = `${PROJECT}\\src\\public-${index}.txt`;
+      const resolved = targets.get(subject.paths[index]!)!;
+      entry(filePath, false, resolved);
+      return Object.defineProperty({ filePath, canonicalPath: target.canonicalPath }, "runtimePath", { get: readRuntimePath });
+    });
     expect(evaluateScopedRules({ ...subject, paths: publicPaths, targets: matchingTargets }, PROJECT, [rule])).toMatchObject({ decision: "deny", pattern: rule.pattern });
     expect(readRuntimePath).not.toHaveBeenCalled();
+  });
+
+  it("shares drive observations across the resolution and scope checks of a native patch", async () => {
+    const first = `${PROJECT}\\patch-first.txt`.toLowerCase();
+    const second = `${PROJECT}\\patch-second.txt`.toLowerCase();
+    const observations = new Map<string, number>();
+    const queries: string[] = [];
+    setWindowsDriveQueryForTest(drive => { queries.push(drive); return LOCAL_DRIVE; });
+    filesystem.observeLstat = path => {
+      if ((path === first || path === second) && !observations.has(path)) observations.set(path, queries.length);
+    };
+    const checkPathScope = PermissionManager.checkPathScope;
+    const scopeQueries: string[][] = [];
+    vi.spyOn(PermissionManager, "checkPathScope").mockImplementation(args => {
+      const start = queries.length;
+      const result = checkPathScope(args);
+      scopeQueries.push(queries.slice(start));
+      return result;
+    });
+    const patch = ["*** Begin Patch", "*** Add File: patch-first.txt", "+first", "*** Add File: patch-second.txt", "+second", "*** End Patch"].join("\n");
+    await run(new ApplyPatchTool(), { patch });
+
+    expect([...observations.keys()]).toEqual([first, second]);
+    expect(queries[observations.get(first)! - 1]).toBe("D:");
+    expect(observations.get(second)).toBe(observations.get(first));
+    expect(scopeQueries).toEqual([[], []]);
+  });
+
+  it("queries the drive once for a standalone multi-target scope check", () => {
+    const query = vi.fn(() => LOCAL_DRIVE);
+    setWindowsDriveQueryForTest(query);
+    expect(PermissionManager.checkPathScope({
+      canonicalTargets: ["first.txt", "second.txt"].map(name => ({
+        filePath: `${PROJECT}\\${name}`, canonicalPath: `d:/fixture/project/${name}`,
+      })),
+      allowedDirectories: ["d:/fixture/project"], effect: "write", blockReadsOutsideWorkingDirectories: true,
+    })).toEqual({ sensitiveHit: null, outOfAllowed: null, readOutsideScope: null });
+    expect(query.mock.calls).toEqual([["D:"]]);
+  });
+
+  it.each([
+    { change: "drive remap", pass: "saved Edit", load: 1 },
+    { change: "link retarget", pass: "saved Edit", load: 1 },
+    { change: "link retarget", pass: "central authorization", load: 2 },
+  ] as const)("refuses a $change during $pass rule loading", async ({ change, load }) => {
+    const path = `${PROJECT}\\linked.txt`;
+    const original = `${PROJECT}\\inside.txt`;
+    entry(path, false, original);
+    await manager.addRulePersist({ pattern: "Edit(inside.txt)", action: "allow" }, { kind: "user" });
+    const loadRules = manager.ensureProjectRulesLoaded.bind(manager);
+    let loads = 0;
+    vi.spyOn(manager, "ensureProjectRulesLoaded").mockImplementation(async cwd => {
+      await loadRules(cwd);
+      if (++loads !== load) return;
+      if (change === "drive remap") setWindowsDriveQueryForTest(drive => drive === "D:" ? String.raw`\??\UNC\host.example\share` : LOCAL_DRIVE);
+      else entry(path, false, OUTSIDE);
+    });
+    const tool = new WriteFileTool();
+    const execute = vi.spyOn(tool, "execute");
+
+    expect(await run(tool, { path: "linked.txt", content: "changed" })).toMatchObject({
+      is_error: true, content: expect.stringContaining(t("be_executor.fileTargetChanged")),
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(requests).toEqual([]);
   });
 
   it.each(["file", "directory"])("keeps the native spelling of a %s directory suggestion", async (kind) => {

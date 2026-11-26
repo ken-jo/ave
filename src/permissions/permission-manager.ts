@@ -769,35 +769,37 @@ export class PermissionManager {
     outOfAllowed: { filePath: string; canonicalPath: string } | null;
     readOutsideScope: { filePath: string; canonicalPath: string } | null;
   } {
-    let sensitiveHit: { filePath: string; pattern: string } | null = null;
-    for (const target of args.canonicalTargets) {
-      const pattern = isAdmissionDeniedPath(target.canonicalPath, args.effect);
-      if (pattern) {
-        sensitiveHit = { filePath: target.filePath, pattern };
-        break;
+    return withLocalityDecision(() => {
+      let sensitiveHit: { filePath: string; pattern: string } | null = null;
+      for (const target of args.canonicalTargets) {
+        const pattern = isAdmissionDeniedPath(target.canonicalPath, args.effect);
+        if (pattern) {
+          sensitiveHit = { filePath: target.filePath, pattern };
+          break;
+        }
       }
-    }
-    const scope = {
-      directories: args.allowedDirectories,
-      blockReadsOutsideWorkingDirectories: args.blockReadsOutsideWorkingDirectories,
-    };
-    let outOfAllowed: { filePath: string; canonicalPath: string } | null = null;
-    let readOutsideScope: { filePath: string; canonicalPath: string } | null = null;
-    for (const target of args.canonicalTargets) {
-      if (!isPathAllowedForEffect(target.canonicalPath, scope, args.effect)) {
-        outOfAllowed = { filePath: target.filePath, canonicalPath: target.canonicalPath };
-        break;
+      const scope = {
+        directories: args.allowedDirectories,
+        blockReadsOutsideWorkingDirectories: args.blockReadsOutsideWorkingDirectories,
+      };
+      let outOfAllowed: { filePath: string; canonicalPath: string } | null = null;
+      let readOutsideScope: { filePath: string; canonicalPath: string } | null = null;
+      for (const target of args.canonicalTargets) {
+        if (!isPathAllowedForEffect(target.canonicalPath, scope, args.effect)) {
+          outOfAllowed = { filePath: target.filePath, canonicalPath: target.canonicalPath };
+          break;
+        }
+        // The same target asked as a write. When the two answers differ, the directory list did refuse this path and only the read/write asymmetry admitted it — which is the fact the audit row records.
+        if (
+          readOutsideScope === null &&
+          args.effect === "read" &&
+          !isPathAllowedForEffect(target.canonicalPath, scope, "write")
+        ) {
+          readOutsideScope = { filePath: target.filePath, canonicalPath: target.canonicalPath };
+        }
       }
-      // The same target asked as a write. When the two answers differ, the directory list did refuse this path and only the read/write asymmetry admitted it — which is the fact the audit row records.
-      if (
-        readOutsideScope === null &&
-        args.effect === "read" &&
-        !isPathAllowedForEffect(target.canonicalPath, scope, "write")
-      ) {
-        readOutsideScope = { filePath: target.filePath, canonicalPath: target.canonicalPath };
-      }
-    }
-    return { sensitiveHit, outOfAllowed, readOutsideScope };
+      return { sensitiveHit, outOfAllowed, readOutsideScope };
+    });
   }
 
   // Boot propagates the persisted reviewer preference without creating another routing policy.

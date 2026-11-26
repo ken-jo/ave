@@ -1561,6 +1561,29 @@ async function runToolInvocationAttempt(
     });
 
     const canonicalTargets: Array<{ filePath: string; canonicalPath: string; runtimePath: string }> = [];
+    const unsealedRuleSubject = scopedRuleSubjectFor(tool, finalInput, executionCwd);
+    const resolveFileTarget = (filePath: string): (typeof canonicalTargets)[number] => {
+      const runtimePath = unsealedRuleSubject?.kind === "edit"
+        ? resolveShellFilesystemPath(filePath, executionCwd)
+        : resolvePathForPolicy(filePath);
+      if (unsealedRuleSubject?.kind === "edit" && process.platform !== "win32" && runtimePath.includes("\\")) {
+        throw new Error("Ambiguous write path");
+      }
+      return { filePath, canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), runtimePath };
+    };
+    const assertFileTargetsUnchanged = (): void => {
+      for (const target of canonicalTargets) {
+        if (resolveFileTarget(target.filePath).runtimePath !== target.runtimePath) throw new Error("Target identity changed");
+      }
+    };
+    const denyFileTargets = async (reason: string): Promise<ToolResult> => {
+      const durationMs = Date.now() - startTime;
+      emitToolStart(callbacks, toolUse.name, finalInput, meta);
+      callbacks?.onToolEnd?.(toolUse.name, reason, true, meta, undefined, durationMs);
+      await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true, startTime, refusal(reason, RULE_PROVENANCE), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+      return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, durationMs });
+    };
+    const changedTargetReason = t("be_executor.fileTargetChanged");
     let directoryAuthorization: AuthorizationStageContext["directoryAuthorization"];
     const directoryApprovalSignal = (approvalSignal?: AbortSignal) =>
       approvalSignal && abortSignal ? AbortSignal.any([approvalSignal, abortSignal]) : approvalSignal ?? abortSignal;
@@ -1608,25 +1631,37 @@ async function runToolInvocationAttempt(
             cwd: terminalScope?.cwd ?? resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined) }
         : undefined;
       await manager.ensureProjectRulesLoaded(shellSubject?.cwd ?? executionCwd);
-      const checkDirectoryPermission = (): PermissionCheckResult => manager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
-        ...invocationPermissionContext, sessionId, projectRulesCwd: shellSubject?.cwd ?? executionCwd,
-        userOwnedBrowser: userOwnedBrowserScopeOf(tool, approvalMemory),
-        agentBrowser: agentBrowserScopeOf(tool, approvalMemory),
-        ...(terminalScope?.lane === "manual" ? { hostTerminalTurn: terminalScope, trustOrigin: invocationPermissionContext.trustOrigin } : {}),
-        ...(invocationCategory === "read" && blockReadsOutsideWorkingDirectories ? { admissionDenial: { code: "read-boundary", reason: "This read is outside the configured allowed directories." } } : {}),
-        ...(invocationCategory === "shell" ? { ...(shellSubject ? { ruleSubject: shellSubject } : {}), hostShellExecutionPlan: hostShellExecutionPlan ?? hostTerminalFloorPlan,
-          shellEscalated: true,
-          shellExecution: { runsSandboxed: hostShellExecutionPlan !== undefined && isConfinedHostShellExecution(hostShellExecutionPlan, disposableSubstrate),
-            ...(isCanonicalBashTool(tool) && preparedShellInvocation !== undefined && hostShellExecutionPlan?.substrate !== "mxc"
-              && invocationPermissionContext.disposableSubstrate === undefined && !brokeredHostShellRouteSelected()
-              ? { environmentSnapshot: preparedShellFacts(preparedShellInvocation).environment } : {}),
-          } } : {
-          ruleSubject: scopedRuleSubjectFor(tool, finalInput, executionCwd, canonicalTargets),
-          fileWritePolicy: { insideProject: false, checkpointAvailable: false, directoryApproved: false },
-        }),
-        ...(approvalReasonPrefix || invocationPermissionContext.otherPrincipal ? { floor: { code: "other-principal" as const, reason: "This action requires the user's approval." } } : {}),
+      const checkDirectoryPermission = (): PermissionCheckResult => withLocalityDecision(() => {
+        assertFileTargetsUnchanged();
+        return manager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
+          ...invocationPermissionContext, sessionId, projectRulesCwd: shellSubject?.cwd ?? executionCwd,
+          userOwnedBrowser: userOwnedBrowserScopeOf(tool, approvalMemory),
+          agentBrowser: agentBrowserScopeOf(tool, approvalMemory),
+          ...(terminalScope?.lane === "manual" ? { hostTerminalTurn: terminalScope, trustOrigin: invocationPermissionContext.trustOrigin } : {}),
+          ...(invocationCategory === "read" && blockReadsOutsideWorkingDirectories ? { admissionDenial: { code: "read-boundary", reason: "This read is outside the configured allowed directories." } } : {}),
+          ...(invocationCategory === "shell" ? { ...(shellSubject ? { ruleSubject: shellSubject } : {}), hostShellExecutionPlan: hostShellExecutionPlan ?? hostTerminalFloorPlan,
+            shellEscalated: true,
+            shellExecution: { runsSandboxed: hostShellExecutionPlan !== undefined && isConfinedHostShellExecution(hostShellExecutionPlan, disposableSubstrate),
+              ...(isCanonicalBashTool(tool) && preparedShellInvocation !== undefined && hostShellExecutionPlan?.substrate !== "mxc"
+                && invocationPermissionContext.disposableSubstrate === undefined && !brokeredHostShellRouteSelected()
+                ? { environmentSnapshot: preparedShellFacts(preparedShellInvocation).environment } : {}),
+            } } : {
+            ruleSubject: scopedRuleSubjectFor(tool, finalInput, executionCwd, canonicalTargets),
+            fileWritePolicy: { insideProject: false, checkpointAvailable: false, directoryApproved: false },
+          }),
+          ...(approvalReasonPrefix || invocationPermissionContext.otherPrincipal ? { floor: { code: "other-principal" as const, reason: "This action requires the user's approval." } } : {}),
+        });
       });
-      let directoryPermission = behavior !== undefined ? manager.recheckPermission(behavior.reviewedPermission) : checkDirectoryPermission();
+      let directoryPermission: PermissionCheckResult;
+      try {
+        directoryPermission = behavior === undefined ? checkDirectoryPermission() : withLocalityDecision(() => {
+          assertFileTargetsUnchanged();
+          return manager.recheckPermission(behavior.reviewedPermission);
+        });
+      } catch (error) {
+        if (canonicalTargets.length === 0) throw error;
+        return { allowed: false, result: await denyFileTargets(changedTargetReason) };
+      }
       const memoryRequest = directoryPermission.pipelineRequest;
       if (behavior === undefined && directoryPermission.decision !== "allow" && memoryRequest && !memoryRequest.admissionDenial && !memoryRequest.floor
         && !memoryRequest.rules?.deny && !memoryRequest.rules?.ask && !memoryRequest.manualRerun && !rationaleResumeContext) {
@@ -1951,6 +1986,8 @@ async function runToolInvocationAttempt(
         if (grantGuard && !grantGuard.isCurrent()) {
           return { allowed: false, result: await denyDirectoryGrant(directorySignal) };
         }
+        try { withLocalityDecision(() => assertFileTargetsUnchanged()); }
+        catch { return { allowed: false, result: await denyFileTargets(changedTargetReason) }; }
         // A policy allow is kept as issued: later rechecks look the result itself up.
         const humanApproved = surfaceResolution.humanApproved ?? surfaceResolution.provenance === undefined;
         const approvedPermissionResult = humanApproved
@@ -2345,32 +2382,35 @@ async function runToolInvocationAttempt(
     const targetFilePaths = brokeredFileRouteSelected
       ? []
       : extractTargetFilePaths(tool, finalInput, executionCwd);
-    // Resolve once. Execution and approval retain native spelling; sensitive-path
-    // and allowed-directory matching share a key derived from that same snapshot.
-    const unsealedRuleSubject = scopedRuleSubjectFor(tool, finalInput, executionCwd);
-    for (const filePath of targetFilePaths) {
-      let runtimePath: string;
-      try {
-        // Native edits must distinguish a new suffix from a dangling or
-        // unreadable ancestor before sealing the one shared path snapshot.
-        if (unsealedRuleSubject?.kind === "edit") {
-          const resolved = resolveShellFilesystemPath(filePath, executionCwd);
-          if (process.platform !== "win32" && resolved.includes("\\")) throw new Error("Ambiguous write path");
-          runtimePath = resolved;
-        } else {
-          runtimePath = resolvePathForPolicy(filePath);
-        }
-      } catch {
-        const reason = "Cannot resolve write target";
-        const blocked: PermissionCheckResult = { decision: "deny", reason, provenance: RULE_PROVENANCE };
-        const durationMs = Date.now() - startTime;
-        emitToolStart(callbacks, toolUse.name, finalInput, meta);
-        callbacks?.onToolEnd?.(toolUse.name, reason, true, meta, undefined, durationMs);
-        await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true, startTime, blocked, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-        return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, durationMs });
-      }
-      canonicalTargets.push({ filePath, canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), runtimePath });
+    const pathEffect = requiredTier(invocationCategory);
+    const nativeFileWrite = isCanonicalFileTool(tool) && invocationCategory === "write" && !brokeredFileRouteSelected;
+    const initialPathJudgment = () => withLocalityDecision(() => {
+      for (const target of targetFilePaths.map(resolveFileTarget)) canonicalTargets.push(target);
+      const sensitiveTarget = brokeredFileRouteSelected ? undefined : PermissionManager.checkPathScope({
+        canonicalTargets,
+        allowedDirectories: invocationAllowedScope.directories,
+        effect: pathEffect,
+        blockReadsOutsideWorkingDirectories,
+      }).sensitiveHit;
+      const inProject = createProjectMembership(executionCwd);
+      const linkedTargets = canonicalTargets.flatMap((target) => {
+        const { canonicalPath } = approvalTargetFor(target.filePath, target.runtimePath);
+        return canonicalPath === undefined ? [] : [{ filePath: target.filePath, canonicalPath, outsideProject: !inProject(target.canonicalPath) }];
+      });
+      // Exclude the broader directory defaults and per-turn temp grants.
+      const rawProjectRoots = [executionCwd, ...(permissionContext.projectDirectories ?? [])];
+      const projectRoots = sanitizeAllowedDirectories(rawProjectRoots);
+      const lexicalProjectRoots = rawProjectRoots.map((root) => caseFoldForMatch(foldCanonicalPathSeparators(resolveToolPathForPermission(root, executionCwd))));
+      const insideProject = nativeFileWrite && areProjectWriteTargetsInside(canonicalTargets, lexicalProjectRoots, projectRoots,
+        unsealedRuleSubject?.kind === "edit" ? unsealedRuleSubject.paths : undefined);
+      return { sensitiveTarget, linkedTargets, projectRoots, insideProject };
+    });
+    let initialPathScope: ReturnType<typeof initialPathJudgment>;
+    try { initialPathScope = initialPathJudgment(); }
+    catch {
+      return await denyFileTargets(pathEffect === "write" ? "Cannot resolve write target" : "Cannot resolve file target");
     }
+    const { sensitiveTarget, linkedTargets, projectRoots, insideProject } = initialPathScope;
     const declaredPaths = (tool.pathFields ?? []).flatMap((field) => selectDeclaredPathValues(finalInput, field)).filter((path): path is string => typeof path === "string");
     invocationPermissionContext.paths = canonicalTargets.flatMap((target) => {
       const operands = declaredPaths.filter((path) => resolveToolPathForPermission(path, executionCwd) === target.filePath);
@@ -2387,38 +2427,7 @@ async function runToolInvocationAttempt(
       if (criticalTarget) invocationPermissionContext.floor = { code: "critical-delete", reason: "Deleting this root requires a fresh human approval." };
     }
 
-    // Layer 0/1 path-scope predicate lives in PermissionManager (SOT V2).
-    // The executor keeps canonicalization (above) + the layer-0 deny and
-    // layer-1 modal wiring below; PM only answers "which target is sensitive
-    // / out-of-allowed". Static call so this runs even when no
-    // PermissionManager instance is wired (the Layer 0/1 hard-block and
-    // out-of-directory prompt are not gated on `services.permissionManager`).
-    //
-    // The effect these targets carry comes from the invocation's category via
-    // `requiredTier`, the same mapping that decides which grant tier covers a
-    // call, so "what counts as a read" is answered once for grants and for
-    // containment. Only `read` maps to a read effect; `write`, `shell`,
-    // `network` and `meta` are all write-equivalent here.
-    const pathEffect = requiredTier(invocationCategory);
-    // A brokered canonical file tool targets the disposable guest namespace.
-    // Host sensitive-path and allowed-directory policy must not reinterpret
-    // `/git`, `/var`, `/root`, etc. as controller paths. The exact branded
-    // grant and protocol's clean POSIX path schema remain mandatory at execute.
-    const sensitiveTarget = brokeredFileRouteSelected
-      ? undefined
-      : PermissionManager.checkPathScope({
-          canonicalTargets,
-          allowedDirectories: invocationAllowedScope.directories,
-          effect: pathEffect,
-          blockReadsOutsideWorkingDirectories,
-        }).sensitiveHit;
     const targetFilePath = canonicalTargets[0]?.filePath;
-    // Targets a link sends somewhere other than their spelling; a card shows both.
-    const inProject = createProjectMembership(executionCwd);
-    const linkedTargets = canonicalTargets.flatMap((target) => {
-      const { canonicalPath } = approvalTargetFor(target.filePath, target.runtimePath);
-      return canonicalPath === undefined ? [] : [{ filePath: target.filePath, canonicalPath, outsideProject: !inProject(target.canonicalPath) }];
-    });
     const sensitivePathPattern = sensitiveTarget?.pattern ?? null;
 
     // Turn-scope admission. `pluginTurnScopeTarget` answers "which plugin does
@@ -2470,13 +2479,6 @@ async function runToolInvocationAttempt(
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
     }
 
-    // Project roots deliberately exclude the broader Layer 1 defaults and per-turn temp grants.
-    const rawProjectRoots = [executionCwd, ...(permissionContext.projectDirectories ?? [])];
-    const projectRoots = sanitizeAllowedDirectories(rawProjectRoots);
-    const lexicalProjectRoots = rawProjectRoots.map((root) => caseFoldForMatch(foldCanonicalPathSeparators(resolveToolPathForPermission(root, executionCwd))));
-    const nativeFileWrite = isCanonicalFileTool(tool) && invocationCategory === "write" && !brokeredFileRouteSelected;
-    const insideProject = nativeFileWrite && areProjectWriteTargetsInside(canonicalTargets, lexicalProjectRoots, projectRoots,
-      unsealedRuleSubject?.kind === "edit" ? unsealedRuleSubject.paths : undefined);
     // Outside project roots, preserve the existing reviewer lane for supported host edits.
     const unsupportedTransfer = nativeFileWrite && insideProject && (tool.name === "extract_archive" || (tool.name === "copy_path"
       && !(typeof finalInput.sourcePath === "string" && await isFileCopyCheckpointSupported(finalInput.sourcePath, executionCwd))));
@@ -2492,21 +2494,28 @@ async function runToolInvocationAttempt(
     // A saved Edit scope grants only the sealed file targets of this call.
     // It never becomes a session directory grant or widens a plugin's scope.
     const editSubject = unsealedRuleSubject?.kind === "edit" ? { ...unsealedRuleSubject, targets: canonicalTargets } : undefined;
-    if (!brokeredFileRouteSelected && editSubject?.kind === "edit" && services.permissionManager) {
-      await services.permissionManager.ensureProjectRulesLoaded(executionCwd);
-      const editDecision = services.permissionManager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
-        ...invocationPermissionContext, ruleSubject: editSubject, projectRulesCwd: executionCwd,
-      });
-      if (editDecision.decision === "allow" && services.permissionManager.checkScopedRules(editSubject, executionCwd).decision === "allow") {
+    const manager = services.permissionManager;
+    if (!brokeredFileRouteSelected && editSubject?.kind === "edit" && manager) {
+      await manager.ensureProjectRulesLoaded(executionCwd);
+      let savedEditAllowed: boolean;
+      try {
+        savedEditAllowed = withLocalityDecision(() => {
+          assertFileTargetsUnchanged();
+          const editDecision = manager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
+            ...invocationPermissionContext, ruleSubject: editSubject, projectRulesCwd: executionCwd,
+          });
+          return editDecision.decision === "allow" && manager.checkScopedRules(editSubject, executionCwd).decision === "allow";
+        });
+      } catch {
+        return await denyFileTargets(changedTargetReason);
+      }
+      if (savedEditAllowed) {
         invocationAllowedScope = { directories: [...invocationAllowedScope.directories, ...canonicalTargets.map((target) => target.canonicalPath)] };
         invocationRuntimeAllowedDirectories = [...invocationRuntimeAllowedDirectories, ...canonicalTargets.map((target) => target.runtimePath)];
       }
     }
 
     // ── Step 2.6: Layer 1 — Allowed Directories ─────
-    //
-    // Frozen-canonical: reuse `canonicalTargetPath` from above (already
-    // realpath'd + case-folded). No re-canonicalization in this block.
     //
     // Skipped when no path-typed input was extracted (e.g. MCP network
     // calls). Shell tools run the same Layer 1 request path above because
@@ -2515,42 +2524,46 @@ async function runToolInvocationAttempt(
     // path-bearing arguments on Tool.pathFields; plugin entries are copied
     // from host-validated manifest authority metadata by plugin-tool-adapter.
     if (canonicalTargets.length > 0 && !brokeredFileRouteSelected) {
-      // A share or device operand is admitted only by authority over its own spelling, never by the drive it names.
-      const scopeTargets = canonicalTargets.map((target) => {
-        const canonicalPath = directoryKey(target.filePath, target.canonicalPath);
-        return canonicalPath === target.canonicalPath ? target : { ...target, canonicalPath, runtimePath: target.filePath };
-      });
-      while (true) {
-        // Re-run the Layer 1 predicate each iteration: applyApprovedDirectory
-        // widens `invocationAllowedScope` after a grant, so the scope must be
-        // re-supplied to PermissionManager.checkPathScope (SOT V2).
+      const checkCurrentFileScope = () => withLocalityDecision(() => {
+        assertFileTargetsUnchanged();
+        // A share or device spelling requires its own directory authority.
+        const scopeTargets = canonicalTargets.map((target) => {
+          const canonicalPath = directoryKey(target.filePath, target.canonicalPath);
+          return canonicalPath === target.canonicalPath ? target : { ...target, canonicalPath, runtimePath: target.filePath };
+        });
         const pathScope = PermissionManager.checkPathScope({
           canonicalTargets: scopeTargets,
           allowedDirectories: invocationAllowedScope.directories,
           effect: pathEffect,
           blockReadsOutsideWorkingDirectories,
         });
-        const outOfAllowed = pathScope.outOfAllowed;
-        const outOfAllowedTarget = outOfAllowed === null ? null : { ...outOfAllowed,
-          realPath: scopeTargets.find((target) => target.filePath === outOfAllowed.filePath)?.runtimePath ?? outOfAllowed.canonicalPath };
-        if (!outOfAllowedTarget) {
-          // A read the directory list would have refused leaves no prompt and
-          // no grant behind it, so the audit row is the only record that the
-          // asymmetry — not a user authorization — is what admitted it.
-          if (pathScope.readOutsideScope) {
-            await services.auditWriter.auditPermissionGrant({
-              toolName: toolUse.name,
-              source,
-              category: invocationCategory,
-              directory: pathScope.readOutsideScope.filePath,
-              policyRule: READ_ANYWHERE_AUDIT_RULE,
-              permissionContext: invocationPermissionContext,
-              provenance: RULE_PROVENANCE,
-              audit: currentAuditMetadata(finalInput),
-            });
-          }
-          break;
+        return { scopeTargets, pathScope };
+      });
+      let currentFileScope: ReturnType<typeof checkCurrentFileScope>;
+      try { currentFileScope = checkCurrentFileScope(); }
+      catch { return await denyFileTargets(changedTargetReason); }
+      const { scopeTargets, pathScope } = currentFileScope;
+      if (pathScope.sensitiveHit) return await denyFileTargets(`sensitive path hard-block: ${pathScope.sensitiveHit.pattern}`);
+      const outOfAllowed = pathScope.outOfAllowed;
+      const outOfAllowedTarget = outOfAllowed === null ? null : { ...outOfAllowed,
+        realPath: scopeTargets.find((target) => target.filePath === outOfAllowed.filePath)?.runtimePath ?? outOfAllowed.canonicalPath };
+      if (!outOfAllowedTarget) {
+        // A read the directory list would have refused leaves no prompt and
+        // no grant behind it, so the audit row is the only record that the
+        // asymmetry — not a user authorization — is what admitted it.
+        if (pathScope.readOutsideScope) {
+          await services.auditWriter.auditPermissionGrant({
+            toolName: toolUse.name,
+            source,
+            category: invocationCategory,
+            directory: pathScope.readOutsideScope.filePath,
+            policyRule: READ_ANYWHERE_AUDIT_RULE,
+            permissionContext: invocationPermissionContext,
+            provenance: RULE_PROVENANCE,
+            audit: currentAuditMetadata(finalInput),
+          });
         }
+      } else {
         const dirLayerResult: PermissionCheckResult = {
           decision: "ask", provenance: RULE_PROVENANCE,
           reason: `out-of-allowed-dir: ${outOfAllowedTarget.filePath} (not in additionalDirectories)`,
@@ -2568,6 +2581,8 @@ async function runToolInvocationAttempt(
           tool.pathFields ?? [],
         );
         if (!resolution.allowed) return resolution.result;
+        try { withLocalityDecision(() => assertFileTargetsUnchanged()); }
+        catch { return await denyFileTargets(changedTargetReason); }
         if (resolution.permissionResult) {
           permissionResult = resolution.permissionResult;
           directoryAuthorization = { permission: resolution.permissionResult, humanApproved: resolution.humanApproved === true,
@@ -2576,15 +2591,13 @@ async function runToolInvocationAttempt(
         if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) {
           const denied = await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.provenance ?? RULE_PROVENANCE);
           if (denied) return denied;
+          try { withLocalityDecision(() => assertFileTargetsUnchanged()); }
+          catch { return await denyFileTargets(changedTargetReason); }
         }
         applyApprovedDirectory(resolution.approvedDirectory);
         // The one card authorizes the complete sealed invocation; saved folders retain only the chosen scope.
         for (const target of [...canonicalTargets, ...scopeTargets]) applyApprovedDirectory(target.runtimePath);
         if (fileWritePolicy && !resolution.pendingRationale && invocationPermissionContext.headless !== true) fileWritePolicy.directoryApproved = true;
-        break;
-        // allow-once / allow-session / allow-always — fall through to Step 3
-        // (full Layer 3 check still runs; Layer 1 is necessary, not
-        // sufficient).
       }
     }
     if (
@@ -2651,6 +2664,7 @@ async function runToolInvocationAttempt(
       targetFilePath,
       linkedTargets,
       canonicalTargets,
+      ...(canonicalTargets.length > 0 ? { assertFileTargetsUnchanged } : {}),
       approvalCacheKey,
       executionCwd,
       auditCurrentToolCall,
@@ -2668,6 +2682,10 @@ async function runToolInvocationAttempt(
     });
     if ("tool_use_id" in authorization || authorization.outcome === "rationale-required") {
       return authorization;
+    }
+    if (canonicalTargets.length > 0) {
+      try { withLocalityDecision(() => assertFileTargetsUnchanged()); }
+      catch { return await denyFileTargets(changedTargetReason); }
     }
     if (hostTerminalReapproval && !authorization.humanApproved) {
       return await returnExecutionRouteFailure(new Error("Terminal reapproval requires an explicit human answer."));

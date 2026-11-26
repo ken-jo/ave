@@ -1,6 +1,5 @@
-import { withLocalityDecision } from "../../shared/local-path-io.js";
+import { admitLocalRoute, localFs, withLocalityDecision } from "../../shared/local-path-io.js";
 import { dirname, isAbsolute, sep } from "node:path";
-import { statSync } from "node:fs";
 import { globMatch, containsGlobMetacharacter } from "../../lib/glob-matcher.js";
 import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.js";
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
@@ -40,14 +39,18 @@ function editPaths(subject: Extract<ScopedRuleSubject, { kind: "edit" }>, root: 
   if (subject.pathEffects && subject.pathEffects.length !== subject.paths.length) throw new Error("Edit path effects do not match sealed operands");
   const inProject = createProjectMembership(root);
   return subject.paths.map((path, index) => {
-    const lexical = foldCanonicalPathSeparators(resolveToolPathForPermission(path, subject.cwd));
+    const absolute = resolveToolPathForPermission(path, subject.cwd);
+    const lexical = foldCanonicalPathSeparators(absolute);
     const frozen = subject.targets?.find((target) => caseFoldForMatch(foldCanonicalPathSeparators(target.filePath)) === caseFoldForMatch(lexical));
     if (subject.targets && !frozen) throw new Error("Edit target was not sealed by the host");
-    const resolved = frozen?.canonicalPath ?? resolveShellFilesystemPath(expandLeadingTilde(path), subject.cwd);
+    const resolved = resolveShellFilesystemPath(frozen ? absolute : expandLeadingTilde(path), subject.cwd);
     if (process.platform !== "win32" && (path.includes("\\") || subject.cwd.includes("\\") || resolved.includes("\\"))) {
       throw new Error("Write path cannot be represented by normalized rules");
     }
     const canonical = foldCanonicalPathSeparators(resolved);
+    if (frozen && caseFoldForMatch(canonical) !== caseFoldForMatch(foldCanonicalPathSeparators(frozen.canonicalPath))) {
+      throw new Error("Sealed Edit target changed");
+    }
     const effect = subject.pathEffects?.[index] ?? "write";
     if (effect !== "read" && effect !== "write") throw new Error("Edit target has no valid path effect");
     const control = effect === "write" ? protectedControlEntryFor(lexical) ?? protectedControlEntryFor(canonical) : undefined;
@@ -155,6 +158,11 @@ export interface EditDepthCandidate {
 
 // Host-resolved depth choices use ordinary Edit rules and the same store.
 export function editDepthCandidates(path: string, cwd: string): EditDepthCandidate[] {
+  try { return withLocalityDecision(() => editDepthCandidatesInDecision(path, cwd)); }
+  catch { return []; }
+}
+
+function editDepthCandidatesInDecision(path: string, cwd: string): EditDepthCandidate[] {
   let target: string;
   try {
     const paths = editPaths({ kind: "edit", paths: [path], cwd }, projectRootFor(cwd));
@@ -165,7 +173,7 @@ export function editDepthCandidates(path: string, cwd: string): EditDepthCandida
   try { parseRuleSpecifier(formatRuleSpecifier({ kind: "edit", path: target, recursive: false })); }
   catch { return []; }
   let directory = false;
-  try { directory = statSync(target).isDirectory(); } catch { /* A new target is a file candidate. */ }
+  try { directory = localFs.stat(admitLocalRoute(target).verdict).isDirectory(); } catch { /* A new target is a file candidate. */ }
   const parent = directory ? target : dirname(target);
   const project = projectRootFor(parent);
   const candidates: EditDepthCandidate[] = [];

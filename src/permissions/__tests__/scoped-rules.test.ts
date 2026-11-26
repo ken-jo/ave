@@ -279,7 +279,7 @@ describe("scoped permission rules", () => {
     expect(evaluateScopedRules(subject, project, [{ pattern: "Edit(src/**)", action: "ask" }], [{ pattern: "Edit(src/nested/**)", action: "deny" }])).toMatchObject({ decision: "deny" });
   });
 
-  it("keeps rule decisions tied to the sealed path after a symlink changes", () => {
+  it("refuses a sealed Edit target after a symlink changes", () => {
     const outside = join(directory, "outside");
     mkdirSync(outside);
     const link = join(project, "src", "link");
@@ -289,18 +289,18 @@ describe("scoped permission rules", () => {
     unlinkSync(link);
     symlinkSync(join(project, "src", "nested"), link, "junction");
     const subject: ScopedRuleSubject = { kind: "edit", paths: [filePath], cwd: project, targets: [{ filePath, canonicalPath }] };
-    expect(evaluate(subject, [allow("Edit(src/**)")])).toMatchObject({ floor: expect.any(String) });
+    expect(() => evaluate(subject, [allow("Edit(src/**)")])).toThrow("Sealed Edit target changed");
     expect(() => evaluate({ ...subject, targets: [] }, [allow("Edit(src/**)")])).toThrow("Edit target was not sealed by the host");
   });
 
-  it.each(["deny", "ask"] as const)("retains a lexical %s when a rule anchor symlink changes", (action) => {
+  it.each(["deny", "ask"] as const)("retains a lexical %s for a current sealed target after a rule anchor symlink changes", (action) => {
     const link = join(project, "alias");
     symlinkSync(join(project, "src", "nested"), link, "junction");
     const filePath = join(link, "new.ts");
-    const canonicalPath = join(project, "src", "nested", "new.ts");
     unlinkSync(link);
     mkdirSync(join(project, "public"));
     symlinkSync(join(project, "public"), link, "junction");
+    const canonicalPath = join(project, "public", "new.ts");
     const subject: ScopedRuleSubject = { kind: "edit", cwd: project, paths: [filePath], targets: [{ filePath, canonicalPath }] };
     expect(evaluate(subject, [allow("Edit(**)"), { pattern: "Edit(alias/**)", action }])).toMatchObject({ decision: action });
   });
