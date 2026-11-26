@@ -10,6 +10,7 @@ import { NODE_PRESERVE_SYMLINK_FLAGS, spawnConfinedChild, srtWinTargetEnv } from
 import { createSandboxProcessHome, isSandboxHomeUnavailable } from '../../permissions/sandbox-process-home.js';
 import { CHILD_LOOPBACK_TRANSPORT_ARG, connectToAnnouncedChild, encodeChildEnv } from '../../plugins/isolation/child-loopback-link.js';
 import { spawnMxcBundledHolder } from '../../sandbox/wrap-bundled-command.js';
+import { commitUnderAdmission } from '../../shared/admission-commit.js';
 import type { MemoryMapProgress } from '../../shared/memory-map.js';
 import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
 import { win32SystemBinary } from '../../shared/windows-system-path.js';
@@ -27,8 +28,13 @@ const TELEMETRY_OPT_OUT = { ORT_DISABLE_TELEMETRY: '1' } as const;
 const INFERENCE_CHILD_LABEL = 'memory-map-inference';
 const INFERENCE_EGRESS_OWNER = { kind: 'worker', role: 'worker', pluginId: undefined, instanceId: 'memory-map', network: 'offline' } as const;
 
-function write(output: Writable, chunk: Buffer): Promise<void> {
-  return new Promise((resolve, reject) => { output.write(chunk, error => { if (error) reject(error); else resolve(); }); });
+// Every dispatch to the child crosses the admission boundary: a refusal sends nothing.
+function send(output: Writable, chunk: Buffer, assertStillValid: () => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    try {
+      commitUnderAdmission(assertStillValid, () => { output.write(chunk, error => { if (error) reject(error); else resolve(); }); });
+    } catch (error) { reject(error as Error); }
+  });
 }
 
 // The child reads no model file: the host streams the verified bytes, so no grant reaches the model folder.
@@ -45,12 +51,11 @@ async function writeRequest(output: Writable, folder: string, taskJson: string, 
     }
     const prefix = Buffer.alloc(INFERENCE_PREFIX_BYTES);
     for (const [index, bytes] of lengths.entries()) prefix.writeUInt32BE(bytes, index * 4);
-    assertStillValid();
-    await write(output, prefix);
-    await write(output, Buffer.from(taskJson, 'utf8'));
+    await send(output, prefix, assertStillValid);
+    await send(output, Buffer.from(taskJson, 'utf8'), assertStillValid);
     let frameTail: Buffer | undefined;
     for (const { handle, file } of opened) {
-      if (frameTail !== undefined) await write(output, frameTail);
+      if (frameTail !== undefined) await send(output, frameTail, assertStillValid);
       const hash = createHash('sha256');
       let received = 0;
       let finalChunk: Buffer | undefined;
@@ -59,7 +64,7 @@ async function writeRequest(output: Writable, folder: string, taskJson: string, 
         received += bytes.length;
         hash.update(bytes);
         if (received === file.bytes) finalChunk = bytes;
-        else await write(output, bytes);
+        else await send(output, bytes, assertStillValid);
       }
       if (finalChunk === undefined || (await handle.stat()).size !== file.bytes || hash.digest('hex') !== file.sha256) {
         throw new MemoryMapHostError('model-integrity-failed');
@@ -74,8 +79,7 @@ async function writeRequest(output: Writable, folder: string, taskJson: string, 
       }
     }));
     if (frameTail === undefined) throw new MemoryMapHostError('model-integrity-failed');
-    assertStillValid();
-    await write(output, frameTail);
+    await send(output, frameTail, assertStillValid);
   } finally { await Promise.all(handles.map(handle => handle.close())); }
 }
 
@@ -119,6 +123,8 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
       signal,
       assertStillValid,
     });
+    // The supervisor splits a write into frames across yields; each frame takes the same check.
+    holder.process.fenceInput(assertStillValid);
     holder.process.stderr.resume();
     return { input: holder.process.stdout, output: holder.process.stdin, stop: holder.release, assertStillValid };
   }
@@ -205,7 +211,11 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
         input.destroy();
       }
       void Promise.resolve().then(stop).then(
-        () => { if (error) reject(error); else resolve(value as T); },
+        () => {
+          if (error) { reject(error); return; }
+          // Cleanup yielded, so the result leaves under the receipt as it stands now.
+          try { commitUnderAdmission(assertStillValid, () => resolve(value as T)); } catch (refusal) { reject(refusal as Error); }
+        },
         (cleanupError: unknown) => reject(error ?? cleanupError),
       );
     };
@@ -220,7 +230,11 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
       if (settled) return;
       let message: { kind?: string; progress?: MemoryMapProgress; value?: unknown; error?: unknown };
       try { message = JSON.parse(line) as typeof message; } catch { finish(new Error('Memory worker failed')); return; }
-      if (message.kind === 'progress') { if (message.progress !== undefined) onProgress?.(message.progress); }
+      if (message.kind === 'progress') {
+        const { progress } = message;
+        if (progress === undefined || onProgress === undefined) return;
+        try { commitUnderAdmission(assertStillValid, () => onProgress(progress)); } catch (error) { refuse(error); }
+      }
       else if (message.kind === 'result') {
         try { assertStillValid(); } catch (error) { refuse(error); return; }
         finish(undefined, message.value as T);

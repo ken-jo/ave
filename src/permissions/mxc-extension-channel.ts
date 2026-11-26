@@ -2,6 +2,7 @@ import { Readable, Writable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { encodeMxcFrame, MxcFrameDecoder, type MxcStreamFrame } from "./mxc-extension-protocol.js";
 import { MxcProcessContractError } from "./mxc-extension-errors.js";
+import { commitUnderAdmission } from "../shared/admission-commit.js";
 
 type FramePayload = MxcStreamFrame extends infer Frame ? Frame extends MxcStreamFrame ? Omit<Frame, "version" | "generation" | "sequence"> : never : never;
 
@@ -11,6 +12,7 @@ export class MxcExtensionChannel {
   private pending = 0;
   private tail: Promise<void> = Promise.resolve();
   private closed = false;
+  private failed = false;
   private readonly decoder: MxcFrameDecoder;
 
   constructor(readonly input: Readable, readonly output: Writable, private readonly generation: string,
@@ -18,16 +20,37 @@ export class MxcExtensionChannel {
     this.decoder = new MxcFrameDecoder(generation, key, role === "host" ? "supervisor" : "host");
   }
 
-  send(payload: FramePayload): Promise<void> {
+  /** `admit` runs in the step that writes the frame. Its refusal sends nothing, takes no sequence number and leaves the
+   * channel open for the frames that end the process. */
+  send(payload: FramePayload, admit?: () => void): Promise<void> {
     if (this.pending >= 4 || this.closed || this.output.destroyed) return Promise.reject(new MxcProcessContractError("Supervisor send is not available"));
-    const frame = encodeMxcFrame({ ...payload, version: 1, generation: this.generation, sequence: this.sequence++ } as MxcStreamFrame, this.key, this.role);
     this.pending += 1;
     const sent = this.tail.then(() => new Promise<void>((resolve, reject) => {
-      this.output.write(frame, (error) => error ? reject(error) : resolve());
+      if (this.failed) { reject(new MxcProcessContractError("Supervisor send is not available")); return; }
+      let writing = false;
+      const write = (): void => {
+        writing = true;
+        const frame = encodeMxcFrame({ ...payload, version: 1, generation: this.generation, sequence: this.sequence++ } as MxcStreamFrame, this.key, this.role);
+        this.output.write(frame, (error) => {
+          if (!error) { resolve(); return; }
+          this.fail();
+          reject(error);
+        });
+      };
+      try {
+        if (admit === undefined) write(); else commitUnderAdmission(admit, write);
+      } catch (error) {
+        if (writing) this.fail();
+        reject(error as Error);
+      }
     })).finally(() => { this.pending -= 1; });
-    this.tail = sent;
-    void sent.catch(() => { this.closed = true; });
+    this.tail = sent.then(() => {}, () => {});
     return sent;
+  }
+
+  private fail(): void {
+    this.failed = true;
+    this.closed = true;
   }
 
   async *frames(): AsyncGenerator<MxcStreamFrame> {

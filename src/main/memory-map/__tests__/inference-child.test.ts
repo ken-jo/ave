@@ -320,9 +320,17 @@ it('streams verified bytes through the container holder and releases it', async 
   route.mockReturnValue('mxc');
   const { child, completed } = serveReply();
   const release = vi.fn(async () => {});
-  spawnMxc.mockResolvedValue({ process: child, release });
+  const fenceInput = vi.fn<(admit: () => void) => void>();
+  spawnMxc.mockResolvedValue({ process: Object.assign(child, { fenceInput }), release });
   const signal = new AbortController().signal;
   await expect(runInferenceChild(folder, TASK, signal)).resolves.toBe('embedded');
+  // The holder's own frames take the request's admission: it refuses once the route is superseded.
+  expect(fenceInput).toHaveBeenCalledOnce();
+  const admitFrame = fenceInput.mock.calls[0]?.[0];
+  if (admitFrame === undefined) throw new Error('Input was not fenced');
+  expect(admitFrame).not.toThrow();
+  route.mockReturnValue('unconfined');
+  expect(admitFrame).toThrow(expect.objectContaining({ code: 'local-runtime-unavailable' }));
   expect(spawnMxc).toHaveBeenCalledWith(expect.objectContaining({
     workerTransport: 'stdio-control-v1', signal, cwd: win32.join(FIXTURE_SYSTEM_ROOT, 'System32'), allowWrite: [],
     egressOwner: expect.objectContaining({ network: 'offline' }),
@@ -439,4 +447,76 @@ it.each(['cancel', 'route change'] as const)('refuses native creation after a de
   expect(spawnHost).not.toHaveBeenCalled();
   if (change === 'cancel') expect(outcome).toBe(reason);
   else expect(outcome).toMatchObject({ code: 'local-runtime-unavailable' });
+});
+
+describe('inference dispatch and delivery under a superseded receipt', () => {
+  function supersedableRoute() {
+    let live = true;
+    route.mockImplementation(() => {
+      if (!live) throw new MemoryMapHostError('local-runtime-unavailable');
+      return 'offline-sandbox';
+    });
+    return () => { live = false; };
+  }
+
+  it('sends no task or model bytes after a held prefix write outlives its receipt', async () => {
+    const supersede = supersedableRoute();
+    const writing = deferred<void>();
+    const release = deferred<void>();
+    const { child, completed } = serveReply(received => {
+      if (received !== 0) return;
+      writing.resolve();
+      return release.promise;
+    });
+    const requestWrite = vi.spyOn(child.stdin, 'write');
+
+    const inference = runInferenceChild(folder, TASK, new AbortController().signal);
+    await writing.promise;
+    supersede();
+    release.resolve();
+    await expect.soft(inference).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
+    expect.soft(requestWrite.mock.calls.map(([chunk]) => (chunk as Buffer).length)).toEqual([REQUEST_PREFIX.length]);
+    expect(completed).not.toHaveBeenCalled();
+  });
+
+  it('refuses a result whose receipt is superseded while child cleanup is held', async () => {
+    setProcessPlatform('win32');
+    vi.stubEnv('SystemRoot', FIXTURE_SYSTEM_ROOT);
+    let live = true;
+    route.mockImplementation(() => {
+      if (!live) throw new MemoryMapHostError('local-runtime-unavailable');
+      return 'mxc';
+    });
+    const { child, completed } = serveReply();
+    const releasing = deferred<void>();
+    const released = deferred<void>();
+    spawnMxc.mockResolvedValue({
+      process: Object.assign(child, { fenceInput: vi.fn() }),
+      release: vi.fn(() => { releasing.resolve(); return released.promise; }),
+    });
+
+    const inference = runInferenceChild(folder, TASK, new AbortController().signal);
+    await releasing.promise;
+    expect(completed).toHaveBeenCalledOnce();
+    live = false;
+    released.resolve();
+    await expect(inference).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
+  });
+
+  it('forwards no progress once its receipt is superseded', async () => {
+    const supersede = supersedableRoute();
+    const progress = { jobId: 'job', phase: 'embedding', completed: 1, total: 2 } as const;
+    const { child, completed } = serveReply(received => {
+      if (received !== 0) return;
+      child.stdout.write(`${JSON.stringify({ kind: 'progress', progress })}
+`);
+      return new Promise<void>(resolve => { setImmediate(() => { supersede(); child.stdout.write(`${JSON.stringify({ kind: 'progress', progress: { ...progress, completed: 2 } })}
+`); setImmediate(resolve); }); });
+    });
+    const onProgress = vi.fn();
+
+    await expect(runInferenceChild(folder, TASK, new AbortController().signal, onProgress)).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
+    expect(onProgress.mock.calls).toEqual([[progress]]);
+    expect(completed).not.toHaveBeenCalled();
+  });
 });

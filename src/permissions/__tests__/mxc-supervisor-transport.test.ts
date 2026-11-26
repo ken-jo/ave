@@ -7,7 +7,7 @@ import * as backendEvidence from "../windows-confinement-evidence.js";
 import { createMxcExtensionRequest, createMxcNativeProcess } from "../../__tests__/support/mxc-supervisor.js";
 import { _spawnMxcExtensionProcessForTest, spawnMxcExtensionProcess, spawnMxcExtensionProcessForDiagnostics, type OwnedMxcExtensionProcess, type MxcProcessLifecycleEvent } from "../mxc-extension-process.js";
 import { MxcExtensionChannel } from "../mxc-extension-channel.js";
-import { mxcRequestDigest } from "../mxc-extension-protocol.js";
+import { MXC_STREAM_CHUNK_BYTES, mxcRequestDigest } from "../mxc-extension-protocol.js";
 import { serveMxcSupervisor } from "../mxc-supervisor-service.js";
 import { MxcIntegrityError } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
 import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "../mxc-extension-errors.js";
@@ -66,7 +66,7 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     ["denied base containment fallback", "base-container", true, true],
     ["extension-only path queries", "base-container", false, false],
   ] as const)("reports shared backend loss for %s only when base containment is unavailable", async (_name, tier, enumerate, needsDaclAugmentation) => {
-    const reportLoss = vi.spyOn(backendEvidence, "invalidateWindowsBackendEvidence");
+    const reportLoss = vi.spyOn(backendEvidence, "reportWindowsBackendLoss");
     try {
       const f = transportFixture();
       f.probe.mockReturnValue({ tier, needsDaclAugmentation, probes: { baseContainerSupportsEnumeratePaths: enumerate } } as ProbeOutput);
@@ -77,13 +77,42 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
   });
 
   it("revokes receipts when native creation reports backend loss", async () => {
-    const reportLoss = vi.spyOn(backendEvidence, "invalidateWindowsBackendEvidence");
+    const reportLoss = vi.spyOn(backendEvidence, "reportWindowsBackendLoss");
     try {
       const f = transportFixture();
       f.spawn.mockRejectedValue(Object.assign(new Error("Base containment was withdrawn"), { code: "backend_unavailable" }));
       await expect(f.launch()).rejects.toBeInstanceOf(MxcProcessCleanupError);
-      expect(reportLoss).toHaveBeenCalledExactlyOnceWith("container");
+      expect(reportLoss).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ backend: "container" }));
     } finally { reportLoss.mockRestore(); }
+  });
+
+  it.each([
+    ["revokes the evidence it measured", false],
+    ["leaves evidence that replaced what it measured", true],
+  ] as const)("a native creation failure %s", async (_name, superseded) => {
+    const f = transportFixture();
+    f.spawn.mockImplementation(async () => {
+      if (superseded) void backendEvidence.WINDOWS_BACKEND_EVIDENCE.container.refresh();
+      throw Object.assign(new Error("Base containment was withdrawn"), { code: "backend_unavailable" });
+    });
+    const lossEpoch = backendEvidence.getWindowsContainerBackendLossEpoch();
+    await expect(f.launch()).rejects.toBeInstanceOf(MxcProcessCleanupError);
+    expect(backendEvidence.getWindowsContainerBackendLossEpoch()).toBe(lossEpoch + (superseded ? 0 : 1));
+  });
+
+  it("checks the input fence at every frame and still stops after a refusal", async () => {
+    const f = transportFixture();
+    let received = 0;
+    f.fixture.stdin.on("data", (bytes: Buffer) => { received += bytes.length; });
+    const owned = await f.launch();
+    let checks = 0;
+    owned.fenceInput(() => { if (++checks > 2) throw new Error("superseded"); });
+    const refused = new Promise<Error | null | undefined>((resolve) => owned.stdin.write(Buffer.alloc(4 * MXC_STREAM_CHUNK_BYTES, 7), resolve));
+    expect((await refused)?.message).toBe("superseded");
+    await owned.dispose();
+    expect(checks).toBe(3);
+    expect(received).toBe(2 * MXC_STREAM_CHUNK_BYTES);
+    expect(f.fixture.native.kill).toHaveBeenCalledOnce();
   });
 
   it("forwards binary stdin, stdout, stderr and terminal status, omitting telemetry", async () => {
