@@ -66,7 +66,7 @@ it("a retried stage seals independently without retaining its old commit", async
     if (!runId) throw new Error("run identity was not stored");
 
     expect(
-      await h.engine.retryStage(id, { runId, stageId: "a" }),
+      await h.engine.retryStage(id, { runId, stageId: "a", attempt: 1 }),
     ).toMatchObject({ ok: true });
 
     const replacement = (await h.untilSpawned(3))[2];

@@ -1,3 +1,4 @@
+import type { OpenJoinIpcResult } from "../../shared/work-board-types.js";
 import type { MemoryMapApi } from '../../shared/memory-map.js';
 import type { PermissionAuditIntegrity } from "../../audit/audit-schema.js";
 import type { ScheduleAttachment, ScheduleAttachmentRequest, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../../shared/workflow-template-types.js";
@@ -1012,6 +1013,9 @@ export type AvePreloadApi = {
   // Result envelopes are the store's discriminated `status` unions (or
   // `{ ok:false, error }` for unauthorized-frame / no-store). Shared types come
   // from the renderer-safe `shared/work-board-types.js` (no Node built-ins).
+  setWorkBoardProjectScope: (root: string | undefined) => Promise<boolean>;
+  openWorkBoardJoin: (itemId: number, input: Omit<import("../../shared/work-board-types.js").StageJoinDecideInput, "decision">) =>
+    Promise<OpenJoinIpcResult | { ok: false; error: string }>;
   listWorkBoard: (
     filter?: import("../../shared/work-board-types.js").WorkItemListFilter,
   ) => Promise<
@@ -1020,12 +1024,14 @@ export type AvePreloadApi = {
   >;
   getWorkBoardItem: (
     id: number,
+    runId?: string,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkItemGetResult
     | { ok: false; error: string }
   >;
   addWorkBoardItem: (
     input: import("../../shared/work-board-types.js").WorkItemCreateInput,
+    launch?: import("../../shared/work-board-types.js").TemplateRunRequest,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkItemCreateResult
     | { ok: false; error: string }
@@ -1149,11 +1155,9 @@ export type AvePreloadApi = {
   // Steer or stop a running execution (local user only: a consumed keyboard
   // gesture, permission-decision-tree.md S→T). The host picks the execute child;
   // the steer text reaches it as host-fenced guidance at its next round boundary.
-  // `userIntent` is captured at the gesture with captureUserKeyboardIntent().
   steerWorkBoardRun?: (
     itemId: number,
     text: string,
-    userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot,
     stageId?: string,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkBoardSteerIpcResult

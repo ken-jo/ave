@@ -1,6 +1,7 @@
 import "../../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { SchedulePanel } from "../SchedulePanel.js";
 import { ScheduleItemPopover } from "../ScheduleItemPopover.js";
 import type { AveApi } from "../../../types.js";
@@ -488,7 +489,8 @@ it("shows recorded metrics on chips and the detail popover while older fires sta
   expect(within(recent).getByTestId("routine-run-metrics").textContent).toBe("3분 12초 · 4.1k 토큰");
 });
 
-it("shows an unavailable tool as a skipped firing and opens a new local approval for reattach", async () => {
+it.each(["{Enter}", "[Space]"])("guides a refused pointer attachment to keyboard approval with %s", async (key) => {
+  const user = userEvent.setup();
   const api = makeApi({
     routines: [routine({
       execution: "template-run", attachmentId: "attached", lastTemplateSkip: {
@@ -501,7 +503,10 @@ it("shows an unavailable tool as a skipped firing and opens a new local approval
   const pin = { templateId: template.id, version: 2, graphHash: "a".repeat(64) };
   api.listWorkflowTemplates = vi.fn(async () => ({ ok: true as const, value: [template] }));
   api.getWorkflowTemplate = vi.fn(async () => ({ ok: true as const, value: { template, versions: [pin] } })) as unknown as AveApi["getWorkflowTemplate"];
-  api.attachWorkflowTemplateSchedule = vi.fn(async () => ({ ok: false as const, error: "scope-changed" as const }));
+  const attach = vi.fn<AveApi["attachWorkflowTemplateSchedule"]>()
+    .mockResolvedValueOnce({ ok: false, error: "user-keyboard-required" })
+    .mockResolvedValueOnce({ ok: false, error: "scope-changed" });
+  api.attachWorkflowTemplateSchedule = attach;
   const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
   expect((await view.findByRole("status")).textContent).toBe("건너뜀: lookup 사용 불가");
   expect(view.queryByText("다시 연결 필요")).toBeNull();
@@ -512,7 +517,15 @@ it("shows an unavailable tool as a skipped firing and opens a new local approval
   await within(dialog).findByText("버전 2");
   expect(within(dialog).getByText(project.projectRoot)).toBeTruthy();
   expect(api.attachWorkflowTemplateSchedule).not.toHaveBeenCalled();
-  fireEvent.click(within(dialog).getByRole("button", { name: "승인하고 연결" }));
-  await waitFor(() => expect(api.attachWorkflowTemplateSchedule).toHaveBeenCalledWith({ ...pin, scheduleId: "build", expectedScope: scope }));
+  const approve = within(dialog).getByRole("button", { name: "승인하고 연결" });
+  await user.click(approve);
+  expect((await within(dialog).findByRole("alert")).textContent).toContain("Enter 또는 Space");
+  expect(attach).toHaveBeenCalledOnce();
+
+  within(dialog).getByRole("button", { name: "취소" }).focus();
+  await user.tab();
+  expect(document.activeElement).toBe(approve);
+  await user.keyboard(key);
+  expect(attach).toHaveBeenNthCalledWith(2, { ...pin, scheduleId: "build", expectedScope: scope });
   expect((await within(dialog).findByRole("alert")).textContent).toContain("범위");
 });

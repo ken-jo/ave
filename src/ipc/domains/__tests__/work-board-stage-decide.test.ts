@@ -1,17 +1,34 @@
+import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
+import { approvalSurfaceResolver } from "../../../boot/approval-surface.js";
+import { updateApprovalSurface } from "../../../permissions/approval-surface-registry.js";
+
+import { securitySettingsGestures } from "../../security-settings-gesture.js";
+import { shell } from "electron";
+import { deliverWorkBoardProgress } from "../../work-board-project-scope.js";
+import type { MainWindow } from "../../../main/main-window-host.js";
+import * as permissionSettings from "../../../permissions/permission-settings-store.js";
+import { workBoardDecisionKey, type WorkBoardDecisionChannel } from "../../../shared/work-board-decision-intent.js";
+import { captureWorkBoardTestGesture, pressWorkBoardTestKey, workBoardTestSender } from "../../../__tests__/support/work-board-ipc.js";
+import { deferred } from "../../../__tests__/support/deferred.js";
+import { registerPermissionsHandlers } from "../permissions.js";
+import { registerWorkApprovalsHandlers } from "../work-approvals.js";
+import { AuditLogger } from "../../../audit/audit-logger.js";
 // A stage gate, a join decision, a stage retry and the start of a template run are work approvals: a sender-validated board-window main
 // frame with a consumed keyboard gesture. The renderer names hashes and ids; it never mints the run source.
 import { beforeEach, expect, it, vi } from "vitest";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../../main/host-resources.js";
 import * as namespace from "../../../main/storage/feature-namespace.js";
 import { autoStageOf, stageOf } from "../../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../../work-board/workflow/__tests__/stage-run-harness.js";
-import { WORK_BOARD } from "../../../shared/ipc-channels.js";
+import { PERMISSIONS, WORK_APPROVALS, WORK_BOARD } from "../../../shared/ipc-channels.js";
 import { registerWorkBoardHandlers } from "../work-board.js";
 import type { IpcDeps } from "../../types.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../../gated.js";
-import { MAX_PLAN_NOTE_LENGTH } from "../../../shared/work-board-types.js";
+import { defaultWorkspaceProject, resolveAuthorizedWorkspaceProject } from "../../../main/project-root-authorization.js";
+import { resultHashOf } from "../../../shared/workflow-template-output.js";
+import { MAX_PLAN_NOTE_LENGTH, type WorkItemCreateResult, workBoardOriginSessionId } from "../../../shared/work-board-types.js";
 import { registeredIpcHandlers } from "./test-helpers.js";
 
 const ipc = vi.hoisted(() => {
@@ -20,7 +37,7 @@ const ipc = vi.hoisted(() => {
 });
 
 vi.mock("electron", () => {
-  const electron = { ipcMain: { handle: ipc.handle } };
+  const electron = { ipcMain: { handle: ipc.handle }, shell: { openPath: vi.fn(async () => "") } };
   return { ...electron, default: electron };
 });
 
@@ -35,15 +52,22 @@ const RUN = "0b0f5a9e-3a52-4c8e-9d0b-6f2f1c1f7a11";
 const HASH = "a".repeat(64);
 const TUPLE = { templateId: "tpl-1", version: 1, graphHash: HASH };
 const gateInput = { runId: RUN, stageId: "a", attempt: 1, resultHash: HASH, decision: "approve" };
-const joinInput = { runId: RUN, joinId: "step-1", conflictHash: HASH, decision: "retry_merge" };
-const retryInput = { runId: RUN, stageId: "a" };
+const joinInput = { runId: RUN, joinId: "step-1", conflictHash: HASH, generation: 1, decision: "retry_merge" };
+const retryInput = { runId: RUN, stageId: "a", attempt: 1 };
 
 const handler = registeredIpcHandlers(ipc.handlers);
+const decide = async (
+  channel: WorkBoardDecisionChannel,
+  event: { sender: ReturnType<typeof workBoardTestSender> },
+  itemId: unknown, input: unknown,
+) => handler(channel)(event, itemId, input, await captureWorkBoardTestGesture(handler, event, channel, itemId, input));
+const bindDefaultProject = (event: unknown) => handler(WORK_BOARD.setProjectScope)(event, defaultWorkspaceProject().projectRoot);
 
 function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: false }) {
-  const owner = { isDestroyed: () => false, send: vi.fn(), mainFrame: { url: "file:///index.html" } };
+  const owner = workBoardTestSender();
   const window = { isDestroyed: () => false, webContents: owner };
   const engine = {
+    decidePlan: vi.fn(async () => ({ result: { ok: true, status: "approved" } })),
     decideStageGate: vi.fn(async () => ({ ok: true, status: "approved" })),
     decideStageJoin: vi.fn(async () => ({ ok: true })),
     retryStage: vi.fn(async () => ({ ok: true })),
@@ -54,8 +78,11 @@ function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: fals
   };
   const log = vi.fn();
   const base = { title: "t", status: "in_progress", status_resolved: "in_progress", priority: "medium", created_at: "x", updated_at: "x" };
+  const create = vi.fn(async (input: { title: string; projectRoot: string }) =>
+    ({ status: "created", itemId: 7, item: { ...base, ...input, id: 7 } }));
   registerWorkBoardHandlers({
     workBoardStore: {
+      create,
       get: async (id: number) => id === 7 ? { status: "found", item: { ...base, id: 7 } }
         : id === 9 ? { status: "found", item: { ...base, id: 9 } }
         : { status: "not_found", itemId: id },
@@ -67,7 +94,7 @@ function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: fals
     getAppWindows: () => [window],
   } as unknown as IpcDeps);
   const event = { sender: owner, senderFrame: owner.mainFrame };
-  return { event, engine, log };
+  return { event, engine, log, create };
 }
 
 const decisions = [
@@ -87,7 +114,7 @@ it("refuses without a keyboard gesture or from a non-owner frame", async () => {
   const { event, engine, log } = setup();
   const subframe = { ...event, senderFrame: { url: "file:///index.html" } };
   for (const [channel, input, method] of decisions) {
-    for (const intent of [undefined, { inputOrigin: "user-keyboard", userActivation: false }, { inputOrigin: "queue-auto", userActivation: true }]) {
+    for (const intent of [undefined, true, GESTURE, { inputOrigin: "user-keyboard", userActivation: false }, { inputOrigin: "queue-auto", userActivation: true }]) {
       await expect(handler(channel)(event, 7, input, intent)).resolves.toEqual({ ok: false, reason: "user-gesture-required" });
     }
     await expect(handler(channel)(subframe, 7, input, GESTURE)).resolves.toEqual(UNAUTHORIZED_FRAME);
@@ -103,12 +130,12 @@ it("refuses without a keyboard gesture or from a non-owner frame", async () => {
 
 it("forwards a gesture-carrying decision with the host's approval surface and audits the decision, never the note", async () => {
   const { event, engine, log } = setup();
-  await expect(handler(WORK_BOARD.decideStage)(event, 7, { ...gateInput, decision: "request_changes", note: "tighten the summary" }, GESTURE)).resolves.toEqual({ ok: true, status: "approved" });
-  expect(engine.decideStageGate).toHaveBeenCalledWith(7, { ...gateInput, decision: "request_changes", note: "tighten the summary" }, { approvalSurface: event.sender });
-  await expect(handler(WORK_BOARD.decideJoin)(event, 7, joinInput, GESTURE)).resolves.toEqual({ ok: true });
-  expect(engine.decideStageJoin).toHaveBeenCalledWith(7, joinInput, { approvalSurface: event.sender });
-  await expect(handler(WORK_BOARD.retryStage)(event, 7, retryInput, GESTURE)).resolves.toEqual({ ok: true });
-  expect(engine.retryStage).toHaveBeenCalledWith(7, retryInput, { approvalSurface: event.sender });
+  await expect(decide(WORK_BOARD.decideStage, event, 7, { ...gateInput, decision: "request_changes", note: "tighten the summary" })).resolves.toEqual({ ok: true, status: "approved" });
+  expect(engine.decideStageGate).toHaveBeenCalledWith(7, { ...gateInput, decision: "request_changes", note: "tighten the summary" });
+  await expect(decide(WORK_BOARD.decideJoin, event, 7, joinInput)).resolves.toEqual({ ok: true });
+  expect(engine.decideStageJoin).toHaveBeenCalledWith(7, joinInput);
+  await expect(decide(WORK_BOARD.retryStage, event, 7, retryInput)).resolves.toEqual({ ok: true });
+  expect(engine.retryStage).toHaveBeenCalledWith(7, retryInput);
   expect(log).toHaveBeenCalledTimes(3);
   const logged = log.mock.calls.map(call => (call[0] as { output: string; type: string; sessionId: string }));
   for (const entry of logged) {
@@ -120,7 +147,7 @@ it("forwards a gesture-carrying decision with the host's approval surface and au
 
 it("refuses a malformed or partial decision before the engine sees it", async () => {
   const { event, engine, log } = setup();
-  const bad: [string, unknown][] = [
+  const bad: [WorkBoardDecisionChannel, unknown][] = [
     [WORK_BOARD.decideStage, { ...gateInput, attempt: 4 }],
     [WORK_BOARD.decideStage, { ...gateInput, resultHash: "short" }],
     [WORK_BOARD.decideStage, { ...gateInput, stageId: "Not A Stage" }],
@@ -129,13 +156,13 @@ it("refuses a malformed or partial decision before the engine sees it", async ()
     [WORK_BOARD.decideStage, { runId: RUN, stageId: "a" }],
     [WORK_BOARD.decideJoin, { ...joinInput, decision: "approve" }],
     [WORK_BOARD.decideJoin, { ...joinInput, conflictHash: 5 }],
-    [WORK_BOARD.retryStage, { ...retryInput, attempt: 2 }],
+    [WORK_BOARD.retryStage, { ...retryInput, attempt: 0 }],
     [WORK_BOARD.retryStage, "a"],
   ];
-  for (const [channel, input] of bad) await expect(handler(channel)(event, 7, input, GESTURE)).resolves.toEqual({ ok: false, reason: "invalid-input" });
-  await expect(handler(WORK_BOARD.decideStage)(event, 7, { ...gateInput, note: "x".repeat(MAX_PLAN_NOTE_LENGTH + 1) }, GESTURE)).resolves.toEqual({ ok: false, reason: "note_too_long" });
-  await expect(handler(WORK_BOARD.decideStage)(event, 8, gateInput, GESTURE)).resolves.toEqual({ ok: false, reason: "not_found" });
-  await expect(handler(WORK_BOARD.decideStage)(event, "7", gateInput, GESTURE)).resolves.toEqual({ ok: false, reason: "invalid-input" });
+  for (const [channel, input] of bad) await expect(decide(channel, event, 7, input)).resolves.toEqual({ ok: false, reason: "invalid-input" });
+  await expect(decide(WORK_BOARD.decideStage, event, 7, { ...gateInput, note: "x".repeat(MAX_PLAN_NOTE_LENGTH + 1) })).resolves.toEqual({ ok: false, reason: "note_too_long" });
+  await expect(decide(WORK_BOARD.decideStage, event, 8, gateInput)).resolves.toEqual({ ok: false, reason: "not_found" });
+  await expect(decide(WORK_BOARD.decideStage, event, "7", gateInput)).resolves.toEqual({ ok: false, reason: "invalid-input" });
   expect(engine.decideStageGate).not.toHaveBeenCalled();
   expect(engine.decideStageJoin).not.toHaveBeenCalled();
   expect(engine.retryStage).not.toHaveBeenCalled();
@@ -144,7 +171,7 @@ it("refuses a malformed or partial decision before the engine sees it", async ()
 
 it("redacts the note before the engine stores it and reports the count", async () => {
   const { event, engine } = setup({ piiRedactEnabled: true });
-  const result = await handler(WORK_BOARD.decideStage)(event, 7, { ...gateInput, decision: "request_changes", note: "mail someone@example.com" }, GESTURE);
+  const result = await decide(WORK_BOARD.decideStage, event, 7, { ...gateInput, decision: "request_changes", note: "mail someone@example.com" });
   const sent = (engine.decideStageGate.mock.calls[0] as unknown as [number, { note: string }])[1];
   expect(sent.note).not.toContain("someone@example.com");
   expect(result).toEqual({ ok: true, status: "approved", redactedCount: 1 });
@@ -153,15 +180,33 @@ it("redacts the note before the engine stores it and reports the count", async (
 it("starts a template run only from a gesture and the tuple the card showed, and mints the source itself", async () => {
   const { event, engine } = setup();
   const run = handler(WORK_BOARD.run);
+  await expect(run(event, 7, { template: TUPLE }, GESTURE)).resolves.toMatchObject({ status: "error", reasonCode: "user-gesture-required" });
   await expect(run(event, 7, { template: TUPLE })).resolves.toMatchObject({ status: "error", reasonCode: "user-gesture-required" });
   await expect(run(event, 7, { template: TUPLE }, { inputOrigin: "user-keyboard", userActivation: false })).resolves.toMatchObject({ status: "error", reasonCode: "user-gesture-required" });
   await expect(run(event, 7, { template: null }, GESTURE)).resolves.toMatchObject({ status: "error", reasonCode: "invalid-input" });
   await expect(run(event, 7, { template: { ...TUPLE, graphHash: "nope" } }, GESTURE)).resolves.toMatchObject({ status: "error", reasonCode: "invalid-input" });
   // A source object in the payload is not a tuple; nothing a renderer sends becomes the source.
   await expect(run(event, 7, { template: { ...TUPLE, kind: "schedule-attachment", attachmentId: "att-1" } }, GESTURE)).resolves.toMatchObject({ status: "error", reasonCode: "invalid-input" });
-  await expect(run(event, 7, { template: TUPLE, templateSource: { kind: "schedule-attachment", attachmentId: "att-1", pin: TUPLE } }, GESTURE)).resolves.toEqual({ status: "awaiting_approval" });
+  const options = { template: TUPLE, templateSource: { kind: "schedule-attachment", attachmentId: "att-1", pin: TUPLE } };
+  await expect(decide(WORK_BOARD.run, event, 7, options)).resolves.toEqual({ status: "awaiting_approval" });
   expect(engine.runItem).toHaveBeenCalledTimes(1);
-  expect(engine.runItem).toHaveBeenCalledWith(7, { approvalSurface: event.sender, templateSource: { kind: "local-create-and-run", pin: TUPLE } });
+  expect(engine.runItem).toHaveBeenCalledWith(7, { templateSource: { kind: "local-create-and-run", pin: TUPLE } });
+});
+
+it("creates and runs only the new item described by the native launch receipt", async () => {
+  const { event, engine, create } = setup();
+  const projectRoot = defaultWorkspaceProject().projectRoot;
+  const input = { title: "Review", templateId: TUPLE.templateId, projectRoot };
+  const launch = { ...TUPLE, projectRoot };
+  const add = handler(WORK_BOARD.add);
+  await expect(add(event, input, launch, true)).resolves.toEqual({ status: "invalid", reason: "user-gesture-required" });
+  const changedTitle = await captureWorkBoardTestGesture(handler, event, WORK_BOARD.add, input, launch);
+  await expect(add(event, { ...input, title: "Changed" }, launch, changedTitle)).resolves.toEqual({ status: "invalid", reason: "user-gesture-required" });
+  expect(create).not.toHaveBeenCalled();
+  await expect(decide(WORK_BOARD.add, event, input, launch)).resolves.toMatchObject({ status: "created", itemId: 7 });
+  expect(engine.runItem).toHaveBeenCalledExactlyOnceWith(7, {
+    templateSource: { kind: "local-create-and-run", pin: TUPLE, projectRoot },
+  });
 });
 
 it("leaves an ordinary run as it was: no gesture, no source", async () => {
@@ -172,10 +217,12 @@ it("leaves an ordinary run as it was: no gesture, no source", async () => {
 
 it("steers a template run by the exact stage shape and never lets any other argument reach the engine", async () => {
   const { event, engine } = setup();
-  await expect(handler(WORK_BOARD.steerRun)(event, 7, "go", GESTURE, { stageId: "b" })).resolves.toEqual({ ok: true, messageId: "m-1" });
+  pressWorkBoardTestKey(event);
+  await expect(handler(WORK_BOARD.steerRun)(event, 7, "go", { stageId: "b" })).resolves.toEqual({ ok: true, messageId: "m-1" });
   expect(engine.steerRun).toHaveBeenLastCalledWith(7, "go", "b");
   for (const forged of ["b", { stageId: "sub-Forged Child" }, { stageId: "b", childSessionId: "child-9" }, null, ["b"]]) {
-    await expect(handler(WORK_BOARD.steerRun)(event, 9, "go", GESTURE, forged)).resolves.toEqual({ ok: true, messageId: "m-1" });
+    pressWorkBoardTestKey(event);
+    await expect(handler(WORK_BOARD.steerRun)(event, 9, "go", forged)).resolves.toEqual({ ok: true, messageId: "m-1" });
     expect(engine.steerRun).toHaveBeenLastCalledWith(9, "go");
   }
 });
@@ -200,12 +247,12 @@ it.each<[string, string, Parameters<typeof stageRunHarness>[0], (h: Harness) => 
   }],
   ["a failed stage's retry", "workflow-runs.json", {}, async h => {
     const { id, item } = await awaiting(h, { ok: false, summary: "failed", error: "failed" });
-    return [WORK_BOARD.retryStage, [id, { runId: item.runId, stageId: "a" }, GESTURE]];
+    return [WORK_BOARD.retryStage, [id, { runId: item.runId, stageId: "a", attempt: 1 }, GESTURE]];
   }],
   ["a join decision", "workflow-runs.json", conflict, async h => {
     const { id, item } = await awaiting(h, {}, [autoStageOf("a")]);
     const [join] = item.stageJoins;
-    return [WORK_BOARD.decideJoin, [id, { runId: item.runId, joinId: join.joinId, conflictHash: join.conflict?.conflictHash, decision: "retry_merge" }, GESTURE]];
+    return [WORK_BOARD.decideJoin, [id, { runId: item.runId, joinId: join.joinId, conflictHash: join.conflict?.conflictHash, generation: join.conflictGeneration, decision: "retry_merge" }, GESTURE]];
   }],
   ["a template run's start", "workflow-runs.json", {}, async h => {
     const version = await h.confirm([stageOf("a")]);
@@ -214,7 +261,7 @@ it.each<[string, string, Parameters<typeof stageRunHarness>[0], (h: Harness) => 
 ])("answers %s with work-board-backup-failed, never a raw failure, and leaves both files as they were", async (_, file, opts, prepare) => {
   const h = await stageRunHarness(opts);
   try {
-    const owner = { isDestroyed: () => false, send: vi.fn(), mainFrame: { url: "file:///index.html" } };
+    const owner = workBoardTestSender();
     const window = { isDestroyed: () => false, webContents: owner };
     registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
     const [channel, args] = await prepare(h);
@@ -231,7 +278,9 @@ it.each<[string, string, Parameters<typeof stageRunHarness>[0], (h: Harness) => 
       throw Object.assign(new Error("EACCES: permission denied, open 'C:\\private'"), { code: "EACCES" });
     });
     try {
-      const answer = await handler(channel)({ sender: owner, senderFrame: owner.mainFrame }, ...args);
+      const event = { sender: owner, senderFrame: owner.mainFrame };
+      await bindDefaultProject(event);
+      const answer = await decide(channel as WorkBoardDecisionChannel, event, args[0], args[1]);
       expect(answer).toEqual(channel === WORK_BOARD.run ? { status: "error", reason: "work-board-backup-failed", reasonCode: "work-board-backup-failed" } : { ok: false, reason: "work-board-backup-failed" });
       expect(JSON.stringify(answer)).not.toMatch(/EACCES|private/);
       expect([...new Set(copies.map(copy => copy.slice(h.dir.length + 1).split(".").slice(0, 2).join(".")))]).toEqual([file]);
@@ -239,4 +288,459 @@ it.each<[string, string, Parameters<typeof stageRunHarness>[0], (h: Harness) => 
       expect(kept()).toEqual(keptBefore);
     } finally { vi.restoreAllMocks(); }
   } finally { for (const child of h.children) child.finish(); await h.cleanup(); }
+});
+
+it("projects a parked result on get and list, then refuses the superseded snapshot at the host", async () => {
+  const h = await stageRunHarness({});
+  try {
+    const privatePath = ["", "Users", "demo", "Documents", "report.md"].join("/");
+    const rawResult = `First review result at ${privatePath}`;
+    const { id, item } = await awaiting(h, { summary: rawResult });
+    const audit = new AuditLogger(join(h.dir, "audit"));
+    const owner = workBoardTestSender();
+    const window = { isDestroyed: () => false, webContents: owner };
+    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, settingsService: { get: () => undefined }, auditLogger: audit, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    const event = { sender: owner, senderFrame: owner.mainFrame };
+    const stage = item.stageRuns[0];
+    const binding = { runId: item.runId, stageId: "a", attempt: 1, resultHash: stage.resultHash };
+    const expected = { runPin: item.record?.pin, pendingWorkflowDecisions: [{ kind: "stage-gate", binding, result: expect.stringContaining("First review result at ") }] };
+    registerWorkApprovalsHandlers({
+      workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] }, auditLogger: audit,
+    } as unknown as IpcDeps);
+    await bindDefaultProject(event);
+    await expect(handler(WORK_APPROVALS.list)(event, {})).resolves.toMatchObject({
+      ok: true, total: 1, items: [{ ...expected.pendingWorkflowDecisions[0], itemId: id }],
+    });
+    expect(binding.resultHash).toBe(resultHashOf(rawResult));
+    const got = await handler(WORK_BOARD.get)(event, id);
+    expect(JSON.stringify(got)).not.toContain(privatePath);
+    expect(got).toMatchObject({ item: { ...expected, workflowRun: { stages: [{ stageId: "a", status: "awaiting_gate" }] } } });
+    await expect(handler(WORK_BOARD.list)(event)).resolves.toMatchObject({ items: [expected] });
+    expect(h.events).toContainEqual(expect.objectContaining({ workflowRun: expect.objectContaining({ stages: [expect.objectContaining({ stageId: "a", status: "awaiting_gate" })] }) }));
+    await expect(decide(WORK_BOARD.decideStage, event, id, { ...binding, decision: "request_changes", note: "Revise the result" })).resolves.toMatchObject({ ok: true });
+    (await h.untilLive(1))[0].finish({ summary: "Revised review result" });
+    const revised = await h.until(id, view => view.stageRuns[0]?.attempt === 2 && view.stageRuns[0]?.status === "awaiting_gate");
+    await expect(decide(WORK_BOARD.decideStage, event, id, { ...binding, decision: "approve" })).resolves.toEqual({ ok: false, reason: "attempt_mismatch" });
+    await expect(decide(WORK_BOARD.decideStage, event, id, { ...binding, attempt: 2, decision: "approve" })).resolves.toEqual({ ok: false, reason: "result_mismatch" });
+    expect((await h.item(id)).stageRuns).toEqual(revised.stageRuns);
+    await expect(handler(WORK_BOARD.get)(event, id)).resolves.toMatchObject({
+      item: { workflowRun: { decisions: [{ kind: "stage-gate", stageId: "a", attempt: 1, decision: "request_changes" }] } },
+    });
+  } finally { for (const child of h.children) child.finish(); await h.cleanup(); }
+});
+
+
+it("projects join conflict evidence and refuses the previous conflict hash after a retry", async () => {
+  const files = [{ path: "reports/summary.md", stageIds: ["a"] }];
+  const h = await stageRunHarness({
+    integrate: () => ({ ok: false, conflict: { reason: "same-path", files, conflictHash: "c".repeat(64) } }),
+  });
+  try {
+    const { id, item } = await awaiting(h, {}, [autoStageOf("a")]);
+    const owner = workBoardTestSender();
+    const window = { isDestroyed: () => false, webContents: owner };
+    const deps = {
+      workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
+      auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+    } as unknown as IpcDeps;
+    registerWorkBoardHandlers(deps);
+    registerWorkApprovalsHandlers(deps);
+    const event = { sender: owner, senderFrame: owner.mainFrame };
+    await bindDefaultProject(event);
+    const binding = { runId: item.runId, joinId: item.stageJoins[0].joinId, conflictHash: item.stageJoins[0].conflict?.conflictHash, generation: 1 };
+    const review = { kind: "join-conflict", binding, evidence: { reason: "same-path", files } };
+    await expect(handler(WORK_BOARD.get)(event, id)).resolves.toMatchObject({ item: { pendingWorkflowDecisions: [review] } });
+    await expect(handler(WORK_APPROVALS.list)(event, {})).resolves.toMatchObject({ total: 1, items: [review] });
+    await expect(decide(WORK_BOARD.decideJoin, event, id, { ...binding, decision: "retry_merge" })).resolves.toEqual({ ok: true });
+    const changed = await h.until(id, view => view.stageJoins[0]?.status === "conflict" && view.stageJoins[0].decidedAt !== undefined);
+    expect(changed.stageJoins[0].conflictGeneration).toBe(2);
+    expect(changed.stageJoins[0].conflict?.conflictHash).not.toBe(binding.conflictHash);
+    await expect(decide(WORK_BOARD.decideJoin, event, id, { ...binding, decision: "reject" })).resolves.toEqual({ ok: false, reason: "conflict_mismatch" });
+    await expect(decide(WORK_BOARD.decideJoin, event, id, {
+      ...binding, conflictHash: changed.stageJoins[0].conflict?.conflictHash, decision: "reject",
+    })).resolves.toEqual({ ok: false, reason: "conflict_mismatch" });
+    expect((await h.item(id)).stageJoins).toEqual(changed.stageJoins);
+    await expect(handler(WORK_BOARD.get)(event, id)).resolves.toMatchObject({
+      item: { workflowRun: { decisions: [{ kind: "join-conflict", joinId: binding.joinId, decision: "retry_merge" }] } },
+    });
+  } finally { for (const child of h.children) child.finish(); await h.cleanup(); }
+});
+
+
+it("shows stored delegation edges only for the parent session of this legacy item", async () => {
+  const get = vi.fn(async (id: number) => ({
+    status: "found", item: { id, runSessionId: "parent-run", title: "Legacy work", status: "in_progress", status_resolved: "in_progress" },
+  }));
+  const listPersistedSpawnsForOrigin = vi.fn(() => [{ childSessionId: "delegated-run", title: "Verify results" }]);
+  const isPersistedSpawnOfOrigin = vi.fn((origin: string, child: string) => origin === workBoardOriginSessionId(7) && child === "parent-run");
+  const owner = workBoardTestSender();
+  const event = { sender: owner, senderFrame: owner.mainFrame };
+  const window = { isDestroyed: () => false, webContents: owner };
+  registerWorkBoardHandlers({
+    workBoardStore: { get },
+    getSubAgentRunner: () => ({ isPersistedSpawnOfOrigin, listPersistedSpawnsForOrigin }),
+    auditLogger: { log: vi.fn() }, getMainWindow: () => window,
+  } as unknown as IpcDeps);
+  await bindDefaultProject(event);
+  await expect(handler(WORK_BOARD.get)(event, 7)).resolves.toMatchObject({
+    item: { delegatedSessions: [{ parentSessionId: "parent-run", childSessionId: "delegated-run", title: "Verify results" }] },
+  });
+  const other = await handler(WORK_BOARD.get)(event, 8);
+  expect(other).not.toHaveProperty("item.delegatedSessions");
+  expect(listPersistedSpawnsForOrigin).toHaveBeenCalledExactlyOnceWith("parent-run");
+});
+
+it("spends the app-wide receipt on the actual decision channel and binding", async () => {
+  const { event } = setup();
+  const consume = vi.spyOn(securitySettingsGestures, "consume");
+  try {
+    await captureWorkBoardTestGesture(handler, event, WORK_BOARD.decideStage, 7, gateInput);
+    expect(consume).toHaveBeenCalledWith(event.sender, { channel: WORK_BOARD.decideStage, payload: workBoardDecisionKey(WORK_BOARD.decideStage, 7, gateInput) });
+  } finally { consume.mockRestore(); }
+});
+
+it.each([
+  [WORK_BOARD.decidePlan, { runId: RUN, planHash: HASH, decision: "approve" }],
+  [WORK_BOARD.decideStage, gateInput],
+  [WORK_BOARD.decideJoin, joinInput],
+  [WORK_BOARD.retryStage, retryInput],
+] as const)("spends a native token once and binds its card and action for %s", async (channel, input) => {
+  const { event } = setup();
+  const invoke = handler(channel);
+  const refusal = { ok: false, reason: "user-gesture-required" };
+  const token = await captureWorkBoardTestGesture(handler, event, channel, 7, input);
+  await expect(invoke(event, 7, input, token)).resolves.toMatchObject({ ok: true });
+  await expect(invoke(event, 7, input, token)).resolves.toEqual(refusal);
+
+  const anotherCard = await captureWorkBoardTestGesture(handler, event, channel, 7, input);
+  await expect(invoke(event, 9, input, anotherCard)).resolves.toEqual(refusal);
+  await expect(invoke(event, 7, input, anotherCard)).resolves.toEqual(refusal);
+  if ("decision" in input) {
+    const wrongAction = await captureWorkBoardTestGesture(handler, event, channel, 7, input);
+    await expect(invoke(event, 7, { ...input, decision: "reject" }, wrongAction)).resolves.toEqual(refusal);
+  }
+  expect(await handler(WORK_BOARD.captureDecisionIntent)(event, token, workBoardDecisionKey(channel, 7, input))).toBe(false);
+  if ("attempt" in input) {
+    const wrongAttempt = await captureWorkBoardTestGesture(handler, event, channel, 7, input);
+    await expect(invoke(event, 7, { ...input, attempt: input.attempt + 1 }, wrongAttempt)).resolves.toEqual(refusal);
+  }
+  if ("conflictHash" in input) {
+    const oldConflict = await captureWorkBoardTestGesture(handler, event, channel, 7, input);
+    await expect(invoke(event, 7, { ...input, conflictHash: "b".repeat(64) }, oldConflict)).resolves.toEqual(refusal);
+    const oldGeneration = await captureWorkBoardTestGesture(handler, event, channel, 7, input);
+    await expect(invoke(event, 7, { ...input, generation: input.generation + 1 }, oldGeneration)).resolves.toEqual(refusal);
+  }
+});
+
+it("refuses an expired decision receipt even when it was valid at capture", async () => {
+  const { event } = setup();
+  const now = vi.spyOn(Date, "now");
+  try {
+    now.mockReturnValue(1_000);
+    const token = await captureWorkBoardTestGesture(handler, event, WORK_BOARD.decideStage, 7, gateInput);
+    now.mockReturnValue(6_001);
+    await expect(handler(WORK_BOARD.decideStage)(event, 7, gateInput, token)).resolves.toEqual({ ok: false, reason: "user-gesture-required" });
+  } finally { now.mockRestore(); }
+});
+
+it.each([
+  [WORK_BOARD.update, "updated", [{ title: "Updated" }]],
+  [WORK_BOARD.transition, "transitioned", ["review", HASH]],
+  [WORK_BOARD.complete, "completed", [HASH]],
+  [WORK_BOARD.reopen, "reopened", [HASH]],
+  [WORK_BOARD.clearRun, "updated", [{ revision: HASH, runId: RUN }]],
+] as const)("returns only navigation metadata when %s replies outside the item's project", async (channel, status, args) => {
+  const owner = workBoardTestSender();
+  const event = { sender: owner, senderFrame: owner.mainFrame };
+  const window = { webContents: owner, isDestroyed: () => false };
+  const h = await stageRunHarness({});
+  const settings = permissionSettings.readPermissionSettings();
+  const projectSettings = vi.spyOn(permissionSettings, "readPermissionSettings");
+  try {
+    const rootA = join(h.dir, "project-a");
+    const rootB = join(h.dir, "project-b");
+    mkdirSync(rootA);
+    mkdirSync(rootB);
+    projectSettings.mockReturnValue({ ...settings, permissions: { ...settings.permissions, additionalDirectories: [rootA, rootB] } });
+    const item = { id: 7, title: "Project A work", projectRoot: rootA, output: "Project A run output", plan: "Project A plan", detail: "Project A detail" };
+    const result = () => ({ status, itemId: 7, item });
+    registerWorkBoardHandlers({
+      workBoardStore: { get: () => ({ status: "found", item }), update: result, transition: result, complete: result, reopen: result },
+      workBoardEngine: { clearMissingRun: result },
+      auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+    } as unknown as IpcDeps);
+    const invoke = handler(channel);
+    await handler(WORK_BOARD.setProjectScope)(event, rootA);
+    await expect(invoke(event, 7, ...args)).resolves.toMatchObject({ item: { output: "Project A run output" } });
+    await handler(WORK_BOARD.setProjectScope)(event, rootB);
+    const other = await invoke(event, 7, ...args);
+    expect(other).toMatchObject({ status, item: { id: item.id, title: item.title, projectRoot: rootA } });
+    expect(JSON.stringify(other)).not.toMatch(/Project A (?:run output|plan|detail)/u);
+  } finally {
+    projectSettings.mockRestore();
+    await h.cleanup();
+  }
+});
+
+it("scopes run progress, failure, list, get, transcript, reports, briefings, approvals and terminal replies by window", async () => {
+  const ownerA = workBoardTestSender();
+  const ownerB = workBoardTestSender();
+  const eventA = { sender: ownerA, senderFrame: ownerA.mainFrame };
+  const eventB = { sender: ownerB, senderFrame: ownerB.mainFrame };
+  const windows = [ownerA, ownerB].map(webContents => ({ webContents, isDestroyed: () => false })) as unknown as MainWindow[];
+  const h = await stageRunHarness({
+    onProgress: (event, project) => {
+      if (project) deliverWorkBoardProgress(windows, event, project.projectRoot);
+    },
+  });
+  const settings = permissionSettings.readPermissionSettings();
+  const projectSettings = vi.spyOn(permissionSettings, "readPermissionSettings");
+  try {
+    const rootA = join(h.dir, "project-a");
+    const rootB = join(h.dir, "project-b");
+    mkdirSync(rootA);
+    mkdirSync(rootB);
+    projectSettings.mockReturnValue({ ...settings, permissions: { ...settings.permissions, additionalDirectories: [rootA, rootB] } });
+    const generate = vi.fn(async () => ({ status: "ok", kind: "daily", markdown: "Project A report", period: "2026-11-26" }));
+    const deps = {
+      workBoardReport: { generate },
+      workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
+      auditLogger: { log: vi.fn() }, getMainWindow: () => windows[0], getAppWindows: () => windows,
+    } as unknown as IpcDeps;
+    registerWorkBoardHandlers(deps);
+    registerWorkApprovalsHandlers(deps);
+    expect(await handler(WORK_BOARD.setProjectScope)(eventA, rootA)).toBe(true);
+    expect(await handler(WORK_BOARD.setProjectScope)(eventB, rootB)).toBe(true);
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version, rootA);
+    const started = h.start(id, h.local(version, rootA));
+    const [child] = await h.untilLive(1);
+    await h.until(id, row => row.stageRuns[0]?.childSessionId === child.sessionId);
+    child.reportActivity({ toolCallCount: 0, entries: [{ kind: "assistant", text: "Project A turn" }] });
+    child.finish({ summary: "Project A private stage result" });
+    await started;
+    const evidence = (owner: typeof ownerA) => JSON.stringify(owner.send.mock.calls.filter(([channel]) => channel === WORK_BOARD.runProgress));
+    expect(evidence(ownerA)).toContain("Project A turn");
+    expect(evidence(ownerA)).toContain("Project A private stage result");
+    expect(evidence(ownerB)).not.toContain("Project A");
+    expect(await handler(WORK_BOARD.get)(eventA, id)).toMatchObject({
+      item: { workflowRun: { stages: [{ result: "Project A private stage result" }] } },
+    });
+    await expect(handler(WORK_BOARD.get)(eventB, id)).resolves.toEqual({ status: "not_found", itemId: id });
+    await expect(handler(WORK_BOARD.list)(eventA, { projectRoot: rootA })).resolves.toMatchObject({ items: [{ id, workflowRunPins: [{ pin: h.pinOf(version) }] }] });
+    await expect(handler(WORK_BOARD.list)(eventA)).resolves.toMatchObject({ items: [] });
+    await expect(handler(WORK_APPROVALS.list)(eventB, { projectRoot: rootB })).resolves.toMatchObject({ ok: true, items: [] });
+    const projectA = resolveAuthorizedWorkspaceProject(rootA).project;
+    if (!projectA) throw new Error("Project A was not registered");
+    await expect(handler(WORK_APPROVALS.list)(eventB, { allProjects: true })).resolves.toMatchObject({
+      ok: true, items: [{ kind: "navigation", targetKind: "stage-gate", scope: { type: "project", projectRoot: projectA.projectRoot } }],
+    });
+    expect(JSON.stringify(await handler(WORK_BOARD.list)(eventB, { projectRoot: rootA }))).not.toContain("Project A private stage result");
+    expect(JSON.stringify(await handler(WORK_APPROVALS.list)(eventB, { projectRoot: rootA }))).not.toContain("Project A private stage result");
+    const record = await h.item(id);
+    const transcriptDir = join(h.dir, "sessions", String(id));
+    mkdirSync(transcriptDir, { recursive: true });
+    writeFileSync(join(transcriptDir, `${record.runId}.jsonl`), `${JSON.stringify({ kind: "turn", text: "Project A transcript" })}\n`);
+    const feature = vi.spyOn(namespace, "openFeatureNamespace").mockReturnValue({ dir: h.dir } as ReturnType<typeof namespace.openFeatureNamespace>);
+    try {
+      await expect(handler(WORK_BOARD.runTranscript)(eventA, id, record.runId)).resolves.toMatchObject({ events: [{ text: "Project A transcript" }] });
+      await expect(handler(WORK_BOARD.runTranscript)(eventB, id, record.runId)).resolves.toEqual({ events: [] });
+    } finally { feature.mockRestore(); }
+    await expect(handler(WORK_BOARD.generateReport)(eventA, "daily", { projectRoot: rootA })).resolves.toMatchObject({ markdown: "Project A report" });
+    await expect(handler(WORK_BOARD.generateReport)(eventB, "daily", { projectRoot: rootA })).resolves.toMatchObject({ status: "error" });
+    expect(generate).toHaveBeenCalledTimes(1);
+    const briefing = vi.spyOn(h.engine, "runBriefing").mockResolvedValue({ status: "empty", kind: "daily", reason: "Project A briefing" });
+    await expect(handler(WORK_BOARD.runBriefing)(eventA, "daily", rootA)).resolves.toMatchObject({ reason: "Project A briefing" });
+    await expect(handler(WORK_BOARD.runBriefing)(eventB, "daily", rootA)).resolves.toMatchObject({ status: "error" });
+    expect(briefing).toHaveBeenCalledTimes(1);
+    const runItem = vi.spyOn(h.engine, "runItem").mockResolvedValue({ status: "completed", output: "Project A terminal output", plan: "Project A terminal plan" });
+    await expect(handler(WORK_BOARD.run)(eventA, id)).resolves.toMatchObject({ output: "Project A terminal output" });
+    await expect(handler(WORK_BOARD.run)(eventB, id)).resolves.toEqual({ status: "completed" });
+    runItem.mockRejectedValueOnce(new Error("Project A private failure"));
+    await expect(handler(WORK_BOARD.run)(eventB, id)).resolves.toEqual({ status: "error" });
+    expect(ownerA.send).toHaveBeenCalledWith(WORK_BOARD.runFailed, expect.objectContaining({ reason: "Project A private failure" }));
+    expect(ownerB.send).not.toHaveBeenCalledWith(WORK_BOARD.runFailed, expect.anything());
+    expect(await handler(WORK_BOARD.setProjectScope)(eventA, rootB)).toBe(true);
+    await expect(handler(WORK_BOARD.get)(eventA, id)).resolves.toEqual({ status: "not_found", itemId: id });
+  } finally {
+    projectSettings.mockRestore();
+    for (const child of h.children) child.finish();
+    await h.cleanup();
+  }
+});
+
+it("reads Work Approvals without confirming a failed settle or releasing its workspace", async () => {
+  const released = vi.fn(async () => {});
+  const h = await stageRunHarness({ workspace: { release: released }, observeRunWork: true });
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    const started = h.start(id, h.local(version));
+    const [child] = await h.untilLive(1);
+    const { runId } = await h.until(id, item => item.stageRuns[0]?.childSessionId !== undefined);
+    if (!runId) throw new Error("Missing workflow run");
+    const update = vi.spyOn(h.board, "updateRun").mockResolvedValue({ status: "pending-review" });
+    child.finish();
+    await started;
+    update.mockRestore();
+    await h.drainRunWork();
+    const runsFile = join(h.dir, "workflow-runs.json");
+    const before = readFileSync(runsFile);
+    registerWorkApprovalsHandlers({
+      workBoardStore: h.board, workBoardEngine: h.engine, routinesStore: { list: () => [], listInvalid: () => [] },
+      auditLogger: { log: vi.fn() },
+    } as unknown as IpcDeps);
+    await expect(handler(WORK_APPROVALS.list)({}, { allProjects: true })).resolves.toMatchObject({ ok: true, items: [] });
+    await h.drainRunWork();
+    expect(readFileSync(runsFile)).toEqual(before);
+    expect(released).not.toHaveBeenCalled();
+    await h.engine.adoptParkedTemplateRuns();
+    expect((await h.runOf(runId))?.settled).toBeDefined();
+    expect(released).toHaveBeenCalledTimes(1);
+  } finally { for (const child of h.children) child.finish(); await h.cleanup(); }
+});
+
+it("opens only the current conflict's host-owned join folder with a fresh receipt", async () => {
+  const openPath = vi.mocked(shell.openPath);
+  openPath.mockClear();
+  let workspacesRoot: string;
+  const joinFolder = vi.fn(async (run: { runId: string }, open: (path: string) => Promise<boolean>) => open(join(workspacesRoot, run.runId, "_join")));
+  const h = await stageRunHarness({
+    integrate: () => ({ ok: false, conflict: { conflictHash: HASH, reason: "merge-conflict", files: [] } }),
+    workspace: {
+      open: async run => ({ ok: true, workspace: { kind: "git", runRoot: join(workspacesRoot, run.runId) } }),
+      openJoinFolder: joinFolder,
+    },
+  });
+  workspacesRoot = join(h.dir, "runs");
+  try {
+    const projectRoot = defaultWorkspaceProject().projectRoot;
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version, projectRoot);
+    const started = h.start(id, h.local(version, projectRoot));
+    (await h.untilLive(1))[0].finish();
+    await started;
+    const row = await h.item(id);
+    const conflict = row.stageJoins[0];
+    const input = { runId: row.runId, joinId: conflict.joinId, conflictHash: conflict.conflict?.conflictHash, generation: conflict.conflictGeneration };
+    const owner = workBoardTestSender();
+    const event = { sender: owner, senderFrame: owner.mainFrame };
+    const window = { webContents: owner, isDestroyed: () => false };
+    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, auditLogger: { log: vi.fn() },
+      getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    await expect(handler(WORK_BOARD.openJoin)(event, id, input)).resolves.toEqual({ ok: false, reason: "user-gesture-required" });
+    await expect(decide(WORK_BOARD.openJoin, event, id, { ...input, path: "other" })).resolves.toEqual({ ok: false, reason: "invalid-input" });
+    await expect(decide(WORK_BOARD.openJoin, event, id, { ...input, conflictHash: "b".repeat(64) })).resolves.toEqual({ ok: false, reason: "conflict_mismatch" });
+    expect(openPath).not.toHaveBeenCalled();
+    await expect(decide(WORK_BOARD.openJoin, event, id, input)).resolves.toEqual({ ok: true });
+    expect(openPath).toHaveBeenCalledExactlyOnceWith(join(workspacesRoot, row.runId ?? "", "_join"));
+  } finally { for (const child of h.children) child.finish(); await h.cleanup(); }
+});
+
+it("keeps a B stage and its descendant approval details out of the launching A window", async () => {
+  const ownerA = workBoardTestSender();
+  const ownerB = workBoardTestSender();
+  const eventA = { sender: ownerA, senderFrame: ownerA.mainFrame };
+  const eventB = { sender: ownerB, senderFrame: ownerB.mainFrame };
+  const windows = [ownerA, ownerB].map(webContents => ({ webContents, isDestroyed: () => false }));
+  const h = await stageRunHarness({});
+  const gate = new ApprovalGate(approvalSurfaceResolver(undefined, () => windows as unknown as MainWindow[]));
+  const settings = permissionSettings.readPermissionSettings();
+  const projectSettings = vi.spyOn(permissionSettings, "readPermissionSettings");
+  let releaseSessions: (() => void) | undefined;
+  const asks: Promise<unknown>[] = [];
+  try {
+    const rootA = join(h.dir, "project-a");
+    const rootB = join(h.dir, "project-b");
+    mkdirSync(rootA);
+    mkdirSync(rootB);
+    projectSettings.mockReturnValue({ ...settings, permissions: { ...settings.permissions, additionalDirectories: [rootA, rootB] } });
+    const deps = {
+      approvalGate: gate, workBoardStore: h.board, workBoardEngine: h.engine,
+      auditLogger: { log: vi.fn() }, getMainWindow: () => windows[0], getAppWindows: () => windows,
+    } as unknown as IpcDeps;
+    registerWorkBoardHandlers(deps);
+    registerPermissionsHandlers(deps);
+    await handler(WORK_BOARD.setProjectScope)(eventA, rootA);
+    await handler(WORK_BOARD.setProjectScope)(eventB, rootA);
+    const version = await h.confirm([stageOf("a")]);
+    const created = await handler(WORK_BOARD.add)(eventA, { title: "Project B work", templateId: version.templateId, projectRoot: rootB }) as WorkItemCreateResult;
+    if (created.status !== "created") throw new Error(`Project B item creation failed: ${created.status}`);
+    const id = created.itemId;
+    const options = { template: { ...h.pinOf(version), projectRoot: rootB } };
+    const token = await captureWorkBoardTestGesture(handler, eventA, WORK_BOARD.run, id, options);
+    const started = handler(WORK_BOARD.run)(eventA, id, options, token);
+    const [stage] = await h.untilLive(1);
+    const descendant = `${stage.sessionId}-descendant`;
+    // The fake runner leaves delivery registration to the test.
+    updateApprovalSurface({ kind: "inherit", sessionId: stage.sessionId, parentSessionId: stage.input.originSessionId });
+    updateApprovalSurface({ kind: "inherit", sessionId: descendant, parentSessionId: stage.sessionId });
+    releaseSessions = () => {
+      updateApprovalSurface({ kind: "release", sessionId: descendant });
+      updateApprovalSurface({ kind: "release", sessionId: stage.sessionId });
+    };
+    const ask = async (sessionId: string, id: string) => {
+      const pending = deferred<void>();
+      const unsubscribe = gate.observePendingApprovals({
+        onPending: ({ requestId }) => { if (requestId === id) pending.resolve(); },
+        onSettled: () => undefined,
+      });
+      try {
+        const decision = gate.requestAndWait({
+          id, sessionId, category: "tool", source: "builtin", toolName: "write_file", toolCategory: "write",
+          args: { path: "B-private.md", text: "B approval details" }, reason: "B stage write", createdAt: Date.now(),
+        });
+        asks.push(decision);
+        await Promise.race([
+          pending.promise,
+          decision.then(() => { throw new Error(`Approval ${id} settled before it became pending`); }),
+        ]);
+      } finally {
+        unsubscribe();
+      }
+    };
+    await ask(stage.sessionId, "parked-stage");
+    expect(gate.pendingCount).toBe(1);
+    expect(ownerA.send).not.toHaveBeenCalledWith(IPC_APPROVAL_REQUEST, expect.anything());
+    expect(await handler(PERMISSIONS.approvalPending)(eventA)).toEqual([]);
+    expect(await handler(PERMISSIONS.approvalPending)(eventB)).toEqual([]);
+    expect(JSON.stringify(ownerA.send.mock.calls)).not.toContain("B approval details");
+    await handler(WORK_BOARD.setProjectScope)(eventB, rootB);
+    expect(ownerB.send).toHaveBeenCalledWith(IPC_APPROVAL_REQUEST, expect.objectContaining({
+      id: "parked-stage", workBoardProjectApproval: expect.objectContaining({ parked: true }),
+    }));
+    await ask(descendant, "live-descendant");
+    expect(gate.pendingCount).toBe(2);
+    expect(ownerB.send).toHaveBeenCalledWith(IPC_APPROVAL_REQUEST, expect.objectContaining({
+      id: "live-descendant", args: { path: "B-private.md", text: "B approval details" },
+    }));
+    expect(await handler(PERMISSIONS.approvalPending)(eventA)).toEqual([]);
+    expect(JSON.stringify(ownerA.send.mock.calls)).not.toContain("B-private.md");
+    const cards = await handler(PERMISSIONS.approvalPending)(eventB) as ReturnType<ApprovalGate["listPendingRendererRequests"]>;
+    expect(cards.map(card => card.id)).toEqual(["parked-stage", "live-descendant"]);
+    await handler(WORK_BOARD.setProjectScope)(eventB, rootA);
+    expect(await handler(PERMISSIONS.approvalPending)(eventB)).toEqual([]);
+    expect(gate.resolveFromDesktopRenderer(cards[0].id, {
+      requestId: cards[0].id, choice: "allow-once", nonce: cards[0].nonce, hmac: cards[0].hmac,
+    }, eventB.sender as never)).toBeNull();
+    await handler(WORK_BOARD.setProjectScope)(eventB, rootB);
+    ownerB.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+    expect(await handler(PERMISSIONS.approvalPending)(eventB)).toEqual([]);
+    await handler(WORK_BOARD.setProjectScope)(eventB, rootB);
+    for (const card of cards) {
+      const decision = { requestId: card.id, choice: "allow-once" as const, nonce: card.nonce, hmac: card.hmac };
+      expect(gate.resolveFromDesktopRenderer(card.id, decision, eventA.sender as never)).toBeNull();
+      expect(gate.resolveFromDesktopRenderer(card.id, decision, eventB.sender as never)).toMatchObject({ choice: "allow-once" });
+    }
+    await Promise.all(asks);
+    stage.finish();
+    await started;
+  } finally {
+    gate.disposeAll();
+    await Promise.all(asks);
+    releaseSessions?.();
+    for (const child of h.children) child.finish();
+    projectSettings.mockRestore();
+    await h.cleanup();
+  }
 });

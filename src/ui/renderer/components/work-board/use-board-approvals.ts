@@ -3,6 +3,7 @@ import type { AveApi, ApprovalRequest } from "../../types.js";
 import type { WorkBoardToolApprovalSurface, WorkItemResolved } from "../../../../shared/work-board-types.js";
 import { isWorkBoardToolApprovalSurface } from "../../../../shared/work-board-types.js";
 import { useApprovalSurface } from "../../hooks/use-approval.js";
+import { projectRootEquals } from "../../../../shared/project-identity.js";
 import type { RunStateMap } from "../../hooks/use-work-board-run.js";
 
 /** The setting's contract default: `DEFAULT_SETTINGS.workBoard.toolApprovalSurface`. Settings normalization guarantees a stored value, so
@@ -74,6 +75,12 @@ export interface BoardApprovals {
   surface: ReturnType<typeof useApprovalSurface>;
 }
 
+export function workBoardApprovalMatchesProject(
+  route: NonNullable<ApprovalRequest["workBoardProjectApproval"]>, scopeRoot: string | undefined, isDefault: boolean,
+): boolean {
+  return scopeRoot !== undefined && (route.projectRoot === undefined ? isDefault : projectRootEquals(route.projectRoot, scopeRoot));
+}
+
 /**
  * Claim the tool approvals of this board's runs. A run's children are listed sessions that no tile can open (their transcripts live in
  * the subagent store), so without a claim their cards park behind a row dot with no surface to draw them. The board claims every phase
@@ -81,7 +88,9 @@ export interface BoardApprovals {
  * draws them: in the run's step panel ("chat") or over the board ("dialog"). Only the place changes; the request, its verdict path and
  * the decision stay the window's.
  */
-export function useBoardApprovals(items: readonly WorkItemResolved[], runState: RunStateMap): BoardApprovals {
+export function useBoardApprovals(
+  items: readonly WorkItemResolved[], runState: RunStateMap, scopeRoot: string | undefined, isDefault: boolean,
+): BoardApprovals {
   const surface = useApprovalSurface();
   const { claims, queue } = surface;
   const surfaceId = `work-board:${useId()}`;
@@ -94,8 +103,15 @@ export function useBoardApprovals(items: readonly WorkItemResolved[], runState: 
       if (item.runSessionId) map.set(item.runSessionId, item.id);
       for (const id of runState[item.id]?.sessionIds ?? []) map.set(id, item.id);
     }
+    for (const request of queue) {
+      const route = request.workBoardProjectApproval;
+      if (!route || route.parked || request.sessionId === undefined) continue;
+      const inScope = workBoardApprovalMatchesProject(route, scopeRoot, isDefault);
+      if (inScope && items.some(item => item.id === route.itemId)) map.set(request.sessionId, route.itemId);
+      else map.delete(request.sessionId);
+    }
     return map;
-  }, [items, runState]);
+  }, [items, runState, queue, scopeRoot, isDefault]);
   const signature = [...sessionToItem.keys()].sort().join("\n");
 
   // Re-claim whenever the set changes: the claim's version bump re-renders the window's routing, so a request that arrived before its
@@ -110,7 +126,7 @@ export function useBoardApprovals(items: readonly WorkItemResolved[], runState: 
     void claimsVersion;
     const map = new Map<number, ApprovalRequest[]>();
     for (const request of queue) {
-      if (request.sessionId === undefined) continue;
+      if (request.workBoardProjectApproval?.parked || request.sessionId === undefined) continue;
       const itemId = sessionToItem.get(request.sessionId);
       // Another board (a second pane) may hold the claim; only the owner draws.
       if (itemId === undefined || claims.ownerOf(request.sessionId) !== surfaceId) continue;

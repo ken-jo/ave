@@ -2728,8 +2728,7 @@ export class SubAgentRunner {
         }
         // Bind persistence and tracing to the addressable child id before work.
         child.replaceSessionIdentity(childSessionId);
-        // A live parent link follows a host ownership transfer for already
-        // running children; no surface is inferred from persisted ancestry.
+        // Inherit the parent route. A workflow route names the run project and resolves its window when a card is asked.
         updateApprovalSurface({ kind: "inherit", sessionId: childSessionId, parentSessionId: input.originSessionId });
         child.sessionKind = "subagent";
         child.rebindTracer();
@@ -3769,6 +3768,7 @@ export class SubAgentRunner {
 
     child = new ConversationLoop(childDeps);
     child.replaceSessionIdentity(resumeId);
+    // Rebuild the live route for this identity without carrying a window through suspension.
     updateApprovalSurface({ kind: "inherit", sessionId: resumeId, parentSessionId: originSessionId });
     child.sessionKind = "subagent";
     child.rebindTracer();
