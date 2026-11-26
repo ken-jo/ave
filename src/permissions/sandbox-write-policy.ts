@@ -337,9 +337,11 @@ export function isGrantPathWithin(root: string, path: string, canonicalize = can
     const rel = relative(resolve(root), resolve(path));
     return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
   }
-  const foldedRoot = caseFoldForMatch(canonicalize(root));
-  const foldedPath = caseFoldForMatch(canonicalize(path));
-  return isCanonicalPathWithin(foldedRoot, foldedPath);
+  return withLocalityDecision(() => {
+    const foldedRoot = caseFoldForMatch(canonicalize(root));
+    const foldedPath = caseFoldForMatch(canonicalize(path));
+    return isCanonicalPathWithin(foldedRoot, foldedPath);
+  });
 }
 
 function isMissingPath(error: unknown): boolean {

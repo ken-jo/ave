@@ -1,9 +1,14 @@
+vi.mock("../../../shared/windows-drive-locality.js", async (original) => ({
+  ...await original<typeof import("../../../shared/windows-drive-locality.js")>(),
+  queryDriveIdentity: vi.fn(() => ({ local: true as const })),
+}));
 vi.mock("../../../shared/windows-path-facts.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../../shared/windows-configuration-handles.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 /** Exercise service marshalling through real child and host components, including bytes that cannot survive UTF-8. */
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { queryDriveIdentity } from "../../../shared/windows-drive-locality.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { PassThrough, Writable } from "node:stream";
 import { registerWorkerOutputFlow, type WorkerOutputFlow } from "../../../permissions/worker-flow.js";
@@ -132,6 +137,7 @@ async function createServiceHarness(
     /** Where the sink queues a frame toward the child; returns the bytes it queued, as the transport does. */
     readonly queue?: (notification: HostApiNotification) => number;
   } = {},
+  confinement = CONFINEMENT,
 ): Promise<ServiceHarness> {
   const requests: HostApiRequest[] = [];
   const notifications: HostApiNotification[] = [];
@@ -171,7 +177,7 @@ async function createServiceHarness(
     // Compose bound entries over the static table only where the child incarnation is owned.
     table: {
       ...HOSTAPI_DISPATCH_TABLE,
-      ...createServiceHostApiPaths(api, CONFINEMENT, onMalformedCredentialSelector),
+      ...createServiceHostApiPaths(api, confinement, onMalformedCredentialSelector),
     },
   });
 
@@ -1279,6 +1285,27 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     await settle();
     expect(stdout).toEqual(["indexed 3"]);
     expect(stderr).toEqual(["warn: slow"]);
+  });
+
+  it.runIf(process.platform === "win32")("queries each drive once for delegated worker grant selection", async () => {
+    const root = process.cwd();
+    const nested = `${root}\\src`;
+    const drive = root.slice(0, 2).toUpperCase();
+    const spawnWorker = vi.fn(async () => makeFakeWorker());
+    const harness = await createServiceHarness({ spawnWorker }, MANIFEST, undefined, {}, {
+      read: [nested, root],
+      write: [nested, root],
+    });
+    vi.mocked(queryDriveIdentity).mockClear();
+    await harness.child.hostApi.spawnWorker!({
+      workerId: "indexer",
+      control: "output-only-v1",
+      command: "true",
+      allowReadPaths: [nested, `${nested}\\shared`],
+      allowWritePaths: [nested, `${nested}\\plugins`],
+    });
+    expect(spawnWorker).toHaveBeenCalledWith(expect.objectContaining({ allowReadPaths: [root], allowWritePaths: [root] }));
+    expect(queryDriveIdentity).toHaveBeenCalledExactlyOnceWith(drive);
   });
 
   it("sends the spec through unchanged and keeps the process host-side", async () => {

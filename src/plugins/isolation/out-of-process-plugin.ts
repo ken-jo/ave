@@ -527,20 +527,23 @@ export async function spawnConfinedPluginChild(
     if (process.platform === "win32" && isPluginWorkerConfinementActive()) {
       // Each grant names the outermost envelope root only: `srt-win` stamps the ACE on what a path resolves to, and a root nested in another; `data/` under a runtime root that holds it, one chosen directory inside another; is a path the
       // inheriting grant on the outer root already covers, and naming it again would hand `srt-win` a spelling to resolve (`outermostContainingRoots`, decision 66). A chosen directory inside `data/` never gets here: derivation folds it into `data/`.
-      const allowRead = [...outermostContainingRoots(spec.envelope.read, spec.envelope.read), sandboxHome.path];
-      const allowWrite = [...outermostContainingRoots(spec.envelope.write, spec.envelope.write), sandboxHome.path];
-      const beyond = [
-        ...pluginGrantPathsBeyondOwnRoots(spec.pluginId, [...allowRead, ...allowWrite]),
-        // An ACL grant inherits: a write grant on the plugin root would cover the host-only storage directory beside the data
-        // directory. The spec carries `socketDir`, a sibling of `data/`, so the storage directory derived beside it is the same one.
-        ...writeGrantsReachingHostStorage(spec.socketDir, allowWrite),
-      ];
-      if (beyond.length > 0) {
-        throw new Error(
-          `[out-of-process-plugin] ${spec.pluginId}: refusing a Windows grant beyond the plugin's own roots: `
-            + `${[...new Set(beyond)].join(", ")}`,
-        );
-      }
+      const { allowRead, allowWrite } = withLocalityDecision(() => {
+        const allowRead = [...outermostContainingRoots(spec.envelope.read, spec.envelope.read), sandboxHome.path];
+        const allowWrite = [...outermostContainingRoots(spec.envelope.write, spec.envelope.write), sandboxHome.path];
+        const beyond = [
+          ...pluginGrantPathsBeyondOwnRoots(spec.pluginId, [...allowRead, ...allowWrite]),
+          // An ACL grant inherits: a write grant on the plugin root would cover the host-only storage directory beside the data
+          // directory. The spec carries `socketDir`, a sibling of `data/`, so the storage directory derived beside it is the same one.
+          ...writeGrantsReachingHostStorage(spec.socketDir, allowWrite),
+        ];
+        if (beyond.length > 0) {
+          throw new Error(
+            `[out-of-process-plugin] ${spec.pluginId}: refusing a Windows grant beyond the plugin's own roots: `
+              + `${[...new Set(beyond)].join(", ")}`,
+          );
+        }
+        return { allowRead, allowWrite };
+      });
       windowsGrant = await holdWindowsFilesystemGrant({
         label: `plugin-child:${spec.pluginId}:asrt-win-acl`,
         allowRead,

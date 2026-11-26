@@ -12,6 +12,10 @@ vi.mock("../../../permissions/mxc-runtime-root.js", async (original) => {
     mxcStagingParent: () => SYNTHETIC_MXC_STAGING_PARENT,
   };
 });
+vi.mock("../../../shared/windows-drive-locality.js", async (original) => ({
+  ...await original<typeof import("../../../shared/windows-drive-locality.js")>(),
+  queryDriveIdentity: vi.fn(() => ({ local: true as const })),
+}));
 vi.mock("../../../shared/windows-path-facts.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../../shared/windows-configuration-handles.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => {
@@ -72,6 +76,7 @@ const windowsGrant = vi.hoisted(() => ({
   ahead: undefined as Promise<void> | undefined,
   /** Holds the turn pending after its grant was applied. */
   applying: undefined as Promise<void> | undefined,
+  onRequest: undefined as (() => void) | undefined,
   blockingMs: 0,
 }));
 vi.mock("../../../permissions/windows-acl-grant-holder.js", async () => {
@@ -81,6 +86,7 @@ vi.mock("../../../permissions/windows-acl-grant-holder.js", async () => {
     holdWindowsFilesystemGrant: async (opts: {
       label: string; allowRead: readonly string[]; allowWrite: readonly string[]; assertStillValid?: () => void;
     }) => {
+      windowsGrant.onRequest?.();
       windowsGrant.calls.push(opts);
       const own = windowsGrant.own;
       // FIFO turns as in the real grant queue: the check runs when the turn starts, before anything is applied.
@@ -220,6 +226,7 @@ import { ProcessEntryUnconfinedError } from "../../process-entry.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 import { admittedMxcChild, nativePluginLaunch } from "../../../__tests__/support/mxc-plugin-launch.js";
 import { MxcNativeEntryRequiredError, MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
+import { queryDriveIdentity } from "../../../shared/windows-drive-locality.js";
 import { holdWindowsFilesystemGrant } from "../../../permissions/windows-acl-grant-holder.js";
 import { PluginRuntime, createNoopHostApiForTests } from "../../runtime.js";
 import { runPluginFactoryWithTimeout } from "../../runtime/index.js";
@@ -2145,6 +2152,37 @@ describe("on Windows a confined child holds a grant on its own directories for e
       // srt-win starts only in a directory the sandbox account is granted: the granted HOME, not the host's `<AVE_HOME>\workspace`.
       expect(spawnConfinedChild.mock.calls[0]![0]).toMatchObject({ cwd: home });
       expect(existsSync(home)).toBe(false);
+    });
+  });
+
+  it.runIf(process.platform === "win32")("queries each drive once for plugin child grant selection", async () => {
+    const layout = aveLayout();
+    await asWindows(layout, async () => {
+      const root = layout.context.pluginDataDir;
+      const nested = join(root, "nested");
+      const paths = [root, nested, join(nested, "child")];
+      const drive = root.slice(0, 2).toUpperCase();
+      const child = fakeChild();
+      spawnConfinedChild.mockImplementation(async () => {
+        setImmediate(() => end(child, 1, null));
+        return { child, confinement: "windows-srt" };
+      });
+      vi.mocked(queryDriveIdentity).mockClear();
+      let grantQueries: unknown;
+      windowsGrant.onRequest = () => { grantQueries = [...vi.mocked(queryDriveIdentity).mock.calls]; };
+      try {
+        await expect(spawnConfinedPluginChild({
+          pluginId: PLUGIN_ID,
+          envelope: { read: paths, write: paths.slice(0, 2) },
+          socketDir: join(layout.own, "sockets"),
+          launch: { kind: "entry", childEntryPath: join(root, "entry.mjs") },
+        })).rejects.toBeInstanceOf(Error);
+        expect(windowsGrant.calls[0]?.allowRead[0]).toBe(root);
+        expect(windowsGrant.calls[0]?.allowWrite[0]).toBe(root);
+        expect(grantQueries).toEqual([[drive]]);
+      } finally {
+        windowsGrant.onRequest = undefined;
+      }
     });
   });
 

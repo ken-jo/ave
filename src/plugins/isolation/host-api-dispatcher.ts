@@ -36,6 +36,7 @@ import {
   type AttachFloatingPanelRequest,
   type AudioCaptureRequest,
 } from "../public-contract.js";
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { isGrantPathWithin, outermostContainingRoots } from "../../permissions/asrt-sandbox.js";
 import { WorkerTransportUnsupportedError } from "../../permissions/mxc-extension-errors.js";
 import { WorkerControlFailedError } from "../../permissions/worker-stdio-control.js";
@@ -713,27 +714,29 @@ function decodeWorkerSpec(
   if (stateDirectory !== undefined && typeof stateDirectory !== "boolean") {
     rejectArgument(call.path, "spec.stateDirectory must be a boolean");
   }
-  // Consume the actual child grant set so envelope widening updates delegation at the same boundary.
-  assertGrantsWithinEnvelope(call, "allowReadPaths", allowReadPaths, confinement.read);
-  assertGrantsWithinEnvelope(call, "allowWritePaths", allowWritePaths, confinement.write);
-  // Windows grants must name envelope roots, never child-controlled descendants that may resolve through junctions.
-  const windows = process.platform === "win32";
-  const readGrants = allowReadPaths !== undefined && windows
-    ? outermostContainingRoots(allowReadPaths, confinement.read)
-    : allowReadPaths;
-  const writeGrants = allowWritePaths !== undefined && windows
-    ? outermostContainingRoots(allowWritePaths, confinement.write)
-    : allowWritePaths;
-  return {
-    workerId,
-    command,
-    ...(args !== undefined ? { args } : {}),
-    ...(env !== undefined ? { env: env as Record<string, string | undefined> } : {}),
-    ...(readGrants !== undefined ? { allowReadPaths: readGrants } : {}),
-    ...(writeGrants !== undefined ? { allowWritePaths: writeGrants } : {}),
-    control,
-    ...(stateDirectory !== undefined ? { stateDirectory } : {}),
-  };
+  return withLocalityDecision(() => {
+    // Consume the actual child grant set so envelope widening updates delegation at the same boundary.
+    assertGrantsWithinEnvelope(call, "allowReadPaths", allowReadPaths, confinement.read);
+    assertGrantsWithinEnvelope(call, "allowWritePaths", allowWritePaths, confinement.write);
+    // Windows grants must name envelope roots, never child-controlled descendants that may resolve through junctions.
+    const windows = process.platform === "win32";
+    const readGrants = allowReadPaths !== undefined && windows
+      ? outermostContainingRoots(allowReadPaths, confinement.read)
+      : allowReadPaths;
+    const writeGrants = allowWritePaths !== undefined && windows
+      ? outermostContainingRoots(allowWritePaths, confinement.write)
+      : allowWritePaths;
+    return {
+      workerId,
+      command,
+      ...(args !== undefined ? { args } : {}),
+      ...(env !== undefined ? { env: env as Record<string, string | undefined> } : {}),
+      ...(readGrants !== undefined ? { allowReadPaths: readGrants } : {}),
+      ...(writeGrants !== undefined ? { allowWritePaths: writeGrants } : {}),
+      control,
+      ...(stateDirectory !== undefined ? { stateDirectory } : {}),
+    };
+  });
 }
 
 /** A worker control failure as it crosses; codes outside the closed set never reach the child. */

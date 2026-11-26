@@ -695,17 +695,19 @@ function pluginOwnedReadRoots(): string[] {
 
 // Grant only the outermost approved envelope: nested junctions can be swapped before ACL stamping, which follows targets. Host-created roots rely on protected parents; chosen roots rely on user consent and unwritable parents. Shared-account grants provide no inter-plugin isolation, and overlapping chosen roots remain a limitation.
 export function outermostContainingRoots(paths: readonly string[], roots: readonly string[]): string[] {
-  const out: string[] = [];
-  for (const path of paths) {
-    const containing = roots.filter((root) => isGrantPathWithin(root, path));
-    const outermost = containing.find((root) => !containing.some((other) =>
-      other !== root && isGrantPathWithin(other, root) && !isGrantPathWithin(root, other)));
-    if (outermost === undefined) {
-      throw new Error(`[asrt-sandbox] ${path} lies under none of ${roots.join(", ")}`);
+  return withLocalityDecision(() => {
+    const out: string[] = [];
+    for (const path of paths) {
+      const containing = roots.filter((root) => isGrantPathWithin(root, path));
+      const outermost = containing.find((root) => !containing.some((other) =>
+        other !== root && isGrantPathWithin(other, root) && !isGrantPathWithin(root, other)));
+      if (outermost === undefined) {
+        throw new Error(`[asrt-sandbox] ${path} lies under none of ${roots.join(", ")}`);
+      }
+      if (!out.includes(outermost)) out.push(outermost);
     }
-    if (!out.includes(outermost)) out.push(outermost);
-  }
-  return out;
+    return out;
+  });
 }
 
 // The paths of a Windows plugin grant that would reach past the plugin's own directories into the roots macOS and Linux refuse every plugin-owned wrap (PerCommandFilesystem.denyPluginsRoot). Windows has no such deny, so the grant itself is held to it: a path may lie inside the plugins root only under the plugin's own install (`<plugins>/<id>`) or generation cache (`<plugins>/.cache/<id>`); never inside an agent plugin's roots, which no `entry` plugin owns; and never at or above any of the roots, since an inheriting grant there would cover every plugin under it. Empty when the grant is the plugin's own.
@@ -4074,11 +4076,13 @@ function assertWindowsGrantPins(requests: readonly WindowsGrantTarget[], identit
 
 function assertPrivateHelperGrants(read: readonly string[], write: readonly string[]): void {
   // Direct grants would override the image's DACL. A writable ancestor could replace the whole directory using its delete-child right, even though the image itself does not inherit the ancestor's permissions.
-  if (srtWinPrivateDirectories().some((bin) =>
-    read.some((path) => isGrantPathWithin(dirname(bin), path)) ||
-    write.some((path) => isGrantPathWithin(dirname(bin), path) || isGrantPathWithin(path, dirname(bin))))) {
-    throw new Error("Windows filesystem grant overlaps a private helper image");
-  }
+  withLocalityDecision(() => {
+    if (srtWinPrivateDirectories().some((bin) =>
+      read.some((path) => isGrantPathWithin(dirname(bin), path)) ||
+      write.some((path) => isGrantPathWithin(dirname(bin), path) || isGrantPathWithin(path, dirname(bin))))) {
+      throw new Error("Windows filesystem grant overlaps a private helper image");
+    }
+  });
 }
 
 // Per-command cleanup pass-through (`SandboxManager.cleanupAfterCommand`). Call after a wrapped command finishes.
