@@ -9,7 +9,7 @@ export function hostShellWorkingDirectoryPrelude(
   dialect: "bash" | "powershell",
   platform: NodeJS.Platform,
 ): string | undefined {
-  // Windows has no child-side check: the host holds the directory chain against rename and delete until the child closes (holdHostShellSpawnDirectory); an empty leaf can still become a junction in place.
+  // Windows has no child-side check: the host holds the directory chain against rename and delete until the child closes (holdHostShellSpawnDirectory); a leaf whose contents can be removed can still become a junction in place.
   if (platform !== "darwin" && platform !== "linux") return undefined;
   const statArgs = platform === "darwin" ? ["-f", "%d:%i", "."] : ["-L", "-c", "%d:%i", "--", "."];
   const expected = `${identity.dev}:${identity.ino}`;

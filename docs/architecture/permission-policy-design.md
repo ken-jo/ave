@@ -1634,10 +1634,15 @@ before the user command, then waits for the host's final policy grant on a
 private pipe. The prelude reports guard failure through that pipe and closes it
 before user code runs. The host maps guard failure to the revocation error;
 ordinary command output and exit status, including 197, remain intact. Native
-Windows shell routes use the physical spawn path but lack a child-side identity
-check; directory rename/replacement after the host check remains a limitation
-on that platform. Their final policy validation and native spawn share the same
-serial queue.
+Windows children reopen their cwd by path and get no child-side check. Instead,
+a permit-bearing Windows Bash or PowerShell launch holds the approved directory
+and every ancestor open without delete sharing, from before the final check
+until the child closes. The launch is refused when the hold cannot be taken,
+no longer matches the approved identity, or is lost before the handoff; a hold
+lost after launch stops the child. While held, rename, delete and
+non-share-read opens of the chain fail. The residual is any held leaf whose
+contents can be removed: it can still become a junction in place. Final policy
+validation and native spawn share the same serial queue.
 
 A sandbox requested but unavailable carries `fallbackReason: "requested-sandbox-unavailable"`
 and `sandboxed: false` in its host execution plan. The card, model environment
