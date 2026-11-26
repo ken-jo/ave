@@ -8,6 +8,7 @@ import { windowsPeImageDigest } from "../../../scripts/lib/windows-path-kind-ima
 const io = vi.hoisted(() => ({
   helperExists: vi.fn(),
   helperBytes: vi.fn(),
+  lockHelper: vi.fn<(path: string) => { path: string; bytes: Buffer; close(): void }>(),
   spawnHelper: vi.fn(),
   lstat: vi.fn(),
   realpath: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock("node:fs", async (importOriginal) => {
     realpathSync: Object.assign(vi.fn(), { native: io.realpath }),
   };
 });
+vi.mock("../../../scripts/lib/windows-locked-executable.mjs", () => ({ lockWindowsExecutable: io.lockHelper }));
 vi.mock("node:child_process", () => ({ execFile: vi.fn(), spawnSync: io.spawnHelper }));
 vi.mock("electron", () => ({
   app: {
@@ -104,6 +106,7 @@ beforeEach(() => {
   }));
   io.helperExists.mockReturnValue(true);
   io.helperBytes.mockReturnValue(BUILT_HELPER);
+  io.lockHelper.mockImplementation(path => ({ path, bytes: io.helperBytes(path), close: vi.fn() }));
   io.spawnHelper.mockReturnValue({ status: 0, stdout: Buffer.from("\\Device\\HarddiskVolume1") });
   io.lstat.mockReturnValue({ isSymbolicLink: () => false });
   io.realpath.mockImplementation((path: string) => path);
@@ -162,8 +165,9 @@ describe("desktop host resource startup", () => {
     await expect(bootstrap(PROJECT_ROOT, null, () => null, "interactive")).resolves.toMatchObject(expectedResources);
     expect(resourcesAtEarlyBoot).toEqual(expectedResources);
     expect(runEarlyBootEnv).toHaveBeenCalledBefore(io.acquireHostInstanceLock);
-    expect(io.acquireHostInstanceLock).toHaveBeenCalledBefore(io.helperExists);
-    expect(io.helperExists).toHaveBeenCalledWith(win32.join(expectedResources.resourcePath, "windows-path-kind", process.arch, "ave-path-kind.exe"));
+    const checkHelper = isPackaged ? io.helperExists : io.lockHelper;
+    expect(io.acquireHostInstanceLock).toHaveBeenCalledBefore(checkHelper);
+    expect(checkHelper).toHaveBeenCalledWith(win32.join(expectedResources.resourcePath, "windows-path-kind", process.arch, "ave-path-kind.exe"));
     expect(io.spawnHelper).toHaveBeenCalledBefore(io.realpath);
     expect(io.realpath).toHaveBeenCalledBefore(io.sharedBootstrap);
   });
@@ -184,7 +188,8 @@ describe("desktop host resource startup", () => {
     const match = (path: string) => protectedControlEntryFor(path, undefined, { inspectHostFiles: false });
     try {
       const root = isPackaged ? PACKAGED_RESOURCES : win32.join(PROJECT_ROOT, "resources");
-      expect(io.helperExists).toHaveBeenCalledExactlyOnceWith(win32.join(root, "windows-path-kind", process.arch, "ave-path-kind.exe"));
+      const checkHelper = isPackaged ? io.helperExists : io.lockHelper;
+      expect(checkHelper).toHaveBeenCalledExactlyOnceWith(win32.join(root, "windows-path-kind", process.arch, "ave-path-kind.exe"));
       expect(io.spawnHelper).toHaveBeenCalledBefore(io.lstat);
       expect(getConfiguredHostResources()).toBeUndefined();
       expect(match(lexical)).toBe("runtime-settings-file");

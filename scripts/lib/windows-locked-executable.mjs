@@ -15,12 +15,12 @@ const VOLUME_NAME_NT = 2;
 const GLOBAL_ROOT = String.raw`\\?\GLOBALROOT`;
 const MAX_PATH_CHARS = 32768;
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
-const require = createRequire(import.meta.url);
 let api;
 
 function windowsFiles() {
   if (api !== undefined) return api;
-  const kernel = require("koffi").load("kernel32.dll");
+  const requireNative = typeof require === "function" ? require : createRequire(import.meta.url);
+  const kernel = requireNative("koffi").load("kernel32.dll");
   api = {
     open: kernel.func("intptr_t __stdcall CreateFileW(str16, uint32_t, uint32_t, void *, uint32_t, uint32_t, void *)"),
     close: kernel.func("int __stdcall CloseHandle(intptr_t)"),

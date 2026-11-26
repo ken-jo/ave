@@ -391,7 +391,8 @@ describe("Windows path helper build", () => {
     const bundle = readFileSync(resolve("scripts/build-main-esbuild.mjs"), "utf8");
     expect(dev).toContain('spawnWatcher("main", process.execPath, [resolve(repoRoot, "scripts/build-main-esbuild.mjs"), "--watch"])');
     expect(bundle).toContain("pathKindSha256 = buildWindowsPathKind({ root: repoRoot })");
-    expect(bundle).toContain("__AVE_WINDOWS_PATH_KIND_SHA256__: JSON.stringify(pathKindSha256)");
+    expect(bundle).toContain('__AVE_WINDOWS_PATH_KIND_SHA256__: pathKindSha256 === null ? "null" : WINDOWS_PATH_KIND_BUNDLE_PIN');
+    expect(bundle).toContain("windowsPathKindBundlePinDeclaration(pathKindSha256)");
   }, 60_000);
 
   it.each([

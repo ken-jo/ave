@@ -34,7 +34,7 @@ export function recordWindowsPathKindPackageBuild({ appOutDir, arch, manifest, b
   }
   const bundle = Object.entries(pin.bundleSha256 ?? {});
   if (!bundle.some(([file]) => file === "main.js")) throw new Error("Missing Windows main bundle build digests");
-  const declaration = windowsPathKindBundlePinDeclaration(build.imageSha256) + "\n";
+  const declaration = `${windowsPathKindBundlePinDeclaration(build.imageSha256)}\n`;
   for (const [file, digest] of bundle) {
     if (!BUNDLE_FILE.test(file) || typeof digest !== "string" || !SHA256.test(digest)) {
       throw new Error("Invalid Windows main bundle build digest");
