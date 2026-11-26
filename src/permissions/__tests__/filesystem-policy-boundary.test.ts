@@ -12,11 +12,17 @@ import * as integrity from "../srt-win-integrity.js";
 import * as writePolicy from "../sandbox-write-policy.js";
 import { TEST_COMMAND_ID, TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 
-const phase = vi.hoisted(() => ({ before: undefined as (() => void) | undefined, after: undefined as (() => void) | undefined, guarded: false }));
+const phase = vi.hoisted(() => ({ before: undefined as (() => void) | undefined, after: undefined as (() => void) | undefined, guarded: false, homesParent: undefined as string | undefined }));
 vi.mock("../../shared/ave-home-test-guard.js", async original => ({
   ...await original<typeof import("../../shared/ave-home-test-guard.js")>(),
   get AVE_HOME_ISOLATION_GUARD_ACTIVE() { return phase.guarded; },
 }));
+// A sandbox HOME parent as start-up establishes it, so a spawn reaches its grant checks.
+vi.mock("../mxc-runtime-root.js", async original => {
+  const actual = await original<typeof import("../mxc-runtime-root.js")>();
+  return { ...actual, mxcSandboxHomesParent: (...args: Parameters<typeof actual.mxcSandboxHomesParent>) =>
+    phase.homesParent ?? actual.mxcSandboxHomesParent(...args) };
+});
 vi.mock("../windows-stamp-targets.js", async original => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();
   return { ...actual, pinWindowsFilesystemConfig: (...args: Parameters<typeof actual.pinWindowsFilesystemConfig>) => {
@@ -35,7 +41,7 @@ vi.mock("@anthropic-ai/sandbox-runtime", async original => ({
 useVerifiedAveHomePrivacy();
 const scratch = useTempDirs("filesystem-boundary-");
 const link = useScratchLinks();
-beforeEach(() => { phase.before = undefined; phase.after = undefined; phase.guarded = false; });
+beforeEach(() => { phase.before = undefined; phase.after = undefined; phase.guarded = false; phase.homesParent = undefined; });
 afterEach(async () => {
   phase.before = undefined; phase.after = undefined;
   await (await import("../asrt-sandbox.js")).resetAsrtSandbox();
@@ -45,6 +51,7 @@ afterEach(async () => {
 
 async function setup(settings: { allowWrite: string[] } = { allowWrite: [] }) {
   const profile = scratch();
+  phase.homesParent = join(scratch(), "homes"); mkdirSync(phase.homesParent);
   vi.stubEnv("USERPROFILE", profile); vi.stubEnv("HOME", profile);
   vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
   const executable = join(scratch(), "fixture.exe");
