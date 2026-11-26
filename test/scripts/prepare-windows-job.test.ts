@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -146,8 +146,8 @@ function pathKindBuildFixture() {
   }
   const buildTemp = mkdtempSync(join(tmpdir(), "ave cargo temp-"));
   roots.push(buildTemp);
-  const runScript = (script: string, code: string, overrides: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [
-    "--input-type=module", "--eval", code, pathToFileURL(resolve(script)).href, root,
+  const runScript = (script: string, code: string, overrides: NodeJS.ProcessEnv = {}, args: string[] = []) => spawnSync(process.execPath, [
+    "--input-type=module", "--eval", code, pathToFileURL(resolve(script)).href, root, ...args,
   ], {
     encoding: "utf8", windowsHide: true,
     env: {
@@ -302,9 +302,34 @@ describe("Windows path helper build", () => {
       'const {prepareWindowsJob} = await import(process.argv[1]); prepareWindowsJob({root: process.argv[2]});');
     expect(prepared.status, prepared.stderr).toBe(0);
     expect(readFileSync(executable).equals(original)).toBe(true);
-    expect(readFileSync(join(buildTemp, "ave-path-pin-test.exe")).subarray(0, 2).toString()).toBe("MZ");
+    expect(readdirSync(buildTemp)).toEqual([]);
     verifyWindowsPathKindReceipt(root, process.arch);
   }, 60_000);
+
+  it.skipIf(process.platform !== "win32")("gives each test build a private helper and fixture that a second build cannot replace", () => {
+    const { root, runScript, buildTemp } = pathKindBuildFixture();
+    const outputs = [mkdtempSync(join(buildTemp, "first-")), mkdtempSync(join(buildTemp, "second-"))];
+    const build = (outDir: string) => {
+      const result = runScript("scripts/build-windows-path-kind.mjs",
+        "const {buildWindowsPathKind} = await import(process.argv[1]);"
+        + "console.log(JSON.stringify(buildWindowsPathKind({root: process.argv[2], fixture: true, outDir: process.argv[3]})));",
+        {}, [outDir]);
+      expect(result.status, result.stderr).toBe(0);
+      return JSON.parse(result.stdout.trim()) as { helper: string; fixture: string; binarySha256: string };
+    };
+    const first = build(outputs[0]);
+    const selected = readFileSync(first.fixture);
+    const second = build(outputs[1]);
+    expect([first.helper, first.fixture]).toEqual([join(outputs[0], "ave-path-kind.exe"), join(outputs[0], "ave-path-pin-test.exe")]);
+    expect(second.fixture).not.toBe(first.fixture);
+    expect(readFileSync(first.fixture).equals(selected)).toBe(true);
+    expect(createHash("sha256").update(readFileSync(first.helper)).digest("hex")).toBe(first.binarySha256);
+    expect(readdirSync(buildTemp).sort()).toEqual(outputs.map((output) => output.slice(buildTemp.length + 1)).sort());
+    expect(existsSync(join(root, windowsPathKindPath(process.arch)))).toBe(false);
+    const nativeTest = readFileSync(resolve("scripts/test-windows-path-kind.mjs"), "utf8");
+    expect(nativeTest).toContain("buildWindowsPathKind({ root, fixture: true, outDir: output })");
+    expect(nativeTest).not.toContain("ave-path-pin-test.exe");
+  }, 120_000);
 
   it.skipIf(process.platform !== "win32")("binds the main bundle to fresh output instead of staged executable bytes", () => {
     const { root, runScript } = pathKindBuildFixture();
@@ -313,7 +338,7 @@ describe("Windows path helper build", () => {
     const supplied = pathKindPe();
     writeFileSync(executable, supplied);
     const result = runScript("scripts/build-windows-path-kind.mjs",
-      'const {buildWindowsPathKind} = await import(process.argv[1]); console.log(buildWindowsPathKind({root: process.argv[2]}));');
+      'const {buildWindowsPathKind} = await import(process.argv[1]); console.log(buildWindowsPathKind({root: process.argv[2]}).binarySha256);');
     expect(result.status, result.stderr).toBe(0);
     const built = readFileSync(executable);
     expect(built.equals(supplied)).toBe(false);

@@ -7,15 +7,16 @@ import { once } from "node:events";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildWindowsPathKind } from "./build-windows-path-kind.mjs";
-import { windowsPathKindPath } from "./lib/windows-path-kind-build.mjs";
 
 if (process.platform !== "win32") throw new Error("This test requires Windows");
 const root = fileURLToPath(new URL("../", import.meta.url));
-buildWindowsPathKind({ root, fixture: true });
-const helper = resolve(root, windowsPathKindPath(process.arch));
+// A private output directory: another build cannot replace the helper or fixture this run executes.
+const output = mkdtempSync(join(tmpdir(), "ave-path-kind-test-"));
+process.on("exit", () => rmSync(output, { recursive: true, force: true }));
+const { helper, fixture: pinFixture } = buildWindowsPathKind({ root, fixture: true, outDir: output });
 const replyDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function runWithInput(args, input) {
@@ -224,7 +225,7 @@ async function recoveryTests() {
   for (const existing of [false, true]) add(`a volume without file-ID opens refuses the copy before it starts (existing target: ${existing})`, (dir) => {
     writeFileSync(join(dir, "source"), "source");
     if (existing) writeFileSync(join(dir, "target"), "old bytes");
-    const result = spawnSync(join(tmpdir(), "ave-path-pin-test.exe"),
+    const result = spawnSync(pinFixture,
       ["volume-without-file-ids", "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden],
       { input: "c", windowsHide: true, shell: false, env: {}, timeout: 10_000, encoding: "utf8" });
     assert.ifError(result.error);
@@ -241,7 +242,7 @@ async function recoveryTests() {
     let result;
     try {
       assert.throws(() => readFileSync(join(dir, "target")), { code: "EBUSY" });
-      result = spawnSync(join(tmpdir(), "ave-path-pin-test.exe"),
+      result = spawnSync(pinFixture,
         [mode, "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden],
         { input: "c", windowsHide: true, shell: false, env: {}, timeout: 10_000, encoding: "utf8" });
     } finally {
@@ -326,7 +327,7 @@ async function recoveryTests() {
       const restore = boundary !== "no-exclusive-rename";
       const args = restore ? ["--dir-restore", ...held(dir), hidden, part, ...snapshot(source)]
         : ["--dir-remove-id", ...held(dir), hidden, ...snapshot(source)];
-      const result = spawnSync(join(tmpdir(), "ave-path-pin-test.exe"), [boundary, ...args], {
+      const result = spawnSync(pinFixture, [boundary, ...args], {
         input: "c", windowsHide: true, shell: false, env: {}, timeout: 10_000, encoding: "utf8",
       });
       assert.ifError(result.error);
@@ -440,7 +441,7 @@ async function recoveryTests() {
     const result = await runCopy(args, (line, stdin) => {
       if (line === "ready") stdin.write("c");
       if (line === "copied") stdin.end("c");
-    }, join(tmpdir(), "ave-path-pin-test.exe"));
+    }, pinFixture);
     assert.equal(result.code, 3, JSON.stringify(result));
     assert.equal(result.lines.at(-1), "refused target removed");
     assert.equal(readFileSync(target, "utf8"), "competing bytes");
@@ -460,7 +461,7 @@ async function recoveryTests() {
       const result = await runCopy(failure === "none" ? args : [`replace-${failure}-failure`, ...args], (line, stdin) => {
         if (line === "ready") stdin.write("c");
         if (line === "copied") stdin.end("c");
-      }, failure === "none" ? helper : join(tmpdir(), "ave-path-pin-test.exe"));
+      }, failure === "none" ? helper : pinFixture);
       assert.equal(result.code, failure === "none" ? 0 : 4, JSON.stringify(result));
       assert.equal(readFileSync(source, "utf8"), "new bytes");
       assert.ok(!existsSync(join(dir, part)));
@@ -625,7 +626,7 @@ async function recoveryTests() {
           expect(["--dir-write-record", ...held(root), record, saved], ["ready", "written"]);
           stdin.end("c");
         }
-      }, join(tmpdir(), "ave-path-pin-test.exe"));
+      }, pinFixture);
       assert.equal(result.code, 7, JSON.stringify(result));
       assert.equal(result.lines[1], `target-id ${old[1]}`);
       if (boundary === "leftover") assert.match(result.lines.at(-1), /^target-left left /u);
@@ -668,7 +669,7 @@ async function recoveryTests() {
         const result = await runCopy([`file-id-${fault}-${position}`, ...args], (line, stdin) => {
           if (line === "ready") stdin.write("c");
           if (line === "copied") stdin.end("c");
-        }, join(tmpdir(), "ave-path-pin-test.exe"));
+        }, pinFixture);
         const expected = site === "directory" ? { code: 3, lines: ["refused to"] }
           : site === "writer" ? { code: 4, lines: ["ready", "failed EUNKNOWN left"] }
           : { code: 0, lines: ["ready", "left"] };
@@ -688,7 +689,7 @@ async function recoveryTests() {
       const result = await runCopy(args, (line, stdin) => {
         if (line === "ready") stdin.write("c");
         if (line === "copied") stdin.end("c");
-      }, join(tmpdir(), "ave-path-pin-test.exe"));
+      }, pinFixture);
       assert.equal(result.code, 3, JSON.stringify(result));
       assert.equal(result.lines.at(-1), blocked ? "refused target changed" : "refused target left");
       assert.equal(readFileSync(join(dir, part), "utf8"), blocked ? "" : "source");
@@ -985,7 +986,7 @@ console.log("windows-path-kind: ok");
 
 const fixture = mkdtempSync(join(tmpdir(), "ave-path-facts-"));
 try {
-  console.log(execFileSync(join(tmpdir(), "ave-path-pin-test.exe"), [fixture], { windowsHide: true, encoding: "utf8" }).trim());
+  console.log(execFileSync(pinFixture, [fixture], { windowsHide: true, encoding: "utf8" }).trim());
   console.log("native pin: deterministic retag and swapped ancestor checks passed");
   const directory = join(fixture, "directory");
   mkdirSync(directory);

@@ -40,7 +40,7 @@ const require = createRequire(import.meta.url);
 require("./prepare-srt-win-receipts.cjs").prepareSrtWinReceipts();
 let pathKindSha256 = null;
 if (process.platform === "win32") {
-  pathKindSha256 = buildWindowsPathKind({ root: repoRoot });
+  pathKindSha256 = buildWindowsPathKind({ root: repoRoot }).binarySha256;
   execFileSync(process.execPath, [resolve(repoRoot, "scripts/build-srt-win.mjs")], { stdio: "inherit" });
 }
 await buildSkillScripts();

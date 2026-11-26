@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -10,6 +11,7 @@ import {
   windowsPathKindCrateFiles, windowsPathKindPath,
   windowsPathKindReceipt, windowsPathKindReceiptPath, windowsPathKindSourceDigest, windowsPathKindSystemEnvironment,
 } from "./lib/windows-path-kind-build.mjs";
+import { windowsPeImageDigest } from "./lib/windows-pe-image-digest.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 
@@ -24,7 +26,12 @@ function assertNoCargoConfig(directory) {
   }
 }
 
-export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture = false } = {}) {
+/**
+ * Builds the helper and returns the digests its consumers compare against. With `outDir` the helper and fixture go
+ * only to that private directory; otherwise the helper and its receipt replace the checkout copies and the fixture
+ * is checked and discarded.
+ */
+export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture = false, outDir } = {}) {
   if (process.platform !== "win32") throw new Error("The Windows path helper requires a Windows build");
   const identity = windowsPathKindCompiler(root, arch);
   const source = windowsPathKindSourceDigest(root);
@@ -83,20 +90,33 @@ export function buildWindowsPathKind({ root = ROOT, arch = process.arch, fixture
     }
     if (receipt.sourceSha256 !== source) throw new Error("Windows path helper sources changed during build");
     assertWindowsPathKindInputDigests(identity.inputs);
-    if (fixtureBytes) writeFileSync(join(tmpdir(), "ave-path-pin-test.exe"), fixtureBytes);
+    const receiptText = `${JSON.stringify(receipt)}\n`;
+    const evidence = {
+      binarySha256: receipt.binarySha256,
+      imageSha256: windowsPeImageDigest(binary),
+      receiptSha256: createHash("sha256").update(receiptText).digest("hex"),
+    };
+    if (outDir) {
+      const helper = join(outDir, "ave-path-kind.exe");
+      writeFileSync(helper, binary, { flag: "wx" });
+      if (!fixtureBytes) return { ...evidence, helper };
+      const pinFixture = join(outDir, "ave-path-pin-test.exe");
+      writeFileSync(pinFixture, fixtureBytes, { flag: "wx" });
+      return { ...evidence, helper, fixture: pinFixture };
+    }
     const exe = join(root, windowsPathKindPath(arch));
     const manifest = join(root, windowsPathKindReceiptPath(arch));
     mkdirSync(dirname(exe), { recursive: true });
     const staged = [`${exe}.${process.pid}.tmp`, `${manifest}.${process.pid}.tmp`];
     try {
       writeFileSync(staged[0], binary, { flag: "wx" });
-      writeFileSync(staged[1], `${JSON.stringify(receipt)}\n`, { flag: "wx" });
+      writeFileSync(staged[1], receiptText, { flag: "wx" });
       renameSync(staged[0], exe);
       renameSync(staged[1], manifest);
     } finally {
       for (const file of staged) rmSync(file, { force: true });
     }
-    return receipt.binarySha256;
+    return { ...evidence, helper: exe };
   } finally {
     rmSync(buildDir, { recursive: true, force: true });
   }
