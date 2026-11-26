@@ -15,34 +15,36 @@ authoritative when this prose and the implementation disagree.
 
 ## Problem
 
-Ave ships a per-machine NSIS installer (`oneClick:true` + `perMachine:true`;
-all-users Program Files, HKLM ownership - `build/installer.nsh:158-163`). The
-app files and protocol registration are machine-scoped, but the Windows toast
-notification surface is per-user by design:
+Ave ships a per-machine NSIS installer. `build.nsis` in `package.json` sets
+`oneClick` and `perMachine` to `true`, and `customInstall` in
+`build/installer.nsh` registers the protocol in HKLM. Application files go
+under Program Files, while toast notification artifacts belong to each user:
 
 - On first launch, the main process pins a product-owned identity and toast
   activator CLSID: `app.setAppUserModelId("ai.agent-connector.ave")` and, on Windows,
   `app.setToastActivatorCLSID(WINDOWS_TOAST_ACTIVATOR_CLSID)` where the CLSID is
   `{62FD3EFB-B3D2-4235-9402-6979F52C0286}`
-  (`src/main/early-boot-env.ts`). Unpackaged runs use
-  `ai.agent-connector.ave.dev` and their own CLSID, so on a clean machine a
+  (`runEarlyBootEnv` in `src/main/early-boot-env.ts`). In development runs, Ave
+  uses `ai.agent-connector.ave.dev` and a distinct CLSID, so on a clean machine a
   development run never re-points the installed app's activator at a bare
   `electron.exe`. Electron reuses the CLSID stored in an existing
   `Programs\Electron.lnk` over the one the app sets, so a machine where an
   earlier dev run already wrote that shortcut with the product CLSID would keep
-  the hijack. Before setting the dev CLSID, an unpackaged run removes that
+  the hijack. Before setting the dev CLSID, a development run removes that
   shortcut only when it carries the product CLSID, and stops with an error when
   it cannot read or remove it rather than adopting the product CLSID.
 - The unpackaged runtime provisions two per-user artifacts the first time a
   notification presenter initializes, for EACH Windows user who runs the app:
   1. a Start Menu shortcut in that user's Programs known folder
      (`Environment.SpecialFolder.Programs`), carrying the AppUserModelID and the
-     ToastActivatorCLSID (`build/uninstall-windows-notification-artifacts.ps1:388-392`);
+     ToastActivatorCLSID (see the `Environment.GetFolderPath` call in
+     `build/uninstall-windows-notification-artifacts.ps1`);
   2. a per-user COM activator registration under
      `HKCU\Software\Classes\CLSID\{clsid}\LocalServer32` with root default
      `Electron Notification Activator`, `CustomActivator` DWord = 1, and
      `LocalServer32` default pointing at the installed executable
-     (`build/uninstall-windows-notification-artifacts.ps1:186-223`).
+     (see `Test-ExactToastRegistration` and `Remove-ExactToastRegistration` in
+     `build/uninstall-windows-notification-artifacts.ps1`).
 
 **Release limit — per-profile toast registration.** An unpackaged NSIS build
 always writes HKCU per user who runs Ave, so uninstall can only clean the
@@ -51,13 +53,12 @@ unpackaged branch runs
 `if (!is_packaged) { EnsureShortcut(); EnsureCLSIDRegistry(); }`.
 [v45.3.4 `shell/browser/notifications/win/windows_toast_activator.cc:310–321`](https://github.com/electron/electron/blob/v45.3.4/shell/browser/notifications/win/windows_toast_activator.cc#L310-L321)
 
-Genuine uninstall invokes `un.aveCleanupCurrentUserNotificationArtifacts`
-(`build/installer.nsh:335-382`, dispatched at `:425-434`), which shells the
-per-user PowerShell cleanup for the invoking identity - in the normal
-alternate-admin UAC path it runs inside electron-builder's retained OUTER user
-process via `UAC_AsUser_Call` (`build/installer.nsh:425-426`). The cleanup
-targets the invoking user's Programs folder and HKCU hive only
-(`build/uninstall-windows-notification-artifacts.ps1:241-256,332-356,388-392`).
+In `build/installer.nsh`, `customUnInstall` dispatches
+`un.aveCleanupCurrentUserNotificationArtifacts`. Under normal alternate-admin
+UAC, `UAC_AsUser_Call` runs cleanup in the retained outer user process.
+`build/uninstall-windows-notification-artifacts.ps1` scopes cleanup to that
+user's Programs folder and HKCU through `Environment.GetFolderPath` and
+`ToastRegistryKey.OpenCurrentUser`.
 
 Result: if user A installs and runs the app and user B also runs it, both
 profiles get a shortcut + HKCU CLSID. A genuine uninstall performed by A removes
@@ -70,26 +71,22 @@ Two points sharpen the picture beyond the issue text:
 - The cleanup is provably ownership-scoped, not a broad delete. It fails closed
   and preserves anything that is not byte-exact Ave: a same-target
   partial-owned shortcut is classified `foreign-preserved` and survives
-  byte-for-byte (`build/uninstall-windows-notification-artifacts.ps1:405-420`,
-  and the round-trip is asserted on a real `.lnk` in
-  `test/scripts/smoke-windows-nsis-installer.test.ts:409-614`). Any per-value
-  type/data mismatch on the CLSID keys aborts the delete
-  (`...ps1:178-228,278-282`). So extending to other profiles inherits a strict,
-  audited ownership test - the risk is which hives/folders we are allowed to
-  reach, not the matching logic.
-- Two independent updater guards already exist and MUST be preserved. Genuine
-  uninstall vs. updater uninstall is branched by BOTH electron-builder's
-  compile-time `${isUpdated}` and an explicit `--updated` GetOptions probe, in
-  `customUnInstall` (`build/installer.nsh:402-410`, skipping to
-  `ave_skip_genuine_uninstall`) and again in `customRemoveFiles`
-  (`build/installer.nsh:530,601-611`). The notification cleanup runs only on the
-  genuine path, AFTER those guards. Any all-profile design must sit behind the
-  same guards or it will strip activation during an auto-update.
-- The current single-user smoke (`test/scripts/smoke-windows-nsis-installer.test.ts`)
-  drives one user: install `/allusers`, assert exact protocol + owned-shortcut
-  provenance, uninstall, then assert removal
-  (`assertRuntimeNotificationArtifactsRemoved`, e.g. lines 1266+). There is no
-  second-profile coverage today; the two-user test is net-new work.
+  byte-for-byte. See `Get-ShortcutOwnershipMismatches` in
+  `build/uninstall-windows-notification-artifacts.ps1` and the
+  “preserves a real same-target partial-owned shortcut without aborting” case
+  in `test/scripts/smoke-windows-nsis-installer.test.ts`.
+  `Remove-ExactToastRegistration` requires an exact type and data match for
+  all three registry values before deleting them.
+- `customUnInstall` and `customRemoveFiles` in `build/installer.nsh` distinguish
+  genuine uninstall from updater uninstall with the compile-time `${isUpdated}`
+  check and an explicit `--updated` GetOptions probe. Notification cleanup runs
+  on the genuine path after those checks. Apply the same guards to all-profile
+  cleanup to preserve activation during updates.
+- The single-user smoke in `scripts/smoke-windows-nsis-installer.mjs` installs
+  with `/allusers`, verifies exact protocol and owned-shortcut provenance,
+  uninstalls, then checks the result in
+  `assertRuntimeNotificationArtifactsRemoved`. Second-profile coverage requires
+  the two-user acceptance gate.
 
 ## Hard constraints
 
@@ -102,26 +99,26 @@ Any accepted design MUST satisfy all of the following:
 2. Never touch foreign (non-Ave) values or files. The exact-ownership contract
    requires a byte-exact match on shortcut target, working dir, empty args,
    description, AUMID, and valid toast CLSID, plus exact type/data on the CLSID keys
-   (`...ps1:124-166,178-228`).
+   (`Get-ShortcutOwnershipMismatches` and `Get-OwnedToastRegistrationValueCount`
+   in `build/uninstall-windows-notification-artifacts.ps1`).
 3. Must work for a standard-user uninstall performed with alternate admin
    credentials - the common enterprise case. The current design already handles
    this by splitting elevated machine actions from the outer-user notification
-   cleanup (`build/installer.nsh:425-429`); an all-profile design must not
-   assume the uninstalling identity equals the profile that owns the residue.
+   cleanup (`customUnInstall` in `build/installer.nsh`). An all-profile design
+   must account for residue owned by users other than the one uninstalling.
 4. macOS and Linux runtime and packaging paths untouched
    (`build/installer.nsh` is Windows-only; the CLSID write is guarded by
-   `process.platform === "win32"` at `src/main/early-boot-env.ts:75`).
+   `process.platform === "win32"` in `runEarlyBootEnv` in
+   `src/main/early-boot-env.ts`).
 5. Must NOT regress the merged updater-path preservation. Both `${isUpdated}`
    and the explicit `--updated` guard must continue to short-circuit BEFORE any
-   notification/CLSID teardown (`build/installer.nsh:402-410,530,601-611`).
+   notification/CLSID teardown (`customUnInstall` in `build/installer.nsh`).
 6. Must NOT regress the shipped invoking-user cleanup. All-profile
    coverage is additive; the exact invoking-user delete/reinstall path stays
    green.
-7. Must not brick install/uninstall. Notification provisioning/cleanup is
-   non-fatal-by-posture elsewhere (e.g. the sandbox provisioning at
-   `build/installer.nsh:173-175`); an all-profile mechanism should not turn a
-   cosmetic residue into an install/uninstall Abort for foreign-profile edge
-   cases it cannot safely reason about.
+7. Keep install and uninstall usable when cosmetic residue in a foreign profile
+   lacks enough evidence for safe cleanup. For an example of recoverable
+   provisioning failures, see `customInstall` in `build/installer.nsh`.
 
 ## Candidate designs
 
@@ -163,7 +160,7 @@ The packaging decision must account for legacy artifacts. Package identity
 prevents new runtime-created pairs. Existing pairs need exact-ownership cleanup
 from within each affected profile. Package teardown on genuine uninstall must
 respect the existing `${isUpdated}` and `--updated` guards
-(`build/installer.nsh:402-410,601-611`).
+(`customUnInstall` and `customRemoveFiles` in `build/installer.nsh`).
 
 Rollback to an unpackaged build must remove the identity package and restore
 the unpackaged executable and updater path. The per-profile release limit then
@@ -183,7 +180,7 @@ registration for both users and that foreign artifacts survive unchanged.
 
 - `build/installer.nsh` (`customUnInstall`, `un.aveCleanupCurrentUserNotificationArtifacts`, updater guards)
 - `build/uninstall-windows-notification-artifacts.ps1` (exact-ownership cleanup contract)
-- `src/main/early-boot-env.ts:25-77` (AUMID + pinned toast CLSID)
+- `src/main/early-boot-env.ts` (AUMID and pinned toast CLSID in `runEarlyBootEnv`)
 - `test/scripts/smoke-windows-nsis-installer.test.ts` (single-user smoke; two-user test to be added)
 - [MSIX/AppX packaging decision](../references/production-release-checklist.md#msixappx-packaging-decision)
 
