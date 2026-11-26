@@ -132,7 +132,7 @@ it("keeps diagnostics from both app streams in the isolated local log", async ()
 it("sanitizes app failure messages and rejects the boot", async () => {
   const { child, onLine, result } = fixture();
   const msg = "before-quit: shutdown cleanup failed: C:\\Users\\alice\\.ave fixture-secret-sentinel";
-  child.stderr.write(JSON.stringify({ msg }) + "\n");
+  child.stderr.write(`${JSON.stringify({ msg })}\n`);
   await expect(result).rejects.toThrow(/^before-quit: shutdown cleanup failed$/u);
   expect(onLine.mock.calls).toEqual([
     ["before-quit: shutdown cleanup failed"],

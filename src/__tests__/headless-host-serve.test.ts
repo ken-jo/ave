@@ -82,6 +82,7 @@ describe("headless --serve", () => {
       vi.stubEnv("AVE_RESOURCES_DIR", resourcePath);
       vi.mocked(ensureWorkspaceCwd).mockImplementationOnce(() => {
         resourcesAtWorkspaceSetup = getConfiguredHostResources();
+        return resourcePath;
       });
       vi.mocked(createNodeBootHost).mockImplementationOnce(async (options) => {
         expect(resolveWindowsPathKindHelper()).toBe(binary);
