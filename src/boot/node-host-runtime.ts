@@ -3,6 +3,7 @@ import { EnvHttpProxyAgent, fetch as undiciFetch, setGlobalDispatcher, type Disp
 import { createNodeSecretEncryption } from "../data/node-secret-encryption.js";
 import { createSafeLlmFetch } from "../main/safe-llm-fetch.js";
 import type { HostFetchTransport } from "../main/host-fetch-guard.js";
+import type { HostResources } from "../main/host-resources.js";
 import { ensureCorporateCaInjected } from "../main/corp-ca-runtime.js";
 import { readPersistedCorpCaConfigSync } from "../main/persisted-corp-ca.js";
 import { getRuntimeSensitiveKeyPaths, protectRuntimeSettingsPath } from "../permissions/sensitive-paths.js";
@@ -10,11 +11,9 @@ import { settingsFilePath } from "../data/settings-store.js";
 import { WIRE_BYTES_MAX } from "../plugins/isolation/host-api-wire.js";
 import type { BootHost } from "./host-runtime.js";
 
-export interface NodeBootHostOptions {
+export interface NodeBootHostOptions extends HostResources {
   userDataPath: string;
-  resourcePath: string;
   keyFilePath?: string;
-  isPackaged: boolean;
 }
 
 async function prepareBufferedBody(input: string, init: RequestInit): Promise<RequestInit> {

@@ -9,6 +9,7 @@ import { isAuthorizedWorkspaceProjectRoot } from "./main/project-root-authorizat
 import { acquireHostInstanceLock } from "./main/host-instance-lock.js";
 import { createWindowlessHost } from "./main/windowless-host.js";
 import { probeHostRuntimeResources } from "./main/host-runtime-probe.js";
+import { configureHostResources } from "./main/host-resources.js";
 import { runAppShutdownCleanup, runIncompleteBootShutdown, runShutdownHooks } from "./main/app-shutdown.js";
 import { sealManagedChildProcessAdmission } from "./main/managed-child-processes.js";
 import { claimAsrtSignalRelease } from "./permissions/asrt-signal-ownership.js";
@@ -46,16 +47,16 @@ function userDataPath(argv: readonly string[]): string {
 
 export async function main(): Promise<number> {
   const argv = process.argv.slice(2);
-  const packaged = getIsPackaged();
+  const resources = {
+    resourcePath: process.env.AVE_RESOURCES_DIR ?? join(projectRoot, "resources"),
+    isPackaged: getIsPackaged(),
+  };
   if (argv.includes("--runtime-check")) {
     if (argv.length !== 1) {
       process.stderr.write("--runtime-check must be used alone\n");
       return EXEC_USAGE_EXIT_CODE;
     }
-    process.stdout.write(`${JSON.stringify(probeHostRuntimeResources({
-      resourcePath: process.env.AVE_RESOURCES_DIR ?? join(projectRoot, "resources"),
-      isPackaged: packaged,
-    }))}\n`);
+    process.stdout.write(`${JSON.stringify(probeHostRuntimeResources(resources))}\n`);
     return 0;
   }
   const serve = argv.includes("--serve");
@@ -65,6 +66,7 @@ export async function main(): Promise<number> {
     process.stderr.write(`${request && "error" in request ? request.error : "Use --exec, --set-secret, or --serve"}\n`);
     return EXEC_USAGE_EXIT_CODE;
   }
+  configureHostResources(resources);
   if (request?.workloadBroker) {
     await initializeWorkloadBroker(request.workloadBroker);
     if (!request.turn || !isActiveWorkloadBrokerCwd(request.turn.cwd)) {
@@ -100,11 +102,10 @@ export async function main(): Promise<number> {
   try {
     await Promise.race([(async () => {
       const createHost = () => createNodeBootHost({
-          userDataPath: profile,
-          resourcePath: process.env.AVE_RESOURCES_DIR ?? join(projectRoot, "resources"),
-          keyFilePath: process.env.AVE_SECRET_KEY_FILE,
-          isPackaged: packaged,
-        });
+        ...resources,
+        userDataPath: profile,
+        keyFilePath: process.env.AVE_SECRET_KEY_FILE,
+      });
       const attestationPath = request && !("error" in request)
         ? request.operatorAttestationPath
         : undefined;
