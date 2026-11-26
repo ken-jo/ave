@@ -2430,7 +2430,7 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
       const gate = new ApprovalGate(wc as never);
       const requestSpy = vi
         .spyOn(gate, "requestAndWait")
-        .mockImplementation((request) => answeredApprovalDecision({ requestId: "req-test", choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
+        .mockImplementation((request) => answeredApprovalDecision({ requestId: request.id, choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
 
       const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
 
@@ -2465,7 +2465,7 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
     const gate = new ApprovalGate(wc as never);
     const requestSpy = vi
       .spyOn(gate, "requestAndWait")
-      .mockImplementation((request) => answeredApprovalDecision({ requestId: "req-persist", choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
+      .mockImplementation((request) => answeredApprovalDecision({ requestId: request.id, choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
 
     const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
 
@@ -4912,7 +4912,7 @@ describe("ToolExecutor remote controller session authority", () => {
     let current = true;
     const sessionId = "controller-revoked-after-card";
     const context = remoteContext(sessionId, { pairedShare, pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => current } });
-    requestAndWait.mockImplementation(async request => { current = false; return answeredApprovalDecision({ requestId: request.id, choice: "allow-once" }); });
+    requestAndWait.mockImplementation(async request => { current = false; return answeredApprovalDecision({ requestId: request.id, choice: "allow-once" }, "desk", request.toolName, request.invocationToolUseId); });
     const result = await executor.executeAll([{ id: sessionId, name: "controller_probe", input: {} }], { sessionId, permissionContext: context });
     expect(requestAndWait).toHaveBeenCalledOnce();
     expect(executed).not.toHaveBeenCalled();
