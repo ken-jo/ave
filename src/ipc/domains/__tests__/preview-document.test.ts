@@ -552,8 +552,8 @@ describe("read-only observation sender boundary", () => {
   });
 
   it("keeps at most sixteen frame-bound preview opener receipts", async () => {
-    // Only the receipt watch is faked, so a single tick can be counted.
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    // Advance one receipt poll after the text reads finish.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       const event = documentEvent(OK_FRAME);
       const results: PreviewReadFileResult[] = [];
