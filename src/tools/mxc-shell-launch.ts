@@ -183,6 +183,14 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
       part.exists === true ? windowsObjectKey(part) : null, part.canonical, part.directory, part.reparseTag, part.reparseTarget])));
   };
   const admittedGrants = grantIdentity();
+  const assertDispatch = () => {
+    assertAdmission();
+    if (requireMxcContainerStartRoot() !== runtimeRoot) throw new Error("Container runtime root changed before spawn");
+    assertIssuedContainerHomeInPlace(input.sandboxHome);
+    input.assertCommand?.();
+    if (grantIdentity() !== admittedGrants) throw new Error("Container filesystem grant changed before spawn");
+    if (getHostWxcExecIdentity() !== launcherIdentity) throw new Error("Contained shell launcher changed before spawn");
+  };
   assertAdmission();
   const relay = await openHostEgressListener(token, admission);
   assertAdmission();
@@ -206,19 +214,14 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     proxyUrl: listener.url,
     timeoutMs: input.timeoutMs + MXC_TIMEOUT_MARGIN_MS,
   });
-  const transport = await openMxcRequestTransport(request, wxcExec);
+  const transport = await openMxcRequestTransport(request, wxcExec, { root: runtimeRoot, signal: lifecycle.signal, assertStillValid: assertDispatch });
   lifecycle.defer(() => transport.release());
   assertAdmission();
   return {
     argv: [wxcExec, ...transport.args],
     proxyPort: listener.port,
     activate: () => {
-      assertAdmission();
-      if (requireMxcContainerStartRoot() !== runtimeRoot) throw new Error("Container runtime root changed before spawn");
-      assertIssuedContainerHomeInPlace(input.sandboxHome);
-      input.assertCommand?.();
-      if (grantIdentity() !== admittedGrants) throw new Error("Container filesystem grant changed before spawn");
-      if (getHostWxcExecIdentity() !== launcherIdentity) throw new Error("Contained shell launcher changed before spawn");
+      assertDispatch();
       const observation = observeWindowsBackend("container");
       active = true;
       return observation;

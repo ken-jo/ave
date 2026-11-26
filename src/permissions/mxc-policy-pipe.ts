@@ -4,6 +4,8 @@ import { resolveWindowsPathKindHelper } from "../main/windows-path-kind-launcher
 import { assertManagedChildProcessAdmissionOpen, retainUnterminatedChildProcess, trackManagedChildProcess } from "../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
+import { commitUnderAdmission } from "../shared/admission-commit.js";
+import { createMxcReleaseGate } from "./mxc-release-gate.js";
 
 const MAX_POLICY_BYTES = 4 * 1024 * 1024;
 
@@ -14,7 +16,9 @@ class PolicyHelperTerminationError extends Error {
   }
 }
 
-export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
+export async function openMxcPolicyPipe(bytes: Buffer, pipe: string, admission?: {
+  root: string; signal: AbortSignal; assertStillValid: () => void;
+}): Promise<{
   bindChild(child: childProcess.ChildProcess): void;
   release(): Promise<void>;
 }> {
@@ -22,9 +26,15 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
   if (!/^\\\\\.\\pipe\\ave-mxc-[a-f0-9]{32}$/u.test(pipe)) throw new Error("Windows sandbox policy pipe name is invalid");
   const helper = resolveWindowsPathKindHelper();
   assertManagedChildProcessAdmissionOpen("mxc:policy");
-  const server = childProcess.spawn(helper, ["--mxc-policy", pipe, String(TOOL_TIMEOUT_POLICY.mxcRequestTransportMs)], {
-    cwd: dirname(helper), windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"],
-  });
+  const assertLive = () => { admission?.signal.throwIfAborted(); admission?.assertStillValid(); };
+  const gate = admission ? commitUnderAdmission(assertLive, () => createMxcReleaseGate(admission.root)) : undefined;
+  let server: childProcess.ChildProcessWithoutNullStreams;
+  try {
+    server = commitUnderAdmission(assertLive, () => childProcess.spawn(helper,
+      ["--mxc-policy", pipe, String(TOOL_TIMEOUT_POLICY.mxcRequestTransportMs), ...(gate ? [gate.path] : [])], {
+        cwd: dirname(helper), windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"],
+      }));
+  } catch (error) { gate?.revoke(); throw error; }
   let stopTracking: ReturnType<typeof trackManagedChildProcess> | undefined;
   let bound: childProcess.ChildProcess | undefined;
   let closed = false;
@@ -45,6 +55,8 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
     if (releasePromise) return releasePromise;
     released = true;
     clearTimeout(timer);
+    admission?.signal.removeEventListener("abort", revoke);
+    cleanup(() => gate?.revoke());
     releasePromise = Promise.resolve().then(async () => {
       let stopped: Promise<void> | undefined;
       if (!closed) {
@@ -77,6 +89,11 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
     if (bound?.exitCode === null && bound.signalCode === null) cleanup(() => bound?.kill());
     void release().then(() => { rejectReady(recordFailure(error)); }, (releaseError) => { rejectReady(recordFailure(releaseError)); });
   };
+  const revoke = () => {
+    try { gate?.revoke(); }
+    catch (error) { fail(error); }
+  };
+  admission?.signal.addEventListener("abort", revoke, { once: true });
   const timer = setTimeout(() => fail(new Error("Windows sandbox policy delivery timed out")), TOOL_TIMEOUT_POLICY.mxcRequestTransportMs);
   timer.unref();
   server.on("error", (error) => { void fail(error); });
@@ -138,7 +155,8 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
         }
         const pid = Buffer.alloc(4);
         pid.writeUInt32LE(child.pid);
-        server.stdin.write(pid);
+        try { commitUnderAdmission(assertLive, () => { server.stdin.write(pid); }); }
+        catch (error) { fail(error); }
       },
       release,
     };

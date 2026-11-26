@@ -403,10 +403,15 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     if (spec.parent) nativeHolderBindings.get(spec.parent)!.children.add(lifetime);
   } catch (error) { egress.release(); throw error; }
   try {
-    lease = await openMxcEgressLease(egress.token);
-    spec.assertStillValid?.();
-    admitted.assertStillValid();
-    if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before admission");
+    const assertHolder = () => {
+      signal.throwIfAborted();
+      spec.assertStillValid?.();
+      assertParent();
+      admitted.assertStillValid();
+      if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before admission");
+    };
+    lease = await openMxcEgressLease(egress.token, assertHolder);
+    assertHolder();
     const request = buildMxcConfinedChildRequest({ ...spec, grants, proxyUrl: lease.url });
     assertNesting();
     const admissionInput = { request, holder: spec.holder, executableIdentity: measureExecutableIdentity(spec.command), bootPlan: plan };

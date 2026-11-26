@@ -539,9 +539,31 @@ describe("prepareMxcShellLaunch", () => {
     lifecycle.revoke();
     bind.resolve();
     expect(await prepared).toBeInstanceOf(Error);
+    expect(servers).toHaveLength(1);
     expect(await lifecycle.dispose()).toEqual([]);
     expect(servers.every((server) => !server.listening)).toBe(true);
     expect(h.closeRelay).toHaveBeenCalledOnce();
+  });
+
+  it("withdraws policy delivery immediately when a running invocation is revoked", async () => {
+    const lifecycle = createContainedShellLifecycle();
+    const exited = deferred<void>();
+    let delivery: { signal?: AbortSignal; assertStillValid?: () => void } | undefined;
+    const release = vi.fn(async () => {});
+    vi.spyOn(policyPipe, "openMxcPolicyPipe").mockImplementation(async (...args) => {
+      delivery = (args as unknown[])[2] as typeof delivery;
+      return { bindChild: () => {}, release };
+    });
+    relay();
+    try {
+      const launch = await prepareMxcShellLaunch({ ...INPUT, commandLine: "x".repeat(25_000) }, lifecycle);
+      launch.activate();
+      lifecycle.jobStarted(exited.promise);
+      lifecycle.revoke();
+      expect(delivery?.signal?.aborted).toBe(true);
+      expect(() => delivery?.assertStillValid?.()).toThrow();
+      expect(release).not.toHaveBeenCalled();
+    } finally { exited.resolve(); await lifecycle.dispose(); }
   });
 
   it.skipIf(process.platform !== "win32")("releases an unused policy pipe with the invocation listener", async () => {

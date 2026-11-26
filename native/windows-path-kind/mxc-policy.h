@@ -23,6 +23,7 @@ struct Delivery {
   volatile LONG accepted = 0;
   volatile LONG completed = 0;
   volatile LONG failed = 0;
+  const wchar_t* gate = nullptr;
   std::vector<char> bytes;
 };
 
@@ -94,6 +95,12 @@ inline DWORD WINAPI serve(void* context) {
     }
     DWORD written = 0;
     const DWORD size = static_cast<DWORD>(delivery->bytes.size());
+    if (delivery->gate) {
+      const DWORD attributes = GetFileAttributesW(delivery->gate);
+      if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) {
+        return fail_delivery(delivery);
+      }
+    }
     const BOOL sent = WriteFile(pipe, delivery->bytes.data(), size, &written, nullptr);
     DWORD error = sent ? ERROR_SUCCESS : GetLastError();
     if (sent && written != size) return fail_delivery(delivery);
@@ -120,7 +127,7 @@ inline DWORD WINAPI serve(void* context) {
 }
 
 inline int run(int argc, wchar_t** argv) {
-  if (argc != 4) return 2;
+  if (argc != 4 && argc != 5) return 2;
   const std::wstring name(argv[2]);
   const std::wstring prefix = L"\\\\.\\pipe\\ave-mxc-";
   if (name.size() != prefix.size() + 32 || name.compare(0, prefix.size(), prefix) != 0 ||
@@ -132,6 +139,7 @@ inline int run(int argc, wchar_t** argv) {
   HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
   if (!read_exact(input, &size, sizeof(size)) || !size || size > MAX_POLICY_BYTES) return 2;
   Delivery delivery{};
+  if (argc == 5) delivery.gate = argv[4];
   delivery.deadline = GetTickCount64() + timeout;
   delivery.bytes.resize(size);
   if (!read_exact(input, delivery.bytes.data(), size)) return 2;
