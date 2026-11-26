@@ -2378,6 +2378,7 @@ export const en = {
   "formatIpcError.permissionAuditWriteFailed": "Failed to write to the audit log.",
   "formatIpcError.auditChainNotInitialized": "The audit chain has not been initialized.",
   "formatIpcError.managed": "The change was blocked by an administrator policy, or an error occurred while saving.",
+  "formatIpcError.modelListCacheMainOwned": "Ave manages the saved model list. To update it, sync the model list in Settings → Model.",
   "formatIpcError.durableModeDenied": "Permanent changes are not allowed in the current mode.",
   "formatIpcError.oneShotNotRecordable": "This request can only be answered once, so this choice cannot be remembered. Allow or deny it once.",
   "formatIpcError.readjudicationUnavailable": "This request is not eligible for re-adjudication.",

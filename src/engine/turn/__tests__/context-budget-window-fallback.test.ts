@@ -27,7 +27,7 @@ vi.mock("../../llm/provider-factory.js", async (importOriginal) => {
         requests.bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return new Response("refused", { status: 400 });
       },
-      {}, config.providerMetadata,
+      { getRetiredModelId: noRetirementEvidence }, config.providerMetadata,
     ),
   };
 });
@@ -42,6 +42,7 @@ import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js"
 import { FALLBACK_CONTEXT_WINDOW } from "../../../shared/model-host-policy.js";
 import { getPreflightThreshold } from "../../../shared/context-budget.js";
 import { llmModelListCacheKey } from "../../../shared/llm-model-list.js";
+import { noRetirementEvidence } from "../../llm/model-wire-gate.js";
 
 function loopOnModel(model: string, contextWindow?: number): ConversationLoop {
   const llm = fakeLlmSettings({ provider: "openai-compatible", model }) as Record<string, unknown>;

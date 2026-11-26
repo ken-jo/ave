@@ -2380,6 +2380,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "formatIpcError.permissionAuditWriteFailed": "감사 로그 기록에 실패했습니다.",
   "formatIpcError.auditChainNotInitialized": "감사 체인이 초기화되지 않았습니다.",
   "formatIpcError.managed": "관리자 정책에 의해 변경이 차단되었거나 저장 중 오류가 발생했습니다.",
+  "formatIpcError.modelListCacheMainOwned": "저장된 모델 목록은 Ave에서 관리합니다. 목록을 갱신하려면 설정 → 모델에서 모델 목록을 동기화하세요.",
   "formatIpcError.durableModeDenied": "현재 모드에서는 영구 변경이 허용되지 않습니다.",
   "formatIpcError.oneShotNotRecordable": "이 요청은 이번 한 번만 응답할 수 있어 이 선택을 기억할 수 없습니다. 이번만 허용하거나 거부하세요.",
   "formatIpcError.readjudicationUnavailable": "이 요청은 재판정할 수 없습니다.",

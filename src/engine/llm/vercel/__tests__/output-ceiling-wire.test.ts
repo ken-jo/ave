@@ -13,6 +13,7 @@ import { createGuardedModelProviderFetch } from "../../marketplace-provider-fetc
 import { VercelUnifiedProvider } from "../adapter.js";
 import { collectStreamEvents } from "./test-helpers.js";
 import { activeModelCatalog, installModelCatalog } from "../../../../shared/model-catalog/active.js";
+import { noRetirementEvidence } from "../../model-wire-gate.js";
 
 const NUMERIC_CATALOG_KEY = "anthropic/fixture-numeric";
 const INTERLEAVED_CATALOG_KEY = "anthropic/fixture-interleaved";
@@ -76,7 +77,7 @@ async function collectInternalRequest(
   const fetchResponse = vi.fn<typeof fetch>(async () => new Response(responseBody(vendor), {
     headers: { "content-type": "text/event-stream" },
   }));
-  const provider = new VercelUnifiedProvider(vendor, "fixture-key", "https://provider.invalid/v1", fetchResponse);
+  const provider = new VercelUnifiedProvider(vendor, "fixture-key", "https://provider.invalid/v1", fetchResponse, { getRetiredModelId: noRetirementEvidence });
   const result = await collectRoundStream({
     provider, model, systemPrompt: "Return the result.",
     messages: [{ role: "user", content: "Report the value." }], toolSchemas,
@@ -169,7 +170,7 @@ describe("resolved output ceiling on the native wire", () => {
 
   it.each([1, 1_024])("does not turn off numeric thinking to accept impossible user output %i", async (outputTokenLimit) => {
     const fetchResponse = vi.fn<typeof fetch>();
-    const provider = new VercelUnifiedProvider("claude", "fixture-key", "https://provider.invalid/v1", fetchResponse);
+    const provider = new VercelUnifiedProvider("claude", "fixture-key", "https://provider.invalid/v1", fetchResponse, { getRetiredModelId: noRetirementEvidence });
     const block = getLlmVendorSettings({ claude: {
       model: "claude-3-7-sonnet-latest", catalogModel: NUMERIC_CATALOG_KEY, enableThinking: true, thinkingBudgetTokens: 8_000, outputTokenLimit,
     } }, "claude");
@@ -260,7 +261,7 @@ describe("resolved output ceiling on the native wire", () => {
     { model: "unknown-numeric-model", toolSchemas: TOOL_SCHEMAS },
   ])("rejects an impossible ordinary total before transport for $model", async ({ model, toolSchemas }) => {
     const fetchResponse = vi.fn<typeof fetch>();
-    const provider = new VercelUnifiedProvider("claude", "fixture-key", "https://provider.invalid/v1", fetchResponse);
+    const provider = new VercelUnifiedProvider("claude", "fixture-key", "https://provider.invalid/v1", fetchResponse, { getRetiredModelId: noRetirementEvidence });
     const result = await collectRoundStream({
       provider, model, systemPrompt: "Return the result.",
       messages: [{ role: "user", content: "Report the value." }], toolSchemas,
@@ -276,7 +277,7 @@ describe("resolved output ceiling on the native wire", () => {
     }));
     const baseUrl = "http://127.0.0.1:30000/v1";
     const provider = new VercelUnifiedProvider(
-      "claude", "fixture-key", baseUrl, createGuardedModelProviderFetch(baseUrl, fetchResponse),
+      "claude", "fixture-key", baseUrl, createGuardedModelProviderFetch(baseUrl, fetchResponse), { getRetiredModelId: noRetirementEvidence },
     );
     const result = await collectRoundStream({
       provider, model: "claude-sonnet-4-5", systemPrompt: "Return the result.",
@@ -299,7 +300,7 @@ describe("resolved output ceiling on the native wire", () => {
       init?.signal?.throwIfAborted();
       throw new Error("Caller cancellation did not reach the provider transport");
     });
-    const provider = new VercelUnifiedProvider("claude", "fixture-key", "https://provider.invalid/v1", fetchResponse);
+    const provider = new VercelUnifiedProvider("claude", "fixture-key", "https://provider.invalid/v1", fetchResponse, { getRetiredModelId: noRetirementEvidence });
     const result = await collectRoundStream({
       provider, model: "claude-sonnet-4-5", systemPrompt: "Return the result.",
       messages: [{ role: "user", content: "Report the value." }], toolSchemas: TOOL_SCHEMAS,
@@ -315,7 +316,7 @@ describe("resolved output ceiling on the native wire", () => {
     const fetchResponse = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       type: "error", error: { type: "invalid_request_error", message: "The requested output is unavailable" },
     }), { status: 400, headers: { "content-type": "application/json" } }));
-    const provider = new VercelUnifiedProvider("claude", "fixture-key", "https://provider.invalid/v1", fetchResponse);
+    const provider = new VercelUnifiedProvider("claude", "fixture-key", "https://provider.invalid/v1", fetchResponse, { getRetiredModelId: noRetirementEvidence });
     const result = await collectRoundStream({
       provider, model: "claude-sonnet-4-5", systemPrompt: "Return the result.",
       messages: [{ role: "user", content: "Report the value." }], toolSchemas: TOOL_SCHEMAS,
@@ -346,7 +347,7 @@ describe("resolved output ceiling on the native wire", () => {
       const fetchResponse = vi.fn<typeof fetch>(async () => new Response(responseBody("claude"), {
         headers: { "content-type": "text/event-stream" },
       }));
-      const provider = new IsolatedProvider("claude", "fixture-key", "https://provider.invalid/v1", fetchResponse);
+      const provider = new IsolatedProvider("claude", "fixture-key", "https://provider.invalid/v1", fetchResponse, { getRetiredModelId: noRetirementEvidence });
       await collectStreamEvents(provider.streamTurn({
         model: "claude-sonnet-4-5", systemPrompt: "Return the result.",
         messages: [{ role: "user", content: "Report the value." }],

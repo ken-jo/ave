@@ -5,6 +5,7 @@ import { CHATGPT_PLAN_MODELS_URL, CHATGPT_PLAN_RESPONSES_URL, CHATGPT_PLAN_TOKEN
 import { ChatGptPlanRuntime, ChatGptPlanRuntimeError, createChatGptPlanRuntime } from "../runtime.js";
 import { CHATGPT_PLAN_ACCOUNT_SECRET_KEY, ChatGptPlanSession, type ChatGptPlanSecretStore } from "../session.js";
 import { ChatGptPlanTransport } from "../transport.js";
+import { RetiredModelError } from "../../../engine/llm/retired-model-error.js";
 import { SubscriptionRuntimeService, SubscriptionRuntimeServiceError } from "../../subscription-runtime-service.js";
 import type { AcpSubscriptionRuntimeRegistry } from "../../subscription-runtime-service.js";
 import type { CodexAppServerClient } from "../../codex-app-server-client.js";
@@ -485,6 +486,85 @@ describe("ChatGPT plan transport", () => {
     const h = harness(PLAN_SCOPES);
     await expect(h.runtime.fetch("https://api.openai.com/v1/chat/completions", { method: "POST" })).rejects.toThrow(/egress refused/);
     expect(h.requests).toHaveLength(0);
+  });
+});
+
+describe("ChatGPT plan retirement evidence", () => {
+  const SELECTION = { kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" } as const;
+  const LISTED = { slug: "gpt-6.1-sol", display_name: "GPT-6.1 Sol", visibility: "list" };
+  const TURN = { model: "m", systemPrompt: "s", messages: [{ role: "user" as const, content: "hi" }] };
+
+  function catalogHarness(initial: readonly unknown[]) {
+    const state = { models: initial };
+    const h = harness(PLAN_SCOPES, (url) => url === CHATGPT_PLAN_MODELS_URL
+      ? new Response(JSON.stringify({ models: state.models }), { status: 200 })
+      : sse(COMPLETED_TURN));
+    const transport = new ChatGptPlanTransport(SELECTION, async () => h.runtime);
+    const turn = () => collect(transport.streamTurn(TURN)).catch((error: unknown) => error);
+    const inferenceRequests = () => h.requests.filter((entry) => entry.url === CHATGPT_PLAN_RESPONSES_URL).length;
+    return { h, state, turn, inferenceRequests };
+  }
+
+  it.each([
+    ["the picker hides its row", [{ ...LISTED, visibility: "hide" }, { slug: "gpt-6.1-mini", visibility: "list" }]],
+    ["another row cannot be read", [{ slug: "gpt-6.1-mini", visibility: "list" }, { display_name: "Nameless", visibility: "list" }]],
+    ["the list comes back empty", []],
+  ])("keeps serving the selected model when %s", async (_case, refreshed) => {
+    const { h, state, turn, inferenceRequests } = catalogHarness([LISTED]);
+    await h.runtime.listModels();
+    expect(await turn()).toEqual(expect.arrayContaining([expect.objectContaining({ type: "message_complete" })]));
+
+    state.models = refreshed;
+    const listed = await h.runtime.listModels();
+
+    // The picker follows the projection; the projection alone retires nothing.
+    expect(listed.models.map((model) => model.id)).not.toContain("gpt-6.1-sol");
+    expect(h.runtime.getRetiredModelId("gpt-6.1-sol")).toBeUndefined();
+    expect(await turn()).toEqual(expect.arrayContaining([expect.objectContaining({ type: "message_complete" })]));
+    expect(inferenceRequests()).toBe(2);
+  });
+
+  it("refuses a model the complete catalog no longer names, before any inference request", async () => {
+    const { h, turn, inferenceRequests } = catalogHarness([{ slug: "gpt-6.1-mini", visibility: "list" }, { slug: "internal-x", visibility: "hide" }]);
+    await h.runtime.listModels();
+
+    const outcome = await turn();
+
+    expect(outcome).toBeInstanceOf(RetiredModelError);
+    expect(outcome).toMatchObject({ model: "gpt-6.1-sol" });
+    expect(inferenceRequests()).toBe(0);
+  });
+
+  it("refuses at the wire when the catalog retires the model while the token read is pending", async () => {
+    const { h, state, turn, inferenceRequests } = catalogHarness([LISTED]);
+    await h.runtime.listModels();
+    let releaseToken!: () => void;
+    const tokenRequested = new Promise<void>((requested) => {
+      vi.spyOn(h.runtime, "accessToken").mockImplementation(async () => {
+        requested();
+        await new Promise<void>((release) => { releaseToken = release; });
+        return "stored-access-token";
+      });
+    });
+
+    const pending = turn();
+    await tokenRequested;
+    state.models = [{ slug: "gpt-6.1-mini", visibility: "list" }];
+    await h.runtime.listModels();
+    releaseToken();
+
+    expect(await pending).toBeInstanceOf(RetiredModelError);
+    expect(inferenceRequests()).toBe(0);
+  });
+
+  it("forgets one account's catalog when the session ends", async () => {
+    const { h } = catalogHarness([{ slug: "gpt-6.1-mini", visibility: "list" }]);
+    await h.runtime.listModels();
+    expect(h.runtime.getRetiredModelId("gpt-6.1-sol")).toBe("gpt-6.1-sol");
+
+    await h.runtime.logout().catch(() => undefined);
+
+    expect(h.runtime.getRetiredModelId("gpt-6.1-sol")).toBeUndefined();
   });
 });
 

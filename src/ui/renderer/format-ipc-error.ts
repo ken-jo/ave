@@ -142,6 +142,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "a2a-remote-settings-main-owned": "formatIpcError.managed",
   "applied-migrations-main-owned": "formatIpcError.managed",
   "legacy-marketplace-lists-main-owned": "formatIpcError.managed",
+  "model-list-cache-main-owned": "formatIpcError.modelListCacheMainOwned",
   "missing-durable-confirm": "formatIpcError.missingDurableConfirm",
   // Windows-only IPC (sandboxWindowsInstall) refused on a non-win32 platform.
   "not-applicable": "formatIpcError.notApplicable",

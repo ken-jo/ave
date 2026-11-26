@@ -1,3 +1,4 @@
+import { declareDeferredSend } from "../../engine/llm/model-wire-gate.js";
 import { CHATGPT_PLAN_RESPONSES_URL } from "./endpoints.js";
 
 /**
@@ -167,7 +168,7 @@ export function createChatGptPlanResponsesFetch(input: {
   readonly accessToken: () => Promise<string>;
   readonly onFailure?: (failure: ChatGptPlanResponseFailure) => void;
 }): typeof fetch {
-  return (async (request: Parameters<typeof fetch>[0], init?: RequestInit) => {
+  const planFetch = (async (request: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const url = typeof request === "string" ? request : request instanceof URL ? request.toString() : request.url;
     const method = (init?.method ?? "GET").toUpperCase();
     if (method !== "POST" || url !== CHATGPT_PLAN_RESPONSES_URL) {
@@ -197,4 +198,7 @@ export function createChatGptPlanResponsesFetch(input: {
     input.onFailure?.(readChatGptPlanFailure(response.status, response.headers, text));
     return new Response(text, { status: response.status, statusText: response.statusText, headers: response.headers });
   }) as typeof fetch;
+  // The token read awaits before the send, so the transport's retirement check belongs around the inner send.
+  declareDeferredSend(planFetch, (wrapSend) => createChatGptPlanResponsesFetch({ ...input, fetch: wrapSend(input.fetch) }));
+  return planFetch;
 }

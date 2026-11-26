@@ -11,7 +11,7 @@ import {
   CHATGPT_PLAN_REVOCATION_URL,
   CHATGPT_PLAN_TOKEN_URL,
 } from "../endpoints.js";
-import { parseChatGptPlanModels } from "../models.js";
+import { parseChatGptPlanCatalog } from "../models.js";
 import {
   buildAuthorizationUrl,
   ChatGptPlanOAuthError,
@@ -283,18 +283,42 @@ describe("plan-usage egress policy", () => {
 
 describe("plan-usage model list", () => {
   it("keeps listed models in server order with slug and display name", () => {
-    expect(parseChatGptPlanModels({
+    const catalog = parseChatGptPlanCatalog({
       models: [
         { slug: "gpt-6.1-sol", display_name: "GPT-6.1 Sol", visibility: "list" },
         { slug: "internal-x", display_name: "Hidden", visibility: "hide" },
         { slug: "gpt-6.1-mini", display_name: "GPT-6.1 mini", visibility: "list" },
         { slug: "gpt-6.1-sol", display_name: "dup", visibility: "list" },
       ],
-    })).toEqual([
+    });
+    expect(catalog.models).toEqual([
       { id: "gpt-6.1-sol", displayName: "GPT-6.1 Sol" },
       { id: "gpt-6.1-mini", displayName: "GPT-6.1 mini" },
     ]);
-    expect(() => parseChatGptPlanModels({ data: [{ id: "gpt-4o" }] })).toThrow();
+    expect(() => parseChatGptPlanCatalog({ data: [{ id: "gpt-4o" }] })).toThrow();
+  });
+
+  it("takes inference evidence from every row, including the ones the picker hides", () => {
+    const { models, inferenceSlugs } = parseChatGptPlanCatalog({
+      models: [
+        { slug: "gpt-6.1-sol", display_name: "GPT-6.1 Sol", visibility: "list" },
+        { slug: "internal-x", display_name: "Hidden", visibility: "hide" },
+      ],
+    });
+    expect(models.map((model) => model.id)).toEqual(["gpt-6.1-sol"]);
+    expect([...(inferenceSlugs ?? [])]).toEqual(["gpt-6.1-sol", "internal-x"]);
+  });
+
+  it.each([
+    ["a row that is not an object", [{ slug: "gpt-6.1-sol", visibility: "list" }, null]],
+    ["a row without a slug", [{ slug: "gpt-6.1-sol", visibility: "list" }, { display_name: "Nameless", visibility: "list" }]],
+    ["a row with an unreadable slug", [{ slug: "gpt-6.1-sol", visibility: "list" }, { slug: "bad\u0000slug", visibility: "hide" }]],
+    ["an empty list", []],
+  ])("offers no inference evidence from %s", (_case, models) => {
+    const catalog = parseChatGptPlanCatalog({ models });
+    expect(catalog.inferenceSlugs).toBeUndefined();
+    // The picker keeps what it could read.
+    expect(catalog.models.map((model) => model.id)).toEqual(models.length > 0 ? ["gpt-6.1-sol"] : []);
   });
 });
 

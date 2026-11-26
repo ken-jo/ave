@@ -17,6 +17,7 @@ import { FALLBACK_CONTEXT_WINDOW, MAX_CREDIBLE_CONTEXT_WINDOW } from "../model-h
 import { freshAllVendorBlocks, llmImageInputKey } from "../llm-vendor-defaults.js";
 import { llmModelListCacheKey, type LlmModelListCache, type LlmModelListCacheEntry } from "../llm-model-list.js";
 import { activeModelCatalog, installModelCatalog } from "../model-catalog/active.js";
+import { normalizeModelsDevProviders } from "../model-catalog/normalize.js";
 import type { CatalogModel, ModelCatalogDocument } from "../model-catalog/types.js";
 
 describe("getUsableContext — Ave tier-fixed reservations", () => {
@@ -907,6 +908,9 @@ describe("context limits behind a custom endpoint", () => {
 });
 
 describe("resolveModelRetirement — design §6.1", () => {
+  const bundled = activeModelCatalog();
+  afterEach(() => installModelCatalog(bundled));
+
   const listing = (models: string[], complete = true): LlmModelListCacheEntry => ({
     vendor: "openai",
     endpoint: "https://api.openai.com/v1/models",
@@ -999,14 +1003,41 @@ describe("resolveModelRetirement — design §6.1", () => {
     expect(resolveModelRetirement({ vendor: "openai", model: "gpt-5.4", listing: listing(["gpt-4o"]) })).toBe("unlisted");
   });
 
-  it("reads a release date given only to the month as the whole month", () => {
-    // Month-only release dates cannot prove absence within that same month.
-    expect(activeModelCatalog().providers["alibaba-cn"]?.models["qwen-mt-plus"]?.releaseDate).toBe("2025-01");
-    const qwen = (fetchedAt: string) => ({ ...listing(["qwen-plus"]), vendor: "qwen", fetchedAt });
-    expect(resolveModelRetirement({ vendor: "qwen", model: "qwen-mt-plus", listing: qwen("2025-01-20T00:00:00.000Z") }))
-      .toBeUndefined();
-    expect(resolveModelRetirement({ vendor: "qwen", model: "qwen-mt-plus", listing: qwen("2025-02-01T00:00:00.000Z") }))
-      .toBe("unlisted");
+  function resolveWithReleaseDate(releaseDate: unknown, fetchedAt: string, status?: "deprecated") {
+    const model = "model-release-fixture";
+    const { providers } = normalizeModelsDevProviders({
+      openai: { models: { [model]: { id: model, release_date: releaseDate, status } } },
+    }, ["openai"]);
+    installModelCatalog({ ...bundled, providers });
+    return resolveModelRetirement({ vendor: "openai", model, listing: { ...listing(["other"]), fetchedAt } });
+  }
+
+  it.each([
+    ["2025-04", "2025-04-30T23:59:59.999Z", "2025-05-01T00:00:00.000Z"],
+    ["2025", "2025-12-31T23:59:59.999Z", "2026-01-01T00:00:00Z"],
+    ["2024-02-29", "2024-02-29T23:59:59.999Z", "2024-03-01T00:00:00.000Z"],
+  ])("requires a listing at or after the end of the UTC release period %s", (releaseDate, before, end) => {
+    expect(resolveWithReleaseDate(releaseDate, before)).toBeUndefined();
+    expect(resolveWithReleaseDate(releaseDate, end)).toBe("unlisted");
+  });
+
+  it.each(["2025-00", "2025-13", "2025-02-29", "2025-4", "unknown"])(
+    "cannot use an invalid release period %s to prove retirement",
+    (releaseDate) => expect(resolveWithReleaseDate(releaseDate, "2026-02-01T00:00:00.000Z")).toBeUndefined(),
+  );
+
+  it.each(["2026-10", "2026-02-29T00:00:00.000Z", "not-a-time"])(
+    "cannot use an invalid listing timestamp %s to prove retirement",
+    (fetchedAt) => expect(resolveWithReleaseDate("2025-04", fetchedAt)).toBeUndefined(),
+  );
+
+  it.each([undefined, null, "", "2025-04-01T00:00:00.000Z"])(
+    "cannot prove retirement if the source release date %j is missing or dropped during normalization",
+    (releaseDate) => expect(resolveWithReleaseDate(releaseDate, "2025-05-01T00:00:00.000Z")).toBeUndefined(),
+  );
+
+  it("still reports a catalog deprecation without a usable release period", () => {
+    expect(resolveWithReleaseDate(undefined, "2025-05-01T00:00:00.000Z", "deprecated")).toBe("catalog-deprecated");
   });
 
   it("never judges Vertex AI from a listing: its SDK answers no standard /models", () => {
