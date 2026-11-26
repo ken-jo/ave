@@ -2196,8 +2196,8 @@ async function spawnBackground(command: string, cwd: string, sessionId: string, 
   const observation = startShellObservation(command, cwd, sandbox);
   let child: ChildProcess;
   try {
-    const launch = () => process.platform === "win32"
-      ? spawnWindowsJobProcess(shell.cmd, [...argv], { cwd, env })
+    const launch = (hold?: HostShellSpawnDirectoryHold) => process.platform === "win32"
+      ? spawnWindowsJobProcess(shell.cmd, [...argv], { cwd, env }, hold?.launcherArgs)
       : spawn(shell.cmd, [...argv], {
         cwd,
         stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
@@ -2210,7 +2210,7 @@ async function spawnBackground(command: string, cwd: string, sessionId: string, 
       : await withHostShellExecutionHandoff(authorization, (hold) => {
           signal?.throwIfAborted();
           assertShellRemoteAuthority();
-          const started = launch();
+          const started = launch(hold);
           hold.bind(started);
           return started;
         }, refreshShellRemoteAuthority);
@@ -2671,7 +2671,8 @@ export async function spawnWithSandbox(
       assertSrtWinSpawnIntegrity(cmd);
       assertHostShellSpawnDirectory(spawnAuthorization);
       directoryHold.assertHeld();
-      child = spawn(cmd, args, {
+      const target = directoryHold.command(cmd, args);
+      child = spawn(target.executable, target.args, {
         windowsHide: true,
         detached: process.platform !== "win32",
         cwd: resolvedCwd,
@@ -2817,7 +2818,8 @@ async function spawnWithTimeout(
     let child: PipedChild;
     try {
       assertPreparedShellAvailable(prepared);
-      child = spawn(shell.cmd, [...argv], {
+      const target = launchHold?.command(shell.cmd, argv) ?? { executable: shell.cmd, args: [...argv] };
+      child = spawn(target.executable, target.args, {
         windowsHide: true,
         detached: process.platform !== "win32",
         cwd,
@@ -3860,10 +3862,14 @@ function powerShellExecutionEnvironment(verified: VerifiedPowerShellExecution | 
   return verified === undefined ? base : verifiedShellEnvironment(verified.handle, verified.identity, base);
 }
 
-function spawnManagedPowerShell(executable: string, command: string, options: SpawnOptions & { env: Record<string, string> }, verified?: VerifiedPowerShellExecution): ManagedPowerShellChild {
+function spawnManagedPowerShell(
+  executable: string, command: string, options: SpawnOptions & { env: Record<string, string> }, verified?: VerifiedPowerShellExecution,
+  hold?: HostShellSpawnDirectoryHold,
+): ManagedPowerShellChild {
   const launch = preparePowerShellLaunch(command, options.env, undefined, { hostShell: true });
   try {
-    const child = spawn(executable, launch.args, { ...options, env: powerShellExecutionEnvironment(verified, launch.env) }) as ManagedPowerShellChild;
+    const target = hold?.command(executable, launch.args) ?? { executable, args: launch.args };
+    const child = spawn(target.executable, target.args, { ...options, env: powerShellExecutionEnvironment(verified, launch.env) }) as ManagedPowerShellChild;
     retainPowerShellLaunchUntilExit(launch, child);
     return child;
   } catch (error) { launch.cleanup(); throw error; }
@@ -4068,7 +4074,8 @@ async function spawnPowerShellWithSandbox(
       assertSrtWinSpawnIntegrity(cmd);
       assertHostShellSpawnDirectory(spawnAuthorization);
       cwdHold.assertHeld();
-      child = spawn(cmd, args, {
+      const target = cwdHold.command(cmd, args);
+      child = spawn(target.executable, target.args, {
         windowsHide: true,
         detached: process.platform !== "win32",
         cwd,
@@ -4285,7 +4292,8 @@ async function spawnPowerShellInMxc(
     try {
       assertHostShellSpawnDirectory(spawnAuthorization);
       cwdHold.assertHeld();
-      child = spawn(cmd, args, {
+      const target = cwdHold.command(cmd, args);
+      child = spawn(target.executable, target.args, {
         // The launcher runs from its own (per-machine, admin-only) directory, so
         // nothing in the workspace sits beside it; the container's working
         // directory travels in the request.
@@ -4474,7 +4482,7 @@ async function spawnPowerShell(
         stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
         env: powerShellExecutionEnvironment(verified, buildHostShellChildEnv()),
         shell: false,
-      }, verified,
+      }, verified, launchHold,
     ) as PipedChild; }
     catch (error) { observation?.finish(null, "failed"); throw error; }
     launchHold?.bind(child);

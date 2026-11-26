@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync } from "node:fs";
+import crypto from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
@@ -58,7 +59,7 @@ describe.runIf(process.platform === "win32")("Windows directory hold helper prot
   };
   const padded = (bytes: number) => Buffer.from(`${row}${" ".repeat(bytes - row.length - 1)}\n`);
 
-  it("accepts a frame of exactly the limit and reports a later helper exit as a lost hold", async () => {
+  it("accepts a frame of exactly the limit and loses the hold when the helper exits", async () => {
     const frame = padded(MAX_REPLY);
     const pending = holdWindowsDirectory(root);
     helper().stdout.write(frame.subarray(0, MAX_REPLY - 10));
@@ -66,27 +67,22 @@ describe.runIf(process.platform === "win32")("Windows directory hold helper prot
     const held = await pending;
     expect(held?.facts.canonical).toBe((JSON.parse(row) as { canonical: string }[])[0]?.canonical);
     expect(held?.isHeld()).toBe(true);
-    const lost = vi.fn();
-    held?.onLost(lost);
+    const pipe = vi.mocked(spawn).mock.calls[0]?.[1]?.[3];
+    expect(pipe).toMatch(/^\\\\\.\\pipe\\ave-hold-[0-9a-f-]{36}$/u);
+    expect(held?.launcherArgs).toEqual(["--hold-pipe", pipe, "4242"]);
     helper().emit("exit", 1, null);
     expect(held?.isHeld()).toBe(false);
-    expect(lost).toHaveBeenCalledOnce();
-    const late = vi.fn();
-    held?.onLost(late);
-    expect(late).toHaveBeenCalledOnce();
   });
 
-  it("does not report a released hold as lost", async () => {
+  it("releases once", async () => {
     const pending = holdWindowsDirectory(root);
     helper().stdout.write(`${row}\n`);
     const held = await pending;
-    const lost = vi.fn();
-    held?.onLost(lost);
+    held?.release();
     held?.release();
     helper().emit("exit", 1, null);
-    expect(lost).not.toHaveBeenCalled();
     expect(held?.isHeld()).toBe(false);
-    expect(helper().kill).toHaveBeenCalled();
+    expect(helper().kill).toHaveBeenCalledOnce();
   });
 
   it("refuses a frame that crosses the limit in its final chunk", async () => {
@@ -122,5 +118,36 @@ describe.runIf(process.platform === "win32")("Windows directory hold helper prot
     configureHostResources({ resourcePath: root, isPackaged: false });
     expect(await holdWindowsDirectory(root)).toBeUndefined();
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  describe("native reply limit", () => {
+    const fixture = resolve("resources", "windows-path-kind", process.arch, "ave-path-kind-hold-fixture.exe");
+    const pipeName = () => `\\\\.\\pipe\\ave-hold-${crypto.randomUUID()}`;
+    const reply = (limit: number) => new Promise<{ code: number | null; bytes: Buffer }>((done) => {
+      const child = spawn(fixture, ["--hold", root, "--pipe", pipeName()], {
+        env: { ...process.env, AVE_TEST_HOLD_REPLY_LIMIT: String(limit) }, stdio: ["pipe", "pipe", "ignore"], windowsHide: true,
+      });
+      const chunks: Buffer[] = [];
+      child.stdout.on("data", (chunk: Buffer) => {
+        chunks.push(chunk);
+        if (chunk.includes(0x0a)) child.stdin.end();
+      });
+      child.on("close", code => done({ code, bytes: Buffer.concat(chunks) }));
+    });
+
+    it("writes exactly the limit on the wire and refuses one byte over it", async () => {
+      if (!existsSync(fixture)) throw new Error("Build the hold fixture: bun run build:windows-job -- -Helper path-kind -HoldFixture");
+      fake.real = true;
+      const full = await reply(MAX_REPLY);
+      expect(full.code).toBe(0);
+      expect(full.bytes.subarray(-2).toString("hex")).toBe("5d0a");
+      expect(full.bytes.includes(0x0d)).toBe(false);
+      const atLimit = await reply(full.bytes.length);
+      expect(atLimit.code).toBe(0);
+      expect(atLimit.bytes.length).toBe(full.bytes.length);
+      const over = await reply(full.bytes.length - 1);
+      expect(over.code).toBe(3);
+      expect(over.bytes.length).toBe(0);
+    });
   });
 });

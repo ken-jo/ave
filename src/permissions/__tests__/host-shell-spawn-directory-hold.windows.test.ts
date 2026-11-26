@@ -132,14 +132,79 @@ describe.runIf(process.platform === "win32")("host shell spawn directory hold", 
     expect(refused(() => renameSync(leaf, join(parent, "moved")))).toBeUndefined();
   });
 
-  it("stops a bound child when the helper exits", async () => {
-    const held = await holdLeaf();
-    const child = longChild();
+  const alive = (pid: number) => {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+  // The command starts a descendant that keeps the output pipe and prints its PID.
+  const launchTree = (held: HostShellSpawnDirectoryHold) => {
+    const script = "const c = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], { stdio: 'inherit' });" +
+      "console.log(c.pid); setTimeout(() => {}, 20000);";
+    const target = held.command(process.execPath, ["-e", script]);
+    const child = spawn(target.executable, target.args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     held.bind(child);
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    return { child, output: () => output };
+  };
+
+  it("lets the OS stop the command and its descendant when the helper exits", async () => {
+    const held = await holdLeaf();
+    const { child, output } = launchTree(held);
+    await vi.waitFor(() => expect(output()).toMatch(/^\d+/u), { timeout: 5000 });
+    const descendant = Number.parseInt(output(), 10);
+    expect(alive(descendant)).toBe(true);
     const started = Date.now();
     await killHelper();
     await closed(child);
-    expect(child.exitCode === 0).toBe(false);
-    expect(Date.now() - started).toBeLessThan(10000);
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(child.exitCode).toBe(125);
+    expect(output()).toContain("cwd-pin-lost");
+    expect(alive(descendant)).toBe(false);
+  });
+
+  it("runs a command to completion and reports its own exit code once its job is empty", async () => {
+    const held = await holdLeaf();
+    const target = held.command(process.execPath, ["-e", "process.exitCode = 7"]);
+    const child = spawn(target.executable, target.args, { stdio: "ignore", windowsHide: true });
+    held.bind(child);
+    await closed(child);
+    expect(child.exitCode).toBe(7);
+  });
+
+  it("refuses to start a command after the helper has gone", async () => {
+    const held = await holdLeaf();
+    await killHelper();
+    const target = held.command(process.execPath, ["-e", "require('fs').writeFileSync('ran', '')"]);
+    const child = spawn(target.executable, target.args, { cwd: root, stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    held.bind(child);
+    await closed(child);
+    expect(child.exitCode).toBe(125);
+    expect(stderr).toContain("cwd-pin-lost");
+    expect(existsSync(join(root, "ran"))).toBe(false);
+  });
+
+  it("releases once however close, dispose and helper loss interleave", async () => {
+    for (const order of ["close-first", "loss-first"] as const) {
+      const held = await holdLeaf();
+      const [helper] = helpers.spawned.slice(-1);
+      if (helper === undefined) throw new Error("no hold helper");
+      const kill = vi.spyOn(helper, "kill");
+      const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 200)"], { stdio: "ignore", windowsHide: true });
+      held.bind(child);
+      if (order === "loss-first") {
+        helper.kill();
+        kill.mockClear();
+        await new Promise(resolve => helper.once("exit", resolve));
+      }
+      await closed(child);
+      held.dispose();
+      held.dispose();
+      expect(kill).toHaveBeenCalledTimes(1);
+      expect(child.exitCode).toBe(0);
+      hold = undefined;
+    }
   });
 });

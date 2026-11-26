@@ -1,7 +1,9 @@
 import { execFileSync, spawn, type ChildProcessByStdio } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { isAbsolute, win32 } from "node:path";
 import { toUSVString } from "node:util";
 import type { Readable, Writable } from "node:stream";
+import { resolveWindowsJobLauncher } from "../main/windows-job-launcher.js";
 import { isWindowsPathKindHelperTimeout, resolveWindowsPathKindHelper, windowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, windowsCommandLineLength } from "./windows-command-line.js";
 import { decodeWindowsNativeReply, runWindowsNative } from "./windows-native-host.js";
@@ -231,48 +233,42 @@ export function pinWindowsPaths(paths: readonly string[]): readonly WindowsPathF
 
 export interface HeldWindowsDirectory {
   readonly facts: WindowsPathFacts;
+  /** Job launcher arguments that put a command in the helper's kill-on-close job: it cannot start without
+   * this helper and is stopped by the OS when the helper exits. */
+  readonly launcherArgs: readonly string[];
+  /** The job launcher invocation that starts `executable` with `launcherArgs`. */
+  command(executable: string, args: readonly string[]): { executable: string; args: string[] };
   /** False once the helper that owns the handles has exited or failed, or after `release`. */
   isHeld(): boolean;
-  /** Runs once when the hold is lost before `release`; at once if it is already lost. */
-  onLost(listener: () => void): void;
   /** Idempotent. */
   release(): void;
 }
 
 /** Hold a directory and every ancestor against rename and delete until `release`; undefined when the helper did not hold it.
- * The handles live in the helper, so its exit or failure after the reply loses the hold. */
+ * The handles and the command's job live in the helper, so its exit or failure after the reply loses the hold. */
 export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory | undefined> {
   if (!isAbsolute(path)) return Promise.resolve(undefined);
   let child: ChildProcessByStdio<Writable, Readable, null>;
+  const pipe = `\\\\.\\pipe\\ave-hold-${randomUUID()}`;
   try {
-    child = runWindowsNative(() => spawn(resolveWindowsPathKindHelper(), ["--hold", path], { windowsHide: true, stdio: ["pipe", "pipe", "ignore"] }));
+    child = runWindowsNative(() => spawn(resolveWindowsPathKindHelper(), ["--hold", path, "--pipe", pipe], { windowsHide: true, stdio: ["pipe", "pipe", "ignore"] }));
   } catch {
     return Promise.resolve(undefined);
   }
   let settled = false;
   let released = false;
   let lost = false;
-  const lostListeners: (() => void)[] = [];
   const release = (): void => {
     if (released) return;
     released = true;
-    lostListeners.length = 0;
     child.stdin.destroy();
     child.kill();
   };
-  const loseHold = (): void => {
-    if (released || lost) return;
-    lost = true;
-    for (const listener of lostListeners.splice(0)) listener();
-  };
   const held = (facts: WindowsPathFacts): HeldWindowsDirectory => ({
     facts,
+    launcherArgs: ["--hold-pipe", pipe, String(child.pid)],
+    command: (executable, args) => ({ executable: resolveWindowsJobLauncher(), args: ["--hold-pipe", pipe, String(child.pid), executable, ...args] }),
     isHeld: () => !released && !lost,
-    onLost(listener) {
-      if (released) return;
-      if (lost) listener();
-      else lostListeners.push(listener);
-    },
     release,
   });
   return new Promise((resolve) => {
@@ -287,7 +283,7 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
       resolve(result);
     };
     const failed = (): void => {
-      if (settled) loseHold();
+      if (settled) lost = true;
       else settle(undefined);
     };
     const timer = setTimeout(() => settle(undefined), TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs);
@@ -308,7 +304,7 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
       if (newline < 0) return;
       try {
         const [facts] = decodeWindowsPathFacts(decodeWindowsNativeReply(Buffer.concat(chunks, received)), 1, "--pin");
-        settle(facts === undefined ? undefined : held(facts));
+        settle(facts === undefined || child.pid === undefined ? undefined : held(facts));
       } catch {
         settle(undefined);
       }

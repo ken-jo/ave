@@ -1,6 +1,5 @@
 // Plans describe substrates, not authorization. Bind proof privately to one final action and consume it before plain-host spawn.
 import type { ChildProcess } from "node:child_process";
-import { forceKillManagedChildProcess } from "../main/managed-child-processes.js";
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { captureShellWorkingDirectoryIdentity, holdShellWorkingDirectory, matchesShellWorkingDirectoryIdentity, pinShellWorkingDirectory, sameShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
@@ -287,18 +286,28 @@ function isHostShellSpawnDirectoryCurrent(record: PermitRecord): boolean {
 export interface HostShellSpawnDirectoryHold {
   /** Throws HostShellDirectoryHoldError once the directory is no longer held. */
   assertHeld(): void;
-  /** Keep the hold until this child closes; stop the child if the hold is lost first. */
+  /** The program and arguments that start `executable` inside the hold's job. */
+  command(executable: string, args: readonly string[]): { executable: string; args: string[] };
+  /** Arguments that put a job launcher's command in the hold's job. */
+  readonly launcherArgs: readonly string[];
+  /** Keep the hold until this child closes. */
   bind(child: ChildProcess): void;
   /** Release now unless a child was bound. */
   dispose(): void;
 }
 
-const NO_DIRECTORY_HOLD: HostShellSpawnDirectoryHold = Object.freeze({ assertHeld() {}, bind() {}, dispose() {} });
+const NO_DIRECTORY_HOLD: HostShellSpawnDirectoryHold = Object.freeze({
+  assertHeld() {}, command: (executable: string, args: readonly string[]) => ({ executable, args: [...args] }),
+  launcherArgs: [], bind() {}, dispose() {},
+});
 
-/** Windows children open their cwd by path, so a permit-bearing Bash or PowerShell launch holds the approved directory chain against rename
- * and delete from before its final check until the child closes, and refuses the launch when the hold cannot be taken,
- * no longer matches the approved identity, or is lost first. A lost hold after launch stops the child. Nothing is proven
- * inside the child, and a held leaf whose contents can be removed can still become a junction in place. */
+/** Windows children open their cwd by path, so a permit-bearing Bash or PowerShell launch holds the approved directory chain
+ * against rename and delete from before its final check until the child closes. The hold helper owns the only handle to a
+ * kill-on-close job; the command starts suspended through the job launcher and runs only once it is in that job, so a
+ * helper that is gone refuses the launch and a helper that exits stops the whole tree. The launcher exits 125 with
+ * "cwd-pin-lost" unless the helper reports the job empty after the command, so a lost hold is a failed execution.
+ * Acquisition failure, an identity mismatch or an observed loss refuses before spawn. Nothing is proven inside the
+ * child, and a held leaf whose contents can be removed can still become a junction in place. */
 export async function holdHostShellSpawnDirectory(authorization: HostShellSpawnAuthorization | undefined): Promise<HostShellSpawnDirectoryHold> {
   if (authorization === undefined || process.platform !== "win32") return NO_DIRECTORY_HOLD;
   const held = await pinShellWorkingDirectory(authorization.cwdIdentity);
@@ -306,12 +315,13 @@ export async function holdHostShellSpawnDirectory(authorization: HostShellSpawnA
   let bound = false;
   return {
     assertHeld() { if (!held.isHeld()) throw new HostShellDirectoryHoldError(); },
+    command: held.command,
+    launcherArgs: held.launcherArgs,
     bind(child) {
       bound = true;
       child.once("close", held.release);
       // A started child can report an error and keep running; only a start without a process frees the hold early.
       child.on("error", () => { if (child.pid === undefined) held.release(); });
-      held.onLost(() => { void forceKillManagedChildProcess(child, "shell-directory-hold-lost"); });
     },
     dispose() { if (!bound) held.release(); },
   };

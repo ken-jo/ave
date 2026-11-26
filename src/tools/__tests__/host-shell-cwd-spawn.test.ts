@@ -1,6 +1,7 @@
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,7 @@ const spawnBoundary = vi.hoisted(() => ({
   mutate: undefined as (() => void) | undefined,
   cwd: undefined as string | undefined,
   helperArgs: undefined as string[] | undefined,
+  helperExe: undefined as string | undefined,
   onHelper: undefined as ((helper: import("node:child_process").ChildProcess) => void) | undefined,
   commands: [] as string[],
 }));
@@ -21,6 +23,7 @@ vi.mock("node:child_process", async (importOriginal) => {
     spawn: vi.fn((...args: Parameters<typeof actual.spawn>) => {
       if (String(args[0]).endsWith("ave-path-kind.exe")) {
         if (spawnBoundary.helperArgs !== undefined) args[1] = spawnBoundary.helperArgs;
+        if (spawnBoundary.helperExe !== undefined) args[0] = spawnBoundary.helperExe;
         const helper = actual.spawn(...args);
         spawnBoundary.onHelper?.(helper);
         return helper;
@@ -55,13 +58,16 @@ beforeEach(() => {
   spawnBoundary.mutate = undefined;
   spawnBoundary.cwd = undefined;
   spawnBoundary.helperArgs = undefined;
+  spawnBoundary.helperExe = undefined;
   spawnBoundary.onHelper = undefined;
   spawnBoundary.commands = [];
 });
 afterEach(async () => {
   spawnBoundary.mutate = undefined;
   spawnBoundary.helperArgs = undefined;
+  spawnBoundary.helperExe = undefined;
   spawnBoundary.onHelper = undefined;
+  delete process.env.AVE_TEST_HOLD_EXIT_BEFORE_REAP;
   await cleanupTmpDir(directory);
 });
 
@@ -266,7 +272,7 @@ describe("host cwd races after permit consumption", () => {
     expect(existsSync(join(second, "marker"))).toBe(false);
   });
 
-  it("applies the child identity check when a directory is replaced after the host permit check", async () => {
+  it("keeps a directory replaced after the host permit check out of the command (child check on POSIX, held chain on Windows)", async () => {
     const current = join(directory, "current");
     const original = join(directory, "original");
     mkdirSync(current);
@@ -334,21 +340,77 @@ describe.runIf(process.platform === "win32")("Windows host cwd hold at launch", 
     expect(existsSync(join(directory, "current", "marker"))).toBe(false);
   });
 
-  it("stops the command when the helper exits after launch", async () => {
+  const killHelper = (helper: import("node:child_process").ChildProcess | undefined) =>
+    execFileSync("taskkill", ["/PID", String(helper?.pid), "/F"], { stdio: "ignore", windowsHide: true });
+
+  it("refuses the command when the helper dies before the host sees its exit", async () => {
     mkdirSync(join(directory, "current"));
-    const { input, context } = await authorizedContext("current", "sleep 5 && touch marker", ["Bash(sleep 5)", "Bash(touch marker)"]);
+    const { input, context } = await authorizedContext("current");
     let helper: import("node:child_process").ChildProcess | undefined;
     spawnBoundary.onHelper = (child) => { helper = child; };
-    spawnBoundary.mutate = () => { setTimeout(() => helper?.kill(), 500); };
+    // Runs inside the synchronous handoff, after the host's last hold check and before the launch.
+    spawnBoundary.mutate = () => killHelper(helper);
+    const result = await new BashTool().execute(input, context);
+    expect(spawnBoundary.commands).toHaveLength(1);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("cwd-pin-lost");
+    expect(existsSync(join(directory, "current", "marker"))).toBe(false);
+  });
+
+  it("stops the command and a descendant holding its output when the helper dies after launch", async () => {
+    mkdirSync(join(directory, "current"));
+    const command = "(sleep 4; touch late) & sleep 4 && touch marker";
+    const { input, context } = await authorizedContext("current", command, ["Bash(sleep 4)", "Bash(touch late)", "Bash(touch marker)"]);
+    let helper: import("node:child_process").ChildProcess | undefined;
+    spawnBoundary.onHelper = (child) => { helper = child; };
+    spawnBoundary.mutate = () => { setTimeout(() => killHelper(helper), 1000); };
     const started = Date.now();
     const result = await new BashTool().execute(input, context);
-    // The shell is stopped before it reaches the marker; a descendant holding its pipes can delay the result.
-    expect(spawnBoundary.commands[0]).not.toMatch(/taskkill/iu);
-    expect(spawnBoundary.commands.some(command => /taskkill/iu.test(command))).toBe(true);
+    // The OS stops the job: nothing on the host signals the command, and the result does not wait for the descendant.
+    expect(Date.now() - started).toBeLessThan(3500);
+    expect(spawnBoundary.commands.filter(command => /taskkill/iu.test(command))).toEqual([]);
     expect(result.isError).toBe(true);
-    await new Promise(resolve => setTimeout(resolve, Math.max(0, 6000 - (Date.now() - started))));
+    expect(result.output).toContain("cwd-pin-lost");
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, 5500 - (Date.now() - started))));
     expect(existsSync(join(directory, "current", "marker"))).toBe(false);
+    expect(existsSync(join(directory, "current", "late"))).toBe(false);
   }, 15000);
+
+  it("reports a short command as failed when the hold ends before its job is confirmed empty", async () => {
+    const fixture = join(process.cwd(), "resources", "windows-path-kind", process.arch, "ave-path-kind-hold-fixture.exe");
+    if (!existsSync(fixture)) throw new Error("Build the hold fixture: bun run build:windows-job -- -Helper path-kind -HoldFixture");
+    mkdirSync(join(directory, "current"));
+    const { input, context } = await authorizedContext("current");
+    spawnBoundary.helperExe = fixture;
+    process.env.AVE_TEST_HOLD_EXIT_BEFORE_REAP = "1";
+    const result = await new BashTool().execute(input, context);
+    expect(existsSync(join(directory, "current", "marker"))).toBe(true);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("cwd-pin-lost");
+  });
+
+  it("stops a descendant still holding the output when the command exits", async () => {
+    mkdirSync(join(directory, "current"));
+    const { input, context } = await authorizedContext("current", "(sleep 3; touch late) & touch marker", ["Bash(sleep 3)", "Bash(touch late)", "Bash(touch marker)"]);
+    const started = Date.now();
+    const result = await new BashTool().execute(input, context);
+    expect(result.isError).toBe(false);
+    expect(Date.now() - started).toBeLessThan(2500);
+    await new Promise(resolve => setTimeout(resolve, 4000));
+    expect(existsSync(join(directory, "current", "marker"))).toBe(true);
+    expect(existsSync(join(directory, "current", "late"))).toBe(false);
+  }, 15000);
+
+  it("refuses a background job when the helper has exited before the handoff", async () => {
+    setShellSandboxRequestedAtBoot(false);
+    mkdirSync(join(directory, "current"));
+    const { input, context } = await authorizedContext("current", "touch marker", ["Bash(touch marker)"], true);
+    spawnBoundary.onHelper = helperExitsOnReply;
+    const outcome = await new BashTool().execute(input, context).catch((error: unknown) => error);
+    expect(String(outcome instanceof Error ? outcome.message : (outcome as { output?: string }).output)).toContain(HOST_SHELL_DIRECTORY_HOLD_ERROR);
+    expect(spawnBoundary.commands).toEqual([]);
+    expect(existsSync(join(directory, "current", "marker"))).toBe(false);
+  });
 
   it("does not start a background job when the call is cancelled during hold acquisition", async () => {
     setShellSandboxRequestedAtBoot(false);

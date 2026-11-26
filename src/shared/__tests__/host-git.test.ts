@@ -258,7 +258,7 @@ describe("host git starts only where the hold is asked", () => {
     if ((sources.get("shared/host-git.ts") ?? "").match(/\bspawn\(/gu)?.length !== 1) found.push("shared/host-git.ts: starts git other than in the one start");
     const shellTools = sources.get("tools/shell-tools.ts") ?? "";
     const hostBash = shellTools.slice(shellTools.indexOf("async function spawnWithTimeout("), shellTools.indexOf("function reportedHostCwd("));
-    if (!/const launch = \(\)[\s\S]*?assertPreparedShellAvailable\(prepared\);\s*child = spawn\(shell\.cmd,/u.test(hostBash)) {
+    if (!/const launch = \(\)[\s\S]*?assertPreparedShellAvailable\(prepared\);\s*const target = launchHold\?\.command\(shell\.cmd, argv\) \?\? \{ executable: shell\.cmd, args: \[\.\.\.argv\] \};\s*child = spawn\(target\.executable, target\.args,/u.test(hostBash)) {
       found.push("tools/shell-tools.ts: starts verified Bash without checking the hold at launch");
     }
     return found;
