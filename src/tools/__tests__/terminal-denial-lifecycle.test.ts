@@ -29,6 +29,7 @@ type Source =
 /** Each probe loads a fresh module graph, so a sealed or drained ledger never leaks into another case. */
 async function setup(source: Source, { disarmChain = false } = {}) {
   vi.resetModules();
+  (await import("../../main/host-resources.js")).configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
   const ledger = await import("../invocation-ledger.js");
   const { ToolExecutor } = await import("../executor.js");
   const { ToolRegistry } = await import("../registry.js");
