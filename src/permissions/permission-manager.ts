@@ -25,6 +25,7 @@ import { JudgeContractError, JudgeFailure, isSameOrStricter, type JudgeLane, typ
 import { resolveJudge, type JudgeEngineDeps, type JudgeGate, type JudgeOutcome } from "./judge/judge-engine.js";
 import { DEFAULT_JUDGE_SETTINGS, type JudgeBreakerSettings } from "./judge/judge-settings.js";
 import { dirname, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import type { DenyRule, ToolCategory, ToolSource, ToolTrustOrigin } from "../tools/types.js";
 import type { RemoteControllerAuthority } from "../shared/chat-origin.js";
 import type { ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
@@ -2150,7 +2151,10 @@ export class PermissionManager {
       userApprovalIdentity,
       input.executionCwd,
       input.sessionId,
-    ).catch(() => null); // storage failure must not block tool execution
+    ).catch((error: unknown) => {
+      rethrowLocalityFailure(error);
+      return null;
+    });
     // Only a decision made on exactly these arguments short-circuits review
     // here. A target-wide hit on other arguments is classified as a fresh
     // request; the foreground memory skip may reuse it only after that review.
@@ -2158,6 +2162,14 @@ export class PermissionManager {
       ? rememberedDecision
       : null;
 
+    // Sample live confinement and rebuild the provider's exact view before accepting cached provider output.
+    sandboxCacheState = readSandboxCacheState();
+    const reviewerContext = buildReviewerContext();
+    const preparedReview = process.platform === "win32" && userApproval?.verdictAtApproval == null
+      ? options.tracingClassifier.prepareWindowsReview?.(reviewerContext)
+      : undefined;
+    const providerPromptHash = preparedReview?.providerPrompt === undefined
+      ? undefined : createHash("sha256").update(preparedReview.providerPrompt).digest("hex");
     const buildCacheContext = (sandboxCacheState: ReviewerSandboxCacheState) => {
       const sandboxScope = sandboxCacheState.capability;
       return {
@@ -2170,13 +2182,13 @@ export class PermissionManager {
           sandboxKind: sandboxScope.kind,
           sandboxConfidence: sandboxScope.confidence,
           hostShellExecutionPlan: sandboxCacheState.hostShellExecutionPlan ?? null,
+          ...(preparedReview === undefined ? {} : { providerPromptHash: providerPromptHash ?? null }),
         },
         sandboxWrapState: sandboxCacheState,
       };
     };
 
     // Include the sandbox capability in the cache scope so a change to OS isolation invalidates stale verdicts produced under different sandbox assumptions. Capture this live state immediately before cache lookup: no await may sit between wrap-state sampling and cache lookup, or a worker un-wrap could replay a verdict relaxed under stale confinement.
-    sandboxCacheState = readSandboxCacheState();
     const cacheCtx = buildCacheContext(sandboxCacheState);
     const cacheResult = cache.lookup(lookupKey, cacheCtx);
     let verdict: RiskVerdict;
@@ -2219,15 +2231,18 @@ export class PermissionManager {
         scope: userApproval.scope,
         verdictAtApproval: userApproval.verdictAtApproval,
       });
-    } else if (cacheResult.hit && cacheResult.verdict) {
-      const ruleClassifier = new RuleBasedRiskClassifier();
-      ruleVerdictForAudit = ruleClassifier.classify(buildReviewerContext()).level;
-      verdict = cacheResult.verdict;
+    } else if ((!preparedReview || providerPromptHash !== undefined) && cacheResult.hit && cacheResult.verdict) {
+      const ruleVerdict = preparedReview?.ruleVerdict ?? new RuleBasedRiskClassifier().classify(reviewerContext);
+      ruleVerdictForAudit = ruleVerdict.level;
+      if (preparedReview) llmVerdictForAudit = cacheResult.verdict.level;
+      verdict = preparedReview ? maxVerdict(ruleVerdict, cacheResult.verdict) : cacheResult.verdict;
       outcome = "cache";
     } else {
-      const ctx = buildReviewerContext();
       try {
-        const trace = await options.tracingClassifier.classifyWithTrace(ctx, { abortSignal: options.abortSignal });
+        const reviewOptions = { abortSignal: options.abortSignal };
+        const trace = preparedReview
+          ? await preparedReview.classify(reviewOptions)
+          : await options.tracingClassifier.classifyWithTrace(reviewerContext, reviewOptions);
         assertRiskClassificationTrace(trace);
         verdict = trace.finalVerdict;
         outcome = trace.outcome;
@@ -2250,17 +2265,19 @@ export class PermissionManager {
           outcome = "sandbox-state-changed";
         } else {
           // Only a successful fresh classification may become a base-cache entry. malformed/error/timeout fallback verdicts remain fail-safe for this invocation and can never reappear as an eligible "cache" rationale outcome on the next call.
-          if (outcome === "fresh") {
+          const cacheVerdict = preparedReview ? (providerPromptHash === undefined ? null : trace.llmVerdict) : verdict;
+          if (outcome === "fresh" && cacheVerdict !== null) {
             // The verdict cache is the one sink written BEFORE the common redaction point below, so it redacts its own copy. A cache hit then replays an already-masked reason.
-            await cache.store(lookupKey, cacheCtx, redactVerdictReason(verdict));
+            await cache.store(lookupKey, cacheCtx, redactVerdictReason(cacheVerdict));
           }
         }
       } catch (err) {
+        rethrowLocalityFailure(err);
         if (err instanceof JudgeContractError) throw err;
         const message = errorMessage(err);
         verdict = { level: "high", reason: `reviewer error — ${message}` };
         outcome = "error";
-        ruleVerdictForAudit = new RuleBasedRiskClassifier().classify(ctx).level;
+        ruleVerdictForAudit = (preparedReview?.ruleVerdict ?? new RuleBasedRiskClassifier().classify(reviewerContext)).level;
         llmVerdictForAudit = null;
       }
     }

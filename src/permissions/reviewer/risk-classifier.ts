@@ -1,4 +1,4 @@
-import { withLocalityDecision } from "../../shared/local-path-io.js";
+import { rethrowLocalityFailure, withLocalityDecision } from "../../shared/local-path-io.js";
 import { isDestructiveShellArgv, noReusableRuleReason } from "../rules/shell-prefix-values.js";
 // Disabled mode yields LOW while mandatory gates still apply. Model review composes conservatively with deterministic evidence and redacts provider input.
 import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../../tools/types.js";
@@ -1290,7 +1290,8 @@ function extractDeclaredPathTargets(ctx: ToolInvocationContext): Array<{ nativeP
           const nativePath = guest ? posix.normalize(value)
             : resolvePathForPolicy(resolveToolPathForPermission(value, ctx.executionCwd));
           paths.set(nativePath, caseFoldForMatch(foldCanonicalPathSeparators(nativePath)));
-        } catch {
+        } catch (error) {
+          rethrowLocalityFailure(error);
           // Mirror the enforcer: tool schema validation owns argument-type failures. An unresolvable path contributes nothing, and an empty path list falls through to the "write path not declared" HIGH rule — the safe direction.
         }
       }
@@ -1861,15 +1862,37 @@ export class LlmRiskClassifier implements RiskClassifier {
   async classifyWithTrace(
     input: ToolInvocationContext,
     opts?: { abortSignal?: AbortSignal },
+    prepared?: { ruleVerdict: RiskVerdict; userPrompt: string },
   ): Promise<LlmRiskClassificationTrace> {
+    const { ruleVerdict, userPrompt } = prepared ?? this.observeClassification(input);
+    return this.classifyPrepared(input, ruleVerdict, userPrompt, opts);
+  }
+
+  prepareClassification(input: ToolInvocationContext) {
+    const prepared = this.observeClassification(input);
+    return {
+      ruleVerdict: prepared.ruleVerdict,
+      providerPrompt: prepared.userPrompt || undefined,
+      classify: (options?: { abortSignal?: AbortSignal }) => this.classifyWithTrace(input, options, prepared),
+    };
+  }
+
+  private observeClassification(input: ToolInvocationContext) {
     // Composition baseline — rule first, LLM cannot downgrade. The baseline and the prompt's operand facts are one
     // judgment: one decision observes them, and a failed observation fails the review instead of taking a fallback.
-    const { ruleVerdict, userPrompt } = withLocalityDecision(() => {
+    return withLocalityDecision(() => {
       const ruleVerdict = this.rule.classify(input);
       const settled = isHostDeterminedRiskTool(input) || ruleVerdict.level === "high" || ruleVerdict.requiresExplicitApproval === true;
       return { ruleVerdict, userPrompt: settled ? "" : buildUserPrompt(input, ruleVerdict) };
     });
+  }
 
+  private async classifyPrepared(
+    input: ToolInvocationContext,
+    ruleVerdict: RiskVerdict,
+    userPrompt: string,
+    opts?: { abortSignal?: AbortSignal },
+  ): Promise<LlmRiskClassificationTrace> {
     // Host-determined tools never consult the LLM: their risk is settled by system structure, not by anything a model could weigh. For agent_spawn the structural fact is that every effectful call the child makes re-enters this same permission pipeline — a fact that is not in the reviewer prompt, so asking the LLM poses a question it cannot answer; it kept replying HIGH ("no sandbox isolation, file access") and the max(rule, llm) composition let that guess override the host's LOW. Name-scoped and builtin-only: a plugin/MCP tool that happens to share the name still takes the full composed path.
     if (isHostDeterminedRiskTool(input)) {
       return { ruleVerdict, llmVerdict: null, finalVerdict: ruleVerdict, outcome: "host-determined" };

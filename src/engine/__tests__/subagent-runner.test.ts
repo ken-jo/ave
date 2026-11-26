@@ -2636,15 +2636,15 @@ describe("SubAgentRunner A2A bus facade", () => {
 
 describe("SubAgentRunner workspace lifecycle", () => {
   it("revokes every active child and surfaces an aggregate child failure", () => {
-    const first = vi.fn(() => ({
+    const first = vi.fn((_root: string, _options: unknown) => ({
       sessionDirectoriesRemoved: 2,
       turnDirectoriesRemoved: 1,
       projectRebound: false,
     }));
-    const failing = vi.fn(() => {
+    const failing = vi.fn((_root: string, _options: unknown) => {
       throw new Error("isolated child failure");
     });
-    const last = vi.fn(() => ({
+    const last = vi.fn((_root: string, _options: unknown) => ({
       sessionDirectoriesRemoved: 0,
       turnDirectoriesRemoved: 4,
       projectRebound: true,
@@ -2657,13 +2657,13 @@ describe("SubAgentRunner workspace lifecycle", () => {
     ).activeChildren;
     const child = (
       childSessionId: string,
-      revokeWorkspaceRoot: ReturnType<typeof vi.fn>,
+      revokeWorkspaceRoot: typeof first | typeof failing | typeof last,
     ) => ({
       lease: Symbol(childSessionId),
       childSessionId,
       title: childSessionId,
       background: true,
-      loop: { planWorkspaceRootRevocation: (...args: unknown[]) => () => revokeWorkspaceRoot(...args) },
+      loop: { planWorkspaceRootRevocation: (root: string, options: unknown) => () => revokeWorkspaceRoot(root, options) },
     });
     activeChildren.set("child-one", child("child-one", first));
     activeChildren.set("child-failing", child("child-failing", failing));

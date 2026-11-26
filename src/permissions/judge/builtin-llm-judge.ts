@@ -14,6 +14,11 @@ import {
 
 export interface TracingRiskClassifier {
   reviewUserOwnedSurface?: RiskClassifier["reviewUserOwnedSurface"];
+  prepareWindowsReview?(input: ToolInvocationContext): {
+    ruleVerdict: RiskVerdict;
+    providerPrompt?: string;
+    classify(options?: { abortSignal?: AbortSignal }): Promise<LlmRiskClassificationTrace>;
+  } | undefined;
   classifyWithTrace(
     input: ToolInvocationContext,
     opts?: { abortSignal?: AbortSignal },
@@ -36,6 +41,15 @@ export function assertRiskClassificationTrace(trace: LlmRiskClassificationTrace)
 export function traceRiskClassifier(classifier: RiskClassifier): TracingRiskClassifier {
   return {
     ...(classifier.reviewUserOwnedSurface ? { reviewUserOwnedSurface: classifier.reviewUserOwnedSurface.bind(classifier) } : {}),
+    prepareWindowsReview(input) {
+      if (classifier instanceof LlmRiskClassifier) return classifier.prepareClassification(input);
+      if (classifier instanceof RuleBasedRiskClassifier &&
+        (input.pathFields.length > 0 || input.category === "shell" || input.ownerPluginSandboxRoot !== undefined)) {
+        const ruleVerdict = classifier.classify(input);
+        return { ruleVerdict, classify: async () => ({ ruleVerdict, llmVerdict: null, finalVerdict: ruleVerdict, outcome: "fresh" }) };
+      }
+      return undefined;
+    },
     async classifyWithTrace(input, options) {
       try {
         if (classifier instanceof LlmRiskClassifier) {
