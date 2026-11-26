@@ -5,7 +5,7 @@ import { closeSync, fstatSync, openSync, readFileSync, realpathSync, statSync } 
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getIsPackaged, isConfigured, isPackagedElectronProcess } from "../boot/dev-flags.js";
 import { isSensitivePath } from "../permissions/sensitive-paths.js";
-import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
+import { admitLocalRoute, localFs, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { buildHostGitArgs, isHostGitWorkspaceAvailable, spawnHostGitIfWorkspaceFree } from "../shared/host-git.js";
 import { withHostGitLaunch } from "../shared/host-git-executable.js";
@@ -43,7 +43,8 @@ const INSTRUCTION_FILE_NAMES = ["AGENTS.md", "CLAUDE.md"] as const;
 function canonical(path: string): string | null {
   try {
     return process.platform === "win32" ? withLocalityDecision(() => localFs.realpath(admitLocalRoute(path).verdict)) : realpathSync(path);
-  } catch {
+  } catch (error) {
+    rethrowLocalityFailure(error);
     return null;
   }
 }
@@ -75,7 +76,8 @@ function readConfinedFile(canonicalRoot: string, path: string): { canonicalPath:
     fd = openSync(canonicalPath, "r");
     if (!fstatSync(fd).isFile()) return null; // EISDIR / socket / fifo; not an instruction file
     return { canonicalPath, text: readFileSync(fd, "utf-8").replace(/\r\n/g, "\n") };
-  } catch {
+  } catch (error) {
+    rethrowLocalityFailure(error);
     return null;
   } finally {
     if (fd !== null) {
@@ -149,10 +151,13 @@ function directoryLayer(
 }
 
 function hasGitEntry(dir: string): boolean {
+  const marker = join(dir, ".git");
   try {
-    statSync(join(dir, ".git"));
+    if (process.platform === "win32") withLocalityDecision(() => localFs.stat(admitLocalRoute(marker).verdict));
+    else statSync(marker);
     return true;
-  } catch {
+  } catch (error) {
+    rethrowLocalityFailure(error);
     return false;
   }
 }
@@ -287,7 +292,8 @@ export async function discoverDirectoryInstructions(
     let targetDir = dirname(absolute);
     try {
       if ((process.platform === "win32" ? localFs.stat(admitLocalRoute(absolute).verdict) : statSync(absolute)).isDirectory()) targetDir = absolute;
-    } catch {
+    } catch (error) {
+      rethrowLocalityFailure(error);
       // A path that does not exist yet (a file being written) still names its directory.
     }
     const canonicalTarget = canonical(targetDir);
@@ -301,11 +307,13 @@ export async function discoverDirectoryInstructions(
   const { canonicalProject, canonicalTarget, top } = scope;
   const layers: ProjectAgentsMdLayer[] = [];
   for (const dir of chainDirectories(canonicalProject, canonicalTarget).slice(1)) {
-    if (basename(dir) === "node_modules" || hasGitEntry(dir)) break;
+    if (basename(dir) === "node_modules") break;
     const layer = withLocalityDecision(() => {
       if (process.platform === "win32" && (canonical(resolve(projectRoot)) !== canonicalProject || canonical(dir) !== dir)) return null;
+      if (hasGitEntry(dir)) return "nested-repository";
       return directoryLayer(top, dir, new Set(), new Set());
     });
+    if (layer === "nested-repository") break;
     if (!layer || attached.has(layer.relativePath)) continue;
     if (await gitIgnores(top, join(top, layer.relativePath), opts.gitIgnoreVerdicts)) continue;
     const truncated = Buffer.byteLength(layer.content, "utf-8") > PROJECT_AGENTS_MD_MAX_TOTAL_BYTES;
