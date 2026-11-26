@@ -413,9 +413,11 @@ interface WindowsWrapDenies {
 }
 
 type WindowsDocumentsQuery = (signal?: AbortSignal) => Promise<string>;
+type WindowsAccountRuntime = Pick<typeof import("@anthropic-ai/sandbox-runtime"), "getWindowsSandboxUserStatus" | "resolveSrtWin">;
 
 interface AsrtSandboxSession {
   readonly linuxWrapperPrograms?: LinuxWrapperPrograms;
+  readonly windowsAccountRuntime?: WindowsAccountRuntime;
   readonly queryWindowsDocumentsPath?: WindowsDocumentsQuery;
   sharedWindowsDocumentsPath?: () => string;
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
@@ -1337,9 +1339,12 @@ function applySandboxFilesystemPolicy(
 }
 
 // Dynamically import the ESM-only ASRT package. Kept in one place so the dynamic-import shape (and the ESM-in-Electron rationale above) lives in a single spot. Resolved lazily — importing this module has no side effects.
+async function loadSandboxRuntime() {
+  return await import("@anthropic-ai/sandbox-runtime");
+}
+
 async function loadSandboxManager() {
-  const mod = await import("@anthropic-ai/sandbox-runtime");
-  return mod.SandboxManager;
+  return (await loadSandboxRuntime()).SandboxManager;
 }
 
 // Whether initializeAsrtSandbox has run to completion in this process. This is the host-tool spawn path's gate: tool code (bash.ts/powershell.ts) asks THIS module — not the settings service — whether to route through ASRT, so the gate is decided once at boot and cannot be re-evaluated mid-run. That preserves the seal-after-boot security property the registry had: there is no runtime channel to flip the sandbox on/off after boot. Set to `true` only on a successful `initialize`; stays `false` after resetAsrtSandbox.
@@ -1357,6 +1362,27 @@ export function isAsrtSandboxActive(): boolean {
 /** Offline host processes always require OS isolation, independently of shell and extension routing. */
 export function isOfflineProcessConfinementActive(): boolean {
   return active && !windowsExternalConfinement && getAveHomePrivacyFailure() === undefined;
+}
+
+function requireWindowsSandboxUserSid(user: ReturnType<WindowsAccountRuntime["getWindowsSandboxUserStatus"]>): string {
+  if (user.provisioned !== true || user.credPresent !== true || !user.sid) {
+    throw new Error("Windows sandbox user is not provisioned");
+  }
+  return user.sid;
+}
+
+/** The active account runtime can have lost its account or credential since startup. */
+export function isWindowsAccountConfinementOperational(): boolean {
+  const runtime = sandboxSession?.windowsAccountRuntime;
+  if (process.platform !== "win32" || !isOfflineProcessConfinementActive() || runtime === undefined) return false;
+  try {
+    assertWindowsDenyProtection();
+    const srtWin = runtime.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
+    requireWindowsSandboxUserSid(runtime.getWindowsSandboxUserStatus({ srtWin }));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Host-shell spawn gate (bash / powershell tools, the workspace terminal): ASRT is active AND the shell sandbox (`features.osToolSandbox`) was requested at boot.
@@ -3062,8 +3088,9 @@ async function initializeSandboxRuntime(
     assertAveHomePrivacyForConfinement();
   }
   // Containers confine this session's Windows children, so only the egress relay serves them: the wrap runtime stays unloaded.
-  const SandboxManager = process.platform === "win32" && trustedSettings.windows?.externalConfinement === true
-    ? undefined : await loadSandboxManager();
+  const runtime = process.platform === "win32" && trustedSettings.windows?.externalConfinement === true
+    ? undefined : await loadSandboxRuntime();
+  const SandboxManager = runtime?.SandboxManager;
   startupSignal?.throwIfAborted();
   const linuxWrapperPrograms = process.platform === "linux" ? preflightLinuxPrograms ?? requireLinuxWrapperPrograms() : undefined;
   const backgroundInitialization = process.platform === "win32"
@@ -3074,7 +3101,8 @@ async function initializeSandboxRuntime(
     : trustedSettings;
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = initialSettings;
-  sandboxSession = { linuxWrapperPrograms, queryWindowsDocumentsPath, sharedWindowsDocumentsPath: trustedSettings.resolveWindowsDocumentsPath,
+  sandboxSession = { linuxWrapperPrograms, windowsAccountRuntime: process.platform === "win32" ? runtime : undefined,
+    queryWindowsDocumentsPath, sharedWindowsDocumentsPath: trustedSettings.resolveWindowsDocumentsPath,
     windowsLiveGrants: new Map(), windowsLiveGrantCount: 0, windowsLiveGrantRevision: 0, windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Map(), windowsPendingWrapDenies: new Set(), windowsDenyRevision: 0 };
   const session = sandboxSession;
   let fullConfig: SandboxRuntimeConfig;
@@ -3687,12 +3715,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
 
   const srtWin = timeStep("srtWinPrepMs", () => resolveSrtWin({ path: getVerifiedSrtWinExePath() }));
   const user = timeStep("userStatusMs", () => getWindowsSandboxUserStatus({ srtWin }));
-  const sandboxUserSid = user.sid;
-  if (!user.provisioned || !user.credPresent || sandboxUserSid === undefined) {
-    throw new Error(
-      "grantWindowsWorkerFilesystemAccess: Windows sandbox user is not provisioned",
-    );
-  }
+  const sandboxUserSid = requireWindowsSandboxUserSid(user);
 
   const requestedWrite = windowsPinnedPaths(timeStep("preflightMs", () => existingWindowsGrants(pinned.allowWrite ?? [])));
   const requestedRead = [

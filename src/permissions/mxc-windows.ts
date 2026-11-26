@@ -3,6 +3,7 @@
 import { win32 as winPath } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { lstatSync } from "node:fs";
 import type { ProbeOutput } from "@microsoft/mxc-sdk/v1";
 import { z } from "zod";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
@@ -21,6 +22,7 @@ import {
 } from "./admitted-obligation.js";
 
 import { errorMessage } from "../shared/error-message.js";
+import { getHostResources } from "../main/host-resources.js";
 import { compileGlobMatcher, globToRegExp } from "../lib/glob-matcher.js";
 import { isPlainWindowsPathComponent } from "./windows-stamp-targets.js";
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
@@ -1122,11 +1124,18 @@ async function sha256OfFile(path: string): Promise<string> {
 // One verification per launcher path per process: boot, then every launch reuses it.
 const verifiedLaunchers = new Map<string, Promise<string>>();
 
-// `<resources>/mxc/<arch>/wxc-exec.exe` for this host, after its sha256 has matched the pin (once per process). Throws, so the command fails closed, when MXC does not ship for this arch or the file is not the pinned build. Assumption: the installer is per-machine (`nsis.perMachine`), so the file lives in a directory only administrators can write and cannot be swapped between this check and a later launch by the signed-in user. A source checkout's `resources/` is user-writable; that is a developer setup.
-export async function resolveHostWxcExecPath(): Promise<string> {
-  const { getHostResources } = await import("../main/host-resources.js");
+/** The current launcher file at the installed path. Boot and launch verify its build separately. */
+export function requireHostWxcExecFile(): string {
   const path = wxcExecPathFor(getHostResources().resourcePath, process.arch);
-  if (path === undefined) throw new Error(`Microsoft Execution Containers do not ship for ${process.arch}`);
+  if (path === undefined || lstatSync(path, { throwIfNoEntry: false })?.isFile() !== true) {
+    throw new Error("Contained shell launcher is missing from this installation");
+  }
+  return path;
+}
+
+// The installer protects the pinned build from replacement by a signed-in user. The file can still disappear after boot.
+export async function resolveHostWxcExecPath(): Promise<string> {
+  const path = requireHostWxcExecFile();
   let verified = verifiedLaunchers.get(path);
   if (verified === undefined) {
     const pinned = pinnedWxcExecSha256(process.arch);
@@ -1143,13 +1152,12 @@ type HostProbe = (deps: DetectMxcSupportDeps) => Promise<MxcSupport>;
 
 // Run one detection step against this host's shipped binary, in a fresh probe directory.
 async function withHostMxcDeps(step: HostProbe): Promise<MxcSupport> {
-  const [{ execFile }, { existsSync }, { mkdtemp, rm }, os, path, { getHostResources }] = await Promise.all([
+  const [{ execFile }, { existsSync }, { mkdtemp, rm }, os, path] = await Promise.all([
     import("node:child_process"),
     import("node:fs"),
     import("node:fs/promises"),
     import("node:os"),
     import("node:path"),
-    import("../main/host-resources.js"),
   ]);
   // The probe containers write only into a fresh directory of their own.
   const probeDirectory = process.platform === "win32" ? await mkdtemp(path.join(os.tmpdir(), "ave-mxc-probe-")) : os.tmpdir();

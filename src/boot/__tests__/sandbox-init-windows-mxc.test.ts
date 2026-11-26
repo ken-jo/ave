@@ -19,6 +19,8 @@ const h = vi.hoisted(() => ({
   initialize: vi.fn(),
   checkDeps: vi.fn(),
   offlineConfinement: vi.fn(),
+  accountOperational: vi.fn(),
+  requireLauncher: vi.fn(),
   runtimeActive: vi.fn(),
   detectMxc: vi.fn(),
   startProbe: vi.fn(),
@@ -60,6 +62,7 @@ vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/mxc-windows.js")>(),
   detectHostMxcPrerequisites: h.detectMxc,
   probeHostMxcPowerShellStart: h.startProbe,
+  requireHostWxcExecFile: h.requireLauncher,
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
@@ -71,6 +74,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     appOwnedSandboxTempRoot: () => join(roots, "tmp"),
     isAsrtSandboxActive: h.runtimeActive,
     isOfflineProcessConfinementActive: h.offlineConfinement,
+    isWindowsAccountConfinementOperational: h.accountOperational,
     appOwnedSandboxHomeRoot: () => join(roots, "home"),
     sandboxTempPrincipalDirsInUse: () => new Set<string>(),
     ensureSandboxPrivateRoot: (root: string) => {
@@ -147,9 +151,11 @@ beforeEach(() => {
   __resetWindowsSandboxSubstrateForTest();
   __resetSandboxHomesUnavailableForTest();
   h.initialize.mockReset();
-  h.initialize.mockResolvedValue(undefined);
+  h.initialize.mockImplementation(async () => { h.runtimeActive.mockReturnValue(true); });
   h.offlineConfinement.mockReset().mockReturnValue(false);
-  h.runtimeActive.mockReset().mockReturnValue(true);
+  h.accountOperational.mockReset().mockImplementation(() => h.offlineConfinement());
+  h.requireLauncher.mockReset().mockReturnValue("C:/example/resources/wxc-exec.exe");
+  h.runtimeActive.mockReset().mockReturnValue(false);
   h.checkDeps.mockReset();
   h.detectMxc.mockReset();
   h.startProbe.mockReset();
@@ -255,7 +261,10 @@ it.each([
         });
       }
       if (accountStarted) {
-        h.initialize.mockImplementationOnce(async () => { h.offlineConfinement.mockReturnValue(true); });
+      h.initialize.mockImplementationOnce(async () => {
+        h.runtimeActive.mockReturnValue(true);
+        h.offlineConfinement.mockReturnValue(true);
+      });
       }
       await initSandboxGate(harness.context(Boolean(accountStarted || containerStarted || initFailure), false));
       if (containerStarted) await vi.waitFor(() => expect(getWindowsSandboxSubstrate()?.shells).toBe("mxc"));
@@ -304,11 +313,13 @@ it.each([
 });
 
 it.each([
-  ["published HOME refusal", () => markSandboxHomesUnavailable()],
-  ["HOME parent identity loss", () => { h.homesParentError = new Error("HOME parent changed identity"); }],
-  ["withdrawn shell route", () => setShellSandboxRequestedAtBoot(false)],
-  ["stopped proxy runtime", () => h.runtimeActive.mockReturnValue(false)],
-] as const)("preserves the host index after a live container route loses health: %s", async (_label, revoke) => {
+  { label: "published HOME refusal", revoke: () => markSandboxHomesUnavailable() },
+  { label: "HOME parent identity loss", revoke: () => { h.homesParentError = new Error("HOME parent changed identity"); } },
+  { label: "withdrawn shell route", revoke: () => setShellSandboxRequestedAtBoot(false) },
+  { label: "stopped proxy runtime", revoke: () => h.runtimeActive.mockReturnValue(false) },
+  { label: "container launcher loss", preservesRoute: true, revoke: () => h.requireLauncher.mockImplementation(() => { throw new Error("launcher missing"); }) },
+  { label: "account readiness loss", preservesRoute: true, account: true, revoke: () => h.accountOperational.mockReturnValue(false) },
+])("preserves the host index after live confinement loses health: $label", async ({ revoke, account, preservesRoute }) => {
   const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
   const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
   const indexPath = join(dir, "search", "index.db");
@@ -317,11 +328,18 @@ it.each([
   const repository = new SessionRepository({ aveDir: dir, getSearchIndexPolicy: () => sessionSearchIndexPolicy(false) });
   try {
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
-    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
-    h.detectMxc.mockResolvedValue(MXC_OK);
+    h.checkDeps.mockResolvedValue(account ? ACCOUNT_DEPS_READY : SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(account ? MXC_OLD : MXC_OK);
+    if (account) h.initialize.mockImplementationOnce(async () => {
+      h.runtimeActive.mockReturnValue(true);
+      h.offlineConfinement.mockReturnValue(true);
+    });
     await initSandboxGate(harness.context(true, false));
-    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()?.shells).toBe("mxc"));
-    expect(getHostShellExecutionPlan()).toMatchObject({ substrate: "mxc", sandboxed: true });
+    if (!account) {
+      await vi.waitFor(() => expect(getWindowsSandboxSubstrate()?.shells).toBe("mxc"));
+      expect(getHostShellExecutionPlan()).toMatchObject({ substrate: "mxc", sandboxed: true });
+    }
+    const publishedSubstrate = getWindowsSandboxSubstrate();
     await repository.saveSession(sessionId, [{ role: "user", content: "indexed before refusal" }]);
     await repository.saveSessionMetadata(sessionId, { projectRoot });
     expect(repository.searchSessions("indexed before refusal", { projectRoot })).toHaveLength(1);
@@ -346,6 +364,13 @@ it.each([
       expect.soft(updateIndex).toHaveBeenCalledTimes(0);
       expect.soft(deleteRow).toHaveBeenCalledTimes(0);
       expect.soft(discardIndex).toHaveBeenCalledTimes(0);
+      if (preservesRoute) {
+        expect.soft(getWindowsSandboxSubstrate()).toBe(publishedSubstrate);
+        expect.soft(getSandboxHomesUnavailable()).toBe(false);
+        expect.soft(h.runtimeActive()).toBe(true);
+        if (account) expect.soft(h.offlineConfinement()).toBe(true);
+        else expect.soft(getHostShellExecutionPlan()).toMatchObject({ substrate: "mxc", sandboxed: true });
+      }
       expect(readFileSync(indexPath).equals(originalIndex)).toBe(true);
     } finally {
       openIndex.mockRestore();
@@ -395,7 +420,10 @@ it.each([undefined, false])("retains indexes and recovers skipped writes across 
 
     markSandboxGatePendingAtBoot();
     h.checkDeps.mockResolvedValue(ACCOUNT_DEPS_READY);
-    h.initialize.mockImplementationOnce(async () => { h.offlineConfinement.mockReturnValue(true); });
+    h.initialize.mockImplementationOnce(async () => {
+      h.runtimeActive.mockReturnValue(true);
+      h.offlineConfinement.mockReturnValue(true);
+    });
     await initSandboxGate(harness.context(true, false));
     const restarted = new SessionRepository({ aveDir: dir, getSearchIndexPolicy });
     const restartedEmpty = new SessionRepository({ aveDir: emptyDir, getSearchIndexPolicy });

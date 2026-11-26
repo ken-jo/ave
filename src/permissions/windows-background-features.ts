@@ -1,8 +1,9 @@
 import type { SessionSearchIndexPolicy } from "../memory/session-search-index.js";
 import { isAveHomePrivacyVerifiedAtBoot } from "../shared/ave-home.js";
-import { isAsrtSandboxActive, isOfflineProcessConfinementActive } from "./asrt-sandbox.js";
+import { isAsrtSandboxActive, isWindowsAccountConfinementOperational } from "./asrt-sandbox.js";
 import { hasMxcReleaseGateEvidence } from "./mxc-extension-admission.js";
 import { mxcSandboxHomesParent } from "./mxc-runtime-root.js";
+import { requireHostWxcExecFile } from "./mxc-windows.js";
 import {
   detectMxcShellCapability,
   getSandboxHomesUnavailable,
@@ -33,17 +34,27 @@ function hasDefinitiveWindowsBackendAbsence(): boolean {
 
 export function areWindowsBackgroundSwitchesAvailable(): boolean {
   return isWindowsBackgroundFeatureReleaseEnabled() && hasWindowsBackgroundHealth()
-    && !isOfflineProcessConfinementActive() && hasDefinitiveWindowsBackendAbsence();
+    && !isAsrtSandboxActive() && hasDefinitiveWindowsBackendAbsence();
+}
+
+function isWindowsContainerConfinementOperational(): boolean {
+  if (!isAsrtSandboxActive() || detectMxcShellCapability()?.confidence !== "verified") return false;
+  try {
+    requireHostWxcExecFile();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function sessionSearchIndexPolicy(preference: boolean | undefined): SessionSearchIndexPolicy {
   if (!isWindowsBackgroundFeatureReleaseEnabled()) return "enabled";
   if (!hasWindowsBackgroundHealth()) return "inactive";
   const substrate = getWindowsSandboxSubstrate();
-  const confinementOperational = isOfflineProcessConfinementActive()
-    || (substrate?.mxc.state === "available" && isAsrtSandboxActive()
-      && detectMxcShellCapability()?.confidence === "verified");
-  if (!confinementOperational && !hasDefinitiveWindowsBackendAbsence()) return "inactive";
+  const confinementOperational = (substrate?.srtWinReady === true && substrate.accountBackendAbsent !== true
+      && isWindowsAccountConfinementOperational())
+    || (substrate?.mxc.state === "available" && substrate.shells === "mxc" && isWindowsContainerConfinementOperational());
+  if (!confinementOperational && (isAsrtSandboxActive() || !hasDefinitiveWindowsBackendAbsence())) return "inactive";
   try {
     // Recheck the root and HOME parent even before a failed child start can report their loss.
     mxcSandboxHomesParent();

@@ -62,7 +62,7 @@ import * as facts from "../../shared/windows-path-facts.js";
 import * as denyAcl from "../windows-deny-acl.js";
 import * as stampTargets from "../windows-stamp-targets.js";
 import { windowsDenyOperandKey } from "../sandbox-write-policy.js";
-import { assertExtensionStartAllowed, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, probeExtensionStart, isAsrtSandboxActive, isOfflineProcessConfinementActive, isPluginWorkerConfinementActive, resetAsrtSandbox, wrapToolCommand, wrapWorkerCommand } from "../asrt-sandbox.js";
+import { assertExtensionStartAllowed, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, probeExtensionStart, isAsrtSandboxActive, isOfflineProcessConfinementActive, isPluginWorkerConfinementActive, isWindowsAccountConfinementOperational, resetAsrtSandbox, wrapToolCommand, wrapWorkerCommand } from "../asrt-sandbox.js";
 
 const manager = vi.hoisted(() => ({
   initialize: vi.fn(async () => undefined),
@@ -186,6 +186,22 @@ afterEach(async () => {
 });
 
 describe("background session isolation", () => {
+  it("requires current account provisioning, credentials and identity even while the runtime stays active", async () => {
+    await initializeAsrtSandbox({});
+    expect(isWindowsAccountConfinementOperational()).toBe(true);
+    const ready = nativeWorker.getWindowsSandboxUserStatus();
+    nativeWorker.getWindowsSandboxUserStatus
+      .mockReturnValueOnce({ ...ready, provisioned: false })
+      .mockReturnValueOnce({ ...ready, credPresent: false })
+      .mockReturnValueOnce({ ...ready, sid: "" })
+      .mockImplementationOnce(() => { throw new Error("account status unavailable"); });
+    for (let i = 0; i < 4; i++) {
+      expect(isOfflineProcessConfinementActive()).toBe(true);
+      expect(isWindowsAccountConfinementOperational()).toBe(false);
+    }
+    expect(isWindowsAccountConfinementOperational()).toBe(true);
+  });
+
   it("keeps UNC names and directory hints exact after removing the extended prefix", () => {
     const share = String.raw`\\server\Share\Case`;
     const extended = String.raw`\\?\unc\server\Share\Case`;
