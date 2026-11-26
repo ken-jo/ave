@@ -3518,6 +3518,9 @@ in its directory.
   grants fails closed. The shell cannot create that missing directory during
   this spawn. Denies are recomputed each spawn, restoring precise entries once
   it exists; an approved file tool can still create the directory.
+  The three [required Windows write denies](permission-policy-design.md#os-shell-sandbox-policy)
+  are exact. A missing parent for one of these rows refuses the covering
+  write grant for the launch.
   In the six installed x64 runs observed on 2026-11-11, node opens of the Ave
   home, config, browser-profile and user key-store boundaries were denied;
   PowerShell opens at the Ave home and config boundaries were denied except

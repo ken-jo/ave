@@ -990,6 +990,7 @@ export function buildMandatorySandboxWritePolicy(
   inheritedWriteDenies: readonly string[] = [],
 ): Pick<FilesystemConfig, "denyWrite"> & {
   allowWrite: string[];
+  windowsRequiredWriteDenies: readonly string[];
   narrowedWriteRoots: readonly { root: string; reason: "entry-budget" | "path-budget" | "filesystem-access" | "routing-link" }[];
   gitControlSnapshot?: SandboxGitControlSnapshot;
 } {
@@ -1112,12 +1113,17 @@ export function buildMandatorySandboxWritePolicy(
       || !roots.some(root => isPhysicalPathWithin(root, path))) routingPins.add(path);
   }
   // Preserve both the directory entry and its target when a setting is a link.
+  const windowsRequiredWriteDenies = new Set<string>();
   const resolvedDenyPaths = [...new Set([...paths].flatMap((path) => {
     const physical = resolvePolicyDenyPath(path);
     const name = windowsNamedEntries.get(path);
-    if (name !== undefined && path.toLowerCase() !== physical.toLowerCase()
-      && windowsProtectedBoundaries.some(boundary => isPhysicalPathWithin(physical, boundary))) {
-      throw new Error(t("sandboxPolicy.namedEntryLinksToWriteBoundary", { entry: name }));
+    if (name !== undefined) {
+      if (path.toLowerCase() !== physical.toLowerCase()
+        && windowsProtectedBoundaries.some(boundary => isPhysicalPathWithin(physical, boundary))) {
+        throw new Error(t("sandboxPolicy.namedEntryLinksToWriteBoundary", { entry: name }));
+      }
+      windowsRequiredWriteDenies.add(path);
+      windowsRequiredWriteDenies.add(physical);
     }
     if (mandatoryPaths.has(path)) mandatoryPaths.add(physical);
     return [path, physical];
@@ -1126,8 +1132,9 @@ export function buildMandatorySandboxWritePolicy(
   // when its lexical spelling is already covered by a denied parent directory.
   // Windows may omit an inherited deny during ACL narrowing; retain its full
   // mandatory set until that later platform-specific decision has finished.
-  const entries: FilesystemPathEntry[] = minimalLiteralDenyPaths(resolvedDenyPaths, process.platform === "win32" ? [] : inheritedWriteDenies)
-    .map((path) => /[*?\[\]]/.test(path) ? { path, literal: true } : path);
+  const compacted = minimalLiteralDenyPaths(resolvedDenyPaths, process.platform === "win32" ? [] : inheritedWriteDenies);
+  const entries: FilesystemPathEntry[] = [...new Set([...compacted, ...windowsRequiredWriteDenies])]
+    .map((path) => /[*?\[\]]/.test(path) || (windowsRequiredWriteDenies.has(path) && path.includes("%")) ? { path, literal: true } : path);
   // Linux consumes routing links only to revoke covering grants. Replaying one as a deny bind would follow its target and could mask an unrelated subtree.
   if (process.platform !== "linux") {
     entries.push(...[...routingPins].map(path => ({ path, literal: true } as const)));
@@ -1140,6 +1147,7 @@ export function buildMandatorySandboxWritePolicy(
   assertSandboxWritePolicySize(backendEntries, backendMandatoryPaths);
   return {
     allowWrite: roots.filter(root => !revoked.has(root)), denyWrite: backendEntries,
+    windowsRequiredWriteDenies: [...windowsRequiredWriteDenies].map(nativeWriteDenyPath),
     narrowedWriteRoots: [...narrowed].map(([root, reason]) => ({ root, reason })),
     ...(gitDiscovery ? { gitControlSnapshot: finishGitControlSnapshot(
       new Map([...rootIdentities].filter(([root]) => !revoked.has(root))),

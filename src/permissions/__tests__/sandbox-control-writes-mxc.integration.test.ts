@@ -46,6 +46,7 @@ describe.runIf(process.platform === "win32")("container control-file write bound
       execFileSync(git, ["-C", project, "config", "user.name", "Sandbox Fixture"], { env: gitEnv });
       execFileSync(git, ["-C", project, "config", "user.email", "fixture.invalid"], { env: gitEnv });
       mkdirSync(configuration, { recursive: true, mode: 0o700 });
+      mkdirSync(join(configuration, ".ave"));
       await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } }, async () => false);
       const namedTargets = [join(project, ".agents", "skills", "example.md"),
         join(project, ".ave", "commands", "example.md"), join(project, ".ave", "hooks", "example.js")];
@@ -62,7 +63,8 @@ describe.runIf(process.platform === "win32")("container control-file write bound
           launch = await prepareOwnedMxcShellLaunch({
           egressToken: invocation.token, commandLine: powerShellMxcCommandLine(windowsSystemRoot(), command), cwd: project,
           filesystem: { allowRead: [windowsSystemRoot(), gitRoot, project, configuration], allowWrite: policy.allowWrite,
-            denyRead: [], denyWrite: policy.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path) },
+             denyRead: [], denyWrite: policy.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path),
+             requiredWriteDenies: policy.windowsRequiredWriteDenies },
           env: Object.fromEntries(Object.entries({ ...gitEnv, CONTROL_TARGET: target }).filter((entry): entry is [string, string] => entry[1] !== undefined)),
           timeoutMs: TOOL_TIMEOUT_POLICY.shellDefaultMs, exists: existsSync,
           });

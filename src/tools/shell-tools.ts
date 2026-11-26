@@ -4211,6 +4211,7 @@ async function spawnPowerShellInMxc(
           ...sensitiveDenyWrite,
           ...mandatory.denyWrite.map((entry) => typeof entry === "string" ? entry : entry.path),
         ])],
+        requiredWriteDenies: mandatory.windowsRequiredWriteDenies,
         floorPierces,
       },
       sandboxHome: sandboxHome.path,

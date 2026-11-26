@@ -28,6 +28,7 @@ interface WatchedRow {
   readonly anchorIdentity: FileIdentity;
   readonly recordedAt: string;
   readonly roots: Set<string>;
+  exact: boolean;
 }
 
 interface ManifestEntry {
@@ -88,12 +89,13 @@ function entryAt(path: string, bigint = false): Stats | BigIntStats | undefined 
 }
 
 /** Record an absent protected row reachable from `roots`; nothing is created. */
-export function watchAbsentProtectedRow(path: string, roots: readonly string[]): void {
+export function watchAbsentProtectedRow(path: string, roots: readonly string[], exact = false): void {
   const target = plain(path);
   const id = key(target);
   if (excepted.has(id)) return;
   const known = watched.get(id);
   if (known) {
+    known.exact ||= exact;
     for (const root of roots) known.roots.add(root);
     return;
   }
@@ -101,7 +103,7 @@ export function watchAbsentProtectedRow(path: string, roots: readonly string[]):
   for (;;) {
     const entry = entryAt(anchor, true);
     if (entry?.isDirectory()) {
-      watched.set(id, { path: target, anchor, anchorIdentity: { dev: entry.dev, ino: entry.ino }, recordedAt: new Date().toISOString(), roots: new Set(roots) });
+      watched.set(id, { path: target, anchor, anchorIdentity: { dev: entry.dev, ino: entry.ino }, recordedAt: new Date().toISOString(), roots: new Set(roots), exact });
       return;
     }
     const parent = dirname(anchor);
@@ -142,14 +144,13 @@ function sameIdentity(path: string, identity: FileIdentity): boolean {
   return current?.isDirectory() === true && !current.isSymbolicLink() && current.dev === identity.dev && current.ino === identity.ino;
 }
 
-/** Move every created watched entry (its whole subtree below the recorded ancestor) into quarantine. Throws the user-facing failure when a move fails. */
+/** Quarantine created watched entries. Throws the user-facing failure when a move fails. */
 export async function sweepWatchedRows(context: WatchedSweepContext): Promise<string | undefined> {
   const created = createdRows();
   if (created.length === 0) return undefined;
-  // The created entry is the first component below the recorded ancestor; rows sharing it move once.
   const entries = new Map<string, { readonly original: string; readonly row: WatchedRow }>();
   for (const row of created) {
-    const original = join(row.anchor, relative(row.anchor, row.path).split(/[\\/]/)[0] ?? "");
+    const original = row.exact ? row.path : join(row.anchor, relative(row.anchor, row.path).split(/[\\/]/)[0] ?? "");
     if (!entries.has(key(original))) entries.set(key(original), { original, row });
   }
   const failures: string[] = [];
@@ -161,8 +162,10 @@ export async function sweepWatchedRows(context: WatchedSweepContext): Promise<st
     try {
       if (quarantine === undefined) throw new Error(failures[0]);
       if (!sameIdentity(row.anchor, row.anchorIdentity)) throw new Error(`the folder ${JSON.stringify(row.anchor)} changed identity`);
+      const parent = lstatSync(dirname(original));
+      if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error("Sandbox quarantine parent is not a plain directory");
       const before = quarantine.moved.length;
-      quarantine.move(original, lstatSync(row.anchor));
+      quarantine.move(original, parent);
       const landed = quarantine.moved[before];
       if (landed !== undefined) {
         moved.push({ original, quarantined: landed.quarantined, row: row.path, time: new Date().toISOString(), commandId: context.commandId,

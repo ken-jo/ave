@@ -891,11 +891,14 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
     ...getDefaultSensitiveReadDenyPaths(), ...admitted.denyRead,
     ...namespaceRoots, ...(pinnedOwnership?.hostStorageRoots ?? []),
   ]);
-  const writeFloor = literalDenies([...sensitiveWriteDenies, ...admitted.denyWrite, ...mandatory.denyWrite], true);
+  const requiredWrites = new Set(mandatory.windowsRequiredWriteDenies);
+  const writeFloor = literalDenies([...sensitiveWriteDenies, ...admitted.denyWrite, ...mandatory.denyWrite]
+    .filter(entry => !requiredWrites.has(typeof entry === "string" ? entry : entry.path)), true);
   const model = buildPolicyModel({
     floors: [
       ...readDenies.map((path) => policyFloorRow(path, "denied", "read-boundary", true)),
       ...writeFloor.map((path) => policyFloorRow(path, "ro", "protected-name", true)),
+      ...[...requiredWrites].map((path) => policyFloorRow(path, "ro", "required-write-deny", true)),
       ...protectedFloor.map((path) => policyFloorRow(path, "denied", "secrets", true)),
     ],
     userGrants: [],
@@ -906,7 +909,7 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
     ],
     launchGrants: [],
   });
-  assertSandboxWritePolicySize(writeFloor, undefined, admitted.denyWrite);
+  assertSandboxWritePolicySize([...writeFloor, ...requiredWrites], undefined, admitted.denyWrite);
   const assertStillValid = (): void => {
     for (const entry of [...(pinned.allowRead ?? []), ...(pinned.allowWrite ?? []),
       ...(ownershipPins?.allowRead ?? []), ...(ownershipPins?.allowWrite ?? []), ...(namespacePins.allowRead ?? [])]) {

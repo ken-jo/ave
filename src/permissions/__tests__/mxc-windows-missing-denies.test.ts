@@ -29,6 +29,13 @@ describe("missing deny parents", () => {
     }
   });
 
+  it("refuses the covering write grant when a protected child would require denying its carrier", () => {
+    const deny = win32.join(root, ".ave", "commands");
+    const rows = { ...policy([deny]), requiredWriteDenies: [deny] };
+    expect(() => rankMxcLists(rows, exists)).toThrow(deny);
+    expect(rankMxcLists(rows, (path) => exists(path) || path === win32.dirname(deny)).denied).toEqual([deny]);
+  });
+
   it("keeps a missing leaf unchanged", () => {
     const deny = win32.join(root, ".vscode");
     expect(rankMxcLists(policy([deny]), exists).denied).toEqual([deny]);
@@ -249,13 +256,21 @@ describe.skipIf(process.platform !== "win32")("native missing deny parents", () 
       expect(existsSync(join(directory, ".claude"))).toBe(false);
       expect(existsSync(join(directory, ".idea"))).toBe(false);
       writeFileSync(join(directory, "routine"), "");
+      mkdirSync(join(directory, ".ave"));
+      const exactPaths = [join(directory, ".agents"), join(directory, ".ave", "commands"), join(directory, ".ave", "hooks")];
       for (const [label, denies] of [["none", []], ["leaf", [join(directory, ".vscode")]], ["file in directory form", [`${join(directory, "routine")}\\`]],
-        ["nested", [join(directory, "a", "b", ".ssh")]], ["workspace", workspaceDenies]] as const) {
+        ["nested", [join(directory, "a", "b", ".ssh")]], ["workspace", workspaceDenies],
+        ["exact children", exactPaths]] as const) {
         // A floor row in directory form over a placeholder file, as `~/.ave/routine` can be.
         const floorRow = label === "file in directory form";
         const grants = rankMxcLists({ allowWrite: [directory], allowRead: [], denyRead: floorRow ? denies : [],
-          denyWrite: floorRow ? [] : denies, protectedFloor: label === "workspace" ? floor : [] }, existsSync);
-        const request = buildMxcShellRequest({ commandLine: powerShellMxcCommandLine(process.env.SystemRoot!, "exit 0"), cwd: directory, grants,
+          denyWrite: floorRow ? [] : denies, protectedFloor: label === "workspace" ? floor : [],
+          requiredWriteDenies: label === "workspace" ? mandatory.windowsRequiredWriteDenies : label === "exact children" ? exactPaths : [],
+        }, existsSync);
+        const command = label === "exact children"
+          ? '$ErrorActionPreference="Stop"; Set-Content .ave/ordinary.txt kept; foreach ($child in @(".agents", ".ave/commands", ".ave/hooks")) { try { New-Item -ItemType Directory $child | Out-Null } catch { continue }; exit 2 }; exit 0'
+          : "exit 0";
+        const request = buildMxcShellRequest({ commandLine: powerShellMxcCommandLine(process.env.SystemRoot!, command), cwd: directory, grants,
           env: { SYSTEMROOT: process.env.SystemRoot!, LOCALAPPDATA: directory }, proxyUrl: "http://127.0.0.1:9", timeoutMs: TOOL_TIMEOUT_POLICY.shellDefaultMs });
         const result = await new Promise<{ code: number; stdout: string; stderr: string }>((resolveResult, reject) => {
           execFile(launcher, mxcRequestArgs(request, launcher), { cwd: win32.dirname(launcher), windowsHide: true,
@@ -265,10 +280,15 @@ describe.skipIf(process.platform !== "win32")("native missing deny parents", () 
           });
         });
         expect(result.code, `${label}: ${JSON.stringify(result)}`).toBe(0);
+        if (label === "exact children") {
+          expect(grants.denied).toEqual(exactPaths);
+          expect(existsSync(join(directory, ".ave", "ordinary.txt"))).toBe(true);
+          for (const path of exactPaths) expect(existsSync(path)).toBe(false);
+        }
         const relative = (paths: readonly string[]) => paths.filter((path) => isWindowsPathAtOrUnder(path, directory))
           .map((path) => win32.relative(directory, path));
         console.info(`MXC deny evidence ${JSON.stringify({ label, before: relative([...denies, ...(label === "workspace" ? floor : [])]), after: relative(grants.denied) })}`);
       }
     } finally { rmSync(directory, { recursive: true, force: true }); }
-  }, TOOL_TIMEOUT_POLICY.shellDefaultMs * 5 + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);
+  }, TOOL_TIMEOUT_POLICY.shellDefaultMs * 6 + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);
 });

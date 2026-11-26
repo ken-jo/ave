@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -59,6 +59,36 @@ describe("watched protected rows", () => {
     watchAbsentProtectedRow(tasks, [workspace]);
     expect(watchedProtectedRows()).not.toContain(tasks);
     await expect(restoreWatchedQuarantine(entry.slot, entry.index)).rejects.toThrow(/already restored/);
+  });
+
+  it("quarantines the protected children of a newly created carrier and preserves siblings", async () => {
+    const carrier = join(workspace, ".ave");
+    const protectedPaths = [join(carrier, "commands"), join(carrier, "hooks")];
+    for (const path of protectedPaths) watchAbsentProtectedRow(path, [workspace], true);
+    mkdirSync(carrier);
+    const unrelated = join(carrier, "unrelated.txt");
+    writeFileSync(unrelated, "keep");
+    for (const path of protectedPaths) mkdirSync(path);
+
+    await expect(sweepWatchedRows({ commandId: "fixture-command" })).resolves.toContain(WATCHED_ROW_VIOLATION);
+    expect(readFileSync(unrelated, "utf8")).toBe("keep");
+    expect(listWatchedQuarantine().map(entry => entry.original)).toEqual(protectedPaths);
+    for (const path of protectedPaths) expect(lstatSync(path, { throwIfNoEntry: false })).toBeUndefined();
+  });
+
+  it("refuses to move a protected child through a replacement carrier link", async () => {
+    const carrier = join(workspace, ".ave");
+    const target = join(container, "external");
+    const child = join(target, "hooks");
+    mkdirSync(child, { recursive: true });
+    watchAbsentProtectedRow(join(carrier, "hooks"), [workspace], true);
+    symlinkSync(target, carrier, "junction");
+
+    await expect(sweepWatchedRows({ commandId: "fixture-command" })).rejects.toThrow(/quarantine/i);
+    expect(lstatSync(carrier).isSymbolicLink()).toBe(true);
+    expect(lstatSync(child).isDirectory()).toBe(true);
+    expect(listWatchedQuarantine()).toEqual([]);
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
   });
 
   it("fails closed without deleting anything when the quarantine cannot be created", async () => {

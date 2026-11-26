@@ -1,6 +1,7 @@
 // Each shell command gets its own container, filesystem policy and kernel-bound proxy listener; deny/read-only entries outrank write grants, but missing read-only targets do not protect future paths. Killing the launcher tears down descendants, and containers cannot terminate host processes (docs/architecture/architecture.md).
 // Use the signed CLI to relay stdio/exit while the embedded runtime lacks required native support. Plugin workers retain their separate sandbox because proxy mode forbids direct loopback control; terminals remain user-owned and need background descendants to survive.
 import { win32 as winPath } from "node:path";
+import { t } from "../i18n/index.js";
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
@@ -441,6 +442,7 @@ export interface MxcPolicyRows {
   readonly readDenies: readonly string[];
   // The write floor.
   readonly writeFloor: readonly string[];
+  readonly requiredWriteDenies: readonly string[];
   // The protected read floor (`secrets` rows). A grant at or beneath one is dropped.
   readonly protectedFloor: readonly string[];
   // Host-minted pierces. A grant at or beneath one is not dropped by the floor.
@@ -455,6 +457,7 @@ export function mxcPolicyRows(model: PolicyModel): MxcPolicyRows {
     readGrants: paths((row) => grant(row) && row.access === "ro"),
     readDenies: paths((row) => isPolicyFloorRow(row) && row.access === "denied" && row.reason !== "secrets"),
     writeFloor: paths((row) => isPolicyFloorRow(row) && row.access === "ro"),
+    requiredWriteDenies: paths((row) => row.reason === "required-write-deny"),
     protectedFloor: paths((row) => row.reason === "secrets"),
     floorPierces: paths((row) => row.reason === "floor-pierce"),
   };
@@ -475,6 +478,7 @@ export function rankMxcFilesystem(
   const windowsPaths = (paths: readonly string[]): readonly string[] => paths.filter((path) => !/^\/(?!\/)/.test(path));
   const protectedFloor = windowsPaths(rows.protectedFloor);
   const denyWrite = windowsPaths(rows.writeFloor);
+  const requiredWriteDenies = new Set(rows.requiredWriteDenies.map(foldPath));
   const pierces = rows.floorPierces;
   const floored = (path: string): boolean =>
     protectedFloor.some((floor) => isWindowsPathAtOrUnder(path, floor)) &&
@@ -528,6 +532,9 @@ export function rankMxcFilesystem(
     for (;;) {
       const parent = winPath.dirname(firstMissing);
       if (exists(parent)) break;
+      if (requiredWriteDenies.has(foldPath(deny))) {
+        throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: deny }));
+      }
       if (parent === firstMissing) throw new Error(`Windows sandbox policy cannot resolve missing deny: ${deny}`);
       firstMissing = parent;
     }

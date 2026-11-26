@@ -40,6 +40,7 @@ export interface MxcShellPolicyLists {
   readonly denyRead: readonly string[];
   /** The write floor. */
   readonly denyWrite: readonly string[];
+  readonly requiredWriteDenies?: readonly string[];
   /** The protected read floor. A grant at or beneath a row is dropped. */
   readonly protectedFloor: readonly string[];
   /** Reads the shell holds inside the protected floor on purpose (the saved session history). */
@@ -51,10 +52,12 @@ export interface MxcShellPolicyLists {
  * grant stands behind a root. A path on both deny lists is stated twice; the container adapter reads the two lists differently.
  */
 export function shellPolicyModel(lists: MxcShellPolicyLists): PolicyModel {
+  const required = new Set(lists.requiredWriteDenies);
   return buildPolicyModel({
     floors: [
       ...lists.denyRead.map((path) => policyFloorRow(path, "denied", "read-boundary", false)),
-      ...lists.denyWrite.map((path) => policyFloorRow(path, "ro", "protected-name", false)),
+      ...lists.denyWrite.filter(path => !required.has(path)).map((path) => policyFloorRow(path, "ro", "protected-name", false)),
+      ...[...required].map((path) => policyFloorRow(path, "ro", "required-write-deny", true)),
       ...lists.protectedFloor.map((path) => policyFloorRow(path, "denied", "secrets", false)),
     ],
     userGrants: [],

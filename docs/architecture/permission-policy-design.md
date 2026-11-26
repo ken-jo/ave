@@ -862,9 +862,18 @@ Ave home or one of the confined processes' private roots, writes to that directo
 are denied except under the wrap's own write roots inside it. Linux masks both
 with a mount.
 
-On Windows, both the container and ACL-backed routes receive these rows from
-the shared policy builder. Present entries receive the backend's write deny.
-Reachable absent entries follow the [protected-name watch](architecture.md#ave-home-boundary-and-protected-name-mechanics).
+On Windows, both routes receive the three exact rows from the shared policy
+builder, including the physical targets of supported links. A link to the
+`.ave` directory, a write root, or an ancestor of either refuses the launch.
+The container makes a present entry read-only unless a read deny also applies.
+It denies a missing child by name when its parent exists. If the parent is
+missing, including an absent project `.ave`, the container refuses the covering
+write grant for the launch. Its disposable process home supplies its own `.ave`
+parent so the two child denies can be exact there.
+
+The ACL-backed route uses ACLs for present entries. When a watch observes a new
+protected child, quarantine checks its parent and moves only that child. See
+the [protected-name watch](architecture.md#ave-home-boundary-and-protected-name-mechanics).
 
 Loader denies apply to isolated processes through the common filesystem policy,
 including the persistent conversation shell and worker confinement when enabled.
