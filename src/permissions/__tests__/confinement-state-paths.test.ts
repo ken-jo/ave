@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -153,5 +154,30 @@ describe.runIf(process.platform === "win32")("write admission resolves the decla
       setLocale(previous);
     }
     expect(() => assertWriteGrantsOutsideConfinementState([unrelated], declaredConfinementStatePaths())).not.toThrow();
+  });
+
+  it("refuses another case spelling and the short name of an existing state folder", (context) => {
+    const local = join(base, "Local");
+    const helper = join(local, "sandbox-runtime");
+    mkdirSync(helper, { recursive: true });
+    const state = declaredConfinementStatePaths(srtWinConfinementStatePaths({ LOCALAPPDATA: local, ProgramData: join(base, "Machine") }, base), []);
+    const refused = (grant: string) => expect(() => assertWriteGrantsOutsideConfinementState([grant], state), grant)
+      .toThrow(expect.objectContaining({ path: grant, reason: "helper-ledger" }));
+    refused(join(helper.toUpperCase(), "x"));
+    const listing = execFileSync("cmd.exe", ["/d", "/c", "dir", "/x", "/a:d", local], { encoding: "utf8", windowsHide: true });
+    const short = /(\S+~\d+)\s+sandbox-runtime\s*$/mu.exec(listing)?.[1];
+    if (short === undefined) context.skip("short names are off on this volume");
+    refused(join(local, short!, "x"));
+  });
+
+  it("passes the holder's own staging root and refuses anything inside it", () => {
+    const root = String(mxcConfinementStatePaths()[0]);
+    const staging = join(root, "staging", "0".repeat(32));
+    const state = declaredConfinementStatePaths([], [root]);
+    expect(() => assertWriteGrantsOutsideConfinementState([staging], state, staging)).not.toThrow();
+    for (const grant of [join(staging, "home"), join(staging, "temp", "x")]) {
+      expect(() => assertWriteGrantsOutsideConfinementState([grant], state, staging), grant)
+        .toThrow(expect.objectContaining({ path: grant, reason: "container-runtime" }));
+    }
   });
 });
