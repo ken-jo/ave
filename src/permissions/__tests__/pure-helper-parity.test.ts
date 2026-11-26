@@ -177,7 +177,18 @@ describe("destination patterns", () => {
 });
 
 describe("path spelling", () => {
-  it("answers alike for every helper", () => {
+  // Every expansion check runs under a stubbed home, so the account's own profile spelling never reaches an expectation.
+  const withHome = (home: string, check: () => void) => {
+    vi.stubEnv(process.platform === "win32" ? "USERPROFILE" : "HOME", home);
+    try {
+      expect(os.homedir()).toBe(home);
+      check();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  };
+
+  it("answers alike for every helper", () => withHome("C:\\Users\\alice", () => {
     const rows = one(PATHS);
     both(spelling.normalizeCaseForComparison, runtimePath.normalizeCaseForComparison, rows);
     both(spelling.containsGlobChars, runtimePath.containsGlobChars, rows);
@@ -187,7 +198,7 @@ describe("path spelling", () => {
     both(spelling.expandWindowsEnvRefs, runtimePath.expandWindowsEnvRefs, rows);
     both(spelling.globPatternBaseDir, runtimePath.globPatternBaseDir, rows);
     both(spelling.toForwardSlashes, runtimePath.toForwardSlashes, rows);
-  });
+  }));
 
   it("pins the expected spellings", () => {
     expect(spelling.normalizeCaseForComparison("C:\\Users\\ALICE")).toBe("c:\\users\\alice");
@@ -208,10 +219,11 @@ describe("path spelling", () => {
     expect(spelling.globPatternBaseDir("*")).toBe("");
     expect(spelling.globPatternBaseDir("a*")).toBe(".");
     expect(spelling.toForwardSlashes("C:\\a\\b")).toBe(process.platform === "win32" ? "C:/a/b" : "C:\\a\\b");
-    const home = os.homedir();
-    expect(spelling.expandWindowsEnvRefs("%userprofile%\\x")).toBe(`${home}\\x`);
-    expect(spelling.expandWindowsEnvRefs("%HOMEDRIVE%%HOMEPATH%")).toBe(home);
-    expect(spelling.expandWindowsEnvRefs("%APPDATA%\\x")).toBe("%APPDATA%\\x");
+    withHome("C:\\Users\\alice", () => {
+      expect(spelling.expandWindowsEnvRefs("%userprofile%\\x")).toBe("C:\\Users\\alice\\x");
+      expect(spelling.expandWindowsEnvRefs("%HOMEDRIVE%%HOMEPATH%")).toBe("C:\\Users\\alice");
+      expect(spelling.expandWindowsEnvRefs("%APPDATA%\\x")).toBe("%APPDATA%\\x");
+    });
   });
 
   it("strips the same extended prefixes", () => {
@@ -225,25 +237,13 @@ describe("path spelling", () => {
 
   it.each([
     "C:\\Users\\alice", "c:\\users\\bob", "D:\\", "\\\\server\\share\\alice", "/home/alice", "C:\\Users\\a$&b", "C:\\Users\\$1$$alice", "relative",
-  ])("expands env refs alike with the home at %s", (home) => {
-    const homeVar = process.platform === "win32" ? "USERPROFILE" : "HOME";
-    vi.stubEnv(homeVar, home);
-    try {
-      expect(os.homedir()).toBe(home);
-      both(spelling.expandWindowsEnvRefs, runtimePath.expandWindowsEnvRefs, one(PATHS));
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
+  ])("expands env refs alike with the home at %s", (home) => withHome(home, () => {
+    both(spelling.expandWindowsEnvRefs, runtimePath.expandWindowsEnvRefs, one(PATHS));
+  }));
 
-  it("leaves the drive empty for a home without one", () => {
-    vi.stubEnv(process.platform === "win32" ? "USERPROFILE" : "HOME", "\\\\server\\share\\alice");
-    try {
-      expect(spelling.expandWindowsEnvRefs("%HOMEDRIVE%|%HOMEPATH%")).toBe("|\\\\server\\share\\alice");
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
+  it("leaves the drive empty for a home without one", () => withHome("\\\\server\\share\\alice", () => {
+    expect(spelling.expandWindowsEnvRefs("%HOMEDRIVE%|%HOMEPATH%")).toBe("|\\\\server\\share\\alice");
+  }));
 });
 
 describe("relay resolved-address check", () => {
