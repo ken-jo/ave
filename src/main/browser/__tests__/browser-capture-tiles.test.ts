@@ -30,7 +30,7 @@ async function tile(pageY: number): Promise<string> {
   return (await sharp(pixels, { raw: { width: WIDTH, height: VIEWPORT_HEIGHT, channels: 3 } }).png().toBuffer()).toString("base64");
 }
 
-function tiledSession(pixelRatio = 1, zoom = 1) {
+function tiledSession(pixelRatio = 1, zoom = 1, captureTile?: (pageY: number) => Promise<Buffer>) {
   let pageY = 0;
   const restore = vi.fn(async () => {});
   const send = vi.fn(async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
@@ -46,7 +46,7 @@ function tiledSession(pixelRatio = 1, zoom = 1) {
       return {};
     }
     if (method === "Page.captureScreenshot") {
-      const png = await sharp(Buffer.from(await tile(pageY), "base64"))
+      const png = captureTile ? await captureTile(pageY) : await sharp(Buffer.from(await tile(pageY), "base64"))
         .resize({ width: WIDTH * pixelRatio * zoom, height: VIEWPORT_HEIGHT * pixelRatio * zoom, kernel: "nearest" }).png().toBuffer();
       return { data: png.toString("base64") };
     }
@@ -65,7 +65,7 @@ function tiledSession(pixelRatio = 1, zoom = 1) {
 }
 
 describe("browser capture tiles", () => {
-  it.each([{ pixelRatio: 1, zoom: 1 }, { pixelRatio: 2, zoom: 1 }, { pixelRatio: 2, zoom: 1.25 }])("stitches every document row and clips the overlap at density $pixelRatio and zoom $zoom", async ({ pixelRatio, zoom }) => {
+  it.each([{ pixelRatio: 1, zoom: 1 }, { pixelRatio: 2, zoom: 1 }, { pixelRatio: 3, zoom: 1 }, { pixelRatio: 2, zoom: 1.25 }])("stitches every document row and clips the overlap at density $pixelRatio and zoom $zoom", async ({ pixelRatio, zoom }) => {
     const { cdp, send, restore, captureViewport } = tiledSession(pixelRatio, zoom);
     const result = await captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport);
     expect(result).toMatchObject({ width: WIDTH, height: CONTENT_HEIGHT, originalHeight: CONTENT_HEIGHT, truncated: false, captureMethod: "scroll-and-stitch" });
@@ -88,6 +88,71 @@ describe("browser capture tiles", () => {
     expect(send.mock.calls.filter(([method]) => method === "Page.captureScreenshot")).toEqual(Array.from({ length: 3 }, () => [
       "Page.captureScreenshot", { format: "png", captureBeyondViewport: false, fromSurface: true },
     ]));
+  });
+
+  it.each([[2, 2, 128], [3, 4, 255], [2.5, 3, 191]])("samples a one-device-pixel line at %sx without blurring adjacent rows", async (scale, line, expected) => {
+    const nativeWidth = WIDTH * scale;
+    const nativeHeight = VIEWPORT_HEIGHT * scale;
+    const pixels = Buffer.alloc(nativeWidth * nativeHeight * 3);
+    pixels.fill(255, line * nativeWidth * 3, (line + 1) * nativeWidth * 3);
+    const png = await sharp(pixels, { raw: { width: nativeWidth, height: nativeHeight, channels: 3 } }).png().toBuffer();
+    const { cdp, captureViewport } = tiledSession(scale, 1, async () => png);
+    const result = await captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport);
+    expect(result).toMatchObject({ width: WIDTH, height: CONTENT_HEIGHT });
+    const data = await sharp(Buffer.from(result.data, "base64")).raw().toBuffer();
+    expect(Array.from({ length: CONTENT_HEIGHT }, (_, row) => data[row * WIDTH * 4])).toEqual([
+      0, expected, 0, 0, 0, expected, 0, 0, 0, 0,
+    ]);
+  });
+
+  it("retains the embedded wide-gamut profile and pixel values", async () => {
+    const tagged = await sharp({ create: { width: 1, height: 1, channels: 3, background: "white" } })
+      .withIccProfile("p3").png().toBuffer();
+    const profileStart = tagged.indexOf("iCCP") - 4;
+    const profile = tagged.subarray(profileStart, profileStart + 12 + tagged.readUInt32BE(profileStart));
+    const color = [230, 102, 26];
+    const width = WIDTH * 2.5, height = VIEWPORT_HEIGHT * 2.5;
+    const png = await sharp(Buffer.alloc(width * height * 3).fill(Buffer.from(color)), {
+      raw: { width, height, channels: 3 },
+    }).png().toBuffer();
+    const data = Buffer.concat([png.subarray(0, 33), profile, png.subarray(33)]);
+    const { cdp, captureViewport } = tiledSession(2.5, 1, async () => data);
+    const result = await captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport);
+    const output = Buffer.from(result.data, "base64");
+    expect((await sharp(output).metadata()).icc).toEqual((await sharp(data).metadata()).icc);
+    const actual = await sharp(output, { ignoreIcc: true }).raw().toBuffer();
+    expect(actual).toEqual(Buffer.alloc(WIDTH * CONTENT_HEIGHT * 4).fill(Buffer.from([...color, 255])));
+  });
+
+  it("rejects a change in the tile color profile instead of mixing encoded gamuts", async () => {
+    const input = { create: { width: WIDTH, height: VIEWPORT_HEIGHT, channels: 3 as const, background: "white" } };
+    const plain = await sharp(input).png().toBuffer();
+    const tagged = await sharp(input).withIccProfile("p3").png().toBuffer();
+    const { cdp, captureViewport } = tiledSession(1, 1, async (pageY) => pageY === 0 ? tagged : plain);
+    await expect(captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport))
+      .rejects.toMatchObject({ code: "screenshot-unavailable" });
+  });
+
+  it("filters translucent edge pixels with their coverage", async () => {
+    const width = WIDTH * 2, height = VIEWPORT_HEIGHT * 2;
+    const pixels = Buffer.alloc(width * height * 4).fill(Buffer.from([0, 0, 255, 0]));
+    pixels.fill(Buffer.from([255, 0, 0, 255]), width * 4, width * 8);
+    const png = await sharp(pixels, { raw: { width, height, channels: 4 } }).png().toBuffer();
+    const { cdp, captureViewport } = tiledSession(2, 1, async () => png);
+    const result = await captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport);
+    const output = await sharp(Buffer.from(result.data, "base64")).raw().toBuffer();
+    expect([...output.subarray(0, 4)]).toEqual([255, 0, 0, 128]);
+  });
+
+  it("clamps edge samples when the native viewport is smaller than the CSS output", async () => {
+    const pixels = Buffer.concat([Buffer.alloc(9), Buffer.alloc(9, 128), Buffer.alloc(9, 255)]);
+    const png = await sharp(pixels, { raw: { width: 3, height: 3, channels: 3 } }).png().toBuffer();
+    const { cdp, captureViewport } = tiledSession(0.75, 1, async () => png);
+    const result = await captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport);
+    const output = await sharp(Buffer.from(result.data, "base64")).raw().toBuffer();
+    expect(Array.from({ length: CONTENT_HEIGHT }, (_, row) => output[row * WIDTH * 4])).toEqual([
+      0, 80, 176, 255, 0, 80, 176, 255, 176, 255,
+    ]);
   });
 
   it("uses a fixed isolated-world function with only coordinate values", () => {
