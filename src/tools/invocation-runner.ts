@@ -2701,6 +2701,7 @@ async function runToolInvocationAttempt(
       humanApproved: authorization.humanApproved,
       approvedPolicyEpoch: authorization.approvedPolicyEpoch,
       permissionRecheckResult: authorization.permissionRecheckResult,
+      checkCurrentPermission: authorization.checkCurrentPermission,
       replayRootBinding: opts.replayRootBinding,
       abortSignal,
       hostShellExecutionPermitBinding,

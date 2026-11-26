@@ -163,6 +163,7 @@ export interface AuthorizedInvocation {
   humanApproved: boolean;
   approvedPolicyEpoch?: string;
   permissionRecheckResult?: PermissionCheckResult;
+  checkCurrentPermission?: () => PermissionCheckResult;
   checkCurrentHostTerminalPermission?: () => PermissionCheckResult;
   permissionResult: PermissionCheckResult | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
@@ -1406,6 +1407,7 @@ export async function authorizeToolInvocation(
     humanApproved,
     approvedPolicyEpoch,
     permissionRecheckResult,
+    checkCurrentPermission,
     checkCurrentHostTerminalPermission,
     permissionResult,
     hostShellApprovalDecision,

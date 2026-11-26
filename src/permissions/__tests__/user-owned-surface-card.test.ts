@@ -150,7 +150,7 @@ describe("authenticated user-owned surface choices", () => {
 
   it("retains exact host command binding validation before rendering a selector", async () => {
     const f = subject("host-terminal", { toolName: "terminal_run", toolCategory: "shell", durableApprovalRecordAllowed: false,
-      args: { command: "printf displayed" }, hostTerminal: { tabId: "terminal:example", terminalSessionId: "host", sessionId: "conversation", shell: "zsh", physicalCwd: "/workspace", command: "printf other" } });
+      args: { command: "printf displayed" }, hostTerminal: { tabId: "terminal:example", terminalSessionId: "host", sessionId: "conversation", shell: "zsh", physicalCwd: "/workspace", cwdDevice: "1", cwdInode: "2", command: "printf other" } });
     await expect(f.pending).rejects.toThrow("host terminal binding");
     expect(f.card).toBeUndefined();
   });

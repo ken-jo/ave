@@ -12,6 +12,7 @@ import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/ter
 import { TerminalBlockTracker, registerTerminalBlockTracker, __resetTerminalBlocksForTest } from "../../main/terminal/terminal-blocks.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import * as terminalWriteAuthority from "../../permissions/host-terminal-write-authority.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { formatRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { ToolExecutor } from "../executor.js";
@@ -130,6 +131,46 @@ async function fixture(options: { outside?: boolean; mode?: "default" | "strict"
 }
 
 describe("host terminal late native approval", () => {
+  it.each(["deny", "allow"] as const)("rechecks a late answer across its own saved session waiver: %s", async current => {
+    const f = await fixture();
+    const denial = "Current permission refuses the terminal command.";
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "late-waiver-turn" }, async () => {
+      const pending = f.run();
+      await f.reached;
+      noteToolResultsReturnedToModel();
+      f.release();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1), CARD_WAIT);
+      const card = f.cards[0];
+      if (!card) throw new Error("No late waiver card");
+      expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
+      // Exercise the authenticated transition the late decision receives after a successful save.
+      const token = f.gate.beginApprovalRuleSave(card.id, f.manager.getPolicyEpoch());
+      f.manager.addFloorSessionGrant(SESSION_ID, { code: "sandbox-unavailable" });
+      f.gate.completeApprovalRuleSave(token, f.manager.getPolicyEpoch(), "session");
+      const transition = vi.spyOn(f.gate, "allowsPolicyTransition");
+      const issueWriteAuthority = vi.spyOn(terminalWriteAuthority, "issueHostTerminalWriteAuthority");
+      const check = f.manager.checkDetailed.bind(f.manager);
+      if (current === "deny") {
+        vi.spyOn(f.manager, "checkDetailed").mockImplementation((name, source, category, origin, context) =>
+          check(name, source, category, origin, {
+            ...context, admissionDenial: { code: "policy-changed", reason: denial },
+          }));
+      }
+      f.approve(card, true);
+      const [result] = await pending;
+      expect(transition).toHaveReturnedWith(true);
+      if (current === "deny") {
+        expect(result).toMatchObject({ is_error: true, content: denial });
+        expect(f.typed).toEqual([]);
+        expect(issueWriteAuthority).not.toHaveBeenCalled();
+      } else {
+        expect(result.is_error, result.content).toBeFalsy();
+        expect(f.typed).toEqual([COMMAND]);
+      }
+      expect(f.cards).toEqual([card]);
+    });
+  });
+
   it.each(["native", "non-native", "tainted"] as const)("rechecks a changed surface choice or taint before late native authority: %s", async kind => {
     const f = await fixture();
     await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "initial-turn" }, async () => {

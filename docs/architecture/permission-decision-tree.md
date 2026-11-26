@@ -241,7 +241,7 @@ auto = 쓰기 허용 + automatic review: every non-† ask goes to the reviewer 
 
 An approval for a host process binds the physical working directory when the card is issued. The launch must still match that directory. Remembered shell choices in any offered scope require the execution directory to remain current. A host-terminal session waiver likewise requires the command's sealed directory to match before and after the audit wait. A project save also requires the same physical project root and marker. When a required identity changes before the write, the current owner receives the stale-scope notice and the exact card settles denied. The command needs a new request.
 
-`personAnswerStands` owns pending-answer policy across tool, directory, hook and late approvals. A same-card policy transition can stand when its fresh decision still permits the answer. Held egress checks the current policy and destination again before using consent.
+`personAnswerStands` owns pending-answer policy across tool, directory, hook and late approvals. After an authenticated save on the same card, both the main and late tool approval paths recheck current permission. A current denial takes precedence over the answer, including after a session waiver. Held egress checks the current policy and destination again before using consent.
 
 ## Resolved conflicts with existing invariants (lead decision 2026-10-30, from INVENTORY review)
 1. A corrupt or unreadable policy store means the stage-1 deny. It fails closed, because unread deny rules must not be bypassed by the reviewer or the allow mode.

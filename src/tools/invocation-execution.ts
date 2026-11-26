@@ -206,6 +206,7 @@ export interface ExecutionStageContext {
   executionRouteGrant?: ExecutionGrant;
   finalizeExecutionRouteGrant?: () => Promise<ExecutionGrant | undefined>;
   hostTerminalRoute?: { recheck(): Promise<void>; decidedBackend: string; backendIdentity(): string | undefined };
+  checkCurrentPermission?: AuthorizedInvocation["checkCurrentPermission"];
   checkCurrentHostTerminalPermission?: AuthorizedInvocation["checkCurrentHostTerminalPermission"];
   onHostTerminalWriteRefused?: (releasedGeneration: number, policyEpoch: string) => void;
   preparedShellInvocation?: import("./prepared-shell-invocation.js").PreparedShellInvocation;
@@ -1168,11 +1169,26 @@ export async function executeAuthorizedToolInvocation(
     let decision = await services.approvalGate!.requestAndWait(liveRequest);
     abortSignal?.throwIfAborted();
     const currentEpoch = services.permissionManager?.getPolicyEpoch();
+    const policyChanged = "Permission policy changed before execution.";
+    const sameCardTransition: { denial?: string } = {};
     const answerOutdated = services.permissionManager !== undefined &&
-      !lateApprovalStands(true, { gate: services.approvalGate!, decision });
-    if (answerOutdated) {
-      permissionResult = { ...permissionResult, decision: "deny", reason: "Permission policy changed before execution." };
-      throw new Error(permissionResult.reason);
+      !lateApprovalStands(true, {
+        gate: services.approvalGate!,
+        decision,
+        onTransition: () => {
+          const current = context.checkCurrentPermission?.();
+          if (!current) {
+            sameCardTransition.denial = policyChanged;
+            return;
+          }
+          permissionResult = current;
+          if (current.decision === "deny") sameCardTransition.denial = current.reason;
+        },
+      });
+    const invalidationReason = answerOutdated ? policyChanged : sameCardTransition.denial;
+    if (invalidationReason !== undefined) {
+      permissionResult = { ...permissionResult, decision: "deny", reason: invalidationReason };
+      throw new Error(invalidationReason);
     }
     const surfaceResolution = services.permissionManager ? await resolveUserOwnedSurfaceApproval({
       manager: services.permissionManager, gate: services.approvalGate!, permission: permissionResult, decision, request: liveRequest, sessionId,

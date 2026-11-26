@@ -118,6 +118,7 @@ describe("host terminal decision lane", () => {
 
 const binding = (command = "printf ready"): HostTerminalApprovalBinding => ({
   tabId: "terminal:0000c0de-1", terminalSessionId: "host-incarnation", sessionId: "pane", shell: "zsh", physicalCwd: cwd, command,
+  cwdDevice: "1", cwdInode: "2",
 });
 
 function hostRequest(command = "printf ready", overrides: Partial<ApprovalRequestInput> = {}): ApprovalRequestInput {
