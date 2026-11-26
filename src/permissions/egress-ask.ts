@@ -81,7 +81,7 @@ const TERMINAL_EGRESS_ASK_TIMEOUT_MS = 120_000;
 // What the person answered. A deny carries why (their choice, a timeout, no surface).
 export type EgressApprovalAnswer =
   | { readonly allow: true; readonly scope: EgressGrantScope; readonly oneConnection?: true }
-  | { readonly allow: false; readonly reason: string; readonly humanDenied?: true;
+  | { readonly allow: false; readonly reason: string; readonly humanDenied?: true; readonly settledRefusal?: true;
       readonly recheckRefusal?: { readonly kind: "recheck-failed" }
         | { readonly kind: "denied"; readonly rule?: NetworkPermissionEvaluation["rule"] } };
 
@@ -219,7 +219,7 @@ function invocationRefusal({ owner, invocation }: Verified): Decision | undefine
 // A person's answer, before it becomes a grant: the scope chosen among those offered.
 type AskAnswer =
   | { readonly allow: true; readonly scope: EgressGrantScope; readonly scopes: readonly EgressGrantScope[]; readonly oneConnection?: true; readonly policyEpoch?: string; readonly approvalIdentity?: string }
-  | { readonly allow: false; readonly decision: Decision; readonly humanDenied?: true };
+  | { readonly allow: false; readonly decision: Decision; readonly settledRefusal?: true };
 
 // Whether `host:port` matches one allowlist entry, by ASRT's own `allowedDomains` matcher (`d` exactly, `*.d` strictly under `d`, `*` anything, an optional `:port` suffix), so a worker reaches exactly what the shared allowlist let it reach before the lists were split per extension.
 // Not the relay's RelayAllowEntry: that one requires a port and has no bare `*`, so one grammar for both would widen or narrow extension allowlists.
@@ -368,14 +368,16 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       } finally {
         clearTimeout(timer);
       }
-      if (timedOut && !answer.allow) answer = { allow: false, reason: EGRESS_DENY_REASONS.terminalTimeout };
+      if (timedOut && !answer.allow && !answer.settledRefusal && !answer.humanDenied) {
+        answer = { allow: false, reason: EGRESS_DENY_REASONS.terminalTimeout, settledRefusal: true };
+      }
     }
     if (!answer.allow) {
       const recheck = answer.recheckRefusal;
       const decision = recheck?.kind === "denied"
         ? networkDenial({ permission: { reason: answer.reason }, rule: recheck.rule })
         : deny(recheck?.kind === "recheck-failed" ? "policy" : "prompt", answer.reason);
-      return { allow: false, decision, ...(answer.humanDenied ? { humanDenied: true as const } : {}) };
+      return { allow: false, decision, ...(answer.humanDenied || answer.settledRefusal ? { settledRefusal: true as const } : {}) };
     }
     // A scope the card did not offer is the requester's bug, not a grant.
     if (!scopes.includes(answer.scope)) throw new Error(`egress grant: scope ${answer.scope} was not offered`);
@@ -576,7 +578,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
           if (owner.kind === "terminal" && !deps.shellAskEnabled()) return deny("policy", EGRESS_DENY_REASONS.askOff);
           // Shell availability is resolved by the common pipeline: automatic review runs before a human fallback denies.
           const answer = await ask(token, invocation.generation, owner, destination, network, strength, evaluation);
-          if (answer !== ASK_AGAIN && !answer.allow && answer.humanDenied) return answer.decision;
+          if (answer !== ASK_AGAIN && !answer.allow && answer.settledRefusal) return answer.decision;
           const afterAnswer = invocationRefusal(verified);
           if (afterAnswer) return afterAnswer;
           if (answer === ASK_AGAIN) return decide(host, port, context, verified);

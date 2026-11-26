@@ -614,17 +614,17 @@ export async function authorizeToolInvocation(
             (target) => target.canonicalPath,
           ),
           ...(approvalCacheKey === undefined ? {} : { approvalCacheKey }),
-          hasSettledHumanDenial: () => services.invocationTerminal.hasSettledRationaleDenial,
+          hasSettledHumanDenial: () => services.invocationTerminal.settledRationaleRefusal !== undefined,
           recordTerminalDenial: async (reason, stopped) => {
-            if (abortSignal?.aborted || context.terminalClaimed?.() ||
-                (stopped && services.invocationTerminal.hasSettledRationaleDenial)) return;
+            const settled = services.invocationTerminal.settledRationaleRefusal;
+            if (context.terminalClaimed?.() || (settled === undefined && abortSignal?.aborted)) return;
             // A card stopped by the quit is the host's refusal; any other stop is the user's, as on the ordinary path.
             // Either stop is a cancellation; a card that ends without a stop is refused, a denial.
-            const quit = stopped === true && toolInvocationShutdownStarted();
+            const quit = settled === undefined && stopped === true && toolInvocationShutdownStarted();
             await (stopped === true ? context.auditCancelledToolCall : auditCurrentToolCall)(sessionId, toolUse.name, source, trust, finalInput, reason, true,
-              startTime, quit ? hostShutdownDenial() : refusal(reason, RULE_PROVENANCE), Infinity,
+              startTime, settled ?? (quit ? hostShutdownDenial() : refusal(reason, RULE_PROVENANCE)), Infinity,
               invocationPermissionContext, invocationCategory, executionCwd, undefined,
-              stopped === true ? quit ? "host-shutdown" : "user-abort" : undefined);
+              stopped === true && settled === undefined ? quit ? "host-shutdown" : "user-abort" : undefined);
           },
           requestHumanApproval: context.directoryAuthorization?.requestHumanApproval ?? (async ({ requestId, abortSignal: cardAbortSignal }) => {
             let approvalDecision: import("../permissions/approval-gate.js").ApprovalDecision | undefined;

@@ -187,7 +187,7 @@ function manualGate() {
   }, nativeWebContents as never);
   const approve = (card: ApprovalRequest) => answer(card, "allow-once");
   const deny = (card: ApprovalRequest) => answer(card, "deny-once");
-  return { gate, cards, approve, deny, parkedAt };
+  return { gate, cards, approve, deny, parkedAt, nativeWebContents };
 }
 
 function heldHandlerFinalizers(toolUseId: string, count: number) {
@@ -302,14 +302,14 @@ describe("executor automated approval pause", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it.each(["caller", "quit", "project-scope-changed", "scope-before-stop", "stop-before-scope"] as const)("cancels a pending late native card without entering the handler (%s)", async (by) => {
+  it.each(["caller", "quit", "project-scope-changed", "scope-before-stop", "stop-before-scope", "timeout-before-stop", "refusal-before-quit"] as const)("cancels a pending late native card without entering the handler (%s)", async (by) => {
     const f = await subject();
     const controller = new AbortController();
     const execute = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();
     registry.register(makeWriteProbeTool(execute));
     const { hooks, reached, release } = heldPreToolUse();
-    const { gate, cards, approve } = manualGate();
+    const { gate, cards, approve, nativeWebContents } = manualGate();
     const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
     const auditLog = vi.spyOn(f.audit, "log");
     const pending = executor.executeAll([{ id: "cancel-late-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
@@ -318,9 +318,17 @@ describe("executor automated approval pause", () => {
     });
     await reached;
     await f.pause();
+    if (by === "timeout-before-stop") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     release();
     await vi.waitFor(() => expect(cards).toHaveLength(1));
     expect(gate.pendingCount).toBe(1);
+    if (by === "timeout-before-stop") vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs);
+    if (by === "refusal-before-quit") {
+      const [card] = cards;
+      expect(gate.resolveFromDesktopRenderer(card.id, {
+        requestId: card.id, choice: "allow-once", nonce: "invalid", hmac: card.hmac,
+      }, nativeWebContents as never)?.choice).toBe("deny-once");
+    }
     const cancelScope = () => gate.cancelPendingRequest(cards[0].id, SESSION_ID, "project-scope-changed");
     const scopeSettles = by === "project-scope-changed" || by === "scope-before-stop";
     if (scopeSettles) {
@@ -328,7 +336,7 @@ describe("executor automated approval pause", () => {
       expect(controller.signal.aborted).toBe(false);
     }
     if (by !== "project-scope-changed") {
-      controller.abort(by === "quit" ? new HostExitAbortError() : new Error("caller cancelled pending late card"));
+      controller.abort(by === "quit" || by === "refusal-before-quit" ? new HostExitAbortError() : new Error("caller cancelled pending late card"));
     }
     if (by === "stop-before-scope") expect(cancelScope()).toBe(false);
     let settled = false;
@@ -343,6 +351,11 @@ describe("executor automated approval pause", () => {
     const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
     if (by === "quit") {
       expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "cancel-late-card", denyReasons: [{ reason: "host-shutdown" }], trustOrigin: "unknown" });
+    } else if (by === "timeout-before-stop" || by === "refusal-before-quit") {
+      const reason = by === "timeout-before-stop" ? "approval request expired" : "approval rejected by host";
+      expect.soft(result.content).toBe(by === "timeout-before-stop" ? t("be_executor.approvalExpired", { name: "write_probe" })
+        : t("be_executor.approvalRejectedByHost", { name: "write_probe", reason: "approval integrity check failed" }));
+      expect(rows.at(-1)).toMatchObject({ decision: "deny", terminalKind: "denied", trustOrigin: "unknown", denyReasons: [{ reason, source: "approval-gate" }] });
     } else if (scopeSettles) {
       const detail = "project-scope-changed";
       expect.soft(result.content).toContain(detail);

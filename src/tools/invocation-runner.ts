@@ -615,10 +615,10 @@ async function runToolInvocationAttempt(
         ?? (cause === "host-shutdown" ? hostShutdownDenial()
           : cause === "user-abort" ? userAbortRefusal()
           : refusal(detail, HOST_PROVENANCE));
-      const kind: TerminalDenyKind = selectedRefusal === undefined && cause !== "error" ? "cancelled" : "denied";
+      const kind: TerminalDenyKind = selectedRefusal?.reasonCode === "approval-cancelled" || (selectedRefusal === undefined && cause !== "error") ? "cancelled" : "denied";
       const hostSource = resolvedTool?.source ?? "builtin";
       return services.auditWriter.auditToolCall(sessionId, toolUse.name, hostSource, trustFromSource(hostSource), toolUse.input, detail, true, startTime,
-        denial, Infinity, permissionContext, resolvedTool?.category ?? "meta", executionCwd, undefined, cause, undefined, currentAuditMetadata(toolUse.input), { row, kind });
+        denial, Infinity, permissionContext, resolvedTool?.category ?? "meta", executionCwd, undefined, selectedRefusal === undefined ? cause : undefined, undefined, currentAuditMetadata(toolUse.input), { row, kind });
     }, denialLifecycle);
     const tool = services.toolRegistry.findByName(toolUse.name);
     resolvedTool = tool;
@@ -1914,10 +1914,6 @@ async function runToolInvocationAttempt(
           }
           const hostFailure = surfaceRefused ? { content: dirLayerResult.reason, permission: dirLayerResult }
             : approvalFailureOutcome(decision, toolUse.name, dirLayerResult);
-          // A settled desk refusal remains the answer even if authority is later lost.
-          if (hostFailure && !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) {
-            return { allowed: false as const, result: await denyDirectoryGrant() };
-          }
           const msg = hostFailure?.content ?? (
             t("be_executor.dirPolicyUserDenied", { name: toolUse.name, filePath: outOfAllowedTarget.filePath })
             + buildPolicyDenialGuidance({

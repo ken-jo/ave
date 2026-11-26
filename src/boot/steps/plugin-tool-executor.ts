@@ -1,6 +1,8 @@
 import { admitToolInvocation, admitToolInvocationWhileAuditOpen, appendToolInvocationAudit, toolInvocationsSealed } from "../../tools/invocation-ledger.js";
 import { HostExitAbortError, isHostExitAbort } from "../../shared/host-exit-abort.js";
-import { admitApprovalAnswer, approvalFailureKind, hostApprovalDenialReason, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
+import { maskSensitiveData } from "../../shared/dlp.js";
+import { abortSupersedesApprovalDecision } from "../../tools/pipeline/approval-outcome.js";
+import { admitApprovalAnswer, approvalFailureKind, hostApprovalDenialReason, isHostApprovalCancelledDecision, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
 /** Route plugin calls through the executor; only trusted panel calls may use the app-only runtime bypass. */
 import { randomUUID } from "node:crypto";
 import { createHookRunner } from "../conversation.js";
@@ -708,10 +710,11 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
             answer = admitApprovalAnswer(decision, { requestId: card.id, toolName: card.toolName, toolUseId: undefined });
             if (approvalFailureKind(decision) === "denied") {
               denialReason = "plugin operation grant denied by user";
-            } else if (isHostExitAbort(admission.signal.reason)) {
+            } else if (isHostExitAbort(admission.signal.reason) && abortSupersedesApprovalDecision(admission.signal, decision)) {
               denialReason = "host-shutdown";
             } else if (answer?.choice !== "allow-once") {
-              denialReason = hostApprovalDenialReason(decision) ?? "approval rejected by host";
+              denialReason = isHostApprovalCancelledDecision(decision) && decision.rememberPattern !== undefined
+                ? maskSensitiveData(decision.rememberPattern).masked : hostApprovalDenialReason(decision) ?? "approval rejected by host";
             }
           } catch {
             denialReason = "approval rejected by host";

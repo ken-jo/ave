@@ -95,7 +95,7 @@ describe("egress-host approval requests", () => {
       requestId: card.id, choice: "allow-once", egressScope: "always", nonce: card.nonce, hmac: card.hmac,
     }, wc as never);
     expect(refreshCurrent).toHaveBeenCalledOnce();
-    await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
+    await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected, settledRefusal: true });
   });
 
   it("sends the card with the destination and the offered scopes, as the gate's egress-host card", async () => {
@@ -186,7 +186,7 @@ describe("egress-host approval requests", () => {
         hmac: card.hmac,
       };
       gate.resolveFromDesktopRenderer(card.id, decision, wc as never);
-      await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
+      await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected, settledRefusal: true });
       const rows = auditLogger.log.mock.calls.map(([row]) => String((row as { output?: string }).output ?? ""));
       expect(rows.some((row) => row.startsWith(`[approval:egress-scope-rejected] ${card.id}`))).toBe(true);
     }
@@ -335,7 +335,7 @@ describe("a workspace terminal tab's egress ask", () => {
   it("is denied when no window owns the tab (never drawn in another window)", async () => {
     const { gate, sessionSurface } = makeRoutedGate(null);
     await expect(createApprovalGateEgressRequester(gate)(terminalRequest())).resolves.toEqual({
-      allow: false, reason: "Nobody can approve this request; do not retry.",
+      allow: false, reason: "Nobody can approve this request; do not retry.", settledRefusal: true,
     });
     expect(sentApprovalCards(sessionSurface)).toEqual([]);
   });
@@ -406,7 +406,7 @@ describe("shell egress uses the common decision pipeline", () => {
     const check = vi.spyOn(permissionManager, "checkDetailed");
     const review = vi.spyOn(permissionManager, "dispatchReviewer");
     const gate = { requestAndWait: vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "deny-once" as const })) };
-    await expect(createRequester(gate, permissionManager)(terminalRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
+    await expect(createRequester(gate, permissionManager)(terminalRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected, settledRefusal: true });
     expect(check).not.toHaveBeenCalled();
     expect(review).not.toHaveBeenCalled();
     expect(gate.requestAndWait).toHaveBeenCalledOnce();
@@ -421,7 +421,7 @@ describe("shell egress uses the common decision pipeline", () => {
 describe("shell egress human fallback termination", () => {
   it("returns no-retry text when an owner-away wait ends without an approver", async () => {
     const gate = { requestAndWait: vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "deny-once" as const, rememberPattern: "Nobody can approve this request; do not retry." })) };
-    await expect(createRequester(gate, permissionManager)(egressRequest({ ownerUnattended: true }))).resolves.toEqual({ allow: false, reason: "Nobody can approve this request; do not retry." });
+    await expect(createRequester(gate, permissionManager)(egressRequest({ ownerUnattended: true }))).resolves.toEqual({ allow: false, reason: "Nobody can approve this request; do not retry.", settledRefusal: true });
     expect(gate.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ ownerUnattended: true }));
   });
 
@@ -431,7 +431,7 @@ describe("shell egress human fallback termination", () => {
       permissionManager.setRules([{ pattern: "Network(github.com:443)", action: "deny" }]);
       return { requestId: request.id, choice: "deny-once" as const };
     }) };
-    await expect(createRequester(gate, permissionManager)(egressRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
+    await expect(createRequester(gate, permissionManager)(egressRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected, settledRefusal: true });
     expect(permissionManager.getPolicyEpoch()).not.toBe(before);
   });
 
@@ -459,7 +459,7 @@ describe("shell egress human fallback termination", () => {
     const answer = createRequester(gate, permissionManager)(egressRequest());
     await cardSent(wc);
     permissionManager.setMode("default");
-    await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.timeout });
+    await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.timeout, settledRefusal: true });
   });
 
   // The one rule for answered cards (pending-answer-policy.ts): a sibling stage's "Allow for this run" leaves the answer standing.

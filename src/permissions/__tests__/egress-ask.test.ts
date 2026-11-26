@@ -27,7 +27,8 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js";
 import { _resetAveHomePrivacyForTest, ensureAveHomePrivate, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
-import { createShellNetworkPermissionEvaluator } from "../egress-approval.js";
+import { createApprovalGateEgressRequester, createShellNetworkPermissionEvaluator, EGRESS_APPROVAL_DENY_REASONS } from "../egress-approval.js";
+import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../approval-gate.js";
 import { PermissionManager } from "../permission-manager.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import * as projectRuleFiles from "../rules/project-rule-files.js";
@@ -880,6 +881,42 @@ describe("egress ask callback — shell calls", () => {
       .toEqual({ allow: false, reason: "denied by the user" });
     expect(notes.mock.calls.at(-1)).toEqual([SHELL_TOKEN, "github.com", 443]);
     expect(observations.mock.calls.at(-1)?.[0]).toBe(SHELL_TOKEN);
+  });
+
+  it.each(["refusal-first", "stop-first"] as const)("keeps the first shell egress refusal (%s)", async (order) => {
+    const controller = new AbortController();
+    signals.set(SHELL_TOKEN, controller.signal);
+    const opened = deferred<ApprovalRequest>();
+    const surface = { isDestroyed: () => false, send(channel: string, card: ApprovalRequest) {
+      if (channel === IPC_APPROVAL_REQUEST) opened.resolve(card);
+    } };
+    const gate = new ApprovalGate(surface as never);
+    const persist = vi.spyOn(grants, "grant");
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    manager.setMode("strict");
+    answer = createApprovalGateEgressRequester(gate, manager);
+    try {
+      const pending = callback()({ host: "github.com", port: 443 }, listener(SHELL_TOKEN));
+      const card = await Promise.race([opened.promise, pending.then((result) => {
+        throw new Error(`Egress did not open an approval card: ${JSON.stringify(result)}`);
+      })]);
+      if (order === "stop-first") controller.abort();
+      const refused = gate.resolveFromDesktopRenderer(card.id, {
+        requestId: card.id, choice: "allow-once", egressScope: "once", nonce: "invalid", hmac: card.hmac,
+      }, surface as never);
+      if (order === "refusal-first") {
+        expect(refused?.choice).toBe("deny-once");
+        controller.abort();
+        await expect(pending).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
+        expect(audit.at(-1)).toMatchObject({ invocation: { kind: "shell" }, decision: "deny", reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
+      } else {
+        expect(refused).toBeNull();
+        await expect(pending).resolves.toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+      }
+      expect(persist).not.toHaveBeenCalled();
+    } finally {
+      gate.disposeAll();
+    }
   });
 
   it.each(["remembered grant", "allow rule", "held answer", "prompt answer"] as const)("gives a %s allow only to an invocation that is still live", async (path) => {

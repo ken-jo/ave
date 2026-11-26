@@ -4,7 +4,6 @@ import {
   answeredApprovalProvenance,
   HOST_PROVENANCE,
   hostApprovalDenialReason,
-  isAnsweredApprovalDenial,
   isHostApprovalCancelledDecision,
   isHostApprovalTimeoutDecision,
   isHostApprovalRejectedDecision,
@@ -50,14 +49,14 @@ export function isSettledRefusal(decision: ApprovalDecision): boolean {
   return !decision.choice.startsWith("allow") || isHostApprovalRejectedDecision(decision);
 }
 
-/** Keep a person's denial or a distinct host cancellation that already settled the card. */
+/** A bare cancellation from the gate delegates attribution to the invocation signal. */
 export function abortSupersedesApprovalDecision(
   abortSignal: AbortSignal | undefined,
   decision: ApprovalDecision | undefined,
 ): boolean {
   if (abortSignal?.aborted !== true) return false;
-  return decision === undefined || (!isAnsweredApprovalDenial(decision)
-    && !(isHostApprovalCancelledDecision(decision) && decision.rememberPattern !== undefined));
+  return decision === undefined || !isSettledRefusal(decision)
+    || (isHostApprovalCancelledDecision(decision) && decision.rememberPattern === undefined);
 }
 
 export class BrowserApprovalError extends Error {

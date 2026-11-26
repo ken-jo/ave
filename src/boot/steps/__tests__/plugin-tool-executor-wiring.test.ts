@@ -623,7 +623,7 @@ describe("setupPluginToolExecutor approval lane by effective chain origin", () =
   });
 });
 
-it("writes a host-shutdown denial for a parked plugin operation grant before audit close", async () => {
+it.each(["host-shutdown", "scope-before-quit", "refusal-before-quit"] as const)("writes a %s denial for a parked plugin operation grant before audit close", async (settlement) => {
   // Each sealing case simulates its own process-wide ledger.
   vi.resetModules();
   const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");
@@ -632,11 +632,11 @@ it("writes a host-shutdown denial for a parked plugin operation grant before aud
   const { ApprovalGate } = await import("../../../permissions/approval-gate.js");
   const ctx = makeContext();
   const stop = () => {};
-  const card = deferred<void>();
+  const card = deferred<ApprovalRequest>();
   const order: unknown[] = [];
   const surface = makeMockWebContents();
-  surface.send.mockImplementation((channel: string) => {
-    if (channel === IPC_APPROVAL_REQUEST) card.resolve();
+  surface.send.mockImplementation((channel: string, request: ApprovalRequest) => {
+    if (channel === IPC_APPROVAL_REQUEST) card.resolve(request);
   });
   const approvalGate = new ApprovalGate(surface as never);
   const generationLease = {
@@ -682,21 +682,29 @@ it("writes a host-shutdown denial for a parked plugin operation grant before aud
     pluginId, toolName: "update_record", input: {}, appSessionId: "grant-window",
   });
   const result = Promise.allSettled([grant]);
-  await Promise.race([
+  const request = await Promise.race([
     card.promise,
     result.then(([outcome]) => {
       if (outcome.status === "rejected") throw outcome.reason;
       throw new Error("Grant issued before the approval card opened");
     }),
   ]);
+  if (settlement === "scope-before-quit") expect(approvalGate.cancelPendingRequest(request.id, undefined, "project-scope-changed")).toBe(true);
+  if (settlement === "refusal-before-quit") {
+    expect(approvalGate.resolveFromDesktopRenderer(request.id, {
+      requestId: request.id, choice: "allow-once", nonce: "invalid", hmac: request.hmac,
+    }, surface as never)?.choice).toBe("deny-once");
+  }
+  const reason = settlement === "scope-before-quit" ? "approval cancelled: project-scope-changed"
+    : settlement === "refusal-before-quit" ? "approval rejected by host" : "host-shutdown";
   await expect(assembleAppServices(ctx as ReadyBootContext).shutdown?.()).resolves.toBeUndefined();
   expect(await result).toMatchObject([{
-    status: "rejected", reason: expect.objectContaining({ message: expect.stringContaining("operation grant denied") }),
+    status: "rejected", reason: expect.objectContaining({ message: expect.stringContaining(`operation grant denied (${reason})`) }),
   }]);
   expect(order).toEqual([
     expect.objectContaining({
       decision: "deny",
-      denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-grant" }],
+      denyReasons: [{ reason, source: "plugin-operation-grant" }],
       // No person answered the card the quit cancelled.
       trustOrigin: "unknown",
       pluginOperation: { pluginId, operation: "update", outcome: "denied" },

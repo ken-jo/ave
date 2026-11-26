@@ -10,6 +10,7 @@ import {
   type DecisionProvenance,
   type ApprovalGate,
 } from "../../permissions/approval-gate.js";
+import { approvalFailureOutcome } from "./approval-outcome.js";
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -173,7 +174,7 @@ export function deriveConservativeRationaleActionSummary(input: {
   });
 }
 
-type RationaleApprovalGate = Pick<ApprovalGate, "cancelPendingRequest">;
+type RationaleApprovalGate = Pick<ApprovalGate, "cancelPendingRequest"> & Partial<Pick<ApprovalGate, "observePendingApprovals">>;
 
 export interface RationaleHostCoordinatorOptions {
   readonly onReviewerChoiceResolved?: (sessionId: string, requestId: string, decision: "allow" | "deny") => void;
@@ -1035,8 +1036,9 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
     const abortWait = new Promise<ApprovalAbortOutcome>((resolve) => {
       settleAbort = resolve;
     });
+    let settledRefusal: Promise<RationaleApprovalResolution | null> | undefined;
     const abortPending = (): void => {
-      if (abortState.current !== null) return;
+      if (abortState.current !== null || settledRefusal !== undefined) return;
       let failure: ApprovalAbortOutcome["failure"] = null;
       try {
         this.abort(ticketId, Math.max(requestedAt, this.#now()));
@@ -1063,6 +1065,21 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       return null;
     }
 
+    let settleRefusal!: (resolution: Promise<RationaleApprovalResolution | null>) => void;
+    const refusalWait = new Promise<RationaleApprovalResolution | null>((resolve) => { settleRefusal = resolve; });
+    const stopObserving = this.#approvalGate.observePendingApprovals?.({
+      onPending: () => {},
+      onSettled: (requestId, answer) => {
+        if (requestId !== ticketId || input.abortSignal?.aborted || this.#contexts.get(ticketId) !== context) return;
+        admitApprovalAnswer(answer, { requestId: ticketId, toolName: context.control.sealedAction.toolName,
+          toolUseId: context.control.sealedAction.toolUseId });
+        const outcome = approvalFailureKind(answer);
+        if (outcome !== undefined) {
+          settledRefusal = this.#finishApprovalRefusal(context, answer, outcome, input.now ?? this.#now());
+          settleRefusal(settledRefusal);
+        }
+      },
+    });
     let approvalResult: Promise<ApprovalDecision>;
     try {
       approvalResult = Promise.resolve(requestHumanApproval({ requestId: ticketId, ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}) }));
@@ -1071,10 +1088,11 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       approvalResult = Promise.reject(error);
     }
     const approvalWait = approvalResult.then((decision) => ({ kind: "decision" as const, decision }));
-    let waitOutcome: Awaited<typeof approvalWait> | ApprovalAbortOutcome;
+    let waitOutcome: Awaited<typeof approvalWait> | ApprovalAbortOutcome | { kind: "refusal"; resolution: RationaleApprovalResolution | null };
     try {
-      waitOutcome = await Promise.race([approvalWait, abortWait]);
+      waitOutcome = await Promise.race([approvalWait, abortWait, refusalWait.then((resolution) => ({ kind: "refusal" as const, resolution }))]);
     } catch (error) {
+      if (settledRefusal !== undefined) return await settledRefusal;
       if (input.abortSignal?.aborted || abortState.current !== null) {
         if (abortState.current?.failure) throw abortState.current.failure.error;
         return null;
@@ -1094,7 +1112,10 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       return { outcome: "denied", reason: error.reason, ticket: denied.ticket, projection };
     } finally {
       input.abortSignal?.removeEventListener("abort", abortPending);
+      stopObserving?.();
     }
+    if (waitOutcome.kind === "refusal") return waitOutcome.resolution;
+    if (settledRefusal !== undefined) return await settledRefusal;
     const observedAbort = abortState.current;
     if (observedAbort !== null) {
       if (observedAbort.failure !== null) throw observedAbort.failure.error;
@@ -1182,10 +1203,19 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       };
     }
 
+    return this.#finishApprovalRefusal(context, decision, approvalOutcome ?? "rejected", decidedAt);
+  }
+
+  async #finishApprovalRefusal(
+    context: TicketContext, decision: ApprovalDecision | null, approvalOutcome: ApprovalFailureKind, decidedAt: number,
+  ): Promise<RationaleApprovalResolution | null> {
+    const expectation = createRationaleTicketCasExpectation(context.snapshot);
     const denied = approvalOutcome === "denied";
     const timedOut = approvalOutcome === "expired" || approvalOutcome === "unavailable";
     const cancelled = approvalOutcome === "cancelled";
     const hostCancelled = decision !== null && cancelled;
+    const cancellationDetail = hostCancelled && decision.rememberPattern !== undefined
+      ? approvalFailureOutcome(decision, context.control.sealedAction.toolName) : null;
     const hostReason = approvalOutcome === "unavailable" ? NO_APPROVER_MESSAGE : "approval rejected by host";
     const terminal = timedOut
       ? this.#ticketStore.modalTimeout(expectation, decidedAt)
@@ -1203,16 +1233,18 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       now: decidedAt,
     });
     this.#commitProjectionAudit(context.sessionId, projection, decidedAt);
-    await this.#recordTerminalDenial(context,
+    const recording = this.#recordTerminalDenial(context,
       context.control.eligibilityContext.headless || approvalOutcome === "unavailable"
         ? NO_APPROVER_MESSAGE
         : timedOut ? "Permission approval timed out; the action was not executed."
-          : denied ? "The user denied this permission request." : cancelled ? RATIONALE_CARD_STOPPED : hostReason,
+          : denied ? "The user denied this permission request." : cancelled ? cancellationDetail?.permission.reason ?? RATIONALE_CARD_STOPPED : hostReason,
       cancelled);
-    this.#deleteContext(ticketId);
+    this.#deleteContext(terminal.ticket.ticketId);
+    await recording;
     return {
       outcome: timedOut ? "timed-out" : cancelled ? "cancelled" : "denied",
-      approvalOutcome: approvalOutcome ?? "rejected",
+      approvalOutcome,
+      ...(cancellationDetail ? { reason: cancellationDetail.content } : {}),
       ...(hostReason === NO_APPROVER_MESSAGE || (!timedOut && !denied && !cancelled) ? { reason: hostReason } : {}),
       ticket: terminal.ticket,
       projection,

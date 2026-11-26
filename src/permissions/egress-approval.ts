@@ -168,7 +168,7 @@ export function createApprovalGateEgressRequester(
     const outcome = approvalFailureKind(decision);
     if (outcome === "unavailable") {
       if (!terminal) request.onNoApprover?.();
-      return { allow: false, reason: NO_APPROVER_MESSAGE };
+      return { allow: false, reason: NO_APPROVER_MESSAGE, settledRefusal: true };
     }
     if (answer?.choice === "allow-once" && decision.egressScope !== undefined && request.scopes.includes(decision.egressScope)) {
       if (forced && decision.egressScope !== "once") return { allow: false, reason: "A forced network approval is valid for one connection only." };
@@ -189,9 +189,12 @@ export function createApprovalGateEgressRequester(
       }
       return { allow: true, scope: decision.egressScope, ...(forced ? { oneConnection: true as const } : {}) };
     }
-    if (outcome === "expired") return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.timeout };
-    if (outcome === "cancelled") return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.cancelled };
+    if (outcome === "expired") return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.timeout, settledRefusal: true };
+    if (outcome === "cancelled") {
+      const interrupted = request.abortSignal?.aborted && decision.rememberPattern === undefined;
+      return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.cancelled, ...(interrupted ? {} : { settledRefusal: true }) };
+    }
     if (outcome === "denied") return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied, humanDenied: true };
-    return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected };
+    return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected, ...(outcome === "rejected" ? { settledRefusal: true } : {}) };
   };
 }

@@ -1274,6 +1274,7 @@ export async function executeAuthorizedToolInvocation(
     const failure = surfaceResolution.provenance === undefined ? approvalFailureOutcome(decision, toolUse.name) : null;
     if (failure) {
       permissionResult = failure.permission;
+      if (isHostApprovalCancelledDecision(decision)) approvalCancellationContent = failure.content;
       throw new Error(failure.content);
     }
     humanApproved = surfaceResolution.answer;
@@ -1516,7 +1517,7 @@ export async function executeAuthorizedToolInvocation(
     ) {
       interruptionReason = outcome.reason;
     }
-    const hostShutdown = outcome.reason === "user-abort" && isHostExitAbort(abortSignal?.reason);
+    const hostShutdown = outcome.reason === "user-abort" && approvalCancellationContent === undefined && isHostExitAbort(abortSignal?.reason);
     if (hostShutdown && terminationReason !== "indeterminate") {
       terminationReason = "host-shutdown";
     } else if (terminationReason !== "indeterminate") {
