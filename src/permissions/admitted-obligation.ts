@@ -1,5 +1,5 @@
 import { sep, win32 } from "node:path";
-import { expandWindowsEnvRefs, stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { expandWindowsEnvRefs, stripExtendedPathPrefix } from "./sandbox-path-spelling.js";
 import { createLogger } from "../lib/logger.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { admitLocalPath, admitLocalRoute, decisionMemo, type LocalFilesystemFacts, localFs, withLocalityDecision } from "../shared/local-path-io.js";
