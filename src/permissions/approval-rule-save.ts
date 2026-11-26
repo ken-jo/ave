@@ -11,7 +11,7 @@ import { HOME_FOLDER_REFUSED } from "../shared/permissions-events.js";
 
 import { assertApprovalPersistenceCurrent, refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 import { runGrantKeyOfSession } from "./run-grants.js";
-import { ProjectRuleRootChangedError } from "./rules/project-rule-files.js";
+import { ProjectRuleScopeChangedError } from "./rules/project-rule-files.js";
 
 type RequestSnapshot = NonNullable<ReturnType<ApprovalGate["getRequestSnapshot"]>>;
 
@@ -212,7 +212,7 @@ export async function saveApprovalCardRule(
       await permissionManager.addRulePersist({ pattern, action }, { kind: "user" }, ...(authority ? [authority] as const : []));
     }
   } catch (error) {
-    if (error instanceof ProjectRuleRootChangedError) return fail("project-scope-changed");
+    if (error instanceof ProjectRuleScopeChangedError) return fail("project-scope-changed");
     // The home's rule stores refuse writes while boot refuses the folder: the card answers once instead and says why.
     if (error instanceof AveHomeConfigurationRefusedWriteError) return fail(HOME_FOLDER_REFUSED, error.message);
     // A rule that validated but could not be stored (a refused allow prefix, a corrupt file, a lock or I/O) is reported as a failed save.

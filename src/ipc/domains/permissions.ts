@@ -6,7 +6,7 @@ import { isBrowserSiteChoice, isExtensionStartChoices } from "../../shared/permi
 import { ipcMain, session, type IpcMainInvokeEvent } from "electron";
 import { isRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
-import { matchesProjectRuleRootBinding, ProjectRuleRootChangedError } from "../../permissions/rules/project-rule-files.js";
+import { ProjectRuleScopeChangedError } from "../../permissions/rules/project-rule-files.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
 import { RunGrantError, runGrantKeyOfSession } from "../../permissions/run-grants.js";
 import { loadPolicy, savePolicy, validatePolicyPatch, PolicyWriteError } from "../../permissions/policy-store.js";
@@ -1219,14 +1219,11 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const authorityUnavailable = { ok: false, error: "no-such-request", message: "Approval authority is unavailable" } as const;
     if (!capturedAuthority) return authorityUnavailable;
     const rulePayload = body.rule === undefined ? undefined : payloadRecord(body.rule);
-    const projectCwd = snapshot.shellRule?.projectCwd;
-    const expectedProjectRoot = rulePayload?.scope === "project" && rulePayload.action === "allow" &&
-      scope === "persistent" && decision === "allow" && !readjudicate && displayedVerdictAtApproval === snapshot.verdictAtApproval
-      ? snapshot.shellRuleProjectRoot : undefined;
-    const hasProjectScopeChanged = () => expectedProjectRoot !== undefined && projectCwd !== undefined &&
-      !matchesProjectRuleRootBinding(projectCwd, expectedProjectRoot);
+    const isBoundProjectSave = rulePayload?.scope === "project" && rulePayload.action === "allow" &&
+      scope === "persistent" && decision === "allow" && !readjudicate && displayedVerdictAtApproval === snapshot.verdictAtApproval &&
+      snapshot.shellRuleProjectRoot !== undefined && snapshot.shellRule?.projectCwd !== undefined;
     const isControllerCurrent = () => capturedAuthority.controller.isCurrent() && approvalGate.canAccessRendererRequest(requestId, e.sender, "desk");
-    const settleChangedProject = () => {
+    const settleChangedProjectScope = () => {
       if (!isControllerCurrent() || !approvalGate.mayRecordFrom(requestId, e.sender)) return authorityUnavailable;
       approvalGate.cancelPendingRequest(requestId, snapshot.sessionId, "project-scope-changed");
       return { ok: false, error: "project-scope-changed" } as const;
@@ -1236,13 +1233,13 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       isCurrent: () => {
         if (!isControllerCurrent()) return false;
         if (capturedAuthority.isWorkingDirectoryCurrent()) return true;
-        if (hasProjectScopeChanged()) throw new ProjectRuleRootChangedError();
+        if (isBoundProjectSave) throw new ProjectRuleScopeChangedError();
         return false;
       },
     };
     if (!await authority.refresh() || !isControllerCurrent()) return authorityUnavailable;
     if (!capturedAuthority.isWorkingDirectoryCurrent()) {
-      return hasProjectScopeChanged() ? settleChangedProject() : authorityUnavailable;
+      return isBoundProjectSave ? settleChangedProjectScope() : authorityUnavailable;
     }
     if (readjudicate && (decision !== "allow" || snapshot.readjudication === undefined ||
         snapshot.verdictAtApproval !== "high" || body.rule !== undefined)) {
@@ -1265,7 +1262,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
             output: `[approval:remembered] store=rules decision=${rule.action} scope=${rule.scope} rule=${JSON.stringify(rule.pattern)} edited=${rule.edited} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
           });
         });
-        if (!saved.ok) return saved.error === "project-scope-changed" ? settleChangedProject() : saved;
+        if (!saved.ok) return saved.error === "project-scope-changed" ? settleChangedProjectScope() : saved;
         savedScope = saved.scope;
         broadcastPermissionConfigChanged(deps);
         return saved.warning === undefined ? { ok: true } : { ok: true, warning: saved.warning };

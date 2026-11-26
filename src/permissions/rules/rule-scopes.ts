@@ -13,7 +13,7 @@ import { isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type RuleSpecifie
 import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
 import { inspectPowerShellCommand, parsePowerShellCommand, powerShellRuleShape, proveLiteralPowerShell, type ParsedPowerShellCommand, type PowerShellCommandInput } from "./powershell-exfiltration.js";
 import { isRetiredHostTerminalRule, PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
-import { matchesProjectRuleRootBinding, ProjectRuleRootChangedError, projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile, type ProjectRuleRootBinding } from "./project-rule-files.js";
+import { matchesProjectRuleRootBinding, ProjectRuleScopeChangedError, projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile, type ProjectRuleRootBinding } from "./project-rule-files.js";
 import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type ShellRuleSet } from "./shell-rule-matcher.js";
 import { type ParsedShellCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
 import { SHELL_FLOOR_INPUT_LIMIT, SHELL_LITERAL_DATA_LIMIT } from "./shell-floor-policy.js";
@@ -129,7 +129,7 @@ export class ProjectRuleScopes {
     if (expectedProjectRoot !== undefined) {
       const isCurrent = () => {
         if (location.projectRoot !== expectedProjectRoot.path || !matchesProjectRuleRootBinding(projectCwd, expectedProjectRoot)) {
-          throw new ProjectRuleRootChangedError();
+          throw new ProjectRuleScopeChangedError();
         }
         return authority?.isCurrent() ?? true;
       };

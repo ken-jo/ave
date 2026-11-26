@@ -88,10 +88,10 @@ export interface ProjectRuleRootBinding extends ProjectRoot {
   readonly directory: ShellWorkingDirectoryIdentity;
 }
 
-export class ProjectRuleRootChangedError extends Error {
+export class ProjectRuleScopeChangedError extends Error {
   constructor() {
     super("Project scope changed. Request a fresh approval.");
-    this.name = "ProjectRuleRootChangedError";
+    this.name = "ProjectRuleScopeChangedError";
   }
 }
 

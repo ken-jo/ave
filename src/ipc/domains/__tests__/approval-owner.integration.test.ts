@@ -12,7 +12,7 @@ import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput, IPC_APPR
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../../../permissions/judge/judge-settings.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
-import { projectRulesLocation } from "../../../permissions/rules/project-rule-files.js";
+import { matchesProjectRuleRootBinding, projectRulesLocation } from "../../../permissions/rules/project-rule-files.js";
 import { captureShellWorkingDirectoryIdentity } from "../../../permissions/shell-working-directory-identity.js";
 import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
 import { LlmRiskClassifier, type LlmReviewerProvider, type RiskVerdict } from "../../../permissions/reviewer/risk-classifier.js";
@@ -347,6 +347,8 @@ describe("live native approval ownership", () => {
     "is replaced at the same path",
     "is replaced with a fresh working directory below it",
     "is replaced as the working directory",
+    "keeps its root but replaces the working directory before saving",
+    "keeps its root but replaces the working directory while saving",
   ])("refuses This project when the issued repository %s", async (scenario) => {
     const f = await subject("default");
     vi.stubEnv("AVE_HOME", f.root);
@@ -354,7 +356,10 @@ describe("live native approval ownership", () => {
     const outer = join(f.root, "outer");
     const inner = join(outer, "inner");
     const sameRootWithoutMarker = scenario === "loses its marker without changing its root path";
-    const replacesCwd = scenario === "is replaced with a fresh working directory below it" || scenario === "is replaced as the working directory";
+    const replacesOnlyCwd = scenario === "keeps its root but replaces the working directory before saving" ||
+      scenario === "keeps its root but replaces the working directory while saving";
+    const duringSave = scenario === "moves its marker while saving" || scenario === "keeps its root but replaces the working directory while saving";
+    const replacesCwd = replacesOnlyCwd || scenario === "is replaced with a fresh working directory below it" || scenario === "is replaced as the working directory";
     const cwd = sameRootWithoutMarker || scenario === "is replaced as the working directory" ? inner : join(inner, "work");
     mkdirSync(cwd, { recursive: true });
     for (const root of sameRootWithoutMarker ? [inner] : [outer, inner]) {
@@ -379,6 +384,7 @@ describe("live native approval ownership", () => {
     const running = invokeShell("nested-project-rule");
     const card = await f.waitForCard();
     expect(card.shellRule).toMatchObject({ persistentAllowed: true, projectRoot: innerStore.projectRoot });
+    const snapshot = f.gate.getRequestSnapshot(card.id);
     const replaced = replacesCwd || scenario === "is replaced at the same path";
     const currentStore = replaced || sameRootWithoutMarker ? innerStore : outerStore;
     const moveMarker = () => {
@@ -386,7 +392,16 @@ describe("live native approval ownership", () => {
       expect(captureShellWorkingDirectoryIdentity(cwd)).toEqual(issuedCwd);
       expect(projectRulesLocation(f.root, cwd)).toEqual(currentStore);
     };
-    if (replaced) {
+    const replaceOnlyCwd = () => {
+      renameSync(cwd, join(inner, "former-work"));
+      mkdirSync(cwd);
+      expect(captureShellWorkingDirectoryIdentity(cwd)?.ino).not.toBe(issuedCwd?.ino);
+      const projectRoot = snapshot?.shellRuleProjectRoot;
+      expect(projectRoot && matchesProjectRuleRootBinding(cwd, projectRoot)).toBe(true);
+      expect(f.gate.capturePendingRequestAuthority(card.id)?.isWorkingDirectoryCurrent()).toBe(false);
+    };
+    const changeScope = replacesOnlyCwd ? replaceOnlyCwd : moveMarker;
+    if (replaced && !replacesOnlyCwd) {
       const former = join(outer, "former-inner");
       renameSync(inner, former);
       mkdirSync(inner);
@@ -399,20 +414,20 @@ describe("live native approval ownership", () => {
         expect(captureShellWorkingDirectoryIdentity(cwd)).toEqual(issuedCwd);
       }
       expect(projectRulesLocation(f.root, cwd)).toEqual(innerStore);
-    } else if (scenario !== "moves its marker while saving") {
-      moveMarker();
+    } else if (!duringSave) {
+      changeScope();
     } else {
       const read = homeTrust.readAveHomeInput;
       vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async (...args) => {
         const input = await read(...args);
-        if (args[0] === innerStore.filePath) moveMarker();
+        if (args[0] === innerStore.filePath) changeScope();
         return input;
       });
     }
 
     const record = {
       requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "persistent",
-      verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
+      verdictAtApproval: snapshot?.verdictAtApproval,
       rule: { action: "allow", scope: "project" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
     };
     if (replacesCwd) {
