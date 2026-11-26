@@ -190,7 +190,7 @@ export async function detectMxcSupport(deps: DetectMxcSupportDeps): Promise<MxcS
 
 // The fast half of detectMxcSupport, run on the boot path: platform, arch, launcher present and pinned, `--probe` serves the request, `--dry-run` of the shipped request shape. "available" here means only that the start probe is worth running; MXC is not claimed until probeMxcPowerShellStart passes.
 export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promise<MxcSupport> {
-  const unavailable = (reason: MxcUnavailableReason, detail: string): MxcSupport => ({
+  const unavailable = (reason: MxcUnavailableReason, detail: string): Extract<MxcSupport, { state: "unavailable" }> => ({
     state: "unavailable",
     reason,
     windowsBuild: deps.windowsBuild,

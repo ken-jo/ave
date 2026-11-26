@@ -1,11 +1,11 @@
 // Namespace-local FTS search with fail-closed queries; JSONL rebuild is the only corruption recovery path.
-import { promises as fsPromises, mkdirSync, chmodSync } from "node:fs";
+import { mkdirSync, chmodSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { createLogger } from "../lib/logger.js";
 import type { SessionKind } from "../shared/session-lookup.js";
 import type BetterSqlite3 from "better-sqlite3";
-import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from "../lib/atomic-file.js";
+import { isMissingPathError, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from "../lib/atomic-file.js";
 
 const log = createLogger("session-search-index");
 
@@ -101,6 +101,15 @@ function ensureDirSync(dir: string): void {
 
 export type SessionSearchIndexPolicy = "enabled" | "enabled-with-recovery" | "inactive" | "paused";
 
+const INSERT_SESSION_ROW = `INSERT INTO sessions_fts
+  (sessionId, content, timestamp, sessionKind, routineId, projectRoot, title)
+  VALUES (?, ?, ?, ?, ?, ?, ?)`;
+
+function insertSessionRow(insert: BetterSqlite3.Statement, input: IndexedSessionInput): void {
+  insert.run(input.sessionId, input.content, input.timestamp, input.sessionKind,
+    input.routineId ?? "", input.projectRoot ?? "", input.title ?? "");
+}
+
 // Keep each database instance bound to its owning manager's namespace.
 export class SessionSearchIndex {
   private readonly dbPath: string;
@@ -117,7 +126,7 @@ export class SessionSearchIndex {
   }
 
   // Open synchronously on demand; return false on recoverable failure and keep stored search data private.
-  open(): boolean {
+  open(options?: { recoverCorruption?: boolean }): boolean {
     if (this.db) return true;
     // Close handles even if setup fails after opening; leaked handles block Windows corruption recovery.
     let db: BetterSqlite3.Database | null = null;
@@ -169,6 +178,11 @@ export class SessionSearchIndex {
             `Original: ${(err as Error).message}`,
         );
       }
+      const code = (err as NodeJS.ErrnoException).code;
+      if (options?.recoverCorruption && (code === "SQLITE_NOTADB" || code?.startsWith("SQLITE_CORRUPT"))) {
+        this.discard();
+        return this.open();
+      }
       return false;
     }
   }
@@ -186,11 +200,14 @@ export class SessionSearchIndex {
   }
 
   writeRebuiltSessions(inputs: Iterable<IndexedSessionInput>): void {
-    if (!this.db) throw new Error("search index must be open for rebuild");
-    this.db.transaction(() => {
+    const db = this.db;
+    if (!db) throw new Error("search index must be open for rebuild");
+    db.transaction(() => {
+      db.exec("DELETE FROM sessions_fts");
+      const insert = db.prepare(INSERT_SESSION_ROW);
       let expectedRows = 0;
       for (const input of inputs) {
-        this.upsertSession(input);
+        insertSessionRow(insert, input);
         expectedRows += 1;
       }
       const actualRows = this.rowCount();
@@ -205,20 +222,7 @@ export class SessionSearchIndex {
     if (!this.db) return;
     try {
       this.db.prepare("DELETE FROM sessions_fts WHERE sessionId = ?").run(input.sessionId);
-      this.db
-        .prepare(
-          `INSERT INTO sessions_fts (sessionId, content, timestamp, sessionKind, routineId, projectRoot, title)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          input.sessionId,
-          input.content,
-          input.timestamp,
-          input.sessionKind,
-          input.routineId ?? "",
-          input.projectRoot ?? "",
-          input.title ?? "",
-        );
+      insertSessionRow(this.db.prepare(INSERT_SESSION_ROW), input);
     } catch (err) {
       log.warn("upsertSession failed for %s: %s", input.sessionId, (err as Error).message);
     }
@@ -314,13 +318,15 @@ export class SessionSearchIndex {
     this.db = null;
   }
 
-  // Delete corrupt storage so the next open creates a clean database.
-  static async deleteFile(dbPath: string): Promise<void> {
+  discard(): void {
+    this.close();
     for (const suffix of ["", "-wal", "-shm"]) {
       try {
-        await fsPromises.unlink(`${dbPath}${suffix}`);
-      } catch {
+        unlinkSync(`${this.dbPath}${suffix}`);
+      } catch (error) {
+        if (!isMissingPathError(error)) throw error;
       }
     }
   }
+
 }

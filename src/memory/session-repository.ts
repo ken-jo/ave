@@ -1085,18 +1085,6 @@ export class SessionRepository {
     }
   }
 
-  private discardSearchIndex(): void {
-    const dbPath = this.searchIndex.getDbPath();
-    this.searchIndex.close();
-    for (const suffix of ["", "-wal", "-shm"]) {
-      try {
-        unlinkSync(`${dbPath}${suffix}`);
-      } catch (error) {
-        if (!isMissingPathError(error)) throw error;
-      }
-    }
-  }
-
   private hasSearchRepairIntent(): boolean {
     return lstatSync(join(this.sessionsDir, SEARCH_REPAIR_INTENT), { throwIfNoEntry: false }) !== undefined;
   }
@@ -1125,7 +1113,7 @@ export class SessionRepository {
   private pauseSearchIndex(): void {
     if (this.searchIndexState === "discarded" && !this.hasSearchRepairIntent()) return;
     this.searchIndexState = "stale";
-    this.discardSearchIndex();
+    this.searchIndex.discard();
     this.clearSearchRepairIntent();
     this.searchIndexState = "discarded";
   }
@@ -1176,10 +1164,9 @@ export class SessionRepository {
 
   private rebuildSessionSearchRows(): void {
     this.searchIndexState = "stale";
-    this.discardSearchIndex();
     try {
-      if (!this.searchIndex.open()) {
-        throw new Error("search index could not be opened after reset");
+      if (!this.searchIndex.open({ recoverCorruption: true })) {
+        throw new Error("search index could not be opened for repair");
       }
 
       this.searchIndex.writeRebuiltSessions(this.sessionSearchInputs());
@@ -1195,8 +1182,8 @@ export class SessionRepository {
   private repairAllSessionSearchRowsForProjectDetach(): void {
     try {
       const policy = this.getSearchIndexPolicy();
-      if (policy === "inactive") this.searchIndexState = "stale";
-      else if (policy === "paused") this.pauseSearchIndex();
+      if (policy === "inactive") return;
+      if (policy === "paused") this.pauseSearchIndex();
       else this.rebuildSessionSearchRows();
     } catch (cause) {
       throw Object.assign(
@@ -1210,43 +1197,15 @@ export class SessionRepository {
   async verifyOrRebuildSearchIndex(): Promise<void> {
     if (!this.canUseSearchIndex()) return;
     const opened = this.searchIndex.open();
-    // Skip transcript enumeration for healthy populated indexes.
-    if (opened && this.searchIndex.rowCount() > 0) {
-      this.searchIndex.close();
-      return;
-    }
-    const sessionFiles = this.listSessionJsonlFiles();
-    const needsRebuild = !opened || sessionFiles.length > 0;
-    if (!needsRebuild) {
-      this.searchIndex.close();
-      return;
-    }
-    log.info("search index rebuild starting (%d session file(s))", sessionFiles.length);
     if (opened) {
-      this.searchIndex.close();
-    }
-    await SessionSearchIndex.deleteFile(this.searchIndex.getDbPath());
-    if (!this.canUseSearchIndex()) return;
-    if (!this.searchIndex.open()) {
-      log.warn("search index rebuild failed: could not reopen index after reset");
-      return;
-    }
-    try {
-      const UUID_RE = /^[0-9a-f-]{8,}$/i;
-      for (const file of sessionFiles) {
-        const stem = file.replace(".jsonl", "");
-        if (!UUID_RE.test(stem)) continue;
-        const messages = this.loadSession(stem);
-        if (!Array.isArray(messages)) continue;
-        // Keep one index handle across the bulk rebuild.
-        const input = this.buildIndexInput(stem, messages);
-        if (input) this.searchIndex.upsertSession(input);
-        else this.searchIndex.deleteSession(stem);
+      try {
+        // Skip transcript enumeration for healthy populated indexes.
+        if (this.searchIndex.rowCount() > 0 || this.listSessionJsonlFiles().length === 0) return;
+      } finally {
+        this.searchIndex.close();
       }
-      log.info("search index rebuild complete (%d row(s))", this.searchIndex.rowCount());
-    } finally {
-      this.searchIndex.close();
     }
+    this.rebuildSessionSearchRows();
   }
 
   private listSessionJsonlFiles(): string[] {
@@ -1671,7 +1630,8 @@ export class SessionRepository {
         }
       }
 
-      // Keep root intent active through partial I/O failure so retry can repair metadata and the complete index.
+      // Persist projection repair before detaching metadata so it survives workspace removal completion.
+      this.recordSearchRepairIntent();
       for (const { sessionId, targetPath, normalized, next } of plans) {
         writeUtf8FileAtomicSync(targetPath, JSON.stringify(next, null, 2));
         const sessionTombstones = this.detachedProjectRootsBySession.get(sessionId)

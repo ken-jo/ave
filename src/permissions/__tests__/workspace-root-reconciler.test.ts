@@ -12,6 +12,9 @@ import {
 } from "../permission-settings-store.js";
 import { reconcileWorkspaceRoots } from "../workspace-root-reconciler.js";
 import { useTempDirFile } from "../../__tests__/test-helpers.js";
+import { SessionRepository } from "../../memory/session-repository.js";
+import { SessionSearchIndex } from "../../memory/session-search-index.js";
+import { detachWorkspaceRootSessions } from "../../memory/workspace-root-session-lifecycle.js";
 
 const tempSettings = useTempDirFile("ave-root-reconcile-", "settings.json");
 
@@ -356,6 +359,45 @@ describe("reconcileWorkspaceRoots", () => {
     expect(second.pending).toBeUndefined();
     expect(second.inactiveRoots).toContain(sanitizeRuntimeAllowedDirectories([dir])[0]);
     expect(readPermissionSettings(path).permissions.pendingWorkspaceRootRemovals).toEqual([]);
+  });
+
+  it.each(["main", "side-chat", "subagent"] as const)("repairs the populated %s index after interruption following workspace removal", async (namespace) => {
+    const { dir, path } = tempSettings();
+    const workspace = join(dir, "workspace");
+    const activeProject = join(dir, "default");
+    const aveDir = join(dir, namespace);
+    const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+    const content = "detached history evidence";
+    const kind = namespace === "subagent" ? "subagent" : "main";
+    const seedRepository = new SessionRepository({ aveDir });
+    await seedRepository.saveSession(sessionId, [{ role: "user", content }]);
+    await seedRepository.saveSessionMetadata(sessionId, { sessionKind: kind, projectRoot: workspace });
+    expect(seedRepository.searchSessions(content, { kind, projectRoot: workspace })).toHaveLength(1);
+
+    const bootRepository = new SessionRepository({ aveDir, getSearchIndexPolicy: () => "inactive" });
+    await seed(path, [workspace]);
+    const result = await reconcileWorkspaceRoots({
+      source: "boot",
+      settingsPath: path,
+      statFn: async () => { throw codedError("ENOENT"); },
+      beforeComplete: async (root) => { await detachWorkspaceRootSessions(root, [bootRepository]); },
+    });
+    expect(result.removed).toHaveLength(1);
+    expect(readPermissionSettings(path).permissions.pendingWorkspaceRootRemovals).toEqual([]);
+    expect(bootRepository.loadSessionMetadata(sessionId)?.projectRoot).toBeUndefined();
+    const retainedIndex = new SessionSearchIndex(aveDir);
+    expect(retainedIndex.open()).toBe(true);
+    try {
+      expect(retainedIndex.query(content, { kind, projectRoot: workspace })).toHaveLength(1);
+    } finally {
+      retainedIndex.close();
+    }
+
+    const restarted = new SessionRepository({ aveDir, getSearchIndexPolicy: () => "enabled-with-recovery" });
+    await restarted.verifyOrRebuildSearchIndex();
+    expect.soft(restarted.searchSessions(content, { kind, projectRoot: workspace })).toEqual([]);
+    expect(restarted.searchSessions(content, { kind, projectRoot: activeProject, includeUnscoped: true })
+      .map((entry) => entry.sessionId)).toEqual([sessionId]);
   });
 
   it("keeps removal pending when grant pruning fails without leaking the error", async () => {

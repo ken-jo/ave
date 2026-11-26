@@ -1,10 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MemoryManager } from "../memory-manager.js";
-import { type SessionMetadata } from "../session-repository.js";
+import { SessionRepository, type SessionMetadata } from "../session-repository.js";
+import { SessionSearchIndex } from "../session-search-index.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const SESSION_A = "6b010d95-2319-4c22-80b1-87fbf1568da3";
@@ -392,6 +393,47 @@ describe("MemoryManager workspace project detachment", () => {
     openSpy.mockRestore();
     await expect(memory.sessions.detachSessionsFromProject(ROOT)).resolves.toBe(0);
     expect(memory.sessions.searchSessions(`message-${SESSION_A}`)).toHaveLength(1);
+  });
+
+  it("keeps the previous projection and repair intent when the rebuild transaction fails", async () => {
+    await seed(SESSION_A, ROOT, "repair-retry");
+    const content = `message-${SESSION_A}`;
+    const countRows = vi.spyOn(SessionSearchIndex.prototype, "rowCount").mockReturnValueOnce(-1);
+    try {
+      await expect(memory.sessions.detachSessionsFromProject(ROOT)).rejects.toMatchObject({
+        code: "SESSION_SEARCH_INDEX_REPAIR_FAILED",
+      });
+    } finally {
+      countRows.mockRestore();
+    }
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
+    const previousIndex = new SessionSearchIndex(dir);
+    expect(previousIndex.open()).toBe(true);
+    try {
+      expect.soft(previousIndex.query(content, { projectRoot: ROOT })).toHaveLength(1);
+    } finally {
+      previousIndex.close();
+    }
+    const restarted = new SessionRepository({ aveDir: dir });
+    await restarted.verifyOrRebuildSearchIndex();
+    expect(restarted.searchSessions(content, { projectRoot: ROOT })).toEqual([]);
+    expect(restarted.searchSessions(content)).toHaveLength(1);
+  });
+
+  it("clears a deferred projection repair after authorized discard", async () => {
+    await seed(SESSION_A, ROOT, "discard-repair");
+    const deferred = new SessionRepository({ aveDir: dir, getSearchIndexPolicy: () => "inactive" });
+    await expect(deferred.detachSessionsFromProject(ROOT)).resolves.toBe(1);
+    const repairIntent = join(dir, "sessions", ".search-repair.json");
+    const indexPath = new SessionSearchIndex(dir).getDbPath();
+    expect.soft(existsSync(repairIntent)).toBe(true);
+    expect(existsSync(indexPath)).toBe(true);
+
+    const paused = new SessionRepository({ aveDir: dir, getSearchIndexPolicy: () => "paused" });
+    await paused.verifyOrRebuildSearchIndex();
+    expect(existsSync(repairIntent)).toBe(false);
+    expect(existsSync(indexPath)).toBe(false);
+    expect(paused.loadSession(SESSION_A)).toHaveLength(1);
   });
 
   it("removes an orphaned FTS row when project metadata exists without JSONL", async () => {
