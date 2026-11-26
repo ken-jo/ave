@@ -41,8 +41,7 @@ export const ImagePreparationRequestSchema = z.object({
 }).strict();
 type ImagePreparationRequest = z.infer<typeof ImagePreparationRequestSchema>;
 
-export const ImagePreparationPosixFileRequestSchema = ImagePreparationRequestSchema.omit({ expectedPath: true })
-  .extend({ source: z.literal("posix-file") });
+export const ImagePreparationPosixFileRequestSchema = ImagePreparationRequestSchema.omit({ expectedPath: true });
 type ImagePreparationPosixFileRequest = z.infer<typeof ImagePreparationPosixFileRequestSchema>;
 
 /** Validated image bytes travel over child stdin, never argv or JSON. */

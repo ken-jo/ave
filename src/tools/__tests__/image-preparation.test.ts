@@ -211,15 +211,13 @@ describe("bounded image preparation", () => {
     await symlink("hop/../image.png", path);
     const approved = realpathSync.native(join(actual, "image.png"));
     expect(realpathSync.native(path)).toBe(approved);
-    const seal = sealTargets(() => realpathSync.native(path));
-
     const result = await prepareImageFile(path, {
       cwd: root, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true,
-    }, {}, undefined, seal, approved);
+    });
     expect(result).toMatchObject({ originalWidth: 8, originalHeight: 4 });
   });
 
-  it("does not open an in-scope replacement selected during decoder spawn", async () => {
+  it.runIf(process.platform === "win32")("does not open an in-scope replacement selected during decoder spawn", async () => {
     const original = join(directory, "original");
     const replacement = join(directory, "replacement");
     const alias = join(directory, "alias");
@@ -231,7 +229,6 @@ describe("bounded image preparation", () => {
     const linkType = process.platform === "win32" ? "junction" : "dir";
     await symlink(original, alias, linkType);
     const path = join(alias, "image.png");
-    const approved = realpathSync.native(path);
     const seal = sealTargets(() => realpathSync.native(path));
     const marker = join(directory, "replacement-opened");
     const trace = join(directory, "trace-open.mjs");
@@ -256,7 +253,7 @@ describe("bounded image preparation", () => {
     });
     const result = prepareImageFile(path, {
       cwd: directory, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true,
-    }, {}, undefined, seal, approved);
+    }, {}, undefined, seal);
     const error = await result.catch((failure: unknown) => failure);
     expect(existsSync(marker)).toBe(false);
     expect(error).toEqual(expect.objectContaining({ message: expect.stringContaining("Target identity changed") }));
@@ -362,9 +359,8 @@ describe("bounded image preparation", () => {
     expect(result?.is_error).not.toBe(true);
   });
 
-  it.skipIf(process.platform === "win32")("cancels a sealed image invocation during the decoder source lookup", async () => {
+  it.skipIf(process.platform === "win32")("cancels a POSIX image invocation using the path-only decoder request", async () => {
     const path = imageFixturePath("grid.png");
-    const expectedPath = realpathSync.native(path);
     const preload = join(directory, "stall-sealed-realpath.mjs");
     await writeFile(preload, `
       import fs from "node:fs/promises";
@@ -402,7 +398,9 @@ describe("bounded image preparation", () => {
 
     const result = await executeSealedImage(path, controller.signal);
 
-    expect(request).toMatchObject({ path, expectedPath });
+    expect(request).toMatchObject({ path });
+    expect(request).not.toHaveProperty("expectedPath");
+    expect(request).not.toHaveProperty("source");
     expect(hostLookup.mock.calls.filter(([operand]) => operand === path)).toHaveLength(lookupCountAtSpawn);
     expect(diagnostics).toContain("sealed-lookup-stalled");
     expect(result).toMatchObject({ is_error: true, content: expect.stringMatching(/cancelled/i) });

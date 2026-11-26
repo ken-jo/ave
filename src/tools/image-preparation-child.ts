@@ -57,7 +57,7 @@ if (!adoptParentHostResources()) {
       }));
     } else {
       const schema = process.platform === "win32" ? ImagePreparationRequestSchema
-        : ImagePreparationRequestSchema.or(ImagePreparationPosixFileRequestSchema);
+        : ImagePreparationPosixFileRequestSchema;
       const request = schema.parse(raw);
       if (!isAbsolute(request.path) || !isAbsolute(request.scope.cwd)) throw new Error("invalid-image-path: Image source and read scope must be absolute.");
       const context = { ...request.scope, metadata: {} };
@@ -80,7 +80,6 @@ if (!adoptParentHostResources()) {
       } else {
         requireReadAccess(request.path);
         judged = await realpath(request.path);
-        requireExpectedPath(judged);
         requireReadAccess(judged);
       }
       const bytes = await readImageInput(judged, new AbortController().signal);
