@@ -33,9 +33,10 @@ describe.each([
   const longTail = Array.from({ length: 1800 }, () => "date x").join("; ");
   const pastLimit = { decision: "deny", reasonCode: "shell-analysis-limit" };
   const limitCard = { decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit", pipelineRequest: { shellAnalysisLimited: true } };
-  async function evaluate({ saveDeny = true, denyPattern = pattern, generic = false, executionMode = "allow" }: {
+  async function evaluate({ saveDeny = true, denyPattern = pattern, askPattern, generic = false, executionMode = "allow" }: {
     saveDeny?: boolean;
     denyPattern?: string | undefined;
+    askPattern?: string;
     generic?: boolean;
     executionMode?: ExecutionMode;
   } = {}) {
@@ -43,6 +44,7 @@ describe.each([
     manager.setMode(executionMode);
     if (generic) manager.setRules([{ pattern: dialect, action: "deny" }]);
     if (saveDeny) await manager.addRulePersist({ pattern: denyPattern, action: "deny" }, { kind: "user" });
+    if (askPattern !== undefined) await manager.addRulePersist({ pattern: askPattern, action: "ask" }, { kind: "user" });
     return (command: string, headless = false) => manager.checkDetailed(dialect, "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect, command, cwd },
       shellExecution: { runsSandboxed: true },
@@ -82,10 +84,11 @@ describe.each([
       expect(withoutDeny(quotedExpansionInputLimit)).toMatchObject(limitCard);
     });
 
-    describe.each([
+    const unsupportedRedirection = { shape: "unsupported redirection", command: "echo hi > out.txt", denyPattern: "PowerShell(Get-Date *)" };
+    describe.each<{ shape: string; command: string; denyPattern?: string }>([
       { shape: "an escaped brace in a variable name", command: `${escapedVariableStart}}; Write-Output s` },
       { shape: "a quote in a braced expansion", command: `${quotedExpansionStart}}"; Write-Output s` },
-      { shape: "unsupported redirection", command: "echo hi > out.txt", denyPattern: "PowerShell(Get-Date *)" },
+      unsupportedRedirection,
       { shape: "an unsupported quote delimiter", command: "echo ‘hi’", denyPattern: "PowerShell(Get-Date *)" },
     ])("unreadable command with $shape", ({ command, denyPattern }) => {
       it.each(["strict", "default", "auto", "allow"] as const)("refuses in %s mode with a saved deny", async (executionMode) => {
@@ -106,6 +109,15 @@ describe.each([
         const withoutDeny = await evaluate({ saveDeny: false });
         expect(withoutDeny(command)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
       });
+    });
+
+    it.each(["strict", "default", "auto", "allow"] as const)("refuses in %s mode without evidence from an unrelated saved ask", async (executionMode) => {
+      const check = await evaluate({ executionMode, denyPattern: unsupportedRedirection.denyPattern, askPattern: "PowerShell(Get-Location *)" });
+      const result = check(unsupportedRedirection.command);
+      expect(result).toMatchObject(pastLimit);
+      expect(result.pipelineRequest?.rules).not.toHaveProperty("ask");
+      expect(result.forceModal).toBeUndefined();
+      expect(result.reviewer).toBeUndefined();
     });
 
     it.each([" |\n  ", "\n  | ", " ||\n  "])("refuses an over-budget first statement across %j", async (separator) => {
