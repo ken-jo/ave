@@ -4505,29 +4505,29 @@ async function spawnPowerShellInMxc(
     };
     let lifetime: ReturnType<typeof watchShellLifetime> | undefined;
     let closed: Promise<void> | undefined;
+    let unstartedLauncher: Error | undefined;
+    const finishSpawnFailure = async (err: Error, pin?: WindowsHoldVerdict): Promise<void> => {
+      verdict = pin;
+      if (closed !== undefined) await closed;
+      // A running child keeps its timeout and abort watch until its job ends.
+      if (spawned.pid === undefined) lifetime?.dispose();
+      settle(async () => {
+        let artifactMetadata = {};
+        const failures = await runReleaseSteps([
+          async () => { artifactMetadata = await collector?.finish(true) ?? {}; },
+          () => endObservation(null, "failed"),
+        ]);
+        return release(() => {
+          const failed = withCwdPinOutcome(spawnFailure(launcherError(err)), pin, true);
+          return { ...failed, metadata: { ...artifactMetadata, ...failed.metadata } };
+        }, failures);
+      });
+    };
     spawned.on("error", (err) => {
       if (run !== undefined) {
-        // A held run's error is a stop request to its launcher; the result is the verdict's.
-        shellTaskLog.error({ label: MXC_SHELL_LABEL, err: shellFailureText([launcherError(err)]) }, "held contained shell reported an error");
-        return;
-      }
-      void (async () => {
-        if (closed !== undefined) await closed;
-        // A spawn that fails (no pid) may never emit "close". A running child keeps its
-        // timeout and abort watch; its error result uses generic details while it runs.
-        if (spawned.pid === undefined) lifetime?.dispose();
-        settle(async () => {
-          let artifactMetadata = {};
-          const failures = await runReleaseSteps([
-            async () => { artifactMetadata = await collector?.finish(true) ?? {}; },
-            () => endObservation(null, "failed"),
-          ]);
-          return release(() => {
-            const failed = spawnFailure(launcherError(err));
-            return { ...failed, metadata: { ...artifactMetadata, ...failed.metadata } };
-          }, failures);
-        });
-      })();
+        if (spawned.pid === undefined) unstartedLauncher = err;
+        else shellTaskLog.error({ label: MXC_SHELL_LABEL, err: shellFailureText([launcherError(err)]) }, "held contained shell reported an error");
+      } else void finishSpawnFailure(err).catch(fault);
     });
     try {
       // A confirmed exit, or a spawn that failed with no pid, revokes the invocation and starts its disposal
@@ -4599,7 +4599,11 @@ async function spawnPowerShellInMxc(
         return release(() => result, failures);
       });
     };
-    if (run !== undefined) void run.verdict.then((pin) => finish(spawned.exitCode, spawned.signalCode, pin)).catch(fault);
+    if (run !== undefined) {
+      void run.verdict.then((pin) => unstartedLauncher === undefined
+        ? finish(spawned.exitCode, spawned.signalCode, pin)
+        : finishSpawnFailure(unstartedLauncher, pin)).catch(fault);
+    }
     else {
       void watch.stopped.then(() => finish(spawned.exitCode)).catch(fault);
       spawned.once("close", (code, exitSignal) => { void finish(code, exitSignal).catch(fault); });
