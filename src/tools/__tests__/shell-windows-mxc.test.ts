@@ -1017,7 +1017,8 @@ describe("builtin shell — Windows MXC containers", () => {
     try {
       await configureCommandLauncher(async () => ({ bindChild: vi.fn(), release: vi.fn(async () => {}) }), undefined, {
         cwd: movableRoot,
-        filesystem: { allowWrite: [blockedRoot, movableRoot], allowRead: [], denyRead: [], denyWrite: protectedPaths, requiredWriteDenies: protectedPaths },
+        filesystem: { allowWrite: [blockedRoot, movableRoot], allowRead: [], denyRead: [], denyWrite: protectedPaths, requiredWriteDenies: protectedPaths,
+          carrierChildWriteDenies: protectedPaths },
       });
       const prepare = mxcLaunchMock.prepare.getMockImplementation();
       if (prepare === undefined) throw new Error("Missing command launch fixture");

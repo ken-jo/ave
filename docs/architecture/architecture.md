@@ -3532,6 +3532,9 @@ in its directory.
   a watch that cannot be armed refuses the launch, naming the protected path.
   Once the carrier exists, the next launch denies both children exactly; a
   running launch keeps its watch until it ends, since its grants are fixed.
+  Only the host-derived `.ave\commands` and `.ave\hooks` rows of a write root
+  may be watched; another missing required row refuses the grant, and a
+  configured, user or secret deny at the same path keeps its own outcome.
   Literal denies apply throughout the command.
   Pattern denies are enumerated at launch; a file another process creates during a command's lifetime that first matches the pattern is not covered until the next command.
   In the six installed x64 runs observed on 2026-11-11, node opens of the Ave

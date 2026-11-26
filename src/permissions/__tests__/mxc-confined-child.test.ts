@@ -704,7 +704,7 @@ describe("co-holder nesting and executable identity", () => {
     const children = ["D:\\work\\.ave\\commands", "D:\\work\\.ave\\hooks"];
     state.missing.add("D:\\work\\.ave");
     const admitWatched = () => state.admit.mockReturnValueOnce({ model: mxcPolicyModel({ allowRead: ["C:\\runtime", "C:\\Windows"],
-      allowWrite: ["D:\\work"], denyRead: [], denyWrite: children, requiredWriteDenies: children, protectedFloor: [] }), assertStillValid: state.validate });
+      allowWrite: ["D:\\work"], denyRead: [], denyWrite: children, requiredWriteDenies: children, carrierChildWriteDenies: children, protectedFloor: [] }), assertStillValid: state.validate });
     admitWatched();
     let armedAtSpawn: unknown[][] = [];
     state.spawn.mockImplementationOnce(async (request, options) => {

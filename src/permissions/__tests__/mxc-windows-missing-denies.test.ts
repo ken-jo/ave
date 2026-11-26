@@ -56,7 +56,7 @@ describe("missing deny parents", () => {
     const agents = win32.join(root, ".agents");
     const children = [win32.join(carrier, "commands"), win32.join(carrier, "hooks")];
     const required = [agents, ...children];
-    const rows = { ...policy([]), denyWrite: required, requiredWriteDenies: required };
+    const rows = { ...policy([]), denyWrite: required, requiredWriteDenies: required, carrierChildWriteDenies: children };
     expect(rankMxcLists(rows, exists)).toEqual({ readwrite: [root], readonly: [], denied: [agents], watched: children });
     expect(rankMxcLists(rows, (path) => exists(path) || path === carrier)).toEqual({
       readwrite: [root], readonly: [], denied: required,
@@ -72,14 +72,14 @@ describe("missing deny parents", () => {
       const agents = join(workspace, ".agents");
       const children = [join(carrier, "commands"), join(carrier, "hooks")];
       const required = [agents, ...children];
-      const rows = { allowWrite: [workspace], allowRead: [], denyRead: [], denyWrite: required, requiredWriteDenies: required, protectedFloor: [] };
+      const rows = { allowWrite: [workspace], allowRead: [], denyRead: [], denyWrite: required, requiredWriteDenies: required, carrierChildWriteDenies: children, protectedFloor: [] };
       expect(rankAdmittedMxcLists(rows)).toEqual({ readwrite: [workspace], readonly: [], denied: [agents], watched: children });
       expect(existsSync(carrier)).toBe(false);
       const plan = consumeObligations(admitMxcLists(rows), "mxc-launch");
       const denies = plan.filter(entry => entry.polarity.effect === "deny");
       const reach = plan.filter(entry => entry.polarity.effect === "allow");
       const outcome = (watched: readonly string[] | undefined) => ({ denies, patterns: [], outcomes: new Map(), reachable: reach, reach,
-        exceptions: children.map(row => ({ reason: "watched-carrier-child" as const, row })),
+        exceptions: children.map(row => ({ reason: "watched-carrier-child" as const, row, grant: workspace })),
         result: { readwrite: [workspace], readonly: [], denied: [agents], ...(watched === undefined ? {} : { watched }) } });
       expect(() => assertMxcDenyOutcomes(outcome(children))).not.toThrow();
       expect(() => assertMxcDenyOutcomes(outcome(undefined))).toThrow(`Windows sandbox policy left a deny without an outcome: ${children[0]}`);
@@ -90,6 +90,56 @@ describe("missing deny parents", () => {
       const nested = join(workspace, "missing", "deeper", ".agents");
       expect(() => rankAdmittedMxcLists({ ...rows, denyWrite: [nested], requiredWriteDenies: [nested] }))
         .toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: nested }));
+    });
+  });
+
+  it("watches only host-derived carrier children: an unrelated required child refuses, and an independent deny keeps its own outcome", () => {
+    const carrier = win32.join(root, ".ave");
+    const [commands, hooks, tasks] = ["commands", "hooks", "tasks"].map(name => win32.join(carrier, name)) as [string, string, string];
+    const refused = (path: string) => t("sandboxPolicy.windowsProtectedWriteRefused", { path });
+    // A required child the host did not derive as a carrier child, and one whose name is not a carrier child, are not watched.
+    expect(() => rankMxcLists({ ...policy([]), denyWrite: [hooks], requiredWriteDenies: [hooks] }, exists)).toThrow(refused(hooks));
+    expect(() => rankMxcLists({ ...policy([]), denyWrite: [tasks], requiredWriteDenies: [tasks], carrierChildWriteDenies: [tasks] }, exists))
+      .toThrow(refused(tasks));
+    // A configured write deny at a carrier child's spelling is raised as its own row; the raise covers the watched child.
+    const children = [commands, hooks];
+    const required = { ...policy([]), denyWrite: children, requiredWriteDenies: children, carrierChildWriteDenies: children };
+    expect(rankMxcLists({ ...required, independentWriteDenies: [hooks] }, exists)).toEqual({ readwrite: [root], readonly: [], denied: [carrier] });
+    // User and secret read floors at the children's spellings keep their read outcome.
+    expect(rankMxcLists({ ...required, protectedFloor: [commands], userDenyRead: [hooks] }, exists))
+      .toEqual({ readwrite: [root], readonly: [], denied: [carrier] });
+  });
+
+  it.runIf(process.platform === "win32")("watches only host-derived carrier children through admission, and holds the exception to that evidence", () => {
+    withMxcWorkspace((workspace) => {
+      const carrier = join(workspace, ".ave");
+      const [commands, hooks, tasks] = ["commands", "hooks", "tasks"].map(name => join(carrier, name)) as [string, string, string];
+      const refused = (path: string) => t("sandboxPolicy.windowsProtectedWriteRefused", { path });
+      const base = { allowWrite: [workspace], allowRead: [], denyRead: [], protectedFloor: [] };
+      expect(() => rankAdmittedMxcLists({ ...base, denyWrite: [hooks], requiredWriteDenies: [hooks] })).toThrow(refused(hooks));
+      expect(() => rankAdmittedMxcLists({ ...base, denyWrite: [tasks], requiredWriteDenies: [tasks], carrierChildWriteDenies: [tasks] }))
+        .toThrow(refused(tasks));
+      const children = [commands, hooks];
+      const required = { ...base, denyWrite: children, requiredWriteDenies: children, carrierChildWriteDenies: children };
+      const configured = { ...required, independentWriteDenies: [hooks] };
+      expect(rankAdmittedMxcLists(configured)).toEqual({ readwrite: [workspace], readonly: [], denied: [carrier] });
+      const floors = { ...required, protectedFloor: [commands], userDenyRead: [hooks] };
+      expect(rankAdmittedMxcLists(floors)).toEqual({ readwrite: [workspace], readonly: [], denied: [carrier] });
+      expect(existsSync(carrier)).toBe(false);
+      // A result that watched the children instead: the carrier-child exception names each row, but only the carrier child rows
+      // hold it; the configured deny and the read floors at the same spellings stay without an outcome.
+      const watchedInstead = (lists: MxcShellPolicyLists, grant = workspace) => {
+        const plan = consumeObligations(admitMxcLists(lists), "mxc-launch");
+        const reach = plan.filter(entry => entry.polarity.effect === "allow");
+        return { denies: plan.filter(entry => entry.polarity.effect === "deny"), patterns: [], outcomes: new Map(), reachable: reach, reach,
+          exceptions: children.map(row => ({ reason: "watched-carrier-child" as const, row, grant })),
+          result: { readwrite: [workspace], readonly: [], denied: [], watched: children } };
+      };
+      expect(() => assertMxcDenyOutcomes(watchedInstead(required))).not.toThrow();
+      expect(() => assertMxcDenyOutcomes(watchedInstead(required, join(workspace, "elsewhere"))))
+        .toThrow(`Windows sandbox policy left a deny without an outcome: ${commands}`);
+      expect(() => assertMxcDenyOutcomes(watchedInstead(configured))).toThrow(`Windows sandbox policy left a deny without an outcome: ${hooks}`);
+      expect(() => assertMxcDenyOutcomes(watchedInstead(floors))).toThrow(`Windows sandbox policy left a deny without an outcome: ${commands}`);
     });
   });
 
@@ -509,6 +559,7 @@ describe.skipIf(process.platform !== "win32")("native missing deny parents", () 
         const grants = rankMxcLists({ allowWrite: [directory], allowRead: [], denyRead: floorRow ? denies : [],
           denyWrite: floorRow ? [] : denies, protectedFloor: label === "workspace" || label === "clean project" ? floor : [],
           requiredWriteDenies: label === "workspace" || label === "clean project" ? mandatory.windowsRequiredWriteDenies : label === "exact children" ? exactPaths : [],
+          carrierChildWriteDenies: label === "workspace" || label === "clean project" ? mandatory.windowsCarrierChildWriteDenies : label === "exact children" ? exactPaths.slice(1) : [],
         }, existsSync);
         const sweep = grants.watched === undefined ? undefined : watchMxcProtectedRows(grants.watched, { commandId: "clean-project" });
         if (label === "clean project") {

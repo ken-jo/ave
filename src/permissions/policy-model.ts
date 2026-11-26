@@ -49,6 +49,23 @@ interface PolicyRowPath {
 export interface PolicyFloorRow extends PolicyRowPath {
   readonly access: Extract<PolicyAccess, "ro" | "denied">;
   readonly reason: PolicyFloorReason;
+  /** A `required-write-deny` row the host derived as a write root's `.ave\commands` or `.ave\hooks`: the only row a container may
+   * watch, rather than deny, while its carrier is missing. */
+  readonly carrierChild?: true;
+}
+
+/** The children of a project `.ave` carrier that a launch may watch while the carrier is missing. */
+export const WATCHABLE_CARRIER_CHILDREN: readonly string[] = ["commands", "hooks"];
+
+/** Whether `path` is spelled `...\.ave\commands` or `...\.ave\hooks`. */
+export function isCarrierChildSpelling(path: string): boolean {
+  const [carrier, child] = path.replace(/[\\/]+$/u, "").split(/[\\/]+/u).slice(-2).map(name => name.toLowerCase());
+  return carrier === ".ave" && child !== undefined && WATCHABLE_CARRIER_CHILDREN.includes(child);
+}
+
+/** A required write deny row, watchable while its carrier is missing only when the host derived it as a carrier child. */
+export function requiredWriteDenyRow(path: string, carrierChild: boolean): PolicyFloorRow {
+  return { path, literal: true, access: "ro", reason: "required-write-deny", ...(carrierChild && isCarrierChildSpelling(path) ? { carrierChild: true } : {}) };
 }
 
 export interface PolicyGrantRow extends PolicyRowPath {
@@ -134,6 +151,9 @@ function checkFloor(row: PolicyFloorRow): PolicyFloorRow {
   // The write floor is the only floor a launch may still read.
   if ((row.access === "ro") !== (row.reason === "protected-name" || row.reason === "required-write-deny")) refuse(row, "floor access");
   if (row.reason === "required-write-deny" && !row.literal) refuse(row, "required write deny must be literal");
+  if (row.carrierChild !== undefined && (row.carrierChild !== true || row.reason !== "required-write-deny" || !isCarrierChildSpelling(row.path))) {
+    refuse(row, "only a required carrier child is watchable");
+  }
   return Object.freeze({ ...row });
 }
 

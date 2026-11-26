@@ -4,7 +4,7 @@ import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProc
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { mxcRuntimeRootFloorPath } from "./mxc-runtime-root.js";
 import { liveSandboxProcessHomes } from "./sandbox-home-registry.js";
-import { buildPolicyModel, policyFloorRow, policyGrantRow, userDenyCoversPierce, userDenyMayCoverPierce, type PolicyFloorRow, type PolicyGrantRow, type PolicyModel } from "./policy-model.js";
+import { buildPolicyModel, policyFloorRow, policyGrantRow, requiredWriteDenyRow, userDenyCoversPierce, userDenyMayCoverPierce, type PolicyFloorRow, type PolicyGrantRow, type PolicyModel } from "./policy-model.js";
 import { srtWriteFloorRow, toSrtConfig } from "./srt-policy-adapter.js";
 import { isMxcReadPattern } from "./mxc-windows.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
@@ -943,13 +943,15 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
     ...namespaceRoots, ...(pinnedOwnership?.hostStorageRoots ?? []),
   ]);
   const requiredWrites = new Set(mandatory.windowsRequiredWriteDenies);
-  const writeFloor = literalDenies([...sensitiveWriteDenies, ...admitted.denyWrite, ...mandatory.denyWrite]
-    .filter(entry => !requiredWrites.has(typeof entry === "string" ? entry : entry.path)), true);
+  const carrierChildren = new Set(mandatory.windowsCarrierChildWriteDenies);
+  // Only the mandatory floor's own copy of a required row gives way to it; sensitive and configured denies keep their outcome.
+  const writeFloor = literalDenies([...sensitiveWriteDenies, ...admitted.denyWrite,
+    ...mandatory.denyWrite.filter(entry => !requiredWrites.has(typeof entry === "string" ? entry : entry.path))], true);
   const model = buildPolicyModel({
     floors: [
       ...readDenies.map((path) => policyFloorRow(path, "denied", "read-boundary", true)),
       ...writeFloor.map((path) => policyFloorRow(path, "ro", "protected-name", true)),
-      ...[...requiredWrites].map((path) => policyFloorRow(path, "ro", "required-write-deny", true)),
+      ...[...requiredWrites].map((path) => requiredWriteDenyRow(path, carrierChildren.has(path))),
       ...protectedFloor.map((path) => policyFloorRow(path, "denied", "secrets", true)),
       // The user's denies stay spellings: a pattern is expanded when the launch is ranked.
       ...getUserReadDenies().map((path) => policyFloorRow(path, "denied", "user-deny", false)),

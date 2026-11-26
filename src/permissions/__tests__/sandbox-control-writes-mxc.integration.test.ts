@@ -64,7 +64,7 @@ describe.runIf(process.platform === "win32")("container control-file write bound
           egressToken: invocation.token, commandLine: powerShellMxcCommandLine(windowsSystemRoot(), command), cwd: project,
           filesystem: { allowRead: [windowsSystemRoot(), gitRoot, project, configuration], allowWrite: policy.allowWrite,
              denyRead: [], denyWrite: policy.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path),
-             requiredWriteDenies: policy.windowsRequiredWriteDenies },
+             requiredWriteDenies: policy.windowsRequiredWriteDenies, carrierChildWriteDenies: policy.windowsCarrierChildWriteDenies },
           env: Object.fromEntries(Object.entries({ ...gitEnv, CONTROL_TARGET: target }).filter((entry): entry is [string, string] => entry[1] !== undefined)),
           timeoutMs: TOOL_TIMEOUT_POLICY.shellDefaultMs, exists: existsSync,
           });

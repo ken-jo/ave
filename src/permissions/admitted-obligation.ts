@@ -26,7 +26,8 @@ type Principal = "srt-sandbox" | "mxc" | "host-lookup";
 export type ObligationPurpose =
   | "sandbox-config" | "per-exec" | "worker-grant" | "mxc-launch"
   | "shell-cwd" | "pm-cwd-identity" | "git-pin" | "preview";
-export type ObligationSource = "floor" | "read-mask" | "settings" | "per-command" | "live-grant" | "worker-request" | "command-operand";
+// `carrier-child`: a required write deny the host derived as a write root's `.ave` child, the only row a launch may watch.
+export type ObligationSource = "floor" | "read-mask" | "settings" | "per-command" | "live-grant" | "worker-request" | "command-operand" | "carrier-child";
 type EnforcementMode = "acl-exact" | "acl-subtree" | "acl-placeholder" | "mxc-rule" | "lookup";
 
 export type UnresolvedReason =

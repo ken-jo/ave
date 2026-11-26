@@ -61,7 +61,8 @@ describe.skipIf(process.platform !== "win32")("native watched row renamed while 
     const commands = join(project, ".ave", "commands");
     const hooks = join(project, ".ave", "hooks");
     const required = [agents, commands, hooks];
-    const lists = { allowWrite: [project], allowRead: [], denyRead: [], denyWrite: required, requiredWriteDenies: required, protectedFloor: [] };
+    const lists = { allowWrite: [project], allowRead: [], denyRead: [], denyWrite: required, requiredWriteDenies: required,
+      carrierChildWriteDenies: [commands, hooks], protectedFloor: [] };
     try {
       const grantsA = rankAdmittedMxcLists(lists);
       expect(grantsA.watched).toEqual([commands, hooks]);

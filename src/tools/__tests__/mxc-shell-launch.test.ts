@@ -239,7 +239,7 @@ describe("prepareMxcShellLaunch", () => {
     const job = deferred<void>();
     try {
       const launch = await prepareMxcShellLaunch({ ...INPUT, cwd,
-        filesystem: { ...INPUT.filesystem, allowWrite: [cwd], denyWrite: denied, requiredWriteDenies: denied },
+        filesystem: { ...INPUT.filesystem, allowWrite: [cwd], denyWrite: denied, requiredWriteDenies: denied, carrierChildWriteDenies: children },
         exists: (path) => existsSync(path) || path.endsWith("wxc-exec.exe"),
       }, lifecycle);
       expect(decodeRequest(launch.argv).filesystem.deniedPaths).toEqual([agents]);
@@ -281,7 +281,7 @@ describe("prepareMxcShellLaunch", () => {
     h.watchFailure = Object.assign(new Error("EMFILE: too many open files, watch"), { code: "EMFILE" });
     try {
       await expect(prepareMxcShellLaunch({ ...INPUT, cwd,
-        filesystem: { ...INPUT.filesystem, allowWrite: [cwd], denyWrite: children, requiredWriteDenies: children },
+        filesystem: { ...INPUT.filesystem, allowWrite: [cwd], denyWrite: children, requiredWriteDenies: children, carrierChildWriteDenies: children },
         exists: (path) => existsSync(path) || path.endsWith("wxc-exec.exe"),
       }, lifecycle)).rejects.toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: children[0] }));
       expect(watchedProtectedRows().some((path) => children.includes(path))).toBe(false);

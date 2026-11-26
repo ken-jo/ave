@@ -15,7 +15,7 @@ import {
   rankMxcFilesystem,
   resolveHostWxcExecPath,
 } from "../permissions/mxc-windows.js";
-import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../permissions/policy-model.js";
+import { buildPolicyModel, policyFloorRow, policyGrantRow, requiredWriteDenyRow, type PolicyModel } from "../permissions/policy-model.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
 import { assertIssuedContainerHomeInPlace, isIssuedContainerHome } from "../permissions/sandbox-home-registry.js";
 import { WatchedQuarantineError, watchMxcProtectedRows } from "../permissions/windows-watched-rows.js";
@@ -38,9 +38,13 @@ export interface MxcShellPolicyLists {
   readonly allowRead: readonly string[];
   /** Read denies a more specific grant re-opens (the session read boundary, the Ave home, sandbox private directories). */
   readonly denyRead: readonly string[];
-  /** The write floor. */
+  /** The mandatory write floor. A spelling also on `requiredWriteDenies` is that required row. */
   readonly denyWrite: readonly string[];
+  /** Write denies stated on their own (the sensitive floor, configured rows): kept at a required row's spelling, with their own outcome. */
+  readonly independentWriteDenies?: readonly string[];
   readonly requiredWriteDenies?: readonly string[];
+  /** The required rows the host derived as a write root's `.ave` `commands` or `hooks` child: only these may be watched. */
+  readonly carrierChildWriteDenies?: readonly string[];
   /** The protected read floor. A grant at or beneath a row is dropped. */
   readonly protectedFloor: readonly string[];
   /** The user's read denies. A grant at or beneath a row is dropped, and no pierce covers one. */
@@ -55,11 +59,13 @@ export interface MxcShellPolicyLists {
  */
 export function shellPolicyModel(lists: MxcShellPolicyLists): PolicyModel {
   const required = new Set(lists.requiredWriteDenies);
+  const carrierChildren = new Set(lists.carrierChildWriteDenies);
   return buildPolicyModel({
     floors: [
       ...lists.denyRead.map((path) => policyFloorRow(path, "denied", "read-boundary", false)),
       ...lists.denyWrite.filter(path => !required.has(path)).map((path) => policyFloorRow(path, "ro", "protected-name", false)),
-      ...[...required].map((path) => policyFloorRow(path, "ro", "required-write-deny", true)),
+      ...(lists.independentWriteDenies ?? []).map((path) => policyFloorRow(path, "ro", "protected-name", false)),
+      ...[...required].map((path) => requiredWriteDenyRow(path, carrierChildren.has(path))),
       ...lists.protectedFloor.map((path) => policyFloorRow(path, "denied", "secrets", false)),
       ...(lists.userDenyRead ?? []).map((path) => policyFloorRow(path, "denied", "user-deny", false)),
     ],

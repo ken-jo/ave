@@ -134,8 +134,9 @@ describe("watched protected rows", () => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const root = realpathSync.native(workspace);
     const carrier = join(root, ".ave");
-    const children = [join(carrier, "commands"), join(carrier, "hooks")];
-    const lists = { allowWrite: [root], allowRead: [], denyRead: [], denyWrite: children, requiredWriteDenies: children, protectedFloor: [] };
+    const [commands, hooks] = [join(carrier, "commands"), join(carrier, "hooks")];
+    const children = [commands, hooks];
+    const lists = { allowWrite: [root], allowRead: [], denyRead: [], denyWrite: children, requiredWriteDenies: children, carrierChildWriteDenies: children, protectedFloor: [] };
     const running = rankAdmittedMxcLists(lists);
     expect(running.watched).toEqual(children);
     const sweep = watchMxcProtectedRows(running.watched ?? [], { commandId: "running" });
@@ -143,9 +144,9 @@ describe("watched protected rows", () => {
     await vi.waitFor(() => expect(live()).toEqual([root, carrier]));
     expect(rankAdmittedMxcLists(lists)).toEqual({ readwrite: [root], readonly: [], denied: children });
     expect(live()).toEqual([root, carrier]);
-    mkdirSync(children[1]!);
+    mkdirSync(hooks);
     await expect(sweep()).resolves.toContain(WATCHED_ROW_VIOLATION);
-    expect(listWatchedQuarantine().map(entry => entry.original)).toEqual([children[1]]);
+    expect(listWatchedQuarantine().map(entry => entry.original)).toEqual([hooks]);
     expect(live()).toEqual([]);
   });
 
