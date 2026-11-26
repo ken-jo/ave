@@ -39,15 +39,18 @@ import { buildStagePrompt, stageInputsOf } from "./stage-prompt.js";
 import { maskWorkflowText, pendingWorkflowDecisions, projectWorkflowRun, savedWorkflowStageActivity, withoutWorkflowProjection, workflowStageActivity } from "./run-read-projection.js";
 import type { WorkflowRunPinView, WorkflowStageActivityUpdate, WorkflowStageView } from "../../shared/workflow-run-view.js";
 import { OwnedFsError } from "./owned-fs.js";
-import { isAwaitingStageReview, reconcileRunRecord, type RunRecord, type RunWriteFailure, type WorkflowRunState } from "./run-state.js";
+import { isAwaitingStageReview, parkedStageOutcome, reconcileRunRecord, type RunRecord, type RunWriteFailure, type WorkflowRunState } from "./run-state.js";
 import type { RunRef, StageWorkspaceProvider } from "./stage-workspace.js";
 import { WorkflowInvariantError } from "./workflow-errors.js";
+import { checkStageBudget, type BudgetVerdict, type StageUsage } from "./run-budget.js";
+import type { ScheduledRunOutcome } from "./schedule-breaker.js";
 
 const log = createLogger("work-board-stage-run");
 
 /** The host bounds a read-scope stage's rounds, as it does for the plan child of an ordinary run. */
 const READ_STAGE_ROUND_BUDGET = 20;
 const STAGE_OUTPUT_MAX_CHARS = 48_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 const runKeyOf = (itemId: number, runId: string): string => `work-board:${itemId}#${runId}`;
 
@@ -62,7 +65,7 @@ interface LaneHooks {
   admit(a: { runKey: string; stageId: string; envelope: StageEnvelope | undefined; workspaceRoot: string }): Promise<{ ok: true } | { ok: false; code: LaneBlockCode }>;
   sessionLinked(a: { runKey: string; stageId: string; sessionId: string; envelope: StageEnvelope; workspaceRoot: string }): void;
   sessionEnded(sessionId: string): void;
-  onDenied(listener: (e: { sessionId: string; code: string }) => void): () => void;
+  onDenied(listener: (e: { sessionId: string; code: string; call: { toolName: string } }) => void): () => void;
 }
 interface RequestedOutputHooks {
   accept(a: { stage: TemplateStage; workspaceRoot: string; raw: unknown }): { ok: true; output: RequestedOutput } | { ok: false; code: string };
@@ -110,7 +113,7 @@ export interface StageRunEngineDeps {
 
 export type ScheduledTemplateSource = Extract<RunAuthoritySource, { kind: "schedule-attachment" }>;
 export type ScheduledTemplateStart =
-  | { ok: true; itemId: number; result: Promise<WorkItemRunResult> }
+  | { ok: true; itemId: number; result: Promise<WorkItemRunResult>; breakerOutcome: Promise<ScheduledRunOutcome | null> }
   | { ok: false; code: string; tool?: EnvelopeToolRef };
 
 export interface StageRunEngine {
@@ -169,6 +172,8 @@ interface RunState {
   refused: { code: string; tool?: EnvelopeToolRef } | null;
   /** A fire is provisional until its first child links. Stays present through rollback and result reporting. */
   scheduledStart?: { refusal?: WorkItemRunResult };
+  /** The first breaker outcome may arrive after the firing returned at a gate. */
+  resolveScheduleOutcome?: (outcome: ScheduledRunOutcome | null) => void;
   /** stageId → childSessionId, set when the child links. */
   live: Map<string, string>;
   /** `${stageId}#${attempt}` the reducer asked to spawn and no launch consumed yet. */
@@ -685,6 +690,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     // Every cancelled end names its cause: the authority's code, or the stop or the row's removal.
     const told = message ?? (runStatus !== "cancelled" || byAuthority ? undefined : state.rowGone ? "item-removed" : "user-stopped");
     emit({ itemId: state.itemId, phase, ...(told ? { message: told } : {}), ...reason });
+    state.resolveScheduleOutcome?.(settled && runStatus === "completed" ? "completed" : settled && runStatus === "error" ? "failed" : null);
     closeState(state);
     notifyItemChanged(state.itemId);
   }
@@ -851,6 +857,13 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       });
     }
     if ((shown || joinChanged || (record.stageJoins ?? []).some(join => join.status === "conflict")) && deps.itemChanged && claimReplay(replay?.notifications, "item-changed")) notifyItemChanged(state.itemId);
+    if (state.resolveScheduleOutcome && record.settled === undefined) {
+      const outcome = parkedStageOutcome(record);
+      if (outcome) {
+        state.resolveScheduleOutcome(outcome);
+        state.resolveScheduleOutcome = undefined;
+      }
+    }
     const seals = pendingSeals(state, record).filter(seal => !effects.some(effect => effect.type === "seal" && effect.stageId === seal.stageId));
     await runEffects(state, record, version, [...effects, ...seals], replay);
     return null;
@@ -955,7 +968,13 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     state.stopping || state.faulted !== null || state.refused !== null || state.interruptAsked.has(stageId) || state.revoked.has(stageId);
 
   /** The only `runner.spawn` call for a template run. Throws `WorkflowInvariantError` unless every check of the plan's table holds. */
-  async function spawnStageChild(state: RunState, stageId: string, attempt: number): Promise<{ result: SubAgentSpawnResult; inputTaint: boolean }> {
+  async function spawnStageChild(state: RunState, stageId: string, attempt: number): Promise<{
+    result: SubAgentSpawnResult;
+    inputTaint: boolean;
+    usage?: WorkItemStageRun["usage"];
+    deniedCalls?: WorkItemStageRun["deniedCalls"];
+    budgetFailure?: Extract<BudgetVerdict, { ok: false }>["code"];
+  }> {
     const key = `${stageId}#${attempt}`;
     if (!Number.isInteger(attempt) || attempt < 1 || attempt > MAX_STAGE_ATTEMPTS) throw new WorkflowInvariantError("attempt-out-of-range");
     if (state.stopping) throw new WorkflowInvariantError("run-stopped");
@@ -1051,18 +1070,58 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       let linked: string | undefined;
       let scoped = false;
       let activitySignature = "";
+      const budget = lane === "unattended" ? stage.envelope?.budget : undefined;
+      const usage: StageUsage = { rounds: 0, startedAt: Date.now(), denials: 0 };
+      const deniedCalls: NonNullable<WorkItemStageRun["deniedCalls"]> = [];
+      const snapshotUsage = () => ({ ...usage, startedAt: new Date(usage.startedAt).toISOString() });
+      let budgetFailure: Extract<BudgetVerdict, { ok: false }>["code"] | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const origin = workBoardOriginSessionId(state.itemId);
+      const interrupt = () => {
+        if (linked !== undefined) runner.interruptRun(linked, origin);
+      };
+      // A descendant belongs to the attempt only while the runner identifies its immediate parent as this child.
+      const descendants = () => linked === undefined ? [] : runner.listRunStatuses(linked);
+      const countRounds = (ownRounds: number) => {
+        usage.rounds = Math.max(usage.rounds, ownRounds + descendants().reduce((rounds, child) => rounds + child.turnCount, 0));
+      };
+      const check = () => {
+        if (!budget || budgetFailure !== undefined) return;
+        const verdict = checkStageBudget(usage, budget, Date.now());
+        if (!verdict.ok) {
+          budgetFailure = verdict.code;
+          interrupt();
+        }
+      };
+      const armDeadline = () => {
+        if (!budget) return;
+        const remaining = budget.minutes * 60_000 - (Date.now() - usage.startedAt);
+        if (remaining <= 0) check();
+        else {
+          timer = setTimeout(armDeadline, Math.min(remaining, MAX_TIMER_DELAY_MS));
+          timer.unref();
+        }
+      };
+      const unsubscribe = budget && deps.lane?.onDenied(({ sessionId, code, call }) => {
+        if (linked === undefined || budgetFailure !== undefined || (code !== "outside-envelope" && code !== "no-approver")) return;
+        if (sessionId !== linked && !descendants().some(child => child.childSessionId === sessionId)) return;
+        deniedCalls.push({ toolName: maskWorkflowText(call.toolName).slice(0, 500), code });
+        usage.denials = deniedCalls.length;
+        check();
+      });
       try {
+        armDeadline();
         const result = await runner.spawn(
           {
             title: `${stage.name}: ${item.title}`,
             instructions: prompt.instructions,
             toolScope: readOnly ? exactToolScope(readTools) : PARENT_ALL_TOOL_SCOPE,
-            originSessionId: workBoardOriginSessionId(state.itemId),
+            originSessionId: origin,
             projectRoot: stageRoot,
             ...(item.projectName ? { projectName: item.projectName } : {}),
             profileMode: readOnly ? "plan" : "execute",
             profileModel: profile?.model,
-            ...(readOnly ? { maxRounds: READ_STAGE_ROUND_BUDGET } : {}),
+            ...(budget ? { maxRounds: budget.rounds } : readOnly ? { maxRounds: READ_STAGE_ROUND_BUDGET } : {}),
             ...(prompt.taint ? { hostInputTaint: prompt.taint } : {}),
             ...(lane === "unattended" ? { unattendedStage: { runKey, stageId } } : {}),
           },
@@ -1079,7 +1138,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
               let bound = true;
               try { deps.workspaceBinding?.bind(childSessionId, stageRoot); } catch { bound = false; }
               // A stop, a rejection or a revocation that arrived while the child was starting reaches it here.
-              if (!bound || state.stopping || state.faulted !== null || state.interruptAsked.has(stageId) || state.revoked.has(stageId)) runner.interruptRun(childSessionId, workBoardOriginSessionId(state.itemId));
+              if (!bound || budgetFailure !== undefined || state.stopping || state.faulted !== null || state.interruptAsked.has(stageId) || state.revoked.has(stageId)) interrupt();
               // The run's permission scope takes the session with its stage and the lane the authority gave the run. A refused link (the
               // run has ended, or the session belongs to another run) throws and fails the launch.
               deps.runScope?.sessionLinked(runKey, childSessionId, { stageId, stageName: stage.name, lane });
@@ -1087,10 +1146,15 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
               if (lane === "unattended" && stage.envelope) deps.lane?.sessionLinked({ runKey, stageId, sessionId: childSessionId, envelope: stage.envelope, workspaceRoot: stageRoot });
               state.scheduledStart = undefined;
               emit({ itemId: state.itemId, phase: "executing", stageId, attempt, runSessionId: childSessionId });
-              post(state, { type: "stage_linked", stageId, childSessionId }, attempt);
+              post(state, { type: "stage_linked", stageId, childSessionId, ...(budget ? { usage: snapshotUsage() } : {}) }, attempt);
             },
             onActivity: ({ entries }) => {
-              if (linked === undefined || !canShowRun(state)) return;
+              if (linked === undefined) return;
+              if (budget && stage.allowSubAgents) {
+                countRounds(runner.getRunStatus(linked, origin)?.turnCount ?? 0);
+                check();
+              }
+              if (!canShowRun(state)) return;
               const stageActivity: WorkflowStageActivityUpdate = {
                 runId: state.runId, stageId, attempt, childSessionId: linked,
                 activity: workflowStageActivity(entries), breaker: deps.readBreaker?.(linked),
@@ -1105,8 +1169,20 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
             },
           },
         );
-        return { result, inputTaint: prompt.taint !== undefined };
+        if (budget) {
+          countRounds(result.turnCount);
+          const verdict = checkStageBudget(usage, budget, Date.now());
+          if (!verdict.ok) budgetFailure ??= verdict.code;
+          if (result.stopReason === "round-cap") budgetFailure ??= "rounds";
+        }
+        return {
+          result, inputTaint: prompt.taint !== undefined,
+          ...(budget ? { usage: snapshotUsage(), budgetFailure } : {}),
+          ...(deniedCalls.length ? { deniedCalls } : {}),
+        };
       } finally {
+        clearTimeout(timer);
+        unsubscribe?.();
         state.live.delete(stageId);
         if (linked !== undefined) {
           deps.workspaceBinding?.unbind(linked);
@@ -1131,15 +1207,17 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     let next: RunEvent | null = null;
     let faultCause: string | null = null;
     try {
-      const { result, inputTaint } = await spawnStageChild(state, stageId, attempt);
+      const { result, inputTaint, usage, deniedCalls, budgetFailure } = await spawnStageChild(state, stageId, attempt);
       state.results.set(stageId, result);
       // A child that reports no end origin is treated as having read files: an unknown origin never passes as clean.
       const end = result.endTrustOrigin;
       const taint: WorkItemStageRun["taint"] = end === "agent-message" ? "agent-message"
         : inputTaint || end === undefined || end === "file-content" ? "file-content" : undefined;
       next = {
-        type: "stage_ended", stageId, attempt, ok: result.ok, ...(taint ? { taint } : {}),
-        ...(result.ok ? { output: result.summary.slice(0, STAGE_OUTPUT_MAX_CHARS) } : { reason: result.error ?? result.summary, failure: failureOf(state, stageId, result) }),
+        type: "stage_ended", stageId, attempt, ok: result.ok && budgetFailure === undefined, ...(taint ? { taint } : {}),
+        ...(usage ? { usage } : {}), ...(deniedCalls ? { deniedCalls } : {}),
+        ...(budgetFailure !== undefined ? { reason: budgetFailure, failure: "budget" }
+          : result.ok ? { output: result.summary.slice(0, STAGE_OUTPUT_MAX_CHARS) } : { reason: result.error ?? result.summary, failure: failureOf(state, stageId, result) }),
         ...(result.stopReason === "interrupted" ? { interrupted: true } : {}),
       };
     } catch (error) {
@@ -1215,6 +1293,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (runStatus === "denied") return { status: runStatus };
     if (runStatus === "cancelled") return { status: "cancelled", ...(state.stopping ? { reason: state.rowGone ? "item-removed" : "user-stopped" } : reason) };
     // Unsettled with nothing live: the run waits for the user (a gate, a join, Retry or Stop).
+    if (record.runStartedBy.kind === "schedule-attachment") {
+      const parked = parkedStageOutcome(record);
+      if (parked) return { status: "awaiting_approval", reasonCode: parked === "failed" ? "stage-failed" : parked };
+    }
     return { status: "awaiting_approval" };
   }
 
@@ -1313,7 +1395,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const started = await beginStart(created.itemId, source, checked, ref);
       if ("status" in started) return { ok: false, code: started.reasonCode ?? "template-run-unavailable", ...(started.reasonTool ? { tool: started.reasonTool } : {}) };
       handedOff = true;
-      return { ok: true, itemId: created.itemId, result: firstResult(started) };
+      const breakerOutcome = new Promise<ScheduledRunOutcome | null>(resolve => { started.resolveScheduleOutcome = resolve; });
+      return { ok: true, itemId: created.itemId, result: firstResult(started), breakerOutcome };
     } catch (error) {
       const fault = pinFault(error);
       if (!fault) log.warn("scheduled template start failed: %s", errorMessage(error));

@@ -19,8 +19,8 @@ export const MAX_PARALLEL_STAGES = 3;
 export const MAX_STAGE_ATTEMPTS = 3;
 
 export type RunEvent =
-  | { type: "started" } | { type: "stage_linked"; stageId: string; childSessionId: string }
-  | { type: "stage_ended"; stageId: string; attempt: number; ok: boolean; output?: string; taint?: WorkItemStageRun["taint"]; reason?: string; interrupted?: boolean; failure?: StageFailure }
+  | { type: "started" } | { type: "stage_linked"; stageId: string; childSessionId: string; usage?: WorkItemStageRun["usage"] }
+  | { type: "stage_ended"; stageId: string; attempt: number; ok: boolean; output?: string; taint?: WorkItemStageRun["taint"]; reason?: string; interrupted?: boolean; failure?: StageFailure; usage?: WorkItemStageRun["usage"]; deniedCalls?: WorkItemStageRun["deniedCalls"] }
   | { type: "gate_evaluated"; stageId: string; attempt: number; passed: boolean; evidence: string; judgedBy: "host" | "model" }
   | { type: "gate_decided"; stageId: string; attempt: number; decision: WorkPlanDecision; note?: string }
   | { type: "retry_requested"; stageId: string } | { type: "continue_requested" } | { type: "stop_requested" }
@@ -59,7 +59,7 @@ export interface RunStep {
 function rerun(run: WorkItemStageRun): void {
   run.attempt += 1;
   run.status = "waiting";
-  for (const key of ["failure", "resultHash", "childSessionId", "startedAt", "endedAt", "blocked"] as const) delete run[key];
+  for (const key of ["failure", "resultHash", "childSessionId", "startedAt", "endedAt", "blocked", "usage", "deniedCalls"] as const) delete run[key];
 }
 
 /** The whole scheduler as one pure step. It never spawns, writes or reads a clock; the engine runs the effects it returns. */
@@ -90,13 +90,18 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
       break;
     case "stage_linked": {
       const run = find(event.stageId);
-      if (run?.status === "running") run.childSessionId = event.childSessionId;
+      if (run?.status === "running") {
+        run.childSessionId = event.childSessionId;
+        if (event.usage) run.usage = event.usage;
+      }
       break;
     }
     case "stage_ended": {
       const run = find(event.stageId);
       if (run?.status !== "running" || run.attempt !== event.attempt) break;
       run.endedAt = now;
+      if (event.usage) run.usage = event.usage;
+      if (event.deniedCalls) run.deniedCalls = event.deniedCalls;
       if (event.output !== undefined) run.output = event.output;
       if (event.taint) run.taint = event.taint;
       if (winding()) run.status = "cancelled";

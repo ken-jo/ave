@@ -129,6 +129,7 @@ export interface WorkItemStageRun {
   requestedOutputs?: RequestedOutput[];
   outputExecutions?: OutputExecution[];
   usage?: { rounds: number; startedAt: string; denials: number; costUsd?: number };
+  deniedCalls?: { toolName: string; code: "outside-envelope" | "no-approver" }[];
   childSessionId?: string;
   startedAt?: string;
   endedAt?: string;

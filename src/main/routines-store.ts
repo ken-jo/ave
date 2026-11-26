@@ -6,7 +6,7 @@ import { readJsonFileOrEmpty, writeFileAtomicAtPath } from "./storage/feature-na
 import { createLogger } from "../lib/logger.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { errorMessage } from "../shared/error-message.js";
-import { isStringArray } from "../shared/is-record.js";
+import { isRecord, isStringArray } from "../shared/is-record.js";
 import { isValidPluginId } from "../plugins/public-contract.js";
 import { advanceRepeatAt, isMissedWhilePaused, isRoutineScheduleShape, scheduleIdentity } from "../routines/schedule-advance.js";
 import { projectRootEquals } from "../shared/project-identity.js";
@@ -14,6 +14,7 @@ import { assertHostDecisionProof, type HostDecisionProof } from "./workflow-temp
 import type { ScheduleAttachment, TemplateScope, WorkflowTemplate } from "../shared/workflow-template-types.js";
 import { isTemplateId, attachmentScopeMatches, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { isValidSessionId } from "../shared/session-id.js";
+import { nextScheduleState, type ScheduledRunOutcome } from "../work-board/workflow/schedule-breaker.js";
 const log = createLogger("ave");
 
 // Re-export from shared so callers that import from routines-store continue to work unchanged, while the renderer imports from shared/ (no Node built-ins).
@@ -142,7 +143,13 @@ function isValidRecord(r: unknown): r is StoredRoutine {
   if (x.projectRoot !== undefined && (typeof x.projectRoot !== "string" || x.projectRoot.length === 0 || x.projectRoot.length > MAX_PROJECT_ROOT_LENGTH)) return false;
   if (x.createdBy !== undefined && !isActor(x.createdBy)) return false;
   if (x.pausedAt !== undefined && typeof x.pausedAt !== "string") return false;
-  if ((x.pausedAt === undefined) !== (x.pausedBy === undefined) || (x.pausedBy !== undefined && !isActor(x.pausedBy))) return false;
+  if ((x.pausedAt === undefined) !== (x.pausedBy === undefined)
+    || (x.pausedBy !== undefined && !isActor(x.pausedBy) && !(x.execution === "template-run" && x.pausedBy === "schedule-breaker"))) return false;
+  if (x.scheduleBreaker !== undefined) {
+    const breaker = x.scheduleBreaker;
+    if (x.execution !== "template-run" || !isRecord(breaker) || ![0, 1, 2].includes(breaker.consecutiveBad as number)
+      || typeof breaker.firedAt !== "string" || !Number.isFinite(Date.parse(breaker.firedAt))) return false;
+  }
   if (x.resumedAt !== undefined && typeof x.resumedAt !== "string") return false;
   for (const field of ["title", "prePrompt", "notificationTitle", "notificationBody"] as const) {
     if (x[field] !== undefined && typeof x[field] !== "string") return false;
@@ -248,6 +255,7 @@ interface StoredInvalidRoutine extends InvalidRoutine {
 interface StoredRoutine extends RoutineRecord {
   /** Keep both routes searchable while the attachment write and routine write settle. */
   pendingTemplateProjectRoot?: string | null;
+  scheduleBreaker?: { consecutiveBad: number; firedAt: string };
 }
 
 interface RoutinesFile {
@@ -333,7 +341,7 @@ async function writeFileAtomic(filePath: string, data: RoutinesFile): Promise<vo
 }
 
 // Deep clone a RoutineRecord to prevent callers from mutating shared cache refs.
-function cloneRecord({ pendingTemplateProjectRoot: _pendingProject, ...r }: StoredRoutine): RoutineRecord {
+function cloneRecord({ pendingTemplateProjectRoot: _pendingProject, scheduleBreaker: _scheduleBreaker, ...r }: StoredRoutine): RoutineRecord {
   return {
     ...r,
     ...(r.runs ? { runs: structuredClone(r.runs) } : {}),
@@ -857,6 +865,21 @@ export class RoutinesStore {
     });
   }
 
+  async recordTemplateScheduleOutcome(id: string, firedAt: string, outcome: ScheduledRunOutcome): Promise<RoutineRecord | null> {
+    if (!Number.isFinite(Date.parse(firedAt))) throw new Error("Invalid template schedule fire time");
+    return this.mutate(id, (r) => {
+      if (r.execution !== "template-run") throw new Error("Expected a template routine");
+      if (r.pausedAt || (r.scheduleBreaker && firedAt <= r.scheduleBreaker.firedAt)) return false;
+      const next = nextScheduleState({ consecutiveBad: r.scheduleBreaker?.consecutiveBad ?? 0 }, outcome);
+      r.scheduleBreaker = { consecutiveBad: next.consecutiveBad, firedAt };
+      if (next.pausedAt) {
+        r.pausedAt = next.pausedAt;
+        r.pausedBy = "schedule-breaker";
+      }
+      return true;
+    });
+  }
+
   // The fire at `firedAt` did not run because its connected chat was busy. A one-shot stays listed as skipped instead of done; it is not
   // fired again by itself. A later fire is left as it is; null when the item is gone.
   async markChatBusy(id: string, firedAt: string): Promise<RoutineRecord | null> {
@@ -958,6 +981,7 @@ export class RoutinesStore {
       const now = new Date().toISOString();
       delete r.pausedAt;
       delete r.pausedBy;
+      if (r.execution === "template-run" && r.lastFiredAt) r.scheduleBreaker = { consecutiveBad: 0, firedAt: r.lastFiredAt };
       r.resumedAt = now;
       advanceRepeatingSchedule(r, now);
       return true;

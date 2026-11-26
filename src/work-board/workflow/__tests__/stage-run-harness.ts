@@ -7,7 +7,7 @@ import type {
   RunAuthoritySource, StageJoin, TemplateScope, TemplateStage, TemplateVersion, TemplateVersionPin, WorkItemStageRun,
 } from "../../../shared/workflow-template-types.js";
 import { type WorkBoardRunEvent, type WorkItemResolved, workBoardOriginSessionId } from "../../../shared/work-board-types.js";
-import type { SubAgentActivityUpdate, SubAgentRunner, SubAgentSpawnInput, SubAgentSpawnResult } from "../../../engine/subagent-runner.js";
+import type { SubAgentActivityUpdate, SubAgentRunner, SubAgentRunSnapshot, SubAgentSpawnInput, SubAgentSpawnResult } from "../../../engine/subagent-runner.js";
 import { WorkBoardStore } from "../../../main/work-board-store.js";
 import { WorkflowTemplateStore } from "../../../main/workflow-template-store.js";
 import { mintHostDecisionProof } from "../../../main/workflow-template-decision.js";
@@ -83,6 +83,7 @@ export async function stageRunHarness(opts: {
   script?: (input: SubAgentSpawnInput) => Partial<SubAgentSpawnResult> | undefined;
   /** Use a real runner for tests that need child-loop behavior. */
   runner?: (dir: string) => SubAgentRunner;
+  descendants?: (originSessionId: string) => Pick<SubAgentRunSnapshot, "childSessionId" | "turnCount">[];
   workflow?: Partial<WorkflowDeps>;
   /** Parts chosen for the board store the engine runs on (the production wiring is chosen this way); they replace the harness's own. */
   wiring?: (store: WorkBoardStore, harness: { workspace: StageWorkspaceProvider; templates: WorkflowTemplateStore; waking: WakingWorkspaceCall }) => Partial<WorkflowDeps>;
@@ -259,6 +260,7 @@ export async function stageRunHarness(opts: {
       return { ok: true, messageId: `m-${child.steers.length}` };
     },
     getRunStatus: (id: string) => activities.get(id) ?? null,
+    listRunStatuses: (originSessionId: string) => opts.descendants?.(originSessionId) ?? [],
     parentToolRegistry: () => registry,
   } as unknown as SubAgentRunner;
 

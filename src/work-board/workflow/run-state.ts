@@ -6,6 +6,7 @@ import { resultHashOf } from "../../shared/workflow-template-output.js";
 import type { StageJoin, TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkItemStageRun } from "../../shared/workflow-template-types.js";
 import { issueJoinConflict } from "./stage-machine.js";
 import { WorkflowTemplateError } from "../template-graph.js";
+import { MAX_LANE_DENIALS_PER_STAGE } from "./run-budget.js";
 
 /** Everything a template run is decided from. It lives in the covered run file, keyed by `runId`; a board row names a run only by that id
  * and nothing on a board row is ever read as one of these fields. */
@@ -142,10 +143,21 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
   };
 }
 
-/** A template run waits for the user: a stage is at its gate, or a join could not be collected. */
+function stageReachedDenialLimit(stage: WorkItemStageRun): boolean {
+  return stage.status === "failed" && stage.failure === "budget" && stage.deniedCalls?.length === MAX_LANE_DENIALS_PER_STAGE;
+}
+
+export function parkedStageOutcome(run: Pick<RunRecord, "stageRuns">): "parked-on-denials" | "failed" | undefined {
+  if (run.stageRuns.some(stage => stage.status === "running")) return undefined;
+  if (run.stageRuns.some(stageReachedDenialLimit)) return "parked-on-denials";
+  return run.stageRuns.some(stage => stage.status === "failed") ? "failed" : undefined;
+}
+
+/** A template run waits for the user at a gate, a denial limit, or a join conflict. */
 export function isAwaitingStageReview(run: Pick<RunRecord, "settled" | "stageRuns" | "stageJoins">): boolean {
   if (run.settled !== undefined) return false;
-  return run.stageRuns.some(stage => stage.status === "awaiting_gate") || (run.stageJoins ?? []).some(join => join.status === "conflict");
+  return run.stageRuns.some(stage => stage.status === "awaiting_gate" || stageReachedDenialLimit(stage))
+    || (run.stageJoins ?? []).some(join => join.status === "conflict");
 }
 
 /** What a restart leaves of an unsettled run: a run that waits for the user, and nothing starts. A stage that was running lost its child
