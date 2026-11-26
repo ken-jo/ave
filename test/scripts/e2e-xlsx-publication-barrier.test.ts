@@ -203,7 +203,9 @@ describe("workbook publication build", () => {
       const reads = powerShellHostScriptReadPaths(ast, source);
       expect(reads).toContain(fixture.scriptPath);
       expect(reads).toContain(windowsPathKindHelperIn(join(fixture.root, "resources")));
-      expect(awaitedHostScriptCommand(source, ast.commands[0]!)).not.toBeNull();
+      const [invocation] = ast.commands;
+      if (!invocation) throw new Error("The rendered command did not parse");
+      expect(awaitedHostScriptCommand(source, invocation)).not.toBeNull();
       expect(findPowerShellAstPathViolation(ast, workspace, workspace, [], true, source)).toBeNull();
     } finally {
       fixture.dispose();

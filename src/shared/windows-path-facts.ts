@@ -270,7 +270,7 @@ function aceSidOffset(ace: Buffer): number | undefined {
 function isCompleteAce(ace: Buffer): boolean {
   const sid = aceSidOffset(ace);
   if (sid === undefined || sid + SID_HEADER_BYTES > ace.length || ace[sid] !== 1) return false;
-  const subAuthorities = ace[sid + 1]!;
+  const subAuthorities = ace.readUInt8(sid + 1);
   return subAuthorities <= SID_MAX_SUB_AUTHORITIES && sid + SID_HEADER_BYTES + 4 * subAuthorities <= ace.length;
 }
 
