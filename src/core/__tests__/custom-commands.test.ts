@@ -1,15 +1,42 @@
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import * as hostWorkspaceGate from "../../shared/host-workspace-gate.js";
 import {
   CUSTOM_COMMAND_MAX_BYTES,
   expandCustomCommand,
   listCustomCommands,
   loadCustomCommand,
 } from "../custom-commands.js";
+
+const io = vi.hoisted(() => ({
+  onResolved: undefined as ((path: string) => void) | undefined,
+  onRead: undefined as ((path: string) => void) | undefined,
+}));
+vi.mock("node:fs/promises", async (original) => {
+  const real = await original<typeof import("node:fs/promises")>();
+  return {
+    ...real,
+    realpath: async (path: string) => {
+      const resolved = await real.realpath(path);
+      io.onResolved?.(path);
+      return resolved;
+    },
+    open: async (path: string, flags: string | number) => {
+      const handle = await real.open(path, flags);
+      const readFile = handle.readFile.bind(handle);
+      handle.readFile = (async (encoding: "utf8") => {
+        const body = await readFile(encoding);
+        io.onRead?.(path);
+        return body;
+      }) as typeof handle.readFile;
+      return handle;
+    },
+  };
+});
 
 const originalHome = process.env.AVE_HOME;
 let root: string;
@@ -45,6 +72,57 @@ describe("custom command files", () => {
       { name: "review", scope: "project", description: "Review a PR", argumentHint: "<pr>" },
       { name: "standup", scope: "user", description: "Daily notes" },
     ]);
+  });
+
+  it("contributes no project commands while the project's workspace gate refuses", async () => {
+    await command(userDir, "standup", "Summarize today.");
+    await command(projectDir, "review", "Review $ARGUMENTS.");
+    const gate = vi.spyOn(hostWorkspaceGate, "isHostWorkspaceConsumable").mockImplementation(workspace => workspace !== project);
+    try {
+      expect((await listCustomCommands(project)).map(entry => entry.name)).toEqual(["standup"]);
+      expect(await loadCustomCommand("review", project)).toBeNull();
+      expect(await loadCustomCommand("standup", project)).toMatchObject({ scope: "user" });
+    } finally {
+      gate.mockRestore();
+    }
+    expect((await listCustomCommands(project)).map(entry => entry.name)).toEqual(["review", "standup"]);
+    expect(await loadCustomCommand("review", project)).toMatchObject({ scope: "project" });
+  });
+
+  it.each(["listing", "lookup"] as const)("refuses a project command during %s when the gate closes after resolution", async (operation) => {
+    await command(projectDir, "review", "project body");
+    const file = join(projectDir, "review.md");
+    let consumable = true;
+    const read = vi.fn();
+    io.onResolved = path => { if (path === file) consumable = false; };
+    io.onRead = read;
+    const gate = vi.spyOn(hostWorkspaceGate, "isHostWorkspaceConsumable").mockImplementation(() => consumable);
+    try {
+      if (operation === "listing") expect(await listCustomCommands(project)).toEqual([]);
+      else expect(await loadCustomCommand("review", project)).toBeNull();
+      expect(consumable).toBe(false);
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      gate.mockRestore();
+      io.onResolved = undefined;
+      io.onRead = undefined;
+    }
+  });
+
+  it.each(["listing", "lookup"] as const)("discards a project command during %s when the gate closes during the read", async (operation) => {
+    await command(projectDir, "review", "project body");
+    await command(userDir, "review", "user body");
+    let consumable = true;
+    io.onRead = path => { if (path === join(projectDir, "review.md")) consumable = false; };
+    const gate = vi.spyOn(hostWorkspaceGate, "isHostWorkspaceConsumable").mockImplementation(() => consumable);
+    try {
+      if (operation === "listing") expect(await listCustomCommands(project)).toMatchObject([{ scope: "user", name: "review" }]);
+      else expect(await loadCustomCommand("review", project)).toMatchObject({ scope: "user", body: "user body" });
+      expect(consumable).toBe(false);
+    } finally {
+      gate.mockRestore();
+      io.onRead = undefined;
+    }
   });
 
   it("lets the project file win a name clash", async () => {

@@ -12,6 +12,7 @@ import { loadHookRuntimePolicy, type HookRuntimePolicy } from "../hook-source-po
 import { acceptHookTrust } from "../hook-trust-commands.js";
 import { readWindowsDacls, windowsPolicyDescriptor, windowsPolicyTrustFailure } from "../../shared/windows-path-facts.js";
 import { hookDirLayout, writeExecutableHook } from "./test-helpers.js";
+import * as hostWorkspaceGate from "../../shared/host-workspace-gate.js";
 
 // Whether a real temp file is trusted depends on who runs the tests (an elevated runner owns it as an administrator), so
 // cases that need a fixed owner and DACL substitute them in the real native snapshot; the production trust check still
@@ -100,6 +101,67 @@ describe("source-bound hook review", () => {
     await reviewRuntimeHookTrust(manager, { sourceId: "user", fileName: user.fileName, expectedSha256: user.sha256, action: "disable" });
     expect(manager.hooksOfType("pre")).toHaveLength(1);
     expect(listRuntimeHookTrustState(manager).active[0].sourceId).toBe("system");
+  });
+
+  it("reads and runs no project hook while the project's workspace gate refuses", async () => {
+    const layout = hookDirLayout(root);
+    const project = join(root, "project");
+    writeExecutableHook(join(project, ".ave", "hooks"), "pre-project.sh");
+    const { manager } = await wireHookSystem({ ...layout, policy: openPolicy() });
+    const projectRows = () => {
+      const state = listRuntimeHookTrustState(manager, project);
+      return [...state.active, ...state.disabled].filter((entry) => entry.hookSource === "project");
+    };
+    const [row] = projectRows();
+    if (!row) throw new Error("Project hook row missing");
+    const request = { sourceId: row.sourceId ?? "project", fileName: row.fileName, expectedSha256: row.sha256 };
+    const payload = { toolName: "read_file", source: "builtin" as const, category: "read" as const, input: {}, sessionId: "project", trustOrigin: "user-keyboard" as const };
+    const gate = vi.spyOn(hostWorkspaceGate, "isHostWorkspaceConsumable").mockReturnValue(false);
+    try {
+      expect(projectRows()).toEqual([]);
+      expect((await reviewRuntimeHookTrust(manager, { ...request, action: "trust-project" }, project)).ok).toBe(false);
+    } finally {
+      gate.mockRestore();
+    }
+    expect((await reviewRuntimeHookTrust(manager, { ...request, action: "trust-project" }, project)).ok).toBe(true);
+    expect((await reviewRuntimeHookTrust(manager, { ...request, action: "accept" }, project)).ok).toBe(true);
+    expect((await manager.runPreToolUse(payload, { cwd: project })).results).toHaveLength(1);
+    // A trusted, accepted project hook is skipped as well, and comes back once the gate passes.
+    const refusedAgain = vi.spyOn(hostWorkspaceGate, "isHostWorkspaceConsumable").mockReturnValue(false);
+    try {
+      expect((await manager.runPreToolUse(payload, { cwd: project })).results).toHaveLength(0);
+    } finally {
+      refusedAgain.mockRestore();
+    }
+    expect((await manager.runPreToolUse(payload, { cwd: project })).results).toHaveLength(1);
+  });
+
+  it("refuses a discovered project hook when the workspace gate closes during approval", async () => {
+    const layout = hookDirLayout(root);
+    const project = join(root, "project");
+    writeExecutableHook(join(project, ".ave", "hooks"), "pre-project.sh");
+    let consumable = true;
+    const authorizeCommand = vi.fn(async () => {
+      await Promise.resolve();
+      consumable = false;
+      return { decision: "allow" as const, reason: "approved" };
+    });
+    const { manager } = await wireHookSystem({ ...layout, policy: openPolicy(), authorizeCommand });
+    const row = listRuntimeHookTrustState(manager, project).active.find((entry) => entry.hookSource === "project");
+    if (!row) throw new Error("Project hook row missing");
+    const request = { sourceId: row.sourceId ?? "project", fileName: row.fileName, expectedSha256: row.sha256 };
+    expect((await reviewRuntimeHookTrust(manager, { ...request, action: "trust-project" }, project)).ok).toBe(true);
+    expect((await reviewRuntimeHookTrust(manager, { ...request, action: "accept" }, project)).ok).toBe(true);
+
+    const gate = vi.spyOn(hostWorkspaceGate, "isHostWorkspaceConsumable").mockImplementation(() => consumable);
+    try {
+      const result = await manager.runPreToolUse({ toolName: "read_file", source: "builtin", category: "read", input: {},
+        sessionId: "project-approval", trustOrigin: "user-keyboard" }, { cwd: project });
+      expect(authorizeCommand).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ decision: "deny", reason: expect.stringContaining("Hook definition changed") });
+    } finally {
+      gate.mockRestore();
+    }
   });
 
   it("requires project trust before definition enrollment and scopes dispatch to its root", async () => {

@@ -52,10 +52,10 @@ describe("Windows ACL stamp budget", () => {
     const denyRead = [row(0)];
     const denyWrite = Array.from({ length: 1_023 }, (_, index) => row(index + 1));
     // Count UTF-8 bytes and JSON escapes as well as the envelope and commas.
-    const boundaryRow = `${row(1).slice(0, -36)}é\\😀`;
+    const boundaryRow = `${row(1).slice(0, -56)}é\\😀`;
     denyWrite[0] = boundaryRow;
     const dispatch = async (read: string[], write: string[]) => send({ srtWin, sandboxUserSid: "S-1-5-21-123", denyRead: read, denyWrite: write });
-    const bytes = (read: string[], write: string[]) => Buffer.byteLength(JSON.stringify({ denyRead: read, denyWrite: write }));
+    const bytes = (read: string[], write: string[]) => Buffer.byteLength(JSON.stringify({ denyRead: read, denyWrite: write, existingOnly: true }));
     const tooWide = [...denyWrite];
     tooWide[0] = `${boundaryRow}x`;
     expect(bytes(denyRead, denyWrite)).toBe(262_144);

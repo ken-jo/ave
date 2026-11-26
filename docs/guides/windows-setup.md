@@ -167,9 +167,11 @@ bun run check:plugin-host-protocol-schema
 bun run test -- src/permissions/__tests__/allowed-directories.test.ts src/permissions/__tests__/sensitive-paths-canonicalize.test.ts src/shared/__tests__/ave-home.test.ts src/lib/__tests__/atomic-file.test.ts src/lib/__tests__/with-file-lock.test.ts src/tools/__tests__/bash-dialect.test.ts src/tools/__tests__/shell-windows-partial-plan-b.test.ts src/permissions/__tests__/windows-sandbox-logic.test.ts src/permissions/__tests__/asrt-windows-support.test.ts src/main/__tests__/windows-job-launcher.test.ts
 ```
 
-When CI requires native platform checks, Windows runs every collected Vitest suite across six shards of two workers each. The build job plans the split from `config/windows-test-times.json`: Windows samples first, then Mac durations scaled to Windows, then a 1 s default. Each suite lands in exactly one shard, so a new suite needs no list edit. Each shard re-derives the collected suites from its own checkout and refuses a plan that omits, repeats or adds one.
+When CI requires native platform checks, eight regular Windows x64 shards run the collected Vitest suites outside the native tier, with two workers per shard. The build job balances estimated worker loads using `config/windows-test-times.json`. It uses Windows samples first, then Mac durations scaled to Windows, then a 1 s default, and adds a per-suite allowance for collection and startup. Each shard re-derives the inventory from its own checkout and refuses a plan that omits, repeats or adds a suite. The three tier shards run the native and census workloads when selected.
 
-One preparation job supplies the helpers to all six shards. It reuses only native helper build outputs when the tracked inputs, toolchain, runner image, and installed pinned patch and upstream binaries match. The job verifies the cached digests and binary identities before use, and rebuilds if verification fails. Every run builds and verifies both payload packages and runs the native tests.
+The build job provides the test plan. The preparation job verifies launcher process ownership, folder classification, and the patched sandbox helper, then uploads the checked helpers and interpreter mirror. It reuses native helper build outputs when the tracked inputs, toolchain, runner image, and installed pinned patch and upstream binaries match. It verifies the cached digests and binary identities before use and rebuilds if verification fails.
+
+When Windows preparation is selected, three jobs run alongside the eligible shards on the same checkout. They verify both payload packages, run the Windows script tests, and build and smoke-test the development desktop. Each uses the same run's checked helpers and an isolated job root. `build-and-test` requires each selected job to succeed.
 
 **Trust anchor.** The helper cache is authentic because of who can write it, not because of the digests:
 
@@ -181,7 +183,7 @@ One preparation job supplies the helpers to all six shards. It reuses only nativ
 The preparation job trusts its own workflow steps, because code running in any of those steps already controls the job. On a hit, the verifier installs the checked bytes. The guard in `.github/scripts/check-windows-workflow.mjs` requires every step that executes a restored or cached binary to follow the job's trust point:
 
 - In the preparation job, the trust point rehashes the launcher and helpers at their installed paths against the same sealed manifest. A mismatch stops that step before launch.
-- In each shard, the trust point installs the same run's checked artifacts.
+- In each shard and each of the three validation jobs, the trust point installs the same run's checked artifacts.
 
 The `node_modules` cache can also carry a sandbox helper saved after an earlier rebuild. So the sandbox helper runs only after the job has replaced that copy and the same step has checked its integrity.
 

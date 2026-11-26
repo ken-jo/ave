@@ -5,19 +5,23 @@ import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
+import { quotePowerShell } from "../../__tests__/support/powershell-literal.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
 import { admitMxcLists, rankAdmittedMxcLists, rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 import type { MxcShellPolicyLists } from "../../tools/mxc-shell-launch.js";
+import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { localFs } from "../../shared/local-path-io.js";
 import * as policyHome from "../../shared/policy-home.js";
 import * as facts from "../../shared/windows-path-facts.js";
+import { windowsSystemRoot } from "../../shared/windows-system-path.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { getDefaultSensitiveWriteDenyPaths, getProtectedReadDenyFloor } from "../asrt-sandbox.js";
+import { admitMxcExtensionFilesystem, getBuiltinShellReadPolicy, getDefaultSensitiveWriteDenyPaths, getProtectedReadDenyFloor } from "../asrt-sandbox.js";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
-import { assertMxcDenyOutcomes, buildMxcShellRequest, isWindowsPathAtOrUnder, mxcRequestArgs, powerShellMxcCommandLine, resolveHostWxcExecPath, type MxcDenyException, type MxcDirectoryEntry, type MxcFilesystemGrants } from "../mxc-windows.js";
+import { assertMxcDenyOutcomes, buildMxcShellRequest, isWindowsPathAtOrUnder, mxcRequestArgs, openMxcRequestTransport, powerShellMxcCommandLine, rankMxcFilesystem, resolveHostWxcExecPath, type MxcDenyException, type MxcDirectoryEntry, type MxcFilesystemGrants, type MxcWatchedRow } from "../mxc-windows.js";
 import { SENSITIVE_PATH_PATTERNS } from "../sensitive-paths.js";
 import { consumeObligations } from "../admitted-obligation.js";
+import { claimMxcWatchedRows, listWatchedQuarantine, WATCHED_ROW_VIOLATION } from "../windows-watched-rows.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -33,6 +37,14 @@ function withMxcWorkspace(run: (root: string) => void): void {
   }
 }
 
+// The watched row the ranker records for an absent name whose nearest existing folder is `anchor`.
+function watchedUnder(anchor: string): (path: string) => MxcWatchedRow {
+  const [pinned] = facts.pinWindowsPaths([anchor]);
+  const { volumeSerial, fileId } = pinned ?? {};
+  if (typeof volumeSerial !== "string" || typeof fileId !== "string") throw new Error("The anchor has no identity");
+  return path => ({ path, anchor, volumeSerial, fileId });
+}
+
 describe("missing deny parents", () => {
   const root = String.raw`C:\Users\alice\work`;
   const policy = (denies: string[]) => ({ allowWrite: [root], allowRead: [], denyRead: denies, denyWrite: [], protectedFloor: [] });
@@ -46,6 +58,151 @@ describe("missing deny parents", () => {
       for (const deny of original) for (const probe of [deny, win32.join(deny, "child"), win32.join(deny.toUpperCase(), "future", "secret")]) {
         expect(grants.denied.some((raised) => isWindowsPathAtOrUnder(probe, raised)), probe).toBe(true);
       }
+    });
+  });
+
+  it("watches protected names under a missing parent at their own paths and denies the missing root-level name", () => {
+    const carrier = win32.join(root, ".ave");
+    const agents = win32.join(root, ".agents");
+    const children = [win32.join(carrier, "commands"), win32.join(carrier, "hooks")];
+    const required = [agents, ...children];
+    const rows = { ...policy([]), denyWrite: required, requiredWriteDenies: required };
+    expect(rankMxcLists(rows, exists)).toEqual({ readwrite: [root], readonly: [], denied: [agents], watched: children });
+    expect(rankMxcLists(rows, (path) => exists(path) || path === carrier)).toEqual({
+      readwrite: [root], readonly: [], denied: required,
+    });
+    expect(rankMxcLists(rows, (path) => exists(path) || path === carrier || path === agents)).toEqual({
+      readwrite: [root], readonly: [agents], denied: children,
+    });
+  });
+
+  it.runIf(process.platform === "win32")("records a watched name with its anchor's identity through admission, and holds the outcome to that identity", () => {
+    withMxcWorkspace((workspace) => {
+      const carrier = join(workspace, ".ave");
+      const agents = join(workspace, ".agents");
+      const children = [join(carrier, "commands"), join(carrier, "hooks")];
+      const required = [agents, ...children];
+      const watchedRow = watchedUnder(workspace);
+      const rows = { allowWrite: [workspace], allowRead: [], denyRead: [], denyWrite: required, requiredWriteDenies: required, protectedFloor: [] };
+      expect(rankAdmittedMxcLists(rows)).toEqual({ readwrite: [workspace], readonly: [], denied: [agents], watched: children.map(watchedRow) });
+      expect(existsSync(carrier)).toBe(false);
+      const plan = consumeObligations(admitMxcLists(rows), "mxc-launch");
+      const denies = plan.filter(entry => entry.polarity.effect === "deny");
+      const reach = plan.filter(entry => entry.polarity.effect === "allow");
+      const outcome = (watched: MxcFilesystemGrants["watched"]) => ({ denies, patterns: [], outcomes: new Map(), reachable: reach, reach, exceptions: [],
+        result: { readwrite: [workspace], readonly: [], denied: [agents], ...(watched === undefined ? {} : { watched }) } });
+      const unheld = `Windows sandbox policy left a deny without an outcome: ${children[0]}`;
+      expect(() => assertMxcDenyOutcomes(outcome(children.map(watchedRow)))).not.toThrow();
+      expect(() => assertMxcDenyOutcomes(outcome(undefined))).toThrow(unheld);
+      // The same spellings beneath another directory object, or beneath another anchor path, are not this deny's outcome.
+      const other = join(workspace, "other");
+      mkdirSync(other);
+      const commands = join(carrier, "commands");
+      const elsewhere = watchedUnder(other)(commands);
+      expect(elsewhere.fileId).not.toBe(watchedRow(commands).fileId);
+      expect(() => assertMxcDenyOutcomes(outcome(children.map(path => ({ ...watchedRow(path), fileId: elsewhere.fileId }))))).toThrow(unheld);
+      expect(() => assertMxcDenyOutcomes(outcome(children.map(path => ({ ...watchedRow(path), volumeSerial: `${elsewhere.volumeSerial}0` }))))).toThrow(unheld);
+      expect(() => assertMxcDenyOutcomes(outcome(children.map(path => ({ ...watchedRow(path), anchor: other }))))).toThrow(unheld);
+      // No exception reason stands in for the watched outcome.
+      expect(() => assertMxcDenyOutcomes({ ...outcome(undefined),
+        exceptions: children.map(row => ({ reason: "watched", row, grant: workspace })) as unknown as MxcDenyException[] }))
+        .toThrow("Windows sandbox policy named an unknown deny exception");
+      mkdirSync(carrier);
+      expect(rankAdmittedMxcLists(rows)).toEqual({ readwrite: [workspace], readonly: [], denied: required });
+      mkdirSync(agents);
+      expect(rankAdmittedMxcLists(rows)).toEqual({ readwrite: [workspace], readonly: [agents], denied: children });
+      const nested = join(workspace, "missing", "deeper", ".agents");
+      expect(rankAdmittedMxcLists({ ...rows, denyWrite: [nested], requiredWriteDenies: [nested] }))
+        .toEqual({ readwrite: [workspace], readonly: [], denied: [], watched: [watchedRow(nested)] });
+    });
+  });
+
+  it.runIf(process.platform === "win32")("rejects a watched outcome when the covering grant changes identity at the same spelling", () => {
+    withMxcWorkspace(scratch => {
+      const workspace = join(scratch, "workspace");
+      mkdirSync(workspace);
+      const hooks = join(workspace, ".ave", "hooks");
+      const rows = { allowWrite: [workspace], allowRead: [], denyRead: [], denyWrite: [hooks], requiredWriteDenies: [hooks], protectedFloor: [] };
+      const result = rankAdmittedMxcLists(rows);
+      const plan = consumeObligations(admitMxcLists(rows), "mxc-launch");
+      const denies = plan.filter(entry => entry.polarity.effect === "deny");
+      const reach = plan.filter(entry => entry.polarity.effect === "allow");
+      const outcome = { denies, patterns: [], outcomes: new Map(), reachable: reach, reach, exceptions: [], result };
+      expect(result.watched).toEqual([watchedUnder(workspace)(hooks)]);
+      expect(() => assertMxcDenyOutcomes(outcome)).not.toThrow();
+
+      renameSync(workspace, join(scratch, "original"));
+      mkdirSync(workspace);
+      const replacement = consumeObligations(admitMxcLists(rows), "mxc-launch").filter(entry => entry.polarity.effect === "allow");
+      expect(replacement[0]?.target).toBe(reach[0]?.target);
+      expect(replacement[0]?.identity).not.toEqual(reach[0]?.identity);
+      expect(() => assertMxcDenyOutcomes({ ...outcome, reachable: replacement, reach: replacement }))
+        .toThrow(`Windows sandbox policy left a deny without an outcome: ${hooks}`);
+    });
+  });
+
+  it.runIf(process.platform === "win32")("refuses to rank a watched outcome when the grant pin disagrees with the deny chain", () => {
+    withMxcWorkspace(workspace => {
+      const hooks = join(workspace, ".ave", "hooks");
+      const rows = { allowWrite: [workspace], allowRead: [], denyRead: [], denyWrite: [hooks], requiredWriteDenies: [hooks], protectedFloor: [] };
+      const pin = facts.pinWindowsPaths;
+      const replaced = vi.fn((paths: readonly string[]) => pin(paths).map((entry, index) => {
+        if (paths[index] !== workspace) return entry;
+        const fileId = `0x${"0".repeat(32)}`;
+        return { ...entry, fileId, fileIndex: fileId };
+      }));
+      vi.spyOn(facts, "pinWindowsPaths").mockImplementation(replaced);
+      expect(() => rankAdmittedMxcLists(rows)).toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: hooks }));
+      expect(replaced).toHaveBeenCalledWith([workspace]);
+    });
+  });
+
+  it("never widens a deny under a missing protected parent to the parent: a protected name is watched, any other deny refuses", () => {
+    const carrier = win32.join(root, ".ave");
+    const [commands, hooks, tasks] = ["commands", "hooks", "tasks"].map(name => win32.join(carrier, name)) as [string, string, string];
+    const refused = (path: string) => t("sandboxPolicy.windowsProtectedWriteRefused", { path });
+    expect(rankMxcLists({ ...policy([]), denyWrite: [hooks], requiredWriteDenies: [hooks] }, exists))
+      .toEqual({ readwrite: [root], readonly: [], denied: [], watched: [hooks] });
+    const children = [commands, hooks];
+    const required = { ...policy([]), denyWrite: children, requiredWriteDenies: children };
+    // A configured write deny at a protected child's own spelling is the same obligation and leaves the parent's other children writable.
+    expect(rankMxcLists({ ...required, independentWriteDenies: [hooks] }, exists)).toEqual({ readwrite: [root], readonly: [], denied: [], watched: [hooks, commands] });
+    // A deny that is not a protected name cannot be watched: the launch is refused naming it, never widened.
+    expect(() => rankMxcLists({ ...required, denyWrite: [...children, tasks] }, exists)).toThrow(refused(tasks));
+    expect(() => rankMxcLists({ ...required, protectedFloor: [commands] }, exists)).toThrow(refused(commands));
+    expect(() => rankMxcLists({ ...required, userDenyRead: [hooks] }, exists)).toThrow(refused(hooks));
+    // A deny the policy states on the parent itself is that row's own outcome and covers the children.
+    expect(rankMxcLists({ ...required, denyRead: [carrier] }, exists)).toEqual({ readwrite: [root], readonly: [], denied: [carrier] });
+    // Without a protected name beneath it, a missing parent is raised as before.
+    expect(rankMxcLists({ ...policy([]), denyWrite: [tasks] }, exists)).toEqual({ readwrite: [root], readonly: [], denied: [carrier] });
+  });
+
+  it.runIf(process.platform === "win32")("never widens a deny under a missing protected parent through admission", () => {
+    withMxcWorkspace((workspace) => {
+      const carrier = join(workspace, ".ave");
+      const [commands, hooks, tasks] = ["commands", "hooks", "tasks"].map(name => join(carrier, name)) as [string, string, string];
+      const refused = (path: string) => t("sandboxPolicy.windowsProtectedWriteRefused", { path });
+      const watchedRow = watchedUnder(workspace);
+      const base = { allowWrite: [workspace], allowRead: [], denyRead: [], protectedFloor: [] };
+      expect(rankAdmittedMxcLists({ ...base, denyWrite: [hooks], requiredWriteDenies: [hooks] }))
+        .toEqual({ readwrite: [workspace], readonly: [], denied: [], watched: [watchedRow(hooks)] });
+      const children = [commands, hooks];
+      const required = { ...base, denyWrite: children, requiredWriteDenies: children };
+      expect(rankAdmittedMxcLists({ ...required, independentWriteDenies: [hooks] }))
+        .toEqual({ readwrite: [workspace], readonly: [], denied: [], watched: [hooks, commands].map(watchedRow) });
+      expect(() => rankAdmittedMxcLists({ ...required, denyWrite: [...children, tasks] })).toThrow(refused(tasks));
+      expect(() => rankAdmittedMxcLists({ ...required, protectedFloor: [commands] })).toThrow(refused(commands));
+      expect(() => rankAdmittedMxcLists({ ...required, userDenyRead: [hooks] })).toThrow(refused(hooks));
+      expect(rankAdmittedMxcLists({ ...required, denyRead: [carrier] })).toEqual({ readwrite: [workspace], readonly: [], denied: [carrier] });
+      expect(rankAdmittedMxcLists({ ...base, denyWrite: [tasks] })).toEqual({ readwrite: [workspace], readonly: [], denied: [carrier] });
+      expect(existsSync(carrier)).toBe(false);
+      // A result that widened to the parent instead still stamps every row; one that dropped a row leaves it without an outcome.
+      const plan = consumeObligations(admitMxcLists({ ...required, independentWriteDenies: [hooks] }), "mxc-launch");
+      const reach = plan.filter(entry => entry.polarity.effect === "allow");
+      const outcome = (watched: readonly string[]) => ({ denies: plan.filter(entry => entry.polarity.effect === "deny"), patterns: [], outcomes: new Map(),
+        reachable: reach, reach, exceptions: [], result: { readwrite: [workspace], readonly: [], denied: [], watched: watched.map(watchedRow) } });
+      expect(() => assertMxcDenyOutcomes(outcome(children))).not.toThrow();
+      expect(() => assertMxcDenyOutcomes(outcome([commands]))).toThrow(`Windows sandbox policy left a deny without an outcome: ${hooks}`);
     });
   });
 
@@ -438,6 +595,193 @@ describe("pattern denies", () => {
   });
 });
 
+describe.skipIf(process.platform !== "win32")("composed container floors", () => {
+  function withProfile(run: (profile: string, project: string) => void): void {
+    withMxcWorkspace(scratch => {
+      const profile = join(scratch, "alice");
+      const home = join(scratch, "ave-data");
+      const project = join(scratch, "project");
+      for (const path of [profile, home, project]) mkdirSync(path);
+      vi.stubEnv("AVE_HOME", home);
+      // The policy fixture is separate from the host profile that locates the helper ledger.
+      vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
+      try { run(profile, project); }
+      finally { vi.unstubAllEnvs(); }
+    });
+  }
+
+  function rankComposed(kind: "shell" | "holder", root: string, profile: string, options: { denyRead?: string[]; denyWrite?: string[] } = {}): MxcFilesystemGrants {
+    const { denyRead = [], denyWrite = [] } = options;
+    if (kind === "holder") {
+      const { model } = admitMxcExtensionFilesystem({ allowRead: [], allowWrite: [root], denyRead, denyWrite },
+        { readRoots: [], writeRoots: [root], hostStorageRoots: [] });
+      return rankMxcFilesystem(model);
+    }
+    return rankShell([root], profile, "mxc", options);
+  }
+
+  function rankShell(roots: readonly string[], profile: string, backend: "mxc" | undefined, { denyRead = [], denyWrite = [] }: { denyRead?: string[]; denyWrite?: string[] } = {}): MxcFilesystemGrants {
+    const read = getBuiltinShellReadPolicy(roots, profile, undefined, undefined, backend);
+    const sensitive = getDefaultSensitiveWriteDenyPaths();
+    const mandatory = buildMandatorySandboxWritePolicy(roots, undefined, sensitive);
+    return rankAdmittedMxcLists({ allowWrite: mandatory.allowWrite, allowRead: read.allowRead,
+      denyRead: [...read.denyRead, ...denyRead], denyWrite: mandatory.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path),
+      independentWriteDenies: [...sensitive, ...denyWrite], protectedFloor: getProtectedReadDenyFloor(),
+      requiredWriteDenies: mandatory.windowsRequiredWriteDenies });
+  }
+
+  async function runNativeShell(launcher: string, scratch: string, cwd: string, grants: MxcFilesystemGrants, command: string) {
+    const systemRoot = windowsSystemRoot();
+    const request = buildMxcShellRequest({ commandLine: powerShellMxcCommandLine(systemRoot, command, cwd), cwd, grants,
+      env: { SYSTEMROOT: systemRoot, LOCALAPPDATA: scratch }, proxyUrl: "http://127.0.0.1:9", timeoutMs: TOOL_TIMEOUT_POLICY.shellDefaultMs });
+    const transport = await openMxcRequestTransport(request, launcher);
+    try {
+      return await new Promise<{ code: number; stdout: string; stderr: string }>((resolveResult, reject) => {
+        const child = execFile(launcher, [...transport.args], { cwd: win32.dirname(launcher), windowsHide: true,
+          timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs }, (error, stdout, stderr) => {
+          if (error && typeof error.code !== "number") { reject(error); return; }
+          resolveResult({ code: error?.code as number | undefined ?? 0, stdout, stderr });
+        });
+        transport.bindChild(child);
+      });
+    } finally {
+      await transport.release();
+    }
+  }
+
+  it.for([
+    { label: "former policy", profileFirst: false, includeProfile: true, backend: undefined, masked: false },
+    { label: "workspace grant alone", profileFirst: false, includeProfile: false, backend: "mxc", masked: false },
+    { label: "production grant order", profileFirst: false, includeProfile: true, backend: "mxc", masked: true },
+    { label: "reverse grant order", profileFirst: true, includeProfile: true, backend: "mxc", masked: true },
+  ] as const)("starts the native shell in the requested workspace with $label", {
+    timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs,
+  }, async ({ profileFirst, includeProfile, backend, masked }, context) => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    await requireMxcCapability(context.skip);
+    const launcher = await resolveHostWxcExecPath();
+    const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-workspace-cwd-")));
+    const profile = join(scratch, "alice");
+    const home = join(profile, ".ave");
+    const workspace = join(home, "workspace");
+    const sibling = join(home, "private");
+    const fixture = join(sibling, "example.txt");
+    try {
+      for (const directory of [workspace, sibling, join(home, "certs")]) mkdirSync(directory, { recursive: true });
+      writeFileSync(fixture, "protected");
+      vi.stubEnv("USERPROFILE", profile);
+      vi.stubEnv("AVE_HOME", home);
+      vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
+      const roots = includeProfile ? (profileFirst ? [profile, workspace] : [workspace, profile]) : [workspace];
+      const grants = rankShell(roots, profile, backend);
+      expect(grants.denied.includes(home)).toBe(masked);
+      expect(grants.readwrite).toContain(workspace);
+      const command = [
+        "$ErrorActionPreference = 'Stop'",
+        "(Get-Location).Path",
+        "$PWD.Path",
+        "[System.Environment]::CurrentDirectory",
+        `Set-Content -LiteralPath ${quotePowerShell(join(workspace, "absolute.txt"))} -Value ok`,
+        "Set-Content -LiteralPath 'relative.txt' -Value ok",
+        ...(masked ? [`try { [void] [System.IO.File]::ReadAllText(${quotePowerShell(fixture)}) } catch { exit 0 }; exit 2`] : []),
+      ].join("; ");
+      const result = await runNativeShell(launcher, scratch, workspace, grants, command);
+      expect({ locations: result.stdout.trim().split(/\r?\n/), absoluteWrite: existsSync(join(workspace, "absolute.txt")),
+        relativeWrite: existsSync(join(workspace, "relative.txt")), code: result.code }, result.stderr).toEqual({
+        locations: [workspace, workspace, workspace], absoluteWrite: true, relativeWrite: true, code: 0,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses the native shell before the command when it cannot establish the requested working directory", async (context) => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    await requireMxcCapability(context.skip);
+    const launcher = await resolveHostWxcExecPath();
+    const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-refuse-cwd-")));
+    try {
+      const denied = join(scratch, "denied");
+      mkdirSync(denied);
+      const grants = rankAdmittedMxcLists({ allowWrite: [scratch], allowRead: [], denyRead: [denied], denyWrite: [], protectedFloor: [] });
+      expect(grants.denied).toContain(denied);
+      const result = await runNativeShell(launcher, scratch, denied, grants, "Write-Output 'command ran'; exit 0");
+      expect(result).toMatchObject({ code: 1, stdout: "", stderr: expect.stringContaining("Shell working directory could not be established") });
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }, TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);
+
+  it("keeps the absent legacy Ave home uncreated in a native shell with a profile grant", async (context) => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    await requireMxcCapability(context.skip);
+    const launcher = await resolveHostWxcExecPath();
+    const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-legacy-home-")));
+    const profile = join(scratch, "alice");
+    const home = join(scratch, "ave-data");
+    const legacy = join(profile, ".ave");
+    try {
+      mkdirSync(profile);
+      mkdirSync(home);
+      vi.stubEnv("USERPROFILE", profile);
+      vi.stubEnv("AVE_HOME", home);
+      vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
+      const grants = rankShell([profile], profile, "mxc");
+      expect(grants.denied).toContain(legacy);
+      const result = await runNativeShell(launcher, scratch, profile, grants, [
+        "$ErrorActionPreference = 'Stop'",
+        "Set-Content -LiteralPath 'regular.txt' -Value ok",
+        "try { [void] [System.IO.Directory]::CreateDirectory('.ave') } catch { exit 0 }; exit 2",
+      ].join("; "));
+      expect(result.code, result.stderr).toBe(0);
+      expect(existsSync(join(profile, "regular.txt"))).toBe(true);
+      expect(existsSync(legacy)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }, TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);
+
+  it.each(["shell", "holder"] as const)("admits the synthetic profile with the %s default floor and relocated Ave home", kind => {
+    withProfile(profile => {
+      const carrier = join(profile, ".ave");
+      const certs = join(carrier, "certs");
+      const namesCerts = (path: string) => isWindowsPathAtOrUnder(certs, path) && isWindowsPathAtOrUnder(path, certs);
+      expect(getDefaultSensitiveWriteDenyPaths().some(namesCerts)).toBe(true);
+      expect(getProtectedReadDenyFloor().some(namesCerts)).toBe(true);
+      const grants = rankComposed(kind, profile, profile);
+      expect(grants.readwrite).toContain(profile);
+      expect(grants.denied).toContain(carrier);
+      expect(grants.denied.some(deny => isWindowsPathAtOrUnder(certs, deny))).toBe(true);
+      expect(grants.watched?.some(row => isWindowsPathAtOrUnder(row.path, carrier)) ?? false).toBe(false);
+      expect(existsSync(carrier)).toBe(false);
+    });
+  });
+
+  it.each(["shell", "holder"] as const)("uses the %s declared parent coverage while an ordinary project keeps its watched children", kind => {
+    withProfile((profile, project) => {
+      const carrier = join(project, ".ave");
+      const commands = join(carrier, "commands");
+      const hooks = join(carrier, "hooks");
+      const independent = join(carrier, "tasks");
+      const ordinary = rankComposed(kind, project, profile);
+      expect(ordinary.readwrite).toContain(project);
+      expect(ordinary.denied).not.toContain(carrier);
+      expect(ordinary.watched).toEqual([commands, hooks].map(watchedUnder(project)));
+      for (const options of [{ denyRead: [independent] }, { denyWrite: [independent] }]) {
+        expect(() => rankComposed(kind, project, profile, options))
+          .toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: independent }));
+      }
+      const covered = rankComposed(kind, project, profile, { denyRead: [independent, carrier], denyWrite: [independent] });
+      expect(covered.readwrite).toContain(project);
+      expect(covered.denied).toContain(carrier);
+      expect(covered.watched).toBeUndefined();
+      expect(existsSync(carrier)).toBe(false);
+    });
+  });
+});
+
 describe.skipIf(process.platform !== "win32")("native missing deny parents", () => {
   it("starts with no denies, a missing leaf, nested denies and mandatory workspace denies", async (context) => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
@@ -455,28 +799,62 @@ describe.skipIf(process.platform !== "win32")("native missing deny parents", () 
       expect(existsSync(join(directory, ".claude"))).toBe(false);
       expect(existsSync(join(directory, ".idea"))).toBe(false);
       writeFileSync(join(directory, "routine"), "");
+      const exactPaths = [join(directory, ".agents"), join(directory, ".ave", "commands"), join(directory, ".ave", "hooks")];
+      vi.stubEnv("AVE_HOME", home);
       for (const [label, denies] of [["none", []], ["leaf", [join(directory, ".vscode")]], ["file in directory form", [`${join(directory, "routine")}\\`]],
-        ["nested", [join(directory, "a", "b", ".ssh")]], ["workspace", workspaceDenies]] as const) {
+        ["nested", [join(directory, "a", "b", ".ssh")]], ["clean project", workspaceDenies], ["workspace", workspaceDenies],
+        ["exact children", exactPaths]] as const) {
         // A floor row in directory form over a placeholder file, as `~/.ave/routine` can be.
         const floorRow = label === "file in directory form";
-        const grants = rankMxcLists({ allowWrite: [directory], allowRead: [], denyRead: floorRow ? denies : [],
-          denyWrite: floorRow ? [] : denies, protectedFloor: label === "workspace" ? floor : [] }, existsSync);
-        const request = buildMxcShellRequest({ commandLine: powerShellMxcCommandLine(process.env.SystemRoot!, "exit 0"), cwd: directory, grants,
+        const { watched: watchedNames, ...grants } = rankMxcLists({ allowWrite: [directory], allowRead: [], denyRead: floorRow ? denies : [],
+          denyWrite: floorRow ? [] : denies, protectedFloor: label === "workspace" || label === "clean project" ? floor : [],
+          requiredWriteDenies: label === "workspace" || label === "clean project" ? mandatory.windowsRequiredWriteDenies : label === "exact children" ? exactPaths : [],
+        }, existsSync);
+        const claim = watchedNames === undefined ? undefined : claimMxcWatchedRows(watchedNames.map(watchedUnder(directory)), { commandId: "clean-project" });
+        claim?.start();
+        if (label === "clean project") {
+          expect(grants.denied).toContain(exactPaths[0]);
+          expect(watchedNames).toEqual(exactPaths.slice(1));
+          expect(existsSync(join(directory, ".ave"))).toBe(false);
+          for (const path of exactPaths) expect(existsSync(path)).toBe(false);
+        }
+        const command = label === "clean project"
+          ? '$ErrorActionPreference="Stop"; Set-Content project.txt kept; New-Item -ItemType Directory .ave | Out-Null; Set-Content .ave/ordinary.txt kept; New-Item -ItemType Directory .ave/commands, .ave/hooks | Out-Null; try { New-Item -ItemType Directory .agents | Out-Null } catch { exit 0 }; exit 2'
+          : label === "exact children"
+          ? '$ErrorActionPreference="Stop"; Set-Content .ave/ordinary.txt kept; foreach ($child in @(".agents", ".ave/commands", ".ave/hooks")) { try { New-Item -ItemType Directory $child | Out-Null } catch { continue }; exit 2 }; exit 0'
+          : "exit 0";
+        const request = buildMxcShellRequest({ commandLine: powerShellMxcCommandLine(process.env.SystemRoot!, command, directory), cwd: directory, grants,
           env: { SYSTEMROOT: process.env.SystemRoot!, LOCALAPPDATA: directory }, proxyUrl: "http://127.0.0.1:9", timeoutMs: TOOL_TIMEOUT_POLICY.shellDefaultMs });
+        let notice: string | undefined;
         const result = await new Promise<{ code: number; stdout: string; stderr: string }>((resolveResult, reject) => {
           execFile(launcher, mxcRequestArgs(request, launcher), { cwd: win32.dirname(launcher), windowsHide: true,
             timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs }, (error, stdout, stderr) => {
             if (error && typeof error.code !== "number") { reject(error); return; }
             resolveResult({ code: error?.code as number | undefined ?? 0, stdout, stderr });
           });
-        });
+        }).finally(async () => { notice = await claim?.release(); });
         expect(result.code, `${label}: ${JSON.stringify(result)}`).toBe(0);
+        if (label === "clean project") {
+          expect(notice).toContain(WATCHED_ROW_VIOLATION);
+          expect(existsSync(join(directory, "project.txt"))).toBe(true);
+          expect(existsSync(join(directory, ".ave", "ordinary.txt"))).toBe(true);
+          expect(listWatchedQuarantine().map(entry => entry.original).sort()).toEqual(exactPaths.slice(1).sort());
+          for (const path of exactPaths) expect(existsSync(path)).toBe(false);
+        }
+        if (label === "exact children") {
+          expect(grants.denied).toEqual(exactPaths);
+          expect(existsSync(join(directory, ".ave", "ordinary.txt"))).toBe(true);
+          for (const path of exactPaths) expect(existsSync(path)).toBe(false);
+        }
         const relative = (paths: readonly string[]) => paths.filter((path) => isWindowsPathAtOrUnder(path, directory))
           .map((path) => win32.relative(directory, path));
         console.info(`MXC deny evidence ${JSON.stringify({ label, before: relative([...denies, ...(label === "workspace" ? floor : [])]), after: relative(grants.denied) })}`);
       }
-    } finally { rmSync(directory, { recursive: true, force: true }); }
-  }, TOOL_TIMEOUT_POLICY.shellDefaultMs * 5 + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, TOOL_TIMEOUT_POLICY.shellDefaultMs * 7 + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);
 });
 
 describe("excepted deny outcomes", () => {
@@ -500,7 +878,7 @@ describe("excepted deny outcomes", () => {
     return { denies: plan.filter(entry => entry.polarity.effect === "deny"), exceptions: exceptions(plan), patterns: [], outcomes: new Map(),
       reachable: reach, reach, result: rankAdmittedMxcLists(policy) };
   };
-  const evidence = (reason: keyof typeof cases, plan: ReturnType<typeof consumeObligations>): MxcDenyException => {
+  const evidence = (reason: keyof typeof cases, plan: ReturnType<typeof consumeObligations>): Extract<MxcDenyException, { readonly grant: string }> => {
     const rowOf = (effect: "allow" | "deny") => {
       const entry = plan.find(candidate => candidate.polarity.effect === effect && candidate.polarity.access === "read");
       if (entry === undefined) throw new Error(`fixture has no ${effect} read row`);
