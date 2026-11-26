@@ -350,10 +350,12 @@ pub fn write_all(handle: Raw, mut bytes: &[u8]) -> Result<(), u32> {
     Ok(())
 }
 
+pub const STDOUT_LINE_ENDING: &str = "\r\n";
+
 pub fn emit(text: &str) -> Result<(), u32> {
     write_all(
         unsafe { GetStdHandle(STDOUT) },
-        format!("{text}\r\n").as_bytes(),
+        format!("{text}{STDOUT_LINE_ENDING}").as_bytes(),
     )
 }
 

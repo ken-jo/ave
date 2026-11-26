@@ -196,6 +196,11 @@ fn content_json(file: Raw) -> Result<String, u8> {
     Ok(format!("\"{}\"", hex(bytes)))
 }
 
+fn framed_row_fits(output_size: usize, row_size: usize, first: bool) -> bool {
+    let punctuation = usize::from(!first) + 1;
+    output_size + row_size + punctuation + STDOUT_LINE_ENDING.len() <= MAX_REPLY
+}
+
 fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
     let (mut parent, mut content, mut framed) = (false, false, false);
     let mut operands = args;
@@ -234,7 +239,7 @@ fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
     };
     let mut output = String::from("[");
     for (index, path) in paths.iter().enumerate() {
-        let punctuation = if index == 0 { 2 } else { 3 };
+        let first = index == 0;
         let pinned = pin(path, content).ok_or_else(|| {
             diagnose("could not read path facts");
             4_u8
@@ -248,7 +253,7 @@ fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
                 row.push(',');
             }
             row.push_str(&facts_json(ancestor));
-            if framed && output.len() + row.len() + punctuation > MAX_REPLY {
+            if framed && !framed_row_fits(output.len(), row.len(), first) {
                 return Err(4);
             }
         }
@@ -293,10 +298,10 @@ fn batch(args: &[Vec<u16>], dacl: bool) -> Result<String, u8> {
             write!(row, ",\"requestPath\":{}", json(path)).unwrap();
         }
         row.push('}');
-        if framed && output.len() + row.len() + punctuation > MAX_REPLY {
+        if framed && !framed_row_fits(output.len(), row.len(), first) {
             return Err(4);
         }
-        if index != 0 {
+        if !first {
             output.push(',');
         }
         output.push_str(&row);
@@ -423,6 +428,18 @@ mod tests {
             assert!(parse_frame(&mut bytes.as_slice()).is_none());
         }
         assert!(parse_frame(&mut (MAX_FRAME as u32 + 1).to_le_bytes().as_slice()).is_none());
+    }
+
+    #[test]
+    fn framed_reply_accepts_the_exact_wire_budget() {
+        assert!(framed_row_fits(1, MAX_REPLY - 4, true));
+        assert!(framed_row_fits(128, MAX_REPLY - 132, false));
+    }
+
+    #[test]
+    fn framed_reply_rejects_the_first_byte_over_the_wire_budget() {
+        assert!(!framed_row_fits(1, MAX_REPLY - 3, true));
+        assert!(!framed_row_fits(128, MAX_REPLY - 131, false));
     }
 
     #[test]
