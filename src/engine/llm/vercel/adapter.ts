@@ -87,6 +87,7 @@ import {
 import { supportsVision } from "../vendor-capabilities.js";
 import { toGrammarSafeToolSchemas } from "../grammar-safe-tool-schema.js";
 import { selectAssistantWireThinkingBlocks } from "../assistant-wire-content.js";
+import { observeServedRequest } from "./observe-served-request.js";
 
 /** Vendor slot recognised by VercelUnifiedProvider. */
 export type VercelVendor = LLMVendor;
@@ -228,33 +229,6 @@ function observeRequestControls(
       // Observing the serialized controls must not change the request.
     }
     return fetchImpl(input, init);
-  };
-}
-
-function requestAddress(input: Parameters<typeof fetch>[0]): string | undefined {
-  try {
-    return new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url).href;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Reports where each provider request was answered from: the response's own address, which
- * is the last hop of any redirect the transport followed. A transport that hides it (a
- * stub, an opaque wrapper) leaves the request address, unless it says it was redirected,
- * in which case nothing is established. The address stays inside this module.
- */
-function observeServedRequest(
-  fetchImpl: typeof fetch,
-  onServedRequest: (servedAddress: string | undefined) => void,
-): typeof fetch {
-  return async (input, init) => {
-    // An earlier attempt of this call no longer says where the answer comes from.
-    onServedRequest(undefined);
-    const response = await fetchImpl(input, init);
-    onServedRequest(response.url || (response.redirected ? undefined : requestAddress(input)));
-    return response;
   };
 }
 

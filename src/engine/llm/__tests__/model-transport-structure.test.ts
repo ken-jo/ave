@@ -30,6 +30,7 @@ function readProductionSources(): Map<string, string> {
 
 const production = readProductionSources();
 const ADAPTER = "src/engine/llm/vercel/adapter.ts";
+const OBSERVER = "src/engine/llm/vercel/observe-served-request.ts";
 const CHAT_ROUTE = "src/engine/turn/provider.ts";
 
 function mutate(changes: Record<string, string | ((source: string) => string)>): string[] {
@@ -47,6 +48,17 @@ function mutate(changes: Record<string, string | ((source: string) => string)>):
 function replaceOnce(source: string, search: string, replacement: string): string {
   expect(source.split(search)).toHaveLength(2);
   return source.replace(search, replacement);
+}
+
+function withGeminiFetch(source: string, declarations: string, fetchExpression: string): string {
+  const branch = 'if (slot === "gemini") {\n';
+  const factory = "      const google = createGoogleGenerativeAI({";
+  const afterFetch = "\n      });\n      return google(modelId);";
+  return replaceOnce(
+    replaceOnce(source, branch + factory, branch + declarations + factory),
+    `fetch: observedFetch,${afterFetch}`,
+    `fetch: ${fetchExpression},${afterFetch}`,
+  );
 }
 
 describe("model transport structure", () => {
@@ -128,6 +140,82 @@ describe("model transport structure", () => {
           "const wireFetch = this.customFetch ?? globalThis.fetch;",
         ),
       })).toEqual(expect.arrayContaining([`${ADAPTER}: createAnthropic(…) is not given the gated wire fetch`]));
+    });
+
+    it("rejects an ungated fetch alias even when a sibling branch reuses the name for a gated fetch", () => {
+      const openAiBranch = 'if (slot === "openai") {\n';
+      expect(mutate({
+        [ADAPTER]: (source) => replaceOnce(
+          replaceOnce(
+            withGeminiFetch(
+              source,
+              "      const branchFetch = this.customFetch ?? globalThis.fetch;\n",
+              "observeServedRequest(branchFetch, onServedRequest)",
+            ),
+            `${openAiBranch}      const openai = createOpenAI({`,
+            `${openAiBranch}      const branchFetch = wireFetch;\n      const openai = createOpenAI({`,
+          ),
+          "fetch: observedFetch,\n      });\n      // Responses API",
+          "fetch: observeServedRequest(branchFetch, onServedRequest),\n      });\n      // Responses API",
+        ),
+      })).toEqual([`${ADAPTER}: createGoogleGenerativeAI(…) is not given the gated wire fetch`]);
+    });
+
+    it("rejects a branch-local function that shadows the imported observer", () => {
+      expect(mutate({
+        [ADAPTER]: (source) => withGeminiFetch(
+          source,
+          "      const ungatedFetch = this.customFetch ?? globalThis.fetch;\n"
+            + "      function observeServedRequest(_fetch: typeof fetch) { return ungatedFetch; }\n",
+          "observeServedRequest(wireFetch)",
+        ),
+      })).toEqual([`${ADAPTER}: createGoogleGenerativeAI(…) is not given the gated wire fetch`]);
+    });
+
+    it("rejects an alias read before its declaration", () => {
+      expect(mutate({
+        [ADAPTER]: (source) => withGeminiFetch(
+          source,
+          "      const branchFetch = laterFetch;\n      const laterFetch = wireFetch;\n",
+          "branchFetch",
+        ),
+      })).toEqual([`${ADAPTER}: createGoogleGenerativeAI(…) is not given the gated wire fetch`]);
+    });
+
+    it("accepts the reviewed observer under a renamed import", () => {
+      expect(mutate({
+        [ADAPTER]: (source) => replaceOnce(
+          replaceOnce(source, "import { observeServedRequest }", "import { observeServedRequest as observe }"),
+          "observeServedRequest(wireFetch, onServedRequest)",
+          "observe(wireFetch, onServedRequest)",
+        ),
+      })).toEqual([]);
+    });
+
+    it("rejects the observer binding from a different module", () => {
+      expect(mutate({
+        [ADAPTER]: (source) => replaceOnce(source, 'from "./observe-served-request.js";', 'from "./other-observer.js";'),
+        "src/engine/llm/vercel/other-observer.ts": "export function observeServedRequest() { return globalThis.fetch; }",
+      })).toContain(`${ADAPTER}: createGoogleGenerativeAI(…) is not given the gated wire fetch`);
+    });
+
+    it.each([
+      "await fetch(input, init)",
+      "await globalThis.fetch(input, init)",
+    ])("rejects an observer whose send expression is %s", (send) => {
+      expect(mutate({
+        [OBSERVER]: (source) => replaceOnce(source, "await fetchImpl(input, init)", send),
+      })).toEqual([`${OBSERVER}: observeServedRequest must send through its first parameter`]);
+    });
+
+    it("rejects an ambient send alongside the delegated send", () => {
+      expect(mutate({
+        [OBSERVER]: (source) => replaceOnce(
+          source,
+          "    const response = await fetchImpl(input, init);",
+          "    await globalThis.fetch(input, init);\n    const response = await fetchImpl(input, init);",
+        ),
+      })).toEqual([`${OBSERVER}: observeServedRequest must send through its first parameter`]);
     });
 
     it("rejects a gate whose predicate was emptied", () => {

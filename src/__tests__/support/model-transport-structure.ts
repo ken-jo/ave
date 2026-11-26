@@ -37,8 +37,11 @@ const REVIEWED_FETCH_CONSTRUCTORS = new Set([
 const GATEWAY_BINDINGS = new Set(["gateway", "createGateway"]);
 const DISPATCH_CALLS = new Set(["streamText", "generateText", "streamObject", "generateObject"]);
 const FACTORY = "src/engine/llm/provider-factory.ts";
+const SERVED_REQUEST_OBSERVER = "observeServedRequest";
+const SERVED_REQUEST_MODULE = "./observe-served-request.js";
+const SERVED_REQUEST_FILE = "src/engine/llm/vercel/observe-served-request.ts";
 /** Wrappers in the adapter that observe or project a response and send through the fetch they are given. */
-const FETCH_WRAPPERS = new Set(["observeRequestControls", "observeServedRequest", "projectNativeOutput"]);
+const FETCH_WRAPPERS = new Set(["observeRequestControls", "projectNativeOutput"]);
 const WIRE_FETCH_BODY = "{ return gateModelFetch(this.customFetch, () => this.extras.getRetiredModelId(modelId)); }";
 
 function isModelSdk(specifier: string): boolean {
@@ -60,68 +63,117 @@ function enclosingFunction(node: ts.Node): ts.Node | undefined {
   return current;
 }
 
-/** The initializer of the `const` a name refers to inside one function. */
-function constInitializer(scope: ts.Node | undefined, name: string): ts.Expression | undefined {
-  let found: ts.Expression | undefined;
-  if (!scope) return undefined;
-  each(scope, (node) => {
-    if (
-      ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name && node.initializer
-      && (node.parent.flags & ts.NodeFlags.Const) !== 0
-    ) {
-      found = node.initializer;
-    }
-  });
-  return found;
+/** Bind the supplied source in isolation. The guard works on the source map, including in-memory mutations. */
+function lexicalChecker(source: ts.SourceFile): ts.TypeChecker {
+  const options = { noLib: true, noResolve: true, types: [] };
+  const host = ts.createCompilerHost(options);
+  host.getSourceFile = (name) => name === source.fileName ? source : undefined;
+  host.fileExists = () => false;
+  host.readFile = () => undefined;
+  return ts.createProgram([source.fileName], options, host).getTypeChecker();
 }
 
-/** The same lookup through each enclosing function, innermost first. */
-function outerConstInitializer(node: ts.Node, name: string): ts.Expression | undefined {
-  for (let scope = enclosingFunction(node); scope && !ts.isSourceFile(scope); scope = enclosingFunction(scope)) {
-    const initializer = constInitializer(scope, name);
-    if (initializer) return initializer;
+/** A shorthand property refers to its value binding as well as declaring a property. */
+function bindingOf(identifier: ts.Identifier, checker: ts.TypeChecker): ts.Symbol | undefined {
+  return ts.isShorthandPropertyAssignment(identifier.parent) && identifier.parent.name === identifier
+    ? checker.getShorthandAssignmentValueSymbol(identifier.parent)
+    : checker.getSymbolAtLocation(identifier);
+}
+
+/** Follow only initialized const bindings that are visible at this expression. */
+function constInitializer(identifier: ts.Identifier, checker: ts.TypeChecker): ts.Expression | undefined {
+  const declaration = bindingOf(identifier, checker)?.valueDeclaration;
+  if (!declaration || !ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name)
+    || !ts.isVariableDeclarationList(declaration.parent) || (declaration.parent.flags & ts.NodeFlags.Const) === 0
+    || declaration.end > identifier.getStart()) return undefined;
+  return declaration.initializer;
+}
+
+function isFetchWrapper(identifier: ts.Identifier, checker: ts.TypeChecker): boolean {
+  const declaration = bindingOf(identifier, checker)?.declarations?.[0];
+  if (declaration && ts.isImportSpecifier(declaration)) {
+    const clause = declaration.parent.parent;
+    const { moduleSpecifier } = clause.parent;
+    return !declaration.isTypeOnly && !clause.isTypeOnly
+      && (declaration.propertyName ?? declaration.name).text === SERVED_REQUEST_OBSERVER
+      && ts.isStringLiteral(moduleSpecifier) && moduleSpecifier.text === SERVED_REQUEST_MODULE;
   }
-  return undefined;
+  return declaration !== undefined && ts.isFunctionDeclaration(declaration) && ts.isSourceFile(declaration.parent)
+    && FETCH_WRAPPERS.has(identifier.text);
+}
+
+/** The observer returns the response from one call to its supplied fetch, with calls for observation only. */
+function observerDelegatesToFetch(source: ts.SourceFile): boolean {
+  const observer = source.statements.find((node): node is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(node) && node.name?.text === SERVED_REQUEST_OBSERVER
+    && node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true);
+  const [fetchParameter, callback] = observer?.parameters ?? [];
+  const [outerReturn] = observer?.body?.statements ?? [];
+  if (!fetchParameter || !callback || observer?.body?.statements.length !== 1
+    || !outerReturn || !ts.isReturnStatement(outerReturn) || !outerReturn.expression
+    || !ts.isArrowFunction(outerReturn.expression) || !ts.isBlock(outerReturn.expression.body)) return false;
+
+  const { body } = outerReturn.expression;
+  const returned = body.statements.at(-1);
+  if (!returned || !ts.isReturnStatement(returned) || !returned.expression || !ts.isIdentifier(returned.expression)) return false;
+
+  const checker = lexicalChecker(source);
+  const response = constInitializer(returned.expression, checker);
+  if (!response || !ts.isAwaitExpression(response) || !ts.isCallExpression(response.expression)) return false;
+  const send = response.expression;
+  if (!ts.isIdentifier(send.expression) || bindingOf(send.expression, checker)?.valueDeclaration !== fetchParameter) return false;
+
+  const addressHelper = source.statements.find((node): node is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(node) && node.name?.text === "requestAddress");
+  let delegates = true;
+  each(body, (node) => {
+    if (ts.isReturnStatement(node) && node !== returned) delegates = false;
+    if (ts.isIdentifier(node) && node !== send.expression && bindingOf(node, checker)?.valueDeclaration === fetchParameter) delegates = false;
+    if (!ts.isCallExpression(node) || node === send) return;
+    const callee = ts.isIdentifier(node.expression) ? bindingOf(node.expression, checker)?.valueDeclaration : undefined;
+    if (callee === undefined || (callee !== callback && callee !== addressHelper)) delegates = false;
+  });
+  return delegates;
 }
 
 /** Whether a fetch expression can only be the adapter's gated wire fetch, possibly behind a response wrapper. */
-function isGateDerived(expression: ts.Expression, scope: ts.Node | undefined, aliasDepth = 0): boolean {
+function isGateDerived(expression: ts.Expression, checker: ts.TypeChecker, aliasDepth = 0): boolean {
   if (aliasDepth > 8) return false;
-  if (ts.isParenthesizedExpression(expression)) return isGateDerived(expression.expression, scope, aliasDepth);
+  if (ts.isParenthesizedExpression(expression)) return isGateDerived(expression.expression, checker, aliasDepth);
   if (ts.isConditionalExpression(expression)) {
-    return isGateDerived(expression.whenTrue, scope, aliasDepth) && isGateDerived(expression.whenFalse, scope, aliasDepth);
+    return isGateDerived(expression.whenTrue, checker, aliasDepth) && isGateDerived(expression.whenFalse, checker, aliasDepth);
   }
   if (ts.isCallExpression(expression)) {
     if (compact(expression.expression.getText()) === "this.wireFetch") return true;
     const [first] = expression.arguments;
-    return ts.isIdentifier(expression.expression) && FETCH_WRAPPERS.has(expression.expression.text)
-      && first !== undefined && isGateDerived(first, scope, aliasDepth);
+    return ts.isIdentifier(expression.expression) && isFetchWrapper(expression.expression, checker)
+      && first !== undefined && isGateDerived(first, checker, aliasDepth);
   }
   if (ts.isIdentifier(expression)) {
-    const initializer = constInitializer(scope, expression.text);
-    return initializer !== undefined && isGateDerived(initializer, scope, aliasDepth + 1);
+    const initializer = constInitializer(expression, checker);
+    return initializer !== undefined && isGateDerived(initializer, checker, aliasDepth + 1);
   }
   return false;
 }
 
 /** Whether an SDK factory's options carry a gated fetch: named directly, or inherited from a spread options object. */
-function optionsCarryGatedFetch(options: ts.Expression | undefined, scope: ts.Node | undefined, depth = 0): boolean {
+function optionsCarryGatedFetch(options: ts.Expression | undefined, checker: ts.TypeChecker, depth = 0): boolean {
   if (!options || depth > 4) return false;
-  if (ts.isIdentifier(options)) return optionsCarryGatedFetch(constInitializer(scope, options.text), scope, depth + 1);
+  if (ts.isIdentifier(options)) return optionsCarryGatedFetch(constInitializer(options, checker), checker, depth + 1);
   if (!ts.isObjectLiteralExpression(options)) return false;
   let gated = false;
   for (const property of options.properties) {
     if (ts.isSpreadAssignment(property)) {
       if (ts.isIdentifier(property.expression)) {
-        gated = optionsCarryGatedFetch(property.expression, scope, depth + 1);
+        gated = optionsCarryGatedFetch(property.expression, checker, depth + 1);
       } else if (!spreadsNoFetch(property.expression)) {
         // A spread that could carry a fetch of its own would replace the gated one.
         return false;
       }
     } else if (ts.isPropertyAssignment(property) && property.name.getText() === "fetch") {
-      gated = isGateDerived(property.initializer, scope);
+      gated = isGateDerived(property.initializer, checker);
     } else if (ts.isShorthandPropertyAssignment(property) && property.name.text === "fetch") {
-      gated = isGateDerived(property.name, scope);
+      gated = isGateDerived(property.name, checker);
     }
   }
   return gated;
@@ -156,21 +208,21 @@ function assignedName(fn: ts.Node): string | undefined {
 }
 
 /** Whether a config's fetch can only come from a reviewed constructor. */
-function isReviewedFetch(expression: ts.Expression, scope: ts.Node | undefined, depth = 0): boolean {
+function isReviewedFetch(expression: ts.Expression, checker: ts.TypeChecker, depth = 0): boolean {
   if (depth > 8) return false;
-  if (ts.isParenthesizedExpression(expression)) return isReviewedFetch(expression.expression, scope, depth + 1);
+  if (ts.isParenthesizedExpression(expression)) return isReviewedFetch(expression.expression, checker, depth + 1);
   if (ts.isConditionalExpression(expression)) {
-    return isReviewedFetch(expression.whenTrue, scope, depth + 1) && isReviewedFetch(expression.whenFalse, scope, depth + 1);
+    return isReviewedFetch(expression.whenTrue, checker, depth + 1) && isReviewedFetch(expression.whenFalse, checker, depth + 1);
   }
   if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
-    return isReviewedFetch(expression.left, scope, depth + 1) && isReviewedFetch(expression.right, scope, depth + 1);
+    return isReviewedFetch(expression.left, checker, depth + 1) && isReviewedFetch(expression.right, checker, depth + 1);
   }
   if (ts.isCallExpression(expression)) {
     return ts.isIdentifier(expression.expression) && REVIEWED_FETCH_CONSTRUCTORS.has(expression.expression.text);
   }
   if (ts.isIdentifier(expression)) {
-    const initializer = constInitializer(scope, expression.text);
-    return initializer !== undefined && isReviewedFetch(initializer, scope, depth + 1);
+    const initializer = constInitializer(expression, checker);
+    return initializer !== undefined && isReviewedFetch(initializer, checker, depth + 1);
   }
   return false;
 }
@@ -215,7 +267,7 @@ export function inspectModelTransportStructure(sources: ReadonlyMap<string, stri
   const parsed = new Map<string, ts.SourceFile>();
 
   for (const [file, text] of [...sources].sort(([a], [b]) => a.localeCompare(b))) {
-    if (!isProductionSource(file) || !(RELEVANT.test(text) || FETCH_CHAIN_FILES.has(file))) continue;
+    if (!isProductionSource(file) || !(RELEVANT.test(text) || FETCH_CHAIN_FILES.has(file) || file === SERVED_REQUEST_FILE)) continue;
     const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, file.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
     const sdkFactories = new Set<string>();
     const sdkDispatch = new Set<string>();
@@ -303,6 +355,7 @@ export function inspectModelTransportStructure(sources: ReadonlyMap<string, stri
     }
 
     if (file !== ADAPTER) continue;
+    const checker = lexicalChecker(source);
 
     // Rule 6: a dispatch call takes its model only from resolveModel, never a string the SDK would route itself.
     each(source, (node) => {
@@ -314,7 +367,7 @@ export function inspectModelTransportStructure(sources: ReadonlyMap<string, stri
         ? options.properties.find((property) => property.name?.getText() === "model")
         : undefined;
       const value = model && ts.isPropertyAssignment(model) ? model.initializer
-        : model && ts.isShorthandPropertyAssignment(model) ? outerConstInitializer(call, model.name.text)
+        : model && ts.isShorthandPropertyAssignment(model) ? constInitializer(model.name, checker)
         : undefined;
       const resolved = value !== undefined && ts.isCallExpression(value) && compact(value.expression.getText()) === "this.resolveModel";
       if (!resolved) violations.push(`${file}: ${node.text}(…) must take its model from this.resolveModel(…)`);
@@ -366,7 +419,7 @@ export function inspectModelTransportStructure(sources: ReadonlyMap<string, stri
         violations.push(`${file}: ${node.text} is aliased or passed around instead of being called with a gated fetch`);
         return;
       }
-      if (!optionsCarryGatedFetch(call.arguments[0], enclosingFunction(call))) {
+      if (!optionsCarryGatedFetch(call.arguments[0], checker)) {
         violations.push(`${file}: ${node.text}(…) is not given the gated wire fetch`);
       }
     });
@@ -381,17 +434,24 @@ export function inspectModelTransportStructure(sources: ReadonlyMap<string, stri
       violations.push(`${file}: gateModelFetch must come from ../model-wire-gate.js`);
     }
   }
+  if (parsed.has(ADAPTER)) {
+    const observer = parsed.get(SERVED_REQUEST_FILE);
+    if (!observer || !observerDelegatesToFetch(observer)) {
+      violations.push(`${SERVED_REQUEST_FILE}: observeServedRequest must send through its first parameter`);
+    }
+  }
   // Rule 8: where production code supplies evidence, the fetch beside it comes from a reviewed constructor.
   const siteFiles = new Set(probeSites.map((site) => site.file));
   for (const file of siteFiles) {
     if (file === ADAPTER || file === FACTORY) continue;
     const source = parsed.get(file);
     if (!source) continue;
+    const checker = lexicalChecker(source);
     each(source, (node) => {
       const named = (ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)) && node.name.getText() === "fetch";
       if (!named || !ts.isObjectLiteralExpression(node.parent) || insideReviewedConstructor(node)) return;
       const initializer = ts.isPropertyAssignment(node) ? node.initializer : node.name;
-      if (!isReviewedFetch(initializer, enclosingFunction(node))) {
+      if (!isReviewedFetch(initializer, checker)) {
         violations.push(`${file}: a provider config carries a fetch that no reviewed constructor built`);
       }
     });
