@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -173,6 +173,40 @@ export function withinDeadline<T>(work: Promise<T>, ms: number, label: string): 
     timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms} ms`)), ms);
   });
   return Promise.race([work, expired]).finally(() => clearTimeout(timer));
+}
+
+/** Runs one body step only while the body is live, and stops its continuation if the body aborted meanwhile. */
+export function liveSteps(signal: AbortSignal): <T>(work: () => T | Promise<T>) => Promise<T> {
+  return async (work) => {
+    signal.throwIfAborted();
+    const result = await work();
+    signal.throwIfAborted();
+    return result;
+  };
+}
+
+export interface WorkbookArchive {
+  file(name: string, data: Uint8Array): unknown;
+  generateAsync(options: { type: "nodebuffer"; compression: "DEFLATE" }): Promise<Buffer>;
+}
+
+/** Builds the observed workbook and writes it with its edit request; no compression or write starts after an abort. */
+export async function seedLiveWorkbook(step: ReturnType<typeof liveSteps>, load: () => Promise<WorkbookArchive>,
+  files: { path: string; requestPath: string; request: string },
+  write: (path: string, bytes: Uint8Array) => void = (path, bytes) => writeFileSync(path, bytes)): Promise<Buffer> {
+  const archive = await step(load);
+  archive.file("xl/media/observation-fixture.bin", randomBytes(9 * 1024 * 1024));
+  const bytes = await step(() => archive.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
+  write(files.path, bytes);
+  write(files.requestPath, Buffer.from(files.request));
+  return bytes;
+}
+
+/** Answers 503 once the body aborted; true when the request was refused. */
+export function refuseAborted(signal: AbortSignal | undefined, response: { writeHead(status: number): { end(): unknown } }): boolean {
+  if (!signal?.aborted) return false;
+  response.writeHead(503).end();
+  return true;
 }
 
 /** The PowerShell or POSIX command the model sends for this argv. */

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -23,8 +24,8 @@ import { preparePowerShellLaunch } from "../../src/tools/powershell-launch.js";
 import { buildSafeChildEnv } from "../../src/tools/safe-env.js";
 import { findShellPathPolicyViolation } from "../../src/tools/shell-path-policy.js";
 import { awaitedHostScriptCommand, findPowerShellAstPathViolation, powerShellHostScriptReadPaths, resolvePowerShellExecutable } from "../../src/tools/shell-tools.js";
-import { boundedDiagnostic, fileSystemIo, type FixtureBuildIo, type OwnedApp, prepareWorkbookPublicationBuild, renderWorkbookCommand,
-  runBoundedTest, teardownWorkbookTest } from "../e2e/ui/xlsx-publication-barrier.js";
+import { boundedDiagnostic, fileSystemIo, type FixtureBuildIo, liveSteps, type OwnedApp, prepareWorkbookPublicationBuild,
+  refuseAborted, renderWorkbookCommand, runBoundedTest, seedLiveWorkbook, teardownWorkbookTest, type WorkbookArchive } from "../e2e/ui/xlsx-publication-barrier.js";
 
 let root: string;
 let checkout: string;
@@ -601,6 +602,76 @@ describe("workbook publication build", () => {
           await fixture.late();
           errors.mockRestore();
           for (const path of [fixture.root, ...seeds, fixture.workspace]) rmSync(path, { recursive: true, force: true });
+        }
+      });
+
+      it.each(["load", "generate"] as const)("starts no setup work or write once the body aborts during the ZIP %s", async (held) => {
+        const calls: string[] = [];
+        let finish: () => void = () => {};
+        const pending = new Promise<void>((resolve) => { finish = resolve; });
+        let seeding: Promise<unknown> | undefined;
+        const archive: WorkbookArchive = {
+          file: () => { calls.push("file"); },
+          generateAsync: async () => { calls.push("generate"); if (held === "generate") await pending; return Buffer.from("zip"); },
+        };
+        const failure = await runBoundedTest({
+          body: (signal) => {
+            seeding = seedLiveWorkbook(liveSteps(signal), async () => { if (held === "load") await pending; return archive; },
+              { path: "book.xlsx", requestPath: "edits.json", request: "{}" }, (path) => { calls.push(`write ${path}`); });
+            return seeding.then(() => {});
+          },
+          diagnose: async () => { finish(); await seeding?.catch(() => {}); },
+          teardown: async () => { calls.push("teardown"); return []; },
+        }, budget).catch((error: unknown) => error);
+        expect(String(failure)).toBe("Error: Workbook test body exceeded 100 ms");
+        expect(calls).toEqual(held === "load" ? ["teardown"] : ["file", "generate", "teardown"]);
+      });
+
+      it("starts no observer installation after an exposure that returns once the body aborted", async () => {
+        const calls: string[] = [];
+        let finish: () => void = () => {};
+        let rest: Promise<unknown> | undefined;
+        await runBoundedTest({
+          body: (signal) => {
+            const step = liveSteps(signal);
+            rest = (async () => {
+              await step(() => new Promise<void>((resolve) => { finish = resolve; }));
+              calls.push("observer");
+            })();
+            return rest.then(() => {});
+          },
+          diagnose: async () => { finish(); await rest?.catch(() => {}); },
+          teardown: async () => { calls.push("teardown"); return []; },
+        }, budget).catch(() => {});
+        expect(calls).toEqual(["teardown"]);
+      });
+
+      it("refuses both model routes after abort, at entry and after a request body arrives", async () => {
+        const body = new AbortController();
+        let reading: (() => void) | undefined;
+        const server = createServer(async (request, response) => {
+          if (refuseAborted(body.signal, response)) return;
+          if (request.method === "POST") {
+            for await (const _chunk of request) { /* drain */ }
+            await new Promise<void>((resolve) => { reading = resolve; });
+            if (refuseAborted(body.signal, response)) return;
+          }
+          response.writeHead(200).end();
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+        try {
+          expect((await fetch(`${base}/models`)).status).toBe(200);
+          const reply = fetch(`${base}/chat/completions`, { method: "POST", body: "{}" });
+          await vi.waitFor(() => expect(reading).toBeDefined());
+          body.abort();
+          reading?.();
+          expect((await reply).status).toBe(503);
+          expect((await fetch(`${base}/models`)).status).toBe(503);
+          expect((await fetch(`${base}/chat/completions`, { method: "POST", body: "{}" })).status).toBe(503);
+        } finally {
+          server.closeAllConnections();
+          await new Promise<void>((resolve) => server.close(() => resolve()));
         }
       });
 

@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 import type { WebContents } from "electron";
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import JSZip from "jszip";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -14,8 +14,8 @@ import * as XLSX from "xlsx";
 import { offsetWorkbook } from "../../../src/__tests__/support/table-document-fixtures.js";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
-import { boundedDiagnostic, FIXTURE_TEST_BUDGET, prepareWorkbookPublicationBuild, renderWorkbookCommand, runBoundedTest,
-  teardownWorkbookTest } from "./xlsx-publication-barrier.js";
+import { boundedDiagnostic, FIXTURE_TEST_BUDGET, liveSteps, prepareWorkbookPublicationBuild, refuseAborted, renderWorkbookCommand,
+  runBoundedTest, seedLiveWorkbook, teardownWorkbookTest } from "./xlsx-publication-barrier.js";
 
 test("edited workbook shows a recalculation badge through the real viewer", async () => {
   expect(builtMainExists()).toBe(true);
@@ -193,6 +193,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     response.end("data: [DONE]\n\n");
   };
   const server = createServer(async (request, response) => {
+    if (refuseAborted(bodySignal, response)) return;
     if (request.method === "GET" && request.url === "/v1/models") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ object: "list", data: [{ id: model, object: "model" }] }));
@@ -201,7 +202,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     if (request.method !== "POST" || request.url !== "/v1/chat/completions") { response.writeHead(404).end(); return; }
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
-    if (bodySignal?.aborted) { response.writeHead(503).end(); return; }
+    if (refuseAborted(bodySignal, response)) return;
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { messages?: Array<{ role: string; content: unknown }> };
     toolResults.push(...(body.messages ?? []).filter((message) => message.role === "tool"));
     modelCalls += 1;
@@ -225,15 +226,13 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     bodySignal = signal;
     // Each step that launches, changes state, replies or approves first checks that the body is still live.
     const live = () => signal.throwIfAborted();
+    const step = liveSteps(signal);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, {
       A10001: { t: "s", v: "Existing cell" }, B10002: { t: "n", v: 12 }, "!ref": "A10001:B10002",
     }, "Values");
-    const archive = await JSZip.loadAsync(XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }));
-    archive.file("xl/media/observation-fixture.bin", randomBytes(9 * 1024 * 1024));
-    originalBytes = await archive.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
-    writeFileSync(path, originalBytes);
-    writeFileSync(requestPath, JSON.stringify({ sheet: 0, edits: [{ cell: "A10001", value: "Agent changed" }, { cell: "B10002", value: 84 }] }));
+    originalBytes = await seedLiveWorkbook(step, () => JSZip.loadAsync(XLSX.write(workbook, { type: "buffer", bookType: "xlsx" })),
+      { path, requestPath, request: JSON.stringify({ sheet: 0, edits: [{ cell: "A10001", value: "Agent changed" }, { cell: "B10002", value: 84 }] }) });
     live();
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     live();
@@ -262,8 +261,8 @@ test("approved agent edits stream into the read-only workbook panel", async () =
       state.observedDocumentEvents = [];
       window.ave.preview.onAgentObservation((events) => state.observedDocumentEvents.push(...events));
     });
-    live();
-    await ctx.page.exposeFunction("captureProvisionalDocumentFrame", (frame: ProvisionalFrame) => {
+    const page = ctx.page;
+    await step(() => page.exposeFunction("captureProvisionalDocumentFrame", (frame: ProvisionalFrame) => {
       const sourceHash = createHash("sha256").update(readFileSync(path)).digest("hex");
       const originalHash = createHash("sha256").update(originalBytes).digest("hex");
       provisionalFrames.push({ ...frame, sourceHash });
@@ -271,7 +270,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
         && JSON.stringify(frame.values) === JSON.stringify(["Agent changed", "84"])) {
         prepublicationProof = { ...frame, sourceHash, originalHash };
       }
-    });
+    }));
     await ctx.page.evaluate(() => {
       const proofWindow = window as unknown as {
         captureProvisionalDocumentFrame: (frame: { values: string[]; visible: boolean; snapshotReceived: boolean; frameTime: number }) => Promise<void>;
