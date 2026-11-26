@@ -1,11 +1,12 @@
 import { ChildProcess } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { crc32, deflateSync, inflateSync } from "node:zlib";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { buildMainBoundaryBundle, repositoryRoot } from "../../../plugins/isolation/__tests__/child-entry-bundle.js";
+import { repositoryRoot } from "../../../plugins/isolation/__tests__/child-entry-bundle.js";
+import { buildBrowserCaptureStitchChild } from "../../../__tests__/support/browser-capture-stitch-bundle.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import type { CdpSession } from "../browser-action-guard.js";
@@ -166,12 +167,7 @@ function encodeTestPng(): Promise<Buffer> {
 async function builtEntryDir(): Promise<string> {
   if (builtDir) return builtDir;
   const outdir = entryDir();
-  await buildMainBoundaryBundle({
-    entryPoints: { "browser-capture-stitch-child": join(repositoryRoot(), "src/main/browser/browser-capture-stitch-child-main.ts") },
-    outdir,
-    splitting: true,
-  });
-  copyFileSync(join(outdir, "browser-capture-stitch-child.mjs"), join(outdir, ENTRY));
+  await buildBrowserCaptureStitchChild(outdir);
   builtDir = outdir;
   return outdir;
 }
