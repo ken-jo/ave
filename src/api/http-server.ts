@@ -165,7 +165,8 @@ async function handleDispatch(
       ...("args" in parsed ? { args: parsed.args } : {}),
       origin: HTTP_ORIGIN,
     });
-    sendJson(res, result.ok ? 200 : 403, result);
+    if (result.ok) sendJson(res, 200, result);
+    else sendJson(res, 403, { ok: false, error: result.error });
   } catch (err) {
     log?.(`dispatch handler threw: ${errorMessage(err)}`);
     sendJson(res, 500, { ok: false, error: "internal-error" });

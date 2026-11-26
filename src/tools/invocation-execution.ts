@@ -1463,9 +1463,9 @@ export async function executeAuthorizedToolInvocation(
     });
     indeterminateAuditPersisted = true;
   }
-  const effectPermissionRefusal = effectApprovalRefusal?.kind === "recheck-failed"
-    ? refusal(effectApprovalRefusal.reason, HOST_PROVENANCE)
-    : effectApprovalRefusal?.kind === "denied" ? refusal(effectApprovalRefusal.fresh.reason, RULE_PROVENANCE) : undefined;
+  const effectPermissionRefusal = effectApprovalRefusal === undefined ? undefined
+    : effectApprovalRefusal.kind === "denied" ? refusal(effectApprovalRefusal.fresh.reason, RULE_PROVENANCE)
+    : refusal(effectApprovalRefusal.reason, HOST_PROVENANCE);
   if (effectAuthorizationRequired || effectNoApprover) {
     // The host effect boundary latched this before blocking the mutation. A
     // plugin may catch that thrown denial, but it cannot clear this outer

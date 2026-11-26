@@ -3,7 +3,7 @@ import { useConfigurationOwner } from "../../../__tests__/support/configuration-
 useConfigurationOwner();
 
 import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
-import { answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
+import { answeredApprovalDecision, answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { buildChainedEntries } from "../../../audit/hmac-chain.js";
 import { tmpdir } from "node:os";
@@ -432,10 +432,12 @@ describe("permissions IPC handlers", () => {
   });
 
   it("suggests LLM permission review after repeated default-mode approvals", async () => {
-    const { appWindows } = await setup({
+    const { deps, appWindows } = await setup({
       mode: "default",
       hasReviewer: false,
     });
+    deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity.mockImplementation((_id, decision) =>
+      answeredApprovalDecision(decision as Parameters<typeof answeredApprovalDecision>[0], "desk", "bash_run"));
 
     await invoke(PERMISSIONS.approvalRespond, { requestId: "approval-1", choice: "allow-once" });
     await invoke(PERMISSIONS.approvalRespond, { requestId: "approval-2", choice: "allow-session" });
@@ -501,10 +503,12 @@ describe("permissions IPC handlers", () => {
   });
 
   it("suggests LLM permission review immediately after allow-always in default mode", async () => {
-    const { appWindows } = await setup({
+    const { deps, appWindows } = await setup({
       mode: "default",
       hasReviewer: false,
     });
+    deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity.mockResolvedValueOnce(
+      await answeredApprovalDecision({ requestId: "approval-always", choice: "allow-always" }, "desk", "bash_run"));
 
     await invoke(PERMISSIONS.approvalRespond, { requestId: "approval-always", choice: "allow-always" });
 

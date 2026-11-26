@@ -69,11 +69,11 @@ async function resolveSurface(input: SurfaceInput): Promise<SurfaceResolution> {
     permission: permission.decision === "deny" ? permission : { ...permission, decision: "deny", reason: t("be_executor.approvalDeniedByUser", { name: request.toolName }) },
     decision: denial, answer: undefined,
   });
+  const initialAnswer = admitApprovalAnswer(decision, {
+    requestId: request.id, toolName: request.toolName, toolUseId: request.invocationToolUseId,
+  });
   if (isSettledRefusal(decision)) {
-    const admitted = admitApprovalAnswer(decision, {
-      requestId: request.id, toolName: request.toolName, toolUseId: request.invocationToolUseId,
-    });
-    return admitted?.decision === "deny" ? personDenied(decision) : { permission, decision, answer: undefined };
+    return initialAnswer?.decision === "deny" ? personDenied(decision) : { permission, decision, answer: undefined };
   }
   if (!request.userOwnedSurface || !sessionId) return { permission, decision, answer: input.answer };
   permission = manager.recheckPermission(permission);

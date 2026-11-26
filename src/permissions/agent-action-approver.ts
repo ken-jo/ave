@@ -24,9 +24,11 @@ export type AgentActionApprover = (
   request: AgentActionApprovalRequest,
 ) => Promise<AgentActionApprovalResult>;
 
+export type AgentActionApprovalFailure = ApprovalFailureKind | "concurrent";
+
 export type AgentActionApprovalResult =
   | AgentActionApprovalReceipt
-  | { readonly approved: false; readonly outcome: ApprovalFailureKind | "concurrent" };
+  | { readonly approved: false; readonly outcome: AgentActionApprovalFailure };
 
 export interface AgentActionApprovalReceipt {
   readonly approved: true;

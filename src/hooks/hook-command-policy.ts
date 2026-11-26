@@ -126,12 +126,11 @@ export function createHookCommandAuthorizer(deps: {
       } catch (error) {
         return { decision: "deny", reason: errorMessage(error), commandAdmissionFailure: "recheck-failed" };
       }
-      if (abortSignal?.aborted) return { decision: "deny", reason: "Hook command was cancelled" };
-      if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId) || !controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
       if (admitted?.decision !== "allow") {
-        return { decision: "deny", reason: admitted?.decision === "deny"
-          ? "user denied hook command" : hostApprovalDenialReason(approval) ?? "approval rejected by host" };
+        return { decision: "deny", reason: hostApprovalDenialReason(approval)
+          ?? (admitted?.decision === "deny" ? "user denied hook command" : "approval rejected by host") };
       }
+      if (abortSignal?.aborted) return { decision: "deny", reason: "Hook command was cancelled" };
     }
     if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId) || !controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
     let current: PermissionCheckResult;

@@ -21,7 +21,7 @@ import { makeDeepProxy } from "../../__tests__/support/deep-proxy.js";
 import type { AppServices } from "../../boot.js";
 import type { SettingsService } from "../../data/settings-store.js";
 import type { FeatureFlags, SystemSettings } from "../../data/settings-store.js";
-import type { ApprovalGate } from "../../permissions/approval-gate.js";
+import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import type { A2AHttpRouter } from "../../api/a2a-router.js";
 import { PERMISSIONS, EXTERNAL_MUTATION_DENIED } from "../../contract/app-contract.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -546,7 +546,7 @@ describe("local-api-server", () => {
         origin: "local-api",
       });
 
-      expect(approved).toBe(true);
+      expect(approved).toMatchObject({ approved: true });
       expect(requestAndWait).toHaveBeenCalledTimes(1);
       const req = requestAndWait.mock.calls[0][0] as Record<string, unknown>;
       expect(req.category).toBe("agent-action");
@@ -573,7 +573,7 @@ describe("local-api-server", () => {
         args: { mode: "auto" },
         origin: "cli",
       });
-      expect(approved).toBe(false);
+      expect(approved).toEqual({ approved: false, outcome: "rejected" });
     });
 
     it("a thrown gate → false (fail-closed) and logs one line", async () => {
@@ -590,7 +590,7 @@ describe("local-api-server", () => {
         args: { mode: "auto" },
         origin: "local-api",
       });
-      expect(approved).toBe(false);
+      expect(approved).toEqual({ approved: false, outcome: "rejected" });
       expect(logs).toEqual([
         `[local-api] external-mutation approval errored channel=${PERMISSIONS.setMode} origin=local-api → denied`,
       ]);
@@ -626,7 +626,7 @@ describe("local-api-server", () => {
           origin: "cli",
         });
 
-        expect(second).toBe(false);
+        expect(second).toEqual({ approved: false, outcome: "concurrent" });
         expect(requestAndWait).toHaveBeenCalledTimes(1);
         expect(
           logs.some((l) => l.includes("external mutation approval already pending — denying concurrent request")),
@@ -639,7 +639,7 @@ describe("local-api-server", () => {
         expect(capLog).not.toContain("auto");
 
         releaseGate("allow-once");
-        await expect(first).resolves.toBe(true);
+        await expect(first).resolves.toMatchObject({ approved: true });
       });
 
       it("after the first ask resolves allow, a subsequent ask calls the gate again (guard released)", async () => {
@@ -660,8 +660,8 @@ describe("local-api-server", () => {
           origin: "local-api",
         });
 
-        expect(firstApproved).toBe(true);
-        expect(secondApproved).toBe(true);
+        expect(firstApproved).toMatchObject({ approved: true });
+        expect(secondApproved).toMatchObject({ approved: true });
         expect(requestAndWait).toHaveBeenCalledTimes(2);
       });
 
@@ -684,20 +684,33 @@ describe("local-api-server", () => {
           origin: "local-api",
         });
 
-        expect(firstApproved).toBe(false);
-        expect(secondApproved).toBe(true);
+        expect(firstApproved).toEqual({ approved: false, outcome: "rejected" });
+        expect(secondApproved).toMatchObject({ approved: true });
         expect(requestAndWait).toHaveBeenCalledTimes(2);
       });
     });
   });
 
   describe("HTTP passthrough — approval-denied set-mode", () => {
-    it("POST /v1/dispatch set-mode with a stub approver-denied gate → 403 external-mutation-denied", async () => {
+    it.each(["denied", "rejected", "expired", "unavailable", "cancelled"] as const)("audits the mode approval outcome before returning the public 403 (%s)", async (outcome) => {
       process.env.AVE_LOCAL_API = "1";
-      // Stub gate that denies (deny-once) → approver resolves false.
-      const requestAndWait = vi.fn(async () => ({ requestId: "r", choice: "deny-once" as const }));
+      const surface = {
+        isDestroyed: () => false,
+        send: vi.fn((_channel: string, card: ApprovalRequest) => {
+          if (card?.nonce === undefined || outcome === "expired") return;
+          queueMicrotask(() => {
+            if (outcome === "cancelled") gate.disposeAll();
+            else gate.resolve(card.id, { requestId: card.id, choice: "deny-once",
+              ...(outcome === "denied" ? { nonce: card.nonce, hmac: card.hmac } : {}),
+            }, "desk");
+          });
+        }),
+      };
+      const gate = new ApprovalGate(outcome === "unavailable" ? null : surface as never, undefined, outcome === "expired" ? 5 : undefined);
+      const requestAndWait = vi.fn(gate.requestAndWait.bind(gate));
+      const audit = vi.fn();
       const result = await maybeStartLocalApiServer({
-        services: makeServices({}, "plan", { requestAndWait }),
+        services: makeServices({}, "plan", { requestAndWait }, {}, audit),
         ...START_ARGS,
       });
       const info = readInfo(home);
@@ -714,6 +727,7 @@ describe("local-api-server", () => {
       expect(res.status).toBe(403);
       expect(await res.json()).toEqual({ ok: false, error: EXTERNAL_MUTATION_DENIED });
       expect(requestAndWait).toHaveBeenCalledTimes(1);
+      expect(audit).toHaveBeenCalledWith(expect.objectContaining({ output: `approval=${outcome}` }));
     });
   });
 });

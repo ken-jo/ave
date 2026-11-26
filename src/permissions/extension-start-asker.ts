@@ -1,7 +1,7 @@
 /** The card and the notice for extension starts that nothing confines. */
 import { randomUUID } from "node:crypto";
 import type { ExtensionStartApprovalRow, ExtensionStartChoice } from "../shared/permissions-events.js";
-import { admitApprovalAnswer, type AnsweredRecord, type ApprovalGate } from "./approval-gate.js";
+import { admitApprovalAnswer, approvalFailureKind, type AnsweredRecord, type ApprovalGate } from "./approval-gate.js";
 import type { ExtensionStartAsker, PendingExtensionStart } from "./extension-start-consent.js";
 
 export function createExtensionStartAsker(deps: {
@@ -13,7 +13,8 @@ export function createExtensionStartAsker(deps: {
 }): ExtensionStartAsker {
   return {
     async ask(starts, session) {
-      if (starts.length === 0 || session.abortSignal?.aborted) return "no-approver";
+      if (session.abortSignal?.aborted) return "cancelled";
+      if (starts.length === 0) return "unavailable";
       // A row id names one start on this card only. What it stands for stays here, so an answer can only name a start that was shown.
       const shown = starts.map((start) => ({ start, row: { id: randomUUID(), label: start.label, kind: start.kind, cause: start.cause } satisfies ExtensionStartApprovalRow }));
       const requestId = randomUUID();
@@ -32,14 +33,16 @@ export function createExtensionStartAsker(deps: {
         forceExplicit: true,
         ...(session.abortSignal ? { abortSignal: session.abortSignal } : {}),
       });
-      if (session.abortSignal?.aborted) return "no-approver";
       let admitted: AnsweredRecord | undefined;
       try {
         admitted = admitApprovalAnswer(decision, { requestId, toolName: "extension_start", toolUseId: undefined });
       } catch {
-        return "no-approver";
+        return "rejected";
       }
-      if (admitted === undefined || (admitted.choice !== "allow-once" && admitted.choice !== "deny-once")) return "no-approver";
+      const failure = approvalFailureKind(decision);
+      if (admitted === undefined || failure === "rejected") return failure ?? "rejected";
+      if (session.abortSignal?.aborted) return "cancelled";
+      if (admitted.choice !== "allow-once" && admitted.choice !== "deny-once") return "rejected";
       const choices: Readonly<Record<string, unknown>> | undefined = decision.extensionStartChoices;
       const answers = new Map<string, ExtensionStartChoice>();
       for (const { start, row } of shown) {

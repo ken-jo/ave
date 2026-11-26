@@ -175,9 +175,9 @@ export async function createA2ARemoteRuntime(options: CreateA2ARemoteRuntimeOpti
     approve: async (input) => {
       const lineage = Object.freeze(structuredClone(input.lineage));
       const lineageDigestSha256 = a2aRemoteLineageDigestSha256(lineage);
-      if (lineageDigestSha256 !== input.lineageDigestSha256) return null;
+      if (lineageDigestSha256 !== input.lineageDigestSha256) return { outcome: "rejected" };
       const receipt = await options.agentActionApprover({ toolName: `a2a-remote-${input.operation}`, args: { operation: input.operation, targetLabel: input.targetLabel, semanticDigestSha256: input.semanticDigestSha256, lineage, lineageDigestSha256, intendedCredentialRevisionId: input.intendedCredentialRevisionId }, reason: "Send this DLP-processed message directly to the approved remote A2A agent?", trustOrigin: "user-keyboard" });
-      return receipt.approved ? { decisionId: receipt.decisionId, decidedAt: receipt.decidedAt, intendedCredentialRevisionId: input.intendedCredentialRevisionId, lineageDigestSha256, semanticDigestSha256: input.semanticDigestSha256 } : null;
+      return receipt.approved ? { decisionId: receipt.decisionId, decidedAt: receipt.decidedAt, intendedCredentialRevisionId: input.intendedCredentialRevisionId, lineageDigestSha256, semanticDigestSha256: input.semanticDigestSha256 } : receipt;
     },
   };
   const client = gates.outboundRouting && store ? new A2ARemoteClient({

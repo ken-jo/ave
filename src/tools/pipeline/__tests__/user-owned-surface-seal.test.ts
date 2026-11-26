@@ -30,7 +30,7 @@ async function answeredDeny(pending: ApprovalRequest, answeredBy: "desk" | "plat
   return decision;
 }
 
-function surfaceFallback() {
+async function surfaceFallback() {
   const answer = deferred<ApprovalDecision>();
   const asked = deferred<ApprovalRequest>();
   const quit = new AbortController();
@@ -44,7 +44,7 @@ function surfaceFallback() {
     manager: manager as unknown as PermissionManager,
     gate: gate as unknown as ApprovalGate,
     permission: ask,
-    decision: { requestId: "surface-card", choice: "allow-once" },
+    decision: await answeredApprovalDecision({ requestId: "surface-card", choice: "allow-once" }, "desk", "probe"),
     answer: undefined, action: "tool-use:surface", uses: [],
     request: { id: "surface-card", toolName: "probe", userOwnedSurface: "browser", abortSignal: quit.signal } as never,
     sessionId: "surface-session",
@@ -55,7 +55,7 @@ function surfaceFallback() {
 
 describe("user-owned surface approval across the quit seal", () => {
   it("returns the fallback card's answered deny when the quit lands before it resumes", async () => {
-    const { answer, asked, quit, resolution } = surfaceFallback();
+    const { answer, asked, quit, resolution } = await surfaceFallback();
     // The person's answer settles the card; the quit lands before the awaiting resolution runs again.
     answer.resolve(await answeredDeny(await asked));
     quit.abort(new HostExitAbortError());
@@ -66,9 +66,9 @@ describe("user-owned surface approval across the quit seal", () => {
   });
 
   it("ends on the quit for a deny no person answered through the gate", async () => {
-    const { answer, asked, quit, resolution } = surfaceFallback();
-    await asked;
-    answer.resolve({ requestId: "fallback-card", choice: "deny-once" });
+    const { answer, asked, quit, resolution } = await surfaceFallback();
+    const pending = await asked;
+    answer.resolve({ requestId: pending.id, choice: "deny-once" });
     quit.abort(new HostExitAbortError());
     // The cancellation comes back for the caller to end as a stop, so its terminal writer still runs.
     const resolved = await resolution;
@@ -77,7 +77,7 @@ describe("user-owned surface approval across the quit seal", () => {
   });
 
   it("still ends on the quit when the fallback card was allowed", async () => {
-    const { answer, asked, quit, resolution } = surfaceFallback();
+    const { answer, asked, quit, resolution } = await surfaceFallback();
     const pending = await asked;
     answer.resolve(await answeredApprovalDecision({ requestId: pending.id, choice: "allow-once" }, "desk", pending.toolName));
     quit.abort(new HostExitAbortError());
@@ -90,9 +90,9 @@ describe("user-owned surface approval across the quit seal", () => {
       manager: { recheckPermission: () => ({ decision: "deny", reason: "rule denies" }) } as unknown as PermissionManager,
       gate: {} as ApprovalGate,
       permission: ask,
-      decision: { requestId: "surface-card", choice: "allow-once" },
+      decision: await answeredApprovalDecision({ requestId: "surface-card", choice: "allow-once" }, "desk", "probe"),
     answer: undefined, action: "tool-use:surface", uses: [],
-      request: { id: "surface-card", userOwnedSurface: "browser" } as never,
+      request: { id: "surface-card", toolName: "probe", userOwnedSurface: "browser" } as never,
       sessionId: "surface-session",
       review: async (permission) => permission,
     });

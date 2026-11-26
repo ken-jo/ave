@@ -68,7 +68,7 @@ describe("the extension start card", () => {
 
   it("refuses answers that name rows the card did not show", async () => {
     const { asker: subject } = asker((rows) => ({ choice: "allow-once", extensionStartChoices: { [idOf(rows, 0)]: "yes", "mcp-stdio:files": "yes", "plugin-child:notes": "yes" } }));
-    expect(await subject.ask([START, ...OTHERS], SESSION)).toBe("no-approver");
+    expect(await subject.ask([START, ...OTHERS], SESSION)).toBe("rejected");
   });
 
   it("never reads a yes for several starts out of one allow that names none of them", async () => {
@@ -82,11 +82,11 @@ describe("the extension start card", () => {
   });
 
   it.each(["deny-once", "deny-always"] as const)("treats recordless %s as unanswered", async (choice) => {
-    expect(await asker(() => ({ choice }), { recordless: true }).asker.ask([START], SESSION)).toBe("no-approver");
+    expect(await asker(() => ({ choice }), { recordless: true }).asker.ask([START], SESSION)).toBe("rejected");
   });
 
   it.each(["allow-session", "allow-always"] as const)("treats the unsupported %s as unanswered", async (choice) => {
-    expect(await asker(() => ({ choice }), { outsideAllowedChoices: true }).asker.ask([START], SESSION)).toBe("no-approver");
+    expect(await asker(() => ({ choice }), { outsideAllowedChoices: true }).asker.ask([START], SESSION)).toBe("rejected");
   });
 
   it("passes the notice reason and the audit row through", () => {
@@ -103,7 +103,7 @@ describe("the extension start card", () => {
     const { asker: subject, requestAndWait } = asker(() => ({ choice: "allow-once" }));
     const cancelled = new AbortController();
     cancelled.abort();
-    expect(await subject.ask([START], { ...SESSION, abortSignal: cancelled.signal })).toBe("no-approver");
+    expect(await subject.ask([START], { ...SESSION, abortSignal: cancelled.signal })).toBe("cancelled");
     expect(requestAndWait).not.toHaveBeenCalled();
   });
 
@@ -111,6 +111,6 @@ describe("the extension start card", () => {
     const cancelled = new AbortController();
     const requestAndWait = answeringRequestAndWait(() => { cancelled.abort(); return { choice: "allow-once" }; });
     const subject = createExtensionStartAsker({ approvalGate: { requestAndWait } as unknown as Pick<ApprovalGate, "requestAndWait">, reason: REASON, notify: vi.fn() });
-    expect(await subject.ask([START], { ...SESSION, abortSignal: cancelled.signal })).toBe("no-approver");
+    expect(await subject.ask([START], { ...SESSION, abortSignal: cancelled.signal })).toBe("cancelled");
   });
 });

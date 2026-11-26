@@ -1,6 +1,6 @@
 import { admitToolInvocation, admitToolInvocationWhileAuditOpen, appendToolInvocationAudit, toolInvocationsSealed } from "../../tools/invocation-ledger.js";
 import { HostExitAbortError, isHostExitAbort } from "../../shared/host-exit-abort.js";
-import { admitApprovalAnswer, hostApprovalDenialReason, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
+import { admitApprovalAnswer, approvalFailureKind, hostApprovalDenialReason, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
 /** Route plugin calls through the executor; only trusted panel calls may use the app-only runtime bypass. */
 import { randomUUID } from "node:crypto";
 import { createHookRunner } from "../conversation.js";
@@ -702,11 +702,11 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
             abortSignal: admission.signal,
           } satisfies ApprovalRequestInput;
           const decision = await approvalGate.requestAndWait(card);
-          let answer;
+          let answer: ReturnType<typeof admitApprovalAnswer>;
           let denialReason: string | undefined;
           try {
             answer = admitApprovalAnswer(decision, { requestId: card.id, toolName: card.toolName, toolUseId: undefined });
-            if (answer?.decision === "deny") {
+            if (approvalFailureKind(decision) === "denied") {
               denialReason = "plugin operation grant denied by user";
             } else if (isHostExitAbort(admission.signal.reason)) {
               denialReason = "host-shutdown";

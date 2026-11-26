@@ -341,6 +341,7 @@ export async function runOneHookScript(
         const identity = extensionStartIdentity({ pluginId: confinement.pluginId, hookId: runnable.id, command: spawnCmd, args: spawnArgs, cwd });
         const authority = await requestExtensionStartConsent({ key, identity, kind: "plugin-hook",
           label: `${confinement.pluginId} (${runnable.id})`, cause: error.unconfinedCause }, turnExtensionStartSession(payload.sessionId));
+        if (typeof authority === "string") return deny(`sandbox unavailable: ${error.message} [approval=${authority}]`);
         assertExtensionStartAllowed({ start: { key, identity, authority, spend: true } });
       }
     } catch (error) {

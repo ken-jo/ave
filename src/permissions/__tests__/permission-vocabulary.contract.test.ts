@@ -325,6 +325,7 @@ const ROWS: readonly Row[] = [
       const identity = "fixture";
       return requestExtensionStartConsent({ key, identity, kind: "plugin-child", label: "fixture", cause: "readiness-deadline" }, { sessionId: "s1", attended: true })
         .then((authority): Observation => {
+          if (typeof authority !== "object") throw new Error("Fixture approval did not grant start authority");
           const start = () => extensionStart({ start: { key, identity, authority, spend: true } }).outcome;
           if (start() !== "unasked") return { ...first, waiver: "none" };
           return { ...first, waiver: start() === "ask-human" ? "once" : "session" };
@@ -359,6 +360,7 @@ const ROWS: readonly Row[] = [
       const identity = "fixture";
       return requestExtensionStartConsent({ key, identity, kind: "plugin-child", label: "fixture", cause: "home-privacy-unverified" }, { sessionId: "s1", attended: true })
         .then((authority): Observation => {
+          if (typeof authority !== "object") throw new Error("Fixture approval did not grant start authority");
           const start = () => extensionStart({ start: { key, identity, authority, spend: true } }).outcome;
           if (start() !== "unasked") return { ...first, waiver: "none" };
           return { ...first, waiver: start() === "ask-human" ? "once" : "session" };

@@ -215,8 +215,11 @@ function setup(options: SetupOptions = {}) {
     const resolve = pendingApprovals.get(requestId);
     if (!resolve) return false;
     pendingApprovals.delete(requestId);
-    if (choice.startsWith("allow")) void answeredApprovalDecision({ requestId, choice }).then(resolve);
-    else resolve({ requestId, choice });
+    if (choice.startsWith("allow")) {
+      const card = approvalRequests.find((request) => request.id === requestId);
+      if (!card) throw new Error("fixture approval request was not captured");
+      void answeredApprovalDecision({ requestId, choice }, "desk", card.toolName, card.invocationToolUseId).then(resolve);
+    } else resolve({ requestId, choice });
     return true;
   };
   const fallbackApprovalGate = {

@@ -12,7 +12,7 @@ import type { ApprovalPersistenceGuard } from "../../permissions/approval-persis
 import { RunGrantError, runGrantKeyOfSession } from "../../permissions/run-grants.js";
 import { loadPolicy, savePolicy, validatePolicyPatch, PolicyWriteError } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
-import { UNATTRIBUTED_APPROVAL_SESSION_ID, type ApprovalDecision } from "../../permissions/approval-gate.js";
+import { admitApprovalAnswer, UNATTRIBUTED_APPROVAL_SESSION_ID, type AnsweredRecord, type ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
 import {
   UPSTREAM_PROXY_CREDENTIALS_SECRET,
@@ -218,11 +218,9 @@ function createPermissionReviewSuggestionTracker() {
   return {
     record(
       deps: IpcDeps,
-      decision: ApprovalDecision,
-      snapshot: { toolName: string } | null | undefined,
+      answer: AnsweredRecord,
     ): void {
-      if (!decision.choice.startsWith("allow")) return;
-      if (snapshot?.toolName === "/permission mode") return;
+      if (answer.decision !== "allow" || answer.toolName === "/permission mode") return;
 
       const pm = deps.conversationLoop.permissionManager;
       if (!pm) return;
@@ -231,13 +229,13 @@ function createPermissionReviewSuggestionTracker() {
       const now = Date.now();
       samples = samples
         .filter((sample) => now - sample.at <= REVIEW_SUGGESTION_WINDOW_MS)
-        .concat({ at: now, choice: decision.choice });
+        .concat({ at: now, choice: answer.choice });
 
       if (now - lastSuggestedAt < REVIEW_SUGGESTION_COOLDOWN_MS) return;
 
       const allowAlwaysCount = samples.filter((sample) => sample.choice === "allow-always").length;
       const reason: PermissionReviewSuggestionReason | null =
-        decision.choice === "allow-always" || allowAlwaysCount > 0
+        answer.choice === "allow-always" || allowAlwaysCount > 0
           ? "allow-always"
           : samples.length >= REVIEW_SUGGESTION_REPEAT_THRESHOLD
             ? "repeat-allow"
@@ -853,7 +851,14 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const decision = body as unknown as ApprovalDecision;
     const snapshot = approvalGate?.getRequestSnapshot?.(decision.requestId);
     const honoredDecision = await approvalGate?.resolveFromDesktopRendererWithFreshIdentity(decision.requestId, decision, e.sender);
-    if (honoredDecision) reviewSuggestionTracker.record(deps, honoredDecision, snapshot);
+    if (honoredDecision && snapshot) {
+      try {
+        const answer = admitApprovalAnswer(honoredDecision, { requestId: decision.requestId, toolName: snapshot.toolName, toolUseId: snapshot.toolUseId });
+        if (answer) reviewSuggestionTracker.record(deps, answer);
+      } catch {
+        // Unbound answers cannot supply review feedback.
+      }
+    }
     return { ok: true };
   });
 

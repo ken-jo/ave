@@ -244,20 +244,20 @@ export async function createA2ALoopbackRuntime(
   });
 
   const authorizeOperation: A2AWireAuthorizer = async (descriptor) => {
-    if (!options.approveAgentAction) return false;
-    return (await options.approveAgentAction({
+    if (!options.approveAgentAction) return { approved: false, outcome: "unavailable" };
+    return options.approveAgentAction({
       toolName: `a2a-${descriptor.operation}`,
       args: { operation: descriptor.operation, handlerId: descriptor.handlerId },
       reason: options.approvalReason ?? "An external A2A client requested a sub-agent operation. Do you want to allow it?",
       trustOrigin: options.wireTrustOrigin ?? "a2a-loopback",
-    })).approved;
+    });
   };
 
   const handlers = snapshots.map(({ profile, handlerId }) => {
     const audit = (event: A2ATaskLifecycleAuditEvent): void => {
       writeAudit(
         options.services,
-        `${options.auditScope ?? "a2a"}:task-lifecycle:${event.outcome}:${event.reason}:${handlerId}`,
+        `${options.auditScope ?? "a2a"}:task-lifecycle:${event.outcome}:${event.reason}:${handlerId}${event.approvalOutcome ? `:approval=${event.approvalOutcome}` : ""}`,
         options.auditSessionId,
       );
     };

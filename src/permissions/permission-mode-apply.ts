@@ -185,7 +185,6 @@ async function applyPermissionModeChange(
     try {
       const decision = await deps.approvalGate.requestAndWait(request);
       admitApprovalAnswer(decision, { requestId: request.id, toolName: request.toolName, toolUseId: undefined });
-      if (signal.aborted) return cancelled;
       const failure = approvalFailureKind(decision);
       if (failure === "denied") {
         return { ok: false, error: "durable-mode-denied", message: t("be_permissionModeApply.durableModeDenied") };
@@ -194,8 +193,10 @@ async function applyPermissionModeChange(
         return { ok: false, error: "approval-gate-unavailable", message: t("be_permissionModeApply.approvalGateUnavailable") };
       }
       if (failure !== undefined) {
+        if (failure === "cancelled" && signal.aborted) return cancelled;
         return { ok: false, error: `approval-${failure}`, message: approvalFailureOutcome(decision, request.toolName)?.content ?? rejected.message };
       }
+      if (signal.aborted) return cancelled;
       // The card answers a conversation-scoped remembered allow with allow-session.
       if (decision.choice !== "allow-once" && decision.choice !== "allow-session" && decision.choice !== "allow-always") return rejected;
     } catch {

@@ -984,8 +984,10 @@ export async function authorizeToolInvocation(
         const approvalRequest = {
           id: approvalRequestId,
           ...(context.cardRequestId === undefined ? {} : {
-            onSettled: (answer: ApprovalDecision) =>
-              services.invocationTerminal.selectRationaleDenial(answer, "user denied approval request"),
+            onSettled: (answer: ApprovalDecision) => {
+              admitApprovalAnswer(answer, { requestId: approvalRequestId, toolName: toolUse.name, toolUseId: toolUse.id });
+              services.invocationTerminal.selectRationaleDenial(answer, "user denied approval request");
+            },
           }),
           invocationToolUseId: toolUse.id,
           ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),

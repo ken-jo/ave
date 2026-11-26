@@ -12,7 +12,7 @@ import { canonicalRuleSpecifier } from "./rules/rule-specifier.js";
 import {
   admitApprovalAnswer,
   type AnsweredRecord,
-  isHostApprovalTimeoutDecision,
+  approvalFailureKind,
   type ApprovalGate,
 } from "./approval-gate.js";
 import type { EgressApprovalAnswer, EgressApprovalRequester, ShellNetworkPermissionEvaluator } from "./egress-ask.js";
@@ -30,6 +30,7 @@ export const EGRESS_APPROVAL_DENY_REASONS = {
   denied: "denied by the user",
   timeout: "network approval timed out",
   rejected: "network approval answer was rejected",
+  cancelled: "network approval was cancelled",
 } as const;
 
 export function createShellNetworkPermissionEvaluator(manager?: PermissionManager): ShellNetworkPermissionEvaluator {
@@ -164,11 +165,15 @@ export function createApprovalGateEgressRequester(
     } catch (error) {
       return { allow: false, reason: errorMessage(error), recheckRefusal: { kind: "recheck-failed" } };
     }
-    if (!terminal && decision.rememberPattern === NO_APPROVER_MESSAGE) { request.onNoApprover?.(); return { allow: false, reason: NO_APPROVER_MESSAGE }; }
-    if (decision.choice === "allow-once" && decision.egressScope !== undefined && request.scopes.includes(decision.egressScope)) {
+    const outcome = approvalFailureKind(decision);
+    if (outcome === "unavailable") {
+      if (!terminal) request.onNoApprover?.();
+      return { allow: false, reason: NO_APPROVER_MESSAGE };
+    }
+    if (answer?.choice === "allow-once" && decision.egressScope !== undefined && request.scopes.includes(decision.egressScope)) {
       if (forced && decision.egressScope !== "once") return { allow: false, reason: "A forced network approval is valid for one connection only." };
       if (!terminal) {
-        if (request.abortSignal?.aborted) return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected };
+        if (request.abortSignal?.aborted) return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.cancelled };
         if (card === undefined || !personAnswerStands(card, decision)) {
           const verdict = card?.verdict;
           if (verdict?.kind === "recheck-failed") {
@@ -184,8 +189,9 @@ export function createApprovalGateEgressRequester(
       }
       return { allow: true, scope: decision.egressScope, ...(forced ? { oneConnection: true as const } : {}) };
     }
-    if (isHostApprovalTimeoutDecision(decision)) return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.timeout };
-    if (answer?.decision === "deny") return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied, humanDenied: true };
+    if (outcome === "expired") return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.timeout };
+    if (outcome === "cancelled") return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.cancelled };
+    if (outcome === "denied") return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied, humanDenied: true };
     return { allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected };
   };
 }

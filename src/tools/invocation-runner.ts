@@ -1823,7 +1823,10 @@ async function runToolInvocationAttempt(
         const approvalRequest = {
           id: directoryRequestId,
           invocationToolUseId: toolUse.id,
-          ...(behavior === undefined ? {} : { onSettled: (answer: ApprovalDecision) => services.invocationTerminal.selectRationaleDenial(answer, dirLayerResult.reason) }),
+          ...(behavior === undefined ? {} : { onSettled: (answer: ApprovalDecision) => {
+            admitApprovalAnswer(answer, { requestId: directoryRequestId, toolName: toolUse.name, toolUseId: toolUse.id });
+            services.invocationTerminal.selectRationaleDenial(answer, dirLayerResult.reason);
+          } }),
           ...((dirLayerResult.forceModal === true)
             ? {
                 allowedChoices: ["allow-once", "deny-once"] as const,

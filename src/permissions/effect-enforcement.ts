@@ -68,7 +68,8 @@ export interface EffectGateContext {
 const gateContextStorage = new AsyncLocalStorage<EffectGateContext>();
 const authorizationRequiredLatch = new WeakMap<EffectGateContext, () => void>();
 const noApproverLatch = new WeakMap<EffectGateContext, () => void>();
-export type EffectApprovalRefusal = Extract<PendingAnswerVerdict, { kind: "recheck-failed" | "denied" }>;
+export type EffectApprovalRefusal = Extract<PendingAnswerVerdict, { kind: "recheck-failed" | "denied" }>
+  | { readonly kind: "host-refused"; readonly reason: string };
 const approvalRefusalLatch = new WeakMap<EffectGateContext, (verdict: EffectApprovalRefusal) => void>();
 // The frame a plugin child named for a request the host cannot tell apart from a sibling call's.
 const unattributedFrames = new AsyncLocalStorage<EffectGateContext>();
@@ -506,16 +507,25 @@ export async function gateMutatingEffect(params: {
     ...(permission.reviewer?.verdict ? { reviewerVerdict: permission.reviewer.verdict } : {}),
   }, card));
   let admitted: AnsweredRecord | undefined;
-  let expired = false;
-  let cancelled = false;
+  let failure: import("./approval-gate.js").ApprovalFailureKind | undefined;
   try {
-    const { admitApprovalAnswer, isHostApprovalTimeoutDecision, isHostApprovalCancelledDecision } = await import("./approval-gate.js");
+    const { admitApprovalAnswer, approvalFailureKind } = await import("./approval-gate.js");
     admitted = admitApprovalAnswer(decision, { requestId, toolName: ctx.toolName, toolUseId: undefined });
-    expired = isHostApprovalTimeoutDecision(decision);
-    cancelled = isHostApprovalCancelledDecision(decision);
+    failure = approvalFailureKind(decision);
   } catch (error) {
     approvalRefusalLatch.get(ctx)?.({ kind: "recheck-failed", reason: errorMessage(error) });
     throw error;
+  }
+
+  if (failure === "unavailable") {
+    noApproverLatch.get(ctx)?.();
+    throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "approval-unavailable", NO_APPROVER_MESSAGE);
+  }
+  if (admitted === undefined || (failure !== undefined && failure !== "denied")) {
+    const reason = failure === "cancelled" ? "the effect approval request was cancelled"
+      : failure === "expired" ? "the effect approval request expired" : "the host refused the effect approval";
+    approvalRefusalLatch.get(ctx)?.({ kind: "host-refused", reason });
+    throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "denied", reason);
   }
 
   ctx.abortSignal?.throwIfAborted();
@@ -528,17 +538,8 @@ export async function gateMutatingEffect(params: {
     throw new Error(verdict.kind === "recheck-failed" ? verdict.reason : verdict.fresh.reason);
   }
   const answer = verdict?.kind === "stands" ? verdict.proof : undefined;
-  if (!stands && decision.choice.startsWith("allow")) throw new Error(EFFECT_ANSWER_REFUSED);
+  if (!stands && admitted.decision === "allow") throw new Error(EFFECT_ANSWER_REFUSED);
   assertEffectPaths(paths);
-  if (decision.rememberPattern === NO_APPROVER_MESSAGE) {
-    noApproverLatch.get(ctx)?.();
-    throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "approval-unavailable", NO_APPROVER_MESSAGE);
-  }
-  if (admitted === undefined) {
-    throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "denied",
-      cancelled ? "the effect approval request was cancelled"
-        : expired ? "the effect approval request expired" : "the host refused the effect approval");
-  }
   switch (admitted.choice) {
     case "allow-once":
     case "allow-session":

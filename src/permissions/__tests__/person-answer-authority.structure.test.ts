@@ -69,6 +69,16 @@ function gateReceivesRequest(request: ts.CallExpression, gate?: ts.Expression): 
     (gate === undefined || call.expression.expression.getText() === gate.getText());
 }
 
+function calls(name: string) {
+  return nodesMentioning(name)
+    .flatMap(({ node, where }) => ts.isCallExpression(node) &&
+      (ts.isPropertyAccessExpression(node.expression) ? node.expression.name.getText() === name
+        : ts.isElementAccessExpression(node.expression) && ts.isStringLiteral(node.expression.argumentExpression)
+          ? node.expression.argumentExpression.text === name
+          : node.expression.getText() === name)
+      ? [{ node, where }] : []);
+}
+
 const policy = { getPolicyEpoch: () => "1:0:0", getPolicyContextEpoch: () => "1" } as unknown as PermissionManager;
 const asked: PermissionCheckResult = { decision: "ask", reason: "Run it on the host.", provenance: RULE_PROVENANCE };
 const ACTION = toolUseAction("probe");
@@ -249,10 +259,6 @@ describe("authority from a person's answer", () => {
 
   // The gate writes a held allow against the standing answer and spends its rule-save use.
   it("writes a held allow only through the owner and the gate's proof spend", () => {
-    const calls = (name: string) => nodesMentioning(name)
-      .flatMap(({ node, where }) => ts.isCallExpression(node) &&
-        (ts.isPropertyAccessExpression(node.expression) ? node.expression.name.getText() : node.expression.getText()) === name
-        ? [{ node, where }] : []);
     const sites = (name: string) => calls(name).map(({ where }) => where).sort();
     expect(sites("commitStagedAllowSaves")).toEqual([`${OWNER}#saveStandingAnswerRule`]);
     expect(sites("pendingAnswerDefersAllowSaves")).toEqual(["permissions/approval-gate.ts#requestAndWait"]);
@@ -322,6 +328,78 @@ describe("authority from a person's answer", () => {
     for (const { node, where } of forwards) {
       expect(node.arguments.map((arg) => arg.getText()), where).toEqual(["req", "wrapper", "forwarded", "base"]);
       expect(gateReceivesRequest(node, node.arguments[3]), where).toBe(true);
+    }
+  });
+
+  it("admits every gate answer before inspecting the raw choice", () => {
+    const forwarding = "engine/subagent-runner.ts#wrappedRequestAndWait";
+    const sites = [
+      ["requestAndWait", "boot/steps/plugin-tool-executor.ts#setupPluginToolExecutor", "decision"],
+      ["requestAndWait", "engine/turn/query-loop.ts#gateCrossAgentInterceptedMetaTools", "decision"],
+      ["requestAndWait", "hooks/hook-command-policy.ts#createHookCommandAuthorizer", "approval"],
+      ["requestAndWait", "mcp/mcp-elicitation-resolver.ts#createElicitationResolverFactory", "decision"],
+      ["requestAndWait", "permissions/agent-action-approver.ts#buildSingleFlightAgentActionApprover", "decision"],
+      ["requestAndWait", "permissions/effect-enforcement.ts#gateMutatingEffect", "decision"],
+      ["requestAndWait", "permissions/egress-approval.ts#createApprovalGateEgressRequester", "decision"],
+      ["requestAndWait", "permissions/extension-start-asker.ts#ask", "decision"],
+      ["requestAndWait", "permissions/permission-mode-apply.ts#applyPermissionModeChange", "decision"],
+      ["requestAndWait", "tools/invocation-authorization.ts#authorizeToolInvocation", "decision"],
+      ["requestAndWait", "tools/invocation-execution.ts#authorizeBrowserSite", "actionDecision", "admitBrowserApproval"],
+      ["requestAndWait", "tools/invocation-execution.ts#authorizeBrowserSite", "siteDecision", "admitBrowserApproval"],
+      ["requestAndWait", "tools/invocation-execution.ts#requestLateApproval", "decision"],
+      ["requestAndWait", "tools/invocation-runner.ts#requestOutOfAllowedDirectoryAccess", "decision"],
+      ["requestAndWait", "tools/pipeline/user-owned-surface.ts#resolveSurface", "decision"],
+      ["requestAndWait", "tools/skill-load.ts#execute", "decision"],
+      ["requestHumanApproval", "tools/pipeline/rationale-host-coordinator.ts#promptForApproval", "decision"],
+      ["resolveFromDesktopRendererWithFreshIdentity", "ipc/domains/permissions.ts#registerPermissionsHandlers", "honoredDecision"],
+      ["resolveWithFreshIdentity", "main/telegram-remote-approval.ts#handleCallbackQuery", "decision"],
+    ] as const;
+    const admissions = [...calls("admitApprovalAnswer"), ...calls("admitBrowserApproval")];
+    expect(admissions.some(({ where }) => where === "tools/invocation-execution.ts#admitBrowserApproval")).toBe(true);
+    expect(admissions.some(({ where, node }) => where === "main/telegram-remote-approval.ts#finalTextFor" &&
+      node.arguments[0]?.getText() === "decision")).toBe(true);
+    const observers = calls("selectRationaleDenial").filter(({ where }) => !where.startsWith("tools/invocation-ledger.ts#"));
+    expect(observers.map(({ where }) => where).sort()).toEqual([
+      "tools/invocation-authorization.ts#onSettled", "tools/invocation-runner.ts#onSettled",
+    ]);
+    for (const observer of observers) {
+      expect(admissions.some(({ where, node }) => where === observer.where &&
+        node.end <= observer.node.pos && node.arguments[0]?.getText() === observer.node.arguments[0]?.getText())).toBe(true);
+    }
+    const earlyReads = [
+      ...nodesMentioning("choice").filter(({ node }) =>
+        (ts.isPropertyAccessExpression(node) && node.name.getText() === "choice") ||
+        (ts.isElementAccessExpression(node) && /^["']choice["']$/.test(node.argumentExpression.getText())) ||
+        (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && /\bchoice\b/.test(node.name.getText()))),
+      ...["approvalFailureKind", "hostApprovalDenialReason", "isSettledRefusal", "isAnsweredApprovalDenial"]
+        .flatMap(calls),
+    ];
+    for (const entry of new Set(sites.map(([entry]) => entry))) {
+      const asks = calls(entry);
+      const matching = sites.filter(([name]) => name === entry);
+      const expected = matching.map(([, where]) => where);
+      expect(asks.map(({ where }) => where).sort()).toEqual(
+        (entry === "requestAndWait" ? [...expected, forwarding] : expected).sort(),
+      );
+      for (const [, where, result, helper = "admitApprovalAnswer"] of matching) {
+        const candidates = asks.filter((ask) => ask.where === where);
+        const ask = candidates.length === 1 ? candidates[0] : candidates.find(({ node }) => {
+          const awaited = node.parent;
+          const declaration = awaited.parent;
+          return ts.isAwaitExpression(awaited) && ts.isVariableDeclaration(declaration) && declaration.name.getText() === result;
+        });
+        const admission = admissions.find(({ node, where: owner }) =>
+          owner === where && ask !== undefined && node.pos >= ask.node.end &&
+          node.expression.getText() === helper && node.arguments[0]?.getText() === result,
+        );
+        expect(admission, `${where} (${result})`).toBeDefined();
+        expect(earlyReads.filter(({ node, where: owner }) => {
+          if (owner !== where || node.pos < (ask?.node.end ?? Infinity) || node.pos >= (admission?.node.pos ?? -Infinity)) return false;
+          if (ts.isCallExpression(node)) return node.arguments[0]?.getText() === result;
+          if (ts.isVariableDeclaration(node)) return node.initializer?.getText() === result;
+          return (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) && node.expression.getText() === result;
+        }), `${where} (${result})`).toEqual([]);
+      }
     }
   });
 });

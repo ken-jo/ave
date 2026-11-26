@@ -67,7 +67,7 @@ async function answerFallback(change: Change, rechecked: Partial<PermissionCheck
     id: "surface-card", sessionId: "stage-session", category: "tool", kind: "tool", toolName: "browser_click", toolCategory: "write",
     args: {}, reason: "surface", createdAt: 0, userOwnedSurface: "browser",
   } as ApprovalRequestInput;
-  const decision = { requestId: request.id, choice: "allow-once" as const };
+  const decision = await answeredApprovalDecision({ requestId: request.id, choice: "allow-once" }, "desk", request.toolName);
   const answer = standingAnswer(ACTION, decision);
   const resolving = resolveUserOwnedSurfaceApproval({
     manager, gate, permission: ask, decision, answer, action: ACTION, uses: [], request, sessionId: "stage-session",

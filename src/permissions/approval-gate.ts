@@ -513,12 +513,16 @@ export interface ExpectedApprovalAnswer {
   readonly requestId: string;
   readonly toolName: string;
   readonly toolUseId: string | undefined;
+  readonly extensionStartRow?: string;
 }
 
 /** Admit the decision a card's ask returned, before anything judges, saves or acts on it. An answer the gate recorded must be
  * the answer to this request, for this action and this call, in the direction the decision states. A deny without a record is
  * the host's own refusal and passes without a receipt; an allow without one breaks the gate's contract. */
 export function admitApprovalAnswer(decision: ApprovalDecision, expected: ExpectedApprovalAnswer): AnsweredRecord | undefined {
+  if (decision.requestId !== expected.requestId || decision.extensionStartRow !== expected.extensionStartRow) {
+    throw new ApprovalReceiptError("Approval answer does not match the pending request");
+  }
   const handle = answeredDecisionHandles.get(decision);
   if (handle === undefined) {
     if (decision.choice.startsWith("allow")) throw new ApprovalReceiptError("approval: an answered decision carries no record of who answered");
@@ -528,7 +532,7 @@ export function admitApprovalAnswer(decision: ApprovalDecision, expected: Expect
   if (record.toolName !== expected.toolName || record.toolUseId !== expected.toolUseId) {
     throw new ApprovalReceiptError(`approval: the answer to ${record.requestId} does not settle this ${record.decision} of ${expected.toolName}`);
   }
-  if (record.requestId !== expected.requestId || decision.requestId !== expected.requestId || record.choice !== decision.choice) {
+  if (record.requestId !== expected.requestId || record.choice !== decision.choice) {
     throw new ApprovalReceiptError("Approval answer does not match the pending request");
   }
   return record;
@@ -891,6 +895,7 @@ interface PendingEntry {
 export interface PendingApprovalView {
   readonly requestId: string;
   readonly toolName: string;
+  readonly toolUseId?: string;
   readonly source?: ToolSource;
   readonly category: "tool" | "agent-action";
   readonly kind?: ApprovalKind;
@@ -1925,6 +1930,7 @@ export class ApprovalGate {
       if (userOwnedSurface === undefined && oneShotPermitBinding?.executionMode !== "host" && hostTerminal === undefined) this.notifyPendingParked({
         requestId: fullReq.id,
         toolName: fullReq.toolName,
+        ...(req.invocationToolUseId === undefined ? {} : { toolUseId: req.invocationToolUseId }),
         ...(fullReq.source === undefined ? {} : { source: fullReq.source }),
         category: fullReq.category,
         ...(fullReq.kind === undefined ? {} : { kind: fullReq.kind }),
@@ -2322,7 +2328,9 @@ export class ApprovalGate {
       // Still waiting on other rows: this row is answered, the card is not. The desk card is sent again so it shows the row answered.
       if (answered.size < offered.length) {
         this.showExtensionStartRowsAnswered(entry, answered);
-        return { requestId, choice: decision.choice };
+        const rowAnswer = Object.freeze({ requestId, choice: decision.choice, extensionStartRow: row });
+        if (Object.hasOwn(APPROVAL_ANSWERER_TRUST_ORIGINS, answeredBy)) mintAnsweredProvenance(rowAnswer, answeredBy, entry.toolName, entry.invocationToolUseId);
+        return rowAnswer;
       }
       // Every row has its answer: the card settles with them, through the same checks as an answer for the whole card.
       entry.extensionStartRowAnswers = undefined;
@@ -2479,6 +2487,7 @@ export class ApprovalGate {
   // server-side ApprovalRequest snapshot lookup. The userApprovalRecord IPC handler binds to an in-flight request by id and reads the canonical `trustOrigin` / `approvalCacheKey` / `toolName` / `source` from the main-process pending entry rather than trusting the renderer payload. Eliminates the "renderer pretends a different trustOrigin" attack class — a renderer XSS that spoofs `trustOrigin: "user-keyboard"` for an `llm-tool-arg` request can no longer fool the user-approval-store cache identity. Returns `null` when no pending entry exists for `requestId` (e.g. the approval already resolved or timed out).
   getRequestSnapshot(requestId: string): {
     toolName: string;
+    toolUseId?: string;
     args: unknown;
     source: ToolSource;
     trustOrigin: string;
@@ -2504,6 +2513,7 @@ export class ApprovalGate {
     if (!entry || !isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId)) return null;
     return {
       toolName: entry.toolName,
+      ...(entry.invocationToolUseId === undefined ? {} : { toolUseId: entry.invocationToolUseId }),
       args: entry.args,
       // PendingEntry.source can be undefined for legacy callers — default to "builtin" so cache identity is conservative (high-trust source). The strict-record handler additionally validates against the SOT emitter; this default never widens an existing approval.
       source: entry.source ?? "builtin",

@@ -1,12 +1,10 @@
 import { hasRationaleUserQuote } from "../../shared/rationale-user-quote.js";
 import {
   admitApprovalAnswer,
+  approvalFailureKind,
   answeredApprovalProvenance,
   ApprovalReceiptError,
-  hostApprovalDenialReason,
-  isHostApprovalCancelledDecision,
-  isHostApprovalRejectedDecision,
-  isHostApprovalTimeoutDecision,
+  type ApprovalFailureKind,
   RULE_PROVENANCE,
   type ApprovalDecision,
   type DecisionProvenance,
@@ -252,6 +250,7 @@ export type RationaleApprovalResolution =
   | {
       readonly outcome: "denied" | "cancelled" | "timed-out";
       readonly reason?: string;
+      readonly approvalOutcome?: ApprovalFailureKind;
       readonly ticket: RationaleTicketStateRecord;
       readonly projection: RationaleUiAuditProjection;
     };
@@ -1116,11 +1115,17 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
     }
     const expectation = createRationaleTicketCasExpectation(context.snapshot);
 
-    if (
-      decision?.requestId === ticketId &&
-      (decision.choice === "allow-once" || decision.choice === "allow-session" || decision.choice === "allow-always") &&
-      !isHostApprovalRejectedDecision(decision)
-    ) {
+    let approvalOutcome: ApprovalFailureKind | undefined = decision === null ? "cancelled" : "rejected";
+    if (decision !== null) {
+      try {
+        admitApprovalAnswer(decision, { requestId: ticketId, toolName: context.control.sealedAction.toolName,
+          toolUseId: context.control.sealedAction.toolUseId });
+        approvalOutcome = approvalFailureKind(decision);
+      } catch (error) {
+        if (!(error instanceof ApprovalReceiptError)) throw error;
+      }
+    }
+    if (decision !== null && approvalOutcome === undefined) {
       const provenance = answeredApprovalProvenance(decision);
       const afterPolicy = this.#getRationalePolicySnapshot?.();
       if (beforePolicy && afterPolicy && beforePolicy.epoch !== afterPolicy.epoch) {
@@ -1177,21 +1182,11 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       };
     }
 
-    let denied = false;
-    if (decision?.choice.startsWith("deny")) {
-      try {
-        denied = admitApprovalAnswer(decision, {
-          requestId: ticketId, toolName: context.control.sealedAction.toolName,
-          toolUseId: context.control.sealedAction.toolUseId,
-        })?.decision === "deny";
-      } catch (error) {
-        if (!(error instanceof ApprovalReceiptError)) throw error;
-      }
-    }
-    const timedOut = isHostApprovalTimeoutDecision(decision);
-    const hostCancelled = decision !== null && isHostApprovalCancelledDecision(decision);
-    const cancelled = decision === null || hostCancelled;
-    const hostReason = (decision === null ? undefined : hostApprovalDenialReason(decision)) ?? "approval rejected by host";
+    const denied = approvalOutcome === "denied";
+    const timedOut = approvalOutcome === "expired" || approvalOutcome === "unavailable";
+    const cancelled = approvalOutcome === "cancelled";
+    const hostCancelled = decision !== null && cancelled;
+    const hostReason = approvalOutcome === "unavailable" ? NO_APPROVER_MESSAGE : "approval rejected by host";
     const terminal = timedOut
       ? this.#ticketStore.modalTimeout(expectation, decidedAt)
       : denied
@@ -1209,7 +1204,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
     });
     this.#commitProjectionAudit(context.sessionId, projection, decidedAt);
     await this.#recordTerminalDenial(context,
-      context.control.eligibilityContext.headless || (timedOut && decision?.rememberPattern === NO_APPROVER_MESSAGE)
+      context.control.eligibilityContext.headless || approvalOutcome === "unavailable"
         ? NO_APPROVER_MESSAGE
         : timedOut ? "Permission approval timed out; the action was not executed."
           : denied ? "The user denied this permission request." : cancelled ? RATIONALE_CARD_STOPPED : hostReason,
@@ -1217,6 +1212,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
     this.#deleteContext(ticketId);
     return {
       outcome: timedOut ? "timed-out" : cancelled ? "cancelled" : "denied",
+      approvalOutcome: approvalOutcome ?? "rejected",
       ...(hostReason === NO_APPROVER_MESSAGE || (!timedOut && !denied && !cancelled) ? { reason: hostReason } : {}),
       ticket: terminal.ticket,
       projection,

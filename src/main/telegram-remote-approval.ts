@@ -2,7 +2,8 @@
 // callback tokens map to pending approvals in memory.
 import { randomBytes } from "node:crypto";
 import {
-  isHostApprovalTimeoutDecision,
+  admitApprovalAnswer,
+  approvalFailureKind,
   type ApprovalDecision,
   type PendingApprovalObserver,
   type PendingApprovalView,
@@ -124,6 +125,8 @@ function remoteApprovalOffer(view: PendingApprovalView): RemoteApprovalOffer | n
 
 interface RemoteApprovalCard {
   readonly requestId: string;
+  readonly toolName: string;
+  readonly toolUseId: string | undefined;
   // The one row of an extension-start ask this card answers; undefined when the card answers the whole request.
   readonly row?: string;
   readonly toolIdentifier: string;
@@ -186,11 +189,17 @@ export function createTelegramRemoteApprovalCoordinator(
   };
 
   const finalTextFor = (card: RemoteApprovalCard, decision: ApprovalDecision): string => {
-    // Read before the guard: its `decision is ApprovalDecision` predicate would otherwise narrow the negated branch to `never`.
+    let answer: ReturnType<typeof admitApprovalAnswer>;
+    try {
+      answer = admitApprovalAnswer(decision, card);
+    } catch {
+      return CARD_TEXT.expired(card.toolIdentifier);
+    }
+    const outcome = approvalFailureKind(decision);
+    if (outcome !== undefined && outcome !== "denied") return CARD_TEXT.expired(card.toolIdentifier);
     // A row card shows its own start's answer. An answer that names no row is for the whole ask: a dismissed desk card, or the one start of a one-start card.
     const rowAnswer = card.row === undefined ? undefined : decision.extensionStartChoices?.[card.row];
-    const approved = rowAnswer === undefined ? decision.choice.startsWith("allow") : rowAnswer === "yes";
-    if (isHostApprovalTimeoutDecision(decision)) return CARD_TEXT.expired(card.toolIdentifier);
+    const approved = rowAnswer === undefined ? answer?.decision === "allow" : rowAnswer === "yes";
     return approved
       ? CARD_TEXT.approved(card.toolIdentifier)
       : CARD_TEXT.denied(card.toolIdentifier);
@@ -217,6 +226,8 @@ export function createTelegramRemoteApprovalCoordinator(
       for (const [index, row] of rows.slice(0, shown).entries()) {
         const card: RemoteApprovalCard = {
           requestId: view.requestId,
+          toolName: view.toolName,
+          toolUseId: view.toolUseId,
           ...(row === undefined ? {} : { row }),
           toolIdentifier: offer.toolIdentifier,
           chatId,
@@ -310,16 +321,31 @@ export function createTelegramRemoteApprovalCoordinator(
         await acknowledge(callback.callbackQueryId, CARD_TEXT.ackStale);
         return;
       }
-      // A row answered while other starts still wait: the gate has not settled the ask, so this card is closed here.
-      if (binding.card.row !== undefined && cardsByToken.get(callback.data) === binding) {
-        const allowed = binding.choice === "allow-once";
+      const partialRow = binding.card.row !== undefined && cardsByToken.get(callback.data) === binding;
+      let answer: ReturnType<typeof admitApprovalAnswer>;
+      try {
+        answer = admitApprovalAnswer(decision, { ...binding.card, ...(partialRow ? { extensionStartRow: binding.card.row } : {}) });
+      } catch {
+        await acknowledge(callback.callbackQueryId, CARD_TEXT.ackStale);
+        return;
+      }
+      const outcome = approvalFailureKind(decision);
+      if (outcome !== undefined && outcome !== "denied") {
+        await acknowledge(callback.callbackQueryId, CARD_TEXT.ackStale);
+        return;
+      }
+      if (partialRow) {
+        const allowed = answer?.choice === "allow-once";
         retireCard(binding.card, allowed ? CARD_TEXT.rowAllowed(binding.card.toolIdentifier) : CARD_TEXT.rowDeclined(binding.card.toolIdentifier));
         await acknowledge(callback.callbackQueryId, allowed ? CARD_TEXT.ackRowAllowed : CARD_TEXT.ackRowDeclined);
         return;
       }
       await acknowledge(
         callback.callbackQueryId,
-        (binding.card.row === undefined ? decision.choice.startsWith("allow") : binding.choice === "allow-once") ? CARD_TEXT.ackApproved : CARD_TEXT.ackDenied,
+        (binding.card.row === undefined
+          ? answer?.choice === "allow-once"
+          : (decision.extensionStartChoices?.[binding.card.row] ?? (answer?.choice === "allow-once" ? "yes" : "no")) === "yes")
+          ? CARD_TEXT.ackApproved : CARD_TEXT.ackDenied,
       );
     },
     dispose(): void {

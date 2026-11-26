@@ -186,7 +186,6 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           source: "builtin",
           createdAt: Date.now(),
         });
-        if (!invocationCurrent()) return interrupted();
         let admitted: AnsweredRecord | undefined;
         try {
           admitted = admitApprovalAnswer(decision, { requestId, toolName: "skill_load", toolUseId: undefined });
@@ -194,10 +193,11 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           return { output: JSON.stringify({ error: errorMessage(error) }), isError: true };
         }
         if (admitted?.decision !== "allow" || (skill.mcpOwner && admitted.choice !== "allow-once")) {
-          const reason = admitted?.decision === "deny" ? "user denied skill load"
-            : hostApprovalDenialReason(decision) ?? "approval rejected by host";
+          const reason = hostApprovalDenialReason(decision)
+            ?? (admitted?.decision === "deny" ? "user denied skill load" : "approval rejected by host");
           return { output: JSON.stringify({ error: `${reason}: ${skill.name}` }), isError: true };
         }
+        if (!invocationCurrent()) return interrupted();
       }
 
       // Refuse missing session identity; a shared synthetic bucket would leak skill attribution across calls.
