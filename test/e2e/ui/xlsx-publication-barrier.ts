@@ -59,6 +59,9 @@ export function prepareWorkbookPublicationBuild(checkout: string, workspace: str
   if (manifest.version !== 1 || manifest.scripts[name] !== digest(producer)) {
     throw new Error("Workbook producer does not match its resource manifest");
   }
+  // The host verifier's script name shape: a direct basename, so no copy can leave the disposable root.
+  const invalid = Object.keys(manifest.scripts).find((entry) => !/^[a-z][a-z0-9-]*.cjs$/.test(entry));
+  if (invalid !== undefined) throw new Error(`Resource manifest names a script outside its directory: ${JSON.stringify(invalid)}`);
   const script = Buffer.concat([Buffer.from(PUBLICATION_BARRIER_PRELUDE), producer]);
   const preparedManifest = Buffer.from(`${JSON.stringify({ ...manifest,
     scripts: { ...manifest.scripts, [name]: digest(script) } }, null, 2)}\n`);

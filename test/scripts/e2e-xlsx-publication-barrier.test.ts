@@ -166,6 +166,19 @@ describe("workbook publication build", () => {
     expectSharedBuildUsable();
   });
 
+  it.each(["../escape.cjs", "nested/inner.cjs", "Upper.cjs", "plain.js"])("refuses manifest key %s before any copy or write", (key) => {
+    const malformed = join(root, `malformed-${createHash("sha256").update(key).digest("hex").slice(0, 8)}`);
+    mkdirSync(join(malformed, "dist", "skill-scripts"), { recursive: true });
+    writeFileSync(join(malformed, "dist", "skill-scripts", "edit-xlsx.cjs"), producerBytes);
+    writeFileSync(join(malformed, "dist", "skill-scripts", "manifest.json"), JSON.stringify({ version: 1,
+      scripts: { "edit-xlsx.cjs": createHash("sha256").update(producerBytes).digest("hex"), [key]: "0".repeat(64) } }));
+    const calls: string[] = [];
+    const record = faultyIo((operation, path) => { calls.push(`${operation} ${path}`); return false; });
+    expect(() => prepareWorkbookPublicationBuild(malformed, join(root, "workspace"), record)).toThrow("outside its directory");
+    expect(calls).toEqual([]);
+    expect(existsSync(join(malformed, ".cache"))).toBe(false);
+  });
+
   it("leaves the shared build usable when launch, teardown or a worker fails", () => {
     const workspace = mkdtempSync(join(root, "lifecycle-fault-"));
     let launchedRoot = "";
