@@ -10,6 +10,7 @@ import type {
   ApprovalChoice,
   ApprovalDecision,
   ApprovalRequest,
+  ApprovalRequestInput,
 } from "../../../permissions/approval-gate.js";
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
 import type { PermissionCheckResult } from "../../../permissions/permission-manager.js";
@@ -181,7 +182,7 @@ function setup(options: SetupOptions = {}) {
     readonly projection: RationaleUiAuditProjection;
     readonly at: number;
   }> = [];
-  const approvalRequests: Array<Omit<ApprovalRequest, "requireExplicit">> = [];
+  const approvalRequests: ApprovalRequestInput[] = [];
   // Modal tests use a high re-evaluation; allow cases supply a low/medium reviewer.
   const reviewer = options.reviewer ?? {
     async reevaluate(input) {
@@ -219,9 +220,7 @@ function setup(options: SetupOptions = {}) {
     return true;
   };
   const fallbackApprovalGate = {
-    requestAndWait: vi.fn(async (
-      request: Omit<ApprovalRequest, "requireExplicit">,
-    ) => {
+    requestAndWait: vi.fn(async (request: ApprovalRequestInput) => {
       approvalRequests.push(request);
       if (options.deferApproval) {
         return await new Promise<ApprovalDecision>((resolve) => {

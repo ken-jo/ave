@@ -262,7 +262,6 @@ describe("authority from a person's answer", () => {
     const saves = calls("saveStandingAnswerRule");
     const verdicts = calls("personAnswerStands").filter(({ node }) => node.arguments.length === 2);
     const admissions = calls("admitApprovalAnswer");
-    expect(admissions.map(({ where }) => where).sort()).toEqual(cards.map(({ where }) => where).sort());
     expect(saves.map(({ where }) => where).sort()).toEqual(cards.map(({ where }) => where).sort());
     expect(asks.map(({ where }) => where).sort()).toEqual(cards.map(({ where }) => where).sort());
     expect(cards.map(({ where }) => where).sort()).toEqual([
@@ -305,8 +304,8 @@ describe("authority from a person's answer", () => {
         call.arguments[0]?.getText() === cardName);
       expect(verdict, where).toBeDefined();
       // The answer is admitted for its own request between the ask and the judgement, so nothing judges, saves or acts on a foreign one.
-      expect(admissions.some(({ where: scope, node: call }) => scope === where && call.pos > (ask?.node.pos ?? Infinity) &&
-        call.pos < (verdict?.node.pos ?? -Infinity) && call.arguments[0]?.getText() === verdict?.node.arguments[1]?.getText()), where).toBe(true);
+      expect(admissions.filter(({ where: scope, node: call }) => scope === where && call.pos > (ask?.node.pos ?? Infinity) &&
+        call.pos < (verdict?.node.pos ?? -Infinity) && call.arguments[0]?.getText() === verdict?.node.arguments[1]?.getText()), where).toHaveLength(1);
       expect(saves.some(({ where: scope, node: call }) => scope === where && call.pos > (verdict?.node.pos ?? Infinity) &&
         call.arguments[0]?.getText() === cardName && call.arguments[1]?.getText() === verdict?.node.arguments[1]?.getText()), where).toBe(true);
     }

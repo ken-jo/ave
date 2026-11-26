@@ -72,8 +72,10 @@ export function approvalFailureOutcome(
   const detail = decision.rememberPattern
     ? maskSensitiveData(decision.rememberPattern).masked
     : t("be_executor.approvalHostRejectedReason");
+  const cancellation = t("be_executor.toolExecutionCancelled");
+  const cancellationContent = decision.rememberPattern ? `${cancellation} (${detail})` : cancellation;
   return {
-    content: cancelled ? t("be_executor.toolExecutionCancelled") : autoSkipped ? NO_APPROVER_MESSAGE : expired ? t("be_executor.approvalExpired", { name: toolName })
+    content: cancelled ? cancellationContent : autoSkipped ? NO_APPROVER_MESSAGE : expired ? t("be_executor.approvalExpired", { name: toolName })
       : t("be_executor.approvalRejectedByHost", { name: toolName, reason: detail }),
     permission: {
       decision: "deny",
