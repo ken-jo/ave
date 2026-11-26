@@ -261,6 +261,7 @@ export interface HeldWindowsDirectory {
 
 const HOLD_VERDICT_LIMIT = 64;
 const HOLD_DRAIN_MS = 2_000;
+const HOLD_REQUEST_BYTES = 8;
 
 /** Hold a directory and every ancestor against rename and delete until `release`; undefined when the helper did not hold it.
  * The handles and the kill-on-close job live in the helper, so its exit stops the launcher and everything it started. */
@@ -318,12 +319,27 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
       if (launcher.pid === undefined) finish({ kind: "unconfirmed" });
       else void stop();
     });
-    if (launcher.pid === undefined || relay == null || report == null) {
+    const launcherPid = launcher.pid;
+    if (launcherPid === undefined || relay == null || report == null) {
       void stop();
       return run;
     }
-    relay.pipe(channel);
-    channel.pipe(relay);
+    const stopAdmission = (): void => { relay.destroy(); void stop(); };
+    const admitRelay = (): void => {
+      const frame = relay.read(HOLD_REQUEST_BYTES) as Buffer | null;
+      if (frame === null) return;
+      relay.off("readable", admitRelay);
+      relay.off("end", stopAdmission);
+      if (frame.length !== HOLD_REQUEST_BYTES || frame.readUInt32LE(4) !== launcherPid) {
+        stopAdmission();
+        return;
+      }
+      channel.write(frame);
+      relay.pipe(channel);
+      channel.pipe(relay);
+    };
+    relay.on("readable", admitRelay);
+    relay.once("end", stopAdmission);
     // A closed helper channel ends the launcher's read at once instead of at its admission deadline.
     channel.once("close", () => relay.destroy());
     report.on("data", (chunk: Buffer) => { if (record.length <= HOLD_VERDICT_LIMIT) record += chunk.toString("latin1"); });

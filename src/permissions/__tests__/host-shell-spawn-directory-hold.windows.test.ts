@@ -349,12 +349,13 @@ describe.runIf(process.platform === "win32")("host shell spawn directory hold", 
 
     // A process on the launcher's end of the channel that speaks the frames itself: `kind` and the process id it names.
     // It prints each reply's kind ('E' once the channel has closed), reads on only after a challenge, and exits when asked to stop.
-    const speaker = (held: HostShellSpawnDirectoryHold, kind: number, named: number) => {
-      const script = "const fs = require('fs'); const frame = Buffer.alloc(8); frame.writeUInt32LE(Number(process.argv[1]), 0); frame.writeUInt32LE(Number(process.argv[2]), 4);" +
+    const speaker = (held: HostShellSpawnDirectoryHold, kind: number, named?: number) => {
+      const script = "const fs = require('fs'); const frame = Buffer.alloc(8); frame.writeUInt32LE(Number(process.argv[1]), 0); frame.writeUInt32LE(Number(process.argv[2] ?? process.pid), 4);" +
         "fs.writeSync(3, frame); const reply = Buffer.alloc(9);" +
         "for (;;) { let read = 0; try { read = fs.readSync(3, reply, 0, 9); } catch {} const answer = read === 9 ? String.fromCharCode(reply[0]) : 'E'; fs.writeSync(1, answer); if (answer !== 'C') break; }" +
         "process.stdin.on('data', () => {}); process.stdin.on('close', () => process.exit(0));";
-      const child = spawn(process.execPath, ["-e", script, String(kind), String(named)], { stdio: held.stdio, windowsHide: true });
+      const args = ["-e", script, String(kind), ...(named === undefined ? [] : [String(named)])];
+      const child = spawn(process.execPath, args, { stdio: held.stdio, windowsHide: true });
       const run = held.bind(child);
       if (run === undefined) throw new Error("no held run");
       let output = "";
@@ -369,26 +370,20 @@ describe.runIf(process.platform === "win32")("host shell spawn directory hold", 
       const decoy = spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], { stdio: "ignore", windowsHide: true });
       try {
         if (decoy.pid === undefined) throw new Error("no decoy");
-        // The helper challenges the named process; the speaker cannot answer for it, so nothing is admitted.
         const { run, output } = speaker(held, HELLO, decoy.pid);
-        await vi.waitFor(() => expect(output()).toBe("C"), { timeout: 5000 });
-        await new Promise(resolve => setTimeout(resolve, 500));
-        expect(output()).toBe("C");
-        // The named process is not in the hold job: the helper's exit, which stops every member, leaves it running.
-        await killHelper();
+        await vi.waitFor(() => expect(output()).toBe("E"), { timeout: 5000 });
         expect(await run.verdict).toEqual(UNCONFIRMED);
-        expect(output()).toBe("CE");
         expect(alive(decoy.pid)).toBe(true);
       } finally { decoy.kill(); }
     });
 
     it.each([
-      ["a frame that is not the admission request", RECHECK, process.pid],
-      ["a process id that names no process", HELLO, 0xfffffff0],
-    ])("refuses %s", async (_name, kind, named) => {
+      ["a frame that is not the admission request", RECHECK, undefined, "F"],
+      ["a process id that names no process", HELLO, 0xfffffff0, "E"],
+    ] as const)("refuses %s", async (_name, kind, named, reply) => {
       const held = await holdLeaf();
       const { run, output } = speaker(held, kind, named);
-      await vi.waitFor(() => expect(output()).toBe("F"), { timeout: 5000 });
+      await vi.waitFor(() => expect(output()).toBe(reply), { timeout: 5000 });
       expect(await run.stop()).toEqual(UNCONFIRMED);
     });
 

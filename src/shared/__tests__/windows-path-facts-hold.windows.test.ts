@@ -13,7 +13,7 @@ import { TOOL_TIMEOUT_POLICY } from "../tool-timeout-policy.js";
 class FakePipe extends Duplex {
   written = "";
   override _read(): void {}
-  override _write(chunk: Buffer, _encoding: BufferEncoding, done: () => void): void { this.written += chunk.toString(); done(); }
+  override _write(chunk: Buffer, _encoding: BufferEncoding, done: () => void): void { this.written += chunk.toString("latin1"); done(); }
 }
 
 class FakeHelper extends EventEmitter {
@@ -182,14 +182,36 @@ describe.runIf(process.platform === "win32")("Windows directory hold helper prot
       expect(helper().kill).toHaveBeenCalledOnce();
     });
 
-    it("carries the launcher's frames to the helper and the helper's replies back", async () => {
+    const hello = (pid: number) => {
+      const frame = Buffer.alloc(8);
+      frame.write("AVH2");
+      frame.writeUInt32LE(pid, 4);
+      return frame;
+    };
+
+    it("buffers the first frame, then carries subsequent bytes and the helper's replies", async () => {
       const { launcher } = await start();
-      launcher.relay.push("hello");
+      if (launcher.pid === undefined) throw new Error("no launcher pid");
+      const frame = hello(launcher.pid);
+      launcher.relay.push(frame.subarray(0, 4));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(helper().channel.written).toBe("");
+      launcher.relay.push(Buffer.concat([frame.subarray(4), Buffer.from("next")]));
       helper().channel.push("reply");
       await vi.waitFor(() => {
-        expect(helper().channel.written).toBe("hello");
+        expect(helper().channel.written).toBe(`${frame.toString("latin1")}next`);
         expect(launcher.relay.written).toBe("reply");
       });
+    });
+
+    it("stops the launcher without forwarding a first frame that names another PID", async () => {
+      const { launcher, run } = await start();
+      launcher.relay.push(hello(helper().pid));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(helper().channel.written).toBe("");
+      expect(launcher.stdin.destroyed).toBe(true);
+      await launcher.end(0, "");
+      await expect(run.verdict).resolves.toEqual(unconfirmed);
     });
 
     it("publishes nothing while the launcher runs, whatever it has written and whatever the helper does", async () => {
