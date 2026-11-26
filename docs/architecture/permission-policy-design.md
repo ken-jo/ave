@@ -1635,14 +1635,25 @@ private pipe. The prelude reports guard failure through that pipe and closes it
 before user code runs. The host maps guard failure to the revocation error;
 ordinary command output and exit status, including 197, remain intact. Native
 Windows children reopen their cwd by path and get no child-side check. Instead,
-a permit-bearing Windows Bash or PowerShell launch holds the approved directory
-and every ancestor open without delete sharing, from before the final check
-until the child closes. The launch is refused when the hold cannot be taken,
-no longer matches the approved identity, or is lost before the handoff; a hold
-lost after launch stops the child. While held, rename, delete and
-non-share-read opens of the chain fail. The residual is any held leaf whose
-contents can be removed: it can still become a junction in place. Final policy
-validation and native spawn share the same serial queue.
+a permit-bearing Windows Bash or PowerShell launch, on every route (plain host,
+background, Windows sandbox and container wrappers), holds the approved
+directory and every ancestor open without delete sharing, from before the final
+check until the child closes. A helper process owns those handles and the only
+handle to a kill-on-close job. The command starts suspended through the job
+launcher and runs only after the helper has put it in that job. A helper that
+is gone refuses the launch before the command runs, and a helper that exits
+stops the whole tree through the OS. The command succeeds only when the helper
+reports the job empty after the root exits. Any other outcome exits 125 with a
+`cwd-pin-lost` diagnostic, so a lost hold is a failed execution even after
+exit code 0. Descendants still running when the root exits are stopped, as
+with background jobs. The host also refuses before spawn when the hold cannot
+be taken, no longer matches the approved identity, or has been observed lost.
+While held, rename, delete and share-checked opens that omit read sharing can
+be refused on the leaf and its ancestors. The residual is any held leaf whose
+contents can be removed: it can still become a junction in place. On the plain
+host routes, final policy validation and native spawn share the same serial
+queue. The sandbox and container routes run their own synchronous identity and
+hold checks immediately before spawn.
 
 A sandbox requested but unavailable carries `fallbackReason: "requested-sandbox-unavailable"`
 and `sandboxed: false` in its host execution plan. The card, model environment

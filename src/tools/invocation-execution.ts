@@ -665,8 +665,8 @@ export async function executeAuthorizedToolInvocation(
   // and is consumed once by the plain explicit-host / Plan-B spawn path. Its
   // authority is either the user's allow-once receipt or, for an explicit host
   // request only, the matching exact allow-rule decision (owner 2026-10-25, unsandboxed shell exact-rule requirement).
-  // On Windows a permit-bearing Bash/PowerShell launch also holds the approved cwd chain for the child's lifetime and is
-  // refused on identity change or hold failure; nothing is checked inside the child (holdHostShellSpawnDirectory).
+  // On Windows a permit-bearing Bash/PowerShell launch also runs in a job tied to a held cwd chain and is refused or
+  // fails on identity change or hold loss; nothing is checked inside the child (holdHostShellSpawnDirectory).
   const requiresShellPermit = () => hostShellRequiresExplicitApproval ||
     (processCwd !== undefined && "directory" in processCwd && processCwd.directory.held);
   const hostShellExecutionPermit =
