@@ -164,7 +164,10 @@ function carveGrants(
   const chainFolders = [...chain.values()].sort((left, right) => left.length - right.length);
   for (const folder of chainFolders) {
     const enclosing = nearestEnclosing(folder, grants, lookups.foldsCase);
-    if (enclosing === undefined || readDenies.some(deny => covers(deny, folder))) continue;
+    if (enclosing === undefined) continue;
+    // A surviving grant reopens its subtree inside a carved deny. Denies inside that grant still apply.
+    const activeDenies = readDenies.filter(deny => !covers(deny, enclosing));
+    if (activeDenies.some(deny => covers(deny, folder))) continue;
     const candidates = new Map<string, string>();
     try {
       const children = lookups.children(folder, remainingEntries + 1);
@@ -187,7 +190,7 @@ function carveGrants(
         const resolvedKey = key(resolved);
         if (!covers(enclosing, resolved) || !lookups.exists(resolved) || resolved === "/dev" || chain.has(resolvedKey)
           || grantKeys.has(resolvedKey) || emitted.has(resolvedKey)) continue;
-        if (readDenies.some(deny => covers(resolved, deny) || covers(deny, resolved))) continue;
+        if (activeDenies.some(deny => covers(resolved, deny) || covers(deny, resolved))) continue;
         if (resolvedKey !== key(child)
           && (chainFolders.some(path => covers(resolved, path))
             || grants.some(path => covers(resolved, path) || covers(path, resolved)))) continue;

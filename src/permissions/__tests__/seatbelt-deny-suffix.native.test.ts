@@ -90,6 +90,31 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")("nativ
     expect(readFileSync(join(work, "ordinary", "good"), "utf8").trim()).toBe("ok");
   });
 
+  it("keeps both admitted children readable through nested carves and both denied scopes closed", () => {
+    const outer = join(work, "outer");
+    const project = join(outer, "project");
+    const inner = join(project, "inner");
+    const child = join(inner, "child");
+    mkdirSync(child, { recursive: true });
+    for (const dir of [outer, project, inner, child]) writeFileSync(join(dir, "file"), "fixture");
+
+    const lookups = posixPolicyLookups(root, true);
+    const grants = rankPosixContainerRows(buildPolicyModel({
+      floors: [outer, inner].map(dir => policyFloorRow(dir, "denied", "read-boundary", true)),
+      launchGrants: [work, project, child].map(dir => policyGrantRow(dir, "ro", "launch-grant", true)),
+      userGrants: [], extensionManifests: [],
+    }), "seatbelt", lookups);
+    const result = launch([
+      `cat '${project}/file' || exit 11`,
+      `cat '${child}/file' || exit 12`,
+      `if cat '${outer}/file'; then exit 13; fi`,
+      `if cat '${inner}/file'; then exit 14; fi`,
+    ].join("\n"), 3_000, "", {
+      readwritePaths: grants.readwrite, readonlyPaths: grants.readonly, deniedPaths: grants.denied,
+    });
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+  });
+
   it("reaps the shell, a background child and a setsid descendant on the backend timeout under an override", () => {
     const suffix = buildSeatbeltDenySuffix({
       literals: [], patterns: [], writeRoots: [work], lookups: posixPolicyLookups(root, true),
