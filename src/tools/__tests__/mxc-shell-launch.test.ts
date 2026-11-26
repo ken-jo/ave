@@ -313,6 +313,8 @@ describe("prepareMxcShellLaunch", () => {
       relay();
       h.privateRoots.mockReturnValue([`${ROOT}\\`]);
       h.liveHomes.add(OWN);
+      // Admission ranks only what is on the drive.
+      for (const path of [OWN, `${OWN}\\AppData`, `${ROOT}-other\\repo`, ...CLOSED]) onDrive(path);
     });
     afterEach(() => {
       h.privateRoots.mockReturnValue([]);
