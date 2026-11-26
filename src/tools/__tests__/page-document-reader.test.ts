@@ -3,13 +3,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { crc32 } from "node:zlib";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { pdfFixture, presentationFixture } from "../../__tests__/support/page-document-fixtures.js";
 import { offsetWorkbook } from "../../__tests__/support/table-document-fixtures.js";
 import { createZipFixture, zipCentralOffset } from "../../__tests__/support/zip-fixtures.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../../shared/preview-document.js";
 import { PAGE_PREVIEW_LIMITS } from "../../shared/preview-page-document.js";
 import { parsePageDocument, pdfAssetDirectory } from "../page-document-reader.js";
+import { pdfRasterCanvasFactory } from "../pdf-raster-context.js";
 import { CFB_MAGIC } from "../workbook-container.js";
 import { readPageDocumentResponse } from "../preview-page-protocol.js";
 
@@ -161,13 +162,18 @@ describe("page document previews", () => {
   });
 
   it("renders a real PDF page into a bounded image with extractable text", async () => {
-    const first = await parsePageDocument(pdfFixture(), "pdf", 0);
+    const { createCanvas, loadImage } = await import("@napi-rs/canvas");
+    const prototype = Object.getPrototypeOf(createCanvas(1, 1).getContext("2d"));
+    const fontSetter = vi.spyOn(prototype, "font", "set");
+    const first = await parsePageDocument(pdfFixture(), "pdf", 0).then((result) => {
+      expect(fontSetter).not.toHaveBeenCalled();
+      return result;
+    }).finally(() => fontSetter.mockRestore());
     expect(first).toMatchObject({ format: "pdf", totalPages: 2, page: { index: 0, paragraphs: ["First PDF page"] } });
     expect(first.page.png).toMatch(/^iVBORw0KGgo/);
     expect(first.page.width * first.page.height).toBeLessThanOrEqual(PAGE_PREVIEW_LIMITS.maxPixels);
     expect(readPageDocumentResponse(first)).toBe(first);
     const png = Buffer.from(first.page.png!, "base64");
-    const { createCanvas, loadImage } = await import("@napi-rs/canvas");
     const bitmap = createCanvas(first.page.width, first.page.height);
     const pixels = bitmap.getContext("2d");
     pixels.drawImage(await loadImage(png), 0, 0);
@@ -202,6 +208,37 @@ describe("page document previews", () => {
     await expect(parsePageDocument(Buffer.from("%PDF-broken"), "pdf", 0)).rejects.toMatchObject({ code: "corrupt-document" });
     await expect(parsePageDocument(presentationFixture(), "pdf", 0)).rejects.toMatchObject({ code: "corrupt-document" });
     await expect(parsePageDocument(pdfFixture(), "pptx", 0)).rejects.toMatchObject({ code: "corrupt-document" });
+  });
+
+  it("applies fonts for native text with saved and reset raster state", async () => {
+    const { createCanvas } = await import("@napi-rs/canvas");
+    const Factory = pdfRasterCanvasFactory(createCanvas);
+    const factory = new Factory();
+    const prototype = Object.getPrototypeOf(createCanvas(1, 1).getContext("2d"));
+    const fontSetter = vi.spyOn(prototype, "font", "set");
+    try {
+      const surface = factory.create(30, 30);
+      const { context } = surface;
+      if (!context) throw new Error("PDF raster context is unavailable");
+      const outerFont = 'normal normal 16px "g_0_f1", sans-serif';
+      const innerFont = 'italic bold 20px "g_0_f2", serif';
+      context.font = outerFont;
+      context.save();
+      context.font = innerFont;
+      expect(context.font).toBe(innerFont);
+      expect(fontSetter).not.toHaveBeenCalled();
+      context.measureText("Test");
+      context.restore();
+      context.fillText("Test", 0, 15);
+      expect(fontSetter.mock.calls).toEqual([[innerFont], [outerFont]]);
+      context.font = innerFont;
+      factory.reset(surface, 20, 20);
+      context.strokeText("Test", 0, 15);
+      expect(fontSetter).toHaveBeenCalledTimes(2);
+      factory.destroy(surface);
+    } finally {
+      fontSetter.mockRestore();
+    }
   });
 
   it("refuses excessive image resources instead of silently omitting them", async () => {

@@ -122,6 +122,11 @@ const provider = {
   },
 } satisfies LLMProvider;
 
+const activeRuntime = {
+  getLlm: () => ({ activeChatRuntime: { kind: "api" as const } }),
+  onMismatch: () => { throw new Error("Unexpected runtime mismatch"); },
+};
+
 function invoke(input: {
   coordinator?: RationaleConversationCoordinator;
   executor?: ReturnType<typeof makeExecutor>;
@@ -140,6 +145,7 @@ function invoke(input: {
       executeOptions: { executionCwd: "C:\\workspace" },
       provider,
       model: "test-model",
+      activeRuntime,
       llmSettings: {
         streamSmoothing: "none",
         enableThinking: false,
@@ -346,6 +352,7 @@ describe("executeRationaleAwareConversationBatch", () => {
       executeOptions: { executionCwd: "C:\\workspace" },
       provider,
       model: "test-model",
+      activeRuntime,
       llmSettings: {
         streamSmoothing: "none",
         enableThinking: false,

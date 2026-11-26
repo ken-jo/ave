@@ -1,5 +1,5 @@
 import type { ChatMessageRevealRequest } from "./hooks/use-chat-scroll.js";
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useTranslation } from "../../i18n/react.js";
 import { MAX_CHAT_GROUPS } from "../../contract/app-contract.js";
 import { ErrorBoundary } from "./components/ErrorBoundary.js";
@@ -98,6 +98,7 @@ import type { NotificationToastMeta } from "./hooks/use-status-bar.js";
 import { useWindowNotices } from "./hooks/use-window-notices.js";
 import { NotificationHistoryContext } from "./context/NotificationHistoryContext.js";
 import { useSettings } from "./hooks/use-settings.js";
+import { workBoardApprovalMatchesProject } from "./components/work-board/use-board-approvals.js";
 import { ApprovalSurfaceProvider, useApproval, type ApprovalSurfaceContextValue } from "./hooks/use-approval.js";
 import { usePermissionSignals } from "./hooks/use-permission-signals.js";
 import { useApprovalSentence } from "./hooks/use-approval-sentence.js";
@@ -859,6 +860,7 @@ export function App() {
   // The window's project is the user's selection (plan D1), not the focused conversation's.
   const projectSelection = useProjectSelection(api, workspaceProjects);
   const activeProject = projectSelection.selectedProject;
+  const workBoardProjectRoot = projectSelection.selection?.kind === "root" ? projectSelection.selection.root : undefined;
   const projectSelectionRef = useRef(projectSelection);
   projectSelectionRef.current = projectSelection;
   /** Opening something that belongs to another project switches to it, except in the all-projects view. */
@@ -895,12 +897,15 @@ export function App() {
   // The pane-chat claim identifies card ownership for chats outside the tile registry.
   const approvalClaimsVersion = useSyncExternalStore(approvalClaims.subscribe, approvalClaims.readVersion, approvalClaims.readVersion);
   const pendingAnswers = useMemo(() => selectPendingAnswers({
-    approvals: approvalQueue,
+    approvals: approvalQueue.filter(request => {
+      const route = request.workBoardProjectApproval;
+      return !route || (!route.parked && workBoardApprovalMatchesProject(route, workBoardProjectRoot, activeProject?.isDefault === true));
+    }),
     tiles: tileSessions,
     overlayCards: overlayQueue,
     sessions,
     isClaimed: (sessionId) => approvalClaims.ownerOf(sessionId) !== null,
-  }), [approvalQueue, tileSessions, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
+  }), [approvalQueue, tileSessions, overlayQueue, sessions, approvalClaims, approvalClaimsVersion, workBoardProjectRoot, activeProject?.isDefault]);
   const sidebarAnswerPending = [...pendingAnswers.sessionIds].some((sessionId) => {
     const tile = tileSessions.find((candidate) => candidate.sessionId === sessionId || candidate.sideChat?.sessionId === sessionId);
     return tile === undefined || tile.paneHidden || (tile.sideChat?.sessionId === sessionId && !tile.sideChat.shown);
@@ -1296,6 +1301,9 @@ export function App() {
     followProject(focusedSessionRoot);
   }, [currentSessionId, focusedSessionRoot, projectSelection.selection === undefined, followProject]);
   surfaceProjectRootRef.current = (activeProject ?? defaultWorkspaceProject)?.projectRoot;
+  useLayoutEffect(() => {
+    void api.setWorkBoardProjectScope(workBoardProjectRoot);
+  }, [api, workBoardProjectRoot]);
 
   const handleOpenRoutineSession = useCallback(
     async (sessionId: string) => {
@@ -1350,6 +1358,7 @@ export function App() {
     llmReadyWithoutApiKey,
     retiredLlmProvider,
     deprecatedLlmModel,
+    dismissDeprecatedLlmModel,
     subscriptionRuntimePolicy,
     refresh: refreshLlmSettings,
     settingsLoaded,
@@ -1612,6 +1621,12 @@ export function App() {
   // opens in its own project's home, so the window switches to that project first; a shared item opens in the project being viewed.
   const [workApprovalFocusKey, setWorkApprovalFocusKey] = useState<string | null>(null);
   const [workApprovalShowAll, setWorkApprovalShowAll] = useState(false);
+  const openBoardProject = useCallback((root: string): boolean => {
+    const project = findWorkspaceProject(workspaceProjectsRef.current, root);
+    if (!project) return false;
+    projectSelectionRef.current.selectRoot(project.projectRoot);
+    return true;
+  }, []);
   const openWorkApprovals = useCallback((target: { key: string; projectRoot: string | undefined } | "all") => {
     handleViewSelectWithDoctor("work-board");
     if (target === "all") {
@@ -1620,12 +1635,10 @@ export function App() {
     }
     // Only a project that is still open is selected; a shared item opens in the project being viewed.
     if (target.projectRoot !== undefined) {
-      const project = findWorkspaceProject(workspaceProjectsRef.current, target.projectRoot);
-      // An explicit row jump leaves the all-projects view on purpose (board 15: "그 프로젝트 홈으로 이동"), unlike followProject.
-      if (project) projectSelectionRef.current.selectRoot(project.projectRoot);
+      if (!openBoardProject(target.projectRoot)) return;
     }
     setWorkApprovalFocusKey(target.key);
-  }, [handleViewSelectWithDoctor]);
+  }, [handleViewSelectWithDoctor, openBoardProject]);
   // "스케줄에서 열기": the routine surface, scrolled to and focusing that routine.
   const [routineFocusId, setRoutineFocusId] = useState<string | null>(null);
   const openRoutine = useCallback((routineId: string) => {
@@ -2200,6 +2213,10 @@ export function App() {
         <WorkBoardPanel
           api={api}
           project={activeProject ?? defaultWorkspaceProject}
+          projects={workspaceProjects}
+          allProjects={projectSelection.selection?.kind === "all"}
+          onOpenProject={openBoardProject}
+          onOpenApproval={(key, projectRoot) => openWorkApprovals({ key, projectRoot })}
           focusItemId={workBoardFocusItemId}
           onFocusConsumed={() => setWorkBoardFocusItemId(null)}
           approvalFocusKey={workApprovalFocusKey}
@@ -2562,8 +2579,13 @@ export function App() {
                         onChooseProvider={() => onOpenSettings("llm")}
                       />
                       <DeprecatedModelNotice
-                        model={subscriptionRuntimeSelected ? null : deprecatedLlmModel}
+                        deprecation={subscriptionRuntimeSelected ? null : deprecatedLlmModel}
                         onChooseModel={() => onOpenSettings("llm")}
+                        onDismiss={() => {
+                          void dismissDeprecatedLlmModel().catch(() => {
+                            statusPushToast({ severity: "error", message: t("useSettingsOrchestration.saveFailed") });
+                          });
+                        }}
                       />
                       <MarketplaceAnnouncementBanner
                         announcements={marketplaceAnnouncements}

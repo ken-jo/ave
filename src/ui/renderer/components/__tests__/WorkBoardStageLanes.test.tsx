@@ -36,7 +36,6 @@ async function mountBoard(queue: ApprovalRequest[]) {
     onSettingsUpdated: noop, onWorkBoardItemChanged: noop, onWorkBoardRunStarted: noop, onWorkBoardRunFinished: noop, onWorkBoardRunFailed: noop,
     onWorkBoardRunProgress: (h: (p: RunProgressEventPayload) => void) => { progress.push(h); return () => {}; },
     steerWorkBoardRun: vi.fn(), cancelWorkBoardRun: vi.fn(), updateWorkBoardItem: vi.fn(),
-    captureUserKeyboardIntent: () => ({ inputOrigin: "user-keyboard" as const, token: "tok" }),
   } as unknown as AveApi;
   const surface = { ...approvalSurfaceStub(), queue };
   render(withApprovalSurface(<WorkBoardPanel api={api} />, surface));

@@ -1,9 +1,11 @@
 import { EventEmitter } from "node:events";
 import type { BrowserWindow, WebContents } from "electron";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withoutTestApprovalCardPresenters } from "../../__tests__/vitest-approval-presentation.js";
 import { approvalSurfaceResolver } from "../../boot/approval-surface.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, IPC_APPROVAL_SETTLED, isHostApprovalRejectedDecision, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
+import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import { getMainWindow, getMainWindows, markMainWindowFocused, registerMainWindow, resetMainWindowsForTests, unregisterMainWindow } from "../app-state.js";
 
 vi.mock("../terminal/pty-manager.js", () => ({ terminalOwnerWindowId: () => null }));
@@ -29,7 +31,8 @@ function fixture() {
   registerMainWindow(first.window, "primary");
   registerMainWindow(second.window, "secondary");
   markMainWindowFocused(first.window);
-  const gate = new ApprovalGate(approvalSurfaceResolver());
+  const audit = { log: vi.fn() };
+  const gate = new ApprovalGate(approvalSurfaceResolver(), undefined, undefined, audit as never);
   gates.push(gate);
   const pending = gate.requestAndWait({ id: "panel-request", category: "tool", toolName: "panel_status", toolCategory: "write",
     source: "plugin", sourcePluginId: "sample-panel", args: {}, reason: "Panel request", createdAt: Date.now() });
@@ -37,7 +40,7 @@ function fixture() {
     const card = first.cards()[0];
     return gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac }, owner);
   };
-  return { first, second, gate, pending, answer };
+  return { first, second, gate, pending, answer, audit };
 }
 
 describe("main-window lifecycle for unattributed approvals", () => {
@@ -79,6 +82,36 @@ describe("main-window lifecycle for unattributed approvals", () => {
     expect(h.second.cards()).toHaveLength(1);
     expect(h.answer(h.second.contents)?.choice).toBe("allow-once");
     await h.pending;
+  });
+
+  it("denies a pending approval when an unattended handoff cannot present the card", async () => {
+    const h = fixture();
+    expect(h.first.cards()).toHaveLength(1);
+    markMainWindowFocused(h.second.window);
+    turnExtensionPolicyContext.run({ unattendedStage: true, allowExternalHooks: false }, () => unregisterMainWindow(h.first.window));
+    expect(h.gate.pendingCount).toBe(0);
+    const result = await h.pending;
+    expect(result).toMatchObject({ choice: "deny-once", reasonCode: "unattended-approval-denied" });
+    expect(isHostApprovalRejectedDecision(result)).toBe(true);
+    expect(h.second.cards()).toEqual([]);
+  });
+
+  it("audits an unattended handoff when the card presenter is uninstalled", async () => {
+    const h = fixture();
+    expect(h.first.cards()).toHaveLength(1);
+    markMainWindowFocused(h.second.window);
+    await withoutTestApprovalCardPresenters(async () => {
+      turnExtensionPolicyContext.run({ unattendedStage: true, allowExternalHooks: false }, () => unregisterMainWindow(h.first.window));
+      expect(h.audit.log).toHaveBeenCalledWith(expect.objectContaining({
+        output: expect.stringContaining("[approval:unattended-approval-denied] panel-request"),
+      }));
+      expect(h.audit.log).not.toHaveBeenCalledWith(expect.objectContaining({
+        output: expect.stringContaining("[approval:send-failed]"),
+      }));
+      await expect(h.pending).resolves.toMatchObject({ choice: "deny-once", reasonCode: "unattended-approval-denied" });
+      expect(h.gate.pendingCount).toBe(0);
+      expect(h.second.cards()).toEqual([]);
+    });
   });
 
   it("hands off a destroyed recipient even before an explicit unregister callback", async () => {

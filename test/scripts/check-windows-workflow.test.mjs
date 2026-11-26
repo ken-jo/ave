@@ -15,6 +15,55 @@ import {
 } from "../../.github/scripts/check-windows-workflow.mjs";
 
 const workflow = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
+const WINDOWS_VALIDATION_RESULTS = {
+  "windows-payload-packaging": "WINDOWS_PACKAGING_RESULT",
+  "windows-script-tests": "WINDOWS_SCRIPTS_RESULT",
+  "windows-dev-boot": "WINDOWS_DEV_BOOT_RESULT",
+};
+const BASE_AGGREGATE_JOBS = [
+  "build", "vitest", "vitest-tiers", "windows-native-preparation", "windows-permission-tests", "windows-tier-tests",
+  "windows-arm64-path-kind", "macos-permission-tests", "linux-confinement-tests", "gate-core", "mxc-pins",
+];
+
+it("keeps every aggregate dependency and adds the three Windows validations", () => {
+  const { jobs } = parse(workflow);
+  const aggregate = jobs["build-and-test"];
+  assert.deepEqual([...aggregate.needs].sort(), [...BASE_AGGREGATE_JOBS, ...Object.keys(WINDOWS_VALIDATION_RESULTS)].sort());
+
+  for (const [id, variable] of Object.entries(WINDOWS_VALIDATION_RESULTS)) {
+    const job = jobs[id];
+    assert.equal(job["runs-on"], "windows-2025");
+    assert.deepEqual(job.needs, ["build", "windows-native-preparation"]);
+    assert.equal(job.if, "(needs.build.outputs.platform_checks == 'true' || needs.build.outputs.windows_tier_tests == 'true') && needs.windows-native-preparation.result == 'success'");
+    assert.equal(aggregate.steps[0].env[variable], `\${{ needs.${id}.result }}`);
+  }
+  for (const id of ["windows-permission-tests", "windows-tier-tests"]) {
+    assert.deepEqual(jobs[id].needs, ["build", "windows-native-preparation"]);
+  }
+});
+
+it("requires every extracted Windows validation whenever preparation is selected", () => {
+  const step = parse(workflow).jobs["build-and-test"].steps[0];
+  for (const [platform, tiers, expected] of [[true, false, "success"], [false, true, "success"], [false, false, "skipped"]]) {
+    const values = Object.values(WINDOWS_VALIDATION_RESULTS);
+    for (const variable of values) {
+      for (const result of ["success", "skipped", "failure", "cancelled", ""]) {
+        const run = spawnSync("bash", ["-e", "-c", step.run], { encoding: "utf8", windowsHide: true, env: {
+          ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
+          VITEST_RESULT: "success", DOCS_ONLY: "false", PLATFORM_CHECKS: String(platform),
+          WINDOWS_PREPARATION_RESULT: expected,
+          WINDOWS_RESULT: platform ? "success" : "skipped", MACOS_RESULT: platform ? "success" : "skipped",
+          LINUX_RESULT: platform ? "success" : "skipped", WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
+          VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: String(tiers),
+          WINDOWS_TIER_RESULT: tiers ? "success" : "skipped",
+          ...Object.fromEntries(values.map(key => [key, expected])), [variable]: result,
+        } });
+        assert.ifError(run.error);
+        assert.equal(run.status, result === expected ? 0 : 1, `${variable}=${result} with platform=${platform}, tiers=${tiers}`);
+      }
+    }
+  }
+});
 
 it("runs the workflow guard before any Windows test commands", () => {
   for (const job of ["windows-native-preparation", "windows-permission-tests"]) {
@@ -179,19 +228,22 @@ async function containedManifest(steps) {
 }
 const CONDITION = "steps.docs-impact.outputs.docs_only != 'true'";
 
-it("derives independent receipts for preparation and every shard", async () => {
+it("derives independent receipts for preparation, validation and shard jobs", async () => {
   const { containedSteps } = await import("../../.github/scripts/check-windows-workflow.mjs");
   const expected = {
     "windows-native-preparation": [
       "verify-native-background-process-ownership-1",
-      "verify-both-windows-native-payload-packages-1", "verify-both-windows-native-payload-packages-2",
       "verify-windows-folder-classification-1",
       "build-and-test-patched-windows-sandbox-helper-1", "build-and-test-patched-windows-sandbox-helper-2",
-      "run-script-tests-1",
+    ],
+    "windows-payload-packaging": ["verify-both-windows-native-payload-packages-1", "verify-both-windows-native-payload-packages-2"],
+    "windows-script-tests": ["run-script-tests-1"],
+    "windows-dev-boot": [
       "build-windows-development-desktop-1",
       "smoke-test-windows-development-boot-1",
     ],
     "windows-permission-tests": ["run-windows-regressions-1"],
+    "windows-tier-tests": ["run-windows-regressions-1"],
   };
   for (const [job, ids] of Object.entries(expected)) {
     const manifest = containedSteps(workflow, job);
@@ -294,23 +346,23 @@ it("rejects the bare packaging check after job-root setup", () => {
     ["example: line 1: command runs outside the job containment launcher: bun run check:mxc-packaging"]);
 });
 
-for (const [name, change, expected] of [
-  ["a bare bun test line", (_steps, step) => { step("Run script tests").run += "\nbun test"; },
+for (const [name, job, change, expected] of [
+  ["a bare bun test line", "windows-script-tests", (_steps, step) => { step("Run script tests").run += "\nbun test"; },
     "Run script tests: line 2: command runs outside the job containment launcher: bun test"],
-  ["a test runner hidden in a script block", (_steps, step) => { step("Run script tests").run += "\nif ($true) { bun x vitest run }"; },
+  ["a test runner hidden in a script block", "windows-script-tests", (_steps, step) => { step("Run script tests").run += "\nif ($true) { bun x vitest run }"; },
     "Run script tests: line 2: command runs outside the job containment launcher: bun x vitest run"],
-  ["an uncontained packaging check", (_steps, step) => {
+  ["an uncontained packaging check", "windows-payload-packaging", (_steps, step) => {
     const packaging = step("Verify both Windows native payload packages");
     packaging.run = packaging.run.replace("node .github/scripts/run-in-job.mjs bun run check:mxc-packaging", "bun run check:mxc-packaging");
   }, "Verify both Windows native payload packages: line 3: command runs outside the job containment launcher: bun run check:mxc-packaging"],
-  ["a non-PowerShell step after setup", (_steps, step) => { step("Ensure uv toolchain").shell = "bash"; },
+  ["a non-PowerShell step after setup", "windows-native-preparation", (_steps, step) => { step("Ensure uv toolchain").shell = "bash"; },
     "Ensure uv toolchain: steps after job-root setup need a PowerShell shell"],
-  ["a contained command before setup", steps => {
+  ["a contained command before setup", "windows-native-preparation", steps => {
     steps.unshift({ name: "Early", if: CONDITION, run: "node .github/scripts/run-in-job.mjs node scripts/test-windows-job.mjs --early" });
   }, "manifest step early-1 is not exactly one contained command after job-root setup"],
 ]) {
-  const rejects = inspect => () => assert.throws(() => checkWindowsWorkflow(changedWorkflow(change), inspect),
-    error => error.message.split("\n").includes(`windows-native-preparation: ${expected}`) || assert.fail(error.message));
+  const rejects = inspect => () => assert.throws(() => checkWindowsWorkflow(changedWorkflow(change, job), inspect),
+    error => error.message.split("\n").includes(`${job}: ${expected}`) || assert.fail(error.message));
   it(`rejects ${name} in the contained job`, realParser, rejects());
   it(`rejects ${name} in the contained job from parsed lines`, rejects(parsedLines));
 }
@@ -345,7 +397,7 @@ for (const [name, commands, expected] of [
 it("rejects a second bare test command on a contained line", () => {
   assert.throws(() => checkWindowsWorkflow(changedWorkflow((_steps, step) => {
     step("Run script tests").run = "node .github/scripts/run-in-job.mjs bun run test:scripts; bun run test:scripts";
-  })), /contained invocation needs plain single-spaced arguments: bun run test:scripts; bun run test:scripts/);
+  }, "windows-script-tests"), parsedLines), /contained invocation needs plain single-spaced arguments: bun run test:scripts; bun run test:scripts/);
 });
 
 const ARM64_JOB = "windows-arm64-path-kind";
@@ -425,6 +477,7 @@ it("requires the arm64 result for selected runs, including docs-only main pushes
       const result = spawnSync("bash", ["-e", "-c", step.run], { encoding: "utf8", windowsHide: true, env: {
         ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
         VITEST_RESULT: docs === "true" ? "skipped" : "success", DOCS_ONLY: docs, PLATFORM_CHECKS: "false",
+        ...Object.fromEntries(Object.values(WINDOWS_VALIDATION_RESULTS).map(variable => [variable, "skipped"])),
         WINDOWS_PREPARATION_RESULT: "skipped", WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
         WINDOWS_ARM64_PATH_KIND: selected, WINDOWS_ARM64_PATH_KIND_RESULT: arm64,
         VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: "false", WINDOWS_TIER_RESULT: "skipped",
@@ -513,6 +566,7 @@ it("requires selected Windows tiers when the platform matrix is skipped", () => 
     const result = spawnSync("bash", ["-e", "-c", step.run], { encoding: "utf8", windowsHide: true, env: {
       ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
       VITEST_RESULT: "success", DOCS_ONLY: "false", PLATFORM_CHECKS: "false",
+      ...Object.fromEntries(Object.values(WINDOWS_VALIDATION_RESULTS).map(variable => [variable, tiers === "true" ? "success" : "skipped"])),
       WINDOWS_PREPARATION_RESULT: preparation, WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
       WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
       VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: tiers, WINDOWS_TIER_RESULT: tierResult,
@@ -588,7 +642,7 @@ it("builds and checks shared native inputs once, before any shard provisions its
   const { jobs } = parse(workflow);
   const before = jobs["windows-native-preparation"].steps;
   const after = jobs["windows-permission-tests"].steps;
-  for (const name of ["Verify both Windows native payload packages", "Build and test patched Windows sandbox helper", "Prepare authenticated interpreter mirror"]) {
+  for (const name of ["Build and test patched Windows sandbox helper", "Prepare authenticated interpreter mirror"]) {
     assert.equal(before.filter(step => step.name === name).length, 1);
     assert.equal(after.some(step => step.name === name), false);
   }
@@ -714,7 +768,7 @@ for (const [name, change, expected] of [
   ["using the output before verification", (steps, get) => {
     const step = get("Verify Windows preparation outputs or rebuild");
     steps.splice(steps.indexOf(step), 1);
-    steps.splice(steps.indexOf(get("Verify both Windows native payload packages")) + 1, 0, step);
+    steps.splice(steps.indexOf(get("Verify native background process ownership")) + 1, 0, step);
   }, /must verify or rebuild before any output is used/],
   ["skipping a native test on a cache hit", (_steps, get) => {
     get("Build and test patched Windows sandbox helper").if += " && env.AVE_WINDOWS_PREP_VERIFIED == 'false'";

@@ -1,14 +1,13 @@
 import { sep, win32 } from "node:path";
-import { expandWindowsEnvRefs, stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { expandWindowsEnvRefs, stripExtendedPathPrefix } from "./sandbox-path-spelling.js";
 import { createLogger } from "../lib/logger.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { admitLocalPath, admitLocalRoute, decisionMemo, type LocalFilesystemFacts, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { isWindowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
 import { admitWindowsReparse, isWindowsPathFactsPathFailure, pinWindowsPaths, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { WINDOWS_COMMAND_LINE_LIMIT } from "../shared/windows-command-line.js";
-import { classifyWindowsSpelling } from "../shared/windows-path-spelling.js";
+import { classifyWindowsSpelling, isPlainWindowsStampPath } from "../shared/windows-path-spelling.js";
 import { SENSITIVE_PATH_ENTRIES } from "./sensitive-paths.js";
-import { isPlainWindowsStampPath } from "./windows-stamp-targets.js";
 
 const log = createLogger("admitted-obligation");
 

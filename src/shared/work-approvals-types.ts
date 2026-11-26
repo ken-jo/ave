@@ -1,10 +1,11 @@
 /**
- * Work-level decisions ("확인 필요"): a read-only projection over the stores that own each decision. Tool-execution approvals are not here; they
- * stay in the chat ApprovalDock. Views are built field by field from each record, never by spreading one, so private record fields (a routine's
+ * Work-level decisions ("확인 필요"): a read-only projection over the stores that own each decision. Tool cards use the signed tool-approval
+ * channel even when drawn beside these views. Views are built field by field from each record, so private record fields (a routine's
  * prePrompt, a proposal's taskBrief) do not reach the renderer through this channel.
  *
  * Renderer-safe: no Node imports.
  */
+import type { PendingWorkflowDecision } from "./workflow-run-view.js";
 import type { RoutineFailure } from "./routines-types.js";
 
 // Scope: `project` (with whether it is the default project), `unscoped` (no project yet; accepting chooses one), or `global` (belongs to no project).
@@ -81,17 +82,36 @@ export interface RoutineAttentionApprovalView {
   failure?: RoutineFailure;
 }
 
-export type WorkApprovalView =
+export type WorkflowApprovalView = PendingWorkflowDecision & {
+  key: string;
+  scope: WorkPlanApprovalView["scope"];
+  title: string;
+  itemId: number;
+};
+
+type WorkApprovalDetail =
+  | WorkflowApprovalView
   | WorkPlanApprovalView
   | WorkProposalApprovalView
   | RoutineAttentionApprovalView;
+
+export interface WorkApprovalNavigationView {
+  kind: "navigation";
+  targetKind: WorkApprovalDetail["kind"];
+  key: string;
+  scope: WorkApprovalDetail["scope"];
+  title: string;
+  phase: "pending" | "replanning";
+}
+
+export type WorkApprovalView = WorkApprovalDetail | WorkApprovalNavigationView;
 
 export type WorkApprovalListResult =
   | {
       ok: true;
       /** The requested project's decisions plus the unscoped and global ones, or every authorized project's in all-projects mode. */
       items: WorkApprovalView[];
-      /** Every decision waiting for the user across all authorized projects, each counted once; the title-bar badge. */
+      /** Waiting decisions in this request. The title-bar badge uses the all-projects request. */
       total: number;
       /** The authorized projects, default first. */
       projects: WorkApprovalProject[];

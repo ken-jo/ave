@@ -23,7 +23,7 @@ type CostEstimateParams = {
   llmVendor?: string;
   /** Omit when the active runtime has no verified billing contract. */
   llmModel?: string;
-  /** The route's endpoint and its own price report (`resolveModelPricing`'s route). */
+  /** The route's configured endpoint and its own price report (`resolveModelPricing`'s route), projected before any request is sent. */
   pricingRoute?: ModelPricingRoute;
   /** The route's effective output limit: the most a reply may cost in output. */
   maxOutputTokens: number;
@@ -78,44 +78,30 @@ export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, contextCarrierTokens, entries.length, entries[entries.length - 1]]);
 
-  const costEstimate = useMemo(() => {
+  const costEstimate = useMemo<EstimateBreakdown | undefined>(() => {
     if (!enabled) return undefined;
     const resolved = resolveModelPricing(llmVendor ?? "", llmModel ?? "", pricingOverrides, pricingRoute);
-    const pricing = resolved.source === "unknown" ? undefined : resolved.rates;
-    // Where the rates came from, or why there are none: a model the catalog lists at zero is said so, never shown as a $0
-    // estimate.
-    const provenance: Pick<EstimateBreakdown, "pricingSource" | "catalogListsZero"> = resolved.source === "unknown"
-      ? (resolved.catalogListsZero !== undefined ? { catalogListsZero: resolved.catalogListsZero } : {})
-      : { pricingSource: resolved.source };
     const attachments = draft.attachments ?? [];
     const draftContent = toUserContentForEstimation(draft.text, attachments);
     const draftTokens = estimateOutgoingUserMessageTokens(draft.text, attachments);
-    const pricingVendor = toPricingVendor(llmVendor ?? "");
-    if (contextCarrierTokens !== undefined) {
-      const inputTokens = contextCarrierTokens + draftTokens;
-      const outputTokens = Math.max(0, maxOutputTokens);
-      const { inputCost, outputCost, total } = pricing
-        ? computeEstimatedCost(inputTokens, outputTokens, pricing, pricingVendor)
-        : { inputCost: 0, outputCost: 0, total: 0 };
+    const estimated = contextCarrierTokens !== undefined
+      ? { inputTokens: contextCarrierTokens + draftTokens, outputTokens: Math.max(0, maxOutputTokens) }
+      : estimateTurnTokens({ historySerialized, draft: draftContent, draftTokens, maxOutputTokens });
+    if (resolved.source === "unknown") {
       return {
-        inputTokens,
-        outputTokens,
-        inputCost,
-        outputCost,
-        total,
-        pricingKnown: !!pricing,
-        ...provenance,
+        ...estimated,
+        pricingKnown: false,
+        ...(resolved.catalogListsZero !== undefined ? { catalogListsZero: resolved.catalogListsZero } : {}),
+        ...(resolved.reason !== undefined ? { reason: resolved.reason } : {}),
       };
     }
-    const estimated = estimateTurnTokens({ historySerialized, draft: draftContent, draftTokens, maxOutputTokens });
-    if (!pricing) {
-      return { ...estimated, inputCost: 0, outputCost: 0, total: 0, pricingKnown: false, ...provenance };
-    }
+    const amounts = computeEstimatedCost(estimated.inputTokens, estimated.outputTokens, resolved.rates, toPricingVendor(llmVendor ?? ""));
+    if (!Number.isFinite(amounts.total)) return { ...estimated, pricingKnown: false };
     return {
       ...estimated,
-      ...computeEstimatedCost(estimated.inputTokens, estimated.outputTokens, pricing, pricingVendor),
+      ...amounts,
       pricingKnown: true,
-      ...provenance,
+      pricingSource: resolved.source,
     };
   }, [enabled, contextCarrierTokens, historySerialized, draft.text, draft.attachments, llmVendor, llmModel, pricingRoute, maxOutputTokens, pricingOverrides]);
   // What this conversation's turns have produced, not the most a turn may: the limit is the upper end of the range, never
@@ -124,13 +110,15 @@ export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate
     if (!enabled) return [];
     return entries.flatMap((entry) => (entry.kind === "turn_summary" ? [entry.tokensOut] : []));
   }, [enabled, entries.length, entries[entries.length - 1]]);
-  const sourcedCostEstimate = useMemo(() => {
+  const sourcedCostEstimate = useMemo<EstimateBreakdown | undefined>(() => {
     if (!costEstimate) return costEstimate;
     const expectedOutput = expectedTurnOutput(completedTurnOutputs, costEstimate.outputTokens);
+    const limit = outputLimitSource ? { outputLimitSource } : {};
+    if (costEstimate.pricingKnown === false) return { ...costEstimate, ...limit, expected: expectedOutput };
     const outputRate = costEstimate.outputTokens > 0 ? costEstimate.outputCost / costEstimate.outputTokens : 0;
     return {
       ...costEstimate,
-      ...(outputLimitSource ? { outputLimitSource } : {}),
+      ...limit,
       expected: { ...expectedOutput, total: costEstimate.inputCost + expectedOutput.tokens * outputRate },
     };
   }, [costEstimate, outputLimitSource, completedTurnOutputs]);

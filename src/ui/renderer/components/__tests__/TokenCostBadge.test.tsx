@@ -31,6 +31,21 @@ function renderInCostMode(props: Parameters<typeof TokenCostBadge>[0]) {
 describe("TokenCostBadge — cost parity with shared computeCost", () => {
   afterEach(() => cleanup());
 
+  it("exposes the recorded endpoint-price reason on an unpriced turn", () => {
+    renderInCostMode({
+      tokensIn: 100, freshInputTokens: 100, tokensOut: 50, vendor: "openai",
+      usageByModel: [{
+        vendorProvider: "openai", vendorModel: "gpt-5.4",
+        tokenUsage: { inputTokens: 100, outputTokens: 50 },
+        pricing: { source: "unknown", reason: "endpoint-price-unavailable" },
+      }],
+    });
+    const badge = screen.getByTestId(TEST_IDS.tokenCostBadge);
+    expect(badge).toHaveAttribute("aria-disabled", "true");
+    expect(badge).toHaveAttribute("aria-description", "이 경로의 엔드포인트가 사용 가능한 가격을 제공하지 않았습니다.");
+    expect(badge).not.toHaveTextContent("$");
+  });
+
   it("uses recorded request prices after a pricing correction changes", async () => {
     await syncPricingOverrides({ getPricingOverrides: async () => [
       { vendor: "openai", model: "gpt-5.4", inputPer1M: 10, outputPer1M: 0 },
@@ -158,11 +173,13 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
         {
           vendorProvider: "openai",
           vendorModel: "gpt-5.4",
+          pricing: { source: "model-catalog", rates: pricing },
           tokenUsage: { inputTokens: 200_000, outputTokens: 0 },
         },
         {
           vendorProvider: "openai",
           vendorModel: "gpt-5.4",
+          pricing: { source: "model-catalog", rates: pricing },
           tokenUsage: { inputTokens: 200_000, outputTokens: 0 },
         },
       ],
@@ -182,6 +199,7 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
       usageByModel: [{
         vendorProvider: "qwen",
         vendorModel: "qwen-plus",
+        pricing: resolveModelPricing("qwen", "qwen-plus"),
         tokenUsage: { inputTokens: 0, outputTokens: 1_000_000, reasoningTokens: 400_000 },
       }],
     });
@@ -189,7 +207,7 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
     expect(numeric).toBeCloseTo(1.147, 2);
   });
 
-  it("prices each segment with the price correction main reports", async () => {
+  it("keeps a legacy label-only segment unpriced even when a correction exists", async () => {
     await act(async () => {
       await syncPricingOverrides({
         getPricingOverrides: async () => [{ vendor: "openai", model: "gpt-5.4", inputPer1M: 10, outputPer1M: 0 }],
@@ -203,8 +221,10 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
         vendor: "openai",
         usageByModel: [{ vendorProvider: "openai", vendorModel: "gpt-5.4", tokenUsage: { inputTokens: 100_000, outputTokens: 0 } }],
       });
-      const numeric = Number((screen.getByText(/^≈ \$/).textContent ?? "").replace(/[^0-9.]/g, ""));
-      expect(numeric).toBeCloseTo(1, 2);
+      expect(screen.getByTestId(TEST_IDS.tokenCostBadge)).toHaveAttribute(
+        "aria-description", "이 요청에 사용된 경로가 기록되지 않았습니다.",
+      );
+      expect(screen.queryByText(/^≈ \$/)).toBeNull();
     } finally {
       await act(async () => {
         await syncPricingOverrides({ getPricingOverrides: async () => [] });

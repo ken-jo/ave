@@ -76,28 +76,28 @@ describe("configuration boot refusal", () => {
       expect(caller).toContain("await acquireHostInstanceLock()");
     }
   });
-  it("shows the path cause and recovery instructions in English", () => {
+  it("shows the path cause and recovery instructions in English", async () => {
     setLocale("en");
     const path = join(import.meta.dirname, "fixture-home", "config");
-    showConfigurationBootError(new AveHomeConfigurationUntrustedError(path, "Foreign child deletion rights"));
+    await showConfigurationBootError(new AveHomeConfigurationUntrustedError(path, "Foreign child deletion rights"));
     expect(dialog.showErrorBox).toHaveBeenCalledWith("Ave cannot trust its configuration", expect.stringContaining(path));
     expect(vi.mocked(dialog.showErrorBox).mock.calls[0]![1]).toContain("Foreign child deletion rights");
     expect(vi.mocked(dialog.showErrorBox).mock.calls[0]![1]).toContain("Remove other accounts' write and delete access");
     expect(vi.mocked(dialog.showErrorBox).mock.calls[0]![1]).toContain("restart Ave");
   });
 
-  it("shows the path cause and recovery instructions in Korean", () => {
+  it("shows the path cause and recovery instructions in Korean", async () => {
     setLocale("ko");
     const path = join(import.meta.dirname, "fixture-home", "config");
-    showConfigurationBootError(new AveHomeConfigurationUntrustedError(path, "Configuration marker content is invalid"));
+    await showConfigurationBootError(new AveHomeConfigurationUntrustedError(path, "Configuration marker content is invalid"));
     expect(dialog.showErrorBox).toHaveBeenCalledWith("Ave 설정을 신뢰할 수 없습니다", expect.stringContaining(path));
     expect(vi.mocked(dialog.showErrorBox).mock.calls[0]![1]).toContain("Configuration marker content is invalid");
     expect(vi.mocked(dialog.showErrorBox).mock.calls[0]![1]).toContain("다른 계정의 쓰기 및 삭제 권한을 제거");
     expect(vi.mocked(dialog.showErrorBox).mock.calls[0]![1]).toContain("Ave를 다시 시작");
   });
 
-  it("does not show a configuration dialog for unrelated boot failures", () => {
-    showConfigurationBootError(new Error("Unrelated bootstrap failure"));
+  it("does not show a configuration dialog for unrelated boot failures", async () => {
+    await showConfigurationBootError(new Error("Unrelated bootstrap failure"));
     expect(dialog.showErrorBox).not.toHaveBeenCalled();
   });
 
@@ -109,9 +109,9 @@ describe("configuration boot refusal", () => {
     const error = new AveHomeConfigurationUntrustedError(join(import.meta.dirname, "fixture-home", "config"), "Foreign child deletion rights");
     const stopped = boot.handle(error);
     try {
+      await vi.waitFor(() => expect(boot.showProviderError).toHaveBeenCalledOnce());
       expect(dialog.showErrorBox).toHaveBeenCalledOnce();
       expect(dialog.showErrorBox).toHaveBeenCalledWith("Ave cannot trust its configuration", expect.stringContaining(error.path));
-      await vi.waitFor(() => expect(boot.showProviderError).toHaveBeenCalledOnce());
       expect(boot.quit).not.toHaveBeenCalled();
       presentation.resolve(false);
       await stopped;

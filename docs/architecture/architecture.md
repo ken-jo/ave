@@ -1261,10 +1261,11 @@ listing on its native host no longer names it (never for local, self-hosted, gat
 custom-`baseUrl` or Azure routes; a failed or partial listing proves nothing). Only an
 id the active catalog knows exactly under the vendor's mapped provider can be judged;
 a fine-tune, an account-scoped deployment or a model newer than the snapshot never is. A saved
-selection at one sets the `llm.retiredProvider` marker at settings load
-(`{ vendor, model, reason: "unlisted" }` beside the removed-vendor string), which
-withholds API-key chat and credentials until the user picks — the same flow as a removed
-vendor. **Deprecated:** the active catalog marks it `deprecated` where the route
+selection sets the `llm.retiredProvider` marker when a listing proves it retired,
+including mid-session. The marker withholds API-key chat and credentials until the
+selection or listing resolves the retirement. Every model transport rereads its route's
+retirement evidence at the wire, immediately before each network attempt, so a transport's
+own retry cannot reach a model proven retired. **Deprecated:** the active catalog marks it `deprecated` where the route
 establishes its identity; no marker, chat and credentials keep working, and the window
 shows a non-blocking notice. The listing outranks the catalog. Both tiers are hidden from
 every picker; the host keeps no retired-name list. See [retired models](../design/model-capability-catalog.md#61-retired-models-slice-7-follow-up-owner-direction-2026-10-13).
@@ -1996,6 +1997,10 @@ Preparation, readback and cleanup share one cancellation signal and capture
 deadline. Cleanup attempts to restore the original scroll position and clear any
 temporary viewport override even on cancellation; a still-pending cleanup retains
 guest capture ownership until it settles.
+Each tiled capture composes its tiles in its own supervised child process
+(`browser-capture-stitch-child.js`). A capture that ends with tile work still
+outstanding ends that process, and the guest accepts another screenshot only
+after every outstanding job has settled or the process exit is confirmed.
 Selection verifies the final native value and rejects unsupported controls.
 Native single-select uses a fixed function in an isolated action world on one
 host-resolved main-document object, with only the requested option value as data.
@@ -3363,7 +3368,9 @@ Package manifests use the required semantic pins for `name`, `version`, `main`, 
 
 Empty `node-pty/.bun-tag-<16 lowercase hex digits>` patch-install markers are declared package-manager bookkeeping and are removed before packaged inventory verification. Nonempty or malformed markers remain unexpected payloads and fail verification.
 
-Before-pack source verification also requires the original package-manifest byte hashes; semantic verification applies to normalized packaged manifests. `bun run update:mxc-pins` regenerates file hashes, semantic manifest fields and both native architectures deterministically from installed sources. `bun run check:mxc-pins` (`node scripts/update-mxc-pins.mjs --check`) fails on drift without rewriting pins. Missing optional target addons are staged from their separately verified archives into temporary sources and cleaned up; `--no-download` requires all sources locally. Archive, launcher and license trust anchors remain explicit review inputs. The required `build-and-test` CI job checks the generated pins and runs `check:mxc-packaging` for x64 and arm64, sharing a lock-keyed Windows runtime ZIP cache. The Windows permission job also runs both packaging targets with a cached runtime download, so the native-host collector path is covered. Successful packaging checks delete their owned temporary trees, failures retain and report the exact path. Strict packaged inventory checks include the FFI, PTY and nested semver trees; unknown scripts, manifests, binaries and redirects fail closed. Retained source/declaration/license allowances are scoped by path and extension. Unused PTY local build/source directories and non-target prebuilds are declared packaging exclusions; unknown selected-target files remain available for rejection.
+Before-pack source verification also requires the original package-manifest byte hashes; semantic verification applies to normalized packaged manifests. `bun run update:mxc-pins` regenerates file hashes, semantic manifest fields and both native architectures deterministically from installed sources. `bun run check:mxc-pins` (`node scripts/update-mxc-pins.mjs --check`) fails on drift without rewriting pins. Missing optional target addons are staged from their separately verified archives into temporary sources and cleaned up; `--no-download` requires all sources locally. Archive, launcher and license trust anchors remain explicit review inputs. The required `build-and-test` CI job checks the generated pins and runs `check:mxc-packaging` for x64 and arm64, sharing a lock-keyed Windows runtime ZIP cache. The Windows native payload packaging job runs both targets under the containment launcher with a cached runtime download to cover the native-host collector path. Successful packaging checks delete their owned temporary trees, failures retain and report the exact path. Strict packaged inventory checks include the FFI, PTY and nested semver trees; unknown scripts, manifests, binaries and redirects fail closed. Retained source/declaration/license allowances are scoped by path and extension. Unused PTY local build/source directories and non-target prebuilds are declared packaging exclusions; unknown selected-target files remain available for rejection.
+
+Windows x64 preparation runs the launcher ownership and path-classification proofs and the sandbox helper checks. It publishes checked helpers and the interpreter mirror for the regular and tier shards, which also consume the build job's exact-tree plan. The eight regular shards use two workers each. Payload packaging, script tests, and the development build and boot smoke run in separate contained jobs alongside the matrices when preparation is selected. All three results feed the required `build-and-test` aggregate.
 
 The packaging regression uses the production dependency declarations and installed dependency graph, with production build configuration and the same locked dependency collector. A reduced graph with added root dependencies is insufficient: hoisting can keep a nested build dependency in that graph while moving it to the root in the application graph. The installed collector reproduces this relocation on macOS too; it is not established as an operating-system-specific omission. The check requires an installed nested PTY header tree before collection and its absence, including the hoisted root copy, in the assembled payload. Diagnostic-only entry/output, unsigned packaging and the focused SDK finalizer do not replace the full application hook or execute native code.
 
@@ -3934,8 +3941,12 @@ with its own owner rule:
   their counts per step, without paths. A mismatched object's ACE is left as
   it was, so a deny there stays fail-closed, and the next boot's ACL recovery
   handles leftovers.
-  A plugin or worker grant release is judged by the same status sets and exit
-  code. An unconfirmed one seals the session against further confinement until
+  Plugin and worker grant release and rollback require a successful native exit
+  and a cleanup result for every admitted volume serial and file ID. The
+  revoker uses the holder's ledger and locates moved grants by file ID. It
+  reports the identity only after verifying it on the ACL handle, including
+  after relocation. Missing, contradictory, or unverified results seal
+  the session against further confinement until
   the quit reset (in practice, until restart); confined children already
   running are not stopped.
   At the first helper preparation, the Windows sweep also reclaims partial copies

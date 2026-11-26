@@ -1,3 +1,4 @@
+import { approvalPresentationDenial, presentRemoteApprovalCard } from "../permissions/approval-presentation.js";
 // Verified button presses resolve through the same ApprovalGate checks as desktop decisions. Cards contain fixed host text and coarse tool IDs only;
 // callback tokens map to pending approvals in memory.
 import { randomBytes } from "node:crypto";
@@ -198,7 +199,7 @@ export function createTelegramRemoteApprovalCoordinator(
 
   const observer: PendingApprovalObserver = {
     onPending: (view) => {
-      if (disposed) return;
+      if (disposed || approvalPresentationDenial()) return;
       const offer = remoteApprovalOffer(view);
       if (offer === null) return;
       let chatId: string | null;
@@ -239,9 +240,12 @@ export function createTelegramRemoteApprovalCoordinator(
           : shown < rows.length && index === shown - 1
             ? CARD_TEXT.promptRowLast(card.toolIdentifier, index + 1, rows.length, rows.length - shown)
             : CARD_TEXT.promptRow(card.toolIdentifier, index + 1, rows.length);
-        void client
-          .sendDecisionCard(card.chatId, prompt, buttons)
-          .then((result) => {
+        const sent = presentRemoteApprovalCard(client, card.chatId, prompt, buttons);
+        if (!sent) {
+          forgetCard(card);
+          continue;
+        }
+        void sent.then((result) => {
             if (!result.ok) {
               // An unsent card must not keep live tokens: a press can only arrive for a card that exists on the owner's screen.
               forgetCard(card);
