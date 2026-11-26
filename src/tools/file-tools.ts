@@ -778,7 +778,7 @@ export class ViewImageTool extends FileTool<typeof ViewImageInputSchema> {
         cwd: ctx.cwd, extraAllowedDirectories: [...ctx.extraAllowedDirectories],
         blockReadsOutsideWorkingDirectories: ctx.blockReadsOutsideWorkingDirectories === true,
       }, { maxBytes: input.maxBytes, maxDimension: input.maxDimension }, ctx.abortSignal, ctx.fileTargetSeal, ctx.imageTargetPath);
-      ctx.fileTargetSeal?.verify();
+      if (process.platform === "win32") ctx.fileTargetSeal?.verify();
       const { data, ...details } = prepared;
       return {
         output: JSON.stringify({ path: target, ...details, loaded: true }),

@@ -72,7 +72,11 @@ if (!adoptParentHostResources()) {
         return requireAuthorizedPath(localFs.realpathNative(admitLocalRoute(request.path).verdict));
       }) : requireAuthorizedPath(await realpath(request.path));
       const bytes = await readImageInput(judged, new AbortController().signal);
-      process.stdout.write(JSON.stringify({ ok: true, image: await normalizeImage(bytes, request.options) }));
+      const image = await normalizeImage(bytes, request.options);
+      if (process.platform !== "win32" && "expectedPath" in request && await realpath(request.path) !== request.expectedPath) {
+        throw new TargetIdentityChangedError();
+      }
+      process.stdout.write(JSON.stringify({ ok: true, image }));
     }
   } catch (error) {
     process.stdout.write(JSON.stringify({ ok: false, error: `invalid-image: ${errorMessage(error).slice(0, 2048)}` }));

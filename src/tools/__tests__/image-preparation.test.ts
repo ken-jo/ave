@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import sharp from "sharp";
 import { buildImagePreparationEntry, imageFixturePath } from "../../__tests__/support/image-preparation-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { AuditLogger } from "../../audit/audit-logger.js";
 import { buildMainBoundaryBundle, childBundleDir, repositoryRoot } from "../../plugins/isolation/__tests__/child-entry-bundle.js";
 import { IMAGE_PREPARATION_POLICY, ImagePreparationOptionsSchema, ImagePreparationRequestSchema, type ImagePreparationOptions } from "../../shared/image-preparation-policy.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -15,7 +16,11 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { projectSubscriptionImageHistory } from "../../main/subscription-image-history.js";
 import { MAX_ACP_SUBSCRIPTION_IMAGE_BYTES } from "../../main/acp-subscription-session-client.js";
 import type { GenericMessage } from "../../engine/llm/types.js";
+import { PermissionManager } from "../../permissions/permission-manager.js";
 import { sealTargets } from "../../permissions/target-seal.js";
+import { ToolExecutor } from "../executor.js";
+import { ViewImageTool } from "../file-tools.js";
+import { ToolRegistry } from "../registry.js";
 
 const runtime = vi.hoisted(() => ({ directory: "" }));
 vi.mock("../../main/main-paths.js", async (original) => ({
@@ -271,6 +276,69 @@ describe("bounded image preparation", () => {
     expect(hostLookup.mock.calls.filter(([operand]) => operand === path)).toEqual([]);
     expect(diagnostics).toContain("lookup-stalled");
     expect(closed).toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32")("cancels a sealed image invocation during its final native lookup", async () => {
+    const path = imageFixturePath("grid.png");
+    const expectedPath = realpathSync.native(path);
+    const preload = join(directory, "stall-final-realpath.mjs");
+    await writeFile(preload, `
+      import fs from "node:fs/promises";
+      import { syncBuiltinESMExports } from "node:module";
+      const realpath = fs.realpath;
+      let lookups = 0;
+      fs.realpath = async (path, ...args) => {
+        if (path === ${JSON.stringify(path)} && ++lookups === 2) {
+          process.stderr.write("final-lookup-stalled");
+          await new Promise(() => { setInterval(() => {}, 1000); });
+        }
+        return realpath(path, ...args);
+      };
+      syncBuiltinESMExports();
+    `);
+    const controller = new AbortController();
+    const hostLookup = vi.spyOn(realpathSync, "native");
+    const spawn = managed.spawnManaged;
+    let request: unknown;
+    let lookupCountAtSpawn = 0;
+    let closed = false;
+    let diagnostics = "";
+    vi.spyOn(managed, "spawnManaged").mockImplementationOnce((program, args, ...options) => {
+      request = JSON.parse(args[1]!);
+      lookupCountAtSpawn = hostLookup.mock.calls.filter(([operand]) => operand === path).length;
+      const child = spawn(program, ["--import", pathToFileURL(preload).href, ...args], ...options);
+      child.stderr?.on("data", (chunk: Buffer) => {
+        diagnostics += chunk.toString();
+        if (diagnostics.includes("final-lookup-stalled")) controller.abort();
+      });
+      child.once("close", () => { closed = true; });
+      return child;
+    });
+
+    const tool = new ViewImageTool();
+    const registry = new ToolRegistry();
+    registry.register(tool);
+    const permissions = new PermissionManager(join(directory, "image-permissions.json"));
+    permissions.setMode("allow");
+    const audit = new AuditLogger(join(directory, "image-audit"));
+    try {
+      const executor = new ToolExecutor(registry, undefined, permissions, undefined, undefined, undefined, audit);
+      const [result] = await executor.executeAll([{ id: "sealed-image", name: tool.name, input: { path } }], {
+        executionCwd: repositoryRoot(),
+        sessionId: "sealed-image",
+        permissionContext: { trustOrigin: "llm-tool-arg", approvalSurface: "unavailable" },
+        abortSignal: controller.signal,
+      });
+
+      expect(request).toMatchObject({ path, expectedPath });
+      expect(hostLookup.mock.calls.filter(([operand]) => operand === path)).toHaveLength(lookupCountAtSpawn);
+      expect(diagnostics).toContain("final-lookup-stalled");
+      expect(result).toMatchObject({ is_error: true, content: expect.stringMatching(/cancelled/i) });
+      expect(result).not.toHaveProperty("image");
+      expect(closed).toBe(true);
+    } finally {
+      await audit.close();
+    }
   });
 
   it("waits for child termination on cancellation, then admits a queued request", async () => {
