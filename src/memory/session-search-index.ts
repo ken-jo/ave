@@ -101,7 +101,7 @@ function ensureDirSync(dir: string): void {
 
 export type SessionSearchIndexPolicy = "enabled" | "enabled-with-recovery" | "inactive" | "paused";
 
-/** With `refreshSearchIndexPolicy`, database work needs the policy a refresh returns for that operation; the synchronous read then only decides whether a skipped write is recorded for repair. */
+/** Database work uses the refreshed policy when the source supplies one. */
 export interface SessionSearchIndexPolicySource {
   readonly getSearchIndexPolicy?: () => SessionSearchIndexPolicy;
   readonly refreshSearchIndexPolicy?: () => Promise<() => SessionSearchIndexPolicy>;
@@ -224,22 +224,29 @@ export class SessionSearchIndex {
   }
 
   // Index maintenance must never block source transcript persistence.
-  upsertSession(input: IndexedSessionInput): void {
-    if (!this.db) return;
+  upsertSession(input: IndexedSessionInput): boolean {
+    const db = this.db;
+    if (!db) return false;
     try {
-      this.db.prepare("DELETE FROM sessions_fts WHERE sessionId = ?").run(input.sessionId);
-      insertSessionRow(this.db.prepare(INSERT_SESSION_ROW), input);
+      db.transaction(() => {
+        db.prepare("DELETE FROM sessions_fts WHERE sessionId = ?").run(input.sessionId);
+        insertSessionRow(db.prepare(INSERT_SESSION_ROW), input);
+      })();
+      return true;
     } catch (err) {
       log.warn("upsertSession failed for %s: %s", input.sessionId, (err as Error).message);
+      return false;
     }
   }
 
-  deleteSession(sessionId: string): void {
-    if (!this.db) return;
+  deleteSession(sessionId: string): boolean {
+    if (!this.db) return false;
     try {
       this.db.prepare("DELETE FROM sessions_fts WHERE sessionId = ?").run(sessionId);
+      return true;
     } catch (err) {
       log.warn("deleteSession failed for %s: %s", sessionId, (err as Error).message);
+      return false;
     }
   }
 
