@@ -89,7 +89,7 @@ export async function simulatedWindowsPathFacts(actual: typeof PathFacts, native
               child.once("error", () => resolve({ kind: "unconfirmed" }));
             });
             return { verdict, stop: () => { child.kill(); return verdict; } };
-          }, isHeld: () => true, release() {} },
+          }, isHeld: () => true, async release() {} },
     pinWindowsPaths: paths => process.platform !== "win32"
       ? actual.pinWindowsPaths(paths) : paths.map(walked),
     readWindowsDacls: (paths, options) => process.platform !== "win32"

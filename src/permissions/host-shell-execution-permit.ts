@@ -300,8 +300,8 @@ export interface HostShellSpawnDirectoryHold {
   readonly stdio: HeldWindowsDirectory["stdio"] | undefined;
   /** Keep the hold for this started launcher and return its run; undefined without a hold. */
   bind(child: ChildProcess): HeldWindowsRun | undefined;
-  /** Release now unless a child was bound. */
-  dispose(): void;
+  /** Wait for release unless a child owns the hold. */
+  dispose(): void | Promise<void>;
 }
 
 const NO_DIRECTORY_HOLD: HostShellSpawnDirectoryHold = Object.freeze({
@@ -327,10 +327,11 @@ export async function holdHostShellSpawnDirectory(authorization: HostShellSpawnA
     launcherArgs: held.launcherArgs,
     stdio: held.stdio,
     bind(child) {
+      const run = held.bind(child);
       bound = true;
-      return held.bind(child);
+      return run;
     },
-    dispose() { if (!bound) held.release(); },
+    dispose() { if (!bound) return held.release(); },
   };
 }
 
@@ -356,7 +357,7 @@ export async function withHostShellExecutionHandoff<T>(
       if (record !== undefined) hold = await holdHostShellSpawnDirectory(authorization);
     });
   } finally {
-    hold?.dispose();
+    await hold?.dispose();
   }
 }
 

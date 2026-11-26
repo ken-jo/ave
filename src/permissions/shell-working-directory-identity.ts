@@ -87,7 +87,7 @@ export async function pinShellWorkingDirectory(identity: ShellWorkingDirectoryId
   const { facts } = held;
   if (!facts.directory || facts.volumeSerial === null || facts.fileId === null ||
     BigInt(facts.volumeSerial) !== identity.dev || BigInt(facts.fileId) !== identity.ino) {
-    held.release();
+    await held.release();
     return undefined;
   }
   return held;

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Duplex } from "node:stream";
@@ -137,6 +137,33 @@ describe.runIf(process.platform === "win32")("host shell spawn directory hold", 
   it("releases on dispose when no launcher was bound", async () => {
     (await holdLeaf()).dispose();
     await vi.waitFor(() => expect(refused(() => renameSync(leaf, join(parent, "moved")))).toBeUndefined());
+  });
+
+  it.each(["dispose", "verdict"] as const)("allows immediate cwd removal after %s", async (completion) => {
+    const held = await holdLeaf();
+    const [helper] = helpers.spawned.slice(-1);
+    const stdin = helper?.stdin;
+    if (helper === undefined || stdin == null) throw new Error("No hold helper input");
+    const closed = new Promise<void>(resolve => helper.once("close", () => resolve()));
+    const terminate = helper.kill.bind(helper);
+    const closeInput = stdin.destroy.bind(stdin);
+    // Keep the native handles alive until the event loop can report the helper's exit.
+    const destroy = vi.spyOn(stdin, "destroy").mockReturnValue(stdin);
+    const kill = vi.spyOn(helper, "kill").mockImplementation(() => {
+      setImmediate(() => { closeInput(); terminate(); });
+      return true;
+    });
+    try {
+      if (completion === "dispose") await held.dispose();
+      else expect(await launch(held, "").run.verdict).toEqual({ kind: "ok", stopped: false });
+      rmSync(leaf, { recursive: true });
+    } finally {
+      destroy.mockRestore();
+      kill.mockRestore();
+      closeInput();
+      terminate();
+      await closed;
+    }
   });
 
   it("refuses a directory replaced at the approved path", async () => {

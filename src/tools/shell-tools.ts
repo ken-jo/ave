@@ -3003,7 +3003,7 @@ export async function spawnWithSandbox(
       })().catch(fault);
     }, fault);
   });
-  } finally { releaseClaim(); cwdHold?.dispose(); }
+  } finally { releaseClaim(); await cwdHold?.dispose(); }
 }
 
 function directoryHoldRefusal(error: unknown): HostShellDirectoryHoldError {
@@ -4416,7 +4416,7 @@ async function spawnPowerShellWithSandbox(
       })().catch(fault);
     }, fault);
   });
-  } finally { cwdHold.dispose(); }
+  } finally { await cwdHold.dispose(); }
 }
 
 /**

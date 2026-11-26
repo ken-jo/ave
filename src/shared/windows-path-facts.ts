@@ -264,8 +264,8 @@ export interface HeldWindowsDirectory {
   bind(launcher: ChildProcess): HeldWindowsRun;
   /** False once the helper that owns the handles has exited or failed, or after `release`. */
   isHeld(): boolean;
-  /** Idempotent. */
-  release(): void;
+  /** Idempotent. Resolves once the helper has closed its handles. */
+  release(): Promise<void>;
 }
 
 const HOLD_VERDICT_LIMIT = 64;
@@ -283,18 +283,20 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     return Promise.resolve(undefined);
   }
   const channel = child.stdio[3] as Duplex;
+  const closed = new Promise<void>(resolve => child.once("close", () => resolve()));
   let settled = false;
   let released = false;
   let lost = false;
   let run: HeldWindowsRun | undefined;
   let onLost: (() => void) | undefined;
-  const release = (): void => {
-    if (released) return;
+  const release = (): Promise<void> => {
+    if (released) return closed;
     released = true;
     child.stdin?.destroy();
     channel.destroy();
     child.kill();
     onLost?.();
+    return closed;
   };
   const bind = (launcher: ChildProcess): HeldWindowsRun => {
     if (run !== undefined) throw new Error("The working directory hold already has a launcher");
@@ -308,8 +310,7 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
         done = true;
         clearTimeout(deadline);
         for (const stream of launcher.stdio) stream?.destroy();
-        release();
-        resolve(result);
+        void release().then(() => resolve(result));
       };
     });
     const stop = (): Promise<WindowsHoldVerdict> => {
@@ -383,9 +384,10 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
       clearTimeout(timer);
       if (result === undefined) {
         child.stdout?.destroy();
-        release();
+        void release().then(() => resolve(undefined));
+      } else {
+        resolve(result);
       }
-      resolve(result);
     };
     const failed = (): void => {
       if (!settled) { settle(undefined); return; }

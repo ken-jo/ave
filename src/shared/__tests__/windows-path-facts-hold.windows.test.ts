@@ -24,7 +24,13 @@ class FakeHelper extends EventEmitter {
   readonly pid = 4242;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
-  readonly kill = vi.fn(() => true);
+  readonly kill = vi.fn(() => { this.exit(1); return true; });
+
+  exit(code: number): void {
+    this.exitCode = code;
+    this.emit("exit", code, null);
+    this.emit("close", code, null);
+  }
 }
 
 class FakeLauncher extends EventEmitter {
@@ -98,7 +104,7 @@ describe.runIf(process.platform === "win32")("Windows directory hold helper prot
     expect(held?.isHeld()).toBe(true);
     expect(vi.mocked(spawn).mock.calls[0]?.[1]).toEqual(["--hold", root]);
     expect(held?.launcherArgs).toEqual(["--hold"]);
-    helper().emit("exit", 1, null);
+    helper().exit(1);
     expect(held?.isHeld()).toBe(false);
   });
 
@@ -106,9 +112,9 @@ describe.runIf(process.platform === "win32")("Windows directory hold helper prot
     const pending = holdWindowsDirectory(root);
     helper().stdout.write(`${row}\n`);
     const held = await pending;
-    held?.release();
-    held?.release();
-    helper().emit("exit", 1, null);
+    const released = held?.release();
+    expect(held?.release()).toBe(released);
+    await released;
     expect(held?.isHeld()).toBe(false);
     expect(helper().kill).toHaveBeenCalledOnce();
   });
@@ -124,7 +130,7 @@ describe.runIf(process.platform === "win32")("Windows directory hold helper prot
 
   it.each([
     ["an asynchronous spawn error", (child: FakeHelper) => child.emit("error", new Error("spawn failed"))],
-    ["an exit before the reply", (child: FakeHelper) => child.emit("exit", 4, null)],
+    ["an exit before the reply", (child: FakeHelper) => child.exit(4)],
     ["malformed output", (child: FakeHelper) => child.stdout.write("not a facts row\n")],
     ["a stdout stream error", (child: FakeHelper) => child.stdout.destroy(new Error("pipe broke"))],
   ])("refuses %s", async (_name, fail) => {
@@ -218,7 +224,7 @@ describe.runIf(process.platform === "win32")("Windows directory hold helper prot
       const { launcher, run } = await start();
       launcher.report.write("AVJ1 ok 0 0\n");
       expect(await pendingStill(run.verdict)).toBe(true);
-      helper().emit("exit", 1, null);
+      helper().exit(1);
       expect(await pendingStill(run.verdict)).toBe(true);
       // The helper's exit is a stop request to the launcher, never a verdict of its own.
       expect(launcher.stdin.destroyed).toBe(true);
@@ -286,7 +292,7 @@ describe.runIf(process.platform === "win32")("Windows directory hold helper prot
       const pending = holdWindowsDirectory(root);
       helper().stdout.write(`${row}\n`);
       const held = await pending;
-      helper().emit("exit", 1, null);
+      helper().exit(1);
       const launcher = new FakeLauncher();
       const run = held?.bind(launcher as unknown as ChildProcess);
       expect(launcher.stdin.destroyed).toBe(true);

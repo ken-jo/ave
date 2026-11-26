@@ -5,7 +5,7 @@ import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { analysisLimitAnswer } from "../../__tests__/support/permission-lane.js";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
@@ -391,7 +391,11 @@ describe("shell confinement and escape rules", () => {
   });
 });
 
-function executorWithDock(options: { executionMode?: "host" | "sandbox"; headless?: boolean } = {}) {
+function executorWithDock(options: {
+  executionMode?: "host" | "sandbox";
+  headless?: boolean;
+  answer?: () => "allow-once" | "deny-once";
+} = {}) {
   const registry = new ToolRegistry();
   registry.register(new BashTool());
   const requests: ApprovalRequest[] = [];
@@ -399,7 +403,7 @@ function executorWithDock(options: { executionMode?: "host" | "sandbox"; headles
   const send = vi.fn((channel: string, request: ApprovalRequest) => {
     if (channel !== "ave:approval:request") return;
     requests.push(request);
-    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, nativeWebContents as never);
+    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: options.answer?.() ?? "allow-once", nonce: request.nonce, hmac: request.hmac }, nativeWebContents as never);
   });
   const nativeWebContents = { isDestroyed: () => false, send };
   gate = new ApprovalGate(nativeWebContents as never);
@@ -508,6 +512,23 @@ describe("plain-shell invocation authorization", () => {
     expect((await run())[0]).toMatchObject({ content: "ready" });
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ allowedChoices: ["allow-once", "deny-once"] });
+    rmSync(dir, { recursive: true });
+  });
+
+  it.each(["host", "sandbox"] as const)("leaves the cwd removable while asking and after denial (%s)", async (executionMode) => {
+    __resetActiveSandboxCapabilityForTest();
+    const answer = vi.fn(() => {
+      const moved = join(root, "moved-project");
+      renameSync(dir, moved);
+      renameSync(moved, dir);
+      return "deny-once" as const;
+    });
+    const { run, requests } = executorWithDock({ executionMode, answer });
+    expect((await run())[0]).toMatchObject({ is_error: true });
+    expect(requests).toHaveLength(1);
+    expect(answer).toHaveBeenCalledOnce();
+    expect(answer).toHaveReturnedWith("deny-once");
+    rmSync(dir, { recursive: true });
   });
 
   function lowReviewer() {
@@ -531,6 +552,7 @@ describe("plain-shell invocation authorization", () => {
       expect(requests[0]).toMatchObject({ allowedChoices: ["allow-once", "deny-once"],
         executionPlan: { mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true } });
     } finally { await cache.flush(); }
+    rmSync(dir, { recursive: true });
   });
 
   it("allows a low reviewer verdict to authorize an explicit host request", async () => {
