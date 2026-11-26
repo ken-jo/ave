@@ -30,11 +30,11 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", a
   const actual = await importOriginal<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>();
   return {
     ...actual,
-    expandWindowsFsPaths: (...args: Parameters<typeof actual.expandWindowsFsPaths>) => {
+    expandWindowsFsPaths: vi.fn((...args: Parameters<typeof actual.expandWindowsFsPaths>) => {
       const expanded = actual.expandWindowsFsPaths(...args);
       if (expanded.length > 0) expansion.after?.();
       return expanded;
-    },
+    }),
   };
 });
 
@@ -255,7 +255,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
   });
 
   it("accepts only plain drive paths as stamp literals", async () => {
-    const { isPlainWindowsStampPath } = await import("../windows-stamp-targets.js");
+    const { isPlainWindowsStampPath } = await import("../../shared/windows-path-spelling.js");
     const accepted = ["C:\\", "C:\\fixture\\leaf", "C:\\fixture\\dir\\", "D:\\a b\\c.d", "C:\\fixture\\.git", "C:\\fixture\\CONSOLE"];
     const refused = [
       "C:\\fixture\\*.secret", "C:\\fixture\\leaf?", // r1: glob re-expansion
@@ -312,8 +312,171 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     vi.stubEnv("USERPROFILE", profile);
     vi.stubEnv("HOME", profile);
     for (const path of ["~/leaf", "%USERPROFILE%\\leaf", "%USERPROFILE%\\*.txt"]) {
-      expect(() => pinWindowsFilesystemConfig({ [list]: [path] })).toThrow(/filesystem-expansion-glob/);
+      expect(() => pinWindowsFilesystemConfig({ [list]: [path] })).toThrow(
+        /^filesystem-expansion-glob: USERPROFILE value contains glob characters\. Use the explicit absolute path without a wildcard\.$/,
+      );
     }
+  });
+
+  const homeRefs = ["%USERPROFILE%", "%HOMEDRIVE%%HOMEPATH%"];
+
+  describe.each(["[home]", "a*b", "a?b"])("Windows profile glob characters in %s", component => {
+    it.each([
+      ["%USERPROFILE%", "USERPROFILE"],
+      ["%HOMEDRIVE%%HOMEPATH%", "HOMEPATH"],
+    ])("refuses %s before pinning or enumeration", async (homeRef, variable) => {
+      const profile = join(scratch(), "alice", component);
+      vi.stubEnv("USERPROFILE", profile);
+      vi.stubEnv("HOME", profile);
+      const facts = await import("../../shared/windows-path-facts.js");
+      const { buildSandboxConfig } = await import("../asrt-sandbox.js");
+      const pin = vi.spyOn(facts, "pinWindowsPaths");
+      const enumerate = vi.mocked(expandWindowsFsPaths).mockClear();
+
+      expect(() => buildSandboxConfig({ allowWrite: [`${homeRef}\\*`] }))
+        .toThrow(new Error(`filesystem-expansion-glob: ${variable} value contains glob characters. Use the explicit absolute path without a wildcard.`));
+      expect(pin).not.toHaveBeenCalled();
+      expect(enumerate).not.toHaveBeenCalled();
+    });
+  });
+
+  it("admits the explicit absolute path when a profile reference introduces brackets", async () => {
+    const profile = join(scratch(), "alice", "[home]");
+    mkdirSync(profile, { recursive: true });
+    const fixture = join(profile, "open.stamp-fixture");
+    writeFileSync(fixture, "");
+    vi.stubEnv("USERPROFILE", profile);
+    const { buildSandboxConfig } = await import("../asrt-sandbox.js");
+
+    expect(() => buildSandboxConfig({ allowWrite: ["%USERPROFILE%\\open.stamp-fixture"] })).toThrow(
+      /^filesystem-expansion-glob: USERPROFILE value contains glob characters\. Use the explicit absolute path without a wildcard\.$/,
+    );
+    expect(runtimeAllowWrite(buildSandboxConfig({ allowWrite: [fixture] }).filesystem)).toContain(fixture);
+  });
+
+  it("explains glob syntax before a Windows profile reference", async () => {
+    vi.stubEnv("USERPROFILE", join(scratch(), "alice"));
+    const { buildSandboxConfig } = await import("../asrt-sandbox.js");
+
+    expect(() => buildSandboxConfig({ allowWrite: ["*\\%USERPROFILE%\\leaf"] })).toThrow(
+      /^filesystem-expansion-glob: Glob characters appear before a profile reference in the grant\. Put the reference before any glob characters\.$/,
+    );
+  });
+
+  describe.each(["a$&b", "$1$$data"])("literal Windows home component %s", component => {
+    let profile: string;
+
+    beforeEach(() => {
+      profile = join(scratch(), "alice", component);
+      mkdirSync(profile, { recursive: true });
+      vi.stubEnv("USERPROFILE", profile);
+      vi.stubEnv("HOME", profile);
+    });
+
+    it.each(homeRefs)("checks and pins the home spelled as %s", async homeRef => {
+      const facts = await import("../../shared/windows-path-facts.js");
+      const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
+      const check = vi.spyOn(facts, "pinWindowsPaths");
+      const pinned = pinWindowsFilesystemConfig({ allowRead: [homeRef] });
+
+      expect(check).toHaveBeenNthCalledWith(1, [profile]);
+      expect(pinned.allowRead).toEqual([{ path: profile, literal: true }]);
+    });
+
+    it.each(homeRefs)("checks the requested write breadth under %s", async homeRef => {
+      const { buildSandboxConfig } = await import("../asrt-sandbox.js");
+      const machineRoot = join(profile, "machine-root");
+      vi.stubEnv("ProgramData", machineRoot);
+      const grant = `${homeRef}\\*`;
+
+      expect(() => buildSandboxConfig({ allowWrite: [grant] }))
+        .toThrow(`Windows write grant ${grant} contains machine root ${machineRoot}`);
+    });
+  });
+
+  describe("single Windows grant expansion", () => {
+    let profile: string;
+    let match: string;
+
+    beforeEach(() => {
+      profile = join(scratch(), "alice", "a$$b");
+      match = join(profile, "ab.stamp-fixture");
+      mkdirSync(profile, { recursive: true });
+      writeFileSync(match, "");
+      vi.stubEnv("USERPROFILE", profile);
+      vi.stubEnv("HOME", profile);
+    });
+
+    it.each(homeRefs)("pins and enumerates %s from one expansion", async homeRef => {
+      const spelling = await import("../sandbox-path-spelling.js");
+      const facts = await import("../../shared/windows-path-facts.js");
+      const { buildSandboxConfig } = await import("../asrt-sandbox.js");
+      const expand = vi.spyOn(spelling, "expandWindowsEnvRefs");
+      const pin = vi.spyOn(facts, "pinWindowsPaths");
+      const enumerate = vi.mocked(expandWindowsFsPaths).mockClear();
+      const tail = "\\[ab]*?.stamp-fixture";
+      const request = homeRef + tail;
+
+      const config = buildSandboxConfig({ allowWrite: [request] });
+
+      expect(pin).toHaveBeenNthCalledWith(1, [profile]);
+      expect(enumerate).toHaveBeenCalledWith([profile + tail], { mode: "deny" });
+      expect(runtimeAllowWrite(config.filesystem)).toContain(match);
+      expect(expand.mock.calls.filter(([path]) => path === request)).toHaveLength(1);
+    });
+
+    it.each(homeRefs)("checks the original %s base after enumeration", async homeRef => {
+      const { buildSandboxConfig } = await import("../asrt-sandbox.js");
+      const request = homeRef + "\\*.stamp-fixture";
+      const machineRoot = join(profile, "machine-root");
+      const alternate = join(scratch(), "bob");
+      vi.stubEnv("ProgramData", machineRoot);
+      expansion.after = () => {
+        expansion.after = undefined;
+        vi.stubEnv("USERPROFILE", alternate);
+        vi.stubEnv("HOME", alternate);
+      };
+      try {
+        expect(() => buildSandboxConfig({ allowWrite: [request] }))
+          .toThrow(`Windows write grant ${request} contains machine root ${machineRoot}`);
+      } finally {
+        expansion.after = undefined;
+      }
+    });
+  });
+
+  describe("residual Windows home reference", () => {
+    let profile: string;
+
+    beforeEach(() => {
+      profile = join(scratch(), "alice", "a$$b", "%HOMEPATH%");
+      mkdirSync(profile, { recursive: true });
+      vi.stubEnv("USERPROFILE", profile);
+      vi.stubEnv("HOME", profile);
+    });
+
+    it.each(homeRefs)("refuses %s before pinning or enumeration", async homeRef => {
+      const facts = await import("../../shared/windows-path-facts.js");
+      const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
+      const pin = vi.spyOn(facts, "pinWindowsPaths");
+      const enumerate = vi.mocked(expandWindowsFsPaths).mockClear();
+
+      expect(() => pinWindowsFilesystemConfig({ allowRead: [`${homeRef}*`] }))
+        .toThrow(/percent sign after expansion/);
+      expect(pin).not.toHaveBeenCalled();
+      expect(enumerate).not.toHaveBeenCalled();
+    });
+
+    it.each(homeRefs)("refuses %s at write admission before pinning", async homeRef => {
+      const stampTargets = await import("../windows-stamp-targets.js");
+      const { buildSandboxConfig } = await import("../asrt-sandbox.js");
+      const pin = vi.spyOn(stampTargets, "pinWindowsGrantRequests");
+      vi.stubEnv("ProgramData", join(profile, "machine-root"));
+
+      expect(() => buildSandboxConfig({ allowWrite: [`${homeRef}*`] }))
+        .toThrow(/percent sign after expansion/);
+      expect(pin).not.toHaveBeenCalled();
+    });
   });
 
   it.each(["session", "per-command", "worker", "plugin-holder", "grant-holder", "bundled-holder"])("refuses machine-root writes at the %s policy entry", async producer => {
@@ -728,7 +891,8 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
       };
     });
     const grant = vi.spyOn(runtime, "grantWindowsAcl").mockImplementation(() => {});
-    vi.spyOn(runtime, "revokeWindowsAcl").mockReturnValue([{ path: realpathSync.native(existing), status: "revoked" }]);
+    const { canonical, objectIdentity } = observeWindowsGrantIdentity(existing);
+    vi.spyOn(runtime, "revokeWindowsAcl").mockReturnValue([{ path: canonical, status: "revoked", objectIdentity }]);
     const checked = vi.spyOn(homeGuard, "checkSandboxStampTargets");
     const held = await sandbox.grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, allowWrite: [join(alias, "*.stamp-fixture")] });
     expect(held.allowWrite).toEqual([realpathSync.native(existing)]);
