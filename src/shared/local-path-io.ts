@@ -14,11 +14,16 @@ import { classifyWindowsSpelling, normalizeWindowsPathSpelling, windowsVolumeRoo
  */
 
 class Decision {
-  readonly drives = new Map<string, DriveIdentity | { error: unknown }>();
+  readonly drives = new Map<string, DriveIdentity>();
+  failure?: { error: unknown };
   readonly memos = new Map<object, Map<string, unknown>>();
   // A decision opened by a single lookup outside any running decision; it serves only the synchronous run that opened it.
   open = true;
   constructor(readonly detached = false) {}
+
+  assertUsable(): void {
+    if (this.failure !== undefined) throw this.failure.error;
+  }
 }
 
 let active: Decision | undefined;
@@ -37,11 +42,12 @@ export function openLocalityDecision(): LocalityDecision {
 export function withLocalityDecision<T>(fn: () => T, decision?: LocalityDecision): T {
   const chosen = decision ?? active ?? new Decision();
   if (!(chosen instanceof Decision)) throw new TypeError("Unknown locality decision");
-  if (chosen === active) return fn();
+  chosen.assertUsable();
   const previous = active;
   active = chosen;
   try {
     const result = fn();
+    chosen.assertUsable();
     if (typeof (result as { then?: unknown } | null)?.then === "function") throw new Error("A locality decision cannot span an await");
     return result;
   } finally {
@@ -67,7 +73,10 @@ export function createRunLocality(): () => LocalityDecision {
 }
 
 function currentDecision(): Decision {
-  if (active !== undefined) return active;
+  if (active !== undefined) {
+    active.assertUsable();
+    return active;
+  }
   const decision = new Decision(true);
   queueMicrotask(() => { decision.open = false; });
   return decision;
@@ -106,6 +115,7 @@ export interface LocalRoute {
 function use(verdict: LocalPathVerdict, route: boolean): string {
   const own = active === undefined ? verdict.decision.detached && verdict.decision.open : verdict.decision === active;
   if (!issued.has(verdict) || !own) throw new Error("Filesystem lookup without a verdict of this decision");
+  verdict.decision.assertUsable();
   if (route && !verdict.route) throw new Error("Filesystem lookup follows a name its verdict did not walk");
   return verdict.path;
 }
@@ -132,16 +142,17 @@ function refuseSpelling(path: string): string | undefined {
 }
 
 function driveIdentity(drive: string, decision: Decision): DriveIdentity {
+  decision.assertUsable();
   let identity = decision.drives.get(drive);
   if (identity === undefined) {
     try {
       identity = queryDriveIdentity(drive);
     } catch (error) {
-      identity = { error };
+      decision.failure = { error };
+      throw error;
     }
     decision.drives.set(drive, identity);
   }
-  if ("error" in identity) throw identity.error;
   return identity;
 }
 

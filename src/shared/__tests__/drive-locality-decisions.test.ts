@@ -11,7 +11,7 @@ import { LlmRiskClassifier, RuleBasedRiskClassifier, type LlmReviewerProvider } 
 import { derivePluginChildEnvelope } from "../../plugins/isolation/out-of-process-plugin.js";
 import { createPathCanonicalizer, createSensitivePathCheck } from "../../permissions/sensitive-paths.js";
 import { createFilePathPolicy } from "../../tools/file-access-policy.js";
-import { openLocalityDecision, withLocalityDecision } from "../local-path-io.js";
+import { admitLocalPath, localDriveExists, localFs, openLocalityDecision, withLocalityDecision } from "../local-path-io.js";
 import { resolveShellFilesystemPath, verifyLocalFilesystemChain } from "../shell-filesystem-path.js";
 import { modelShellPath } from "../shell-native-path.js";
 import { setWindowsDriveQueryForTest } from "../windows-drive-locality.js";
@@ -116,13 +116,40 @@ describe.runIf(process.platform === "win32")("drive locality is proven in each d
       .mockReturnValue(String.raw`\Device\HarddiskVolume1`);
     setWindowsDriveQueryForTest(query);
 
-    withLocalityDecision(() => {
+    expect(() => withLocalityDecision(() => {
       expect(() => verifyLocalFilesystemChain(path)).toThrow(failure);
       expect(() => verifyLocalFilesystemChain(path)).toThrow(failure);
-    });
+    })).toThrow(failure);
     expect(query.mock.calls).toEqual([[drive]]);
     expect(() => verifyLocalFilesystemChain(path)).not.toThrow();
     expect(query.mock.calls).toEqual([[drive], [drive]]);
+  });
+
+  it("refuses a whole judgment after a drive-query failure even when the operand catches it", () => {
+    const drive = root.slice(0, 2).toUpperCase();
+    const otherDrive = drive === "K:" ? "R:" : "K:";
+    const failure = new Error("Drive query returned an invalid mapping");
+    let fails = true;
+    const query = vi.fn((letter: string) => {
+      if (letter === otherDrive && fails) throw failure;
+      return "\\Device\\HarddiskVolume1";
+    });
+    setWindowsDriveQueryForTest(query);
+
+    expect(() => withLocalityDecision(() => {
+      const verdict = admitLocalPath(root);
+      expect(() => localDriveExists(otherDrive)).toThrow(failure);
+      expect(() => localDriveExists(drive)).toThrow(failure);
+      expect(() => localFs.lstat(verdict)).toThrow(failure);
+    })).toThrow(failure);
+    expect(query.mock.calls).toEqual([[drive], [otherDrive]]);
+
+    fails = false;
+    withLocalityDecision(() => {
+      expect(localDriveExists(drive)).toBe(true);
+      expect(localDriveExists(otherDrive)).toBe(true);
+    });
+    expect(query.mock.calls).toEqual([[drive], [otherDrive], [drive], [otherDrive]]);
   });
 
   it("rechecks relocated sensitivity anchors when reusing file policy after an await", async () => {
