@@ -4,6 +4,7 @@ import { matchesMcpToolApprovalMemory } from "../../shared/mcp-tool-approval.js"
 import { exactCanonicalStringify } from "../../shared/exact-json.js";
 import type { ToolSource, ToolCategory } from "../types.js";
 import type { PermissionCheckResult, PermissionManager } from "../../permissions/permission-manager.js";
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { JudgeContractError } from "../../permissions/judge/judge-contract.js";
 import type { ToolInvocationContext } from "../../permissions/reviewer/risk-classifier.js";
 import { RuleBasedRiskClassifier, maxVerdict } from "../../permissions/reviewer/risk-classifier.js";
@@ -135,7 +136,7 @@ export async function tryUserApprovalMemorySkip(
         context.trustOrigin, executionCwd, sessionId);
       if (readjudicated) {
         disclose?.({ toolName, scope: readjudicated.scope, verdictAtApproval: "medium" });
-        return { decision: "allow", reason: `prior human re-adjudication (scope=${readjudicated.scope})` };
+        return { decision: "allow", provenance: RULE_PROVENANCE, reason: `prior human re-adjudication (scope=${readjudicated.scope})` };
       }
     } catch {
       // No exact re-adjudication authority; any independent ordinary approval retains its existing checks below.
@@ -291,7 +292,7 @@ export async function tryUserApprovalMemorySkip(
     verdictAtApproval: approval.verdictAtApproval,
   });
   return {
-    decision: "allow",
+    decision: "allow", provenance: RULE_PROVENANCE,
     reason: `prior user approval (scope=${approval.scope})`,
     };
 }

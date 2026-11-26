@@ -115,7 +115,7 @@ describe("plugin filesystem identity precision", () => {
 
   it("revokes a directory grant when its file id changes above numeric precision", () => {
     identities.linked.set(root, LARGE_INO);
-    const grant = capturePluginSandboxGrant(root);
+    const grant = capturePluginSandboxGrant({ path: root, access: "write" });
     expect(grant.identity).toEqual({ dev: 11n, ino: LARGE_INO });
     expect(isPluginSandboxGrantCovered(grant, dirname(root), root)).toBe(true);
     identities.linked.set(root, LARGE_INO + 1n);

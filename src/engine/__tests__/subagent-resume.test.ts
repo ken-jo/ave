@@ -1,4 +1,5 @@
 // Resume rehydrates frozen history and scope; it never reauthorizes against the live parent registry.
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, existsSync, readdirSync,
 } from "node:fs";
@@ -281,12 +282,12 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     );
     permissionManager.checkDetailed = (toolName) => toolName === "resume_authorization_probe"
       ? {
-          decision: "ask",
+          decision: "ask", provenance: RULE_PROVENANCE,
           reason: "fixture requires local authorization",
           forceModal: true,
         }
       : {
-          decision: "allow",
+          decision: "allow", provenance: RULE_PROVENANCE,
           reason: "fixture allows setup read",
         };
     const provider = new ScriptedProvider([

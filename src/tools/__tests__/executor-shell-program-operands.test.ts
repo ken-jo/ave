@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +24,7 @@ async function invoke(command: string, decision: "allow" | "deny" = "allow") {
       execute,
     }));
     const permissions = new PermissionManager(join(root, "permissions.json"));
-    permissions.checkDetailed = () => ({ decision, reason: "program probe permission", });
+    permissions.checkDetailed = () => ({ decision, reason: "program probe permission", provenance: RULE_PROVENANCE });
     const executor = new ToolExecutor(registry, undefined, permissions, new BashAstValidator({ mode: "deny" }));
     const results = await executor.executeAll(
       [{ id: "program-probe", name: "shell_program_probe", input: { command } }],

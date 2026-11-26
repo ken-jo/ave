@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -435,7 +436,7 @@ describe("ConversationLoop authorization-required terminal", () => {
       join(temporaryDirectory, "permissions.json"),
     );
     permissionManager.checkDetailed = () => ({
-      decision: "allow",
+      decision: "allow", provenance: RULE_PROVENANCE,
       reason: "fixture pre-authorized spawn",
     });
     const loop = new ConversationLoop(makeBasicConversationLoopDeps({

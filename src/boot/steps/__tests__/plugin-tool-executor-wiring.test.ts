@@ -1,5 +1,8 @@
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BootContext } from "../../context.js";
+import { makeMockWebContents } from "../../../__tests__/test-helpers.js";
+import { IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../../permissions/approval-gate.js";
+import type { BootContext, ReadyBootContext } from "../../context.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { PluginRuntimeDetachedOperationError } from "../../../plugins/runtime/detached-operation.js";
 
@@ -12,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   revokePluginOperationAccount: vi.fn(),
   executeAll: vi.fn(),
   resolvePluginOperationAccount: vi.fn(),
+  revokePluginOperationSession: vi.fn(),
 }));
 
 vi.mock("electron", () => ({
@@ -32,6 +36,9 @@ vi.mock("../../../tools/executor.js", () => ({
     setSkillAdmissionCheck = vi.fn();
     revokePluginOperationAccount = mocks.revokePluginOperationAccount;
     executeAll = mocks.executeAll;
+    inspectPluginOperationGrant = vi.fn(() => ({ operation: "update", approvalArgs: {} }));
+    issueInspectedPluginOperationGrant = vi.fn(() => ({ token: "issued-token", grantId: "issued-grant" }));
+    revokePluginOperationSession = mocks.revokePluginOperationSession;
   },
 }));
 
@@ -58,7 +65,8 @@ vi.mock("../../../ipc/domains/permissions.js", () => ({
   broadcastPermissionConfigChanged: vi.fn(),
 }));
 
-vi.mock("../../../permissions/sandbox-capability.js", () => ({
+vi.mock("../../../permissions/sandbox-capability.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/sandbox-capability.js")>(),
   isActiveSandboxFilesystemContainedForPluginEffects: vi.fn(() => false),
 }));
 
@@ -77,6 +85,22 @@ import { setupPluginToolExecutor } from "../plugin-tool-executor.js";
 const pluginId = "sampleportal";
 const activeGenerationId = "generation-2";
 const predecessorGenerationId = "generation-1";
+
+// A real gate (from the current module graph, after vi.resetModules) whose card the test answers, so the decision carries the gate's record of who decided.
+async function answeringGate(choice: "allow-once" | "deny-once", answeredBy: "desk" | "platform-bridge" = "desk") {
+  const { ApprovalGate } = await import("../../../permissions/approval-gate.js");
+  const card = deferred<ApprovalRequest>();
+  const surface = makeMockWebContents();
+  surface.send.mockImplementation((channel: string, request: ApprovalRequest) => {
+    if (channel === IPC_APPROVAL_REQUEST) card.resolve(request);
+  });
+  const gate = new ApprovalGate(surface as never);
+  const answer = async () => {
+    const asked = await card.promise;
+    return gate.resolve(asked.id, { requestId: asked.id, choice, nonce: asked.nonce, hmac: asked.hmac }, answeredBy);
+  };
+  return { gate, answer };
+}
 
 function makeContext(options: {
   manifestTools?: unknown[];
@@ -420,6 +444,91 @@ describe("setupPluginToolExecutor production auth wiring", () => {
       invoke("auth_login", {}, invocationContext()),
     ).rejects.toThrow("plugin operation session is revoked");
   });
+
+  it("refuses a trusted-panel handler whose lease resolves after the shutdown seal", async () => {
+    vi.resetModules();
+    const { setupPluginToolExecutor: setup } = await import("../plugin-tool-executor.js");
+    const ledger = await import("../../../tools/invocation-ledger.js");
+    const ctx = makeContext();
+    const lease = deferred<void>();
+    const handler = vi.fn();
+    mocks.dispatchAppOnlyRuntimeInvocation.mockImplementation(async (...args: unknown[]) => {
+      await lease.promise;
+      (args[5] as (() => void) | undefined)?.();
+      handler();
+      return { refreshed: true };
+    });
+    await setup(ctx);
+    const invoke = ctx.lateBinding.pluginToolInvokerRef.fn;
+    if (!invoke) throw new Error("Plugin invoker missing");
+    const call = invoke("panel_refresh", {}, {
+      origin: "ui",
+      ownerPluginId: pluginId,
+      ownerGenerationId: activeGenerationId,
+      appInvocation: { surface: "trusted-panel", sessionId: "window-1" },
+    });
+    ledger.sealToolInvocations();
+    lease.resolve();
+    await expect(call).rejects.toThrow("application shutdown");
+    expect(handler).not.toHaveBeenCalled();
+    expect(ledger.pendingToolInvocationCount()).toBe(0);
+  });
+
+  it("refuses a trusted-panel handler admitted while the audit closes without failing the shutdown", async () => {
+    vi.resetModules();
+    const { setupPluginToolExecutor: setup } = await import("../plugin-tool-executor.js");
+    const ledger = await import("../../../tools/invocation-ledger.js");
+    const ctx = makeContext();
+    const handler = vi.fn();
+    mocks.dispatchAppOnlyRuntimeInvocation.mockImplementation(async () => { handler(); return { refreshed: true }; });
+    await setup(ctx);
+    const invoke = ctx.lateBinding.pluginToolInvokerRef.fn;
+    if (!invoke) throw new Error("Plugin invoker missing");
+    ledger.sealToolInvocations();
+    await expect(ledger.closeToolInvocationAudit(async () => {
+      await expect(invoke("panel_refresh", {}, {
+        origin: "ui",
+        ownerPluginId: pluginId,
+        ownerGenerationId: activeGenerationId,
+        appInvocation: { surface: "trusted-panel", sessionId: "window-1" },
+      })).rejects.toThrow("application shutdown");
+    })).resolves.toBe(0);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("releases the auth transition lease and invalidates the auth invocation when the seal refuses it", async () => {
+    vi.resetModules();
+    const { setupPluginToolExecutor: setup } = await import("../plugin-tool-executor.js");
+    const ledger = await import("../../../tools/invocation-ledger.js");
+    const ctx = makeContext();
+    mocks.beginPluginAuthInvocation.mockReturnValue({
+      epoch: 8,
+      accountTransitionScopeHash: "stable-account-scope",
+    });
+    await setup(ctx);
+    const invoke = ctx.lateBinding.pluginToolInvokerRef.fn;
+    if (!invoke) throw new Error("Plugin invoker missing");
+    ledger.sealToolInvocations();
+    await expect(invoke("auth_login", {}, {
+      ...invocationContext(),
+      appInvocation: { surface: "trusted-panel", sessionId: "window-1" },
+    })).rejects.toThrow("application shutdown");
+    expect(mocks.dispatchAppOnlyRuntimeInvocation).not.toHaveBeenCalled();
+    expect(mocks.invalidateFailedPluginAuthInvocation).toHaveBeenCalledWith(pluginId, activeGenerationId, 8);
+    const grants = ctx.pluginOperationGrants;
+    if (!grants) throw new Error("Plugin operation grants missing");
+    let acquired = false;
+    const next = grants.acquireAccountTransitionLease({
+      ownerPluginId: pluginId,
+      generationId: activeGenerationId,
+      appSessionId: "next-window",
+      accountScopeHash: "stable-account-scope",
+    }).then((lease) => { acquired = true; return lease; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(acquired).toBe(true);
+    (await next).release();
+    expect(ledger.pendingToolInvocationCount()).toBe(0);
+  });
 });
 
 /** The effective origin, including nested hops, selects interactive versus headless approval handling. */
@@ -511,4 +620,222 @@ describe("setupPluginToolExecutor approval lane by effective chain origin", () =
     expect(laneOfExecutorCall(0)).toBe(true);
     expect(laneOfExecutorCall(1)).toBe(true);
   });
+});
+
+it("writes a host-shutdown denial for a parked plugin operation grant before audit close", async () => {
+  // Each sealing case simulates its own process-wide ledger.
+  vi.resetModules();
+  const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");
+  const { assembleAppServices } = await import("../../assemble-services.js");
+  // The gate's host-decision markers live in its module, so it comes from the same fresh graph as the executor.
+  const { ApprovalGate } = await import("../../../permissions/approval-gate.js");
+  const ctx = makeContext();
+  const stop = () => {};
+  const card = deferred<void>();
+  const order: unknown[] = [];
+  const surface = makeMockWebContents();
+  surface.send.mockImplementation((channel: string) => {
+    if (channel === IPC_APPROVAL_REQUEST) card.resolve();
+  });
+  const approvalGate = new ApprovalGate(surface as never);
+  const generationLease = {
+    generation: { generationId: activeGenerationId, state: { runtime: { manifest: { version: "2.0.0" } } } },
+    release: vi.fn(),
+  };
+  mocks.resolvePluginOperationAccount.mockReturnValue({
+    accountScopeHash: "account-scope", accountHash: "account",
+  });
+  Object.assign(ctx, {
+    toolRegistry: { findByName: () => ({ category: "write" }) },
+    approvalGate,
+    bootAuditLogger: {
+      appendPermissionAuditEntry: async (row: unknown) => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        order.push(row);
+      },
+      close: async () => { order.push("close"); },
+    },
+    pluginBundleLifecycle: {
+      acquire: async () => generationLease,
+      runWithLease: async (_lease: unknown, run: () => Promise<unknown>) => run(),
+    },
+    disposeRefreshActiveLlmWildcard: stop,
+    memoryMaintenanceCoordinator: { stop },
+    memoryCaptureService: { stop },
+    preferenceRefreshService: { stop },
+    routinesScheduler: { stop },
+    alertsService: { stop },
+    conversationLoop: { abortCurrentTurn: stop },
+    sideChatConversationLoop: { abortCurrentTurn: stop },
+    paneChatLoops: { all: () => [] },
+    askUserQuestionGate: { disposeAll: stop },
+    mcpGovernance: { stopPolicyRefresh: stop },
+    mcpManager: { disconnectAll: async () => {} },
+    auditService: { stop },
+    tracing: { shutdown: async () => {} },
+  });
+  Object.assign(ctx.pluginRuntime, { getPluginAuthOperationAccount: () => undefined });
+  await setupPluginToolExecutor(ctx);
+  if (!ctx.requestPluginOperationGrant) throw new Error("Plugin grant handler missing");
+  const grant = ctx.requestPluginOperationGrant({
+    pluginId, toolName: "update_record", input: {}, appSessionId: "grant-window",
+  });
+  const result = Promise.allSettled([grant]);
+  await Promise.race([
+    card.promise,
+    result.then(([outcome]) => {
+      if (outcome.status === "rejected") throw outcome.reason;
+      throw new Error("Grant issued before the approval card opened");
+    }),
+  ]);
+  await expect(assembleAppServices(ctx as ReadyBootContext).shutdown?.()).resolves.toBeUndefined();
+  expect(await result).toMatchObject([{
+    status: "rejected", reason: expect.objectContaining({ message: expect.stringContaining("operation grant denied") }),
+  }]);
+  expect(order).toEqual([
+    expect.objectContaining({
+      decision: "deny",
+      denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-grant" }],
+      // No person answered the card the quit cancelled.
+      trustOrigin: "unknown",
+      pluginOperation: { pluginId, operation: "update", outcome: "denied" },
+    }),
+    "close",
+  ]);
+  expect(generationLease.release).toHaveBeenCalledOnce();
+});
+
+it("refuses a plugin operation grant requested after the audit closed without failing the shutdown", async () => {
+  vi.resetModules();
+  const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");
+  const ledger = await import("../../../tools/invocation-ledger.js");
+  const ctx = makeContext();
+  const acquire = vi.fn();
+  Object.assign(ctx, { pluginBundleLifecycle: { acquire, acquireExact: acquire, runWithLease: vi.fn() } });
+  await setupPluginToolExecutor(ctx);
+  const request = ctx.requestPluginOperationGrant;
+  if (!request) throw new Error("Plugin grant handler missing");
+  ledger.sealToolInvocations();
+  let outcome: PromiseSettledResult<unknown> | undefined;
+  await expect(ledger.closeToolInvocationAudit(async () => {
+    [outcome] = await Promise.allSettled([
+      request({ pluginId, toolName: "update_record", input: {}, appSessionId: "late-window" }),
+    ]);
+  })).resolves.toBe(0);
+  expect(outcome).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringContaining("application shutdown") }) });
+  expect(acquire).not.toHaveBeenCalled();
+});
+
+it("revokes an issued plugin operation grant instead of delivering it after the shutdown seal", async () => {
+  vi.resetModules();
+  const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");
+  const ledger = await import("../../../tools/invocation-ledger.js");
+  const ctx = makeContext();
+  const rows: Array<Record<string, unknown>> = [];
+  const { gate, answer } = await answeringGate("allow-once");
+  void answer();
+  mocks.resolvePluginOperationAccount.mockReturnValue({ accountScopeHash: "account-scope", accountHash: "account" });
+  Object.assign(ctx, {
+    toolRegistry: { findByName: () => ({ category: "write" }) },
+    approvalGate: gate,
+    bootAuditLogger: {
+      appendPermissionAuditEntry: async (row: Record<string, unknown>) => {
+        rows.push(row);
+        if ((row.pluginOperation as { outcome?: string } | undefined)?.outcome === "issued") ledger.sealToolInvocations();
+      },
+    },
+    pluginBundleLifecycle: {
+      acquire: async () => ({
+        generation: { generationId: activeGenerationId, state: { runtime: { manifest: { version: "2.0.0" } } } },
+        release: vi.fn(),
+      }),
+      runWithLease: async (_lease: unknown, run: () => Promise<unknown>) => run(),
+    },
+  });
+  Object.assign(ctx.pluginRuntime, { getPluginAuthOperationAccount: () => undefined });
+  await setupPluginToolExecutor(ctx);
+  if (!ctx.requestPluginOperationGrant) throw new Error("Plugin grant handler missing");
+  await expect(ctx.requestPluginOperationGrant({
+    pluginId, toolName: "update_record", input: {}, appSessionId: "grant-window",
+  })).rejects.toThrow("operation grant cancelled");
+  expect(mocks.revokePluginOperationSession).toHaveBeenCalledWith("grant-window");
+  expect(rows.map((row) => row.pluginOperation)).toEqual([
+    { pluginId, operation: "update", outcome: "issued", grantId: "issued-grant" },
+    { pluginId, operation: "update", outcome: "denied", grantId: "issued-grant" },
+  ]);
+  expect(rows[0]).toMatchObject({ decision: "allow", trustOrigin: "user-keyboard" });
+  expect(rows[1]).toMatchObject({ decision: "deny", denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-grant" }], trustOrigin: "unknown" });
+});
+
+it.each([
+  ["desk", "user-keyboard"],
+  ["platform-bridge", "platform-bridge"],
+] as const)("records a plugin operation grant denied from the %s with that answerer's origin", async (answeredBy, origin) => {
+  vi.resetModules();
+  const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");
+  const ctx = makeContext();
+  const rows: Array<Record<string, unknown>> = [];
+  const { gate, answer } = await answeringGate("deny-once", answeredBy);
+  void answer();
+  mocks.resolvePluginOperationAccount.mockReturnValue({ accountScopeHash: "account-scope", accountHash: "account" });
+  Object.assign(ctx, {
+    toolRegistry: { findByName: () => ({ category: "write" }) },
+    approvalGate: gate,
+    bootAuditLogger: { appendPermissionAuditEntry: async (row: Record<string, unknown>) => { rows.push(row); } },
+    pluginBundleLifecycle: {
+      acquire: async () => ({
+        generation: { generationId: activeGenerationId, state: { runtime: { manifest: { version: "2.0.0" } } } },
+        release: vi.fn(),
+      }),
+      runWithLease: async (_lease: unknown, run: () => Promise<unknown>) => run(),
+    },
+  });
+  Object.assign(ctx.pluginRuntime, { getPluginAuthOperationAccount: () => undefined });
+  await setupPluginToolExecutor(ctx);
+  if (!ctx.requestPluginOperationGrant) throw new Error("Plugin grant handler missing");
+  await expect(ctx.requestPluginOperationGrant({
+    pluginId, toolName: "update_record", input: {}, appSessionId: "grant-window",
+  })).rejects.toThrow("operation grant denied");
+  expect(rows).toEqual([expect.objectContaining({
+    decision: "deny",
+    denyReasons: [{ reason: "plugin operation grant denied by user", source: "plugin-operation-grant" }],
+    trustOrigin: origin,
+  })]);
+});
+
+it("keeps a user's grant denial when the seal lands before the handler resumes", async () => {
+  vi.resetModules();
+  const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");
+  const ledger = await import("../../../tools/invocation-ledger.js");
+  const ctx = makeContext();
+  const rows: Array<Record<string, unknown>> = [];
+  const { gate, answer } = await answeringGate("deny-once");
+  mocks.resolvePluginOperationAccount.mockReturnValue({ accountScopeHash: "account-scope", accountHash: "account" });
+  Object.assign(ctx, {
+    toolRegistry: { findByName: () => ({ category: "write" }) },
+    approvalGate: gate,
+    bootAuditLogger: { appendPermissionAuditEntry: async (row: Record<string, unknown>) => { rows.push(row); } },
+    pluginBundleLifecycle: {
+      acquire: async () => ({
+        generation: { generationId: activeGenerationId, state: { runtime: { manifest: { version: "2.0.0" } } } },
+        release: vi.fn(),
+      }),
+      runWithLease: async (_lease: unknown, run: () => Promise<unknown>) => run(),
+    },
+  });
+  Object.assign(ctx.pluginRuntime, { getPluginAuthOperationAccount: () => undefined });
+  await setupPluginToolExecutor(ctx);
+  if (!ctx.requestPluginOperationGrant) throw new Error("Plugin grant handler missing");
+  const grant = ctx.requestPluginOperationGrant({
+    pluginId, toolName: "update_record", input: {}, appSessionId: "grant-window",
+  });
+  // The person's answer settles the gate; the seal lands before the awaiting handler runs again.
+  expect((await answer())?.choice).toBe("deny-once");
+  ledger.sealToolInvocations();
+  await expect(grant).rejects.toThrow("operation grant denied");
+  expect(rows).toEqual([expect.objectContaining({
+    decision: "deny",
+    denyReasons: [{ reason: "plugin operation grant denied by user", source: "plugin-operation-grant" }],
+    trustOrigin: "user-keyboard",
+  })]);
 });

@@ -1,8 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { ConversationLoop, type ConversationLoopDeps } from "../conversation-loop.js";
 import { makeConversationLoopDeps } from "./conversation-loop-test-helpers.js";
-import { t } from "../../i18n/index.js";
+import { getLocale, setLocale, t } from "../../i18n/index.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 type PermissionCommandFn = (
   args: string,
@@ -65,6 +69,27 @@ describe("ConversationLoop.handlePermissionCommand", () => {
     const loop = makeLoop();
     const result = await callPermission(loop, "audit show");
     expect(result).toBe(t("be_conversationLoop.permissionAuditNoLogger"));
+  });
+
+  it("reports an integrity error in audit show for an invalid terminal kind", async () => {
+    const locale = getLocale();
+    setLocale("en");
+    onTestFinished(() => { setLocale(locale); });
+    const dir = mkdtempSync(join(tmpdir(), "ave-slash-audit-show-"));
+    onTestFinished(() => cleanupTmpDir(dir));
+    const row = { auditId: "invalid-row", decision: "deny", terminalKind: "refused" };
+    writeFileSync(join(dir, "2026-05-09.permission-audit.jsonl"), `${JSON.stringify(row)}\n`);
+    const auditLogger = {
+      getAuditDir: () => dir,
+      getPermissionAuditSecret: () => null,
+      getPermissionAuditSealStore: () => null,
+      isPermissionAuditChainReady: () => false,
+    } as unknown as ConversationLoopDeps["auditLogger"];
+
+    const result = await callPermission(makeLoop({ auditLogger }), "audit show");
+    expect(result).toContain("Audit latest 0");
+    expect(result).toContain("Integrity error: invalid terminal kind in audit entries (1)");
+    expect(result).not.toContain("invalid-row");
   });
 
   it("rules add persists an allow rule, re-syncs visibility deny rules, and echoes the rule", async () => {

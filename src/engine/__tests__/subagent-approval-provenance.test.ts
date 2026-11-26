@@ -1,5 +1,6 @@
 // Only the host may attach child provenance from a tracked run; runs without a local parent get none.
 import { describe, it, expect, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import {
   buildSubAgentApprovalProvenanceForTest as buildSubAgentApprovalProvenance,
   makeSubAgentApprovalAdapter,
@@ -159,10 +160,7 @@ describe("sub-agent approval adapter", () => {
   });
 
   function makeBase() {
-    const requestAndWait = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "allow-once" as const,
-    }));
+    const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }));
     return { requestAndWait } as unknown as ApprovalGate & {
       requestAndWait: ReturnType<typeof vi.fn>;
     };

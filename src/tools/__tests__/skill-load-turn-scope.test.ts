@@ -1,4 +1,5 @@
 // Plugin skill loading uses the same turn authority as plugin tools (docs/development/README.md#skill-loading-policy).
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { describe, it, expect, vi } from "vitest";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -52,7 +53,7 @@ function skillLoadHarness() {
   const permissionManager = new PermissionManager("/tmp/nonexistent-permissions.json");
   // Allow later permission layers so only the earlier turn-scope gate can refuse.
   permissionManager.checkDetailed = () => ({
-    decision: "allow",
+    decision: "allow", provenance: RULE_PROVENANCE,
     reason: "would otherwise allow",
     });
   const executor = new ToolExecutor(

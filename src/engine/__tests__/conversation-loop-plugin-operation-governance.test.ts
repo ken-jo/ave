@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -76,7 +77,7 @@ describe("ConversationLoop plugin operation governance", () => {
     const permissionManager =
       new PermissionManager("/tmp/nonexistent-conversation-operation-governance.json");
     permissionManager.checkDetailed = () => ({
-      decision: "allow",
+      decision: "allow", provenance: RULE_PROVENANCE,
       reason: "test",
     });
     const { generationAccess, release } = admittedHostGeneration(pluginId, generationId);

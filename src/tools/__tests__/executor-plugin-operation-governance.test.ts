@@ -1,5 +1,6 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -14,11 +15,15 @@ import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { runWithInvocationOrigin } from "../../plugins/runtime/origin-chain.js";
 import { currentEffectLedger } from "../../permissions/effect-ledger.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { HostExitAbortError } from "../../shared/host-exit-abort.js";
 import { createDynamicTool } from "../base.js";
 import { ToolExecutor } from "../executor.js";
+import { closeToolInvocationAudit, pendingToolInvocationCount, sealToolInvocations } from "../invocation-ledger.js";
 import { ToolRegistry } from "../registry.js";
 import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
 import type { HostPluginGenerationState } from "../../plugins/plugin-host-generation.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+import { AuditLogger } from "../../audit/audit-logger.js";
 
 const principal = {
   ownerPluginId: "sampleportal",
@@ -37,6 +42,7 @@ function setup(options: {
   useReadResultStatusContract?: boolean;
   scriptHookManager?: ScriptHookManager;
   requireAuditChain?: boolean;
+  audit?: AuditLogger;
 } = {}) {
   const configuredRawResult = Object.prototype.hasOwnProperty.call(
     options,
@@ -129,8 +135,8 @@ function setup(options: {
     }),
   ]);
   const permissions = new PermissionManager("/tmp/nonexistent-operation-governance.json");
-  permissions.checkDetailed = () => ({ decision: "allow", reason: "test", });
-  const approvalGate = { requestAndWait: vi.fn(async (_request: Record<string, unknown>) => ({ choice: "allow-once" })) };
+  permissions.checkDetailed = () => ({ decision: "allow", provenance: RULE_PROVENANCE, reason: "test", });
+  const approvalGate = { requestAndWait: answeringRequestAndWait<{ id: string } & Record<string, unknown>>(() => ({ choice: "allow-once" })) };
   const scriptHookManager =
     options.wireHooks === false
       ? undefined
@@ -190,7 +196,7 @@ function setup(options: {
       undefined,
       approvalGate as never,
       scriptHookManager,
-      auditLogger as never,
+      (options.audit ?? auditLogger) as never,
       undefined,
       undefined,
       pluginOperationGrants,
@@ -545,6 +551,39 @@ describe("ToolExecutor plugin operation governance", () => {
     expect(queuedResult.content).toContain("domain is indeterminate");
     expect(directWrite).not.toHaveBeenCalled();
     expect(lifecycle).not.toHaveBeenCalled();
+  });
+
+  it("ends a permission-hook mutation of a governed auth lifecycle with the rule's one deny row and no host row", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-governed-mutation-"));
+    const audit = new AuditLogger(join(directory, "audit"));
+    await audit.setupPermissionAuditChain("cd".repeat(32));
+    const scriptHookManager = new ScriptHookManager();
+    vi.spyOn(scriptHookManager, "runPermissionRequest").mockResolvedValue({ decision: "allow", reason: "rewrites the operation",
+      updatedInput: { operation: "status", target: "changed" }, results: [] });
+    const lifecycle = vi.spyOn(scriptHookManager, "runLifecycleEvent");
+    try {
+      const { executor, permissions, read } = setup({ scriptHookManager, audit });
+      permissions.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "test ask" });
+      const completeFailure = vi.fn();
+      const pluginAuthLifecycle = {
+        binding: { pluginId: principal.ownerPluginId, generationId: principal.generationId, toolName: "domain_read",
+          appSessionId: principal.appSessionId, accountScopeHash: principal.accountScopeHash },
+        beforeHandler: vi.fn(), completeSuccess: vi.fn(), completeFailure,
+      };
+      const [result] = await runWithInvocationOrigin("ui", undefined, () => executor.executeAll(
+        [{ id: "mutated-call", name: "domain_read", input: { operation: "status" } }], { ...options(), pluginAuthLifecycle }));
+      expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("could not safely restart") });
+      expect(read).not.toHaveBeenCalled();
+      await audit.close();
+      const rows = readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.toolUseId === "mutated-call" && row.decision !== "ask");
+      expect(rows).toEqual([expect.objectContaining({ decision: "deny",
+        denyReasons: [{ reason: "Hook input mutation could not safely restart permission classification", source: "hook-input-mutation" }] })]);
+      expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
+    } finally {
+      await audit.close();
+      await cleanupTmpDir(directory);
+    }
   });
 
   it("settles a governed auth lifecycle after final audit and before queued work", async () => {
@@ -1070,7 +1109,8 @@ describe("ToolExecutor plugin operation governance", () => {
     expect(write).toHaveBeenCalledTimes(1);
   });
 
-  it("holds the exclusive domain lease until a signal-ignoring write settles", async () => {
+  it("holds the exclusive domain lease and tracks the audit until a signal-ignoring write settles", async () => {
+    const pendingBeforeWrite = pendingToolInvocationCount();
     vi.useFakeTimers();
     try {
       const { executor, read, write, auditLogger } = setup();
@@ -1107,6 +1147,7 @@ describe("ToolExecutor plugin operation governance", () => {
       await writeStarted;
       await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.globalCeilingMs + 1);
       const [timedOutResult] = await timedOutWrite;
+      expect(pendingToolInvocationCount()).toBe(pendingBeforeWrite + 1);
       expect(timedOutResult.is_error).toBe(true);
       // Plugin ceiling failures must be retryable and name the host bound; plugins have no timeout field to escalate.
       expect(timedOutResult.content).toContain("domain_write");
@@ -1123,6 +1164,7 @@ describe("ToolExecutor plugin operation governance", () => {
 
       releaseWrite();
       await readback;
+      expect(pendingToolInvocationCount()).toBe(pendingBeforeWrite);
       expect(read).toHaveBeenCalledTimes(2);
       expect(auditLogger.appendPermissionAuditEntry).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1606,6 +1648,7 @@ describe("ToolExecutor plugin operation governance", () => {
     const lifecycle = vi.spyOn(scriptHookManager, "runLifecycleEvent");
     const { executor, read, directWrite, auditLogger } = setup({
       scriptHookManager,
+      requireAuditChain: true,
     });
     const holderGrant = executor.issuePluginOperationGrant({
       toolName: "direct_write",
@@ -1655,6 +1698,11 @@ describe("ToolExecutor plugin operation governance", () => {
         terminationReason: "user-abort",
       })],
     }));
+    // The abort's row is the attempt's one terminal row; the admission's settle adds no host row.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const terminalRows = auditLogger.appendPermissionAuditEntry.mock.calls.map(([entry]) => entry)
+      .filter((entry) => entry.toolUseId === "queued-abort" && entry.pluginOperation === undefined && entry.decision !== "ask");
+    expect(terminalRows).toEqual([expect.objectContaining({ decision: "deny", denyReasons: [expect.objectContaining({ reason: "user aborted turn" })] })]);
 
     releaseHolder();
     await holder;
@@ -1876,5 +1924,184 @@ describe("ToolExecutor plugin operation governance", () => {
 
     expect(result.is_error).toBeFalsy();
     expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("records a write the quit interrupts as unsettled with the host's origin, not the invocation's", async () => {
+    const { executor, write, auditLogger } = setup();
+    await runWithInvocationOrigin("ui", undefined, () =>
+      executor.executeAll([{ id: "r-quit", name: "domain_read", input: { operation: "status" } }], options()),
+    );
+    const grant = executor.issuePluginOperationGrant({ toolName: "domain_write", input: { operation: "save", value: 34 }, principal });
+    let releaseWrite!: () => void;
+    const writeStarted = new Promise<void>((started) => {
+      write.mockImplementationOnce(() => new Promise((resolve) => {
+        started();
+        releaseWrite = () => resolve({ output: "late saved", isError: false });
+      }));
+    });
+    const quit = new AbortController();
+    const interrupted = runWithInvocationOrigin("ui", undefined, () =>
+      executor.executeAll(
+        [{ id: "w-quit", name: "domain_write", input: { operation: "save", value: 34 } }],
+        { ...options(grant.token), abortSignal: quit.signal },
+      ),
+    );
+    await writeStarted;
+    quit.abort(new HostExitAbortError());
+    try {
+      expect((await interrupted)[0].is_error).toBe(true);
+      const unsettled = auditLogger.appendPermissionAuditEntry.mock.calls
+        .map(([entry]) => entry)
+        .filter((entry) => JSON.stringify(entry.denyReasons ?? []).includes("remains unsettled after interruption"));
+      expect(unsettled).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
+    } finally {
+      releaseWrite();
+    }
+  });
+
+  it.each([
+    ["the ceiling", true],
+    ["a user stop", false],
+  ] as const)("records a write %s interrupts as unsettled, as the host's stop only when the host stopped it", async (by, hostStop) => {
+    vi.useFakeTimers();
+    const { executor, write, auditLogger } = setup();
+    let releaseWrite: (() => void) | undefined;
+    try {
+      await runWithInvocationOrigin("ui", undefined, () =>
+        executor.executeAll([{ id: "r-stop", name: "domain_read", input: { operation: "status" } }], options()),
+      );
+      const grant = executor.issuePluginOperationGrant({ toolName: "domain_write", input: { operation: "save", value: 35 }, principal });
+      const writeStarted = new Promise<void>((started) => {
+        write.mockImplementationOnce(() => new Promise((resolve) => {
+          started();
+          releaseWrite = () => resolve({ output: "late saved", isError: false });
+        }));
+      });
+      const stop = new AbortController();
+      const interrupted = runWithInvocationOrigin("ui", undefined, () =>
+        executor.executeAll(
+          [{ id: "w-stop", name: "domain_write", input: { operation: "save", value: 35 } }],
+          { ...options(grant.token), abortSignal: stop.signal },
+        ),
+      );
+      await writeStarted;
+      if (by === "the ceiling") await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.globalCeilingMs + 1);
+      else stop.abort();
+      expect((await interrupted)[0].is_error).toBe(true);
+      const unsettled = auditLogger.appendPermissionAuditEntry.mock.calls
+        .map(([entry]) => entry)
+        .filter((entry) => JSON.stringify(entry.denyReasons ?? []).includes("remains unsettled after interruption"));
+      expect(unsettled).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: hostStop ? "unknown" : "plugin-emitted" })]);
+      // The authorization row and exactly one settlement row; only a host stop leaves the invocation's origin behind.
+      expect(auditLogger.appendPermissionAuditEntry.mock.calls.map(([entry]) => [entry.decision, entry.trustOrigin]))
+        .toEqual([["allow", "plugin-emitted"], ["deny", hostStop ? "unknown" : "plugin-emitted"]]);
+    } finally {
+      releaseWrite?.();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["the ceiling", "a user stop"] as const)("records an ordinary plugin write %s interrupts with one terminal row", async (by) => {
+    vi.useFakeTimers();
+    const { executor, registry, auditLogger } = setup({ requireAuditChain: true });
+    let releaseWrite: (() => void) | undefined;
+    try {
+      let started!: () => void;
+      const writeStarted = new Promise<void>((resolve) => { started = resolve; });
+      registry.register(createDynamicTool({
+        name: "plain_write",
+        description: "write without operation governance",
+        source: "plugin",
+        category: "write",
+        pluginId: principal.ownerPluginId,
+        pluginGeneration: { pluginId: principal.ownerPluginId, generationId: principal.generationId },
+        modelVisible: true,
+        jsonSchema: { type: "object" },
+        execute: () => new Promise((resolve) => {
+          started();
+          releaseWrite = () => resolve({ output: "late saved", isError: false });
+        }),
+      }));
+      const stop = new AbortController();
+      const interrupted = runWithInvocationOrigin("ui", undefined, () =>
+        executor.executeAll([{ id: "plain-stop", name: "plain_write", input: { value: 1 } }], {
+          sessionId: "s",
+          abortSignal: stop.signal,
+          permissionContext: { trustOrigin: "plugin-emitted" as const, allowedPluginIds: new Set([principal.ownerPluginId]) },
+        }),
+      );
+      await writeStarted;
+      if (by === "the ceiling") await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.globalCeilingMs + 1);
+      else stop.abort();
+      expect((await interrupted)[0].is_error).toBe(true);
+      // The authorizing allow is the call's one terminal row; an ordinary write leaves no settlement row behind.
+      expect(auditLogger.appendPermissionAuditEntry.mock.calls
+        .map(([entry]) => entry)
+        .filter((entry) => entry.tool === "plain_write")
+        .map((entry) => [entry.decision, entry.trustOrigin]))
+        .toEqual([["allow", "plugin-emitted"]]);
+    } finally {
+      releaseWrite?.();
+      vi.useRealTimers();
+    }
+  });
+
+  // Seals the process-wide ledger, so it stays the last test in this file.
+  it("closes a detached write at the seal with one host-shutdown row and refuses its late settlement", async () => {
+    vi.useFakeTimers();
+    try {
+      const { executor, write, auditLogger } = setup();
+      await runWithInvocationOrigin("ui", undefined, () =>
+        executor.executeAll([{ id: "r1", name: "domain_read", input: { operation: "status" } }], options()),
+      );
+      const grant = executor.issuePluginOperationGrant({ toolName: "domain_write", input: { operation: "save", value: 21 }, principal });
+      let releaseWrite!: () => void;
+      const writeStarted = new Promise<void>((started) => {
+        write.mockImplementationOnce(() => new Promise((resolve) => {
+          started();
+          releaseWrite = () => resolve({ output: "late saved", isError: false });
+        }));
+      });
+      const timedOutWrite = runWithInvocationOrigin("ui", undefined, () =>
+        executor.executeAll([{ id: "w1", name: "domain_write", input: { operation: "save", value: 21 } }], options(grant.token)),
+      );
+      await writeStarted;
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.globalCeilingMs + 1);
+      expect((await timedOutWrite)[0].is_error).toBe(true);
+      const outcomes = () => auditLogger.appendPermissionAuditEntry.mock.calls
+        .map(([entry]) => (entry.pluginOperation as { outcome?: string } | undefined)?.outcome)
+        .filter((outcome) => outcome === "indeterminate" || outcome === "settled");
+      const hostShutdownRows = () => auditLogger.appendPermissionAuditEntry.mock.calls
+        .filter(([entry]) => JSON.stringify(entry.denyReasons ?? []).includes("host-shutdown"));
+
+      sealToolInvocations();
+      const close = vi.fn(async () => {});
+      let joined = false;
+      const joining = closeToolInvocationAudit(close).then((count) => { joined = true; return count; });
+      await vi.advanceTimersByTimeAsync(0);
+      try {
+        expect(joined).toBe(true);
+      } finally {
+        releaseWrite();
+      }
+      await expect(joining).resolves.toBeGreaterThanOrEqual(1);
+      expect(close).toHaveBeenCalledOnce();
+      expect(hostShutdownRows()).toHaveLength(1);
+      expect(hostShutdownRows()[0][0]).toMatchObject({
+        decision: "deny",
+        denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-execution" }],
+        // The seal closed it, not the plugin-emitted invocation.
+        trustOrigin: "unknown",
+        pluginOperation: { outcome: "indeterminate" },
+      });
+      expect(pendingToolInvocationCount()).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcomes()).toEqual(["indeterminate", "indeterminate"]);
+      expect(hostShutdownRows()).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

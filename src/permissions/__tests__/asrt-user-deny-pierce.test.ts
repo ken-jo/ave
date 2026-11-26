@@ -3,7 +3,7 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 import { afterEach, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -14,7 +14,7 @@ import { setLocale } from "../../i18n/index.js";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { buildPolicyModel } from "../policy-model.js";
 import { rankMxcFilesystem } from "../mxc-windows.js";
-import { admitMxcExtensionFilesystem, buildPerCommandSandboxCustomConfig, getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, initializeAsrtSandbox, resetAsrtSandbox } from "../asrt-sandbox.js";
+import { admitMxcExtensionFilesystem, buildPerCommandSandboxCustomConfig, getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, initializeAsrtSandbox, resetAsrtSandbox, userDenyInsidePierceNotices } from "../asrt-sandbox.js";
 import { createAveHomeBoundarySnapshot } from "../ave-home-boundary-snapshot.js";
 import { canonicalizePathForMatch, getConfiguredSessionReadPolicy } from "../sensitive-paths.js";
 
@@ -399,6 +399,29 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
       const grants = grantsFor();
       expect(grants.readonly).toEqual([certs()]);
       expect(grants.denied).toContain(corp());
+    });
+
+    it("keeps the holder notice available when ranking refuses a pierce", async () => {
+      const hooks = join(scratch, ".config", "ave", "hooks");
+      const hook = join(hooks, "fixture-hook");
+      mkdirSync(hooks, { recursive: true });
+      writeFileSync(hook, "");
+      vi.stubEnv("USERPROFILE", scratch);
+      try {
+        await initializeWith([corp(), hook]);
+        setProcessPlatform("win32");
+        expect(() => rankMxcFilesystem(admitMxcExtensionFilesystem({
+          allowRead: [certs(), corp(), hook], allowWrite: [], floorPierces: [certs(), hook],
+        }).model)).toThrow(`Your read deny ${hook} covers ${hook}`);
+
+        expect(grantsFor().readonly).toEqual([certs()]);
+        expect(userDenyInsidePierceNotices([certs()])).toEqual([
+          `Your read deny ${corp()} applies inside ${certs()}, which this launch reads; the launch keeps the rest of it and cannot read what the deny matches.`,
+        ]);
+        expect(userDenyInsidePierceNotices([certs()])).toEqual([]);
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
   });
 });
