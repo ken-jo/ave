@@ -19,7 +19,7 @@ import {
 
 import { errorMessage } from "../shared/error-message.js";
 import { compileGlobMatcher, globToRegExp } from "../lib/glob-matcher.js";
-import { isPlainWindowsPathComponent } from "./windows-stamp-targets.js";
+import { isPlainWindowsPathComponent } from "../shared/windows-path-spelling.js";
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
 import MXC_PINS from "./mxc-launcher-pins.json" with { type: "json" };
 

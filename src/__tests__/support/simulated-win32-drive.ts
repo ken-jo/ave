@@ -8,6 +8,7 @@ import type * as SandboxProcessHome from "../../permissions/sandbox-process-home
 import type * as StampTargets from "../../permissions/windows-stamp-targets.js";
 import type * as ConfigurationHandles from "../../shared/windows-configuration-handles.js";
 import type * as PathFacts from "../../shared/windows-path-facts.js";
+import { isPlainWindowsStampPath } from "../../shared/windows-path-spelling.js";
 
 type Fn = (...args: unknown[]) => unknown;
 const DRIVE_PATH = /^[A-Za-z]:[\x5c/]/;
@@ -156,7 +157,7 @@ export function simulatedStampTargets(actual: typeof StampTargets): typeof Stamp
     for (const entries of [filesystem?.allowRead, filesystem?.allowWrite, filesystem?.denyRead, filesystem?.denyWrite]) {
       for (const entry of entries ?? []) {
         const path = typeof entry === "string" ? entry : entry.path;
-        if (/[A-Za-z]:/.test(path) && !actual.isPlainWindowsStampPath(path.replace(/\//g, "\x5c"))) throw new Error("Invalid simulated drive path");
+        if (/[A-Za-z]:/.test(path) && !isPlainWindowsStampPath(path.replace(/\//g, "\x5c"))) throw new Error("Invalid simulated drive path");
       }
     }
     return filesystem;

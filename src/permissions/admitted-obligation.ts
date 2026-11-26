@@ -6,9 +6,8 @@ import { admitLocalPath, admitLocalRoute, decisionMemo, type LocalFilesystemFact
 import { isWindowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
 import { admitWindowsReparse, isWindowsPathFactsPathFailure, pinWindowsPaths, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { WINDOWS_COMMAND_LINE_LIMIT } from "../shared/windows-command-line.js";
-import { classifyWindowsSpelling } from "../shared/windows-path-spelling.js";
+import { classifyWindowsSpelling, isPlainWindowsStampPath } from "../shared/windows-path-spelling.js";
 import { SENSITIVE_PATH_ENTRIES } from "./sensitive-paths.js";
-import { isPlainWindowsStampPath } from "./windows-stamp-targets.js";
 
 const log = createLogger("admitted-obligation");
 

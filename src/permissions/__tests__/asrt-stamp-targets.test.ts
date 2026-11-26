@@ -255,7 +255,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
   });
 
   it("accepts only plain drive paths as stamp literals", async () => {
-    const { isPlainWindowsStampPath } = await import("../windows-stamp-targets.js");
+    const { isPlainWindowsStampPath } = await import("../../shared/windows-path-spelling.js");
     const accepted = ["C:\\", "C:\\fixture\\leaf", "C:\\fixture\\dir\\", "D:\\a b\\c.d", "C:\\fixture\\.git", "C:\\fixture\\CONSOLE"];
     const refused = [
       "C:\\fixture\\*.secret", "C:\\fixture\\leaf?", // r1: glob re-expansion
