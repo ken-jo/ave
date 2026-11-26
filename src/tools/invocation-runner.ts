@@ -615,7 +615,9 @@ async function runToolInvocationAttempt(
       return services.auditWriter.auditToolCall(sessionId, toolUse.name, hostSource, trustFromSource(hostSource), toolUse.input, detail, true, startTime,
         denial, Infinity, permissionContext, resolvedTool?.category ?? "meta", executionCwd, undefined, cause, undefined, currentAuditMetadata(toolUse.input), { row, kind });
     }, denialLifecycle);
-    const tool = services.toolRegistry.findByName(toolUse.name);
+    const tool = opts.advertisedToolNames && !opts.advertisedToolNames.has(toolUse.name)
+      ? undefined
+      : services.toolRegistry.findByName(toolUse.name);
     resolvedTool = tool;
     if (!tool) {
       const durationMs = Date.now() - startTime;

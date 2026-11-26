@@ -82,6 +82,7 @@ describe("shutdown permission audit ordering", () => {
 
   beforeEach(async () => {
     vi.resetModules();
+    await import("../../__tests__/vitest-approval-presentation.js");
     root = mkdtempSync(join(tmpdir(), "ave-shutdown-audit-"));
     workspace = join(root, "workspace");
     mkdirSync(workspace);

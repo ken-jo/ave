@@ -1117,3 +1117,18 @@ describe("openAuthWindow — visible-window dedup", () => {
     await warmupOutcome;
   });
 });
+
+it("refuses interactive authentication windows from an unattended stage", async () => {
+  const { turnExtensionPolicyContext } = await import("../../shared/turn-extension-policy.js");
+  const url = "https://auth.example.test/authorize";
+  await turnExtensionPolicyContext.run({ unattendedStage: true, allowExternalHooks: false }, async () => {
+    const capture = openAuthWindow(parent(), { url, completionUrlPatterns: [COMPLETION], cookieHosts: [COOKIE_HOST] });
+    await expect(capture).rejects.toThrow("unattended-approval-denied");
+    const onCancel = vi.fn();
+    await expect(openOAuthInAuthWindow(parent(), url, { completion: Promise.resolve(), onCancel, timeoutMs: 1_000 }))
+      .rejects.toThrow("unattended-approval-denied");
+    expect(onCancel).toHaveBeenCalledWith("failed");
+  });
+  expect(constructed).toEqual([]);
+  expect(shell.openExternal).not.toHaveBeenCalled();
+});
