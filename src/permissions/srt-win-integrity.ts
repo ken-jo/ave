@@ -4,6 +4,7 @@ import { lstatSync, mkdirSync, readFileSync, rmdirSync, rmSync, unlinkSync, writ
 import { homedir, tmpdir, type } from "node:os";
 import { dirname, join, win32 } from "node:path";
 
+import { t } from "../i18n/index.js";
 import { writeExitDiagnostic } from "../shared/exit-diagnostic.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
@@ -295,8 +296,8 @@ export function srtWinSpawnEnvironment<V extends string | undefined>(executable:
   if (!isSrtWinHelper(executable)) return { ...env };
   const state = srtWinStateBases(hostEnv);
   if (state === undefined) {
-    throw Object.assign(new Error("The sandbox helper's state location could not be determined: LOCALAPPDATA and ProgramData must be drive paths"),
-      { code: "srt-win-state-location-unresolved" });
+    const code = "srt-win-state-location-unresolved";
+    throw Object.assign(new Error(t("be_confinementState.helperStateUnresolved", { code })), { code });
   }
   return { ...Object.fromEntries(Object.entries(env).filter(([key]) => !STATE_VARIABLES.has(key.toUpperCase()))), ...state };
 }

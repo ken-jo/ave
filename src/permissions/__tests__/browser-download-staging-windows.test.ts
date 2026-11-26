@@ -34,11 +34,11 @@ const runtime = vi.hoisted(() => ({
   policyFrames: [] as Buffer[],
 }));
 
-// Faked win32 on any host: no backend state to check here; the state rule has its own tests.
-vi.mock("../confinement-state-paths.js", async (original) => ({
-  ...await original<typeof import("../confinement-state-paths.js")>(),
-  declaredConfinementStatePaths: () => [],
-}));
+// Faked win32 on a POSIX host: no backend state to check here; a Windows host keeps its own.
+vi.mock("../confinement-state-paths.js", async (original) => {
+  const actual = await original<typeof import("../confinement-state-paths.js")>();
+  return hostPlatform === "win32" ? actual : { ...actual, declaredConfinementStatePaths: () => [] };
+});
 vi.mock("../../main/host-resources.js", async (original) => {
   const actual = await original<typeof import("../../main/host-resources.js")>();
   return { ...actual, configureHostResources: (input: Parameters<typeof actual.configureHostResources>[0]) => {
@@ -1185,8 +1185,11 @@ describe("the browser download staging folder in a container holder's native req
     }
     // A grant on the Ave home or a directory holding it reaches other holders' and the host's storage: refused before the native entry.
     const parent = aveHome().replace(/\\[^\\]+$/, "");
+    // On a Windows host the profile holds the helper's state, so writing the profile-child home's parent is refused for that first.
+    const stateFirst = hostPlatform === "win32" && layout === PROFILE_CHILD;
     for (const [kind, asked] of [["read", aveHome()], ["read", parent], ["write", aveHome()], ["write", parent]] as const) {
-      await expectHolderRefusal(asking(kind, asked), /ownership reaches another holder or host storage/, `${kind} ${asked}`);
+      await expectHolderRefusal(asking(kind, asked), stateFirst && kind === "write" && asked === parent
+        ? /\(confinement-state-write-grant\)$/u : /ownership reaches another holder or host storage/, `${kind} ${asked}`);
     }
   });
 });

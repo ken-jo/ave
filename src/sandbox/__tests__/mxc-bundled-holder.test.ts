@@ -7,7 +7,7 @@ import { escapeRegExp } from "../../shared/escape-reg-exp.js";
 import { assertSandboxWindowsExtensionPlan } from "../../shared/sandbox-capability-info.js";
 
 const HELPER_STATE = "C:\\helper\\sandbox-runtime";
-const STAGING_PATH_PREFIX =`${SYNTHETIC_MXC_STAGING_PARENT}\\`;
+const STAGING_PATH_PREFIX = `${SYNTHETIC_MXC_STAGING_PARENT}\\`;
 const STAGING_PARENT_PATTERN = escapeRegExp(SYNTHETIC_MXC_STAGING_PARENT);
 const STAGING_ROOT_PATTERN = new RegExp(String.raw`^${STAGING_PARENT_PATTERN}\\[0-9a-f]{32}$`, "u");
 const STAGING_TREE_PATTERN = new RegExp(String.raw`^${STAGING_PARENT_PATTERN}\\[0-9a-f]{32}`, "u");
