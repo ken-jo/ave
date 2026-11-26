@@ -56,6 +56,8 @@ import { __resetManagedChildProcessesForTest, forceKillAndDrainManagedChildProce
 import { deferred } from "../../__tests__/support/deferred.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { WindowsHoldVerdict } from "../../shared/windows-path-facts.js";
+import * as powerShellExecutable from "../../shared/powershell-executable.js";
+import { win32SystemBinary } from "../../shared/windows-system-path.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { HOST_SHELL_CWD_REVOKED_EXIT_CODE } from "../host-shell-cwd-guard.js";
@@ -427,10 +429,14 @@ describe.runIf(process.platform === "win32")("Windows host cwd hold at launch", 
     expect(permit).toBeDefined();
     spawnBoundary.helperExe = fixture;
     if (recheck !== undefined) process.env.AVE_TEST_HOLD_RECHECK = recheck;
+    // This route test uses the real parser and launcher with a fixture installation proof.
+    const installation = vi.spyOn(powerShellExecutable, "resolveTrustedPowerShellExecutable").mockReturnValue({
+      executable: win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe"), kind: "windows-powershell",
+    });
     const result = await new PowerShellTool().execute(input, {
       cwd: directory, extraAllowedDirectories: [], metadata: { toolUseId: "cwd-spawn" }, hostShellExecutionPlan: plan, hostShellExecutionPermit: permit,
-    });
-    expect(spawnBoundary.commands.filter(command => command.endsWith("ave-job.exe"))).toHaveLength(1);
+    }).finally(() => installation.mockRestore());
+    expect(spawnBoundary.commands.filter(command => command.endsWith("ave-job.exe")), result.output).toHaveLength(1);
     expect(existsSync(join(directory, "current", "marker"))).toBe(true);
     expect(result.output).toContain("pinnedrun");
     expect(result.isError).toBe(failed);
