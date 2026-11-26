@@ -9,6 +9,7 @@ import { PassThrough } from "node:stream";
 import { configureHostResources } from "../../../main/host-resources.js";
 import { setLocale } from "../../../i18n/index.js";
 import { aveHome } from "../../../shared/ave-home.js";
+import * as policyHome from "../../../shared/policy-home.js";
 import { makeTestPluginRuntime, servedAgentPluginsDocument } from "../../__tests__/test-helpers.js";
 import { nativePluginLaunch } from "../../../__tests__/support/mxc-plugin-launch.js";
 import { mxcStagingParentFor } from "../../../__tests__/support/mxc-staging-parent.js";
@@ -141,10 +142,17 @@ describe.runIf(hostPlatform === "win32")("a user's read deny over a plugin's cer
     installedDir = join(testDir, "plugins");
     registryPath = join(installedDir, "registry.json");
     mkdirSync(certs(), { recursive: true });
+    // The default floor anchors on every home, the account's included; the session's homes are a fixture profile.
+    const profile = join(testDir, "profile");
+    mkdirSync(profile);
+    vi.stubEnv("HOME", profile);
+    vi.stubEnv("USERPROFILE", profile);
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     await resetAsrtSandbox();
     await rm(testDir, { recursive: true, force: true });
   });
