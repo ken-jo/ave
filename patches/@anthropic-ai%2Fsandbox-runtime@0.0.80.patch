@@ -5082,7 +5082,7 @@ index 65b8eefe5..3116fa929 100644
 \ No newline at end of file
 +//# sourceMappingURL=windows-sandbox-utils.d.ts.map
 diff --git a/dist/sandbox/windows-sandbox-utils.js b/dist/sandbox/windows-sandbox-utils.js
-index 3e8876a37..11aa65fc6 100644
+index 3e8876a37..15e5c2911 100644
 --- a/dist/sandbox/windows-sandbox-utils.js
 +++ b/dist/sandbox/windows-sandbox-utils.js
 @@ -312,6 +312,18 @@ function runSrtWinJsonAllowFail(args, opts) {
@@ -5256,7 +5256,7 @@ index 3e8876a37..11aa65fc6 100644
   * PROTECTED rewrite, no SD snapshot. Idempotent and refcounted via
   * srt-win's `working_aces` table.
   *
-@@ -1176,12 +1239,86 @@ export function parseWindowsSandboxError(stderr) {
+@@ -1176,12 +1239,90 @@ export function parseWindowsSandboxError(stderr) {
   *   2, so on throw the caller should call {@link restoreWindowsAcl}
   *   to release whatever WAS stamped.
   */
@@ -5271,14 +5271,15 @@ index 3e8876a37..11aa65fc6 100644
 +    logForDebugging(`[Sandbox Windows] acl stamp targets=${JSON.stringify(rows)}`);
 +}
 +// Bound the ACL helper's stdin allocation and work before serializing or spawning.
-+// A 240-character profile needs 317 rows and 86,041 bytes for its write floor.
-+// The shared 256 KiB / 1,024-row ceiling leaves 176,103 bytes and 707 rows for
++// A 240-character profile needs 317 rows and about 84 KiB for its write floor.
++// The shared 256 KiB / 1,024-row ceiling leaves about 172 KiB and 707 rows for
 +// read and configured denies. Native local stamps measured 57–65 ms for 4–5
 +// rows including startup. Accounting at the slowest observed per-row rate
 +// gives about 17 seconds for 1,024 rows. The existing 60-second deadline
 +// still bounds individual stamps regardless of filesystem latency.
 +const WINDOWS_ACL_POLICY_BYTES = 256 * 1024;
 +const WINDOWS_ACL_POLICY_ROWS = 1024;
++const WINDOWS_ACL_STAMP_ENVELOPE_BYTES = Buffer.byteLength(serializeWindowsAclStamp([], []));
 +export function assertWindowsAclPolicyBudget(denyRead = [], denyWrite = [], extraRead = []) {
 +    const readCount = denyRead.length + extraRead.length;
 +    const fail = () => {
@@ -5286,7 +5287,7 @@ index 3e8876a37..11aa65fc6 100644
 +    };
 +    if (readCount + denyWrite.length > WINDOWS_ACL_POLICY_ROWS)
 +        fail();
-+    let bytes = 30 + Math.max(0, readCount - 1) + Math.max(0, denyWrite.length - 1); // JSON envelope and row separators.
++    let bytes = WINDOWS_ACL_STAMP_ENVELOPE_BYTES + Math.max(0, readCount - 1) + Math.max(0, denyWrite.length - 1);
 +    for (const entries of [denyRead, denyWrite, extraRead]) {
 +        for (const entry of entries) {
 +            const spelling = typeof entry === 'string' ? entry : entry.path;
@@ -5330,10 +5331,13 @@ index 3e8876a37..11aa65fc6 100644
 +    assertWindowsAclPolicyBudget(denyRead, denyWrite, credentialDeny);
 +    return { denyRead, denyWrite, credentialDeny, admitted: [...admitted] };
 +}
++function serializeWindowsAclStamp(denyRead, denyWrite) {
++    // Ave patch (existing deny targets): a missing target is refused, never created.
++    return JSON.stringify({ denyRead, denyWrite, existingOnly: true });
++}
 +function windowsAclStampInput(opts) {
 +    assertWindowsAclPolicyBudget(opts.denyRead, opts.denyWrite);
-+    // Ave patch (existing deny targets): a missing target is refused, never created.
-+    return JSON.stringify({ denyRead: opts.denyRead, denyWrite: opts.denyWrite, existingOnly: true });
++    return serializeWindowsAclStamp(opts.denyRead, opts.denyWrite);
 +}
  export function stampWindowsAcl(opts) {
 +    const stdin = windowsAclStampInput(opts);
@@ -5347,7 +5351,7 @@ index 3e8876a37..11aa65fc6 100644
      const r = runSrtWin([
          'acl',
          'stamp',
-@@ -1190,13 +1327,70 @@ export function stampWindowsAcl(opts) {
+@@ -1190,13 +1331,70 @@ export function stampWindowsAcl(opts) {
          '--sandbox-user-sid',
          opts.sandboxUserSid,
      ], { timeoutMs: 60000, stdin, srtWin: opts.srtWin });
@@ -5419,7 +5423,7 @@ index 3e8876a37..11aa65fc6 100644
  /**
   * Release this holder's deny ACEs and remove the sandbox-user ACE
   * on any path whose refcount falls to zero. Best-effort (does not
-@@ -1221,6 +1415,47 @@ export function restoreWindowsAcl(opts) {
+@@ -1221,6 +1419,47 @@ export function restoreWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });
@@ -5467,7 +5471,7 @@ index 3e8876a37..11aa65fc6 100644
          if (!r.ok) {
              logForDebugging(`[Sandbox Windows] acl restore exited non-zero (per-path ` +
                  `outcomes preserved): ${r.stderr}`, { level: 'error' });
-@@ -1266,6 +1501,22 @@ export function grantWindowsAcl(opts) {
+@@ -1266,6 +1505,22 @@ export function grantWindowsAcl(opts) {
          throw new WindowsSandboxError('acl_grant_failed', `srt-win acl grant exited ${r.status}: ${r.stderr || r.stdout}`);
      }
  }
@@ -5490,7 +5494,7 @@ index 3e8876a37..11aa65fc6 100644
  /**
   * Release this holder's grants and remove the sandbox-user ACE on
   * any path whose refcount falls to zero. Best-effort (does not
-@@ -1283,6 +1534,34 @@ export function revokeWindowsAcl(opts) {
+@@ -1283,6 +1538,34 @@ export function revokeWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });
@@ -5525,7 +5529,7 @@ index 3e8876a37..11aa65fc6 100644
          if (!r.ok) {
              logForDebugging(`[Sandbox Windows] acl revoke exited non-zero: ${r.stderr}`, { level: 'error' });
          }
-@@ -1298,6 +1577,25 @@ export function revokeWindowsAcl(opts) {
+@@ -1298,6 +1581,25 @@ export function revokeWindowsAcl(opts) {
  // ────────────────────────────────────────────────────────────────────
  // Wrap
  // ────────────────────────────────────────────────────────────────────
@@ -5551,7 +5555,7 @@ index 3e8876a37..11aa65fc6 100644
  /**
   * Build the spawn descriptor for running `command` inside the Windows
   * sandbox: an `argv` array plus the `env` to spawn it with.
-@@ -1365,6 +1663,8 @@ export function wrapCommandWithSandboxWindows(p) {
+@@ -1365,6 +1667,8 @@ export function wrapCommandWithSandboxWindows(p) {
          argv.push('--deny-read', d);
      for (const d of p.denyWrite ?? [])
          argv.push('--deny-write', d);
@@ -5560,7 +5564,7 @@ index 3e8876a37..11aa65fc6 100644
      // The two-hop runner starts with the SANDBOX user's profile env
      // (USERPROFILE/TEMP isolated) and overlays exactly what we pass as
      // `--env`. The broker does NOT enumerate its own env — the overlay
-@@ -1393,14 +1693,11 @@ export function wrapCommandWithSandboxWindows(p) {
+@@ -1393,14 +1697,11 @@ export function wrapCommandWithSandboxWindows(p) {
      // cmd /s) so the inner shell receives it intact. See launch.rs.
      const sh = p.binShell ?? parseWindowsBinShell(undefined);
      argv.push(sh.exe, ...sh.args, p.command);
