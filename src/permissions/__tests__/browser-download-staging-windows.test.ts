@@ -401,18 +401,21 @@ function createPinRoot(runRoot: string): string {
 }
 const pinRoot = createPinRoot(runTmp);
 const nativeRoot = hostPlatform === "win32" ? pinRoot : null;
-const resourceRoot = hostFs.realpathSync.native(nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(hostOs.tmpdir(), "browser-download-resources-"))));
-const fixtureResources = { resourcePath: hostPath.join(resourceRoot, "resources"), isPackaged: false };
-const fixtureScripts = hostPath.join(resourceRoot, "dist", "skill-scripts");
-const fixtureRuntime = hostPath.join(resourceRoot, "host-runtime.exe");
-const fixtureSandboxPackage = hostPath.join(resourceRoot, "sandbox-runtime", "package.json");
-const fixtureVendoredSrtWin = hostPath.join(hostPath.dirname(fixtureSandboxPackage), "vendor", "srt-win");
-const fixturePrivateSrtWin = hostPath.join(resourceRoot, "srt-win-private", "bin");
-const fixtureProgramData = hostPath.join(resourceRoot, "program-data");
-const fixtureExternalKey = hostPath.join(resourceRoot, "external-key");
-const fixtureGlobalGitConfig = hostPath.join(resourceRoot, "user.gitconfig");
-const fixtureSystemGitConfig = hostPath.join(resourceRoot, "system.gitconfig");
-const srtPath = hostPath.join(fixturePrivateSrtWin, "srt-win.exe");
+const resourceScratch = hostFs.realpathSync.native(nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(hostOs.tmpdir(), "browser-download-resources-"))));
+// The checkout, its runtime and the host files it names are native paths, as on a Windows host; a foreign host puts them on the drive.
+const resourceRoot = nativeRoot === null ? String.raw`C:\ave` : resourceScratch;
+const resourcePath = nativeRoot === null ? hostPath.win32 : hostPath;
+const fixtureResources = { resourcePath: resourcePath.join(resourceRoot, "resources"), isPackaged: false };
+const fixtureScripts = resourcePath.join(resourceRoot, "dist", "skill-scripts");
+const fixtureRuntime = resourcePath.join(resourceRoot, "host-runtime.exe");
+const fixtureSandboxPackage = resourcePath.join(resourceRoot, "sandbox-runtime", "package.json");
+const fixtureVendoredSrtWin = resourcePath.join(resourcePath.dirname(fixtureSandboxPackage), "vendor", "srt-win");
+const fixturePrivateSrtWin = resourcePath.join(resourceRoot, "srt-win-private", "bin");
+const fixtureProgramData = resourcePath.join(resourceRoot, "program-data");
+const fixtureExternalKey = resourcePath.join(resourceRoot, "external-key");
+const fixtureGlobalGitConfig = resourcePath.join(resourceRoot, "user.gitconfig");
+const fixtureSystemGitConfig = resourcePath.join(resourceRoot, "system.gitconfig");
+const srtPath = resourcePath.join(fixturePrivateSrtWin, "srt-win.exe");
 const originalExecPath = Object.getOwnPropertyDescriptor(process, "execPath");
 if (originalExecPath === undefined) throw new Error("The host runtime path descriptor is missing");
 const profileRoot = nativeRoot === null ? "C:\\Users\\alice" : hostPath.join(nativeRoot, "profile");
@@ -447,7 +450,7 @@ const { buildMandatorySandboxWritePolicy } = await import("../sandbox-write-poli
 const { pinWindowsPaths, windowsPathKey } = await import("../../shared/windows-path-facts.js");
 const { assertWindowsGrantGrammar, pinWindowsGrantTargets } = await import("../windows-grant-targets.js");
 const { prepareOwnedMxcShellLaunch } = await import("../../__tests__/support/contained-shell-launch.js");
-const { existsSync, mkdirSync, mkdtempSync, rmdirSync } = await import("node:fs");
+const { existsSync, mkdirSync, mkdtempSync, rmdirSync, writeFileSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const runtimeRoot = await import("../mxc-runtime-root.js");
 const { mxcStagingParentFor, removeSuiteMxcStagingParent } = await import("../../__tests__/support/mxc-staging-parent.js");
@@ -461,25 +464,30 @@ function checkCheckoutStampTargets(paths: readonly string[], checkout = original
   withProvidedContext("realAccountHome", checkout, () => checkSandboxStampTargets(paths));
 }
 
+// A foreign host's drive is emptied after each test, so its checkout is laid out again before each one.
+function createCheckout(fs: { mkdirSync: typeof hostFs.mkdirSync; writeFileSync: typeof hostFs.writeFileSync }): void {
+  for (const path of [fixtureResources.resourcePath, fixtureScripts, fixtureVendoredSrtWin, fixturePrivateSrtWin, fixtureProgramData]) {
+    fs.mkdirSync(path, { recursive: true });
+  }
+  fs.writeFileSync(fixtureSandboxPackage, "{}");
+  fs.writeFileSync(fixtureRuntime, "runtime image fixture");
+  fs.writeFileSync(fixtureExternalKey, "key path fixture");
+  fs.writeFileSync(fixtureGlobalGitConfig, "");
+  fs.writeFileSync(fixtureSystemGitConfig, "");
+}
+
 beforeAll(() => {
-  checkSandboxStampTargets([resourceRoot]);
-  hostFs.mkdirSync(fixtureResources.resourcePath, { recursive: true });
-  hostFs.mkdirSync(fixtureScripts, { recursive: true });
-  hostFs.mkdirSync(fixtureVendoredSrtWin, { recursive: true });
-  hostFs.mkdirSync(fixturePrivateSrtWin, { recursive: true });
-  hostFs.mkdirSync(fixtureProgramData, { recursive: true });
-  hostFs.writeFileSync(fixtureSandboxPackage, "{}");
-  hostFs.writeFileSync(fixtureRuntime, "runtime image fixture");
-  hostFs.writeFileSync(fixtureExternalKey, "key path fixture");
-  hostFs.writeFileSync(fixtureGlobalGitConfig, "");
-  hostFs.writeFileSync(fixtureSystemGitConfig, "");
+  checkSandboxStampTargets([resourceScratch]);
+  if (nativeRoot !== null) createCheckout(hostFs);
   if (hostPlatform === "win32") {
     const relative = hostPath.join("windows-path-kind", process.arch, "ave-path-kind.exe");
     const target = hostPath.join(fixtureResources.resourcePath, relative);
     hostFs.mkdirSync(hostPath.dirname(target), { recursive: true });
     hostFs.copyFileSync(hostPath.join(originalCwd, "resources", relative), target);
   }
-  configureHostResources(fixtureResources);
+  // The composition root checks the native resource path with the platform's own path rules.
+  setProcessPlatform("win32");
+  try { configureHostResources(fixtureResources); } finally { setProcessPlatform(hostPlatform); }
 });
 const STAGED = "0123456789abcdef0123456789abcdef";
 const RELOCATED = { name: "a relocated Ave home inside the project", project: `${profileRoot}\\work`, home: `${profileRoot}\\work\\ave` } as const;
@@ -535,6 +543,7 @@ beforeEach(() => {
   vi.stubEnv("GIT_CONFIG_SYSTEM", fixtureSystemGitConfig);
   vi.stubEnv("GIT_CONFIG_NOSYSTEM", undefined);
   mkdirSync(profileRoot, { recursive: true });
+  if (nativeRoot === null) createCheckout({ mkdirSync, writeFileSync });
 });
 
 afterEach(async () => {
@@ -804,7 +813,7 @@ describe("the browser download staging folder in the srt-win session floor and w
   ])("accepts default scratch beside $checkout and refuses its scripts", ({ checkout, scratch }) => {
     // Preserve each layout's ancestry inside the run's scratch on either host.
     const project = (path: string) => hostPath.join(
-      resourceRoot, ...path.slice(hostPath.win32.parse(path).root.length).split(/[\\/]/u),
+      resourceScratch, ...path.slice(hostPath.win32.parse(path).root.length).split(/[\\/]/u),
     );
     const checkoutPath = project(checkout);
     const scratchPath = project(scratch);
