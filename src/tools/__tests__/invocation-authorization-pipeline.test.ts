@@ -115,7 +115,9 @@ describe("invocation permission pipeline orchestration", () => {
     context.finalInput = Object.freeze({ path: join(directory, "resource.txt"), content: "unchanged input" });
     requestAndWait.mockImplementation(async (request) => {
       manager.setRules([{ pattern: context.toolUse.name, action: "deny" }]);
-      return answeredApprovalDecision({ requestId: request.id, choice: "allow-once" });
+      return answeredApprovalDecision(
+        { requestId: request.id, choice: "allow-once" }, "desk", context.toolUse.name, context.toolUse.id,
+      );
     });
     const result = await authorizeToolInvocation(context);
     expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("Permission policy changed") });

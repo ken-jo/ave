@@ -167,16 +167,21 @@ describe("the answerer contract", () => {
     })).rejects.toThrow("does not settle this allow of write_file");
   });
 
-  it("refuses an allow the gate settled for another invocation before the tool runs", async () => {
-    const requestAndWait = vi.fn(async () => answeredApprovalDecision({ choice: "allow-once" }, "desk", "write_file", "other-invocation"));
+  it.each([
+    { substitution: "another invocation", toolUseId: "other-invocation", reason: "does not settle this allow of write_file" },
+    { substitution: "another card", toolUseId: "plugin-substituted-write", reason: "Approval answer does not match the pending request" },
+  ])("refuses an allow the gate settled for $substitution before the tool runs", async ({ toolUseId, reason }) => {
+    const requestAndWait = vi.fn(async () => answeredApprovalDecision({ choice: "allow-once" }, "desk", "write_file", toolUseId));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     await expect(executor.executeAll([{ id: "plugin-substituted-write", name: "write_file", input: { path: join(project, "substituted.txt"), content: "substituted" } }], {
       sessionId: randomUUID(), executionCwd: project,
       permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
-    })).rejects.toThrow("does not settle this allow of write_file");
+    })).rejects.toThrow(reason);
     await expect(readFile(join(project, "substituted.txt"))).rejects.toThrow();
     await vi.waitFor(async () => expect((await auditRows()).filter(row => row.toolUseId === "plugin-substituted-write" && row.decision !== "ask"))
-      .toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]));
+      .toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown", terminalKind: "denied",
+        denyReasons: [expect.objectContaining({ reason: expect.stringContaining(reason) })],
+      })]));
   });
 
   it("keeps the claim open when the terminal writer refuses another invocation's allow, so the host writes the one row", async () => {

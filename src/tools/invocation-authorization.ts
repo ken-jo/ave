@@ -12,7 +12,7 @@ import {
   type PermissionCheckContext,
   type PermissionCheckResult,
 } from "../permissions/permission-manager.js";
-import { answeredApprovalProvenance, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalRejectedDecision, RULE_PROVENANCE, type ApprovalDecision, type LinkedApprovalTarget } from "../permissions/approval-gate.js";
+import { answeredApprovalProvenance, answeredRecordForAction, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalRejectedDecision, RULE_PROVENANCE, type ApprovalDecision, type LinkedApprovalTarget } from "../permissions/approval-gate.js";
 import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import type {
   HostShellExecutionPlan,
@@ -1222,6 +1222,11 @@ export async function authorizeToolInvocation(
           return withHostShellExecutionPlan(
             await returnUserAbort(abortDeps(finalInput)),
           );
+        }
+
+        if (!isSettledRefusal(decision)) {
+          const receipt = answeredRecordForAction(answeredApprovalProvenance(decision), "allow", toolUse.name, toolUse.id);
+          if (receipt.requestId !== approvalRequestId) throw new Error("Approval answer does not match the pending request");
         }
 
         // This is intentionally immediately after the local decision. A P2
