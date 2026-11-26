@@ -91,6 +91,7 @@ import { ToolRegistry } from "../registry.js";
 import { createDynamicTool, type Tool, type ToolExecutionContext } from "../base.js";
 import { ApplyPatchTool, ReadFileTool, WriteFileTool, createFileTools } from "../file-tools.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+import { ApprovalPersistenceError } from "../../permissions/approval-persistence-guard.js";
 
 const ORIGINAL_PLATFORM = process.platform;
 const PROJECT = String.raw`D:\Fixture\Project`;
@@ -344,5 +345,62 @@ describe("native Windows file permission targets", () => {
     expect(check.mock.results.at(-1)?.value.pipelineRequest.paths).toContainEqual(expect.objectContaining({ canonical: identity }));
     if (linkedRoot) expect(requests[0]?.forceExplicit).toBeUndefined();
     else expect(requests[0]).toMatchObject({ forceExplicit: true, allowedChoices: ["allow-once", "deny-once"] });
+  });
+});
+
+describe("sealed file targets up to their effects", () => {
+  const LINK = `${PROJECT}\linked.txt`;
+  const INSIDE = `${PROJECT}\inside.txt`;
+
+  async function runAnswered(choice: "allow-once" | "allow-session" | "allow-always", drift: () => void, lifecycle?: { allowDirectory: (root: string, source: "permission-slash", authority?: { isCurrent(): boolean }) => Promise<string[]>; denyDirectory: () => Promise<string[]> }) {
+    const tool = new WriteFileTool();
+    const execute = vi.spyOn(tool, "execute");
+    const registry = new ToolRegistry();
+    registry.register(tool);
+    let answered = false;
+    const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => {
+      requests.push(request);
+      answered = true;
+      return { requestId: request.id, choice };
+    }) };
+    const ready = audit.isPermissionAuditChainReady.bind(audit);
+    vi.spyOn(audit, "isPermissionAuditChainReady").mockImplementation(() => {
+      if (answered && !lifecycle) { answered = false; drift(); }
+      return ready();
+    });
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined, lifecycle ? () => lifecycle as never : undefined);
+    const onTurnDirectoryGrant = vi.fn();
+    const onSessionDirectoryGrant = vi.fn();
+    const [result] = await executor.executeAll([{ id: "sealed-grant", name: tool.name, input: { path: OUTSIDE, content: "changed" } }], {
+      executionCwd: PROJECT, sessionId: "sealed-grant", permissionContext: { trustOrigin: "user-keyboard", onTurnDirectoryGrant, onSessionDirectoryGrant },
+    });
+    return { result, execute, grants: [...onTurnDirectoryGrant.mock.calls, ...onSessionDirectoryGrant.mock.calls] };
+  }
+
+  it.each(["allow-once", "allow-session"] as const)("commits no %s folder grant when the target changes during its audit", async (choice) => {
+    const { result, execute, grants } = await runAnswered(choice, () => entry(OUTSIDE, false, INSIDE));
+    expect(requests).toHaveLength(1);
+    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(t("be_executor.fileTargetChanged")) });
+    expect(grants).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("persists no always folder grant when the target changes before the commit", async () => {
+    const writes: string[] = [];
+    const lifecycle = {
+      allowDirectory: async (root: string, _source: "permission-slash", authority?: { isCurrent(): boolean }) => {
+        entry(OUTSIDE, false, INSIDE);
+        await Promise.resolve();
+        if (authority && !authority.isCurrent()) throw new ApprovalPersistenceError();
+        writes.push(root);
+        return writes;
+      },
+      denyDirectory: async () => writes,
+    };
+    const { result, execute } = await runAnswered("allow-always", () => undefined, lifecycle);
+    expect(requests).toHaveLength(1);
+    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(t("be_executor.fileTargetChanged")) });
+    expect(writes).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
   });
 });

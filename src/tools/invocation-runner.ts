@@ -11,6 +11,7 @@ import { selectDeclaredPathValues } from "../shared/dotted-field-value.js";
 import { isConfinedHostShellExecution } from "../permissions/host-shell-execution-plan.js";
 import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { criticalDeleteTargetFor } from "../permissions/sensitive-paths.js";
+import { sealedPersistenceGuard, sealsHold, sealTargets, type TargetSeal } from "../permissions/target-seal.js";
 import { hookChainFromDispatch } from "./pipeline/audit-entries.js";
 import { runScriptHook } from "./invocation-services.js";
 import { HookInputMutationRequest, attachHookControlContext, hookInfluenceContext } from "../hooks/hook-influence.js";
@@ -1571,11 +1572,11 @@ async function runToolInvocationAttempt(
       }
       return { filePath, canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), runtimePath };
     };
-    const assertFileTargetsUnchanged = (): void => {
-      for (const target of canonicalTargets) {
-        if (resolveFileTarget(target.filePath).runtimePath !== target.runtimePath) throw new Error("Target identity changed");
-      }
-    };
+    // Sealed by the initial path judgment: each operand's runtime path and the project anchors of its write judgment.
+    let fileTargetSeal: TargetSeal | undefined;
+    const assertFileTargetsUnchanged = (): void => { fileTargetSeal?.verify(); };
+    // A grant commit stands only on the targets and the directory its card approved, checked with the commit itself.
+    const grantStillSealed = (directorySeal: TargetSeal | undefined): boolean => sealsHold(fileTargetSeal, directorySeal);
     const denyFileTargets = async (reason: string): Promise<ToolResult> => {
       const durationMs = Date.now() - startTime;
       emitToolStart(callbacks, toolUse.name, finalInput, meta);
@@ -1614,7 +1615,7 @@ async function runToolInvocationAttempt(
       reviewerPathFields: readonly string[],
       behavior?: { reviewedPermission: PermissionCheckResult; requestId: string; allowedDirectories: readonly string[]; abortSignal?: AbortSignal },
     ): Promise<
-      | { allowed: true; approvedDirectory: string; scope: "turn" | "session" | "always"; permissionResult?: PermissionCheckResult; humanApproved?: boolean; pendingRationale?: true; requestHumanApproval?: NonNullable<AuthorizationStageContext["directoryAuthorization"]>["requestHumanApproval"]; approvalDecision?: ApprovalDecision }
+      | { allowed: true; approvedDirectory: string; scope: "turn" | "session" | "always"; directorySeal?: TargetSeal; permissionResult?: PermissionCheckResult; humanApproved?: boolean; pendingRationale?: true; requestHumanApproval?: NonNullable<AuthorizationStageContext["directoryAuthorization"]>["requestHumanApproval"]; approvalDecision?: ApprovalDecision }
       | { allowed: false; result: ToolResult; approvalDecision?: ApprovalDecision }
     > => {
       const abortSignal = services.invocationTerminal.bindAbortSignal(behavior?.abortSignal);
@@ -1769,7 +1770,7 @@ async function runToolInvocationAttempt(
             if (resolution.allowed && resolution.scope !== "turn") {
               const denied = await propagateGrantScope(
                 resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.provenance ?? RULE_PROVENANCE,
-                directoryApprovalSignal(approvalAbortSignal),
+                resolution.directorySeal, directoryApprovalSignal(approvalAbortSignal),
               );
               if (denied) throw new RationaleHumanApprovalDeniedError(denied.content);
               const afterDirectories = [...(invocationPermissionContext.getAdditionalDirectories?.() ?? invocationPermissionContext.additionalDirectories ?? [])];
@@ -1986,8 +1987,6 @@ async function runToolInvocationAttempt(
         if (grantGuard && !grantGuard.isCurrent()) {
           return { allowed: false, result: await denyDirectoryGrant(directorySignal) };
         }
-        try { withLocalityDecision(() => assertFileTargetsUnchanged()); }
-        catch { return { allowed: false, result: await denyFileTargets(changedTargetReason) }; }
         // A policy allow is kept as issued: later rechecks look the result itself up.
         const humanApproved = surfaceResolution.humanApproved ?? surfaceResolution.provenance === undefined;
         const approvedPermissionResult = humanApproved
@@ -2002,6 +2001,15 @@ async function runToolInvocationAttempt(
               ? decision.rememberPattern
               : suggestedParent ?? outOfAllowedTarget.filePath)
           : outOfAllowedTarget.filePath;
+        const grantedDirectory = decision.choice === "allow-session" ? suggestedParent ?? outOfAllowedTarget.filePath : approvedDirectory;
+        // The card approves this directory as it resolves now; each grant commit verifies it again.
+        let directorySeal: TargetSeal;
+        try {
+          directorySeal = withLocalityDecision(() => {
+            assertFileTargetsUnchanged();
+            return sealTargets(() => resolvePathForPolicy(grantedDirectory));
+          });
+        } catch { return { allowed: false, result: await denyFileTargets(changedTargetReason) }; }
         if (decision.choice === "allow-always" && !persistRefused) {
           // Persist no folder rule unless its grant audit is durable.
           await services.auditWriter.auditPermissionGrant({
@@ -2030,11 +2038,12 @@ async function runToolInvocationAttempt(
                   path: approvedDirectory,
                   session: false,
                   acknowledgeWarnings: true,
-                }, undefined, lifecycle, grantGuard)
+                }, undefined, lifecycle, sealedPersistenceGuard(grantGuard, fileTargetSeal, directorySeal))
               : { ok: false as const, error: "workspace lifecycle unavailable" };
             assertApprovalPersistenceCurrent(grantGuard);
           } catch (error) {
             if (!(error instanceof ApprovalPersistenceError)) throw error;
+            if (!grantStillSealed(directorySeal)) return { allowed: false, result: await denyFileTargets(changedTargetReason) };
             return { allowed: false, result: await denyDirectoryGrant(directorySignal) };
           }
           if (!dirResult.ok || dirResult.verb !== "allow") {
@@ -2045,7 +2054,7 @@ async function runToolInvocationAttempt(
             await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, hostRefusalOfApproval(`folder rule save failed: ${dirResult.ok ? "unexpected result" : dirResult.error}`, approvedPermissionResult.provenance), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
             return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
           }
-          return { allowed: true, approvalDecision: decision, approvedDirectory, scope: "always", permissionResult: approvedPermissionResult, humanApproved };
+          return { allowed: true, approvalDecision: decision, approvedDirectory, scope: "always", permissionResult: approvedPermissionResult, humanApproved, directorySeal };
         }
         if (decision.choice === "allow-session") {
           // Mirror allow-always' persist convention so the permission
@@ -2057,7 +2066,7 @@ async function runToolInvocationAttempt(
           // the next tool call in the same conversation hitting a
           // sibling path under the same directory passes Layer 1
           // without re-prompting.
-          const sessionScopePath = suggestedParent ?? outOfAllowedTarget.filePath;
+          const sessionScopePath = grantedDirectory;
           const dirResult = await dispatchPermissionDirCommand({
             verb: "allow",
             path: sessionScopePath,
@@ -2075,10 +2084,10 @@ async function runToolInvocationAttempt(
             await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, hostRefusalOfApproval(`session folder registration failed: ${dirResult.ok ? "unexpected result" : dirResult.error}`, approvedPermissionResult.provenance), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
             return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
           }
-          return { allowed: true, approvalDecision: decision, approvedDirectory: sessionScopePath, scope: "session", permissionResult: approvedPermissionResult, humanApproved: true };
+          return { allowed: true, approvalDecision: decision, approvedDirectory: sessionScopePath, scope: "session", permissionResult: approvedPermissionResult, humanApproved: true, directorySeal };
         }
         // allow-once: turn-scope, no persistence, narrowest path.
-        return { allowed: true, approvalDecision: decision, approvedDirectory, scope: "turn", permissionResult: approvedPermissionResult, humanApproved: true };
+        return { allowed: true, approvalDecision: decision, approvedDirectory, scope: "turn", permissionResult: approvedPermissionResult, humanApproved: true, directorySeal };
       }
 
       throw new Error("Human approval requires an available approval surface");
@@ -2116,6 +2125,7 @@ async function runToolInvocationAttempt(
       approvedDirectory: string,
       scope: "turn" | "session" | "always",
       provenance: DecisionProvenance,
+      directorySeal: TargetSeal | undefined,
       signal = abortSignal,
     ): Promise<ToolResult | undefined> => {
       if (scope === "always") return; // The workspace lifecycle already audited and committed the grant.
@@ -2149,6 +2159,7 @@ async function runToolInvocationAttempt(
         if (!(error instanceof ApprovalPersistenceError)) throw error;
         return denyDirectoryGrant(signal);
       }
+      if (!grantStillSealed(directorySeal)) return denyFileTargets(changedTargetReason);
       commit?.call(invocationPermissionContext, approvedDirectory);
     };
 
@@ -2280,9 +2291,10 @@ async function runToolInvocationAttempt(
               ...(resolution.pendingRationale ? { pendingRationale: true, requestHumanApproval: resolution.requestHumanApproval } : {}) };
           }
           if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) {
-             const denied = await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.provenance ?? RULE_PROVENANCE);
+             const denied = await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.provenance ?? RULE_PROVENANCE, resolution.directorySeal);
             if (denied) return denied;
           }
+          if (!grantStillSealed(resolution.directorySeal)) return await denyFileTargets(changedTargetReason);
           applyApprovedDirectory(resolution.approvedDirectory);
           for (const path of resolution.permissionResult?.pipelineRequest?.paths ?? []) applyApprovedDirectory(path.canonical);
           continue;
@@ -2407,8 +2419,13 @@ async function runToolInvocationAttempt(
       const rawProjectRoots = [executionCwd, ...(permissionContext.projectDirectories ?? [])];
       const projectRoots = sanitizeAllowedDirectories(rawProjectRoots);
       const lexicalProjectRoots = rawProjectRoots.map((root) => caseFoldForMatch(foldCanonicalPathSeparators(resolveToolPathForPermission(root, executionCwd))));
-      const insideProject = nativeFileWrite && areProjectWriteTargetsInside(canonicalTargets, lexicalProjectRoots, projectRoots,
-        unsealedRuleSubject?.kind === "edit" ? unsealedRuleSubject.paths : undefined);
+      const judgeProjectWrite = (roots: readonly string[]): boolean => nativeFileWrite && areProjectWriteTargetsInside(canonicalTargets,
+        lexicalProjectRoots, roots, unsealedRuleSubject?.kind === "edit" ? unsealedRuleSubject.paths : undefined);
+      const insideProject = judgeProjectWrite(projectRoots);
+      if (canonicalTargets.length > 0) fileTargetSeal = sealTargets(() => {
+        const roots = sanitizeAllowedDirectories(rawProjectRoots);
+        return JSON.stringify([canonicalTargets.map((target) => resolveFileTarget(target.filePath).runtimePath), roots, judgeProjectWrite(roots)]);
+      });
       return { sensitiveTarget, linkedTargets, projectRoots, insideProject };
     });
     let initialPathScope: ReturnType<typeof initialPathJudgment>;
@@ -2587,18 +2604,16 @@ async function runToolInvocationAttempt(
           tool.pathFields ?? [],
         );
         if (!resolution.allowed) return resolution.result;
-        try { withLocalityDecision(() => assertFileTargetsUnchanged()); }
-        catch { return await denyFileTargets(changedTargetReason); }
+        if (!grantStillSealed(resolution.directorySeal)) return await denyFileTargets(changedTargetReason);
         if (resolution.permissionResult) {
           permissionResult = resolution.permissionResult;
           directoryAuthorization = { permission: resolution.permissionResult, humanApproved: resolution.humanApproved === true,
             ...(resolution.pendingRationale ? { pendingRationale: true, requestHumanApproval: resolution.requestHumanApproval } : {}) };
         }
         if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) {
-          const denied = await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.provenance ?? RULE_PROVENANCE);
+          const denied = await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.provenance ?? RULE_PROVENANCE, resolution.directorySeal);
           if (denied) return denied;
-          try { withLocalityDecision(() => assertFileTargetsUnchanged()); }
-          catch { return await denyFileTargets(changedTargetReason); }
+          if (!grantStillSealed(resolution.directorySeal)) return await denyFileTargets(changedTargetReason);
         }
         applyApprovedDirectory(resolution.approvedDirectory);
         // The one card authorizes the complete sealed invocation; saved folders retain only the chosen scope.
@@ -2804,6 +2819,7 @@ async function runToolInvocationAttempt(
       approvedPolicyEpoch: authorization.approvedPolicyEpoch,
       permissionRecheckResult: authorization.permissionRecheckResult,
       replayRootBinding: opts.replayRootBinding,
+      fileTargetSeal,
       abortSignal,
       hostShellExecutionPermitBinding,
       hostShellApprovalDecision,
@@ -2844,6 +2860,8 @@ async function runToolInvocationAttempt(
       pluginOperationPrincipal,
       pluginAuthLifecycle,
     });
+    // The checkpoint snapshots the sealed project roots before the handler admission rechecks them.
+    if (permissionResult?.requiresCodeCheckpoint === true && !grantStillSealed(undefined)) return await denyFileTargets(changedTargetReason);
     const executedResult = permissionResult?.requiresCodeCheckpoint === true
       ? await withProjectWriteRoots(projectRoots, () => withRequiredCodeCheckpoint(executeAuthorized))
       : await executeAuthorized();

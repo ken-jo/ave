@@ -47,6 +47,7 @@ import {
 import { TOOL_RESULT_READ_MAX_CHARS } from "../shared/bounded-tool-output.js";
 import { TOOL_RESULT_CHUNK_READER_METADATA_KEY } from "./tool-result-chunk.js";
 import { t } from "../i18n/index.js";
+import type { TargetSeal } from "../permissions/target-seal.js";
 import { createLogger } from "../lib/logger.js";
 import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
 import type { Tool } from "./base.js";
@@ -199,6 +200,8 @@ export interface ExecutionStageContext {
   approvedPolicyEpoch?: string;
   permissionRecheckResult?: PermissionCheckResult;
   replayRootBinding?: ReplayRootBinding;
+  /** The file targets and project anchors the authorization judged; verified at handler admission. */
+  fileTargetSeal?: TargetSeal;
   abortSignal: AbortSignal | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
@@ -939,6 +942,13 @@ export async function executeAuthorizedToolInvocation(
   // Nothing asynchronous may separate this check from the handler call.
   const assertHandlerAdmission = (signal: AbortSignal): void => {
     signal.throwIfAborted();
+    if (context.fileTargetSeal) {
+      try { context.fileTargetSeal.verify(); }
+      catch {
+        permissionResult = refusal("File target changed before execution.", RULE_PROVENANCE);
+        throw new Error(t("be_executor.fileTargetChanged"));
+      }
+    }
     if (services.requirePermissionAuditChain) {
       try {
         services.auditLogger.assertPermissionAuditWritable();
