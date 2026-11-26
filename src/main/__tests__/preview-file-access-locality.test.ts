@@ -70,7 +70,8 @@ describe.runIf(process.platform === "win32")("preview file access drive queries"
   });
 
   it("revokes the frame receipts and stops polling when a later drive query throws", () => {
-    const paths = ["first.txt", "second.txt"].map(receiptPath);
+    const first = receiptPath("first.txt");
+    const paths = [first, receiptPath("second.txt")];
     for (const path of paths) recordPreviewFileAccess(event, deps, path);
 
     const interval = PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs;
@@ -83,15 +84,15 @@ describe.runIf(process.platform === "win32")("preview file access drive queries"
     expect(sender.listenerCount("destroyed")).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
 
-    recordPreviewFileAccess(event, deps, paths[0]!);
-    expect(previewFileReadAuthorizes(event, deps, paths[0]!)).toBe(true);
+    recordPreviewFileAccess(event, deps, first);
+    expect(previewFileReadAuthorizes(event, deps, first)).toBe(true);
     query.mockClear();
     vi.advanceTimersByTime(interval);
     expectOneQueryPerDrive();
   });
 
   it("queries each drive once per tick for multiple receipts and rechecks a revoked scope", () => {
-    const paths = ["first.txt", "second.txt", "third.txt"].map(receiptPath);
+    const paths = Array.from({ length: 12 }, (_, index) => receiptPath(`notes-${index}.txt`));
     for (const path of paths) {
       recordPreviewFileAccess(event, deps, path);
       expect(previewFileReadAuthorizes(event, deps, path)).toBe(true);
@@ -101,6 +102,7 @@ describe.runIf(process.platform === "win32")("preview file access drive queries"
     readPermissionSettings.mockClear();
     vi.advanceTimersByTime(PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs);
     expect(readPermissionSettings).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls.length).toBeLessThanOrEqual(4);
     expectOneQueryPerDrive();
 
     query.mockClear();
@@ -108,6 +110,7 @@ describe.runIf(process.platform === "win32")("preview file access drive queries"
     readPermissionSettings.mockReturnValueOnce({ permissions: { additionalDirectories: [] } });
     vi.advanceTimersByTime(PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs);
     expect(readPermissionSettings).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls.length).toBeLessThanOrEqual(4);
     expectOneQueryPerDrive();
 
     for (const path of paths) expect(previewFileReadAuthorizes(event, deps, path)).toBe(false);

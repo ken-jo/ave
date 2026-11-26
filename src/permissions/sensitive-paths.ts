@@ -1386,13 +1386,16 @@ function createPathSensitivityMatcher(
     })) {
       return "runtime-settings-file";
     }
-    const roots = state.roots ??= {
-      session: !nameOnly && effect === "read" ? getConfiguredSessionReadRoot() : undefined,
-      keys: (nameOnly
-        ? runtimeSecretKeyPaths?.configured === process.env.AVE_SECRET_KEY_FILE ? runtimeSecretKeyPaths?.paths ?? []
-          : process.env.AVE_SECRET_KEY_FILE === undefined ? [] : [pathResolve(process.env.AVE_SECRET_KEY_FILE)]
-        : getRuntimeSensitiveKeyPaths()).map((path) => caseFoldForMatch(foldCanonicalPathSeparators(path))),
-    };
+    if (state.roots === undefined) {
+      state.roots = {
+        session: !nameOnly && effect === "read" ? getConfiguredSessionReadRoot() : undefined,
+        keys: (nameOnly
+          ? runtimeSecretKeyPaths?.configured === process.env.AVE_SECRET_KEY_FILE ? runtimeSecretKeyPaths?.paths ?? []
+            : process.env.AVE_SECRET_KEY_FILE === undefined ? [] : [pathResolve(process.env.AVE_SECRET_KEY_FILE)]
+          : getRuntimeSensitiveKeyPaths()).map((path) => caseFoldForMatch(foldCanonicalPathSeparators(path))),
+      };
+    }
+    const roots = state.roots;
     const sessionRoot = roots.session === undefined ? undefined : caseFoldForMatch(roots.session);
     const foldedPath = caseFoldForMatch(normalizedPath);
     const canReadSession = sessionRoot !== undefined
@@ -1418,7 +1421,8 @@ function createPathSensitivityMatcher(
     }
     if (nameOnly) return null;
     // A relocated application root need not contain a literal namespace segment.
-    const application = state.application ??= buildApplicationIndex();
+    state.application ??= buildApplicationIndex();
+    const application = state.application;
     const parent = foldedPath.slice(0, foldedPath.lastIndexOf("/"));
     const directories = applicationAt(application, parent);
     const exact = application.exact.get(foldedPath);
