@@ -1,3 +1,4 @@
+import { writePermissionSettingsFixture } from "../../../src/__tests__/support/permission-settings-fixture.js";
 import { test, expect } from "@playwright/test";
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -56,7 +57,7 @@ test(`agent shell output streams locally while user terminal commands stay outsi
     ctx = await launchSeededElectron({ sessionTitle: "Agent terminal activity", settings, historyRows: [] });
     ctx.page.on("pageerror", (error) => appErrors.push(error.message));
     ctx.page.on("crash", () => appErrors.push("Renderer process crashed"));
-    writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [directory],
+    writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [directory],
       reviewer: { interactive: { autoApprove: "off" } } } }));
     await setWindowSize(ctx.app, 1280, 860);
     await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();
