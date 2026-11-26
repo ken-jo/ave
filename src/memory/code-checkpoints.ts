@@ -547,17 +547,27 @@ export async function checkpointFileMutation<T>(
   run: () => Promise<T>,
   seal?: TargetSeal,
 ): Promise<T> {
-  seal?.verify();
   const sessionId = turnContext.getStore()?.sessionId ?? currentAgentObservationIdentity()?.sessionId;
   if (!sessionId) return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, run, seal));
-  const originals = await Promise.all(effects.map(async (effect) => {
+  const baselinePaths = withLocalityDecision(() => {
+    seal?.verify();
+    return effects.map((effect) => {
+      try { return resolvePhysicalFilesystemPath(effect.path, process.cwd(), 64); }
+      catch (error) {
+        rethrowLocalityFailure(error);
+        if (!isTerminalReviewUnavailable(error)) throw error;
+        log.warn("terminal review baseline unavailable: %s", (error as Error).message);
+        return undefined;
+      }
+    });
+  });
+  const originals = await Promise.all(effects.map(async (effect, index) => {
+    const path = baselinePaths[index];
+    if (path === undefined) return { path: effect.path, requestedPath: effect.path, before: undefined };
     try {
-      const path = withLocalityDecision(() => {
-        seal?.verify();
-        return resolvePhysicalFilesystemPath(effect.path, process.cwd(), 64);
-      });
       return { path, requestedPath: effect.path, before: await readTerminalReviewText(path) };
     } catch (error) {
+      rethrowLocalityFailure(error);
       if (!isTerminalReviewUnavailable(error)) throw error;
       log.warn("terminal review baseline unavailable: %s", (error as Error).message);
       return { path: effect.path, requestedPath: effect.path, before: undefined };
@@ -659,15 +669,20 @@ async function checkpointMutation<T>(
         if (!current || hash(current.bytes) !== change.beforeHash) throw new Error("File changed before checkpointed mutation");
       }
     } catch (error) {
+      rethrowLocalityFailure(error);
       turn.changes = turn.changes.filter((entry) => !changes.includes(entry));
       await save(turns, turn);
       throw error;
     }
     requireAvailableCheckpoint(identity);
+    const snapshotForBookkeeping = (path: string) => snapshot(path, seal).catch((error: unknown) => {
+      rethrowLocalityFailure(error);
+      return undefined;
+    });
     const removeUnchanged = async () => {
       // No-op failures claim no edit; partial effects remain guarded by the intended after-hash.
       for (const change of changes) {
-        const current = await snapshot(change.path).catch(() => undefined);
+        const current = await snapshotForBookkeeping(change.path);
         if (current && hash(current.bytes) === change.beforeHash) {
           const index = turn.changes.indexOf(change);
           if (index >= 0) turn.changes.splice(index, 1);
@@ -682,7 +697,7 @@ async function checkpointMutation<T>(
         const captures = turn.changes.filter((entry) => entry.path === change.path);
         if (captures.at(-1) !== change
           || captures.some((entry, index) => index > 0 && captures[index - 1].afterHash !== entry.beforeHash)) continue;
-        const current = await snapshot(change.path).catch(() => undefined);
+        const current = await snapshotForBookkeeping(change.path);
         if (!current || hash(current.bytes) !== change.afterHash) continue;
         const first = captures[0];
         const before = (await hydrate(first)).before;
@@ -706,19 +721,22 @@ async function checkpointMutation<T>(
       }
       if (recorded) await save(turns, turn);
     };
+    let recordCounts = false;
     try {
       const result = await run();
       if (result && typeof result === "object" && "isError" in result && result.isError === true) {
         await removeUnchanged();
       }
+      recordCounts = true;
       return result;
     } catch (error) {
       rethrowLocalityFailure(error);
       await removeUnchanged();
+      recordCounts = true;
       throw error;
     } finally {
       // Informational totals never replace the effect outcome or weaken restore hashes.
-      await recordVerifiedCounts().catch((error: unknown) => log.warn("checkpoint line counts unavailable: %s", (error as Error).message));
+      if (recordCounts) await recordVerifiedCounts().catch((error: unknown) => log.warn("checkpoint line counts unavailable: %s", (error as Error).message));
     }
   });
 }
