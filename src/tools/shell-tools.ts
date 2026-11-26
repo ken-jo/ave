@@ -4180,9 +4180,10 @@ async function spawnPowerShellInMxc(
   const installation = resolveTrustedPowerShellExecutable();
   const systemExecutable = win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe");
   if (installation === null || installation.kind !== "windows-powershell"
-    || win32Path.normalize(installation.executable).toLowerCase() !== systemExecutable.toLowerCase()) {
+    || installation.assertStillValid === undefined || win32Path.normalize(installation.executable).toLowerCase() !== systemExecutable.toLowerCase()) {
     return mxcSpawnFailure("trusted system installation is unavailable");
   }
+  const assertInterpreter = installation.assertStillValid;
   // The invocation's one owner: each resource below registers with it as it is allocated, and every
   // failure is formatted only after disposal, from the raw errors.
   const lifecycle = createContainedShellLifecycle();
@@ -4244,6 +4245,12 @@ async function spawnPowerShellInMxc(
       env: powerShellExecutionEnvironment(verified, powerShellLaunch.env),
       timeoutMs: resolveShellTimeoutMs(timeoutSeconds),
       exists: existsSync,
+      assertCommand: () => {
+        assertInterpreter();
+        if (verified !== undefined && verifiedShellExecution(verified.handle, verified.identity) === undefined) {
+          throw new Error("Verified shell command is no longer available for this invocation");
+        }
+      },
     }, lifecycle));
     signal?.throwIfAborted();
     const gate = currentEffectGateContext();

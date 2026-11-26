@@ -3,7 +3,7 @@ import { accessSync, constants, lstatSync, readdirSync, realpath, realpathSync, 
 import { access, lstat, readdir } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 import { check, runChecksAsync, runChecksSync, type Checks } from "./sync-async-checks.js";
-import { admitWindowsReparse, mapWindowsGenericRights, readWindowsDacls, type WindowsDaclFacts } from "./windows-path-facts.js";
+import { admitWindowsReparse, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsObjectKey, type WindowsDaclFacts } from "./windows-path-facts.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 
 export interface VerifiedExecutableCandidate {
@@ -14,6 +14,7 @@ export interface VerifiedExecutableCandidate {
 
 export interface VerifiedExecutable {
   readonly executable: string;
+  readonly assertStillValid?: () => void;
 }
 
 const trustedWindowsWriters = new Set([
@@ -209,7 +210,7 @@ function verifyWindowsInstallation(candidate: string, roots: readonly string[]):
     }
     const pending = roots.map(path => ({ path, depth: 0 }));
     let inspected = 0;
-    let foundExecutable = false;
+    let executableIdentity: string | undefined;
     while (pending.length > 0) {
       const batch = pending.splice(Math.max(0, pending.length - 16), 16);
       if (batch.some(({ path, depth }) => path.length > 1024 || depth > MAX_INSTALLATION_DEPTH)
@@ -222,13 +223,18 @@ function verifyWindowsInstallation(candidate: string, roots: readonly string[]):
         const row = rows[index]!;
         if (path.toLowerCase() === candidate.toLowerCase()) {
           if (row.directory) return null;
-          foundExecutable = true;
+          executableIdentity = windowsObjectKey(row);
         }
         // Prove the directory before reading its entries. A writable subtree
         // never becomes startup work merely because a protected parent names it.
         if (row.directory) for (const name of readdirSync(path)) pending.push({ path: win32.join(path, name), depth: depth + 1 });
       }
     }
-    return foundExecutable ? Object.freeze({ executable: candidate }) : null;
+    if (executableIdentity === undefined) return null;
+    return Object.freeze({ executable: candidate, assertStillValid: () => {
+      const current = pinWindowsPaths([candidate])[0];
+      if (!current || current.exists !== true || current.directory || admitWindowsReparse(current) !== true
+        || windowsObjectKey(current) !== executableIdentity) throw new Error("Verified executable changed before spawn");
+    } });
   } catch { return null; }
 }

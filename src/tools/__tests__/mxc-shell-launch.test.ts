@@ -25,6 +25,7 @@ const h = vi.hoisted(() => ({
   startRoot: vi.fn((): string => "C:\\Users\\alice\\AppData\\Local\\ai.agent-connector.ave\\mxc-runtime"),
   // Stands for the issued-HOME identity check (its own suite runs it on real directories): the invocation's HOME itself.
   issuedHome: vi.fn((cwd: string, home: string | undefined): boolean => cwd === home),
+  assertHome: vi.fn(),
 }));
 vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/mxc-runtime-root.js")>(),
@@ -33,6 +34,7 @@ vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
 vi.mock("../../permissions/sandbox-home-registry.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/sandbox-home-registry.js")>(),
   isIssuedContainerHome: (cwd: string, home: string | undefined) => h.issuedHome(cwd, home),
+  assertIssuedContainerHomeInPlace: (home: string | undefined) => h.assertHome(home),
 }));
 type DriveKind = "dir" | "file" | "link" | "placeholder" | "vanished";
 vi.mock("node:fs", async (importOriginal) => {
@@ -213,6 +215,33 @@ afterEach(() => {
 });
 
 describe("prepareMxcShellLaunch", () => {
+  it.each(["HOME", "command", "grant"] as const)("refuses a prepared launch after its %s proof changes", async change => {
+    const lifecycle = createContainedShellLifecycle();
+    const preparing = deferred<void>();
+    const resume = deferred<void>();
+    const home = String.raw`C:\private\home`;
+    onDrive(home);
+    relay();
+    const inherited = h.openRelay.getMockImplementation()!;
+    h.openRelay.mockImplementation(async (...args) => {
+      const opened = await inherited(...args);
+      preparing.resolve();
+      await resume.promise;
+      return opened;
+    });
+    let live = true;
+    h.assertHome.mockImplementation(() => { if (!live && change === "HOME") throw new Error("HOME proof expired"); });
+    const assertCommand = () => { if (!live && change === "command") throw new Error("command proof expired"); };
+    try {
+      const pending = prepareMxcShellLaunch({ ...INPUT, sandboxHome: home, ...{ assertCommand } }, lifecycle);
+      await preparing.promise;
+      live = false;
+      if (change === "grant") h.drive.delete(WS.toLowerCase());
+      resume.resolve();
+      await expect(pending.then(launch => launch.activate())).rejects.toThrow(/proof expired|grant changed/iu);
+    } finally { h.assertHome.mockReset(); await lifecycle.dispose(); }
+  });
+
   it("leaves what it allocated to its owner when the system root is missing", async () => {
     const roots = ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"];
     const previous = roots.map(key => process.env[key]);

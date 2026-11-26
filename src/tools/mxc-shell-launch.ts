@@ -3,6 +3,7 @@
 import { win32 as winPath } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
+import { pinWindowsPaths, windowsObjectKey } from "../shared/windows-path-facts.js";
 
 import { appOwnedSandboxPrivateRoots, aveHomeReadBoundaryCovering, getProtectedReadDenyFloor, getUserReadDenies, insideOwnWindowsSandboxHome, protectedReadDenyMatcher } from "../permissions/asrt-sandbox.js";
 import { openInvocationProxyListener } from "../permissions/egress-invocation-listener.js";
@@ -13,6 +14,7 @@ import { observeWindowsBackend, reportWindowsBackendLoss, type WindowsBackendObs
 import {
   buildMxcShellRequest,
   getHostWxcExecIdentity,
+  isWindowsPathAtOrUnder,
   openMxcRequestTransport,
   rankMxcFilesystem,
   resolveHostWxcExecPath,
@@ -83,6 +85,7 @@ export interface PrepareMxcShellLaunchInput {
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
   readonly exists: (path: string) => boolean;
+  readonly assertCommand?: () => void;
 }
 
 /** Margin MXC's own timeout keeps behind the host's lifetime watch. */
@@ -97,7 +100,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   const capability = detectMxcShellCapability();
   if (capability === undefined) throw new Error("Container shell route is unavailable");
   // Before anything is allocated: a runtime root that was not proved private refuses every container start.
-  requireMxcContainerStartRoot();
+  const runtimeRoot = requireMxcContainerStartRoot();
   const token = input.egressToken;
   const owner = egressInvocationOwner(token);
   if (owner?.kind !== "shell" || owner.requiresListener !== true) {
@@ -164,6 +167,22 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   const userDenyRead = getUserReadDenies();
   const protectedFloor = getProtectedReadDenyFloor().filter((path) => !userDenyRead.includes(path));
   const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, denyRead, protectedFloor, userDenyRead }));
+  const allowed = [...grants.readwrite, ...grants.readonly];
+  const cwd = allowed.some(path => isWindowsPathAtOrUnder(input.cwd, path)) ? [input.cwd] : [];
+  const paths = [...new Set([...cwd, ...allowed, ...grants.denied]
+    .map(path => {
+      const normalized = winPath.normalize(path);
+      return normalized === winPath.parse(normalized).root ? normalized : normalized.replace(/\\+$/u, "");
+    }))];
+  const grantIdentity = () => {
+    const facts = [];
+    for (let start = 0; start < paths.length; start += 32) {
+      facts.push(...pinWindowsPaths(paths.slice(start, start + 32)));
+    }
+    return JSON.stringify(facts.map(row => [...row.ancestors, row].map(part => [part.exists,
+      part.exists === true ? windowsObjectKey(part) : null, part.canonical, part.directory, part.reparseTag, part.reparseTarget])));
+  };
+  const admittedGrants = grantIdentity();
   assertAdmission();
   const relay = await openHostEgressListener(token, admission);
   assertAdmission();
@@ -195,6 +214,10 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     proxyPort: listener.port,
     activate: () => {
       assertAdmission();
+      if (requireMxcContainerStartRoot() !== runtimeRoot) throw new Error("Container runtime root changed before spawn");
+      assertIssuedContainerHomeInPlace(input.sandboxHome);
+      input.assertCommand?.();
+      if (grantIdentity() !== admittedGrants) throw new Error("Container filesystem grant changed before spawn");
       if (getHostWxcExecIdentity() !== launcherIdentity) throw new Error("Contained shell launcher changed before spawn");
       const observation = observeWindowsBackend("container");
       active = true;
