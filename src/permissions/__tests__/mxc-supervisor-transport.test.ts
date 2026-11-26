@@ -17,7 +17,7 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 vi.mock("../../main/host-resources.js", () => ({ getHostResources: () => ({ resourcePath: "unit-resources", isPackaged: false }) }));
 vi.mock("../../main/managed-child-processes.js", () => ({ spawnManaged: vi.fn() }));
 
-function transportFixture(request = createMxcExtensionRequest()) {
+function transportFixture(request = createMxcExtensionRequest(), holdStartWrite?: (complete: () => void) => void) {
   const fixture = createMxcNativeProcess();
   const probe = vi.fn(() => ({ tier: "base-container", needsDaclAugmentation: false, probes: { baseContainerSupportsEnumeratePaths: true } } as ProbeOutput));
   const spawn = vi.fn(async () => fixture.native as unknown as MxcProcess);
@@ -30,6 +30,12 @@ function transportFixture(request = createMxcExtensionRequest()) {
   const fatal = vi.fn();
   const spawnSupervisor = vi.fn((_entry: string, _modules: string, generation: string) => {
     const controls = new PassThrough(); events = new PassThrough(); liveness = new PassThrough();
+    if (holdStartWrite) {
+      vi.spyOn(controls, "_write").mockImplementationOnce((chunk, _encoding, callback) => {
+        controls.push(chunk);
+        holdStartWrite(() => callback());
+      });
+    }
     const diagnostics = new PassThrough();
     child = Object.assign(new EventEmitter(), {
       pid: 314159, stdin: controls, stdout: events, stderr: diagnostics, stdio: [controls, events, diagnostics, liveness],
@@ -166,6 +172,24 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     expect(f.fatal).not.toHaveBeenCalled();
   });
 
+  it("refuses superseded admission while authorization waits for the start write", async () => {
+    let completeStart!: () => void;
+    let current = true;
+    const f = transportFixture(createMxcExtensionRequest(), (complete) => { completeStart = complete; });
+    const beforeSpawn = vi.fn(() => { if (!current) throw new Error("Admission superseded"); });
+    const outcome = f.launch(undefined, (event) => {
+      if (event.type === "creating") queueMicrotask(() => {
+        current = false;
+        completeStart();
+      });
+    }, beforeSpawn).then(async (owned) => { await owned.dispose(); return undefined; }, (error: unknown) => error);
+    expect(await outcome).toMatchObject({ message: "Extension admission revalidation failed" });
+    expect(beforeSpawn).toHaveBeenCalledOnce();
+    expect(f.spawn).not.toHaveBeenCalled();
+    await f.service;
+    expect(f.child.kill).not.toHaveBeenCalled();
+    expect(f.fatal).not.toHaveBeenCalled();
+  });
   it("refuses asynchronous admission checks without creating a container", async () => {
     const f = transportFixture();
     await expect(f.launch(undefined, undefined, async () => {})).rejects.toBeInstanceOf(MxcProcessContractError);

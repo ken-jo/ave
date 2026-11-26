@@ -137,20 +137,23 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
         this.observe({ type: "creating" });
         if (this.stopping || this.failure) continue;
         try {
-          // The authenticated request arrives after native bootstrap and probing.
-          // Recheck admission synchronously; no asynchronous caller work may extend it.
-          const result: unknown = this.beforeSpawn?.();
-          if (result !== undefined) {
-            void Promise.resolve(result).catch(() => {});
-            throw new MxcProcessContractError("Extension admission check must be synchronous");
-          }
-        } catch (cause) {
-          this.fail(new MxcProcessContractError("Extension admission revalidation failed", { cause }));
-          continue;
+          await this.channel.send({ type: "spawn-authorized" }, () => {
+            if (this.stopping || this.failure) throw new MxcProcessContractError("Extension start was cancelled");
+            try {
+              const result: unknown = this.beforeSpawn?.();
+              if (result !== undefined) {
+                void Promise.resolve(result).catch(() => {});
+                throw new MxcProcessContractError("Extension admission check must be synchronous");
+              }
+            } catch (cause) {
+              throw new MxcProcessContractError("Extension admission revalidation failed", { cause });
+            }
+            if (this.stopping || this.failure) throw new MxcProcessContractError("Extension start was cancelled");
+            this.creationStarted = true;
+          });
+        } catch (error) {
+          if (!this.stopping || this.creationStarted) this.fail(error as Error);
         }
-        if (this.stopping || this.failure) continue;
-        this.creationStarted = true;
-        await this.channel.send({ type: "spawn-authorized" });
       } else if (frame.type === "spawning") {
         if (!this.creationRequested || !this.creationStarted || this.spawnInvoked || this.id) throw new MxcProcessContractError("Unexpected supervisor spawning receipt");
         this.spawnInvoked = true;
