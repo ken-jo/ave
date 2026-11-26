@@ -76,10 +76,22 @@ int wmain(int argc, wchar_t** argv) {
   // `--receipt <absolute path>` appends "0" to an existing registered receipt only
   // after the closed job is proven empty.
   const bool contained = argc >= 2 && wcscmp(argv[1], L"--receipt") == 0;
-  const int first = contained ? 3 : 1;
+  // `--hold-pipe <pipe> <helper pid>`: the command also joins the job owned by that working-directory
+  // hold helper while still suspended, and succeeds only once the helper reports that job empty.
+  const bool held = argc >= 2 && wcscmp(argv[1], L"--hold-pipe") == 0;
+  const int first = contained ? 3 : held ? 4 : 1;
   if (contained && (argc < 3 || !absolutePath(argv[2]))) {
     std::fprintf(stderr, "Windows job launcher requires an absolute receipt path\n");
     return 125;
+  }
+  DWORD holder = 0;
+  if (held) {
+    wchar_t* end = nullptr;
+    holder = argc >= 4 ? wcstoul(argv[3], &end, 10) : 0;
+    if (holder == 0 || end == nullptr || *end != L'\0' || wcsncmp(argv[2], L"\\\\.\\pipe\\ave-hold-", 18) != 0) {
+      std::fprintf(stderr, "Windows job launcher requires a hold pipe and its helper process\n");
+      return 125;
+    }
   }
   if (argc <= first || !absolutePath(argv[first])) {
     std::fprintf(stderr, "Windows job launcher requires an absolute executable path\n");
@@ -141,18 +153,43 @@ int wmain(int argc, wchar_t** argv) {
   // Assignment is atomic with creation, eliminating even an abandoned suspended
   // process if this launcher is terminated between creation and assignment.
   if (!CreateProcessW(argv[first], commandLine.data(), nullptr, nullptr, TRUE,
-                      EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+                      EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | (held ? CREATE_SUSPENDED : 0),
                       nullptr, nullptr, &startup.StartupInfo, &child)) return fail("CreateProcess in job");
   DeleteProcThreadAttributeList(attributes);
   for (HANDLE handle : inherited) CloseHandle(handle);
+  HANDLE hold = INVALID_HANDLE_VALUE;
+  if (held) {
+    hold = CreateFileW(argv[2], GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                       SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
+    ULONG server = 0;
+    DWORD count = 0;
+    char reply = 0;
+    // The helper PID check refuses a pipe recreated under the same name after the helper died.
+    const bool assigned = hold != INVALID_HANDLE_VALUE && GetNamedPipeServerProcessId(hold, &server) && server == holder &&
+                          WriteFile(hold, &child.dwProcessId, sizeof(DWORD), &count, nullptr) && count == sizeof(DWORD) &&
+                          ReadFile(hold, &reply, 1, &count, nullptr) && count == 1 && reply == 'A';
+    if (!assigned || ResumeThread(child.hThread) == static_cast<DWORD>(-1)) {
+      TerminateProcess(child.hProcess, 125);
+      std::fprintf(stderr, "Windows job launcher: cwd-pin-lost: the working directory hold is not available\n");
+      return 125;
+    }
+  }
   CloseHandle(child.hThread);
-  HANDLE owner = CreateThread(nullptr, 0, watchOwner, GetStdHandle(STD_INPUT_HANDLE), 0, nullptr);
-  if (!owner) return fail("owner watcher");
+  // A NUL stdin has no owner to watch; a held command is then bound to the hold helper alone.
+  const bool watched = !held || GetFileType(GetStdHandle(STD_INPUT_HANDLE)) == FILE_TYPE_PIPE;
+  HANDLE owner = watched ? CreateThread(nullptr, 0, watchOwner, GetStdHandle(STD_INPUT_HANDLE), 0, nullptr) : nullptr;
+  if (watched && !owner) return fail("owner watcher");
   HANDLE waits[]{child.hProcess, owner};
-  DWORD result = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+  DWORD result = WaitForMultipleObjects(watched ? 2 : 1, waits, FALSE, INFINITE);
   DWORD code = 125;
   if (result == WAIT_OBJECT_0) {
     if (!GetExitCodeProcess(child.hProcess, &code)) code = fail("GetExitCodeProcess");
+    char reaped = 0;
+    DWORD count = 0;
+    if (held && (!ReadFile(hold, &reaped, 1, &count, nullptr) || count != 1 || reaped != 'R')) {
+      std::fprintf(stderr, "Windows job launcher: cwd-pin-lost: the working directory hold ended before the command finished\n");
+      code = 125;
+    }
   } else if (result == WAIT_OBJECT_0 + 1) {
     code = 130;
   } else {
@@ -167,7 +204,8 @@ int wmain(int argc, wchar_t** argv) {
   // A completed root command must not leave descendants retaining its pipes.
   CloseHandle(job);
   CloseHandle(child.hProcess);
-  CloseHandle(owner);
+  if (owner) CloseHandle(owner);
+  if (hold != INVALID_HANDLE_VALUE) CloseHandle(hold);
   // ExitProcess also stops the blocking owner reader on normal command exit.
   ExitProcess(code);
 }

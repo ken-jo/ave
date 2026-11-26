@@ -2,10 +2,11 @@
 # native/windows-job/) or the folder classifier (`-Helper path-kind`,
 # native/windows-path-kind/). Both use the installed C++ build tools and
 # download nothing.
-param([string]$Arch = "x64", [switch]$FailureFixture, [switch]$QueryFailureFixture, [switch]$ToolchainIdentity, [ValidateSet("job", "path-kind")][string]$Helper = "job")
+param([string]$Arch = "x64", [switch]$FailureFixture, [switch]$QueryFailureFixture, [switch]$HoldFixture, [switch]$ToolchainIdentity, [ValidateSet("job", "path-kind")][string]$Helper = "job")
 $ErrorActionPreference = "Stop"
 if ($Arch -notin @("x64", "arm64")) { throw "Unsupported job launcher architecture: $Arch" }
 if (($FailureFixture -or $QueryFailureFixture) -and $Helper -ne "job") { throw "The failure fixture belongs to the job launcher" }
+if ($HoldFixture -and $Helper -ne "path-kind") { throw "The hold fixture belongs to the folder classifier" }
 if ($FailureFixture -and $QueryFailureFixture) { throw "Build one failure fixture at a time" }
 $root = Split-Path $PSScriptRoot -Parent
 $out = Join-Path $root "resources/windows-$Helper/$Arch"
@@ -15,7 +16,7 @@ $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudi
 if (!$installation) { throw "Windows job launcher requires the C++ build tools" }
 $devcmd = Join-Path $installation "Common7/Tools/VsDevCmd.bat"
 $source = if ($Helper -eq "job") { Join-Path $root "native/windows-job/launcher.cpp" } else { Join-Path $root "native/windows-path-kind/path-kind.cpp" }
-$name = if ($Helper -eq "path-kind") { "ave-path-kind.exe" } elseif ($FailureFixture) { "ave-job-failure.exe" } elseif ($QueryFailureFixture) { "ave-job-query-failure.exe" } else { "ave-job.exe" }
+$name = if ($HoldFixture) { "ave-path-kind-hold-fixture.exe" } elseif ($Helper -eq "path-kind") { "ave-path-kind.exe" } elseif ($FailureFixture) { "ave-job-failure.exe" } elseif ($QueryFailureFixture) { "ave-job-query-failure.exe" } else { "ave-job.exe" }
 $object = if ($Helper -eq "job") { "launcher.obj" } else { "path-kind.obj" }
 # Import the compiler environment without passing checkout paths through cmd.
 # UTF-16 preserves environment values containing non-ASCII user/profile paths.
@@ -48,12 +49,13 @@ New-Item -ItemType Directory -Force $out | Out-Null
 $compilerArgs = @("/nologo", "/std:c++17", "/O2", "/MT", "/W4", "/WX", "/EHsc")
 if ($FailureFixture) { $compilerArgs += "/DAVE_TEST_INVALID_JOB" }
 if ($QueryFailureFixture) { $compilerArgs += "/DAVE_TEST_UNQUERYABLE_JOB" }
+if ($HoldFixture) { $compilerArgs += "/DAVE_TEST_HOLD_FIXTURE" }
 $compilerArgs += @($source, "/Fo:$out/$object", "/Fe:$out/$name", "/link", "/INCREMENTAL:NO", "/Brepro")
 # Direct argument passing preserves Unicode, spaces, and literal percent signs.
 & cl.exe @compilerArgs
 if ($LASTEXITCODE -ne 0) { throw "Windows $Helper helper build failed ($LASTEXITCODE)" }
 Remove-Item -LiteralPath (Join-Path $out $object) -ErrorAction SilentlyContinue
-if ($Helper -eq "path-kind") {
+if ($Helper -eq "path-kind" -and !$HoldFixture) {
     $testSource = Join-Path $root "native/windows-path-kind/pin-test.cpp"
     $testExe = Join-Path $env:TEMP "ave-path-pin-test.exe"
     $testObject = Join-Path $env:TEMP "ave-path-pin-test.obj"

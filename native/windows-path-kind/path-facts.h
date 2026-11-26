@@ -260,30 +260,99 @@ int print_path_facts(int argc, wchar_t** argv) {
   return std::fwrite(output.data(), 1, output.size(), stdout) == output.size() && std::fflush(stdout) == 0 ? 0 : 3;
 }
 
-// `--hold <directory>`: report the --pin row, then keep every component held until stdin closes.
+#ifdef AVE_TEST_HOLD_FIXTURE
+// Test-only build: a smaller reply limit and a helper that stops before confirming the job is empty.
+size_t hold_reply_limit() {
+  wchar_t value[32];
+  const DWORD length = GetEnvironmentVariableW(L"AVE_TEST_HOLD_REPLY_LIMIT", value, 32);
+  return length != 0 && length < 32 ? static_cast<size_t>(wcstoull(value, nullptr, 10)) : MAX_PATH_FACTS_OUTPUT_BYTES;
+}
+#else
+size_t hold_reply_limit() { return MAX_PATH_FACTS_OUTPUT_BYTES; }
+#endif
+
+struct HoldJob { HANDLE job; HANDLE pipe; };
+
+bool send_hold_byte(HANDLE pipe, char byte) {
+  DWORD written = 0;
+  return WriteFile(pipe, &byte, 1, &written, nullptr) && written == 1;
+}
+
+// One launcher connects, sends its suspended command's PID and resumes it only after 'A'. After the
+// command exits, every process left in the job is stopped and 'R' confirms the job is empty.
+DWORD WINAPI serve_hold_job(void* context) {
+  const auto* hold = static_cast<const HoldJob*>(context);
+  if (!ConnectNamedPipe(hold->pipe, nullptr) && GetLastError() != ERROR_PIPE_CONNECTED) return 0;
+  DWORD pid = 0, count = 0;
+  if (!ReadFile(hold->pipe, &pid, sizeof(pid), &count, nullptr) || count != sizeof(pid)) return 0;
+  HANDLE command = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+  if (command == nullptr || !AssignProcessToJobObject(hold->job, command)) {
+    if (command != nullptr) CloseHandle(command);
+    send_hold_byte(hold->pipe, 'F');
+    return 0;
+  }
+  if (!send_hold_byte(hold->pipe, 'A')) TerminateJobObject(hold->job, 125);
+  WaitForSingleObject(command, INFINITE);
+  CloseHandle(command);
+#ifdef AVE_TEST_HOLD_FIXTURE
+  if (GetEnvironmentVariableW(L"AVE_TEST_HOLD_EXIT_BEFORE_REAP", nullptr, 0) != 0) ExitProcess(0);
+#endif
+  if (!TerminateJobObject(hold->job, 1)) { send_hold_byte(hold->pipe, 'X'); return 0; }
+  const ULONGLONG deadline = GetTickCount64() + 5000;
+  for (;;) {
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
+    if (!QueryInformationJobObject(hold->job, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr)) break;
+    if (accounting.ActiveProcesses == 0) { send_hold_byte(hold->pipe, 'R'); return 0; }
+    if (GetTickCount64() >= deadline) break;
+    Sleep(10);
+  }
+  send_hold_byte(hold->pipe, 'X');
+  return 0;
+}
+
+// `--hold <directory> --pipe <name>`: report the --pin row, then keep every component held until stdin
+// closes. The helper owns the only handle to a kill-on-close job; a launcher started with the same pipe
+// puts its command in that job, so the command cannot outlive the hold.
 int hold_path(int argc, wchar_t** argv) {
-  if (argc != 3) return 2;
+  if (argc != 5 || std::wstring(argv[3]) != L"--pipe" || std::wstring(argv[4]).rfind(L"\\\\.\\pipe\\ave-hold-", 0) != 0) return 2;
   PinnedPath pinned;
   if (!pin_path(argv[2], pinned, false, true) || pinned.handles.size() != pinned.components.size()
       || (pinned.facts.back().tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
     std::fputs("could not hold the directory\n", stderr);
     return 4;
   }
-  // The host refuses a reply over 8 MiB; stop building one before it gets there.
-  constexpr size_t kMaxReply = 8u * 1024u * 1024u;
+  // Binary stdout keeps the wire length equal to the length checked here.
+  if (_setmode(_fileno(stdout), _O_BINARY) == -1) return 3;
+  const size_t limit = hold_reply_limit();
+  constexpr size_t kFraming = 5;  // "[" + row + "]}]\n"
   std::string row = facts_json(pinned.facts.back()); row.pop_back();
   row += ",\"ancestors\":[";
   for (size_t ancestor = 0; ancestor + 1 < pinned.facts.size(); ++ancestor) {
     if (ancestor != 0) row += ",";
     row += facts_json(pinned.facts[ancestor]);
-    if (row.size() + 5 > kMaxReply) { std::fputs("held directory reply exceeds the limit\n", stderr); return 3; }
+    if (row.size() + kFraming > limit) break;
   }
+  if (row.size() + kFraming > limit) { std::fputs("held directory reply exceeds the limit\n", stderr); return 3; }
   const std::string output = "[" + row + "]}]\n";
+  HoldJob hold{CreateJobObjectW(nullptr, nullptr), INVALID_HANDLE_VALUE};
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (hold.job == nullptr || !SetInformationJobObject(hold.job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+    std::fputs("could not create the hold job\n", stderr);
+    return 3;
+  }
+  hold.pipe = CreateNamedPipeW(argv[4], PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                               PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 16, 16, 0, nullptr);
+  if (hold.pipe == INVALID_HANDLE_VALUE || CreateThread(nullptr, 0, serve_hold_job, &hold, 0, nullptr) == nullptr) {
+    std::fputs("could not open the hold pipe\n", stderr);
+    return 3;
+  }
   if (std::fwrite(output.data(), 1, output.size(), stdout) != output.size() || std::fflush(stdout) != 0) return 3;
   char byte;
   DWORD count;
   while (ReadFile(GetStdHandle(STD_INPUT_HANDLE), &byte, 1, &count, nullptr) && count) {}
-  return 0;
+  // Exiting closes the job handle, which stops any command still in it.
+  ExitProcess(0);
 }
 
 }  // namespace

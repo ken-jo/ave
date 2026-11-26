@@ -310,6 +310,25 @@ each echoed operand before using the facts.
 Build both facts modes with `scripts/build-windows-job.ps1 -Helper path-kind`
 and run `scripts/test-windows-path-kind.mjs` and the shared facts Vitest suite.
 
+## Held working directory
+
+`ave-path-kind.exe --hold <directory> --pipe \\.\pipe\ave-hold-<id>` pins the
+directory and every ancestor (traverse access, read and write sharing, no
+delete sharing), writes the `--pin` row in binary mode (at most 8 MiB on the
+wire, LF included), and keeps the handles until stdin closes. It also owns the
+only handle to a kill-on-close job. The handle is not inheritable, and the
+helper starts no processes. One client of the pipe sends a suspended process
+id. The helper assigns that process to the job (nested in any job it already
+has) and answers `A`, or `F` when assignment fails. When that process exits,
+the helper terminates the job, waits up to 5 seconds for it to be empty, and
+answers `R`, or `X` when it is not. The helper's exit closes the job, which
+stops everything in it.
+
+Build `-Helper path-kind -HoldFixture` for `ave-path-kind-hold-fixture.exe`,
+which is never packaged. It reads the reply limit from
+`AVE_TEST_HOLD_REPLY_LIMIT` and, with `AVE_TEST_HOLD_EXIT_BEFORE_REAP` set,
+exits after the command instead of answering `R`.
+
 ## Compatibility deny evidence
 
 `ave-path-kind.exe --deny-acls <SID> <absolute-path>...` returns a JSON array

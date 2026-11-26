@@ -21,6 +21,15 @@ command exits or the owner closes stdin, it terminates the job and waits up to
 `0`. A job query failure or survivor exits 125 with no verdict appended, and
 job-root cleanup refuses the root.
 
+`--hold-pipe <pipe> <helper pid>` ties the command to a working-directory hold
+helper (`ave-path-kind.exe --hold`). The command is created suspended. The
+launcher refuses the pipe unless its server is that helper process, sends the
+command's process id, and resumes the command only after the helper has placed
+it in the helper's kill-on-close job. After the root exits, it waits for the
+helper to report that job empty. Any failure on that pipe stops the command,
+prints a `cwd-pin-lost` diagnostic and exits 125, so a hold lost at any point
+is a failed execution. In this mode a NUL stdin is not watched as an owner.
+
 Call `spawnWindowsJobProcess` with an absolute executable path already selected
 by the shell resolver. Keep its stdin open until disposal; never expose that pipe
 as command input. The helper forwards the original command-line tail without
