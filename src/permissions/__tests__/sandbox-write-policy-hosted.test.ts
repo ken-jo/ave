@@ -72,7 +72,14 @@ vi.mock("../windows-stamp-targets.js", async original => {
   return { ...targets, pinWindowsFilesystemConfig: <T extends Partial<import("@anthropic-ai/sandbox-runtime").FilesystemConfig> | undefined>(config: T): T =>
     driveFixture.enabled ? actual.pinWindowsFilesystemConfig(config) : targets.pinWindowsFilesystemConfig(config) };
 });
-/vi.mock("node:module", async original =>
+// The isolation guard resolves with the host's own path and fs, where a drive spelling is a relative name under the checkout. On a
+// POSIX host it checks the backing file each drive spelling names, as a Windows host checks the drive path itself.
+vi.mock("../../shared/ave-home-test-guard.js", async original => {
+  const actual = await original<typeof import("../../shared/ave-home-test-guard.js")>();
+  return { ...actual, checkSandboxStampTargets: (paths: readonly string[]) => actual.checkSandboxStampTargets(
+    driveFixture.enabled ? paths.map(path => (/^[A-Za-z]:[\\/]/u.test(path) ? driveFixture.toHost(path) : path)) : paths) };
+});
+vi.mock("node:module", async original =>
   // The drive fixture switches every path call to win32, so a POSIX checkout path would be a rootless native spelling: the package resolves on the drive.
   (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original(), () => driveFixture.enabled));
 // A POSIX host spells the run directory without a drive, so the simulated win32 floor row is put on the simulated drive.
