@@ -858,8 +858,8 @@ export async function bootstrap(
   await initSandboxGate(ctx, startupSignal);
   recordBootPhase("sandbox-gate");
   if (isWindowsBackgroundFeatureReleaseEnabled()) {
-    // Started together so the stores share one evidence refresh.
-    await Promise.all(workspaceSessionStores.map((manager) => verifySessionSearchIndex(manager)));
+    // Started together so the stores share one evidence refresh. Boot does not wait for the native answer: searches queue behind it.
+    void Promise.all(workspaceSessionStores.map((manager) => verifySessionSearchIndex(manager)));
   }
 
   // §9.5: MCP servers + signed marketplace artifact stores.

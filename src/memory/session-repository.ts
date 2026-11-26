@@ -872,6 +872,14 @@ export class SessionRepository {
   }
 
   closeSearchIndex(): void {
+    // Work still waiting for its policy runs as refused: writes leave a repair intent, reads answer nothing.
+    for (const work of this.searchIndexQueue.splice(0)) {
+      try {
+        work(() => "inactive");
+      } catch (error) {
+        log.warn({ error }, "session search index work failed");
+      }
+    }
     this.searchIndex.close();
   }
 

@@ -467,6 +467,39 @@ it.each(["failed", "refused"] as const)("keeps progress and other reads responsi
   }
 });
 
+it("refuses index work still waiting for a native answer when the store closes, and leaves it for repair", async () => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const repository = new SessionRepository({ aveDir: dir, ...sessionSearchIndexPolicySource(() => undefined) });
+  try {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    await initSandboxGate(harness.context(true, false));
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()?.shells).toBe("mxc"));
+    const answer = deferred<object>();
+    h.startProbe.mockReturnValue(answer.promise);
+    const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
+    try {
+      await repository.saveSession(sessionId, [{ role: "user", content: "saved before closing" }]);
+      const search = repository.searchSessionsWithCurrentPolicy("saved before closing");
+      repository.closeSearchIndex();
+      expect(await search).toEqual([]);
+      expect(existsSync(join(dir, "sessions", ".search-repair.json"))).toBe(true);
+      answer.resolve(MXC_OK);
+      await repository.searchIndexIdle();
+      expect(openIndex).toHaveBeenCalledTimes(0);
+    } finally {
+      openIndex.mockRestore();
+    }
+  } finally {
+    repository.closeSearchIndex();
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 it.each([
   ["a present account backend", () => h.checkDeps.mockResolvedValue(ACCOUNT_DEPS_READY)],
   ["an account backend that cannot be queried", () => h.checkDeps.mockRejectedValue(new Error("inventory failed"))],
@@ -486,6 +519,16 @@ it.each([
     const publishedSubstrate = getWindowsSandboxSubstrate();
     expect((await refreshWindowsBackgroundAdmission("switches")).areSwitchesAvailable()).toBe(true);
     expect(assertLocalEmbeddingRuntime(true, await refreshWindowsBackgroundAdmission())).toBe("unconfined");
+    const settingsService = {
+      getAll: () => DEFAULT_SETTINGS,
+      get: (key: keyof typeof DEFAULT_SETTINGS) => DEFAULT_SETTINGS[key],
+      set: vi.fn(),
+      hasStoredSecret: async () => false,
+    };
+    const memoryMap = createMemoryMapRuntime({ settingsService, singleHopNetworkFetch: vi.fn() } as unknown as IpcDeps, vi.fn());
+    const generalSettings = async () => (await rendererSettingsSnapshot(settingsService as unknown as IpcDeps["settingsService"])).features ?? {};
+    expect(await generalSettings()).toHaveProperty("sessionIndexingWithoutContainment");
+    expect(await memoryMap.settingsGet()).toHaveProperty("localInferenceWithoutSandbox");
     await repository.saveSession(sessionId, [{ role: "user", content: "indexed without a backend" }]);
     expect(await repository.searchSessionsWithCurrentPolicy("indexed without a backend")).toHaveLength(1);
     const originalIndex = readFileSync(indexPath);
@@ -500,6 +543,10 @@ it.each([
       await repository.searchIndexIdle();
       expect.soft(await repository.searchSessionsWithCurrentPolicy("indexed without a backend")).toEqual([]);
       expect.soft((await refreshWindowsBackgroundAdmission("switches")).areSwitchesAvailable()).toBe(false);
+      expect.soft(await generalSettings()).not.toHaveProperty("sessionIndexingWithoutContainment");
+      expect.soft(await memoryMap.settingsGet()).not.toHaveProperty("localInferenceWithoutSandbox");
+      await expect.soft(memoryMap.settingsSet({ localInferenceWithoutSandbox: false })).rejects.toMatchObject({ code: "local-runtime-unavailable" });
+      expect.soft(settingsService.set).not.toHaveBeenCalled();
       const admission = await refreshWindowsBackgroundAdmission();
       expect.soft(() => assertLocalEmbeddingRuntime(true, admission)).toThrow(expect.objectContaining({ code: "local-runtime-unavailable" }));
       expect.soft(openIndex).toHaveBeenCalledTimes(0);
