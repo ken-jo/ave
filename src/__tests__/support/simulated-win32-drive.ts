@@ -40,6 +40,11 @@ export async function simulatedWindowsPathFacts(actual: typeof PathFacts, native
   const sid = "S-1-5-21-100-200-300-1001";
   const hex = (value: bigint, width = 16) => `0x${value.toString(16).padStart(width, "0")}`;
   const facts = (path: string): PathFacts.WindowsPathFacts => {
+    // A drive's volume root always exists on Windows, so a deny of a missing path still has an anchor to stamp.
+    if (DRIVE_ROOT.test(path)) {
+      return { exists: true, canonical: path, volumeSerial: hex(1n), fileId: hex(5n, 32), volumeSerialNumber: hex(1n), fileIndex: hex(5n),
+        fileSystemName: null, changeTime: hex(116444736000000000n), attributes: 16, reparseTag: 0, directory: true, reparseTarget: null, ancestors: [] };
+    }
     try {
       const stat = lstatSync(path, { bigint: true });
       return { exists: true, canonical: path, volumeSerial: hex(stat.dev), fileId: hex(stat.ino, 32),
