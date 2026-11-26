@@ -620,7 +620,7 @@ export interface ApprovalPolicyMutation {
 }
 
 /** What a held allow save reports once it ran: the store it moved, and that store's generation before and after. */
-export type StagedAllowSaveResult =
+type StagedAllowSaveResult =
   | { readonly ok: true; readonly store: "rules"; readonly from: string; readonly to: string; readonly scope: "session" | "run" | "project" | "always" }
   | { readonly ok: true; readonly store: "exact"; readonly from: string; readonly to: string; readonly scope: string }
   | { readonly ok: false; readonly error: string };
