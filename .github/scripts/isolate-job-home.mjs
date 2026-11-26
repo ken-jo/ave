@@ -22,7 +22,8 @@ function runJobRootCommand(command, args, options) {
 }
 
 export function hardenWindowsJobRoot(root, run = runJobRootCommand) {
-  const options = { encoding: "utf8", windowsHide: true, stdio: "pipe", timeout: 10_000 };
+  // Cold Windows PowerShell start-up on a loaded hosted runner has exceeded 10 s; 60 s keeps the step bounded.
+  const options = { encoding: "utf8", windowsHide: true, stdio: "pipe", timeout: 60_000 };
   const identity = run("whoami.exe", ["/user", "/fo", "csv", "/nh"], options);
   const sids = identity.trim().split(",").map(field => field.trim().replace(/^"|"$/g, ""))
     .filter(field => /^S-/.test(field));
