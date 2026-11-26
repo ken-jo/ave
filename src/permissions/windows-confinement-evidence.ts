@@ -6,7 +6,7 @@ import {
   isWindowsAccountConfinementOperational,
 } from "./asrt-sandbox.js";
 import { detectHostMxcPrerequisites, getHostWxcExecIdentity, probeHostMxcPowerShellStart, resolveHostWxcExecPath } from "./mxc-windows.js";
-import { detectMxcShellCapability, getSandboxGeneration, getWindowsSandboxSubstrate } from "./sandbox-capability.js";
+import { detectMxcShellCapability, getSandboxGeneration, getWindowsExtensionBackendPlan, getWindowsSandboxSubstrate } from "./sandbox-capability.js";
 
 export type WindowsBackendState = "operational" | "absent" | "unavailable";
 
@@ -122,8 +122,9 @@ const accountBackend = new WindowsBackendEvidenceOwner({
 const containerBackend = new WindowsBackendEvidenceOwner({
   route: () => {
     const capability = detectMxcShellCapability();
-    return [getSandboxGeneration(), ...getWindowsConfinementRoute(), getWindowsSandboxSubstrate(), capability,
-      capability?.confidence === "verified" ? getHostWxcExecIdentity() : undefined];
+    const plan = getWindowsExtensionBackendPlan();
+    return [getSandboxGeneration(), ...getWindowsConfinementRoute(), getWindowsSandboxSubstrate(), capability, plan,
+      capability?.confidence === "verified" || plan?.selectedBackend === "mxc" ? getHostWxcExecIdentity() : undefined];
   },
   probeRoute: async () => {
     const launcher = getHostWxcExecIdentity();
@@ -135,14 +136,18 @@ const containerBackend = new WindowsBackendEvidenceOwner({
     return support.state === "unavailable" && support.reason === "container-unavailable"
       && support.containerBackendAbsent === true && support.baseContainerApiPresent === false;
   },
-  isRoutePublished: (substrate) => substrate.mxc.state === "available" && substrate.shells === "mxc"
-    && detectMxcShellCapability()?.confidence === "verified",
+  isRoutePublished: (substrate) => {
+    const plan = getWindowsExtensionBackendPlan();
+    return (plan?.selectedBackend === "mxc" && plan.readiness === "ready")
+      || (substrate.mxc.state === "available" && substrate.shells === "mxc" && detectMxcShellCapability()?.confidence === "verified");
+  },
   isAbsentAtBoot: (substrate) => substrate.mxc.state === "unavailable" && substrate.mxc.reason === "container-unavailable"
     && substrate.mxc.containerBackendAbsent === true,
 });
 
 /** Every backend that can confine background work on Windows. Removing a backend removes its entry. */
-export const WINDOWS_BACKEND_EVIDENCE: readonly WindowsBackendEvidenceOwner[] = [accountBackend, containerBackend];
+export const WINDOWS_BACKEND_EVIDENCE = { account: accountBackend, container: containerBackend } as const;
+export type WindowsBackend = keyof typeof WINDOWS_BACKEND_EVIDENCE;
 
 /** A failed launch or a withdrawn route: nothing gathered before it may admit work. */
 let containerBackendLossEpoch = 0;
@@ -159,6 +164,6 @@ export function invalidateWindowsBackendEvidence(backend?: "account" | "containe
 
 /** Probes every backend for the calling operation and returns what each probe established. */
 export async function refreshWindowsBackendEvidence(): Promise<ReadonlyMap<WindowsBackendEvidenceOwner, WindowsBackendEvidence | undefined>> {
-  const receipts = await Promise.all(WINDOWS_BACKEND_EVIDENCE.map(async (owner) => [owner, await owner.refresh()] as const));
+  const receipts = await Promise.all(Object.values(WINDOWS_BACKEND_EVIDENCE).map(async (owner) => [owner, await owner.refresh()] as const));
   return new Map(receipts);
 }

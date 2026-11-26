@@ -67,9 +67,8 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   let pendingInferenceDisables = 0;
   const localInferencePreference = () => pendingInferenceDisables === 0 && storedLocalInferencePreference();
   const localRuntime = (admission: WindowsBackgroundAdmission) => assertLocalEmbeddingRuntime(localInferencePreference(), admission);
-  const refreshLocalPreparation = () => refreshLocalInferenceAdmission("switches");
   const refreshLocalAdmission = async () => {
-    const admission = await refreshLocalPreparation();
+    const admission = await refreshLocalInferenceAdmission();
     return bindLocalEmbeddingRuntime(() => localRuntime(admission)).assertStillValid;
   };
   let buildGeneration = 0;
@@ -105,7 +104,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     refreshLocalAdmission,
     runWorker: (folder, task, signal, onProgress) => runMemoryWorker(folder, task, signal, onProgress, localInferencePreference),
     validatedModelPath: async (signal) => {
-      const admission = await refreshLocalPreparation();
+      const admission = await refreshLocalInferenceAdmission();
       signal.throwIfAborted();
       const { assertStillValid } = bindLocalEmbeddingRuntime(() => localRuntime(admission));
       if (!deps.settingsService.get('memoryEmbedding')?.localModelPath) throw new MemoryMapHostError('model-unconfigured');
@@ -124,7 +123,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     if (generation !== modelGeneration) throw new MemoryModelError('model-cancelled');
   };
   const startModelOperation = async (generation: number, event: IpcMainInvokeEvent, start: () => unknown) => {
-    const admission = await refreshLocalPreparation();
+    const admission = await refreshLocalInferenceAdmission();
     assertCurrentModelRequest(generation);
     localRuntime(admission);
     cancelBuild();
@@ -167,7 +166,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     build: async (scope, event) => {
       const generation = ++buildGeneration;
       if (deps.settingsService.get('memoryEmbedding')?.source !== 'provider') {
-        const admission = await refreshLocalPreparation();
+        const admission = await refreshLocalInferenceAdmission();
         if (generation !== buildGeneration) throw new MemoryMapHostError('request-stale');
         localRuntime(admission);
       }
@@ -185,7 +184,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     modelCancel: () => { cancelModel(); return null; },
     modelUseExisting: async event => {
       const generation = ++modelGeneration;
-      const admission = await refreshLocalPreparation();
+      const admission = await refreshLocalInferenceAdmission();
       assertCurrentModelRequest(generation);
       localRuntime(admission);
       const selection = await dialog.showOpenDialog({ properties: ['openDirectory'] });

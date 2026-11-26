@@ -201,6 +201,9 @@ export class MemoryMapHost {
         }, controller.signal, progress => {
           if (progress.phase !== 'embedding') report(progress);
         });
+        assertCurrent();
+        assertLocalAdmission();
+        assertLocalAdmission = await this.options.refreshLocalAdmission();
       }
       const canPublish = () => {
         if (!current()) return false;
@@ -211,7 +214,7 @@ export class MemoryMapHost {
       this.validateSnapshot(result.snapshot, catalog);
       await this.namespace.childDir('');
       const committed = await writeFileAtomicAtPathIf(join(this.namespace.dir, 'snapshot.json'), JSON.stringify(result), canPublish);
-      if (!committed || !canPublish()) throw new MemoryMapHostError('request-stale');
+      if (!committed || !current()) throw new MemoryMapHostError('request-stale');
       this.cache = result.cache; this.snapshot = result.snapshot; this.pending = null;
       return result.snapshot;
     } catch (error) {

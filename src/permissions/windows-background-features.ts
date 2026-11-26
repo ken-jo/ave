@@ -13,6 +13,7 @@ import {
 import {
   refreshWindowsBackendEvidence,
   WINDOWS_BACKEND_EVIDENCE,
+  type WindowsBackend,
   type WindowsBackendEvidenceOwner,
   type WindowsBackendState,
 } from "./windows-confinement-evidence.js";
@@ -25,11 +26,14 @@ export function isWindowsBackgroundFeatureReleaseEnabled(): boolean {
 export interface WindowsBackgroundAdmission {
   readonly areSwitchesAvailable: () => boolean;
   readonly searchIndexPolicy: (preference: boolean | undefined) => SessionSearchIndexPolicy;
+  readonly isBackendOperational: (backend: WindowsBackend) => boolean;
 }
 
+const BACKEND_OWNERS = Object.values(WINDOWS_BACKEND_EVIDENCE);
 const INACTIVE_ADMISSION: WindowsBackgroundAdmission = {
   areSwitchesAvailable: () => false,
   searchIndexPolicy: () => "inactive",
+  isBackendOperational: () => false,
 };
 
 function hasWindowsBackgroundHealth(): boolean {
@@ -43,13 +47,13 @@ function hasWindowsBackgroundHealth(): boolean {
   }
 }
 
-function admissionOver(stateOf: (owner: WindowsBackendEvidenceOwner) => WindowsBackendState | undefined): WindowsBackgroundAdmission {
+function admissionOver(stateOf: (owner: WindowsBackendEvidenceOwner) => WindowsBackendState | undefined): Omit<WindowsBackgroundAdmission, "isBackendOperational"> {
   // Absence needs the boot record and the current evidence of every backend to agree.
   const hasDefinitiveBackendAbsence = (): boolean => {
     const substrate = getWindowsSandboxSubstrate();
     const plan = getWindowsExtensionBackendPlan();
     if (plan?.selectedBackend !== "none" || substrate?.shells !== "none"
-      || !WINDOWS_BACKEND_EVIDENCE.every((owner) => owner.provider.isAbsentAtBoot(substrate) && stateOf(owner) === "absent")) return false;
+      || !BACKEND_OWNERS.every((owner) => owner.provider.isAbsentAtBoot(substrate) && stateOf(owner) === "absent")) return false;
     return plan.readiness === "off" || (plan.readiness === "unavailable"
       && (plan.reason === (substrate.mxc.state === "unavailable" ? substrate.mxc.reason : undefined) || plan.reason === "native-validation-required"));
   };
@@ -59,7 +63,7 @@ function admissionOver(stateOf: (owner: WindowsBackendEvidenceOwner) => WindowsB
     searchIndexPolicy: (preference) => {
       if (isSandboxGateUndecidedAtBoot()) return "inactive";
       const substrate = getWindowsSandboxSubstrate();
-      const confinementOperational = substrate !== null && isWindowsBackgroundConfinementRuntimeActive() && WINDOWS_BACKEND_EVIDENCE
+      const confinementOperational = substrate !== null && isWindowsBackgroundConfinementRuntimeActive() && BACKEND_OWNERS
         .some((owner) => owner.provider.isRoutePublished(substrate) && stateOf(owner) === "operational");
       if (!confinementOperational && (isWindowsBackgroundConfinementRuntimeActive() || !hasDefinitiveBackendAbsence())) return "inactive";
       if (!hasWindowsBackgroundHealth()) return "inactive";
@@ -73,29 +77,40 @@ function admissionOver(stateOf: (owner: WindowsBackendEvidenceOwner) => WindowsB
  * owner still carries the evidence this refresh produced, so the caller decides synchronously, with no await before the
  * action. A caller that asks about the switches alone gets its refusal without a probe once any backend is on record.
  */
-export async function refreshWindowsBackgroundAdmission(scope: "all" | "switches" = "all"): Promise<WindowsBackgroundAdmission> {
+export async function refreshWindowsBackgroundAdmission(scope: "all" | "switches" | WindowsBackend = "all"): Promise<WindowsBackgroundAdmission> {
   const releaseGeneration = getMxcReleaseGateGeneration();
   const releaseIsCurrent = () => releaseGeneration === getMxcReleaseGateGeneration();
+  if (scope !== "all" && scope !== "switches") {
+    if (process.platform !== "win32" || isSandboxGateUndecidedAtBoot()) return INACTIVE_ADMISSION;
+    const owner = WINDOWS_BACKEND_EVIDENCE[scope];
+    const receipt = await owner.refresh();
+    return {
+      ...INACTIVE_ADMISSION,
+      isBackendOperational: (backend) => backend === scope && releaseIsCurrent() && receipt?.state === "operational" && owner.isCurrent(receipt),
+    };
+  }
   if (!isWindowsBackgroundFeatureReleaseEnabled()) {
     return {
-      areSwitchesAvailable: INACTIVE_ADMISSION.areSwitchesAvailable,
+      ...INACTIVE_ADMISSION,
       searchIndexPolicy: () => releaseIsCurrent() ? "enabled" : "inactive",
     };
   }
   if (isSandboxGateUndecidedAtBoot()) return INACTIVE_ADMISSION;
   const substrate = getWindowsSandboxSubstrate();
-  if (scope === "switches" && !(substrate !== null && WINDOWS_BACKEND_EVIDENCE.every((owner) => owner.provider.isAbsentAtBoot(substrate)))) {
+  if (scope === "switches" && !(substrate !== null && BACKEND_OWNERS.every((owner) => owner.provider.isAbsentAtBoot(substrate)))) {
     return INACTIVE_ADMISSION;
   }
   const refreshed = await refreshWindowsBackendEvidence();
-  const receiptsAreCurrent = () => releaseIsCurrent() && WINDOWS_BACKEND_EVIDENCE.every((owner) => {
+  const currentState = (owner: WindowsBackendEvidenceOwner) => {
     const receipt = refreshed.get(owner);
-    return receipt !== undefined && owner.isCurrent(receipt);
-  });
+    return receipt !== undefined && owner.isCurrent(receipt) ? receipt.state : undefined;
+  };
+  const receiptsAreCurrent = () => releaseIsCurrent() && BACKEND_OWNERS.every(owner => currentState(owner) !== undefined);
   const admission = admissionOver((owner) => refreshed.get(owner)?.state);
   return {
     areSwitchesAvailable: () => receiptsAreCurrent() && admission.areSwitchesAvailable(),
     searchIndexPolicy: (preference) => receiptsAreCurrent() ? admission.searchIndexPolicy(preference) : "inactive",
+    isBackendOperational: backend => releaseIsCurrent() && currentState(WINDOWS_BACKEND_EVIDENCE[backend]) === "operational",
   };
 }
 

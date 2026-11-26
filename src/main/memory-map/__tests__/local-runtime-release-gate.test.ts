@@ -10,7 +10,7 @@ import { registerMxcReleaseGateEvidence } from '../../../permissions/mxc-extensi
 import { refreshWindowsBackgroundAdmission, sessionSearchIndexPolicySource } from '../../../permissions/windows-background-features.js';
 import { invalidateWindowsBackendEvidence } from '../../../permissions/windows-confinement-evidence.js';
 import type { SandboxWindowsExtensionPlan, SandboxWindowsSubstrateInfo } from '../../../shared/sandbox-capability-info.js';
-import { assertLocalEmbeddingRuntime } from '../local-runtime.js';
+import { assertLocalEmbeddingRuntime, refreshLocalInferenceAdmission } from '../local-runtime.js';
 
 const NO_ACCOUNT = { errors: [] as string[], warnings: [] as string[], accountBackendAbsent: true as const };
 const NO_CONTAINER = { state: 'unavailable', reason: 'container-unavailable', windowsBuild: null, detail: '', baseContainerApiPresent: false, containerBackendAbsent: true };
@@ -59,7 +59,7 @@ const EVIDENCE = {
 let unregister: (() => void) | undefined;
 const policy = async (preference: boolean | undefined) => (await refreshWindowsBackgroundAdmission()).searchIndexPolicy(preference);
 const switches = async () => (await refreshWindowsBackgroundAdmission()).areSwitchesAvailable();
-const runtime = async (preference?: boolean) => assertLocalEmbeddingRuntime(preference, await refreshWindowsBackgroundAdmission());
+const runtime = async (preference?: boolean) => assertLocalEmbeddingRuntime(preference, await refreshLocalInferenceAdmission());
 const ACCOUNT_ROUTE = { mxc: { state: 'unavailable', reason: 'container-unavailable' }, srtWinReady: true, shells: 'approved-host' } as const;
 const CONTAINER_ROUTE = { mxc: { state: 'available' }, srtWinReady: false, shells: 'mxc' } as const;
 
@@ -94,6 +94,7 @@ describe('Windows local inference release gate', () => {
   it('selects the available container regardless of the no-backend preference', async () => {
     unregister = registerMxcReleaseGateEvidence(EVIDENCE);
     state.plan = { selectedBackend: 'mxc', readiness: 'ready', reason: 'ready' };
+    state.substrate = CONTAINER_ROUTE;
     expect(await runtime(false)).toBe('mxc');
     expect(await switches()).toBe(false);
   });
@@ -110,6 +111,7 @@ describe('Windows local inference release gate', () => {
   it('preserves the active offline sandbox independently of the preference', async () => {
     unregister = registerMxcReleaseGateEvidence(EVIDENCE);
     state.confined = true;
+    state.substrate = ACCOUNT_ROUTE;
     expect(await runtime(false)).toBe('offline-sandbox');
     expect(await switches()).toBe(false);
   });
