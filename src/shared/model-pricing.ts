@@ -6,21 +6,39 @@ import { allowsImplicitModelLimits, resolveCatalogKey } from "./model-catalog/re
 import { vendorHasCatalogProvider } from "./model-catalog/vendor-models.js";
 import type { CatalogModelCost } from "./model-catalog/types.js";
 import type { LlmModelListPricing } from "./llm-model-list.js";
-import { isLLMVendor, isOpenAICompatiblePresetVendor, OPENAI_COMPATIBLE_VENDOR_PRESETS } from "./llm-vendor-defaults.js";
+import { isLLMVendor, isOpenAICompatiblePresetVendor, OPENAI_COMPATIBLE_VENDOR_PRESETS, type LLMVendor } from "./llm-vendor-defaults.js";
 
 export type ModelPricingSource = "user" | "endpoint-report" | "model-catalog";
 export type UnknownModelPricingReason = "endpoint-price-unavailable" | "legacy-route-unrecorded";
 
+/**
+ * What a request's transport established about where it was served. Decided at dispatch
+ * and carried on the request's usage; it holds no request path, so a credential in a
+ * configured path cannot leave the transport through it.
+ */
+export type ServedRouteEvidence =
+  /** The response came from the vendor's own API base; `base` is that canonical address. */
+  | { readonly kind: "vendor-native"; readonly base: string }
+  /** The response came from under the provider's configured endpoint, named only by a digest of that setting. */
+  | { readonly kind: "configured-endpoint"; readonly origin: string; readonly configuredBaseId: string }
+  /** Neither could be established: a redirect elsewhere, or an address nothing configured. */
+  | { readonly kind: "unknown"; readonly origin?: string };
+
+/** The served route as pricing judges it; `base` values come from settings or the canonical table. */
+export type ServedPricingRoute =
+  | { readonly kind: "vendor-native"; readonly base: string }
+  /** Served by the configured endpoint the route's model list is keyed on. */
+  | { readonly kind: "report-endpoint"; readonly base: string }
+  | { readonly kind: "unknown" };
+
 export interface ModelPricingRoute {
-  /** The configured endpoint the route's model list was read from; absent on a vendor's default route. */
+  /** The configured endpoint; absent on a vendor's default route. Projects the route before any request is sent. */
   readonly baseUrl?: string;
   readonly reported?: LlmModelListPricing;
-  /**
-   * Dispatch evidence: the URL a provider request was sent to, as the transport saw it.
-   * When present it decides the route; the settings only say where `reported` was listed.
-   * Absent before dispatch (the pre-send estimate), where the configured endpoint is the projection.
-   */
-  readonly servedRequestUrl?: string;
+  /** The address the model list holding `reported` was read from (the cache row's `endpoint`). */
+  readonly reportedAt?: string;
+  /** Dispatch evidence. When present it decides the route and `baseUrl` is not consulted. */
+  readonly served?: ServedPricingRoute;
 }
 
 function parsedUrl(value: string): URL | undefined {
@@ -31,37 +49,57 @@ function parsedUrl(value: string): URL | undefined {
   }
 }
 
-/**
- * Whether a recorded request URL is on the vendor's own route. The identity rule stays
- * `allowsImplicitModelLimits`. A request under a preset's base address is the vendor's
- * default route, judged as a route with no configured endpoint is; the rule compares
- * base addresses, and some presets select a product by path.
- */
-function servedOnCatalogRoute(vendor: string, servedRequestUrl: string): boolean {
-  const served = parsedUrl(servedRequestUrl);
-  if (served === undefined) return false;
-  if (isLLMVendor(vendor) && isOpenAICompatiblePresetVendor(vendor)) {
-    const preset = parsedUrl(OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].baseUrl);
-    const prefix = preset?.pathname.replace(/\/+$/u, "");
-    if (preset !== undefined && prefix !== undefined && served.origin === preset.origin
-      && (served.pathname === prefix || served.pathname.startsWith(`${prefix}/`))) {
-      return allowsImplicitModelLimits(vendor);
-    }
-  }
-  return allowsImplicitModelLimits(vendor, served.href);
+/** Same origin and the base's path as a whole-segment prefix; the base's query is not part of it. */
+export function urlIsUnderBase(url: string, base: string): boolean {
+  const target = parsedUrl(url);
+  const root = parsedUrl(base);
+  if (target === undefined || root === undefined || target.origin !== root.origin) return false;
+  const prefix = root.pathname.replace(/\/+$/u, "");
+  return target.pathname === prefix || target.pathname.startsWith(`${prefix}/`);
 }
 
+/** The default API base of each first-party SDK; regional hosts serve the same path. */
+const DEFAULT_NATIVE_API_BASES: Partial<Record<LLMVendor, string>> = {
+  openai: "https://api.openai.com/v1",
+  claude: "https://api.anthropic.com/v1",
+  gemini: "https://generativelanguage.googleapis.com/v1beta",
+};
+
+/** Hosts the Vertex SDK builds for a location: global, `<region>-`, and the `eu`/`us` multi-region hosts. */
+const VERTEX_API_HOST = /^(?:[a-z0-9-]+-)?aiplatform\.googleapis\.com$|^aiplatform\.(?:eu|us)\.rep\.googleapis\.com$/u;
+const VERTEX_API_PATH = /^\/v1(?:beta1)?\/(?:projects\/[^/]+\/locations\/[^/]+\/)?publishers\/google(?:\/|$)/u;
+
 /**
- * A model-list report prices only the endpoint that listed it. Origins are compared, not
- * paths: SDKs append versions and operations to a base address. With no configured
- * endpoint the list came from the vendor's default, so the request must be on that route.
+ * The vendor's canonical API base an address is served under, or `undefined`. A vendor's
+ * published price holds only there: the same host can serve other products on other paths.
  */
-function reportListedByServedEndpoint(vendor: string, route: ModelPricingRoute, servedRequestUrl: string): boolean {
-  const configured = route.baseUrl?.trim();
-  if (!configured) return servedOnCatalogRoute(vendor, servedRequestUrl);
-  const listed = parsedUrl(configured);
-  const served = parsedUrl(servedRequestUrl);
-  return listed !== undefined && served !== undefined && listed.origin === served.origin;
+export function vendorNativeBase(vendor: string, address: string): string | undefined {
+  const url = parsedUrl(address);
+  if (url === undefined || !isLLMVendor(vendor)) return undefined;
+  if (isOpenAICompatiblePresetVendor(vendor)) {
+    const preset = parsedUrl(OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].baseUrl);
+    if (preset === undefined) return undefined;
+    const base = `${preset.origin}${preset.pathname.replace(/\/+$/u, "")}`;
+    return urlIsUnderBase(url.href, base) ? base : undefined;
+  }
+  if (url.protocol !== "https:" || url.port !== "") return undefined;
+  if (vendor === "vertex-ai") {
+    const version = VERTEX_API_HOST.test(url.hostname) ? VERTEX_API_PATH.exec(url.pathname) : null;
+    return version ? `${url.origin}/${url.pathname.split("/")[1]}` : undefined;
+  }
+  const standard = DEFAULT_NATIVE_API_BASES[vendor];
+  // The host rule is the shared one; the path is what narrows a host to the vendor's API.
+  if (standard === undefined || !allowsImplicitModelLimits(vendor, url.origin)) return undefined;
+  const base = `${url.origin}${new URL(standard).pathname}`;
+  return urlIsUnderBase(url.href, base) ? base : undefined;
+}
+
+/** The address a route with no configured endpoint lists its models from. */
+export function vendorDefaultApiBase(vendor: string): string | undefined {
+  if (!isLLMVendor(vendor)) return undefined;
+  return isOpenAICompatiblePresetVendor(vendor)
+    ? OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].baseUrl
+    : DEFAULT_NATIVE_API_BASES[vendor];
 }
 
 /** Read persisted legacy price provenance unchanged; new resolution never emits that source. */
@@ -205,14 +243,17 @@ export function resolveModelPricing(
       },
     };
   }
-  const served = route?.servedRequestUrl;
+  const served = route?.served;
   const routeEstablishesModel = served !== undefined
-    ? servedOnCatalogRoute(vendor, served)
+    ? served.kind === "vendor-native"
     : allowsImplicitModelLimits(vendor, route?.baseUrl);
   const needsEndpointPrice = !routeEstablishesModel
     || (route !== undefined && (!isLLMVendor(vendor) || !vendorHasCatalogProvider(vendor)));
-  const reportedRates = route?.reported !== undefined
-    && (served === undefined || reportListedByServedEndpoint(vendor, route, served))
+  // A report prices only the endpoint that listed it. Before dispatch the cache key binds
+  // the two; after it, the list's own address must lie under the base that served.
+  const reportApplies = served === undefined
+    || (served.kind !== "unknown" && route?.reportedAt !== undefined && urlIsUnderBase(route.reportedAt, served.base));
+  const reportedRates = route?.reported !== undefined && reportApplies
     ? endpointTokenRates(route.reported)
     : undefined;
   if (needsEndpointPrice) {

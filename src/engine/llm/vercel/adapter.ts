@@ -71,6 +71,8 @@ import { TOOL_SEARCH_TOOL_NAME } from "../../../tools/registry.js";
 import type { MarketplaceInstalledProviderPreset } from "../../../shared/marketplace-package-assets.js";
 import { isGuardedInsecureCredentialedModelProviderFetch } from "../marketplace-provider-fetch.js";
 import { normalizeOutputTokenLimit } from "../output-token-limit.js";
+import { configuredEndpointId } from "../pricing.js";
+import { urlIsUnderBase, vendorNativeBase, type ServedRouteEvidence } from "../../../shared/model-pricing.js";
 import { planReasoning, usesOpenAIResponsesWire } from "../reasoning-plan.js";
 import {
   catalogModelFor,
@@ -227,30 +229,57 @@ function observeRequestControls(
   };
 }
 
-/**
- * Dispatch evidence for pricing: the address a provider request is sent to, as the
- * transport receives it from the SDK. It already reflects whatever chose the address
- * (a configured base URL, an SDK environment variable, the SDK default and its own
- * normalization). Query and credentials are dropped; the address is never persisted.
- */
 function requestAddress(input: Parameters<typeof fetch>[0]): string | undefined {
   try {
-    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-    return `${url.origin}${url.pathname}`;
+    return new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url).href;
   } catch {
     return undefined;
   }
 }
 
-/** A request without a caller-supplied transport still goes to the runtime's fetch, resolved when it is sent. */
+/**
+ * Reports where each provider request was answered from: the response's own address, which
+ * is the last hop of any redirect the transport followed. A transport that hides it (a
+ * stub, an opaque wrapper) leaves the request address, unless it says it was redirected,
+ * in which case nothing is established. The address stays inside this module.
+ * A request without a caller-supplied transport still goes to the runtime's fetch, resolved when it is sent.
+ */
 function observeServedRequest(
   fetchImpl: typeof fetch | undefined,
-  onServedRequest: (servedRequestUrl: string | undefined) => void,
+  onServedRequest: (servedAddress: string | undefined) => void,
 ): typeof fetch {
   return async (input, init) => {
-    onServedRequest(requestAddress(input));
-    return (fetchImpl ?? globalThis.fetch)(input, init);
+    // An earlier attempt of this call no longer says where the answer comes from.
+    onServedRequest(undefined);
+    const response = await (fetchImpl ?? globalThis.fetch)(input, init);
+    onServedRequest(response.url || (response.redirected ? undefined : requestAddress(input)));
+    return response;
   };
+}
+
+/**
+ * Decide the route class at dispatch and keep only the verdict: the vendor's canonical
+ * base, or a digest of the configured endpoint the answer came from under. No part of the
+ * request path is kept, so a credential in a configured path does not ride on usage.
+ */
+function servedRouteEvidence(
+  vendor: LLMVendor,
+  configuredBaseUrl: string | undefined,
+  sdkBaseUrl: string | undefined,
+  servedAddress: string | undefined,
+): ServedRouteEvidence {
+  if (servedAddress === undefined) return { kind: "unknown" };
+  let origin: string;
+  try {
+    origin = new URL(servedAddress).origin;
+  } catch {
+    return { kind: "unknown" };
+  }
+  const base = vendorNativeBase(vendor, servedAddress);
+  if (base !== undefined) return { kind: "vendor-native", base };
+  return configuredBaseUrl !== undefined && sdkBaseUrl !== undefined && urlIsUnderBase(servedAddress, sdkBaseUrl)
+    ? { kind: "configured-endpoint", origin, configuredBaseId: configuredEndpointId(configuredBaseUrl) }
+    : { kind: "unknown", origin };
 }
 
 function routelessModelCapabilities(params: {
@@ -284,6 +313,18 @@ export function normalizeAzureFoundryBaseURL(rawBaseUrl: string): string {
 
   parsedUrl.pathname = pathname || "/";
   return parsedUrl.toString().replace(/\/$/, "");
+}
+
+/** The base address the SDK factory for this slot is given, when one is configured. */
+function sdkBaseUrl(slot: VercelVendor, configuredBaseUrl: string | undefined): string | undefined {
+  const configured = configuredBaseUrl?.trim();
+  if (!configured) return undefined;
+  if (slot !== "azure-foundry") return configured;
+  try {
+    return normalizeAzureFoundryBaseURL(configured);
+  } catch {
+    return undefined;
+  }
 }
 
 function assertCredentialedBaseUrlUsesHttps(
@@ -462,7 +503,8 @@ export class VercelUnifiedProvider implements LLMProvider {
       const interleavedNumericThinking = numericThinking && hasTools
         && claudeShape?.interleavedNumericThinking === true;
       // Per call, so concurrent turns on one provider never share evidence.
-      let servedRequestUrl: string | undefined;
+      let requestDispatched = false;
+      let servedAddress: string | undefined;
       const model = this.resolveModel(
         params.model,
         useOpenAIResponsesAliases,
@@ -471,7 +513,7 @@ export class VercelUnifiedProvider implements LLMProvider {
           ? { outputTokenLimit, interleavedThinking: interleavedNumericThinking, numericThinking, reportedCeiling }
           : undefined,
         params.onRequestControls,
-        (address) => { servedRequestUrl = address; },
+        (address) => { requestDispatched = true; servedAddress = address; },
       );
       const reasoningEffort = reasoningPlan?.kind === "openai-effort" ? reasoningPlan.effort : undefined;
       const useReasoning = params.enableThinking === true && reasoningEffort !== undefined;
@@ -727,8 +769,8 @@ export class VercelUnifiedProvider implements LLMProvider {
         for await (const event of restoredEvents) {
           if (params.abortSignal?.aborted) return;
           idleController.signal.throwIfAborted();
-          yield event.type === "message_complete" && event.usage !== undefined && servedRequestUrl !== undefined
-            ? { ...event, usage: { ...event.usage, servedRequestUrl } }
+          yield event.type === "message_complete" && event.usage !== undefined && requestDispatched
+            ? { ...event, usage: { ...event.usage, servedRoute: servedRouteEvidence(this.vendor, baseUrl?.trim() || undefined, sdkBaseUrl(slot, baseUrl), servedAddress) } }
             : event;
         }
         if (params.abortSignal?.aborted) return;
@@ -772,7 +814,7 @@ export class VercelUnifiedProvider implements LLMProvider {
     openAIResponsesWire: boolean,
     outputProjection?: NativeOutputProjection,
     onRequestControls?: StreamTurnParams["onRequestControls"],
-    onServedRequest?: (servedRequestUrl: string | undefined) => void,
+    onServedRequest?: (servedAddress: string | undefined) => void,
   ) {
     const slot = this.protocolVendor();
     if (this.vendorSlot === "openai-compatible" && !this.providerMetadata && !this.baseUrl) {

@@ -13,7 +13,7 @@ import type { CustomProviderWire } from "../../shared/custom-provider.js";
 // path while the type definition cannot drift between modules.
 import type { RequestGenerationControls, RunModelSettings } from "../../shared/run-model-settings.js";
 import type { OutputCeilingSource, RouteModelCapabilities } from "../../shared/context-budget.js";
-import type { ModelUsageSegment } from "../../shared/model-pricing.js";
+import type { ModelUsageSegment, ServedRouteEvidence } from "../../shared/model-pricing.js";
 import {
   type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import type { MarketplaceInstalledProviderPreset } from "../../shared/marketplace-package-assets.js";
@@ -452,11 +452,11 @@ export interface TokenUsage {
    */
   reasoningTokens?: number;
   /**
-   * Dispatch evidence for pricing: the address this request was sent to (origin and
-   * path, no query), set by the transport that sent it. Engine-internal: the request's
-   * recorded price is resolved from it, and it is never persisted or sent to a window.
+   * Dispatch evidence for pricing: what the transport established about where this
+   * request was served. Engine-internal; the request's recorded price is resolved from
+   * it, and it is never persisted or sent to a window.
    */
-  servedRequestUrl?: string;
+  servedRoute?: ServedRouteEvidence;
 }
 
 export type TokenUsageByModel = ModelUsageSegment<LLMVendor>;

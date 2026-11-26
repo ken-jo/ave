@@ -1,8 +1,21 @@
-/** The usage a request reports carries the address the installed SDK actually sent it to. */
+/** The usage a request reports carries what its transport established about where the installed SDK was answered from. */
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { configuredEndpointId } from "../../pricing.js";
 import type { StreamEvent, StreamTurnParams } from "../../types.js";
 import { VercelUnifiedProvider } from "../adapter.js";
 import { collectStreamEvents as collect } from "./test-helpers.js";
+
+// The installed Vertex factory builds the address; only its credential lookup, which needs
+// application credentials and the network, is replaced.
+vi.mock("@ai-sdk/google-vertex", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@ai-sdk/google-vertex")>();
+  const authClient = { getAccessToken: async () => ({ token: "fixture-token" }) };
+  return {
+    ...actual,
+    createVertex: (options: Parameters<typeof actual.createVertex>[0]) =>
+      actual.createVertex({ ...options, googleAuthOptions: { authClient: authClient as never } }),
+  };
+});
 
 const TURN: StreamTurnParams = {
   model: "fixture-model",
@@ -49,10 +62,19 @@ function requestUrl(input: Parameters<typeof fetch>[0] | undefined): URL {
   return new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
 }
 
-function servedRequestUrl(events: readonly StreamEvent[]): string | undefined {
+function completion(events: readonly StreamEvent[]) {
   const complete = events.find((event) => event.type === "message_complete");
   if (complete?.type !== "message_complete") throw new Error(`No completed message: ${JSON.stringify(events)}`);
-  return complete.usage?.servedRequestUrl;
+  return complete;
+}
+
+const servedRoute = (events: readonly StreamEvent[]) => completion(events).usage?.servedRoute;
+
+/** A response as a real transport returns it: carrying its own final address. */
+function answeredFrom(response: Response, url: string, redirected = false): Response {
+  Object.defineProperty(response, "url", { value: url });
+  Object.defineProperty(response, "redirected", { value: redirected });
+  return response;
 }
 
 afterEach(() => {
@@ -60,48 +82,89 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("served request evidence", () => {
+describe("served route evidence", () => {
   it.each([
     ["OPENAI_BASE_URL", "openai", () => chat(TURN.model), "https://proxy.invalid/v1/chat/completions"],
     ["ANTHROPIC_BASE_URL", "claude", () => messages(TURN.model), "https://proxy.invalid/v1/messages"],
-  ] as const)("records the proxy an %s override sends a request to when no endpoint is configured", async (variable, vendor, respond, expected) => {
+  ] as const)("places nothing when an %s override sends an unconfigured route to a proxy", async (variable, vendor, respond, sentTo) => {
     vi.stubEnv(variable, "https://proxy.invalid/v1");
     // No transport is supplied either: the request goes to the runtime's fetch, as it does without the observer.
     const runtimeFetch = vi.fn<typeof fetch>(async () => respond());
     vi.stubGlobal("fetch", runtimeFetch);
     const events = await collect(new VercelUnifiedProvider(vendor, "fixture-key").streamTurn(TURN));
     expect(runtimeFetch).toHaveBeenCalledOnce();
-    expect(requestUrl(runtimeFetch.mock.calls[0]?.[0]).href).toBe(expected);
-    expect(servedRequestUrl(events)).toBe(expected);
+    expect(requestUrl(runtimeFetch.mock.calls[0]?.[0]).href).toBe(sentTo);
+    expect(servedRoute(events)).toEqual({ kind: "unknown", origin: "https://proxy.invalid" });
   });
 
   it.each([
-    ["claude", "https://api.anthropic.com", () => messages(TURN.model), TURN.model],
-    ["claude", "https://api.anthropic.com/", () => messages(TURN.model), TURN.model],
-    ["azure-foundry", "https://fixture.services.ai.azure.com/OPENAI/v1", () => responses("fixture-deployment"), "fixture-deployment"],
-    ["azure-foundry", "https://fixture.openai.azure.com/openai/deployments/fixture-deployment/chat/completions?api-version=2024-10-21", () => responses("fixture-deployment"), "fixture-deployment"],
-    ["openai", "https://proxy.invalid/v1/", () => chat(TURN.model), TURN.model],
-    ["gemini", undefined, generated, TURN.model],
-  ] as const)("records what the installed SDK sends for %s at %s, after its own address normalization", async (vendor, baseUrl, respond, model) => {
+    ["claude", undefined, () => messages(TURN.model), TURN.model, "https://api.anthropic.com/v1"],
+    ["claude", "https://api.anthropic.com", () => messages(TURN.model), TURN.model, "https://api.anthropic.com/v1"],
+    ["claude", "https://api.anthropic.com/", () => messages(TURN.model), TURN.model, "https://api.anthropic.com/v1"],
+    ["openai", undefined, () => chat(TURN.model), TURN.model, "https://api.openai.com/v1"],
+    ["openai", "https://eu.api.openai.com/v1/", () => chat(TURN.model), TURN.model, "https://eu.api.openai.com/v1"],
+    ["gemini", undefined, generated, TURN.model, "https://generativelanguage.googleapis.com/v1beta"],
+    ["openrouter", "https://openrouter.ai/api/v1", () => chat(TURN.model), TURN.model, "https://openrouter.ai/api/v1"],
+  ] as const)("names the vendor's own base for %s configured at %s, from what the installed SDK sends", async (vendor, baseUrl, respond, model, base) => {
     const transport = vi.fn<typeof fetch>(async () => respond());
     const events = await collect(new VercelUnifiedProvider(vendor, "fixture-key", baseUrl, transport).streamTurn({ ...TURN, model }));
     expect(transport).toHaveBeenCalledOnce();
-    const sent = requestUrl(transport.mock.calls[0]?.[0]);
-    // Nothing is predicted: the evidence is the address the transport received, without its query.
-    expect(servedRequestUrl(events)).toBe(`${sent.origin}${sent.pathname}`);
-    expect(servedRequestUrl(events)).not.toContain("?");
+    expect(servedRoute(events)).toEqual({ kind: "vendor-native", base });
   });
 
-  it("pins the installed SDK's Anthropic and Foundry addresses the evidence reports", async () => {
-    const anthropic = vi.fn<typeof fetch>(async () => messages(TURN.model));
-    const foundry = vi.fn<typeof fetch>(async () => responses("fixture-deployment"));
-    expect(servedRequestUrl(await collect(
-      new VercelUnifiedProvider("claude", "fixture-key", "https://api.anthropic.com", anthropic).streamTurn(TURN),
-    ))).toBe("https://api.anthropic.com/v1/messages");
-    expect(servedRequestUrl(await collect(
-      new VercelUnifiedProvider("azure-foundry", "fixture-key", "https://fixture.services.ai.azure.com/OPENAI/v1", foundry)
-        .streamTurn({ ...TURN, model: "fixture-deployment" }),
-    ))).toBe("https://fixture.services.ai.azure.com/OPENAI/v1/responses");
+  it.each([
+    ["global", "https://aiplatform.googleapis.com"],
+    ["us-central1", "https://us-central1-aiplatform.googleapis.com"],
+    ["eu", "https://aiplatform.eu.rep.googleapis.com"],
+    ["us", "https://aiplatform.us.rep.googleapis.com"],
+  ] as const)("names the host the installed Vertex SDK builds for location %s", async (vertexLocation, origin) => {
+    const transport = vi.fn<typeof fetch>(async () => generated());
+    const provider = new VercelUnifiedProvider("vertex-ai", "", undefined, transport, { vertexProject: "fixture-project", vertexLocation });
+    const events = await collect(provider.streamTurn({ ...TURN, model: "gemini-2.5-pro" }));
+    expect(transport).toHaveBeenCalledOnce();
+    const sent = requestUrl(transport.mock.calls[0]?.[0]);
+    expect(sent.origin).toBe(origin);
+    expect(sent.pathname).toBe(`/v1beta1/projects/fixture-project/locations/${vertexLocation}/publishers/google/models/gemini-2.5-pro:streamGenerateContent`);
+    expect(servedRoute(events)).toEqual({ kind: "vendor-native", base: `${origin}/v1beta1` });
+  });
+
+  it.each([
+    ["openai", "https://proxy.invalid/v1/", () => chat(TURN.model), TURN.model, "/v1/chat/completions"],
+    ["claude", "https://proxy.invalid", () => messages(TURN.model), TURN.model, "/messages"],
+    ["azure-foundry", "https://fixture.services.ai.azure.com/OPENAI/v1", () => responses("fixture-deployment"), "fixture-deployment", "/OPENAI/v1/responses"],
+    ["azure-foundry", "https://fixture.openai.azure.com/openai/deployments/fixture-deployment/chat/completions?api-version=2024-10-21", () => responses("fixture-deployment"), "fixture-deployment", "/openai/v1/responses"],
+    // Another product on the vendor's own host is a configured endpoint, not the vendor's API.
+    ["openai", "https://api.openai.com/gateway/v1", () => chat(TURN.model), TURN.model, "/gateway/v1/chat/completions"],
+    ["openrouter", "https://openrouter.ai/api/alpha/v1", () => chat(TURN.model), TURN.model, "/api/alpha/v1/chat/completions"],
+  ] as const)("names a configured endpoint only by a digest of its setting: %s at %s", async (vendor, baseUrl, respond, model, sentPath) => {
+    const transport = vi.fn<typeof fetch>(async () => respond());
+    const events = await collect(new VercelUnifiedProvider(vendor, "fixture-key", baseUrl, transport).streamTurn({ ...TURN, model }));
+    expect(transport).toHaveBeenCalledOnce();
+    // The installed SDK's own normalization of the address, pinned.
+    const sent = requestUrl(transport.mock.calls[0]?.[0]);
+    expect(sent.pathname).toBe(sentPath);
+    expect(servedRoute(events)).toEqual({
+      kind: "configured-endpoint", origin: sent.origin, configuredBaseId: configuredEndpointId(baseUrl),
+    });
+  });
+
+  it("takes the answering address after a redirect, not the one the request was sent to", async () => {
+    const entry = "https://entry.invalid/v1";
+    const moved = vi.fn<typeof fetch>(async () => answeredFrom(chat(TURN.model), "https://serving.invalid/inference/chat/completions", true));
+    expect(servedRoute(await collect(new VercelUnifiedProvider("openai", "fixture-key", entry, moved).streamTurn(TURN))))
+      .toEqual({ kind: "unknown", origin: "https://serving.invalid" });
+    // A transport that followed a redirect and does not say where to establishes nothing.
+    const hidden = vi.fn<typeof fetch>(async () => answeredFrom(chat(TURN.model), "", true));
+    expect(servedRoute(await collect(new VercelUnifiedProvider("openai", "fixture-key", entry, hidden).streamTurn(TURN))))
+      .toEqual({ kind: "unknown" });
+    // The same configured endpoint answering for itself.
+    const direct = vi.fn<typeof fetch>(async () => answeredFrom(chat(TURN.model), `${entry}/chat/completions`));
+    expect(servedRoute(await collect(new VercelUnifiedProvider("openai", "fixture-key", entry, direct).streamTurn(TURN))))
+      .toEqual({ kind: "configured-endpoint", origin: "https://entry.invalid", configuredBaseId: configuredEndpointId(entry) });
+    // A proxy that hands the request on to the vendor is priced as the vendor.
+    const handedOn = vi.fn<typeof fetch>(async () => answeredFrom(chat(TURN.model), "https://api.openai.com/v1/chat/completions", true));
+    expect(servedRoute(await collect(new VercelUnifiedProvider("openai", "fixture-key", entry, handedOn).streamTurn(TURN))))
+      .toEqual({ kind: "vendor-native", base: "https://api.openai.com/v1" });
   });
 
   it.each(["OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"] as const)("sends nothing when %s is set but empty", async (variable) => {
@@ -115,28 +178,36 @@ describe("served request evidence", () => {
     expect(events.map((event) => event.type)).toEqual(["error"]);
   });
 
-  it("keeps each concurrent request's own address on one provider", async () => {
+  it("keeps each concurrent request's own evidence on one provider", async () => {
     let releaseFirst!: () => void;
     const firstHeld = new Promise<void>((resolve) => { releaseFirst = resolve; });
     const transport = vi.fn<typeof fetch>(async (input) => {
-      if (requestUrl(input).pathname.includes("first-model")) await firstHeld;
-      return generated();
+      const sent = requestUrl(input);
+      if (!sent.pathname.includes("first-model")) return generated();
+      await firstHeld;
+      return answeredFrom(generated(), "https://elsewhere.invalid/moved", true);
     });
     const provider = new VercelUnifiedProvider("gemini", "fixture-key", undefined, transport);
     const first = collect(provider.streamTurn({ ...TURN, model: "first-model" }));
     const second = await collect(provider.streamTurn({ ...TURN, model: "second-model" }));
     releaseFirst();
-    expect(servedRequestUrl(second)).toContain("/models/second-model:");
-    expect(servedRequestUrl(await first)).toContain("/models/first-model:");
+    expect(servedRoute(second)).toEqual({ kind: "vendor-native", base: "https://generativelanguage.googleapis.com/v1beta" });
+    expect(servedRoute(await first)).toEqual({ kind: "unknown", origin: "https://elsewhere.invalid" });
   });
 
-  it("drops credentials and the query from the recorded address", async () => {
+  it("carries no part of the request address: a credential in the path, the user info or the query stays in the transport", async () => {
     const transport = vi.fn<typeof fetch>(async () => chat(TURN.model));
-    const provider = new VercelUnifiedProvider(
-      "openai-compatible", "fixture-key", "https://user:secret@gateway.invalid/v1", transport,
-    );
+    const baseUrl = "https://user:fixture-user-secret@entry.invalid/gateway/fixture-path-credential/v1?key=fixture-query-secret";
+    const provider = new VercelUnifiedProvider("openai-compatible", "fixture-key", baseUrl, transport);
     const events = await collect(provider.streamTurn(TURN));
     expect(transport).toHaveBeenCalledOnce();
-    expect(servedRequestUrl(events)).toBe("https://gateway.invalid/v1/chat/completions");
+    expect(requestUrl(transport.mock.calls[0]?.[0]).pathname).toContain("fixture-path-credential");
+    expect(servedRoute(events)).toEqual({
+      kind: "configured-endpoint", origin: "https://entry.invalid", configuredBaseId: configuredEndpointId(baseUrl),
+    });
+    const carried = JSON.stringify(events);
+    for (const secret of ["fixture-path-credential", "fixture-user-secret", "fixture-query-secret", "/gateway/"]) {
+      expect(carried).not.toContain(secret);
+    }
   });
 });

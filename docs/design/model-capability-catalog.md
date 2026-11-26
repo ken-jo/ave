@@ -507,44 +507,58 @@ answers the rates with their source:
    without a dollar value; it is never shown as $0 and never borrows another route's
    price.
 
-**The route a request is priced on is the one it was sent to.** The adapter observes
-the address of each provider request where the SDK hands it to the transport
-(`servedRequestUrl` on the request's usage: origin and path, no query or credentials).
-That address already reflects whatever chose it — a configured `baseUrl`, an SDK
-environment variable (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`), the SDK default and the
-SDK's own normalization — so the host predicts none of them. `resolveModelPricing`
-then decides from the recorded address:
+**The route a request is priced on is the one that answered it.** The adapter wraps
+the transport it hands each SDK and reads the response's own address (`response.url`,
+the last hop of any redirect the transport followed). A transport that does not expose
+it leaves the request address; one that reports a redirect without a destination
+establishes nothing. The adapter reduces the address to a verdict at once
+(`ServedRouteEvidence` on the request's usage) and keeps no part of the path:
 
-- **Catalog identity** is `allowsImplicitModelLimits` applied to the served address. A
-  request under a preset's base address is on the vendor's default route and is judged
-  as a route with no configured endpoint is; the rule compares base addresses and some
-  presets select a product by path.
-- **A report applies** when the served origin equals the origin of the configured
-  endpoint its model list was read from; with no configured endpoint the list came from
-  the vendor's default, so the request must be on the vendor's own route. Origins are
-  compared, not paths: SDKs append versions and operations to a base address.
-- A fallback that keeps the primary's vendor and model is priced by the same two
-  checks, so it uses the primary's report only when the same endpoint served it. A
-  fallback's own cached report is not looked up; off its vendor's own route it is
+- `vendor-native` with the vendor's canonical base, when the address is under it
+  (`vendorNativeBase`): origin **and** path. The host rule is
+  `allowsImplicitModelLimits` on the origin; the path is the first-party SDK's API
+  path (`/v1`, `/v1beta`), the preset's own base, or for Vertex the publisher path on
+  the hosts the SDK builds (global, `<region>-aiplatform`, and
+  `aiplatform.{eu,us}.rep.googleapis.com`). Another product on the same host is not
+  the vendor's API.
+- `configured-endpoint` with the origin and a digest of the configured base URL
+  (`configuredEndpointId`), when the address is under the base the SDK was given. The
+  setting itself is not repeated: a base URL can carry a credential in its path.
+- `unknown` otherwise: an SDK environment override, a redirect to another address.
+
+The query loop turns the evidence into the pricing route. A `configured-endpoint`
+becomes `report-endpoint` only when its digest is the primary route's own setting, so a
+fallback that keeps the vendor and model but is configured elsewhere, even on the same
+host, does not qualify. `resolveModelPricing` then decides:
+
+- **Catalog rates** apply only to `vendor-native`.
+- **A report applies** only when the address its model list was read from
+  (`reportedPricingEndpoint`, the cache row's `endpoint`) lies under the base that
+  served: same origin, path prefix. The settings normalizer drops a cache row whose
+  `endpoint` is not under the endpoint its key names, with a warning, so a row cannot
+  attribute one address's list to another.
+- A fallback's own cached report is not looked up; off its vendor's own base it is
   `endpoint-price-unavailable`.
 
-The address prices the request and is not stored: the audit row and the turn summary
+Neither the address nor the evidence is stored: the audit row and the turn summary
 keep the resolved price and its reason. The turn's `modelSettings.pricing` is the price
-its last answered primary request was recorded at, so it agrees with the request
-snapshots; a turn none of whose requests answered keeps the pre-send projection.
+its last answered primary request was recorded at. Until a request answers it is
+`unknown`: the pre-send estimate is the composer's and is never written as a record.
 
 Nothing else reads this evidence. Discovery, the model-list cache keys, protocol
 selection, retirement, the context window and Settings identify a route by its
-configured endpoint as before. Two limits follow and are accepted:
+configured endpoint as before. These limits follow and are accepted:
 
 - A request an SDK environment variable sends to a proxy is `endpoint-price-unavailable`
   even when that proxy lists prices, because the model list is read from the configured
   endpoint, not from the environment's.
 - The pre-send estimate has no request yet. It projects the route from the configured
-  endpoint (`allowsImplicitModelLimits(vendor, baseUrl)`), so under an environment
-  override it can show the vendor's catalog price until the first request records
-  otherwise. A provider that reports usage without an address is priced by the same
-  projection.
+  endpoint with `allowsImplicitModelLimits(vendor, baseUrl)`, which judges the host
+  only. Under an environment override, or for another product on the vendor's host, it
+  can show the catalog price until the first request records otherwise. A provider
+  that reports usage without evidence is priced by the same projection.
+- The canonical API bases are stated in `model-pricing.ts`; discovery and the limits
+  rule keep their own copies of the default addresses.
 
 Until slice 7 the hand-kept row answered as `pricing-catalog` between the catalog and
 `unknown`. A price snapshot an earlier build recorded with that source is still read back

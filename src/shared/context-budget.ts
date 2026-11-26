@@ -383,6 +383,8 @@ export interface RouteContextWindow extends ResolvedContextWindow, RouteModelCap
   /** Carry output ceiling separately; context budget math does not use it. */
   readonly maxOutputTokens?: number;
   readonly reportedPricing?: LlmModelListPricing;
+  /** The address the model list holding `reportedPricing` was read from. */
+  readonly reportedPricingEndpoint?: string;
   readonly output: ResolvedOutputTokenLimit;
   /** Report missing named entries once so configuration typos cannot silently become fallback budgets. */
   readonly unresolvedCatalogModel?: string;
@@ -427,6 +429,9 @@ export function resolveContextWindowForRoute(
   const entry = llm.provider === "vertex-ai"
     ? undefined
     : cachedModelListEntry(llm.modelListCache, { ...address, model });
+  const listedAt = entry === undefined
+    ? undefined
+    : llm.modelListCache?.[llmModelListCacheKey(address.vendor, address.baseUrl, address.credentialScope)]?.endpoint;
   // A named entry describes only the configured block model, not presets or different child models.
   const catalogModel = address.credentialScope === undefined && model === block.model.trim()
     ? block.catalogModel
@@ -478,6 +483,7 @@ export function resolveContextWindowForRoute(
     ...(catalogModel !== undefined ? { catalogModel } : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
     ...(entry?.pricing !== undefined ? { reportedPricing: entry.pricing } : {}),
+    ...(entry?.pricing !== undefined && listedAt !== undefined ? { reportedPricingEndpoint: listedAt } : {}),
     output,
     ...(unresolved ? { unresolvedCatalogModel: catalogModel } : {}),
     ...(inputModalities !== undefined ? { inputModalities } : {}),

@@ -92,6 +92,39 @@ describe("bundled provider settings", () => {
     }
   });
 
+  it("drops a cached model list that was read from another address than the endpoint it is filed under", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "model-list-cache-binding-"));
+    try {
+      const row = (vendor: string, endpoint: string, baseUrl?: string) => ({
+        vendor, ...(baseUrl ? { baseUrl } : {}), endpoint, models: ["fixture"],
+        modelEntries: [{ id: "fixture", pricing: { prompt: "0.000003", completion: "0.000004" } }],
+        fetchedAt: "2026-01-01T00:00:00.000Z",
+      });
+      const serve = "https://serve.invalid/v1";
+      const project = "https://fixture.services.ai.azure.com/api/projects/project-a/openai/v1";
+      const kept = {
+        [llmModelListCacheKey("openai-compatible", serve)]: row("openai-compatible", `${serve}/models`, serve),
+        [llmModelListCacheKey("azure-foundry", project)]: row("azure-foundry", `${project}/models`, project),
+        [llmModelListCacheKey("openai", "")]: row("openai", "https://api.openai.com/v1/models"),
+        [llmModelListCacheKey("claude", "https://proxy.invalid")]: row("claude", "https://proxy.invalid/models", "https://proxy.invalid"),
+      };
+      const dropped = {
+        // Another origin.
+        [llmModelListCacheKey("deepseek", serve)]: row("deepseek", "https://listing.invalid/v1/models", serve),
+        // The same host, another project.
+        [llmModelListCacheKey("xai", project)]: row("xai", "https://fixture.services.ai.azure.com/api/projects/project-b/openai/v1/models", project),
+        // A default route whose list did not come from the vendor's default address.
+        [llmModelListCacheKey("gemini", "")]: row("gemini", "https://proxy.invalid/v1beta/models"),
+        [llmModelListCacheKey("claude", "")]: row("claude", "https://eu.api.openai.com/v1/models"),
+      };
+      writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ llm: { modelListCache: { ...kept, ...dropped } } }));
+      const cache = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm").modelListCache;
+      expect(Object.keys(cache).sort()).toEqual(Object.keys(kept).sort());
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+
   it("preserves a native model cache on reload and clears it when the format changes", async () => {
     const userDataPath = mkdtempSync(join(tmpdir(), "custom-provider-cache-"));
     try {

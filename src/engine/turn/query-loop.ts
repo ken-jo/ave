@@ -56,7 +56,14 @@ import { planReasoning } from "../llm/reasoning-plan.js";
 import { activeModelCatalog } from "../../shared/model-catalog/active.js";
 import type { ContextWindowSource } from "../../shared/context-budget.js";
 import type { RunModelSettings } from "../../shared/run-model-settings.js";
-import { resolveModelPricing, type ModelPricingRoute, type ResolvedModelPricing } from "../../shared/model-pricing.js";
+import {
+  resolveModelPricing,
+  type ModelPricingRoute,
+  type ResolvedModelPricing,
+  type ServedPricingRoute,
+  type ServedRouteEvidence,
+} from "../../shared/model-pricing.js";
+import { configuredEndpointId } from "../llm/pricing.js";
 import { resolvePricingOverrides, type PricingOverride } from "../../shared/pricing-overrides.js";
 import { isA2AQuestionInputRequiredControl } from "../../tools/agent-send.js";
 import {
@@ -219,6 +226,7 @@ export async function queryLoop(
       : {
           ...(runtimeContextBudget.baseUrl !== undefined ? { baseUrl: runtimeContextBudget.baseUrl } : {}),
           ...(runtimeContextBudget.reportedPricing !== undefined ? { reported: runtimeContextBudget.reportedPricing } : {}),
+          ...(runtimeContextBudget.reportedPricingEndpoint !== undefined ? { reportedAt: runtimeContextBudget.reportedPricingEndpoint } : {}),
         };
     // Capacity is turn-stable; record reasoning at each request because retries may change its shape.
     const modelSettingsBase: RunModelSettings | undefined = apiRound === undefined || effectiveOutput === undefined
@@ -237,11 +245,13 @@ export async function queryLoop(
           ...(toolsWithheld
             ? { tools: { sent: false as const, source: toolsWithheld.source, catalogEntry: toolsWithheld.catalogEntry } }
             : {}),
-          pricing: resolveModelPricing(llmSettings.provider, model, turnPricingOverrides, primaryPricingRoute),
+          // A price is recorded when a request answers. The pre-send estimate is the
+          // composer's; a turn whose requests all fail records no price.
+          pricing: { source: "unknown" },
         };
     let turnModelSettings: RunModelSettings | undefined;
     // The price the turn's last answered primary request was recorded at. Until a request
-    // answers, the turn record carries the price projected from the configured route.
+    // answers, the turn record carries no price.
     let primaryRequestPricing: ResolvedModelPricing | undefined;
     const withServingIdentity = (
       result: {
@@ -335,10 +345,10 @@ export async function queryLoop(
         },
         turnPricingOverrides,
         {
-          // A fallback that keeps the primary's vendor and model still has to be served
-          // by the endpoint that listed the report before the report prices it.
           ...(servedByPrimaryLabel ? primaryPricingRoute : {}),
-          ...(usage.servedRequestUrl !== undefined ? { servedRequestUrl: usage.servedRequestUrl } : {}),
+          ...(usage.servedRoute !== undefined
+            ? { served: servedPricingRoute(usage.servedRoute, servedByPrimaryLabel ? primaryPricingRoute?.baseUrl : undefined) }
+            : {}),
         },
       );
       if (requestPricing !== undefined && servedByPrimaryLabel && turnModelSettings !== undefined) {
@@ -2146,6 +2156,19 @@ function toolResultMeta(
     ...(result.outputArtifact ? { outputArtifact: result.outputArtifact } : {}),
     ...(permissionReview ? { permissionReview } : {}),
   };
+}
+
+/**
+ * A request answered from under a configured endpoint can use the primary route's report
+ * only when that endpoint is the primary's own setting. A fallback that keeps the vendor
+ * and model but is configured elsewhere, even on the same host, does not qualify.
+ */
+function servedPricingRoute(evidence: ServedRouteEvidence, primaryBaseUrl: string | undefined): ServedPricingRoute {
+  if (evidence.kind === "vendor-native") return evidence;
+  return evidence.kind === "configured-endpoint" && primaryBaseUrl !== undefined
+    && evidence.configuredBaseId === configuredEndpointId(primaryBaseUrl)
+    ? { kind: "report-endpoint", base: primaryBaseUrl }
+    : { kind: "unknown" };
 }
 
 // Record API usage only with a verified serving identity.
