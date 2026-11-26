@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "../confinement-state-paths.js";
 import { mxcConfinementStatePaths } from "../mxc-runtime-root.js";
 import { srtWinConfinementStatePaths } from "../srt-win-integrity.js";
@@ -15,6 +16,14 @@ vi.mock("node:fs", async (original) => {
     resolvesTo.get(String(path).toLowerCase()) ?? (actual.realpathSync.native as (...args: unknown[]) => string)(path, ...rest);
   return { ...actual, realpathSync: Object.assign((...args: Parameters<typeof actual.realpathSync>) => actual.realpathSync(...args), { native }) };
 });
+vi.mock("../srt-win-integrity.js", async (original) => {
+  const actual = await original<typeof import("../srt-win-integrity.js")>();
+  return { ...actual, srtWinConfinementStatePaths: vi.fn(actual.srtWinConfinementStatePaths) };
+});
+vi.mock("../mxc-runtime-root.js", async (original) => {
+  const actual = await original<typeof import("../mxc-runtime-root.js")>();
+  return { ...actual, mxcConfinementStatePaths: vi.fn(actual.mxcConfinementStatePaths) };
+});
 
 const missingDrive = (): string => {
   const letter = [..."ZYXWVUTSRQPONMLKJIHGFE"].find((candidate) => !existsSync(`${candidate}:\\`));
@@ -25,6 +34,20 @@ const missingDrive = (): string => {
 describe("a host with no declared confinement state", () => {
   it("admits any write, drive path or not, without resolving it", () => {
     expect(() => assertWriteGrantsOutsideConfinementState(["/home/alice/project", "relative"], [])).not.toThrow();
+  });
+
+  it.each(["darwin", "linux"] as const)("declares nothing on %s without looking up either backend's state", (platform) => {
+    const real = process.platform;
+    vi.mocked(srtWinConfinementStatePaths).mockClear();
+    vi.mocked(mxcConfinementStatePaths).mockClear();
+    setProcessPlatform(platform);
+    try {
+      expect(declaredConfinementStatePaths()).toEqual([]);
+    } finally {
+      setProcessPlatform(real);
+    }
+    expect(srtWinConfinementStatePaths).not.toHaveBeenCalled();
+    expect(mxcConfinementStatePaths).not.toHaveBeenCalled();
   });
 });
 

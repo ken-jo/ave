@@ -92,15 +92,16 @@ export function assertWriteGrantsOutsideConfinementState(
 }
 
 /** Every backend's declared state, whichever backend is active: both can run on one machine. Undefined when one cannot
- * be located. Both declaring backends grant on Windows only. */
+ * be located. Both declaring backends grant on Windows only, so no other host looks either up. */
 export function declaredConfinementStatePaths(
-  helper: readonly string[] | undefined = srtWinConfinementStatePaths(),
-  container: readonly string[] = mxcConfinementStatePaths(),
+  helperPaths?: readonly string[],
+  containerPaths?: readonly string[],
 ): ConfinementStatePath[] | undefined {
   if (process.platform !== "win32") return [];
+  const helper = helperPaths ?? srtWinConfinementStatePaths();
   if (helper === undefined) return undefined;
   return [
     ...helper.map((path) => ({ path, stateClass: "helper-ledger" as const })),
-    ...container.map((path) => ({ path, stateClass: "container-runtime" as const })),
+    ...(containerPaths ?? mxcConfinementStatePaths()).map((path) => ({ path, stateClass: "container-runtime" as const })),
   ];
 }
