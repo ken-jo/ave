@@ -253,11 +253,8 @@ it("a replacement fire leaves a parked gate pending, and once the earlier run se
   expect(await f.h.decide(oldRow.id, "first", "approve")).toMatchObject({ ok: true });
   await f.h.until(oldRow.id, row => row.runStatus === "cancelled");
   const next = await f.dispatch(routine.id);
-  const child = await vi.waitFor(() => {
-    const active = f.h.live().find(candidate => candidate.input.unattendedStage?.stageId === "new");
-    if (!active) throw new Error("New scheduled child has not linked");
-    return active;
-  });
+  await f.h.waitForProgress(event => event.stageId === "new" && event.runSessionId !== undefined, "replacement child linked");
+  const [child] = await f.h.untilLive(1);
   expect(child.input.unattendedStage).toMatchObject({ stageId: "new" });
   child.finish();
   await next.result;
