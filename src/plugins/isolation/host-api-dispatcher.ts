@@ -1477,14 +1477,13 @@ export class HostApiDispatcher {
       );
     }
     if (invocation.live && readsEffectFrame(path)) {
-      // The child picks the token, so a gated effect runs only when every live call would authorize it alike.
-      // Any live call without an effect-gate frame imposes no gate (gateMutatingEffect and the enforced wrapper pass through
-      // without a frame; app-only calls such as a panel's long poll are the usual case), so naming a gated call is never weaker than it;
-      // naming the frameless call while a gated one is live still refuses, or the child could escape that call's gate.
       const named = invocation.run(currentEffectGateContext);
       let sibling = false;
       for (const other of this.options.invocations?.live() ?? []) {
+        if (other === invocation.run) continue;
+        sibling = true;
         const otherFrame = other(currentEffectGateContext);
+        // A frameless call cannot weaken the named call's gate.
         if (named !== undefined && otherFrame === undefined) continue;
         if (!sameEffectAuthority(named, otherFrame)) {
           throw new HostApiBoundaryError(
@@ -1493,10 +1492,8 @@ export class HostApiDispatcher {
             { reason: AMBIGUOUS_INVOCATION_TOKEN },
           );
         }
-        sibling ||= otherFrame !== named;
       }
-      // Equal authority decides whether the effect may run, not whose call it is: with a gated sibling live the request is
-      // unattributed, so it neither asks nor ends the named call.
+      // The child supplies the token. Any other live call makes attribution ambiguous, even when it has no gate.
       if (named !== undefined && sibling) return invocation.run(() => runUnattributedEffectRequest(named, invoke));
     }
     return invocation.run(invoke);

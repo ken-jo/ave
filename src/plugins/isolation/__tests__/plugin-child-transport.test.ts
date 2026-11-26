@@ -1057,7 +1057,7 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
       });
       return reply;
     };
-    const terminal = (id: string) => readFileSync(audit.getPermissionAuditLogFile(), "utf8").trim().split("\n")
+    const terminal = (id: string) => readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
       .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.toolUseId === id && row.decision !== "ask");
     const close = async () => {
       gate.disposeAll();
@@ -1066,8 +1066,43 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
       await audit.close();
       rmSync(root, { recursive: true, force: true });
     };
-    return { manager, gate, desk, cards, write, call, effectFromChild, replyTo, terminal, close };
+    return { rig, manager, gate, desk, cards, write, call, effectFromChild, replyTo, terminal, close };
   }
+
+  it("refuses an effect that would ask while a frameless app poll is live without settling either call", async () => {
+    const t = await overlap();
+    let pendingPoll: Promise<unknown> | undefined;
+    try {
+      const model = await t.call("model-call");
+      const before = t.rig.sent.length;
+      const poll = runWithInvocationOrigin("ui", undefined,
+        () => t.rig.transport.requestMcp("tools/call", { name: "speak", arguments: {} }));
+      pendingPoll = Promise.allSettled([poll]);
+      await settle();
+      const [pollFrame] = t.rig.sent.slice(before).filter((frame) => frame.method === "tools/call");
+      if (pollFrame === undefined) throw new Error("the app poll was not sent");
+      t.effectFromChild("mixed-effect", model.token);
+      await vi.waitFor(() => expect(t.cards.length > 0 || t.rig.sent.some((frame) => frame.id === "mixed-effect")).toBe(true));
+      expect(t.cards.length).toBe(0);
+      const reply = await t.replyTo("mixed-effect");
+      expect(reply.error).toMatchObject({ data: { code: "effect-boundary-denied" } });
+      expect(JSON.stringify(reply.error)).toContain("cannot tell which call asks");
+      expect(t.terminal("model-call")).toEqual([]);
+      expect(t.write).not.toHaveBeenCalled();
+
+      model.finish();
+      const pollResult = { content: [{ type: "text", text: "poll completed" }] };
+      t.rig.deliver({ jsonrpc: "2.0", id: pollFrame.id as string, result: pollResult });
+      const [result] = await model.result;
+      expect(result).toMatchObject({ content: "spoke" });
+      expect(result?.is_error).not.toBe(true);
+      await expect(poll).resolves.toEqual(pollResult);
+      expect(t.terminal("model-call")).toEqual([expect.objectContaining({ decision: "allow" })]);
+    } finally {
+      await t.close();
+      await pendingPoll;
+    }
+  });
 
   it("ends only the call whose effect was refused when the sibling starts after the card opened", async () => {
     const t = await overlap();
