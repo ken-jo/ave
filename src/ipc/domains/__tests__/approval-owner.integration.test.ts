@@ -6,7 +6,10 @@ import { join } from "node:path";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuditLogger } from "../../../audit/audit-logger.js";
+import { terminalSessionFixture } from "../../../__tests__/support/terminal-session-fixtures.js";
+import { TERMINAL_TEST_NONCE, terminalMarker } from "../../../__tests__/support/terminal-markers.js";
 import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
+import { __resetTerminalBlocksForTest, registerTerminalBlockTracker, TerminalBlockTracker } from "../../../main/terminal/terminal-blocks.js";
 import { PermissionTestResources } from "../../../permissions/__tests__/test-resources.js";
 import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput, IPC_APPROVAL_REQUEST, IPC_APPROVAL_SETTLED } from "../../../permissions/approval-gate.js";
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
@@ -27,8 +30,10 @@ import { parseHostShellExecutionInput } from "../../../permissions/host-shell-ex
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot, setWindowsSandboxSubstrate } from "../../../permissions/sandbox-capability.js";
 import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../../boot/steps/windows-sandbox-plan.js";
 import { ToolExecutor } from "../../../tools/executor.js";
+import { runWithHostTerminalTurn } from "../../../tools/host-terminal-turn.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { BashTool } from "../../../tools/shell-tools.js";
+import { createTerminalRunTool } from "../../../tools/terminal-run.js";
 import { makeWriteProbeTool } from "../../../tools/__tests__/approval-memory-test-fixtures.js";
 import { userPermissionContext } from "../../../tools/__tests__/tool-context-fixture.js";
 import { UNAUTHORIZED_FRAME } from "../../gated.js";
@@ -51,6 +56,7 @@ async function closeFixtures() {
 
 afterEach(async () => {
   await closeFixtures();
+  __resetTerminalBlocksForTest();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
   __resetWindowsSandboxSubstrateForTest();
@@ -206,6 +212,119 @@ async function subject(mode: "auto" | "default" = "auto") {
 }
 
 describe("live native approval ownership", () => {
+  it.each(["before save", "during audit", "unchanged"] as const)("checks the terminal floor card's directory when it is %s", async scenario => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    setShellSandboxRequestedAtBoot(true);
+    f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "allow");
+    const cwd = join(f.root, "work");
+    mkdirSync(cwd);
+    const originalCwd = captureShellWorkingDirectoryIdentity(cwd);
+    expect(originalCwd).toBeDefined();
+    const windowId = 101;
+    const terminal = terminalSessionFixture("terminal:0000c0de-1", "manual");
+    const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
+    tracker.recordOutput(`${terminalMarker("D;0")}${terminalMarker(`P;Cwd=${cwd};Keys=emacs;Paste=1`)}${terminalMarker("A")}% ${terminalMarker("B")}`);
+    registerTerminalBlockTracker(terminal, tracker, windowId);
+    const write = vi.fn();
+    f.registry.register(createTerminalRunTool({
+      windowIdForHostedSession: sessionId => sessionId === SESSION_ID ? windowId : null,
+      liveOriginSessionId: () => undefined,
+      boundSurface: () => ({ kind: "terminal", tabId: terminal.tabId }),
+      ensureConversationTerminal: async () => { throw new Error("Unexpected isolated terminal"); },
+      typeCommand: async () => { throw new Error("Unexpected isolated terminal write"); },
+      verifyShell: async () => { throw new Error("Unexpected isolated terminal verification"); },
+      auditMismatch: () => {},
+      host: {
+        session: () => terminal,
+        placement: () => "workspace",
+        shellName: () => "zsh",
+        control: () => ({ mode: "available", generation: 1, agentInput: "supported" }),
+        verifyShell: async (_ref, _window, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
+        typeCommand: async (_ref, _window, request) => {
+          const effect = await request.effectCheck();
+          if (!effect.ok) return { ok: false, reason: "effect-refused", message: effect.message };
+          const refusal = request.writeFence?.();
+          if (refusal !== undefined) return { ok: false, reason: "effect-refused", message: refusal };
+          write(request.line);
+          return { ok: true, firstBlockId: 1 };
+        },
+        waitDisclosure: async (_ref, _window, sessionId, turnId) => ({
+          requestingSessionId: sessionId, turnId, command: String(write.mock.lastCall?.[0]), cwd, blockId: 1,
+          state: "done", exitCode: 0, output: "ready", outputChars: 5, truncated: false,
+        }),
+      },
+    }));
+    const run = (turnId: string, command: string) => runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId }, () =>
+      f.executeAll([{ id: turnId, name: "terminal_run", input: { command, waitSeconds: 0 } }], {
+        sessionId: SESSION_ID, executionCwd: cwd,
+        permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", additionalDirectories: [cwd] }),
+      }));
+    const original = run("original-terminal-command", "printf ready");
+    const card = await f.waitForCard();
+    expect(card.shellRule).toMatchObject({ floorSessionOnly: true, sessionAllowed: true });
+    const replaceCwd = () => {
+      renameSync(cwd, join(f.root, "former-work"));
+      mkdirSync(cwd);
+      expect(captureShellWorkingDirectoryIdentity(cwd)?.ino).not.toBe(originalCwd?.ino);
+    };
+    const auditReached = deferred<void>();
+    const auditRelease = f.hold();
+    const append = f.audit.append.bind(f.audit);
+    const audit = vi.spyOn(f.audit, "append").mockImplementation(async entry => {
+      if (entry.output?.startsWith("[approval:remembered]")) {
+        auditReached.resolve();
+        if (scenario === "during audit") await auditRelease.promise;
+      }
+      await append(entry);
+    });
+    if (scenario === "before save") replaceCwd();
+    const record = Promise.resolve(invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "session",
+      verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
+      rule: { action: "allow", scope: "session" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
+    }));
+    if (scenario === "during audit") {
+      await Promise.race([auditReached.promise, record.then(() => { throw new Error("Waiver save skipped its audit wait"); })]);
+      replaceCwd();
+      auditRelease.resolve();
+    }
+    const saved = await record;
+    if (scenario === "unchanged") {
+      expect(saved).toEqual({ ok: true });
+      await invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+      expect((await original)[0]?.is_error).toBeFalsy();
+      expect((await run("later-terminal-command", "printf later"))[0]?.is_error).toBeFalsy();
+      expect(write.mock.calls).toEqual([["printf ready"], ["printf later"]]);
+      expect(f.cards(f.windowA)).toEqual([card]);
+      return;
+    }
+    expect.soft(saved).toEqual({ ok: false, error: "project-scope-changed" });
+    if (scenario === "before save") {
+      expect.soft(audit.mock.calls.some(([entry]) => entry.output?.startsWith("[approval:remembered]"))).toBe(false);
+    }
+    expect.soft(f.windowA.webContents.send).toHaveBeenCalledWith(IPC_APPROVAL_SETTLED, { requestId: card.id });
+    expect.soft(f.gate.getRequestSnapshot(card.id)).toBeNull();
+    // An authenticated late answer cannot revive the settled card.
+    await invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+    const [result] = await original;
+    expect.soft(result?.is_error).toBe(true);
+    expect.soft(result?.content).toContain("project-scope-changed");
+    expect.soft(write).not.toHaveBeenCalled();
+
+    const nextCard = deferred<ApprovalRequest>();
+    f.windowA.webContents.send.mockImplementation((channel: string, request: ApprovalRequest) => {
+      if (channel === IPC_APPROVAL_REQUEST) nextCard.resolve(request);
+    });
+    const later = run("later-terminal-command", "printf later");
+    const fresh = await Promise.race([nextCard.promise, later.then(() => { throw new Error("Terminal command settled without a fresh card"); })]);
+    expect(fresh.shellRule).toMatchObject({ floorSessionOnly: true, sessionAllowed: true });
+    expect(fresh.id).not.toBe(card.id);
+    await invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { ...allowOnceCardAnswer(fresh), choice: "deny-once" });
+    expect((await later)[0]?.is_error).toBe(true);
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it.each(["project allow", "project allow with raw Windows cwd", "user deny", "user deny with allow answer", "user deny-always"] as const)("applies a card's saved %s to its pending host request", async (scenario) => {
     const f = await subject("default");
     vi.stubEnv("AVE_HOME", f.root);

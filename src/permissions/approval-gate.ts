@@ -61,7 +61,7 @@ import { resolve as pathResolve } from "node:path";
 import { caseFoldForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { isEgressGrantScope, type EgressGrantNetwork, type EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { isTerminalTabId } from "../shared/tab-id.js";
-import { matchesShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
+import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
 import type { ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 
 // Args DLP masking
@@ -1817,15 +1817,22 @@ export class ApprovalGate {
   } | null {
     const entry = this.pending.get(requestId);
     if (!entry) return null;
-    const { shellWorkingDirectory } = entry;
+    const { hostTerminal, shellWorkingDirectory } = entry;
     return {
       controller: {
         refresh: () => refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId),
         isCurrent: () => this.pending.get(requestId) === entry &&
           isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId),
       },
-      isWorkingDirectoryCurrent: () => shellWorkingDirectory === undefined ||
-        matchesShellWorkingDirectoryIdentity(shellWorkingDirectory.path, shellWorkingDirectory.identity),
+      isWorkingDirectoryCurrent: () => {
+        if (hostTerminal !== undefined) {
+          const identity = captureShellWorkingDirectoryIdentity(hostTerminal.physicalCwd);
+          return identity !== undefined && foldCanonicalPathSeparators(identity.realpath) === hostTerminal.physicalCwd &&
+            identity.dev.toString() === hostTerminal.cwdDevice && identity.ino.toString() === hostTerminal.cwdInode;
+        }
+        return shellWorkingDirectory === undefined ||
+          matchesShellWorkingDirectoryIdentity(shellWorkingDirectory.path, shellWorkingDirectory.identity);
+      },
     };
   }
 

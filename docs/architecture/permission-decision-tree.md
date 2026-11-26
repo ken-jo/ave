@@ -239,7 +239,7 @@ Modes are behaviour, not labels. Each column matches the reference hosts' equiva
 
 auto = 쓰기 허용 + automatic review: every non-† ask goes to the reviewer first. The reviewer never sees 질문†.
 
-An approval for a host process binds the physical working directory when the card is issued. The launch must still match that directory. Remembered shell choices in any offered scope require the execution directory to remain current. A project save also requires the same physical project root and marker. When either required identity changes before the write, the current owner receives the stale-scope notice and the exact card settles denied. The command needs a new request.
+An approval for a host process binds the physical working directory when the card is issued. The launch must still match that directory. Remembered shell choices in any offered scope require the execution directory to remain current. A host-terminal session waiver likewise requires the command's sealed directory to match before and after the audit wait. A project save also requires the same physical project root and marker. When a required identity changes before the write, the current owner receives the stale-scope notice and the exact card settles denied. The command needs a new request.
 
 `personAnswerStands` owns pending-answer policy across tool, directory, hook and late approvals. A same-card policy transition can stand when its fresh decision still permits the answer. Held egress checks the current policy and destination again before using consent.
 
