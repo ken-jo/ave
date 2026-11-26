@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   executeAll: vi.fn(),
   resolvePluginOperationAccount: vi.fn(),
   revokePluginOperationSession: vi.fn(),
+  issueInspectedPluginOperationGrant: vi.fn(() => ({ token: "issued-token", grantId: "issued-grant" })),
 }));
 
 vi.mock("electron", () => ({
@@ -37,7 +38,7 @@ vi.mock("../../../tools/executor.js", () => ({
     revokePluginOperationAccount = mocks.revokePluginOperationAccount;
     executeAll = mocks.executeAll;
     inspectPluginOperationGrant = vi.fn(() => ({ operation: "update", approvalArgs: {} }));
-    issueInspectedPluginOperationGrant = vi.fn(() => ({ token: "issued-token", grantId: "issued-grant" }));
+    issueInspectedPluginOperationGrant = mocks.issueInspectedPluginOperationGrant;
     revokePluginOperationSession = mocks.revokePluginOperationSession;
   },
 }));
@@ -765,6 +766,52 @@ it("revokes an issued plugin operation grant instead of delivering it after the 
   ]);
   expect(rows[0]).toMatchObject({ decision: "allow", trustOrigin: "user-keyboard" });
   expect(rows[1]).toMatchObject({ decision: "deny", denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-grant" }], trustOrigin: "unknown" });
+});
+
+it.each(["request", "action", "tool-use", "recordless", "matching"] as const)("requires the plugin operation's own one-time answer (%s)", async (binding) => {
+  vi.resetModules();
+  const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");
+  const ctx = makeContext();
+  const appendPermissionAuditEntry = vi.fn(async (_row: unknown) => {});
+  const { gate, answer } = await answeringGate("allow-once");
+  const ask = gate.requestAndWait.bind(gate);
+  vi.spyOn(gate, "requestAndWait").mockImplementation((card) => {
+    if (binding === "recordless") return Promise.resolve({ requestId: card.id, choice: "allow-once" });
+    if (binding === "request") return ask({ ...card, id: "foreign-request" });
+    if (binding === "action") return ask({ ...card, toolName: "foreign-action" });
+    if (binding === "tool-use") return ask({ ...card, invocationToolUseId: "foreign-tool-use" });
+    return ask(card);
+  });
+  if (binding !== "recordless") void answer();
+  mocks.issueInspectedPluginOperationGrant.mockClear();
+  mocks.resolvePluginOperationAccount.mockReturnValue({ accountScopeHash: "account-scope", accountHash: "account" });
+  Object.assign(ctx, {
+    toolRegistry: { findByName: () => ({ category: "write" }) },
+    approvalGate: gate,
+    bootAuditLogger: { appendPermissionAuditEntry },
+    pluginBundleLifecycle: {
+      acquire: async () => ({
+        generation: { generationId: activeGenerationId, state: { runtime: { manifest: { version: "2.0.0" } } } },
+        release: vi.fn(),
+      }),
+      runWithLease: async (_lease: unknown, run: () => Promise<unknown>) => run(),
+    },
+  });
+  Object.assign(ctx.pluginRuntime, { getPluginAuthOperationAccount: () => undefined });
+  await setupPluginToolExecutor(ctx);
+  if (!ctx.requestPluginOperationGrant) throw new Error("Plugin grant handler missing");
+  const result = ctx.requestPluginOperationGrant({ pluginId, toolName: "update_record", input: {}, appSessionId: "grant-window" });
+  if (binding === "matching") {
+    await expect(result).resolves.toMatchObject({ grantId: "issued-grant" });
+    expect(mocks.issueInspectedPluginOperationGrant).toHaveBeenCalledOnce();
+  } else {
+    await expect.soft(result).rejects.toThrow("approval rejected by host");
+    expect.soft(mocks.issueInspectedPluginOperationGrant).not.toHaveBeenCalled();
+    expect(appendPermissionAuditEntry).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      decision: "deny", trustOrigin: "unknown",
+      denyReasons: [{ reason: "approval rejected by host", source: "plugin-operation-grant" }],
+    }));
+  }
 });
 
 it.each([

@@ -1,6 +1,6 @@
 import { admitToolInvocation, admitToolInvocationWhileAuditOpen, appendToolInvocationAudit, toolInvocationsSealed } from "../../tools/invocation-ledger.js";
 import { HostExitAbortError, isHostExitAbort } from "../../shared/host-exit-abort.js";
-import { approvalDecisionTrustOrigin, hostApprovalDenialReason, isAnsweredApprovalDenial } from "../../permissions/approval-gate.js";
+import { admitApprovalAnswer, hostApprovalDenialReason, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
 /** Route plugin calls through the executor; only trusted panel calls may use the app-only runtime bypass. */
 import { randomUUID } from "node:crypto";
 import { createHookRunner } from "../conversation.js";
@@ -683,7 +683,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
             principal,
             origin,
           });
-          const decision = await approvalGate.requestAndWait({
+          const card = {
             id: randomUUID(),
             category: "tool",
             kind: "tool",
@@ -700,22 +700,28 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
             createdAt: Date.now(),
             forceExplicit: true,
             abortSignal: admission.signal,
-              });
+          } satisfies ApprovalRequestInput;
+          const decision = await approvalGate.requestAndWait(card);
+          let answer;
+          let denialReason: string | undefined;
+          try {
+            answer = admitApprovalAnswer(decision, { requestId: card.id, toolName: card.toolName, toolUseId: undefined });
+            if (answer?.decision === "deny") {
+              denialReason = "plugin operation grant denied by user";
+            } else if (isHostExitAbort(admission.signal.reason)) {
+              denialReason = "host-shutdown";
+            } else if (answer?.choice !== "allow-once") {
+              denialReason = hostApprovalDenialReason(decision) ?? "approval rejected by host";
+            }
+          } catch {
+            denialReason = "approval rejected by host";
+          }
           const governedTool = toolRegistry.findByName(toolName);
           if (!governedTool) {
             throw new Error(`[plugin-operation-policy] governed plugin tool '${toolName}' disappeared`);
           }
-          if (isHostExitAbort(admission.signal.reason) || decision.choice !== "allow-once") {
-            // Who decided comes from the decision: a person's answered deny stays theirs even when the seal
-            // lands before this resumes; a deny the host produced, or an allow the seal vetoes, is the host's.
-            const denial = isAnsweredApprovalDenial(decision)
-              ? { reason: "plugin operation grant denied by user", trustOrigin: approvalDecisionTrustOrigin(decision) }
-              : {
-                  reason: isHostExitAbort(admission.signal.reason)
-                    ? "host-shutdown"
-                    : hostApprovalDenialReason(decision) ?? "approval rejected by host",
-                  trustOrigin: "unknown" as const,
-                };
+          if (denialReason !== undefined || answer?.choice !== "allow-once") {
+            const reason = denialReason ?? "approval rejected by host";
             await appendToolInvocationAudit(bootAuditLogger, {
               decision: "deny",
               ts: new Date().toISOString(),
@@ -723,15 +729,15 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
               tool: toolName,
               source: "plugin",
               category: governedTool.category,
-              denyReasons: [{ reason: denial.reason, source: "plugin-operation-grant" }],
-              trustOrigin: denial.trustOrigin,
+              denyReasons: [{ reason, source: "plugin-operation-grant" }],
+              trustOrigin: answer?.decision === "deny" ? answer.trustOrigin : "unknown",
               pluginOperation: {
                 pluginId,
                 operation: inspected.operation,
                 outcome: "denied",
               },
             });
-            throw new Error("[plugin-operation-policy] operation grant denied");
+            throw new Error(`[plugin-operation-policy] operation grant denied (${reason})`);
           }
           const recheckedAccount = authOperationAccount
             ? pluginRuntime.getPluginAuthOperationAccount(
@@ -770,7 +776,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
               tool: toolName,
               source: "plugin",
               category: governedTool.category,
-              trustOrigin: approvalDecisionTrustOrigin(decision),
+              trustOrigin: answer.trustOrigin,
               pluginOperation: {
                 pluginId,
                 operation: inspected.operation,
