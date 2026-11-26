@@ -12,7 +12,7 @@ import { basename, isAbsolute, join } from "node:path";
 import type { IPty } from "node-pty";
 import { createLogger } from "../../lib/logger.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
-import { assertSrtWinSpawnIntegrity } from "../../permissions/srt-win-integrity.js";
+import { assertSrtWinSpawnIntegrity, srtWinSpawnEnvironment } from "../../permissions/srt-win-integrity.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { buildSandboxedChildEnv, buildUserTerminalEnv } from "../../tools/safe-env.js";
 import {
@@ -772,7 +772,7 @@ async function spawnNewTerminal(
       const { spawn: ptySpawn } = await loadPty();
       owner.abort.signal.throwIfAborted();
       assertSrtWinSpawnIntegrity(cmd);
-      pty = ptySpawn(cmd, wrappedArgs, { ...ptyOptions, env: childEnv });
+      pty = ptySpawn(cmd, wrappedArgs, { ...ptyOptions, env: srtWinSpawnEnvironment(cmd, childEnv) });
       wrappedProcessStarted = true;
       addCleanup(() => killPty(pty, "SIGKILL"));
     }
