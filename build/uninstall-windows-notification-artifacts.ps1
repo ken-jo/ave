@@ -308,35 +308,40 @@ public sealed class ToastRegistryKey : IDisposable
 '@
 }
 
-function Test-ExactToastRegistrationHandles {
+function Get-OwnedToastRegistrationValueCount {
   param(
     [Parameter(Mandatory = $true)]$RootKey,
-    [Parameter(Mandatory = $true)]$ServerKey,
+    [AllowNull()]$ServerKey,
     [Parameter(Mandatory = $true)][string]$ExpectedExecutable
   )
 
+  $count = 0
   $rootDefault = $RootKey.ReadValue("", [Microsoft.Win32.RegistryValueKind]::String)
   if (
-    -not [string]::Equals(
+    [string]::Equals(
       [string]$rootDefault,
       "Electron Notification Activator",
       [System.StringComparison]::Ordinal
     )
   ) {
-    return $false
+    $count++
   }
-  if ($RootKey.ReadValue("CustomActivator", [Microsoft.Win32.RegistryValueKind]::DWord) -ne 1) {
-    return $false
+  if ($RootKey.ReadValue("CustomActivator", [Microsoft.Win32.RegistryValueKind]::DWord) -eq 1) {
+    $count++
   }
-  $serverDefault = $ServerKey.ReadValue("", [Microsoft.Win32.RegistryValueKind]::String)
-  return Test-SamePath $serverDefault $ExpectedExecutable
+  if ($null -ne $ServerKey) {
+    $serverDefault = $ServerKey.ReadValue("", [Microsoft.Win32.RegistryValueKind]::String)
+    if (Test-SamePath $serverDefault $ExpectedExecutable) { $count++ }
+  }
+  return $count
 }
 
 function Test-ExactToastRegistration {
   param(
     [Parameter(Mandatory = $true)]$View,
     [Parameter(Mandatory = $true)][string]$Clsid,
-    [Parameter(Mandatory = $true)][string]$ExpectedExecutable
+    [Parameter(Mandatory = $true)][string]$ExpectedExecutable,
+    [switch]$RejectIncomplete
   )
 
   $root = $null
@@ -345,8 +350,11 @@ function Test-ExactToastRegistration {
     $root = [ToastRegistryKey]::OpenCurrentUser("Software\Classes\CLSID\$Clsid", $View, $false)
     if ($null -eq $root) { return $false }
     $server = $root.OpenSubKey("LocalServer32", $false)
-    if ($null -eq $server) { return $false }
-    return Test-ExactToastRegistrationHandles $root $server $ExpectedExecutable
+    $ownedValueCount = Get-OwnedToastRegistrationValueCount $root $server $ExpectedExecutable
+    if ($RejectIncomplete -and $ownedValueCount -gt 0 -and $ownedValueCount -lt 3) {
+      throw "incomplete Ave toast registration $Clsid ($View) for the owned shortcut"
+    }
+    return $ownedValueCount -eq 3
   }
   finally {
     if ($null -ne $server) { $server.Dispose() }
@@ -371,7 +379,7 @@ function Remove-ExactToastRegistration {
 
     # Recheck exact types and data on writable handles. Keep the keys so a
     # concurrent writer's values cannot be removed by key deletion.
-    if (-not (Test-ExactToastRegistrationHandles $root $server $ExpectedExecutable)) {
+    if ((Get-OwnedToastRegistrationValueCount $root $server $ExpectedExecutable) -ne 3) {
       return $false
     }
 
@@ -397,13 +405,14 @@ function Remove-ExactToastRegistration {
 function Find-ExactToastRegistrations {
   param(
     [Parameter(Mandatory = $true)][string]$ExpectedExecutable,
-    [Parameter(Mandatory = $true)][string[]]$CandidateClsids
+    [Parameter(Mandatory = $true)][string[]]$CandidateClsids,
+    [AllowNull()][string]$ShortcutClsid
   )
 
   $matches = @()
   foreach ($view in (Get-RegistryViews)) {
     foreach ($clsid in $CandidateClsids) {
-      if (Test-ExactToastRegistration $view $clsid $ExpectedExecutable) {
+      if (Test-ExactToastRegistration $view $clsid $ExpectedExecutable -RejectIncomplete:($clsid -eq $ShortcutClsid)) {
         $matches += [PSCustomObject]@{ View = $view; Clsid = $clsid }
       }
     }
@@ -454,6 +463,7 @@ try {
   $nonRegularAttributes = [System.IO.FileAttributes]::Directory -bor [System.IO.FileAttributes]::ReparsePoint
   $productClsid = "{62FD3EFB-B3D2-4235-9402-6979F52C0286}"
   $candidateClsids = @($productClsid)
+  $verifiedClsid = $null
 
   $shortcutAttributes = Get-ShortcutAttributes $shortcutPath
   if ($null -eq $shortcutAttributes) {
@@ -521,7 +531,7 @@ try {
     }
   }
 
-  foreach ($registration in @(Find-ExactToastRegistrations $installedExe $candidateClsids)) {
+  foreach ($registration in @(Find-ExactToastRegistrations $installedExe $candidateClsids $verifiedClsid)) {
     if (Remove-ExactToastRegistration $registration.View $registration.Clsid $installedExe) {
       Write-CleanupEvent "removed" "toast-registration" (
         "Removed exact current-user Ave toast registration {0} ({1})." -f
@@ -531,12 +541,12 @@ try {
     }
   }
 
-  $remaining = @(Find-ExactToastRegistrations $installedExe $candidateClsids)
+  $remaining = @(Find-ExactToastRegistrations $installedExe $candidateClsids $verifiedClsid)
   if ($remaining.Count -ne 0) {
     throw "one or more exact Ave toast registrations survived cleanup"
   }
   Write-CleanupEvent "verified-absent" "toast-registration" (
-    "no exact current-user Ave toast registrations remain"
+    "no exact current-user Ave toast registrations or matching values for the owned shortcut remain"
   )
 
   $shortcutResidue = Get-ShortcutAttributes $shortcutPath

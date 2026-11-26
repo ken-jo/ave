@@ -1,12 +1,103 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { type SpawnSyncReturns, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { readRepoFile } from "../../src/__tests__/test-helpers.js";
 
 const cleanup = readRepoFile("build/uninstall-windows-notification-artifacts.ps1");
 const registryFixture = readRepoFile("test/fixtures/windows-notification-registry.ps1");
+
+const shortcutEvidence = "fixture shortcut evidence";
+
+function prepareRegistryFixture() {
+  const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
+  if (!systemRoot) throw new Error("SystemRoot/WINDIR is required for registry fixtures");
+  const installDir = mkdtempSync(join(tmpdir(), "ave-toast-registry-"));
+  onTestFinished(() => rmSync(installDir, { recursive: true, force: true }));
+
+  const executable = join(installDir, "Ave.exe");
+  const marker = join(installDir, ".ave-nsis-per-machine-v1");
+  const shortcut = join(installDir, "Ave.lnk");
+  const script = join(installDir, "cleanup.ps1");
+  const registry = join(installDir, "registry.json");
+  writeFileSync(marker, "");
+  writeFileSync(shortcut, shortcutEvidence);
+
+  // Substitute external lookups in the copied script. Its quarantine, cleanup and exit path run unchanged.
+  const programsLookup =
+    /\[Environment\]::GetFolderPath\(\s*\[Environment\+SpecialFolder\]::Programs,\s*\[Environment\+SpecialFolderOption\]::DoNotVerify\s*\)/;
+  const registryOpen =
+    /\[Microsoft\.Win32\.RegistryKey\]::OpenBaseKey\(\s*\[Microsoft\.Win32\.RegistryHive\]::CurrentUser,\s*\$View\s*\)|\[ToastRegistryKey\]::OpenCurrentUser\(/g;
+  expect(cleanup.match(registryOpen)).toHaveLength(2);
+  expect(cleanup).toMatch(programsLookup);
+  expect(cleanup).toContain("$shortcutMoved = $false");
+  const fixtureScript = cleanup
+    .replace(programsLookup, "$env:AVE_FIXTURE_DIRECTORY")
+    .replace(registryOpen, (match) => match.endsWith("(")
+      ? "[FixtureRegistryKey]::OpenCurrentUser("
+      : "[FixtureRegistryKey]::OpenBaseKey($View)")
+    .replace("$shortcutMoved = $false", () => `${registryFixture}\n$shortcutMoved = $false`);
+  writeFileSync(script, fixtureScript);
+
+  const powerShell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+
+  function run(scenario = "") {
+    return spawnSync(
+      powerShell,
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy", "Bypass",
+        "-File", script,
+        "-InstalledExecutable", executable,
+        "-ShortcutName", "Ave",
+        "-AppUserModelId", "ai.example.toast",
+        "-InstallMarker", marker,
+      ],
+      {
+        env: {
+          ...process.env,
+          AVE_FIXTURE_DIRECTORY: installDir,
+          AVE_FIXTURE_REGISTRY: registry,
+          AVE_FIXTURE_SCENARIO: scenario,
+        },
+        encoding: "utf8",
+        timeout: 30_000,
+        windowsHide: true,
+      },
+    );
+  }
+
+  const initialState = {
+    root: { defaultValue: "Electron Notification Activator", CustomActivator: 1, ForeignValue: "root data" },
+    server: { defaultValue: executable, ForeignValue: "server data" },
+    foreign: { defaultValue: "subkey data" },
+  };
+  writeFileSync(registry, JSON.stringify(initialState));
+
+  return {
+    run,
+    initialState,
+    readState: () => JSON.parse(readFileSync(registry, "utf8")),
+    writeState: (state: unknown) => writeFileSync(registry, JSON.stringify(state)),
+    expectShortcutPreserved: () => {
+      expect(readFileSync(shortcut, "utf8")).toBe(shortcutEvidence);
+      expect(readdirSync(installDir).filter((file) => file.endsWith(".lnk"))).toEqual(["Ave.lnk"]);
+    },
+    expectShortcutRemoved: () => {
+      expect(readdirSync(installDir).filter((file) => file.endsWith(".lnk"))).toEqual([]);
+    },
+  };
+}
+
+function expectCleanupFailed(result: SpawnSyncReturns<string>, failureDetail: string) {
+  expect(result.error).toBeUndefined();
+  expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(1);
+  expect(result.stderr).toContain(failureDetail);
+  expect(result.stdout).toContain('"status":"contract-failed"');
+  expect(result.stdout).not.toContain('"status":"verified-absent","artifact":"toast-registration"');
+}
 
 describe("current-user toast cleanup", () => {
   it("preserves a same-target shortcut with missing ownership fields", () => {
@@ -28,7 +119,7 @@ describe("current-user toast cleanup", () => {
       /\$shortcutAttributes = Get-ShortcutAttributes \$shortcutPath\s+if \(\$null -eq \$shortcutAttributes\) \{\s+Write-CleanupEvent "verified-absent" "shortcut"[^}]+\}\s+elseif/,
     );
     expect(cleanup).toMatch(
-      /\n {2}foreach \(\$registration in @\(Find-ExactToastRegistrations \$installedExe \$candidateClsids\)\) \{\s+if \(Remove-ExactToastRegistration/,
+      /\n {2}foreach \(\$registration in @\(Find-ExactToastRegistrations \$installedExe \$candidateClsids \$verifiedClsid\)\) \{\s+if \(Remove-ExactToastRegistration/,
     );
   });
 
@@ -45,61 +136,66 @@ describe("current-user toast cleanup", () => {
     ["value read throws", "read-error", "fixture denied the value read"],
     ["a delete silently leaves a value", "delete-noop", "CustomActivator"],
   ])("fails and keeps the owned shortcut when %s", (_label, scenario, failureDetail) => {
-    const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
-    if (!systemRoot) throw new Error("SystemRoot/WINDIR is required for registry fixtures");
-    const installDir = mkdtempSync(join(tmpdir(), "ave-toast-registry-"));
-    try {
-      const executable = join(installDir, "Ave.exe");
-      const marker = join(installDir, ".ave-nsis-per-machine-v1");
-      const shortcut = join(installDir, "Ave.lnk");
-      const script = join(installDir, "cleanup.ps1");
-      const evidence = "fixture shortcut evidence";
-      writeFileSync(marker, "");
-      writeFileSync(shortcut, evidence);
+    const fixture = prepareRegistryFixture();
+    const result = fixture.run(scenario);
+    expect(result.stderr).toContain(`fixture exercised ${scenario}`);
+    expectCleanupFailed(result, failureDetail);
+    fixture.expectShortcutPreserved();
+  });
 
-      // Substitute external lookups in the copied script. Its quarantine, cleanup and exit path run unchanged.
-      const programsLookup =
-        /\[Environment\]::GetFolderPath\(\s*\[Environment\+SpecialFolder\]::Programs,\s*\[Environment\+SpecialFolderOption\]::DoNotVerify\s*\)/;
-      const registryOpen =
-        /\[Microsoft\.Win32\.RegistryKey\]::OpenBaseKey\(\s*\[Microsoft\.Win32\.RegistryHive\]::CurrentUser,\s*\$View\s*\)|\[ToastRegistryKey\]::OpenCurrentUser\(/g;
-      expect(cleanup.match(registryOpen)).toHaveLength(2);
-      expect(cleanup).toMatch(programsLookup);
-      expect(cleanup).toContain("$shortcutMoved = $false");
-      const fixtureScript = cleanup
-        .replace(programsLookup, "$env:AVE_FIXTURE_DIRECTORY")
-        .replace(registryOpen, (match) => match.endsWith("(")
-          ? "[FixtureRegistryKey]::OpenCurrentUser("
-          : "[FixtureRegistryKey]::OpenBaseKey($View)")
-        .replace("$shortcutMoved = $false", () => `${registryFixture}\n$shortcutMoved = $false`);
-      writeFileSync(script, fixtureScript);
+  it.runIf(process.platform === "win32")("fails closed on retry after a partial registry delete", () => {
+    const fixture = prepareRegistryFixture();
+    const first = fixture.run("delete-error");
+    expect(first.stderr).toContain("fixture exercised delete-error");
+    expectCleanupFailed(first, "fixture denied deleting CustomActivator");
+    fixture.expectShortcutPreserved();
 
-      const powerShell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-      const result = spawnSync(
-        powerShell,
-        [
-          "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
-          "-InstalledExecutable", executable, "-ShortcutName", "Ave",
-          "-AppUserModelId", "ai.example.toast", "-InstallMarker", marker,
-        ],
-        {
-          env: { ...process.env, AVE_FIXTURE_DIRECTORY: installDir, AVE_FIXTURE_SCENARIO: scenario },
-          encoding: "utf8",
-          timeout: 30_000,
-          windowsHide: true,
+    const partialState = {
+      ...fixture.initialState,
+      server: { ForeignValue: fixture.initialState.server.ForeignValue },
+    };
+    expect(fixture.readState()).toEqual(partialState);
+
+    const retry = fixture.run();
+    expectCleanupFailed(retry, "incomplete Ave toast registration");
+    expect(fixture.readState()).toEqual(partialState);
+    fixture.expectShortcutPreserved();
+  });
+
+  it.runIf(process.platform === "win32").each(["root default", "CustomActivator", "server default"])(
+    "fails closed when only the owned %s survives",
+    (slot) => {
+      const fixture = prepareRegistryFixture();
+      const state = {
+        root: {
+          ForeignValue: fixture.initialState.root.ForeignValue,
+          ...(slot === "root default" ? { defaultValue: fixture.initialState.root.defaultValue } : {}),
+          ...(slot === "CustomActivator" ? { CustomActivator: 1 } : {}),
         },
-      );
-      expect(result.error).toBeUndefined();
-      expect(result.stderr).toContain(`fixture exercised ${scenario}`);
-      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(1);
-      expect(result.stderr).toContain(failureDetail);
-      expect(result.stdout).toContain('"status":"contract-failed"');
-      expect(result.stdout).not.toContain('"status":"verified-absent","artifact":"toast-registration"');
-      expect(existsSync(shortcut)).toBe(true);
-      expect(readFileSync(shortcut, "utf8")).toBe(evidence);
-      expect(readdirSync(installDir).filter((file) => file.endsWith(".lnk"))).toEqual(["Ave.lnk"]);
-    } finally {
-      rmSync(installDir, { recursive: true, force: true });
-    }
+        server: slot === "server default" ? fixture.initialState.server : null,
+        foreign: fixture.initialState.foreign,
+      };
+      fixture.writeState(state);
+
+      expectCleanupFailed(fixture.run(), "incomplete Ave toast registration");
+      expect(fixture.readState()).toEqual(state);
+      fixture.expectShortcutPreserved();
+    },
+  );
+
+  it.runIf(process.platform === "win32")("preserves foreign values and subkeys after exact cleanup", () => {
+    const fixture = prepareRegistryFixture();
+    const result = fixture.run();
+
+    expect(result.error).toBeUndefined();
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain('"status":"verified-absent","artifact":"toast-registration"');
+    expect(fixture.readState()).toEqual({
+      root: { ForeignValue: fixture.initialState.root.ForeignValue },
+      server: { ForeignValue: fixture.initialState.server.ForeignValue },
+      foreign: fixture.initialState.foreign,
+    });
+    fixture.expectShortcutRemoved();
   });
 
   it("matches registrations at the product CLSID and the exact CLSID from a verified shortcut", () => {
@@ -115,8 +211,8 @@ describe("current-user toast cleanup", () => {
       /if \(\$verifiedClsid -ne \(\[guid\]\$record\.ToastClsid\)\.ToString\("B"\)\) \{\s+throw [^}]+\}\s+if \(\$verifiedClsid -ne \$productClsid\) \{\s+\$candidateClsids \+= \$verifiedClsid\s+\}/,
     );
     expect(cleanup.match(/^\s*\$candidateClsids\s*(?:\+?=)/gm)).toHaveLength(2);
-    expect(cleanup).toMatch(/foreach \(\$clsid in \$CandidateClsids\) \{\s+if \(Test-ExactToastRegistration \$view \$clsid \$ExpectedExecutable\)/);
-    expect(cleanup).toContain("$remaining = @(Find-ExactToastRegistrations $installedExe $candidateClsids)");
+    expect(cleanup).toMatch(/foreach \(\$clsid in \$CandidateClsids\) \{\s+if \(Test-ExactToastRegistration \$view \$clsid \$ExpectedExecutable -RejectIncomplete:\(\$clsid -eq \$ShortcutClsid\)\)/);
+    expect(cleanup).toContain("$remaining = @(Find-ExactToastRegistrations $installedExe $candidateClsids $verifiedClsid)");
     expect(cleanup).not.toMatch(/GetSubKeyNames|ProfileList|HKEY_USERS|NTUSER\.DAT|UsrClass\.dat|RegLoad(?:App)?Key/i);
     const hives = [...cleanup.matchAll(/\bRegistryHive\.(\w+)/g)];
     expect(new Set(hives.map((match) => match[1]))).toEqual(new Set(["CurrentUser"]));

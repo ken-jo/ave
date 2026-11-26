@@ -1,7 +1,5 @@
 class FixtureRegistryKey {
-  static [bool] $RootDefault = $true
-  static [bool] $CustomActivator = $true
-  static [bool] $ServerDefault = $true
+  static [object] $State
   [string] $Role
 
   FixtureRegistryKey([string]$role) { $this.Role = $role }
@@ -13,24 +11,41 @@ class FixtureRegistryKey {
   static [FixtureRegistryKey] OpenCurrentUser(
     [string]$path, [Microsoft.Win32.RegistryView]$view, [bool]$writable
   ) {
+    if ($path -ne "Software\Classes\CLSID\{762333EB-F45E-4825-9E7A-61BBADC1AEE6}") { return $null }
     return [FixtureRegistryKey]::new("root")
   }
 
   [FixtureRegistryKey] OpenSubKey([string]$path, [bool]$writable) {
-    if ($this.Role -eq "base") { return [FixtureRegistryKey]::new("root") }
-    return [FixtureRegistryKey]::new("server")
+    if ($this.Role -eq "base") { return [FixtureRegistryKey]::OpenCurrentUser($path, "Default", $writable) }
+    if ($path -eq "LocalServer32" -and $null -ne [FixtureRegistryKey]::State.server) {
+      return [FixtureRegistryKey]::new("server")
+    }
+    if ($path -eq "Foreign" -and $null -ne [FixtureRegistryKey]::State.foreign) {
+      return [FixtureRegistryKey]::new("foreign")
+    }
+    return $null
   }
 
-  [bool] HasValue([string]$name) {
-    if ($this.Role -eq "server") { return [FixtureRegistryKey]::ServerDefault }
-    if ($name -eq "CustomActivator") { return [FixtureRegistryKey]::CustomActivator }
-    return [FixtureRegistryKey]::RootDefault
+  [string] ValueSlot([string]$name) {
+    if ($name -eq "") { return "defaultValue" }
+    return $name
   }
+
+  [object] Value([string]$name) {
+    $key = [FixtureRegistryKey]::State.($this.Role)
+    $slot = $this.ValueSlot($name)
+    $property = $key.PSObject.Properties[$slot]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+  }
+
+  [bool] HasValue([string]$name) { return $null -ne $this.Value($name) }
 
   [Microsoft.Win32.RegistryValueKind] GetValueKind([string]$name) {
-    if (-not $this.HasValue($name)) { return [Microsoft.Win32.RegistryValueKind]::None }
-    if ($name -eq "CustomActivator") { return [Microsoft.Win32.RegistryValueKind]::DWord }
-    return [Microsoft.Win32.RegistryValueKind]::String
+    $value = $this.Value($name)
+    if ($value -is [int]) { return [Microsoft.Win32.RegistryValueKind]::DWord }
+    if ($value -is [string]) { return [Microsoft.Win32.RegistryValueKind]::String }
+    return [Microsoft.Win32.RegistryValueKind]::None
   }
 
   [object] GetValue([string]$name, [object]$missing) {
@@ -42,10 +57,9 @@ class FixtureRegistryKey {
       [Console]::Error.WriteLine("fixture exercised read-error")
       throw [System.UnauthorizedAccessException]::new("fixture denied the value read")
     }
-    if (-not $this.HasValue($name)) { return $missing }
-    if ($this.Role -eq "server") { return (Join-Path $env:AVE_FIXTURE_DIRECTORY "Ave.exe") }
-    if ($name -eq "CustomActivator") { return 1 }
-    return "Electron Notification Activator"
+    $value = $this.Value($name)
+    if ($null -eq $value) { return $missing }
+    return $value
   }
 
   [object] ReadValue([string]$name, [Microsoft.Win32.RegistryValueKind]$kind) {
@@ -56,23 +70,27 @@ class FixtureRegistryKey {
   [void] DeleteValue([string]$name, [bool]$throwOnMissing) { $this.DeleteValue($name) }
 
   [void] DeleteValue([string]$name) {
-    if ($this.Role -eq "server") {
-      [FixtureRegistryKey]::ServerDefault = $false
-    }
-    elseif ($name -eq "CustomActivator") {
+    if ($this.Role -eq "root" -and $name -eq "CustomActivator") {
       if ($env:AVE_FIXTURE_SCENARIO -eq "delete-noop") {
         [Console]::Error.WriteLine("fixture exercised delete-noop")
         return
       }
-      [FixtureRegistryKey]::CustomActivator = $false
+      if ($env:AVE_FIXTURE_SCENARIO -eq "delete-error") {
+        [Console]::Error.WriteLine("fixture exercised delete-error")
+        throw [System.UnauthorizedAccessException]::new("fixture denied deleting CustomActivator")
+      }
     }
-    else {
-      [FixtureRegistryKey]::RootDefault = $false
-    }
+    $key = [FixtureRegistryKey]::State.($this.Role)
+    $key.PSObject.Properties.Remove($this.ValueSlot($name))
+    [System.IO.File]::WriteAllText(
+      $env:AVE_FIXTURE_REGISTRY, ([FixtureRegistryKey]::State | ConvertTo-Json -Depth 4 -Compress)
+    )
   }
 
   [void] Dispose() {}
 }
+
+[FixtureRegistryKey]::State = ConvertFrom-Json ([System.IO.File]::ReadAllText($env:AVE_FIXTURE_REGISTRY))
 
 function Get-ShortcutRecord {
   param([string]$Path)
