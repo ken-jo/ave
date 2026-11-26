@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it, vi } from "vitest";
 import { windowsPeImageDigest } from "../../../scripts/lib/windows-path-kind-image-digest.mjs";
+import { heldFileOperations } from "../browser/browser-download-files.js";
 import { configureHostResources } from "../host-resources.js";
 import {
   queryWindowsSystemDirectory,
@@ -23,6 +24,26 @@ const parentKeys = [
   "HOMEDRIVE", "HOMEPATH", "LOGONSERVER", "PATH", "SYSTEMDRIVE", "SYSTEMROOT",
   "TEMP", "USERDOMAIN", "USERNAME", "USERPROFILE", "WINDIR", "NODE_V8_COVERAGE", "AVE_PARENT_ONLY",
 ];
+
+it.skipIf(process.platform !== "win32")("distinguishes a missing pinned executable from a failed open", async () => {
+  const resources = mkdtempSync(join(tmpdir(), "ave-missing-helper-"));
+  const helper = windowsPathKindHelperIn(resources);
+  configureHostResources({ resourcePath: resources, isPackaged: true });
+  vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", null);
+  try {
+    mkdirSync(dirname(helper), { recursive: true });
+    expect(() => heldFileOperations(resources)).toThrow(/cannot be used: it is missing\. Reinstall/u);
+    await expect(queryWindowsSystemDirectory()).rejects.toThrow("classifier is missing");
+
+    mkdirSync(helper);
+    expect(() => heldFileOperations(resources)).toThrow(/Could not hold the Windows executable path \(Windows error \d+\)\. Restart Ave; if it persists, reinstall Ave\. Reinstall/u);
+    await expect(queryWindowsSystemDirectory()).rejects.toThrow("classifier could not be opened");
+  } finally {
+    vi.unstubAllGlobals();
+    configureHostResources({ resourcePath, isPackaged: true });
+    rmSync(resources, { recursive: true, force: true });
+  }
+});
 
 it.skipIf(process.platform !== "win32" || !existsSync(windowsPathKindHelperIn(resourcePath)))(
   "keeps parent values out of a real child and still queries the OS directory",

@@ -4,12 +4,13 @@ import { deferred } from "../../__tests__/support/deferred.js";
 import { helperImage } from "../../__tests__/support/windows-helper-image.js";
 
 const mocks = vi.hoisted(() => ({
-  execFile: vi.fn(), execFileSync: vi.fn(), existsSync: vi.fn(), access: vi.fn(), readFileSync: vi.fn(), lockWindowsExecutableAsync: vi.fn(),
+  execFile: vi.fn(), execFileSync: vi.fn(), accessSync: vi.fn(), access: vi.fn(), readFileSync: vi.fn(), lockWindowsExecutableAsync: vi.fn(),
 }));
 vi.mock("node:child_process", () => ({ execFile: mocks.execFile, execFileSync: mocks.execFileSync }));
-vi.mock("node:fs", () => ({ existsSync: mocks.existsSync, readFileSync: mocks.readFileSync }));
+vi.mock("node:fs", () => ({ accessSync: mocks.accessSync, readFileSync: mocks.readFileSync }));
 vi.mock("node:fs/promises", () => ({ access: mocks.access }));
-vi.mock("../../../scripts/lib/windows-locked-executable.mjs", () => ({
+vi.mock("../../../scripts/lib/windows-locked-executable.mjs", async original => ({
+  ...await original<typeof import("../../../scripts/lib/windows-locked-executable.mjs")>(),
   lockWindowsExecutable: (path: string) => ({ path, bytes: mocks.readFileSync(path), close: vi.fn() }),
   lockWindowsExecutableAsync: mocks.lockWindowsExecutableAsync,
 }));
@@ -62,7 +63,7 @@ describe("Windows folder classifier launcher", () => {
   beforeEach(() => {
     configureHostResources({ resourcePath: "/trusted/resources", isPackaged: true });
     mocks.execFile.mockReset();
-    mocks.existsSync.mockReset().mockReturnValue(true);
+    mocks.accessSync.mockReset();
     mocks.lockWindowsExecutableAsync.mockReset().mockImplementation(async (path: string) => ({ path, bytes: mocks.readFileSync(path), close: vi.fn() }));
     vi.stubGlobal("process", { ...process, platform: "win32", arch: "x64" });
   });
@@ -117,7 +118,7 @@ describe("Windows folder classifier launcher", () => {
   });
 
   it("fails clearly without the asset, off Windows, or for anything but a drive, and never runs a command", async () => {
-    mocks.existsSync.mockReturnValue(false);
+    mocks.accessSync.mockImplementationOnce(() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); });
     // Unavailable, yet with no file-system code: a missing helper says nothing about the folder being read. Its install path stays out
     // of the message, which reaches the privacy failure reason, the boot gate and the audit log.
     const missing = await queryDosDevice("C:").then(() => { throw new Error("resolved"); }, (error: unknown) => error as Error);
@@ -125,7 +126,6 @@ describe("Windows folder classifier launcher", () => {
       + "so it reads no folder on a drive. Restart Ave; if it persists, reinstall Ave.");
     expect(isWindowsPathKindHelperUnavailable(missing)).toBe(true);
     expect(missing).not.toHaveProperty("code");
-    mocks.existsSync.mockReturnValue(true);
     await expect(queryDosDevice("C:\\x")).rejects.toThrow("not a drive letter");
     await expect(queryDosDevice("\\\\server\\share")).rejects.toThrow("not a drive letter");
     vi.stubGlobal("process", { ...process, platform: "darwin", arch: "x64" });
@@ -185,7 +185,7 @@ describe("native Documents directory launcher", () => {
     configureHostResources({ resourcePath: "/trusted/resources", isPackaged: true });
     mocks.execFile.mockReset();
     mocks.execFileSync.mockReset().mockReturnValue(Buffer.from("D:\\Documents\r\n"));
-    mocks.existsSync.mockReset().mockReturnValue(true);
+    mocks.accessSync.mockReset();
     vi.stubGlobal("process", { ...process, platform: "win32", arch: "x64" });
   });
   afterEach(() => vi.unstubAllGlobals());
@@ -312,7 +312,7 @@ describe("native system directory launcher", () => {
   });
 
   it("refuses missing helpers and unsupported platforms without another lookup", async () => {
-    mocks.access.mockRejectedValueOnce(new Error("missing"));
+    mocks.access.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
     await expect(queryWindowsSystemDirectory()).rejects.toThrow("classifier is missing");
     vi.stubGlobal("process", { ...process, platform: "linux" });
     await expect(queryWindowsSystemDirectory()).rejects.toThrow("requires Windows");

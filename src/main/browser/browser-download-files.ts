@@ -8,7 +8,7 @@ import { getSystemErrorName } from "node:util";
 import { errorMessage } from "../../shared/error-message.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../managed-child-processes.js";
-import { isWindowsPathKindHelperUnavailable, windowsPathKindHelperIn, withWindowsPathKindHelper } from "../windows-path-kind-launcher.js";
+import { isWindowsPathKindHelperUnavailable, WindowsPathKindHelperMissingError, windowsPathKindHelperIn, withWindowsPathKindHelper } from "../windows-path-kind-launcher.js";
 
 const log = createLogger("browser-download-files");
 
@@ -56,7 +56,8 @@ export class HeldFileHelperUnavailableError extends Error {
   /** For such a copy whose temporary file was left: where it can still be found, or null. */
   partLeftAt: LeftPart | null = null;
   constructor(readonly helper: string, readonly why = "it is missing", message?: string) {
-    super(message ?? `the download file helper ${helper} cannot be used: ${why}. Reinstall Ave; in a development checkout, build it (${HELPER_BUILD[process.platform] ?? "no build for this platform"}).`);
+    const period = why.endsWith(".") ? "" : ".";
+    super(message ?? `the download file helper ${helper} cannot be used: ${why}${period} Reinstall Ave; in a development checkout, build it (${HELPER_BUILD[process.platform] ?? "no build for this platform"}).`);
   }
 }
 
@@ -254,7 +255,8 @@ export function heldFileOperations(resourcePath: string, platform: NodeJS.Platfo
         return withWindowsPathKindHelper(launch, resourcePath);
       } catch (error) {
         if (!isWindowsPathKindHelperUnavailable(error)) throw error;
-        throw new HeldFileHelperUnavailableError(windowsPathKindHelperIn(resourcePath), errorMessage(error));
+        const why = error instanceof WindowsPathKindHelperMissingError ? undefined : errorMessage(error);
+        throw new HeldFileHelperUnavailableError(windowsPathKindHelperIn(resourcePath), why);
       }
     };
     return helperFileOperations(withHelper, true);

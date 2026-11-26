@@ -7,6 +7,8 @@ const GENERIC_READ = 0x80000000;
 const FILE_SHARE_READ = 1;
 const FILE_SHARE_ALL = 7;
 const OPEN_EXISTING = 3;
+const ERROR_FILE_NOT_FOUND = 2;
+const ERROR_PATH_NOT_FOUND = 3;
 const FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
 const FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
 const FILE_ATTRIBUTE_DIRECTORY = 0x10;
@@ -18,12 +20,43 @@ const MAX_PATH_CHARS = 32768;
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 let api;
 
+export class WindowsExecutableError extends Error {
+  constructor(message, code) {
+    super(message);
+    this.code = code;
+  }
+}
+
 function windowsFiles() {
   if (api !== undefined) return api;
   const requireNative = typeof require === "function" ? require : createRequire(import.meta.url);
   const kernel = requireNative("koffi").load("kernel32.dll");
+  const createFile = kernel.func("intptr_t __stdcall CreateFileW(str16, uint32_t, uint32_t, void *, uint32_t, uint32_t, void *)");
+  const lastError = kernel.func("uint32_t __stdcall GetLastError()");
+  const checkOpen = handle => {
+    if (handle === -1 || handle === -1n) {
+      const status = lastError();
+      const code = status === ERROR_FILE_NOT_FOUND || status === ERROR_PATH_NOT_FOUND ? "ENOENT" : undefined;
+      throw new WindowsExecutableError(`Could not hold the Windows executable path (Windows error ${status})`, code);
+    }
+    return handle;
+  };
+  const open = (...args) => checkOpen(createFile(...args));
+  open.async = (...args) => {
+    const done = args.pop();
+    createFile.async(...args, (error, handle) => {
+      if (error) return done(error);
+      // The native call's error status is available only during this callback.
+      try {
+        handle = checkOpen(handle);
+      } catch (failure) {
+        return done(failure);
+      }
+      done(null, handle);
+    });
+  };
   api = {
-    open: kernel.func("intptr_t __stdcall CreateFileW(str16, uint32_t, uint32_t, void *, uint32_t, uint32_t, void *)"),
+    open,
     close: kernel.func("int __stdcall CloseHandle(intptr_t)"),
     finalPath: kernel.func("uint32_t __stdcall GetFinalPathNameByHandleW(intptr_t, void *, uint32_t, uint32_t)"),
     attributes: kernel.func("int __stdcall GetFileInformationByHandleEx(intptr_t, int, void *, uint32_t)"),
@@ -34,9 +67,7 @@ function windowsFiles() {
 }
 
 function* checkedOpen(api, path, access, sharing, flags) {
-  const handle = yield [api.open, path, access, sharing, null, OPEN_EXISTING, flags, null];
-  if (handle === -1 || handle === -1n) throw new Error("Could not hold the Windows executable path");
-  return handle;
+  return yield [api.open, path, access, sharing, null, OPEN_EXISTING, flags, null];
 }
 
 function* volumePath(api, executable) {
@@ -44,7 +75,7 @@ function* volumePath(api, executable) {
   try {
     const buffer = Buffer.alloc(MAX_PATH_CHARS * 2);
     const length = yield [api.finalPath, handle, buffer, MAX_PATH_CHARS, VOLUME_NAME_NT];
-    if (length === 0 || length >= MAX_PATH_CHARS) throw new Error("Could not resolve the Windows executable volume");
+    if (length === 0 || length >= MAX_PATH_CHARS) throw new WindowsExecutableError("Could not resolve the Windows executable volume");
     return GLOBAL_ROOT + buffer.toString("utf16le", 0, length * 2);
   } finally {
     yield [api.close, handle];
@@ -53,13 +84,13 @@ function* volumePath(api, executable) {
 
 function* readImage(api, handle) {
   const size = Buffer.alloc(8);
-  if (!(yield [api.size, handle, size])) throw new Error("Could not measure the Windows executable");
+  if (!(yield [api.size, handle, size])) throw new WindowsExecutableError("Could not measure the Windows executable");
   const length = Number(size.readBigInt64LE());
-  if (length <= 0 || length > MAX_IMAGE_BYTES) throw new Error("Invalid Windows executable size");
+  if (length <= 0 || length > MAX_IMAGE_BYTES) throw new WindowsExecutableError("Invalid Windows executable size");
   const bytes = Buffer.alloc(length);
   const count = Buffer.alloc(4);
   if (!(yield [api.read, handle, bytes, length, count, null]) || count.readUInt32LE() !== length) {
-    throw new Error("Could not read the Windows executable");
+    throw new WindowsExecutableError("Could not read the Windows executable");
   }
   return bytes;
 }
@@ -68,7 +99,7 @@ function* holdExecutable(api, executable) {
   const path = yield* volumePath(api, executable);
   const volume = /^\\Device\\HarddiskVolume[0-9]+\\/iu.exec(path.slice(GLOBAL_ROOT.length))?.[0];
   const root = volume === undefined ? undefined : GLOBAL_ROOT + volume;
-  if (!root || path === root) throw new Error("Expected an executable on a local Windows volume");
+  if (!root || path === root) throw new WindowsExecutableError("Expected an executable on a local Windows volume");
 
   // Lock top-down and open each entry itself. A redirected drive, junction or parent rename cannot retarget the spawn.
   const parts = path.slice(root.length).split("\\");
@@ -87,11 +118,11 @@ function* holdExecutable(api, executable) {
         FILE_SHARE_READ, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
       handles.push(handle);
       if (!(yield [api.attributes, handle, FILE_ATTRIBUTE_TAG_INFO, info, info.length])) {
-        throw new Error("Could not inspect the Windows executable path");
+        throw new WindowsExecutableError("Could not inspect the Windows executable path");
       }
       const attributes = info.readUInt32LE();
       if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) !== 0 || ((attributes & FILE_ATTRIBUTE_DIRECTORY) !== 0) !== directory) {
-        throw new Error("The Windows executable path changed while opening it");
+        throw new WindowsExecutableError("The Windows executable path changed while opening it");
       }
       entry += "\\";
     }

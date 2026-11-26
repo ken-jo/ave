@@ -1,8 +1,8 @@
 import { execFile, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, readFileSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { dirname, join, win32 } from "node:path";
-import { lockWindowsExecutable, lockWindowsExecutableAsync } from "../../scripts/lib/windows-locked-executable.mjs";
+import { lockWindowsExecutable, lockWindowsExecutableAsync, WindowsExecutableError } from "../../scripts/lib/windows-locked-executable.mjs";
 import { windowsPeImageDigest } from "../../scripts/lib/windows-path-kind-image-digest.mjs";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
@@ -26,8 +26,10 @@ export function windowsPathKindHelperIn(resourcePath: string): string {
 
 export function resolveWindowsPathKindHelper(resourcePath = getHostResources().resourcePath): string {
   const binary = windowsPathKindHelperIn(resourcePath);
-  if (!existsSync(binary)) {
-    throw missingWindowsPathKindHelper();
+  try {
+    accessSync(binary);
+  } catch (error) {
+    throw helperOpenFailure(error);
   }
   verifyWindowsPathKindHelper(resourcePath);
   return binary;
@@ -39,8 +41,8 @@ export function withWindowsPathKindHelper<T>(launch: (helper: string) => T, reso
   let executable: ReturnType<typeof lockWindowsExecutable>;
   try {
     executable = lockWindowsExecutable(windowsPathKindHelperIn(resourcePath));
-  } catch {
-    throw missingWindowsPathKindHelper();
+  } catch (error) {
+    throw helperOpenFailure(error);
   }
   try {
     assertBuiltHelper(executable.bytes);
@@ -71,18 +73,29 @@ export function verifyWindowsPathKindHelper(resourcePath: string): void {
   let bytes: Buffer;
   try {
     bytes = readFileSync(windowsPathKindHelperIn(resourcePath));
-  } catch {
-    throw missingWindowsPathKindHelper();
+  } catch (error) {
+    throw helperOpenFailure(error);
   }
   assertBuiltHelper(bytes);
 }
 
-function missingWindowsPathKindHelper(): Error {
-  return windowsPathKindHelperUnavailable("Windows folder classifier is missing. Ave cannot tell whether a drive is on another computer, "
-    + `so it reads no folder on a drive. ${RESTART}`);
+const HELPER_UNAVAILABLE = Symbol.for("ave.windows-path-kind-helper-unavailable");
+
+export class WindowsPathKindHelperMissingError extends Error {
+  readonly [HELPER_UNAVAILABLE] = true;
+
+  constructor() {
+    super("Windows folder classifier is missing. Ave cannot tell whether a drive is on another computer, "
+      + `so it reads no folder on a drive. ${RESTART}`);
+  }
 }
 
-const HELPER_UNAVAILABLE = Symbol.for("ave.windows-path-kind-helper-unavailable");
+function helperOpenFailure(error: unknown): Error {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code === "ENOENT") return new WindowsPathKindHelperMissingError();
+  const detail = error instanceof WindowsExecutableError ? ` ${error.message}.` : typeof code === "string" ? ` (${code}).` : ".";
+  return windowsPathKindHelperUnavailable(`Windows folder classifier could not be opened${detail} ${RESTART}`);
+}
 
 /** The helper is missing, could not start, or did not answer in time: no answer, as opposed to a wrong one. No message names the
  * helper's install path: it reaches the privacy failure reason, the boot gate and the audit log. */
@@ -223,9 +236,9 @@ export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT
       }, budget);
     });
     const prepareAndLaunch = async () => {
-      const executable = await lockWindowsExecutableAsync(helper, checkDeadline).catch(() => {
+      const executable = await lockWindowsExecutableAsync(helper, checkDeadline).catch((error: unknown) => {
         checkDeadline();
-        throw missingWindowsPathKindHelper();
+        throw helperOpenFailure(error);
       });
       try {
         checkDeadline();
@@ -245,8 +258,8 @@ export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT
   }
   try {
     await access(helper);
-  } catch {
-    throw missingWindowsPathKindHelper();
+  } catch (error) {
+    throw helperOpenFailure(error);
   }
   return launch(helper, remaining());
 }
