@@ -16,6 +16,8 @@ import { hostScriptInvocationReadPaths, hostScriptRuntimePaths, hostScriptWriteD
 import { resolveRuntimePathsFromModuleUrl } from "../../src/main/main-paths.js";
 import { windowsPathKindHelperIn } from "../../src/main/windows-path-kind-launcher.js";
 import { rankMxcFilesystem } from "../../src/permissions/mxc-windows.js";
+import * as powerShellExecutable from "../../src/shared/powershell-executable.js";
+import { win32SystemBinary } from "../../src/shared/windows-system-path.js";
 import { PermissionManager } from "../../src/permissions/permission-manager.js";
 import { shellQuote } from "../../src/lib/shell-resolver.js";
 import { shellPolicyModel } from "../../src/tools/mxc-shell-launch.js";
@@ -773,6 +775,10 @@ describe("workbook publication build", () => {
   it.runIf(process.platform === "win32")("keeps the exact helper grant through the parsed PowerShell command the E2E sends", () => {
     const workspace = mkdtempSync(join(root, "alice's workspace "));
     const fixture = prepareWorkbookPublicationBuild(checkout, workspace);
+    // Elevated runners hold no trusted installation; the resolver suite proves that refusal on its own.
+    const installation = vi.spyOn(powerShellExecutable, "resolveTrustedPowerShellExecutable").mockReturnValue({
+      executable: win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe"), kind: "windows-powershell",
+    });
     try {
       configureHostResources({ resourcePath: join(fixture.root, "resources"), isPackaged: false });
       const source = renderWorkbookCommand("win32", fixture.argv(process.execPath, join(workspace, "alice's book.xlsx"), join(workspace, "edits.json")));
@@ -793,6 +799,7 @@ describe("workbook publication build", () => {
       expect(awaitedHostScriptCommand(source, invocation)).not.toBeNull();
       expect(findPowerShellAstPathViolation(ast, workspace, workspace, [], true, source)).toBeNull();
     } finally {
+      installation.mockRestore();
       fixture.dispose();
     }
   });
