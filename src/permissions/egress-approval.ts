@@ -16,7 +16,7 @@ import {
   type ApprovalGate,
   isHostApprovalControllerRevoked,
 } from "./approval-gate.js";
-import { EGRESS_DENY_REASONS, type EgressApprovalAnswer, type EgressApprovalRequester, type ShellNetworkPermissionEvaluator } from "./egress-ask.js";
+import type { EgressApprovalAnswer, EgressApprovalRequester, ShellNetworkPermissionEvaluator } from "./egress-ask.js";
 
 // The exact host rule for one destination, or null for an address literal, which the host grammar does not name. A canonical host name that does not parse is a contract violation and throws.
 function exactNetworkRule(host: string, port: number): string | null {
@@ -167,7 +167,7 @@ export function createApprovalGateEgressRequester(
       return { allow: false, reason: errorMessage(error), recheckRefusal: { kind: "recheck-failed" } };
     }
     if (isHostApprovalControllerRevoked(decision)) {
-      return { allow: false, reason: EGRESS_DENY_REASONS.controllerRevoked, settledRefusal: true };
+      return { allow: false, outcome: "controller-revoked" };
     }
     const outcome = approvalFailureKind(decision);
     if (outcome === "unavailable") {

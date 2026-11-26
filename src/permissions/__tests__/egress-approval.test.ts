@@ -9,7 +9,7 @@ import { PermissionManager, type ReviewerDispatchResult } from "../permission-ma
 
 import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from "../approval-gate.js";
 import { createApprovalGateEgressRequester as createRequester, EGRESS_APPROVAL_DENY_REASONS } from "../egress-approval.js";
-import { EGRESS_DENY_REASONS, type EgressShellApprovalRequest, type EgressTerminalApprovalRequest } from "../egress-ask.js";
+import type { EgressShellApprovalRequest, EgressTerminalApprovalRequest } from "../egress-ask.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 
@@ -95,7 +95,7 @@ describe("egress-host approval requests", () => {
       requestId: card.id, choice: "allow-once", egressScope: "always", nonce: card.nonce, hmac: card.hmac,
     }, wc as never);
     expect(refreshCurrent).toHaveBeenCalledOnce();
-    await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_DENY_REASONS.controllerRevoked, settledRefusal: true });
+    await expect(answer).resolves.toEqual({ allow: false, outcome: "controller-revoked" });
   });
 
   it("sends the card with the destination and the offered scopes, as the gate's egress-host card", async () => {

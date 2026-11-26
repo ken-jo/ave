@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager, type ReviewerDispatchResult } from "../permission-manager.js";
 import { ApprovalGate, isHostApprovalRejectedDecision, type ApprovalRequest } from "../approval-gate.js";
-import { createEgressAskCallback } from "../egress-ask.js";
+import { createEgressAskCallback, EGRESS_DENY_REASONS } from "../egress-ask.js";
 import { createApprovalGateEgressRequester, createShellNetworkPermissionEvaluator } from "../egress-approval.js";
 import { EgressGrantStore } from "../egress-grants.js";
 import type { ShellEgressOwner } from "../egress-invocations.js";
@@ -19,7 +19,7 @@ const DESTINATION = { host: "downloads.example.com", port: 443 };
 const TOKEN = "1".repeat(32);
 
 function fixture(options: { headless?: boolean; forced?: boolean; askEnabled?: boolean; mode?: "strict" | "default" | "auto" | "allow";
-  remoteControllerAuthority?: RemoteControllerAuthority; afterAnswer?: () => void } = {}) {
+  remoteControllerAuthority?: RemoteControllerAuthority; abortSignal?: AbortSignal; afterAnswer?: () => void } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "egress-pipeline-"));
   directories.push(directory);
   const manager = new PermissionManager(join(directory, "permissions.json"));
@@ -39,7 +39,7 @@ function fixture(options: { headless?: boolean; forced?: boolean; askEnabled?: b
   const audit = vi.fn<(entry: SandboxEgressDecisionAuditEntry) => void>();
   const callback = createEgressAskCallback({
     identityStrength: () => "kernel-channel", ownerOf: (token) => token === TOKEN ? owner : undefined,
-    abortSignalOf: () => undefined, workerAllowedDomains: () => [], grants,
+    abortSignalOf: () => options.abortSignal, workerAllowedDomains: () => [], grants,
     evaluateShellPermission: evaluate, shellAskEnabled: () => options.askEnabled ?? true, requester: () => async request => {
       const decision = await requester(request);
       options.afterAnswer?.();
@@ -92,6 +92,34 @@ describe("actual shell network pipeline authority", () => {
     expect(await f.grants.matchingScope(f.subject, { ...DESTINATION, network: "public" }, ["once", "session", "always"])).toBeUndefined();
     expect(f.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ decision: "deny", basis, reason, scope: null }));
     expect(decision).toEqual({ allow: false, reason });
+  });
+
+  it.each(["live", "interrupted"] as const)("handles a fresh rule denial with revocation text when the invocation is %s", async (state) => {
+    const controller = new AbortController();
+    const f = fixture({ abortSignal: controller.signal, afterAnswer: () => {
+      if (state === "interrupted") controller.abort();
+    } });
+    const grant = vi.spyOn(f.grants, "grant");
+    const save = vi.spyOn(f.gate, "commitStagedAllowSaves");
+    const pending = f.callback(DESTINATION, { attributionKey: TOKEN, identity: "listener", phase: "resolved",
+      addresses: ["93.184.216.34"], resolution: "pinned" });
+    const request = await f.card(1);
+    const pattern = "Network(downloads.example.com:443)";
+    const check = f.manager.checkLoadedNetworkPermission.bind(f.manager);
+    const recheck = vi.spyOn(f.manager, "checkLoadedNetworkPermission").mockImplementationOnce((...args) => {
+      f.manager.setRules([{ pattern, action: "deny" }]);
+      const checked = check(...args);
+      return { ...checked, permission: { ...checked.permission, reason: EGRESS_DENY_REASONS.controllerRevoked } };
+    });
+    expect(f.answer(request, true, "session")?.choice).toBe("allow-once");
+    const reason = state === "live" ? `${EGRESS_DENY_REASONS.denyRule} ${pattern}` : EGRESS_DENY_REASONS.unattributed;
+    await expect(pending).resolves.toEqual({ allow: false, reason, ...(state === "interrupted" ? { unattributed: true } : {}) });
+    expect(f.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      decision: "deny", reason, basis: state === "live" ? "rule" : "policy", scope: null,
+    }));
+    expect(recheck).toHaveBeenCalledOnce();
+    expect(grant).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
   });
 
   it.each(["desk first", "revocation first", "revocation before delivery"] as const)("keeps the correct egress refusal with %s", async order => {

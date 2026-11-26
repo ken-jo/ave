@@ -78,10 +78,11 @@ interface EgressApprovalRequestCommon {
 // How long a confined terminal's approval card holds a connection before denial.
 const TERMINAL_EGRESS_ASK_TIMEOUT_MS = 120_000;
 
-// What the person answered. A deny carries why (their choice, a timeout, no surface).
+// The approval result, including refusals issued by the host.
 export type EgressApprovalAnswer =
   | { readonly allow: true; readonly scope: EgressGrantScope; readonly oneConnection?: true }
-  | { readonly allow: false; readonly reason: string; readonly humanDenied?: true; readonly settledRefusal?: true;
+  | { readonly allow: false; readonly outcome: "controller-revoked" }
+  | { readonly allow: false; readonly outcome?: never; readonly reason: string; readonly humanDenied?: true; readonly settledRefusal?: true;
       readonly recheckRefusal?: { readonly kind: "recheck-failed" }
         | { readonly kind: "denied"; readonly rule?: NetworkPermissionEvaluation["rule"] } };
 
@@ -369,12 +370,12 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       } finally {
         clearTimeout(timer);
       }
-      if (timedOut && !answer.allow && !answer.settledRefusal && !answer.humanDenied) {
+      if (timedOut && !answer.allow && answer.outcome !== "controller-revoked" && !answer.settledRefusal && !answer.humanDenied) {
         answer = { allow: false, reason: EGRESS_DENY_REASONS.terminalTimeout, settledRefusal: true };
       }
     }
     if (!answer.allow) {
-      if (answer.reason === EGRESS_DENY_REASONS.controllerRevoked) {
+      if (answer.outcome === "controller-revoked") {
         return { allow: false, decision: revokedConnection(), settledRefusal: true };
       }
       const recheck = answer.recheckRefusal;
