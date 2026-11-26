@@ -68,8 +68,8 @@ export interface WatchedSweepContext {
 }
 
 const watched = new Map<string, WatchedRow>();
-// A created entry whose quarantine failed: host-side consumers of these roots stay refused while it exists.
-const failClosed = new Map<string, { readonly path: string; readonly roots: readonly string[] }>();
+// A failed quarantine blocks later sweeps and host consumers until the entry is removed or recovered.
+const failClosed = new Map<string, { readonly path: string; readonly roots: readonly string[]; readonly failure: string }>();
 // Rows the user restored; they are no longer watched in this session.
 const excepted = new Set<string>();
 // Receipts no command result carried yet (a holder's release, a check made for a host consumer): the next sandboxed command's result takes them.
@@ -308,7 +308,7 @@ export function isWatchedWorkspaceConsumable(workspace: string): boolean {
       const state = rowState(row);
       if (state === "absent") continue;
       consumable = false;
-      created ||= state === "present" && row.restored !== true && !failClosed.has(key(sweepOriginal(row)));
+      created ||= state === "present" && row.restored !== true && quarantineFailureAt(sweepOriginal(row)) === undefined;
     }
     if (created && consumerSweep === undefined) {
       consumerSweep = quarantineCreatedRows({ commandId: "host-consumer" }, undefined, true)
@@ -325,6 +325,13 @@ setHostWorkspaceGuard(isWatchedWorkspaceConsumable);
 
 function sweepOriginal(row: WatchedRow): string {
   return row.exact ? row.path : join(row.anchor, relative(row.anchor, row.path).split(/[\\/]/)[0] ?? "");
+}
+
+function quarantineFailureAt(path: string): string | undefined {
+  for (const entry of failClosed.values()) {
+    if (overlaps(entry.path, path)) return entry.failure;
+  }
+  return undefined;
 }
 
 function sameIdentity(path: string, identity: FileIdentity): boolean {
@@ -374,6 +381,10 @@ function quarantineCreatedRows(context: WatchedSweepContext, holder?: symbol, de
 }
 
 async function quarantineCreatedRowsNow(context: WatchedSweepContext, holder: symbol | undefined, deferReceipt: boolean): Promise<string | undefined> {
+  for (const [id, entry] of failClosed) {
+    try { if (entryAt(entry.path) === undefined) failClosed.delete(id); }
+    catch { /* An unreadable entry stays blocked. */ }
+  }
   const created = createdRows(holder);
   if (created.length === 0) return undefined;
   const entries = new Map<string, { readonly original: string; readonly row: WatchedRow }>();
@@ -387,6 +398,11 @@ async function quarantineCreatedRowsNow(context: WatchedSweepContext, holder: sy
   try { quarantine = await createSandboxQuarantine(context.commandId); }
   catch (error) { failures.push(errorMessage(error)); }
   for (const [id, { original, row }] of entries) {
+    const previousFailure = quarantineFailureAt(original);
+    if (previousFailure !== undefined) {
+      failures.push(previousFailure);
+      continue;
+    }
     let found = false;
     try {
       if (!anchorsIntact(row)) throw new Error(`the folder ${JSON.stringify(changedAnchor(row))} changed identity`);
@@ -404,9 +420,10 @@ async function quarantineCreatedRowsNow(context: WatchedSweepContext, holder: sy
           ...(context.sessionId ? { sessionId: context.sessionId } : {}), ...(context.command ? { command: context.command } : {}) });
       }
     } catch (error) {
-      failClosed.set(id, { path: original, roots: [...row.roots, row.anchor] });
       const messageKey = found ? "sandboxPolicy.watchedQuarantineFailed" : "sandboxPolicy.watchedQuarantineUnverified";
-      failures.push(`${t(messageKey, { path: JSON.stringify(original), reason: errorMessage(error) })}\n${t("sandboxPolicy.watchedQuarantineRecovery")}`);
+      const failure = `${t(messageKey, { path: JSON.stringify(original), reason: errorMessage(error) })}\n${t("sandboxPolicy.watchedQuarantineRecovery")}`;
+      failClosed.set(id, { path: original, roots: [...row.roots, row.anchor], failure });
+      failures.push(failure);
     }
   }
   const first = moved[0];

@@ -396,7 +396,17 @@ describe("watched protected rows", () => {
     await expect(sweepWatchedRows({ commandId: "fixture-command" })).rejects.toThrow(/changed identity/);
     releaseWatchClaim(later);
     expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
-    expect(lstatSync(hooks).isDirectory()).toBe(true);
+
+    const failure = await sweepWatchedRows({ commandId: "next-command" }).catch((error: unknown) => error);
+    expect(lstatSync(hooks, { throwIfNoEntry: false })?.isDirectory()).toBe(true);
+    expect(listWatchedQuarantine()).toEqual([]);
+    expect(failure).toMatchObject({ message: expect.stringContaining("changed identity") });
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
+
+    renameSync(hooks, join(container, "removed-hooks"));
+    await expect(sweepWatchedRows({ commandId: "after-removal" })).resolves.toBeUndefined();
+    mkdirSync(hooks);
+    await expect(sweepWatchedRows({ commandId: "new-entry" })).resolves.toContain(WATCHED_ROW_VIOLATION);
   });
 
   it("keeps watching a restored name an ACL grant still reaches and refuses host consumers until the next sweep", async () => {
