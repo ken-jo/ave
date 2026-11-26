@@ -172,7 +172,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
   const directory = mkdtempSync(join(process.cwd(), ".cache", "xlsx-agent-live-"));
   const path = join(directory, "live-values.xlsx");
   const requestPath = join(directory, "edits.json");
-  let originalBytes = Buffer.alloc(0);
+  let originalBytes: Buffer = Buffer.alloc(0);
   let bodySignal: AbortSignal | undefined;
   let releaseEdit: (() => void) | undefined;
   let shellCommand = "";
