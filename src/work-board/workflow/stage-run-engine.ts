@@ -15,10 +15,11 @@ import type { WorkflowTemplateStore } from "../../main/workflow-template-store.j
 import type { RunEnd, RunEndCause, RunRemovalCause } from "../../main/workflow-run-store.js";
 import { requiredTier } from "../../permissions/permission-manager.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
+import { projectRootEquals } from "../../shared/project-identity.js";
 import { errorMessage } from "../../shared/error-message.js";
 import {
   MAX_PLAN_NOTE_LENGTH, workBoardOriginSessionId,
-  type StageGateDecideInput, type StageGateDecideResult, type StageJoinDecideInput, type StageJoinDecideResult, type StageRetryResult,
+  type StageGateDecideInput, type StageGateDecideResult, type StageJoinDecideInput, type StageJoinDecideResult, type OpenJoinResult, type StageRetryResult,
   type WorkBoardCancelResult, type WorkBoardRunEvent, type WorkBoardSteerAck, type WorkBoardSteerResult, type WorkItem, type WorkItemResolved,
   type WorkItemRunResult, type WorkItemUpdateResult,
 } from "../../shared/work-board-types.js";
@@ -34,7 +35,7 @@ import type { PassConditionRegistry } from "./stage-gates.js";
 import { assertPinnedVersion, stepsOf } from "./stage-graph.js";
 import { MAX_STAGE_ATTEMPTS, reduceRun, type RunEffect, type RunEvent } from "./stage-machine.js";
 import { buildStagePrompt, stageInputsOf } from "./stage-prompt.js";
-import { pendingWorkflowDecisions, projectWorkflowRun, savedWorkflowStageActivity, withoutWorkflowProjection, workflowStageActivity } from "./run-read-projection.js";
+import { maskWorkflowText, pendingWorkflowDecisions, projectWorkflowRun, savedWorkflowStageActivity, withoutWorkflowProjection, workflowStageActivity } from "./run-read-projection.js";
 import type { WorkflowRunPinView, WorkflowStageActivityUpdate, WorkflowStageView } from "../../shared/workflow-run-view.js";
 import { OwnedFsError } from "./owned-fs.js";
 import { isAwaitingStageReview, reconcileRunRecord, type RunRecord, type RunWriteFailure, type WorkflowRunState } from "./run-state.js";
@@ -79,7 +80,7 @@ export interface StageRunEngineDeps {
   getRunner: () => SubAgentRunner | undefined;
   readBreaker?: (sessionId: string) => WorkflowStageView["breaker"];
   getAgentProfile?: (name: string) => Promise<LoadedAgentProfile | null>;
-  emit: (e: Omit<WorkBoardRunEvent, "at">) => void;
+  emit: (e: Omit<WorkBoardRunEvent, "at">, project?: { projectRoot?: string }) => void;
   /** What a board reader is told about the item's run changed without a board write (a gate opened, a restart's run was taken over). */
   itemChanged?: (itemId: number) => void;
   /** Where the stages of a run work. */
@@ -112,6 +113,7 @@ export interface StageRunEngine {
   start(itemId: number, a: { source: RunAuthoritySource; approvalSurface: WebContents | null }): Promise<WorkItemRunResult>;
   decideGate(itemId: number, i: StageGateDecideInput, o: { approvalSurface: WebContents | null }): Promise<StageGateDecideResult>;
   decideJoin(itemId: number, i: StageJoinDecideInput, o: { approvalSurface: WebContents | null }): Promise<StageJoinDecideResult>;
+  openJoin(itemId: number, i: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult>;
   retryStage(itemId: number, i: { runId: string; stageId: string }, o: { approvalSurface: WebContents | null }): Promise<StageRetryResult>;
   /** Start whatever is ready in a run that has no live child (after a restart). Not a retry: no attempt is used. */
   continueRun(itemId: number, i: { runId: string }, o: { approvalSurface: WebContents | null }): Promise<StageRetryResult>;
@@ -124,6 +126,7 @@ export interface StageRunEngine {
    * them) and sweep the workspaces no run owns. Spawns nothing. */
   adoptParkedRuns(): Promise<void>;
   /** Adds what a board reader is told about each row's template run. */
+  readRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }): Promise<T[]>;
   projectRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }): Promise<T[]>;
   /** The user's clear of a row whose run has no record (WorkBoardStore.clearMissingRun), after the delete intents and markers are read
    * again. Refused `moveRunActive` while this host holds a run of the item: that run's own end settles its row. Starts and stops nothing. */
@@ -261,7 +264,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   function notify(deliver: () => void): void {
     try { deliver(); } catch (error) { log.warn("stage run notification failed: %s", errorMessage(error)); }
   }
-  const emit: StageRunEngineDeps["emit"] = event => notify(() => deps.emit(event));
+  const emit: StageRunEngineDeps["emit"] = (event, project) => notify(() => deps.emit(event.message === undefined ? event : { ...event, message: maskWorkflowText(event.message) }, project ?? runs.get(event.itemId)?.ref));
   const notifyItemChanged = (itemId: number): void => notify(() => deps.itemChanged?.(itemId));
   const records = deps.runs;
   const runs = new Map<number, RunState>();
@@ -1341,6 +1344,19 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return reason === null ? { ok: true } : { ok: false, reason };
   }
 
+  async function openJoin(itemId: number, input: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult> {
+    const got = await store.get(itemId);
+    if (got.status !== "found" || got.item.runId !== input.runId) return { ok: false, reason: "not_found" };
+    const record = await records.get(itemId, input.runId);
+    const join = record?.stageJoins?.find(candidate => candidate.joinId === input.joinId);
+    if (!record || record.settled || join?.status !== "conflict" || !join.conflict || unconfirmed.has(input.runId)) return { ok: false, reason: "not_pending" };
+    if (join.conflict.conflictHash !== input.conflictHash) return { ok: false, reason: "conflict_mismatch" };
+    const root = await runProjectOf(record.runStartedBy);
+    if (!root || !deps.resolveProjectRoot(root) || record.runWorkspace?.kind !== "git") return { ok: false, reason: "join-folder-unavailable" };
+    const ref: RunRef = { itemId, runId: input.runId, runKey: runKeyOf(itemId, input.runId), projectRoot: root };
+    return await workspace.openJoinFolder(ref, open) ? { ok: true } : { ok: false, reason: "join-folder-unavailable" };
+  }
+
   async function retryStage(itemId: number, i: { runId: string; stageId: string }, o: { approvalSurface: WebContents | null }): Promise<StageRetryResult> {
     const reason = await decide(itemId, i.runId, o.approvalSurface, { type: "retry_requested", stageId: i.stageId }, (record) => {
       const run = record.stageRuns.find(candidate => candidate.stageId === i.stageId);
@@ -1615,31 +1631,40 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return { activity, breaker };
   }
 
-  async function projectRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }): Promise<T[]> {
-    // A board reader also gives the existing takeover path a chance to reconcile interrupted runs.
+  function projectRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }): Promise<T[]> {
     detach(() => adopted().catch((error: unknown) => log.warn("template run takeover for a reader failed: %s", errorMessage(error))));
+    return readRuns(items, detail);
+  }
+
+  async function readRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }): Promise<T[]> {
     const named = items.some(item => item.templateId !== undefined && (item.runId !== undefined || (Array.isArray(item.runHistory) && item.runHistory.length > 0)));
     const runOf = named ? await records.view().catch(() => null) : null;
     return Promise.all(items.map(async (item) => {
       const clean = withoutWorkflowProjection(item);
       if (!runOf || !item.templateId) return clean;
 
-      const current = runOf(item);
-      const read = (runId: string) => {
+      const read = async (runId: string) => {
         const record = runOf({ id: item.id, runId });
-        return record?.pin.templateId === item.templateId ? record : null;
+        if (!record || record.pin.templateId !== item.templateId) return null;
+        const source = record.runStartedBy;
+        const scope = source.kind === "local-create-and-run"
+          ? source.projectRoot === undefined ? { kind: "all" as const } : { kind: "project" as const, projectRoot: source.projectRoot }
+          : (await deps.attachments.getAttachment(source.attachmentId))?.approvedScope;
+        if (!scope) return null;
+        if (scope.kind === "all") return item.projectRoot === undefined ? record : null;
+        const canonical = deps.resolveProjectRoot(scope.projectRoot);
+        return canonical && projectRootEquals(item.projectRoot, canonical) ? record : null;
       };
-      const run = current?.pin.templateId === item.templateId ? current : null;
+      const run = item.runId === undefined ? null : await read(item.runId);
       const ids = new Set(
         Array.isArray(item.runHistory) ? item.runHistory.flatMap(entry => typeof entry?.runId === "string" ? [entry.runId] : []) : [],
       );
       if (item.runId !== undefined) ids.add(item.runId);
-      const pins = [...ids].flatMap((id): WorkflowRunPinView[] => {
-        const record = id === run?.runId ? run : read(id);
-        return record ? [{ runId: record.runId, pin: { ...record.pin }, startedAt: record.startedAt }] : [];
-      });
+      const retained = new Map(await Promise.all([...ids].map(async id => [id, id === item.runId ? run : await read(id)] as const)));
+      const pins = [...retained.values()].flatMap((record): WorkflowRunPinView[] =>
+        record ? [{ runId: record.runId, pin: { ...record.pin }, startedAt: record.startedAt }] : []);
       if (pins.length > 0) clean.workflowRunPins = pins.sort((a, b) => b.startedAt.localeCompare(a.startedAt) || Number(b.runId === item.runId) - Number(a.runId === item.runId));
-      const inspected = detail && (detail.runId === undefined ? run : ids.has(detail.runId) ? read(detail.runId) : null);
+      const inspected = detail && (detail.runId === undefined ? run : retained.get(detail.runId));
       if (inspected) {
         const version = await resolvePinned(inspected.pin).catch((error: unknown) => {
           log.warn("The pinned graph could not be read for the workflow view (id=%d): %s", item.id, errorMessage(error));
@@ -1673,7 +1698,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   return {
-    start, decideGate, decideJoin, retryStage, continueRun, projectRootRevoked, steer, stop, projectRuns, clearMissingRun, reconsider,
+    start, decideGate, decideJoin, openJoin, retryStage, continueRun, projectRootRevoked, steer, stop, projectRuns, readRuns, clearMissingRun, reconsider,
     adoptParkedRuns: async () => {
       const done = await adopted();
       if (!done.ok) log.warn("template runs not adopted at boot: %s", done.code);

@@ -6,7 +6,7 @@ import { WorkflowDecisionCard, workflowDecisionKey } from "../work-board/Workflo
 // conversation's ApprovalDock.
 import { EmptyState } from "../../../../components/ui/empty-state.js";
 import { Loader } from "../../../../components/ui/loader.js";
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { CheckSquare } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { Badge } from "../../../../components/ui/badge.js";
@@ -415,7 +415,7 @@ function HeadCard({
   actions: WorkApprovalActions;
   targetProjectRoot: string | undefined;
   projectChoices?: readonly WorkApprovalProject[];
-  api: Pick<AveApi, "decideWorkPlan" | "decideWorkStage" | "decideWorkJoin">;
+  api: Pick<AveApi, "decideWorkPlan" | "decideWorkStage" | "decideWorkJoin" | "openWorkBoardJoin">;
   now: number;
   onChanged: () => void;
 }) {
@@ -557,7 +557,7 @@ function useRovingFocus(keys: readonly string[]) {
 }
 
 export interface WorkApprovalStackProps {
-  api: Pick<AveApi, "listWorkApprovals" | "onWorkApprovalsChanged" | "decideWorkPlan" | "decideWorkStage" | "decideWorkJoin">;
+  api: Pick<AveApi, "listWorkApprovals" | "onWorkApprovalsChanged" | "decideWorkPlan" | "decideWorkStage" | "decideWorkJoin" | "openWorkBoardJoin">;
   /** The project whose home shows this stack; accepted proposals join it. Undefined means the default project. */
   project?: ProjectIdentity;
   actions: WorkApprovalActions;
@@ -681,6 +681,13 @@ export function WorkApprovalStack({
   // empty, so the popover never leaves focus on the page body.
   const handledFocusKey = useRef<string | null>(null);
   const sectionRef = useRef<HTMLElement | null>(null);
+  const stackHeading = useRef<HTMLHeadingElement>(null);
+  const focusedDecision = useRef<string | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (!fresh || !focusedDecision.current || order.includes(focusedDecision.current)) return;
+    focusedDecision.current = undefined;
+    if (document.activeElement === document.body) stackHeading.current?.focus();
+  }, [fresh, order]);
   const firstKeyRef = useRef<string | undefined>(undefined);
   firstKeyRef.current = order[0];
   const focusNode = roving.focusKey;
@@ -782,6 +789,9 @@ export function WorkApprovalStack({
       data-testid="work-approvals"
       data-mode={allProjects ? "all" : "project"}
       ref={sectionRef}
+      onFocusCapture={event => {
+        focusedDecision.current = event.target.closest<HTMLElement>("article[data-approval-key]")?.dataset.approvalKey;
+      }}
       tabIndex={-1}
       className="flex min-h-0 flex-col gap-2 outline-none"
       onKeyDown={(event) => roving.onKeyDown(event, () => {
@@ -791,7 +801,7 @@ export function WorkApprovalStack({
     >
       <header className="flex flex-wrap items-center gap-2">
         <CheckSquare className="h-4 w-4 text-muted-foreground" aria-hidden />
-        <h2 className="text-sm font-semibold">{t("workApprovals.title")}</h2>
+        <h2 ref={stackHeading} tabIndex={-1} className="text-sm font-semibold">{t("workApprovals.title")}</h2>
         <Badge variant="outline" data-testid="work-approvals-count">{decidable.length}</Badge>
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" data-testid="work-approvals-scope">
           {allProjects

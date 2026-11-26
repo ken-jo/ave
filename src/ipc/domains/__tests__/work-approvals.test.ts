@@ -359,7 +359,7 @@ function planKeys(items: WorkApprovalView[]): string[] {
 }
 
 describe("work approvals — plan approvals", () => {
-  it("lists a project's pending plan in that project only, with the shared kinds, and counts every project in the total", async () => {
+  it("lists a project's pending plan in that project only, with the shared kinds, and reserves the all-project total for the all-project request", async () => {
     await register();
     await pendingPlan("plan in A", PROJECT_A);
     await pendingPlan("plan in default", DEFAULT_ROOT);
@@ -370,13 +370,13 @@ describe("work approvals — plan approvals", () => {
     if (!inA.ok) throw new Error(`list failed: ${JSON.stringify(inA)}`);
     expect(planKeys(inA.items)).toEqual(["plan in A", "plan with no project"]);
     expect(inA.items.filter((item) => item.kind === "proposal")).toHaveLength(1);
-    // Three plans and one proposal across every authorized project.
-    expect(inA.total).toBe(4);
+    expect(inA.total).toBe(3);
 
     const inDefault = await list({ projectRoot: DEFAULT_ROOT });
     if (!inDefault.ok) throw new Error("list failed");
     expect(planKeys(inDefault.items)).toEqual(["plan in default", "plan with no project"]);
-    expect(inDefault.total).toBe(4);
+    expect(inDefault.total).toBe(3);
+    expect(await list({ allProjects: true })).toMatchObject({ ok: true, total: 4 });
   });
 
   it("projects a plan field by field: scope, the stored hash, the masked plan text, and no item detail", async () => {
@@ -415,7 +415,7 @@ describe("work approvals — plan approvals", () => {
       const result = await list(request);
       if (!result.ok) throw new Error("list failed");
       expect(JSON.stringify(result)).not.toContain("removed project");
-      expect(result.total).toBe(1);
+      expect(result.total).toBe(request.projectRoot === DEFAULT_ROOT ? 0 : 1);
     }
   });
 

@@ -1,3 +1,4 @@
+import { captureWorkBoardTestGesture, workBoardTestSender } from "../../../__tests__/support/work-board-ipc.js";
 import { beforeEach, expect, it, vi } from "vitest";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -27,7 +28,7 @@ import { broadcastToAppWindows } from "../../window-fanout.js";
 const graph = { name: "Template", scope: { kind: "all" }, stages: [{ id: "a", name: "A", goal: "Read", inputs: [], toolScope: "read", allowSubAgents: false, gate: { type: "human" } }], edges: [] };
 const gesture = { inputOrigin: "user-keyboard", userActivation: true };
 function setup(extra: Partial<IpcDeps> = {}) {
-  const sender = { isDestroyed: () => false, mainFrame: {} }; const window = { isDestroyed: () => false, webContents: sender };
+  const sender = workBoardTestSender(); const window = { isDestroyed: () => false, webContents: sender };
   const changed = new ChangeSignal(() => {});
   const store = { list: vi.fn(async () => []), get: vi.fn(async (id: string) => ({ template: { id, scope: { kind: "all" } } })), draft: vi.fn(async () => { changed.emit(); return {}; }), confirmDraft: vi.fn(async () => { changed.emit(); return {}; }), archive: vi.fn(async () => { changed.emit(); }), attachSchedule: vi.fn(async () => { changed.emit(); return {}; }), detachSchedule: vi.fn(async () => true), getAttachment: vi.fn(async () => ({ templateId: "t" })), changed };
   const auditLog = vi.fn();
@@ -363,16 +364,20 @@ it("returns typed row refusals over IPC without invoking execution or gates", as
   const board = { get: vi.fn(async () => ({ status: "found", itemId: 2, item: { id: 2, templateRunError: "invalid-template-run" } })), update: vi.fn(async () => { throw new WorkflowTemplateError("invalid-template-run"); }) };
   const engine = { runItem: vi.fn(), decidePlan: vi.fn(), projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {}, cancelRun: vi.fn(() => { throw new WorkflowTemplateError("invalid-template-run"); }) };
   const { event } = setup({ workBoardStore: board, workBoardEngine: engine } as unknown as Partial<IpcDeps>);
+  const { resolveAuthorizedWorkspaceProject } = await import("../../../main/project-root-authorization.js");
+  vi.mocked(resolveAuthorizedWorkspaceProject).mockReturnValueOnce({ authorized: true, project: { projectRoot: "/workspace/default", projectName: "default", isDefault: true } });
+  expect(await handler(WORK_BOARD.setProjectScope)(event, "/workspace/default")).toBe(true);
   expect(await handler(WORK_BOARD.get)(event, 2)).toMatchObject({ status: "found", item: { templateRunError: "invalid-template-run" } });
   expect(await handler(WORK_BOARD.update)(event, 2, { title: "Changed" })).toMatchObject({ status: "invalid", reason: "invalid-template-run" });
   expect(await handler(WORK_BOARD.run)(event, 2)).toEqual({ status: "error", reason: "invalid-template-run" });
-  expect(await handler(WORK_BOARD.decidePlan)(event, 2, { runId: "run", planHash: "a".repeat(64), decision: "approve" }, gesture)).toEqual({ ok: false, reason: "invalid-template-run" });
+  const plan = { runId: "run", planHash: "a".repeat(64), decision: "approve" };
+  expect(await handler(WORK_BOARD.decidePlan)(event, 2, plan, await captureWorkBoardTestGesture(handler, event, WORK_BOARD.decidePlan, 2, plan))).toEqual({ ok: false, reason: "invalid-template-run" });
   expect(engine.runItem).not.toHaveBeenCalled(); expect(engine.decidePlan).not.toHaveBeenCalled();
   expect(await handler(WORK_BOARD.cancelRun)(event, 2, gesture)).toEqual({ ok: false, error: "invalid-template-run" });
   // A row whose run file awaits review is refused the same way by run and decide.
   board.get.mockImplementation(async () => ({ status: "found", itemId: 2, item: { id: 2, templateRunError: "template-runs-pending-review" } }));
   expect(await handler(WORK_BOARD.run)(event, 2)).toEqual({ status: "error", reason: "invalid-template-run" });
-  expect(await handler(WORK_BOARD.decidePlan)(event, 2, { runId: "run", planHash: "a".repeat(64), decision: "approve" }, gesture)).toEqual({ ok: false, reason: "invalid-template-run" });
+  expect(await handler(WORK_BOARD.decidePlan)(event, 2, plan, await captureWorkBoardTestGesture(handler, event, WORK_BOARD.decidePlan, 2, plan))).toEqual({ ok: false, reason: "invalid-template-run" });
   expect(engine.runItem).not.toHaveBeenCalled(); expect(engine.decidePlan).not.toHaveBeenCalled();
 });
 

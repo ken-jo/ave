@@ -5,7 +5,7 @@ type JoinEvidence = Omit<NonNullable<StageJoin["conflict"]>, "conflictHash">;
 
 export type PendingWorkflowDecision =
   | { kind: "stage-gate"; binding: Omit<StageGateDecideInput, "decision" | "note">; result: string; outputs?: { id: string; summary: string }[]; arrivedAt: string | null }
-  | { kind: "join-conflict"; binding: Omit<StageJoinDecideInput, "decision">; evidence: JoinEvidence; arrivedAt: null };
+  | { kind: "join-conflict"; binding: Omit<StageJoinDecideInput, "decision">; evidence: JoinEvidence; generation: number; canOpenFolder?: boolean; arrivedAt: null };
 
 export interface WorkflowRunPinView {
   runId: string;

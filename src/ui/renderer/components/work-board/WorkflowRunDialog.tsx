@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { workBoardDecisionProps } from "../../../../shared/work-board-decision-intent.js";
+import { WORK_BOARD } from "../../../../shared/ipc-channels.js";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../../../../components/ui/dialog.js";
@@ -21,7 +23,7 @@ const STAGE_STATE_KEYS = {
 } as const;
 
 export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals, onStop, onRetry, onComplete, onHistory, onClose, restoreFocus }: {
-  api: Pick<AveApi, "getWorkBoardItem" | "getWorkflowTemplate" | "onWorkBoardItemChanged" | "decideWorkStage" | "decideWorkJoin">;
+  api: Pick<AveApi, "getWorkBoardItem" | "getWorkflowTemplate" | "onWorkBoardItemChanged" | "decideWorkStage" | "decideWorkJoin" | "openWorkBoardJoin">;
   item: WorkItemResolved;
   run?: WorkItemRunState;
   requestedVersion?: TemplateVersion;
@@ -71,6 +73,14 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
   const liveActivity = lastActivity?.runId === item.runId && lastActivity?.attempt === selectedSnapshot?.attempt
     && lastActivity?.childSessionId === selectedSnapshot?.childSessionId ? lastActivity : undefined;
   const pending = showingHistory ? [] : (readItem.pendingWorkflowDecisions ?? []).filter(review => review.binding.runId === item.runId);
+
+  const runHeading = useRef<HTMLHeadingElement>(null);
+  const focusedDecision = useRef<string | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (!focusedDecision.current || pending.some(review => workflowDecisionKey(review) === focusedDecision.current)) return;
+    focusedDecision.current = undefined;
+    if (document.activeElement === document.body) runHeading.current?.focus();
+  }, [pending]);
 
   const pinTemplateId = pin?.templateId;
   const pinVersion = pin?.version;
@@ -183,7 +193,7 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
       <DialogContent size="2xl" className="min-w-0" onCloseAutoFocus={event => { event.preventDefault(); restoreFocus(); }}>
         <DialogHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <DialogTitle className="break-words">{stageDisplayName(item.title)}</DialogTitle>
+            <DialogTitle ref={runHeading} tabIndex={-1} className="break-words">{stageDisplayName(item.title)}</DialogTitle>
             <div className="flex flex-wrap gap-2">
               {!!item.runHistory?.length && <Button type="button" size="sm" variant="outline" onClick={onHistory}>{t("workBoard.runHistoryHeading")}</Button>}
               {canStop && <Button type="button" size="sm" variant="outline" onClick={() => void handleStop()} disabled={busy || run?.stopping}>{t("workBoard.liveStop")}</Button>}
@@ -208,7 +218,9 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
         )}
         {readError && <p role="alert" className="text-sm text-destructive">{t("workflowTemplates.runReadFailed")}</p>}
         {!showingHistory && (parked || pending.length > 0) && (
-          <section className="space-y-1 rounded-lg border border-warning bg-background p-3 text-sm">
+          <section className="space-y-1 rounded-lg border border-warning bg-background p-3 text-sm" onFocusCapture={event => {
+            focusedDecision.current = event.target.closest<HTMLElement>("[data-workflow-decision-key]")?.dataset.workflowDecisionKey;
+          }}>
             <h2 className="font-semibold text-warning">{t("workflowTemplates.parked")}</h2>
             {pending.map(review => <WorkflowDecisionCard key={workflowDecisionKey(review)} review={review} itemId={item.id} api={api}
               stageName={review.kind === "stage-gate" ? stageName(review.binding.stageId) : undefined}
@@ -239,6 +251,7 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
                   }} stageName={stageName} />
                   {selectedSnapshot.status === "failed" && canStop && item.runId && (
                     <Button type="button" size="sm" variant="outline" disabled={busy || run?.stopping || retried === `${item.runId}:${selectedSnapshot.stageId}:${selectedSnapshot.attempt}`}
+                      {...workBoardDecisionProps(WORK_BOARD.retryStage, item.id, { runId: item.runId, stageId: selectedSnapshot.stageId })}
                       onClick={() => void handleRetry({ stageId: selectedSnapshot.stageId, attempt: selectedSnapshot.attempt, phase: "stage_failed", at: selectedSnapshot.endedAt ?? "" })}>
                       {t("workflowTemplates.retryStage")}
                     </Button>
@@ -261,6 +274,7 @@ export function WorkflowRunDialog({ api, item, run, requestedVersion, approvals,
                   {update.phase === "stage_failed" && canStop && item.runId && startedAt && update.at >= startedAt && (
                     <Button type="button" size="sm" variant="outline"
                       disabled={busy || run?.stopping || retried === `${item.runId}:${update.stageId}:${update.attempt}`}
+                      {...workBoardDecisionProps(WORK_BOARD.retryStage, item.id, { runId: item.runId, stageId: update.stageId })}
                       onClick={() => void handleRetry(update)}>{t("workflowTemplates.retryStage")}</Button>
                   )}
                 </li>

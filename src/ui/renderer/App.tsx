@@ -1,5 +1,5 @@
 import type { ChatMessageRevealRequest } from "./hooks/use-chat-scroll.js";
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useTranslation } from "../../i18n/react.js";
 import { MAX_CHAT_GROUPS } from "../../contract/app-contract.js";
 import { ErrorBoundary } from "./components/ErrorBoundary.js";
@@ -1296,6 +1296,10 @@ export function App() {
     followProject(focusedSessionRoot);
   }, [currentSessionId, focusedSessionRoot, projectSelection.selection === undefined, followProject]);
   surfaceProjectRootRef.current = (activeProject ?? defaultWorkspaceProject)?.projectRoot;
+  const workBoardProjectRoot = projectSelection.selection ? surfaceProjectRootRef.current : undefined;
+  useLayoutEffect(() => {
+    void api.setWorkBoardProjectScope(workBoardProjectRoot);
+  }, [api, workBoardProjectRoot]);
 
   const handleOpenRoutineSession = useCallback(
     async (sessionId: string) => {

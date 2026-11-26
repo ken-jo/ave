@@ -1,3 +1,4 @@
+import type { OpenJoinIpcResult } from "../../shared/work-board-types.js";
 import type { MemoryMapApi } from '../../shared/memory-map.js';
 import type { ScheduleAttachment, ScheduleAttachmentInput, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../../shared/workflow-template-types.js";
 import type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
@@ -1009,6 +1010,9 @@ export type AvePreloadApi = {
   // Result envelopes are the store's discriminated `status` unions (or
   // `{ ok:false, error }` for unauthorized-frame / no-store). Shared types come
   // from the renderer-safe `shared/work-board-types.js` (no Node built-ins).
+  setWorkBoardProjectScope: (root: string | undefined) => Promise<boolean>;
+  openWorkBoardJoin: (itemId: number, input: Omit<import("../../shared/work-board-types.js").StageJoinDecideInput, "decision">) =>
+    Promise<OpenJoinIpcResult | { ok: false; error: string }>;
   listWorkBoard: (
     filter?: import("../../shared/work-board-types.js").WorkItemListFilter,
   ) => Promise<

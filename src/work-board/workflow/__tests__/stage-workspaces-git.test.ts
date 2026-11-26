@@ -156,9 +156,29 @@ describe("git stage workspaces", () => {
     expect(() => userGit(joinDir, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")).toThrow();
     // Nothing was force-merged: the second stage's answer is not on the run branch.
     expect(userGit(joinDir, "show", "HEAD:a.txt")).toBe("from s1");
-    // The same conflict has the same hash; the gate's decision is bound to it.
+    // The workspace evidence stays stable. The scheduler binds it to each conflict generation.
     const again = await handle.provider.integrate(handle.run, "j1", ["s1", "s2"]);
     expect(again.ok === false && again.conflict.conflictHash).toBe(result.conflict.conflictHash);
+  });
+
+  it("opens the owned join folder and refuses a replacement at the same path", async () => {
+    const handle = start();
+    const open = await handle.provider.open(handle.run, repo);
+    if (!open.ok) throw new Error(open.code);
+    const joinDir = join(open.workspace.runRoot, JOIN_DIR);
+    const openFolder = vi.fn(async () => true);
+    expect(await handle.provider.openJoinFolder(handle.run, openFolder)).toBe(true);
+    expect(openFolder).toHaveBeenCalledExactlyOnceWith(joinDir);
+    const held = join(base, "held-join");
+    renameSync(joinDir, held);
+    try {
+      symlinkSync(held, joinDir, "junction");
+      expect(await handle.provider.openJoinFolder(handle.run, openFolder)).toBe(false);
+      expect(openFolder).toHaveBeenCalledTimes(1);
+    } finally {
+      if (existsSync(joinDir)) removeLink(joinDir, open.workspace.runRoot);
+      renameSync(held, joinDir);
+    }
   });
 
   it("a conflicting name with pattern characters is told of the stages that changed that very file", async () => {

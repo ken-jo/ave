@@ -4,6 +4,7 @@ import { t } from "../../../../i18n/runtime.js";
  * sends the run id and stored hash; queued plans expand before they can be decided; a re-planning plan is listed but not counted; and the
  * all-projects mode groups every authorized project. */
 import "../../../../../test/renderer/setup.js";
+import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { WorkApprovalStack, type WorkApprovalActions } from "../work-approvals/WorkApprovalStack.js";
@@ -90,6 +91,7 @@ function stubApi(result: WorkApprovalListResult | ((request: unknown) => WorkApp
     decideWorkPlan,
     decideWorkStage: vi.fn<AveApi["decideWorkStage"]>(),
     decideWorkJoin: vi.fn<AveApi["decideWorkJoin"]>(),
+    openWorkBoardJoin: vi.fn<AveApi["openWorkBoardJoin"]>(),
   };
   return { api, list, decideWorkPlan, fireChanged: () => changed?.() };
 }
@@ -402,6 +404,7 @@ describe("확인 필요 — all projects", () => {
       decideWorkPlan: vi.fn<AveApi["decideWorkPlan"]>(),
       decideWorkStage: vi.fn<AveApi["decideWorkStage"]>(),
       decideWorkJoin: vi.fn<AveApi["decideWorkJoin"]>(),
+    openWorkBoardJoin: vi.fn<AveApi["openWorkBoardJoin"]>(),
     };
     const onFocusConsumed = vi.fn();
     const view = render(<WorkApprovalStack api={api} project={CHECKOUT} actions={actions()} now={() => NOW} onFocusConsumed={onFocusConsumed} />);
@@ -430,4 +433,19 @@ it("decides a workflow gate shown in the work approval stack using its displayed
   fireEvent.click(screen.getByRole("button", { name: t("workflowTemplates.approveStage") }));
   await waitFor(() => expect(api.decideWorkStage).toHaveBeenCalledExactlyOnceWith(4, { ...binding, decision: "approve" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(t("reasonCodes.result-mismatch"));
+});
+
+it("restores focus to the approval heading after a plan decision removes its card", async () => {
+  let pending = true;
+  const { api } = stubApi(() => okList(pending ? [plan()] : []));
+  api.decideWorkPlan.mockImplementation(async () => {
+    pending = false;
+    return { ok: true, status: "approved", redactedCount: 0 };
+  });
+  renderStack(api);
+  const approve = await screen.findByTestId("work-approval-plan-approve");
+  approve.focus();
+  await userEvent.keyboard("{Enter}");
+  await waitFor(() => expect(approve).not.toBeInTheDocument());
+  expect(screen.getByRole("heading", { name: t("workApprovals.title") })).toHaveFocus();
 });

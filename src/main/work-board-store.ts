@@ -1024,6 +1024,17 @@ export class WorkBoardStore {
     return snapshot;
   }
 
+  /** Work Approvals reads the current rows without loading, quarantining or repairing the board. */
+  async readApprovalItems(): Promise<WorkItemResolved[] | undefined> {
+    const input = await readAveHomeInput(this.filePath);
+    if (input.status === "absent") return [];
+    if (input.status !== "trusted" || repeatsKey(input.bytes.toString("utf8"))) return undefined;
+    const parsed = parseBoard(input.bytes);
+    if (!readableBoard(parsed)) return undefined;
+    const now = this.now();
+    return hydrateBoard(parsed).items.map(item => decorate(cloneItem(item), now));
+  }
+
   // List items, newest-id first, with `status_resolved` computed + filter applied.
   async list(filter: WorkItemListFilter = {}, snapshot?: BoardOnDisk): Promise<WorkItemListResult> {
     if (!snapshot) await this.ensureLoaded();
@@ -1876,7 +1887,7 @@ export class WorkBoardStore {
 
   // Read `proposals.json`, dropping rows that are past their expiry and rows that do not parse. Expiry is a read-time sweep rather than a timer: a
   // stale proposal still stops being shown.
-  private async readProposals(nowMs: number): Promise<ProposalsFile> {
+  private async readProposals(nowMs: number, options?: { quarantineCorrupt?: boolean }): Promise<ProposalsFile> {
     const raw = await readJsonFileOrEmpty<ProposalsFile>(
       this.proposalsPath(),
       () => ({ version: PROPOSALS_VERSION, proposals: [] }),
@@ -1887,6 +1898,7 @@ export class WorkBoardStore {
         }
         return { version: PROPOSALS_VERSION, proposals: file.proposals.filter(isValidProposal) };
       },
+      options,
     );
     return {
       version: PROPOSALS_VERSION,
@@ -1905,7 +1917,7 @@ export class WorkBoardStore {
   // Every proposal still showable right now, newest update first.
   async listProposals(): Promise<WorkProposalListResult> {
     const nowMs = this.now();
-    const file = await this.readProposals(nowMs);
+    const file = await this.readProposals(nowMs, { quarantineCorrupt: false });
     const live = file.proposals
       .filter((p) => isLiveProposal(p, nowMs))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));

@@ -84,3 +84,9 @@ it("replays persisted child activity without tool result bodies or credential va
     tools: [{ toolUseId: "call", name: "web_fetch", kind: "web", label: "example.invalid/path", status: "cancelled", turn: 1 }],
   });
 });
+
+it("redacts home paths in live and retained stage text", () => {
+  const path = ["", "Users", "demo", "Documents", "report.md"].join("/");
+  const activity = savedWorkflowStageActivity([{ index: 0, role: "assistant", content: `Read ${path}` }]);
+  expect(activity.turns[0].text).not.toContain(path);
+});

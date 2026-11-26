@@ -6,7 +6,7 @@ import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } fro
 import type { IpcDeps } from "../types.js";
 import { WORK_APPROVALS } from "../../shared/ipc-channels.js";
 import { hasOnlyKeys } from "../../shared/is-record.js";
-import { maskSensitiveData } from "../../shared/dlp.js";
+import { maskWorkflowText } from "../../work-board/workflow/run-read-projection.js";
 import { listAuthorizedWorkspaceProjects, resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
 import { isDecidablePlan, isReplanningPlan } from "../../main/work-board-store.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
@@ -42,7 +42,7 @@ function parseListRequest(raw: unknown): ListRequest {
 
 // Titles and summaries are model- or plugin-written text; mask secrets and PII before they reach a renderer, as tool results are.
 function masked(text: string): string {
-  return maskSensitiveData(text).masked;
+  return maskWorkflowText(text);
 }
 
 function proposalView(proposal: WorkProposal): WorkProposalApprovalView {
@@ -183,32 +183,32 @@ export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
       ...routinesStore.listInvalid().map(invalidRoutineView),
     ];
 
-    const board = await workBoardStore.list();
-    if (board.status !== "ok") return { ok: false, error: "work-approvals-source-unavailable", source: "plan" };
-    const planViews = board.items.map((item) => planView(item, projects)).filter((view): view is WorkPlanApprovalView => view !== null);
-
-    const visible = board.items.filter(item => item.templateId !== undefined && planScope(item, projects) !== null);
-    if (visible.some(item => item.runId !== undefined) && !workBoardEngine) {
+    const board = await workBoardStore.readApprovalItems();
+    if (board === undefined) return { ok: false, error: "work-approvals-source-unavailable", source: "plan" };
+    const scopedRows = board.filter(item => {
+      const scope = planScope(item, projects);
+      return scope !== null && (homeRoot === null || scope.type !== "project" || projectRootEquals(scope.projectRoot, homeRoot));
+    });
+    const planViews = scopedRows.map((item) => planView(item, projects)).filter((view): view is WorkPlanApprovalView => view !== null);
+    const workflowRows = scopedRows.filter(item => item.templateId !== undefined);
+    if (workflowRows.some(item => item.runId !== undefined) && !workBoardEngine) {
       return { ok: false, error: "work-approvals-source-unavailable", source: "stage-gate" };
     }
-    const workflowItems = workBoardEngine && visible.length ? await workBoardEngine.projectTemplateRuns(visible) : [];
+    const workflowItems = workBoardEngine && workflowRows.length ? await workBoardEngine.readTemplateRuns(workflowRows) : [];
     const workflowViews = workflowItems.flatMap((item): WorkflowApprovalView[] => {
       const scope = planScope(item, projects);
       if (scope === null) return [];
       return (item.pendingWorkflowDecisions ?? []).map(decision => ({
         ...decision, scope, itemId: item.id, title: masked(item.title),
         key: decision.kind === "stage-gate"
-          ? `stage:${item.id}:${decision.binding.runId}:${decision.binding.stageId}:${decision.binding.attempt}`
-          : `join:${item.id}:${decision.binding.runId}:${decision.binding.joinId}`,
+          ? `stage:${item.id}:${decision.binding.runId}:${decision.binding.stageId}:${decision.binding.attempt}:${decision.binding.resultHash}:${decision.binding.outputHash ?? ""}`
+          : `join:${item.id}:${decision.binding.runId}:${decision.binding.joinId}:${decision.generation}:${decision.binding.conflictHash}`,
       }));
     });
 
-    // Proposals (unscoped), routines (global) and plans with no project belong to every project's list; a project's plans only to its own.
-    const everything: WorkApprovalView[] = [...planViews, ...workflowViews, ...proposalViews, ...routineViews];
-    const items = homeRoot === null
-      ? everything
-      : everything.filter((view) => view.scope.type !== "project" || projectRootEquals(view.scope.projectRoot, homeRoot));
-    const total = everything.filter(isCounted).length;
+    // Shared decisions belong to every project's list.
+    const items: WorkApprovalView[] = [...planViews, ...workflowViews, ...proposalViews, ...routineViews];
+    const total = items.filter(isCounted).length;
     return { ok: true, items, total, projects };
   });
 }

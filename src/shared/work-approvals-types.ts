@@ -100,7 +100,7 @@ export type WorkApprovalListResult =
       ok: true;
       /** The requested project's decisions plus the unscoped and global ones, or every authorized project's in all-projects mode. */
       items: WorkApprovalView[];
-      /** Every decision waiting for the user across all authorized projects, each counted once; the title-bar badge. */
+      /** Waiting decisions in this request. The title-bar badge uses the all-projects request. */
       total: number;
       /** The authorized projects, default first. */
       projects: WorkApprovalProject[];

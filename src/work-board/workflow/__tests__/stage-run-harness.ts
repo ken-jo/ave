@@ -92,6 +92,7 @@ export async function stageRunHarness(opts: {
   /** Track detached work for each engine. */
   observeRunWork?: boolean;
   onRunWorkScheduled?: () => void;
+  onProgress?: import("../../../core/work-board-engine.js").WorkBoardEngineDeps["emitProgress"];
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ave-stage-run-"));
   const suppliedRunner = opts.runner?.(dir);
@@ -274,6 +275,7 @@ export async function stageRunHarness(opts: {
     },
     seal: async (_run, stageId) => { recordCall(`seal:${stageId}`); return { ok: true }; },
     integrate: async (_run, joinId) => { recordCall(`integrate:${joinId}`); return opts.integrate?.() ?? { ok: true }; },
+    openJoinFolder: async () => false,
     release: async () => undefined,
     discard: async () => [],
     sweep: async (active, projects) => {
@@ -312,7 +314,8 @@ export async function stageRunHarness(opts: {
     const current = createWorkBoardEngine({
       store,
       getRunner: () => suppliedRunner ?? engineRunner,
-      emitProgress: event => {
+      emitProgress: (event, project) => {
+        opts.onProgress?.(event, project);
         const { itemId, phase, stageId, attempt } = event;
         if (engine === wrapped) {
           if (phase === "stage_failed") {

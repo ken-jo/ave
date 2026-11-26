@@ -1,3 +1,5 @@
+import { workBoardDecisionProps } from "../../../../shared/work-board-decision-intent.js";
+import { WORK_BOARD } from "../../../../shared/ipc-channels.js";
 import { useId, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { Label } from "../../../../components/ui/label.js";
@@ -12,14 +14,14 @@ import { stageDisplayName } from "./workflow-template-graph.js";
 export function workflowDecisionKey(review: PendingWorkflowDecision): string {
   return review.kind === "stage-gate"
     ? `${review.binding.runId}:${review.binding.stageId}:${review.binding.attempt}:${review.binding.resultHash}:${review.binding.outputHash ?? ""}`
-    : `${review.binding.runId}:${review.binding.joinId}:${review.binding.conflictHash}`;
+    : `${review.binding.runId}:${review.binding.joinId}:${review.generation}:${review.binding.conflictHash}`;
 }
 
 export function WorkflowDecisionCard({ review, itemId, stageName, api, onChanged }: {
   review: PendingWorkflowDecision;
   itemId: number;
   stageName?: string;
-  api: Pick<AveApi, "decideWorkStage" | "decideWorkJoin">;
+  api: Pick<AveApi, "decideWorkStage" | "decideWorkJoin" | "openWorkBoardJoin">;
   onChanged: () => void;
 }) {
   const { t } = useTranslation();
@@ -30,6 +32,22 @@ export function WorkflowDecisionCard({ review, itemId, stageName, api, onChanged
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string>();
   const disabled = busy || submitted;
+  const decisionProps = (decision: WorkPlanDecision | StageJoinDecideInput["decision"]) =>
+    workBoardDecisionProps(review.kind === "stage-gate" ? WORK_BOARD.decideStage : WORK_BOARD.decideJoin, itemId, { ...review.binding, decision });
+
+  async function handleOpenJoin() {
+    if (review.kind !== "join-conflict" || disabled) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const result = await api.openWorkBoardJoin(itemId, review.binding);
+      if (!result.ok) setError("workflowTemplates.openJoinFailed");
+    } catch {
+      setError("workflowTemplates.openJoinFailed");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submit(decision: WorkPlanDecision | StageJoinDecideInput["decision"]) {
     if (disabled) return;
@@ -56,7 +74,7 @@ export function WorkflowDecisionCard({ review, itemId, stageName, api, onChanged
   }
 
   return (
-    <section aria-labelledby={headingId} className="min-w-0 space-y-2 rounded-md border bg-card p-3 text-sm">
+    <section aria-labelledby={headingId} data-workflow-decision-key={workflowDecisionKey(review)} className="min-w-0 space-y-2 rounded-md border bg-card p-3 text-sm">
       <h3 className="font-semibold" id={headingId}>{t(review.kind === "stage-gate" ? "workflowTemplates.stageGate" : "workflowTemplates.joinConflict")}</h3>
       {review.kind === "stage-gate" ? <>
         <p>{stageDisplayName(stageName ?? review.binding.stageId)} · {t("workflowTemplates.attempt", { attempt: review.binding.attempt })}</p>
@@ -69,12 +87,12 @@ export function WorkflowDecisionCard({ review, itemId, stageName, api, onChanged
           <Textarea autoFocus maxLength={MAX_PLAN_NOTE_LENGTH} value={note} onChange={event => setNote(event.target.value)} disabled={disabled} />
         </Label>}
         <div className="flex flex-wrap gap-2">
-          <Button type="button" size="sm" onClick={() => void submit("approve")} disabled={disabled}>{t("workflowTemplates.approveStage")}</Button>
-          <Button type="button" size="sm" variant="outline" onClick={() => {
+          <Button type="button" size="sm" {...decisionProps("approve")} onClick={() => void submit("approve")} disabled={disabled}>{t("workflowTemplates.approveStage")}</Button>
+          <Button type="button" size="sm" variant="outline" {...(writingNote && decisionProps("request_changes"))} onClick={() => {
             if (writingNote) void submit("request_changes");
             else setWritingNote(true);
           }} disabled={disabled || (writingNote && !note.trim())}>{t("workflowTemplates.requestChanges")}</Button>
-          <Button type="button" size="sm" variant="outline" onClick={() => void submit("reject")} disabled={disabled}>{t("workflowTemplates.rejectStage")}</Button>
+          <Button type="button" size="sm" variant="outline" {...decisionProps("reject")} onClick={() => void submit("reject")} disabled={disabled}>{t("workflowTemplates.rejectStage")}</Button>
         </div>
       </> : <>
         <p>{t(`workflowTemplates.joinReason.${review.evidence.reason}`)}</p>
@@ -83,8 +101,11 @@ export function WorkflowDecisionCard({ review, itemId, stageName, api, onChanged
         </ul>}
         {review.evidence.excerpt && <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{revealHiddenCharacters(review.evidence.excerpt, { lineBreaks: false })}</pre>}
         <div className="flex flex-wrap gap-2">
-          <Button type="button" size="sm" onClick={() => void submit("retry_merge")} disabled={disabled}>{t("workflowTemplates.retryJoin")}</Button>
-          <Button type="button" size="sm" variant="outline" onClick={() => void submit("reject")} disabled={disabled}>{t("workflowTemplates.rejectJoin")}</Button>
+          {review.canOpenFolder && <Button type="button" size="sm" variant="outline" disabled={disabled}
+            {...workBoardDecisionProps(WORK_BOARD.openJoin, itemId, review.binding)}
+            onClick={() => void handleOpenJoin()}>{t("workflowTemplates.openJoinFolder")}</Button>}
+          <Button type="button" size="sm" {...decisionProps("retry_merge")} onClick={() => void submit("retry_merge")} disabled={disabled}>{t("workflowTemplates.retryJoin")}</Button>
+          <Button type="button" size="sm" variant="outline" {...decisionProps("reject")} onClick={() => void submit("reject")} disabled={disabled}>{t("workflowTemplates.rejectJoin")}</Button>
         </div>
       </>}
       {error && <p role="alert" className="text-destructive">{t(error)}</p>}

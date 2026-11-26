@@ -231,6 +231,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["work-board", WORK_BOARD.decidePlan, [{}]],
   ["work-board", WORK_BOARD.decideStage, [{}]],
   ["work-board", WORK_BOARD.decideJoin, [{}]],
+  ["work-board", WORK_BOARD.openJoin, [{}]],
   ["work-board", WORK_BOARD.retryStage, [{}]],
   // Work-level decisions (확인 필요): proposals and routine attention.
   ["work-approvals", WORK_APPROVALS.list, [{}]],

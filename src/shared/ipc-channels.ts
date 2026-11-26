@@ -62,6 +62,7 @@ export const WORK_BOARD = {
   templatesChanged: "ave:work-board:templates-changed",
   list: "ave:work-board:list",
   get: "ave:work-board:get",
+  setProjectScope: "ave:work-board:set-project-scope",
   add: "ave:work-board:add",
   update: "ave:work-board:update",
   transition: "ave:work-board:transition",
@@ -95,6 +96,8 @@ export const WORK_BOARD = {
   // work-approval boundary as decide-plan; CHANNEL_GESTURE "required".
   decideStage: "ave:work-board:decide-stage",
   decideJoin: "ave:work-board:decide-join",
+  openJoin: "ave:work-board:open-join",
+  captureDecisionIntent: "ave:work-board:capture-decision-intent",
   retryStage: "ave:work-board:retry-stage",
   // Renderer → main: the user's work approval of a stored plan (approve / request changes / reject). Internal, sender-validated,
   // board-owner frame, CHANNEL_GESTURE "required"; bound to the run id and the hash of the stored plan (permission-decision-tree.md

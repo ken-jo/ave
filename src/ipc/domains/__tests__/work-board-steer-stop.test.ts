@@ -1,3 +1,4 @@
+import { captureWorkBoardTestGesture, workBoardTestSender } from "../../../__tests__/support/work-board-ipc.js";
 // Steer and stop are local-user controls (permission-decision-tree.md S→T): sender-validated, board-owner frame, and a consumed keyboard
 // gesture. A call without the gesture is refused, never downgraded to another principal the way a chat guide without one is.
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -36,6 +37,8 @@ vi.mock("../../gated.js", () => ({
 const GESTURE = { inputOrigin: "user-keyboard", userActivation: true } as const;
 
 const handler = registeredIpcHandlers(ipc.handlers);
+const decidePlanAsUser = async (event: { sender: ReturnType<typeof workBoardTestSender> }, id: number, input: unknown) =>
+  handler(WORK_BOARD.decidePlan)(event, id, input, await captureWorkBoardTestGesture(handler, event, WORK_BOARD.decidePlan, id, input));
 
 function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: false }) {
   const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" } };
@@ -154,10 +157,10 @@ function setupDecide(opts: { privacy?: { piiRedactEnabled: boolean }; continuati
   const sent: Array<[string, unknown]> = [];
   const sends = new Set<() => void>();
   const onSend = (wake: () => void) => { sends.add(wake); return () => { sends.delete(wake); }; };
-  const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" }, send: (channel: string, payload: unknown) => {
+  const owner = Object.assign(workBoardTestSender(), { send: vi.fn((channel: string, payload: unknown) => {
     sent.push([channel, payload]);
     for (const wake of sends) wake();
-  } };
+  }) });
   const window = { isDestroyed: () => false, webContents: owner };
   const decidePlan = vi.fn(async (_id: number, input: { decision: string }) => ({
     result: { ok: true as const, status: input.decision === "approve" ? "approved" : input.decision === "reject" ? "rejected" : "changes_requested" },
@@ -183,7 +186,7 @@ function setupDecide(opts: { privacy?: { piiRedactEnabled: boolean }; continuati
 describe("work-board decide-plan IPC", () => {
   it("forwards the decision with the deciding window as the surface and audits it without the note", async () => {
     const { event, decidePlan, log, owner } = setupDecide();
-    await expect(handler(WORK_BOARD.decidePlan)(event, 7, { ...INPUT, note: "PRIVATE-NOTE" }, GESTURE)).resolves.toEqual({ ok: true, status: "approved" });
+    await expect(decidePlanAsUser(event, 7, { ...INPUT, note: "PRIVATE-NOTE" })).resolves.toEqual({ ok: true, status: "approved" });
     expect(decidePlan).toHaveBeenCalledWith(7, { runId: "run-1", planHash: HASH, decision: "approve", note: "PRIVATE-NOTE" }, { approvalSurface: owner });
     expect(log).toHaveBeenCalledTimes(1);
     const record = log.mock.calls[0]![0] as { sessionId: string; type: string; output: string };
@@ -196,7 +199,7 @@ describe("work-board decide-plan IPC", () => {
     let settle!: (value: unknown) => void;
     const continuation = new Promise((r) => { settle = r; });
     const { event, sent, onSend } = setupDecide({ continuation });
-    await handler(WORK_BOARD.decidePlan)(event, 7, INPUT, GESTURE);
+    await decidePlanAsUser(event, 7, INPUT);
     expect(sent.find(([channel]) => channel === WORK_BOARD.runStarted)?.[1]).toMatchObject({ itemId: 7, resumed: true });
     expect(sent.some(([channel]) => channel === WORK_BOARD.runFinished)).toBe(false);
     settle({ status: "completed" });
@@ -233,21 +236,21 @@ describe("work-board decide-plan IPC", () => {
     ["no payload", undefined],
   ])("refuses %s as invalid input", async (_label, input) => {
     const { event, decidePlan } = setupDecide();
-    await expect(handler(WORK_BOARD.decidePlan)(event, 7, input, GESTURE)).resolves.toEqual({ ok: false, reason: "invalid-input" });
+    await expect(decidePlanAsUser(event, 7, input)).resolves.toEqual({ ok: false, reason: "invalid-input" });
     expect(decidePlan).not.toHaveBeenCalled();
   });
 
   it("refuses an unknown item and an oversized note before the engine", async () => {
     const { event, decidePlan } = setupDecide();
-    await expect(handler(WORK_BOARD.decidePlan)(event, 8, INPUT, GESTURE)).resolves.toEqual({ ok: false, reason: "not_found" });
-    await expect(handler(WORK_BOARD.decidePlan)(event, 7, { ...INPUT, note: "x".repeat(MAX_PLAN_NOTE_LENGTH + 1) }, GESTURE))
+    await expect(decidePlanAsUser(event, 8, INPUT)).resolves.toEqual({ ok: false, reason: "not_found" });
+    await expect(decidePlanAsUser(event, 7, { ...INPUT, note: "x".repeat(MAX_PLAN_NOTE_LENGTH + 1) }))
       .resolves.toEqual({ ok: false, reason: "note_too_long" });
     expect(decidePlan).not.toHaveBeenCalled();
   });
 
   it("redacts PII from the note before the engine sees it and reports the count", async () => {
     const { event, decidePlan } = setupDecide({ privacy: { piiRedactEnabled: true } });
-    const result = await handler(WORK_BOARD.decidePlan)(event, 7, { ...INPUT, decision: "request_changes", note: "mail me at someone@example.com" }, GESTURE);
+    const result = await decidePlanAsUser(event, 7, { ...INPUT, decision: "request_changes", note: "mail me at someone@example.com" });
     expect(result).toMatchObject({ ok: true, redactedCount: 1 });
     const sentNote = (decidePlan.mock.calls[0]![1] as unknown as { note: string }).note;
     expect(sentNote).not.toContain("someone@example.com");

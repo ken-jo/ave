@@ -95,10 +95,10 @@ describe("preload contextBridge world shape lock", () => {
     expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.get, 8, runId);
     mockUserActivation.isActive = true;
     await api.decideWorkStage(8, stage);
-    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.decideStage, 8, stage, { inputOrigin: "user-keyboard", userActivation: true });
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.decideStage, 8, stage);
     mockUserActivation.isActive = false;
     await api.decideWorkJoin(8, join);
-    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.decideJoin, 8, join, { inputOrigin: "user-keyboard", userActivation: false });
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.decideJoin, 8, join);
     const receive = vi.fn();
     const unsubscribe = api.onWorkBoardRunProgress(receive);
     const [, listener] = mockOn.mock.calls.at(-1) ?? [];
@@ -657,6 +657,7 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "openExternalUrl": "function",
           "openSettingsFile": "function",
+          "openWorkBoardJoin": "function",
           "pauseRoutine": "function",
           "pauseSessionGoal": "function",
           "pickSettingsDirectory": "function",
@@ -706,6 +707,7 @@ describe("preload contextBridge world shape lock", () => {
           "setPluginContributionTrust": "function",
           "setPluginEnabled": "function",
           "setWebApiKey": "function",
+          "setWorkBoardProjectScope": "function",
           "sideChat": [
             "abort",
             "controlShellTask",

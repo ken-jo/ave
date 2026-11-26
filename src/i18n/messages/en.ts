@@ -6779,6 +6779,8 @@ export const en = {
   "workflowTemplates.rejectStage": "Reject stage",
   "workflowTemplates.changeNote": "Changes needed",
   "workflowTemplates.requestChanges": "Request changes",
+  "workflowTemplates.openJoinFolder": "Open join folder",
+  "workflowTemplates.openJoinFailed": "The join folder could not be opened.",
   "workflowTemplates.retryJoin": "Retry merge",
   "workflowTemplates.rejectJoin": "Reject merge",
   "workflowTemplates.decisionFailed": "The host refused this decision.",

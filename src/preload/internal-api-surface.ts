@@ -1,3 +1,4 @@
+import type { OpenJoinIpcResult } from "../shared/work-board-types.js";
 import { memoryMapApiSurface } from './memory-map-api-surface.js';
 import type { ScheduleAttachmentInput, ScheduleAttachment, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../shared/workflow-template-types.js";
 import type { MemoryDetailResult, MemorySummariesResult } from "../shared/memory-detail.js";
@@ -8,6 +9,7 @@ import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../share
 // The internal renderer API is intentionally assembled in one typed surface.
 import { ipcRenderer } from "electron";
 import { appearanceApiSurface } from "./appearance-api-surface.js";
+import { invokeWorkBoardDecision } from "./work-board-decision-intent.js";
 import { consumeUserKeyboardIntent } from "./gesture-intent.js";
 import type { UserKeyboardIntentSnapshot } from "../shared/chat-origin.js";
 import type { SideChatOperationFailure } from "../shared/side-chat-operation.js";
@@ -1094,27 +1096,26 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkBoardSteerIpcResult
       | { ok: false; error: string }
     >,
-  // The user's work approval of the item's stored plan; the click's own activation is the gesture. The input names the run and the plan
-  // hash the card showed, never the plan text.
+  // Decision bindings come from the displayed work object and its trusted control.
   decideWorkPlan: async (itemId: number, input: import("../shared/work-board-types.js").WorkPlanDecideInput) =>
-    ipcRenderer.invoke(WORK_BOARD.decidePlan, itemId, input, ipcUserKeyboardIntent()) as Promise<
+    invokeWorkBoardDecision(WORK_BOARD.decidePlan, itemId, input) as Promise<
       | import("../shared/work-board-types.js").WorkPlanDecideIpcResult
       | { ok: false; error: string }
     >,
   // The user's decision at a stage gate or on a join of a template run, and a retry of a failed stage: the click's own activation is the
   // gesture. Each input names the run and the hash the card showed, never the output.
   decideWorkStage: async (itemId: number, input: import("../shared/work-board-types.js").StageGateDecideInput) =>
-    ipcRenderer.invoke(WORK_BOARD.decideStage, itemId, input, ipcUserKeyboardIntent()) as Promise<
+    invokeWorkBoardDecision(WORK_BOARD.decideStage, itemId, input) as Promise<
       | import("../shared/work-board-types.js").StageGateDecideIpcResult
       | { ok: false; error: string }
     >,
   decideWorkJoin: async (itemId: number, input: import("../shared/work-board-types.js").StageJoinDecideInput) =>
-    ipcRenderer.invoke(WORK_BOARD.decideJoin, itemId, input, ipcUserKeyboardIntent()) as Promise<
+    invokeWorkBoardDecision(WORK_BOARD.decideJoin, itemId, input) as Promise<
       | import("../shared/work-board-types.js").StageJoinDecideIpcResult
       | { ok: false; error: string }
     >,
   retryWorkStage: async (itemId: number, input: import("../shared/work-board-types.js").StageRetryInput) =>
-    ipcRenderer.invoke(WORK_BOARD.retryStage, itemId, input, ipcUserKeyboardIntent()) as Promise<
+    invokeWorkBoardDecision(WORK_BOARD.retryStage, itemId, input) as Promise<
       | import("../shared/work-board-types.js").StageRetryIpcResult
       | { ok: false; error: string }
     >,
@@ -1124,8 +1125,11 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkBoardCancelIpcResult
       | { ok: false; error: string }
     >,
-  // Work-level decisions ("확인 필요") for one project or every authorized project, plus the all-project badge total; tool-execution
-  // approvals stay in the chat ApprovalDock.
+  openWorkBoardJoin: async (itemId: number, input: Omit<import("../shared/work-board-types.js").StageJoinDecideInput, "decision">) =>
+    invokeWorkBoardDecision(WORK_BOARD.openJoin, itemId, input) as Promise<OpenJoinIpcResult | { ok: false; error: string }>,
+  setWorkBoardProjectScope: async (root: string | undefined) =>
+    ipcRenderer.invoke(WORK_BOARD.setProjectScope, root) as Promise<boolean>,
+  // Work-level decisions ("확인 필요") for one project or every authorized project.
   listWorkApprovals: async (opts?: { projectRoot?: string } | { allProjects: true }) =>
     ipcRenderer.invoke(WORK_APPROVALS.list, opts) as Promise<
       | import("../shared/work-approvals-types.js").WorkApprovalListResult

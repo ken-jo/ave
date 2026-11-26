@@ -30,6 +30,7 @@ import type {
   StageGateDecideResult,
   StageJoinDecideInput,
   StageJoinDecideResult,
+  OpenJoinResult,
   StageRetryInput,
   StageRetryResult,
   WorkItemUpdateResult,
@@ -121,7 +122,7 @@ export interface WorkBoardEngineDeps {
   getRunner: () => SubAgentRunner | undefined;
   /** A named profile's model applies to both child phases. */
   getAgentProfile?: (name: string) => Promise<LoadedAgentProfile | null>;
-  emitProgress: (event: WorkBoardRunEvent) => void;
+  emitProgress: (event: WorkBoardRunEvent, project?: { projectRoot?: string }) => void;
   /** Optional transcript storage retains context across restarts and reruns; absence skips persistence. */
   transcriptStorage?: TranscriptStorage;
   /** Invoke learning only after successful persistence; hook failures must not fail a completed run. */
@@ -196,6 +197,7 @@ export interface WorkBoardEngine {
    * continuing a run that a restart left with only ready stages. Each is refused and changes nothing unless it matches the stored run. */
   decideStageGate(itemId: number, input: StageGateDecideInput, opts?: DecidePlanOptions): Promise<StageGateDecideResult>;
   decideStageJoin(itemId: number, input: StageJoinDecideInput, opts?: DecidePlanOptions): Promise<StageJoinDecideResult>;
+  openStageJoin(itemId: number, input: Omit<StageJoinDecideInput, "decision">, open: (path: string) => Promise<boolean>): Promise<OpenJoinResult>;
   retryStage(itemId: number, input: StageRetryInput, opts?: DecidePlanOptions): Promise<StageRetryResult>;
   continueRun(itemId: number, input: { runId: string }, opts?: DecidePlanOptions): Promise<StageRetryResult>;
   /** Called beside the workspace revocation fan-out: stops every live stage child of template runs on that project. */
@@ -203,6 +205,7 @@ export interface WorkBoardEngine {
   /** Boot, after the store reconciled: show rows as the run file says and take over unsettled template runs. Spawns nothing. */
   adoptParkedTemplateRuns(): Promise<void>;
   /** Adds what a board reader is told about each row's template run; drops whatever a row says about it itself. */
+  readTemplateRuns<T extends WorkItemResolved>(items: readonly T[]): Promise<T[]>;
   projectTemplateRuns<T extends WorkItemResolved>(items: readonly T[], detail?: { runId?: string }): Promise<T[]>;
   /** The user's clear of a row shown `template-run-not-found`, while it is as its card showed it: the row ends error. Starts and stops
    * nothing. */
@@ -476,8 +479,8 @@ export function createWorkBoardEngine(
   /** Allow one survey per window so duplicate clicks cannot incur duplicate child runs. */
   const briefingInFlight = new Set<WorkBoardBriefingKind>();
 
-  const emit = (event: Omit<WorkBoardRunEvent, "at">): void => {
-    emitProgress({ ...event, at: new Date().toISOString() });
+  const emit = (event: Omit<WorkBoardRunEvent, "at">, project?: { projectRoot?: string }): void => {
+    emitProgress({ ...event, at: new Date().toISOString() }, project);
   };
 
   const stageRuns = deps.workflow
@@ -1061,10 +1064,12 @@ export function createWorkBoardEngine(
     cancelRun,
     decideStageGate: async (itemId, input, opts) => { await recover(); return stageRuns?.decideGate(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" }; },
     decideStageJoin: async (itemId, input, opts) => { await recover(); return stageRuns?.decideJoin(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" }; },
+    openStageJoin: async (itemId, input, open) => stageRuns?.openJoin(itemId, input, open) ?? { ok: false, reason: "not_found" },
     retryStage: async (itemId, input, opts) => { await recover(); return stageRuns?.retryStage(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" }; },
     continueRun: async (itemId, input, opts) => { await recover(); return stageRuns?.continueRun(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" }; },
     projectRootRevoked: (canonicalRoot) => stageRuns?.projectRootRevoked(canonicalRoot),
     adoptParkedTemplateRuns: async () => { await recover(); await stageRuns?.adoptParkedRuns(); },
+    readTemplateRuns: async (items) => stageRuns ? stageRuns.readRuns(items) : items.map(withoutWorkflowProjection),
     projectTemplateRuns: async (items, detail) => {
       await recover();
       return stageRuns ? stageRuns.projectRuns(items, detail) : items.map(withoutWorkflowProjection);

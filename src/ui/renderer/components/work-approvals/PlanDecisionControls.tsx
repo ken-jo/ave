@@ -1,3 +1,5 @@
+import { workBoardDecisionProps } from "../../../../shared/work-board-decision-intent.js";
+import { WORK_BOARD } from "../../../../shared/ipc-channels.js";
 // The work approval of a stored plan (permission-decision-tree.md "Work approvals"): approve and run, send back with a note, or reject.
 // It is the user's own decision on the item, not a tool-approval card, so it waits without a timeout and survives a restart. The buttons
 // send the run id and the stored plan hash, never the plan text. Used by the 확인 필요 plan card and by the work item's detail.
@@ -244,7 +246,7 @@ export function PlanDecisionControls({ api, itemId, runId, planHash, stale, onDe
         <span className="shrink-0 tabular-nums" data-testid={`${p}-note-count`}>{note.length} / {MAX_PLAN_NOTE_LENGTH}</span>
       </div>
       <div className="flex flex-wrap justify-end gap-1.5">
-        <Button variant="outline" size="sm" disabled={busy} onClick={() => void decide("reject")} data-testid={`${p}-reject`}>
+        <Button variant="outline" size="sm" disabled={busy} {...workBoardDecisionProps(WORK_BOARD.decidePlan, itemId, { runId, planHash, decision: "reject" })} onClick={() => void decide("reject")} data-testid={`${p}-reject`}>
           {spinner("reject")}
           {label("reject", t("workBoard.planDecisionReject"))}
         </Button>
@@ -253,6 +255,7 @@ export function PlanDecisionControls({ api, itemId, runId, planHash, stale, onDe
           size="sm"
           disabled={busy}
           autoFocus={stale}
+          {...workBoardDecisionProps(WORK_BOARD.decidePlan, itemId, { runId, planHash, decision: "request_changes" })}
           onClick={() => void decide("request_changes")}
           data-testid={`${p}-request-changes`}
         >
@@ -267,6 +270,7 @@ export function PlanDecisionControls({ api, itemId, runId, planHash, stale, onDe
           aria-disabled={stale ? true : undefined}
           className={stale ? "opacity-(--opacity-disabled) cursor-not-allowed" : undefined}
           title={stale ? t("workBoard.planDecisionStale") : undefined}
+          {...workBoardDecisionProps(WORK_BOARD.decidePlan, itemId, { runId, planHash, decision: "approve" })}
           onClick={() => void decide("approve")}
           data-testid={`${p}-approve`}
         >

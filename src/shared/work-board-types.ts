@@ -476,6 +476,8 @@ export interface StageJoinDecideInput { runId: string; joinId: string; conflictH
  * yet. Both are shown by their reasonCodes text. */
 type StageRunRefusal = "not_found" | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "not_pending" | "version_missing" | "graph_mismatch";
 export type StageJoinDecideResult = { ok: true } | { ok: false; reason: StageRunRefusal | "conflict_mismatch" };
+export type OpenJoinResult = StageJoinDecideResult | { ok: false; reason: "join-folder-unavailable" };
+export type OpenJoinIpcResult = OpenJoinResult | { ok: false; reason: "user-gesture-required" | "invalid-input" | StageStoreRefusal };
 export type StageJoinDecideIpcResult = StageJoinDecideResult | { ok: false; reason: "user-gesture-required" | "invalid-input" | StageStoreRefusal };
 /** Retry of a failed stage, or continuing a run that has only ready stages after a restart. not_idle: a child of the run is still live. */
 export type StageRetryResult = { ok: true } | { ok: false; reason: StageRunRefusal | "attempts_exhausted" | "not_idle" };

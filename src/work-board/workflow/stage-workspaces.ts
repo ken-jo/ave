@@ -1009,6 +1009,21 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     });
   }
 
+  function openJoinFolder(run: RunRef, open: (path: string) => Promise<boolean>): Promise<boolean> {
+    return serial(run.runId, async () => {
+      try {
+        const at = locate(run);
+        if (!at?.live || at.file.kind !== "git" || at.file.joinDir === undefined) return false;
+        const folder = at.run.child(JOIN_DIR, at.file.joinDir);
+        if (!folder) return false;
+        folder.check();
+        return await open(folder.path);
+      } catch {
+        return false;
+      }
+    });
+  }
+
   /** The refs the run made go only while each is still at the commit it was made at: a branch a stage was collected onto is the run's
    * result and stays, and so does one git gave no answer for. */
   async function deleteRunRefs(at: Held): Promise<void> {
@@ -1280,5 +1295,5 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
   }
 
-  return { open, prepare, seal, integrate, release, discard, sweep };
+  return { open, prepare, seal, integrate, openJoinFolder, release, discard, sweep };
 }

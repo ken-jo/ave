@@ -26,6 +26,8 @@ export interface StageWorkspaceProvider {
   /** Install one immutable result per run/join from the stage seals; repetition returns that result without another merge.
    * A non-idempotent implementation must commit its receipt atomically with the integration. */
   integrate(run: RunRef, joinId: string, stageIds: readonly string[]): Promise<{ ok: true } | { ok: false; conflict: JoinConflict }>;
+  /** Open the checked, owned Git join folder while serialized with workspace mutations. */
+  openJoinFolder(run: RunRef, open: (path: string) => Promise<boolean>): Promise<boolean>;
   /** Stage folders only; the run branch and the output folder stay. Already absent folders are a no-op. A git run is released only
    * with its project open (`run.projectRoot`): without it nothing of the run is touched. */
   release(run: RunRef, stageIds: readonly string[] | "all"): Promise<void>;

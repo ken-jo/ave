@@ -972,6 +972,8 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   // A stage gate, a join decision and a stage retry of a template run are the same work approval.
   [WORK_BOARD.decideStage]: "required",
   [WORK_BOARD.decideJoin]: "required",
+  [WORK_BOARD.openJoin]: "required",
+  [WORK_BOARD.captureDecisionIntent]: "required",
   [WORK_BOARD.retryStage]: "required",
   [WORK_BOARD.templateConfirm]: "required",
   [WORK_BOARD.templateAttachSchedule]: "required",

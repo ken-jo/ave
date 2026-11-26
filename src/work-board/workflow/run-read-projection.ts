@@ -1,6 +1,7 @@
 import { outputHashOf, resultHashOf } from "../../shared/workflow-template-output.js";
 import type { WorkItemResolved } from "../../shared/work-board-types.js";
 import type { SerializedHistoryMessage } from "../../shared/chat-history.js";
+import { redactHomePathsInText } from "../../audit/dlp-filter.js";
 import { maskSensitiveData } from "../../shared/dlp.js";
 import type { ChatEntry, ToolEntryItem } from "../../lib/chat-stream-state.js";
 import type { TemplateVersion, WorkItemStageRun, WorkflowRunRecord } from "../../shared/workflow-template-types.js";
@@ -12,7 +13,7 @@ import { isAwaitingStageReview } from "./run-state.js";
 const TURN_TEXT_LIMIT = 4_000;
 const RECENT_TURN_LIMIT = 40;
 
-export const maskWorkflowText = (value: string): string => maskSensitiveData(value).masked;
+export const maskWorkflowText = (value: string): string => redactHomePathsInText(maskSensitiveData(value).masked);
 
 export function withoutWorkflowProjection<T extends WorkItemResolved>(item: T): T {
   const clean = { ...item };
@@ -46,6 +47,8 @@ export function pendingWorkflowDecisions(run: WorkflowRunRecord): PendingWorkflo
     pending.push({
       kind: "join-conflict",
       binding: { runId: run.runId, joinId: join.joinId, conflictHash },
+      generation: join.conflictGeneration ?? 0,
+      ...(run.runWorkspace?.kind === "git" && { canOpenFolder: true }),
       evidence: {
         reason, files: files.map(file => ({ path: maskWorkflowText(file.path), stageIds: [...file.stageIds] })),
         ...(excerpt !== undefined && { excerpt: maskWorkflowText(excerpt) }),

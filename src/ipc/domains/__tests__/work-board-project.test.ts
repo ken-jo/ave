@@ -1,3 +1,4 @@
+import { captureWorkBoardTestGesture, workBoardTestSender } from "../../../__tests__/support/work-board-ipc.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
@@ -328,7 +329,7 @@ describe("a copy of a work board file that cannot be made", () => {
       { runId: "run-a", itemId: 4, pin, runStartedBy: { kind: "local-create-and-run", pin }, startedAt: AT, stageRuns: [] },
       { runId: "run-1", itemId: 1, runStartedBy: { kind: "local-create-and-run" } }] }));
     const store = new WorkBoardStore(path);
-    const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" }, send: vi.fn() };
+    const owner = workBoardTestSender();
     const window = { isDestroyed: () => false, webContents: owner };
     const engine = createWorkBoardEngine({ store, getRunner: () => undefined, emitProgress: () => {} });
     // A missing run's clear is the template engine's pass-through to the store.
@@ -347,7 +348,9 @@ describe("a copy of a work board file that cannot be made", () => {
       throw Object.assign(new Error("EACCES: permission denied, open 'C:\\private'"), { code: "EACCES" });
     });
     try {
-      const answer = JSON.stringify(await registeredHandler(channel)({ sender: owner, senderFrame: owner.mainFrame }, ...args));
+      const event = { sender: owner, senderFrame: owner.mainFrame };
+      if (channel === WORK_BOARD.decidePlan) args[2] = await captureWorkBoardTestGesture(registeredHandler, event, channel, args[0], args[1]);
+      const answer = JSON.stringify(await registeredHandler(channel)(event, ...args));
       expect(answer).toContain("\"work-board-backup-failed\"");
       expect(answer).not.toMatch(/EACCES|private/);
       expect(copies.map(copy => copy.slice(root.length + 1).split(".").slice(0, 2).join("."))).toEqual([file]);

@@ -6781,6 +6781,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "workflowTemplates.rejectStage": "단계 거절",
   "workflowTemplates.changeNote": "필요한 변경 사항",
   "workflowTemplates.requestChanges": "변경 요청",
+  "workflowTemplates.openJoinFolder": "병합 폴더 열기",
+  "workflowTemplates.openJoinFailed": "병합 폴더를 열 수 없습니다.",
   "workflowTemplates.retryJoin": "병합 재시도",
   "workflowTemplates.rejectJoin": "병합 거절",
   "workflowTemplates.decisionFailed": "호스트가 이 결정을 거부했습니다.",

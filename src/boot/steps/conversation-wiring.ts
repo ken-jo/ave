@@ -35,6 +35,8 @@ import { workflowEngineExtensions } from "./workflow-engine-extensions.js";
 import { isAuthorizedWorkspaceProjectRoot, resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
 import { WORK_APPROVALS, WORK_BOARD } from "../../shared/ipc-channels.js";
 import type { WorkItemChangedEventPayload } from "../../shared/work-board-types.js";
+import { errorMessage } from "../../shared/error-message.js";
+import { deliverWorkBoardProgress } from "../../ipc/work-board-project-scope.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 import { emitEvent } from "../types.js";
 import { createLogger } from "../../lib/logger.js";
@@ -617,12 +619,13 @@ export async function wireConversation(
     store: workBoardStore,
     getRunner: () => subAgentRunnerRef.fn,
     getAgentProfile: (name) => agentProfileStore.load(name),
-    emitProgress: (event) => {
-      // Broadcast run progress to every open window so detached panels stay current.
-      fanOutToAllWindows(ctx.host.desktop?.getAppWindows() ?? [], WORK_BOARD.runProgress, event, {
-        logger: log,
-      },
-      );
+    emitProgress: (event, project) => {
+      const deliver = (root: string | undefined) =>
+        deliverWorkBoardProgress(ctx.host.desktop?.getAppWindows() ?? [], event, root, { logger: log });
+      if (project) deliver(project.projectRoot);
+      else void workBoardStore.get(event.itemId).then(result => {
+        if (result.status === "found") deliver(result.item.projectRoot);
+      }).catch((error: unknown) => log.warn("Work board progress scope could not be read: %s", errorMessage(error)));
     },
     // Append bounded project learnings best-effort; memory failures must not fail a run.
     onRunComplete: ({ itemId, title, projectRoot }) =>
