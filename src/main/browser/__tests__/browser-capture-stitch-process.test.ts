@@ -3,7 +3,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { crc32 } from "node:zlib";
+import { crc32, deflateSync, inflateSync } from "node:zlib";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildMainBoundaryBundle, repositoryRoot } from "../../../plugins/isolation/__tests__/child-entry-bundle.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
@@ -51,6 +51,7 @@ const WIDTH = 4;
 const VIEWPORT_HEIGHT = 4;
 const CONTENT_HEIGHT = 10;
 const PNG_HEADER_BYTES = 33;
+const PNG_IMAGE_DATA_OFFSET = PNG_HEADER_BYTES + 21;
 /** A reclaimed child frees its guest within this bound: the capture deadline is unchanged and release follows the confirmed exit. */
 const RECOVERY_BOUND_MS = 5_000;
 const STALLED_ENTRY = "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);\n";
@@ -122,7 +123,7 @@ function pngChunk(type: string, data: Buffer = Buffer.alloc(0)): Buffer {
 }
 
 function splitImageData(png: Buffer, separateWithDensity = false): Buffer {
-  const imageOffset = PNG_HEADER_BYTES + png.readUInt32BE(PNG_HEADER_BYTES) + 12;
+  const imageOffset = PNG_IMAGE_DATA_OFFSET;
   const dataEnd = imageOffset + 8 + png.readUInt32BE(imageOffset);
   const data = png.subarray(imageOffset + 8, dataEnd);
   const midpoint = Math.floor(data.length / 2);
@@ -134,6 +135,26 @@ function splitImageData(png: Buffer, separateWithDensity = false): Buffer {
     pngChunk("IDAT", data.subarray(midpoint)),
     png.subarray(dataEnd + 4),
   ]);
+}
+
+function withImageData(png: Buffer, alter: (data: Buffer) => Buffer): Buffer {
+  const dataStart = PNG_IMAGE_DATA_OFFSET + 8;
+  const dataEnd = dataStart + png.readUInt32BE(PNG_IMAGE_DATA_OFFSET);
+  return Buffer.concat([
+    png.subarray(0, PNG_IMAGE_DATA_OFFSET),
+    pngChunk("IDAT", alter(png.subarray(dataStart, dataEnd))),
+    png.subarray(dataEnd + 4),
+  ]);
+}
+
+function fixtureBytes(length: number): Buffer {
+  const bytes = Buffer.alloc(length);
+  let seed = 1;
+  for (let offset = 0; offset < length; offset += 1) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    bytes[offset] = seed >>> 24;
+  }
+  return bytes;
 }
 
 function encodeTestPng(): Promise<Buffer> {
@@ -267,6 +288,26 @@ describe("browser capture stitch process", () => {
     await expect.poll(getManagedChildProcessCount).toBe(0);
   });
 
+  it("accepts consecutive IDAT chunks from the production child", async () => {
+    runtime.mainDir = await builtEntryDir();
+    const width = 128;
+    const height = 128;
+    const pixels = fixtureBytes(width * height * 4);
+    const tilePng = await sharp(pixels, { raw: { width, height, channels: 4 } }).png().toBuffer();
+    const stitcher = startCaptureStitcher(width, height);
+    try {
+      await stitcher.decode(tilePng, { pixelWidth: width, pixelHeight: height, scale: 1, skip: 0, copied: 0, rows: height });
+      const png = await stitcher.encode();
+      expect(png.toString("latin1", PNG_HEADER_BYTES + 4, PNG_HEADER_BYTES + 8)).toBe("pHYs");
+      const secondChunk = PNG_IMAGE_DATA_OFFSET + png.readUInt32BE(PNG_IMAGE_DATA_OFFSET) + 12;
+      expect(png.toString("latin1", secondChunk + 4, secondChunk + 8)).toBe("IDAT");
+      expect((await sharp(png, { failOn: "warning" }).raw().toBuffer()).equals(pixels)).toBe(true);
+    } finally {
+      stitcher.stop();
+      await expect.poll(getManagedChildProcessCount).toBe(0);
+    }
+  });
+
   it("reports the decode error of a corrupt tile and admits the next capture", async () => {
     runtime.mainDir = await builtEntryDir();
     let corrupt = true;
@@ -366,8 +407,23 @@ describe("browser capture stitch process", () => {
       png.subarray(0, PNG_HEADER_BYTES), pngChunk("tEXt", Buffer.from("note\0example")), png.subarray(PNG_HEADER_BYTES),
     ])],
     ["unexpected density", (png) => Buffer.concat([
-      png.subarray(0, PNG_HEADER_BYTES), pngChunk("pHYs", Buffer.alloc(9)), png.subarray(PNG_HEADER_BYTES + 21),
+      png.subarray(0, PNG_HEADER_BYTES), pngChunk("pHYs", Buffer.alloc(9)), png.subarray(PNG_IMAGE_DATA_OFFSET),
     ])],
+    ["missing pHYs", (png) => Buffer.concat([
+      png.subarray(0, PNG_HEADER_BYTES), png.subarray(PNG_IMAGE_DATA_OFFSET),
+    ])],
+    ["corrupt zlib header", (png) => withImageData(png, (data) => { data[0] = 0; return data; })],
+    ["truncated zlib stream", (png) => withImageData(png, (data) => data.subarray(0, -1))],
+    ["bad zlib checksum", (png) => withImageData(png, (data) => { data[data.length - 1] ^= 1; return data; })],
+    ["short inflated length", (png) => withImageData(png, (data) => deflateSync(inflateSync(data).subarray(0, -1)))],
+    ["long inflated length", (png) => withImageData(png, (data) => deflateSync(Buffer.concat([inflateSync(data), Buffer.alloc(1)])))],
+    ["bad scanline filter", (png) => withImageData(png, (data) => {
+      const scanlines = inflateSync(data);
+      scanlines[(CONTENT_HEIGHT - 1) * (1 + WIDTH * 4)] = 5;
+      return deflateSync(scanlines);
+    })],
+    ["trailing zlib data", (png) => withImageData(png, (data) => Buffer.concat([data, Buffer.alloc(1)]))],
+    ["second zlib stream", (png) => withImageData(png, (data) => Buffer.concat([data, deflateSync(Buffer.alloc(0))]))],
   ])(
     "drains an invalid encode PNG with %s before readmitting the tab", async (_fault, alter) => {
       const healthyEntry = await builtEntryDir();
@@ -408,6 +464,31 @@ describe("browser capture stitch process", () => {
       await expect.poll(getManagedChildProcessCount).toBe(0);
     },
   );
+
+  it("rejects an encode PNG with an understated zlib window", async () => {
+    const stride = 1 + WIDTH * 4;
+    const block = fixtureBytes(30 * stride);
+    for (let offset = 0; offset < block.length; offset += stride) block[offset] = 0;
+    const scanlines = Buffer.concat([block, block, block]);
+    const height = scanlines.length / stride;
+    const pixels = Buffer.alloc(WIDTH * height * 4, 255);
+    const template = await sharp(pixels, { raw: { width: WIDTH, height, channels: 4 } }).png().toBuffer();
+    const compressed = deflateSync(scanlines);
+    // The repeated block uses a 510-byte back-reference. Keep FCHECK valid while declaring a 256-byte window.
+    compressed.set([0x08, 0x1d]);
+    const png = withImageData(template, () => compressed);
+    const child = mockStitchChild(42);
+    const onFault = vi.fn();
+    const stitcher = startCaptureStitcher(WIDTH, height, onFault);
+    const result = stitcher.encode().catch((error: unknown) => error);
+    try {
+      child.stdout?.emit("data", replyFrame({ id: 0 }, png));
+      expect(onFault).toHaveBeenCalledOnce();
+    } finally {
+      child.emit("close", 1, null);
+    }
+    await expect(result).resolves.toMatchObject({ code: "screenshot-failed" });
+  });
 
   it.each(["tile acknowledgement", "encode acknowledgement", "error reply"])(
     "retains ownership while settling a valid %s", async (kind) => {

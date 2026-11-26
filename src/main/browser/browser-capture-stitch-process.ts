@@ -2,7 +2,7 @@ import { statSync } from "node:fs";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import type { Writable } from "node:stream";
-import { crc32 } from "node:zlib";
+import { crc32, inflateSync } from "node:zlib";
 import { BROWSER_CAPTURE_LIMITS } from "../../shared/browser-capture.js";
 import { hasOnlyKeys, isRecord } from "../../shared/is-record.js";
 import { mainDir } from "../main-paths.js";
@@ -29,6 +29,25 @@ const PNG_IHDR_DATA_BYTES = 13;
 const PNG_HEADER_BYTES = PNG_SIGNATURE.length + PNG_CHUNK_OVERHEAD + PNG_IHDR_DATA_BYTES;
 const PNG_IHDR_FORMAT = Buffer.from([8, 6, 0, 0, 0]); // 8-bit RGBA, standard compression and filtering, no interlace.
 const PNG_DEFAULT_DENSITY = Buffer.from("000003e8000003e801", "hex"); // 1000 pixels per metre on each axis.
+const PNG_MAX_DEFLATE_WINDOW = 32 * 1024;
+
+function hasValidPngScanlines(compressed: Buffer, width: number, height: number): boolean {
+  const stride = 1 + width * 4;
+  const expectedLength = height * stride;
+  // The encoder only shrinks the window when the whole raster fits. Inflate may accept distances past the declared window.
+  const windowSize = 1 << (8 + (compressed[0] >>> 4));
+  if (windowSize < Math.min(expectedLength, PNG_MAX_DEFLATE_WINDOW)) return false;
+
+  // Default finish mode requires a complete stream. The declarations omit the engine returned with info.
+  const { buffer: scanlines, engine } = inflateSync(compressed, {
+    maxOutputLength: expectedLength, info: true,
+  }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
+  if (scanlines.length !== expectedLength || engine.bytesWritten !== compressed.length) return false;
+  for (let offset = 0; offset < scanlines.length; offset += stride) {
+    if (scanlines[offset] > 4) return false;
+  }
+  return true;
+}
 
 function isValidEncodedPng(png: Buffer, width: number, height: number): boolean {
   const firstChunk = PNG_SIGNATURE.length;
@@ -38,20 +57,24 @@ function isValidEncodedPng(png: Buffer, width: number, height: number): boolean 
     || png.readUInt32BE(16) !== width || png.readUInt32BE(20) !== height
     || !png.subarray(24, 29).equals(PNG_IHDR_FORMAT)) return false;
 
-  let hasImageData = false;
+  const compressed = Buffer.allocUnsafe(png.length);
+  let compressedLength = 0;
   for (let offset = firstChunk; offset + PNG_CHUNK_OVERHEAD <= png.length;) {
     const length = png.readUInt32BE(offset);
     const end = offset + PNG_CHUNK_OVERHEAD + length;
     const crcOffset = end - 4;
     if (end > png.length || crc32(png.subarray(offset + 4, crcOffset)) !== png.readUInt32BE(crcOffset)) return false;
     const type = png.toString("latin1", offset + 4, offset + 8);
-    if (offset !== firstChunk) {
+    if (offset === PNG_HEADER_BYTES) {
+      if (type !== "pHYs" || !png.subarray(offset + 8, crcOffset).equals(PNG_DEFAULT_DENSITY)) return false;
+    } else if (offset !== firstChunk) {
       if (type === "IDAT") {
         if (length === 0) return false;
-        hasImageData = true;
-      } else if (type === "IEND") return hasImageData && length === 0 && end === png.length;
-      else if (type !== "pHYs" || offset !== PNG_HEADER_BYTES
-        || !png.subarray(offset + 8, crcOffset).equals(PNG_DEFAULT_DENSITY)) return false;
+        compressedLength += png.copy(compressed, compressedLength, offset + 8, crcOffset);
+      } else {
+        return type === "IEND" && length === 0 && end === png.length && compressedLength > 0
+          && hasValidPngScanlines(compressed.subarray(0, compressedLength), width, height);
+      }
     }
     offset = end;
   }
