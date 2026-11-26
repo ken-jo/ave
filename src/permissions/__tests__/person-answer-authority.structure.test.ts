@@ -238,9 +238,7 @@ describe("authority from a person's answer", () => {
     expect(asked).toEqual(["tools/invocation-execution.ts#lateApprovalStands"]);
   });
 
-  // A remembered allow is a sink. The record handler only holds it, the gate writes it against the standing answer and spends that
-  // answer's rule-save use, and the owner alone asks the gate to. A card that names no rule-save use saves when asked: the named
-  // routes above and the cards asked straight on the gate.
+  // The gate writes a held allow against the standing answer and spends its rule-save use.
   it("writes a held allow only through the owner and the gate's proof spend", () => {
     const calls = (name: string) => nodesMentioning(name)
       .filter(({ node }) => ts.isCallExpression(node) &&
@@ -249,18 +247,26 @@ describe("authority from a person's answer", () => {
     expect(sites("commitStagedAllowSaves")).toEqual([`${OWNER}#saveStandingAnswerRule`]);
     expect(sites("deferAllowSaves")).toEqual([`${OWNER}#openPendingAnswerCard`]);
     expect(sites("stageAllowSave")).toEqual(["ipc/domains/permissions.ts#registerPermissionsHandlers", "ipc/domains/permissions.ts#registerPermissionsHandlers"]);
-    // The cards that name the rule-save use are the ones whose judging site writes the held allow: main, late, hook, surface fallback.
-    const judged = [
-      "hooks/hook-command-policy.ts#createHookCommandAuthorizer",
-      "tools/invocation-authorization.ts#authorizeToolInvocation",
-      "tools/invocation-execution.ts#requestLateApproval",
-      "tools/pipeline/user-owned-surface.ts#resolveUserOwnedSurfaceApproval",
-    ];
-    expect(sites("saveStandingAnswerRule")).toEqual(judged);
+    const cards = calls("openPendingAnswerCard");
+    const saves = calls("saveStandingAnswerRule");
+    const verdicts = calls("personAnswerStands");
+    expect(saves.map(({ where }) => where).sort()).toEqual(cards.map(({ where }) => where).sort());
+    for (const { node, where } of cards) {
+      expect(ts.isCallExpression(node)).toBe(true);
+      if (!ts.isCallExpression(node)) continue;
+      const binding = node.arguments[4]?.getText();
+      // Shared use lists still have to declare the sink at their definition.
+      const uses = binding?.match(/\buses: (\w+) \}$/)?.[1];
+      expect(uses
+        ? nodesMentioning(uses).find(({ node: declaration, where: scope }) => scope === where &&
+          ts.isVariableDeclaration(declaration) && declaration.name.getText() === uses)?.node.getText()
+        : binding, where).toContain('"rule-save"');
+      const verdict = verdicts.find(({ where: scope, node: call }) => scope === where && call.pos > node.pos);
+      expect(verdict, where).toBeDefined();
+      expect(saves.some(({ where: scope, node: call }) => scope === where && call.pos > (verdict?.node.pos ?? Infinity)), where).toBe(true);
+    }
     const spends = calls("spendStandingAnswer")
       .filter(({ node }) => (node as ts.CallExpression).arguments[1]?.getText() === '"rule-save"').map(({ where }) => where);
     expect(spends).toEqual(["permissions/approval-gate.ts#commitStagedAllowSaves"]);
-    const cards = calls("openPendingAnswerCard").filter(({ node }) => node.getText().includes('"rule-save"')).map(({ where }) => where).sort();
-    expect(cards).toEqual(judged);
   });
 });

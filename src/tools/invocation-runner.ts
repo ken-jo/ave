@@ -1,4 +1,4 @@
-import { openPendingAnswerCard, personAnswerStands, spendStandingAnswer, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
+import { openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, spendStandingAnswer, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { issueReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
@@ -1621,7 +1621,7 @@ async function runToolInvocationAttempt(
       const directoryRequestId = behavior?.requestId ?? randomUUID();
       const directoryAction = toolUseAction(toolUse.id);
       // The folder card's answer also stands for the call itself, so it names the call's kinds beside its own grant.
-      const directoryUses: readonly StandingAnswerUse[] = ["directory-grant", ...answerUses()];
+      const directoryUses: readonly StandingAnswerUse[] = ["directory-grant", "rule-save", ...answerUses()];
       const directoryCard = openPendingAnswerCard(manager, dirLayerResult, checkDirectoryPermission, "stale-refused",
         { gate: services.approvalGate ?? {}, requestId: directoryRequestId, action: directoryAction, uses: directoryUses });
 
@@ -1728,8 +1728,8 @@ async function runToolInvocationAttempt(
           isCurrent: () => (authority?.isCurrent() ?? true) && cwdCurrent(),
           refresh: async () => (await authority?.refresh()) ?? true,
         };
-        const denyCardGrant = () => denyDirectoryGrant(directorySignal, !cwdCurrent()
-          ? "The shell working directory changed or could not be verified. Request authorization again." : undefined);
+        const denyCardGrant = (reason?: string) => denyDirectoryGrant(directorySignal, reason ?? (!cwdCurrent()
+          ? "The shell working directory changed or could not be verified. Request authorization again." : undefined));
         const approvalRequest = {
           id: directoryRequestId,
           ...((dirLayerResult.forceModal === true)
@@ -1898,11 +1898,13 @@ async function runToolInvocationAttempt(
         });
         if ("denied" in surfaceResolution) return { allowed: false, result: surfaceResolution.denied };
         dirLayerResult = surfaceResolution.permission;
-        decision = surfaceResolution.decision;
-        if (decision.choice.startsWith("deny")) return finishDirectoryDenial(decision);
+        if (surfaceResolution.decision.choice.startsWith("deny")) return finishDirectoryDenial(surfaceResolution.decision);
         if (grantGuard && !grantGuard.isCurrent()) {
           return { allowed: false, result: await denyCardGrant() };
         }
+        const { refusal } = await saveStandingAnswerRule(directoryCard, decision);
+        if (refusal !== undefined) return { allowed: false, result: await denyCardGrant(refusal) };
+        decision = surfaceResolution.decision;
         // Every folder grant below is made on the card's standing answer, spent once.
         if (spendStandingAnswer(directoryAnswer, "directory-grant", directoryAction) === undefined) {
           return { allowed: false, result: await denyCardGrant() };

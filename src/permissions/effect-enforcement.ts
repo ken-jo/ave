@@ -1,4 +1,4 @@
-import { openPendingAnswerCard, personAnswerStands, spendStandingAnswer, type StandingAnswer } from "./pending-answer-policy.js";
+import { openPendingAnswerCard, personAnswerStands, saveStandingAnswerRule, spendStandingAnswer, type StandingAnswer } from "./pending-answer-policy.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf, type RemoteControllerAuthority } from "../shared/chat-origin.js";
 // Actual host effects enter the common permission pipeline before recording and execution.
 // Authorize before recording and execution; network audit also records denied attempts. Invalid input snapshots never reach implementation.
@@ -451,11 +451,8 @@ export async function gateMutatingEffect(params: {
   const reusableGrant = snapshot.reusable && !params.capabilityBound && !permission.forceModal && params.input !== undefined;
   const requestId = randomUUID();
   const action = `effect:${key}`;
-  // The owner judges the answer by this effect's own check. The card saves no rule, so the gate lends only its stale-answer audit
-  // and no policy step of the card's own is honored.
-  const staleAudit: Partial<Pick<ApprovalGate, "recordStaleAnswer">> = params.approvalGate;
   const card = openPendingAnswerCard(manager, permission, checkEffect, "stale-refused",
-    { gate: { recordStaleAnswer: (...stale) => staleAudit.recordStaleAnswer?.(...stale) }, requestId, action, uses: ["effect"] });
+    { gate: params.approvalGate, requestId, action, uses: ["effect", "rule-save"] });
   const decision = await params.approvalGate.requestAndWait({
     id: requestId,
     category: "agent-action",
@@ -501,9 +498,12 @@ export async function gateMutatingEffect(params: {
   switch (decision.choice) {
     case "allow-once":
     case "allow-session":
-    case "allow-always":
+    case "allow-always": {
+      const { refusal } = await saveStandingAnswerRule(card, decision);
+      if (refusal !== undefined) throw new Error(refusal);
       resumeAskedEffect(answer, action, reusableGrant ? { key, ctx } : undefined);
       return;
+    }
     case "deny-always":
       if (reusableGrant) descriptorGrants.set(key, { choice: "deny-always", sessionId: ctx.sessionId });
       throw new EffectBoundaryDeniedError(
