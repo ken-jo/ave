@@ -3,7 +3,6 @@ const { join } = require("node:path");
 
 // Packaging and runtime target tables must agree with dependency CPU and OS selection.
 const RIPGREP_PLATFORM_PACKAGES = Object.freeze({
-  "darwin-x64": "@vscode/ripgrep-darwin-x64",
   "darwin-arm64": "@vscode/ripgrep-darwin-arm64",
   "linux-x64": "@vscode/ripgrep-linux-x64",
   "linux-arm64": "@vscode/ripgrep-linux-arm64",

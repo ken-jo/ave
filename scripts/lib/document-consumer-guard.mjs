@@ -12,7 +12,7 @@ const DOCUMENT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const require = createRequire(import.meta.url);
 const PACKAGE_PLATFORMS = ["mac", "win", "linux"];
 const PACKAGE_ARCHES = {
-  mac: ["x64", "arm64", "universal"],
+  mac: ["arm64"],
   win: ["x64", "arm64", "ia32"],
   linux: ["x64", "arm64", "ia32", "armv7l"],
 };

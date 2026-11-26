@@ -46,8 +46,12 @@ describe.runIf(process.platform === "win32")("container control-file write bound
       execFileSync(git, ["-C", project, "config", "user.name", "Sandbox Fixture"], { env: gitEnv });
       execFileSync(git, ["-C", project, "config", "user.email", "fixture.invalid"], { env: gitEnv });
       mkdirSync(configuration, { recursive: true, mode: 0o700 });
+      mkdirSync(join(configuration, ".ave"));
       await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } }, async () => false);
-      const targets = [join(project, ".git", "config"), join(project, ".git", "hooks", "pre-commit"),
+      const namedTargets = [join(project, ".agents", "skills", "example.md"),
+        join(project, ".ave", "commands", "example.md"), join(project, ".ave", "hooks", "example.js")];
+      for (const target of namedTargets) mkdirSync(dirname(target), { recursive: true });
+      const targets = [...namedTargets, join(project, ".git", "config"), join(project, ".git", "hooks", "pre-commit"),
         join(project, ".bash_profile"), join(configuration, "future-control.json")];
       for (const target of targets) if (!existsSync(target)) writeFileSync(target, "original");
       async function run(command: string, target: string): Promise<{ status: number | null; output: string }> {
@@ -57,9 +61,10 @@ describe.runIf(process.platform === "win32")("container control-file write bound
         let launch: Awaited<ReturnType<typeof prepareOwnedMxcShellLaunch>> | undefined;
         try {
           launch = await prepareOwnedMxcShellLaunch({
-          egressToken: invocation.token, commandLine: powerShellMxcCommandLine(windowsSystemRoot(), command), cwd: project,
+          egressToken: invocation.token, commandLine: powerShellMxcCommandLine(windowsSystemRoot(), command, project), cwd: project,
           filesystem: { allowRead: [windowsSystemRoot(), gitRoot, project, configuration], allowWrite: policy.allowWrite,
-            denyRead: [], denyWrite: policy.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path) },
+             denyRead: [], denyWrite: policy.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path),
+             requiredWriteDenies: policy.windowsRequiredWriteDenies },
           env: Object.fromEntries(Object.entries({ ...gitEnv, CONTROL_TARGET: target }).filter((entry): entry is [string, string] => entry[1] !== undefined)),
           timeoutMs: TOOL_TIMEOUT_POLICY.shellDefaultMs, exists: existsSync,
           });
@@ -86,7 +91,8 @@ describe.runIf(process.platform === "win32")("container control-file write bound
         expect(result.status, result.output).not.toBe(0);
         expect(readFileSync(target, "utf8")).toBe(original);
       }
-      const ordinary = join(project, "opaque-result.txt");
+      const ordinary = join(project, "nested", ".agents", "opaque-result.txt");
+      mkdirSync(dirname(ordinary), { recursive: true });
       const ordinaryResult = await run('$ErrorActionPreference="Stop"; Add-Content -LiteralPath $env:CONTROL_TARGET -Value "changed" -NoNewline', ordinary);
       expect(ordinaryResult.status, ordinaryResult.output).toBe(0);
       expect(readFileSync(ordinary, "utf8")).toBe("changed");

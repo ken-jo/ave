@@ -95,6 +95,7 @@ import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-
 import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
 import { isWindowsPathAtOrUnder, MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
 import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";
+import { deferWatchedReceipt } from "../permissions/windows-watched-rows.js";
 import { createContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 import { buildMandatorySandboxWritePolicy } from "../permissions/sandbox-write-policy.js";
 import { captureEffectNoApprover, currentEffectGateContext } from "../permissions/effect-enforcement.js";
@@ -4205,7 +4206,7 @@ async function spawnPowerShellInMxc(
     const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
     // One Ave home boundary snapshot serves this command's read policy and its container grants.
     const boundarySnapshot = createAveHomeBoundarySnapshot(sessionId);
-    const { allowRead, denyRead, floorPierces, withheldSessionReadRoot, policyNotices: readNotices } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path, boundarySnapshot);
+    const { allowRead, denyRead, floorPierces, withheldSessionReadRoot, policyNotices: readNotices } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path, boundarySnapshot, "mxc");
     policyNotices = [...readNotices, ...savedSessionReadNotices(withheldSessionReadRoot, commandReadPaths)];
     const egress = openEgressInvocation(
       { kind: "shell", toolName: "powershell", toolUseId, requiresListener: true, context: ambientShellEgressContext() },
@@ -4222,16 +4223,15 @@ async function spawnPowerShellInMxc(
     const mandatory = buildMandatorySandboxWritePolicy(sandboxWritePaths, undefined, sensitiveDenyWrite);
     launch = await boundarySnapshot.run(() => prepareMxcShellLaunch({
       egressToken: token,
-      commandLine: powerShellMxcCommandLine(systemRoot, powerShellLaunch.args.at(-1)!),
+      commandLine: powerShellMxcCommandLine(systemRoot, powerShellLaunch.args.at(-1)!, cwd),
       cwd,
       filesystem: {
         allowWrite: mandatory.allowWrite,
         allowRead,
         denyRead,
-        denyWrite: [...new Set([
-          ...sensitiveDenyWrite,
-          ...mandatory.denyWrite.map((entry) => typeof entry === "string" ? entry : entry.path),
-        ])],
+        denyWrite: [...new Set(mandatory.denyWrite.map((entry) => typeof entry === "string" ? entry : entry.path))],
+        independentWriteDenies: sensitiveDenyWrite,
+        requiredWriteDenies: mandatory.windowsRequiredWriteDenies,
         floorPierces,
       },
       sandboxHome: sandboxHome.path,
@@ -4291,9 +4291,19 @@ async function spawnPowerShellInMxc(
     const release = async (result: () => ToolExecutionResult, failures: readonly unknown[]): Promise<ToolExecutionResult> => {
       if (!jobLive()) {
         const released = await lifecycle.dispose();
-        return withContainedReleaseFailures(result(), [...failures, ...released]);
+        const completed = result();
+        const notice = launch.watchedNotice;
+        if (notice !== undefined) completed.output = `${completed.output}\n${scrubDiagnosticSecrets(notice)}`;
+        return withContainedReleaseFailures(completed, [...failures, ...released]);
       }
-      void lifecycle.dispose().then((released) => logReleaseFailures(MXC_SHELL_LABEL, released));
+      void lifecycle.dispose().then((released) => {
+        logReleaseFailures(MXC_SHELL_LABEL, released);
+        // A background job's result is already returned: the next sandboxed command's result carries the receipt.
+        if (launch.watchedNotice !== undefined) {
+          shellTaskLog.warn(launch.watchedNotice);
+          deferWatchedReceipt(launch.watchedNotice);
+        }
+      });
       return withContainedReleaseFailures(result(), failures);
     };
     // A failure's redacted full text is logged; the result withholds it while the job is live and shows system errors by code after.

@@ -111,6 +111,8 @@ export interface AgentSpawnToolDeps {
   getRunner: () => SubAgentRunner | undefined;
   getAgentProfile?: (name: string) => Promise<LoadedAgentProfile | null>;
   emit: (event: AgentSpawnEvent) => void;
+  /** Resolves after all background terminalization work, including parent delivery. */
+  _onBackgroundCompletionForTest?: (completion: Promise<void>) => void;
 }
 
 export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
@@ -398,7 +400,8 @@ export function createAgentSpawnTool(deps: AgentSpawnToolDeps): Tool {
           };
 
           const backgroundRun = run();
-          void backgroundRun.then(terminalize, terminalizeRejection);
+          const completion = backgroundRun.then(terminalize, terminalizeRejection);
+          deps._onBackgroundCompletionForTest?.(completion);
           // Publish resumed handles only after child-lease ownership and WORKING state, never from a prior WAITING snapshot.
           if (resumeId) {
             await Promise.race([

@@ -1,11 +1,20 @@
+const { rmSync } = require("node:fs");
 const { join } = require("node:path");
 
-// This packaging-only entry shares the production SDK finalizer. It neither
-// compiles the unrelated native helpers nor executes the packaged application.
+// This packaging-only entry shares the launcher check and SDK finalizer.
+// It does not compile unrelated native helpers or execute the packaged app.
 module.exports = async function afterPack(context) {
-  if (context.electronPlatformName !== "win32") throw new Error("Packaging check requires a Windows target");
+  const platform = context.electronPlatformName;
   const arch = { 1: "x64", 3: "arm64" }[context.arch];
-  const { finalizePackagedMxcSdk } = await import("./lib/mxc-sdk-packaging.mjs");
-  finalizePackagedMxcSdk(join(context.appOutDir, "resources"), arch,
-    join(context.appOutDir, `${context.packager.appInfo.productFilename}.exe`));
+  const target = `${platform}-${arch}`;
+  const product = context.packager.appInfo.productFilename;
+  const resources = platform === "darwin"
+    ? join(context.appOutDir, `${product}.app`, "Contents", "Resources") : join(context.appOutDir, "resources");
+  const { assertPackagedLauncher, finalizePackagedMxcSdk } = await import("./lib/mxc-sdk-packaging.mjs");
+  assertPackagedLauncher(resources, target);
+  if (platform === "win32") {
+    finalizePackagedMxcSdk(resources, arch, join(context.appOutDir, `${product}.exe`));
+  } else {
+    rmSync(join(resources, "app.asar.unpacked", "node_modules", "@microsoft", "mxc-sdk", "bin"), { recursive: true, force: true });
+  }
 };

@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeAveHomeFixture, useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
+import { createWindowsProtectedWriteTargets } from "../../__tests__/support/windows-protected-write-fixture.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { aveHome, readWindowsDirectoryDacls } from "../../shared/ave-home.js";
 import { readWindowsAdminPolicy } from "../../shared/windows-admin-policy.js";
@@ -56,12 +57,23 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
   let fixture: string;
   let target: string;
   let config: SandboxRuntimeConfig | undefined;
+  const protectedTargets = new Set<string>();
+
+  function prepareWritable(path: string): void {
+    for (const target of createWindowsProtectedWriteTargets(path)) protectedTargets.add(target.toLowerCase());
+  }
 
   beforeEach(() => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     fixture = mkdtempSync(join(os.tmpdir(), "grant-target-"));
     target = join(fixture, "allowed");
-    mkdirSync(target);
+    protectedTargets.clear();
+    prepareWritable(target);
+    const readAcl = denyAcl.readWindowsDenyAcls;
+    vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation((paths, sid) => paths.flatMap(path =>
+      protectedTargets.has(path.toLowerCase())
+        ? [{ denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: denyAcl.WINDOWS_WRITE_DENY_MASK, parentMask: 0x40, directory: true }]
+        : readAcl([path], sid)));
     const profile = join(fixture, "alice");
     mkdirSync(profile);
     vi.stubEnv("HOME", profile);
@@ -104,10 +116,6 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     mkdirSync(engine, { recursive: true });
     writeFileSync(profile, "");
     await initializeAsrtSandbox({ resolveWindowsDocumentsPath: () => documents });
-    vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => paths.map(() => ({
-      denyMask: 0, inheritableMask: 0, parentMask: 0, directory: false,
-    })));
-
     const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] });
     try {
       expect(grant.allowWrite).toEqual([target]);
@@ -123,6 +131,8 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     const homes = mxcSandboxHomesParent();
     const home = createSandboxProcessHome("win32");
     const own = home.path;
+    prepareWritable(own);
+    prepareWritable(join(own, "AppData"));
     // A directory of the right shape that the host never issued.
     const sibling = mkdtempSync(join(homes, "ave-sandbox-home-"));
     const released = createSandboxProcessHome("win32");
@@ -543,7 +553,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
 
   it("batches every resolved target in each effect-boundary pin", async () => {
     const other = join(fixture, "other");
-    mkdirSync(other);
+    prepareWritable(other);
     const link = join(fixture, "link");
     symlinkSync(target, link, "junction");
     await initializeAsrtSandbox({});
@@ -593,6 +603,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     const nativePin = facts.pinWindowsPaths;
     const template = nativePin([target])[0]!;
     const paths = [join(fixture, "Foo"), join(fixture, "foo")];
+    for (const path of paths) prepareWritable(path);
     const ids = ["0x00000000000000000000000000000001", "0x00000000000000000000000000000002"];
     let swapped = false;
     const pin = vi.spyOn(facts, "pinWindowsPaths").mockImplementation(requests => {
@@ -702,8 +713,9 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     })));
     const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] });
     try {
-      expect(stampWindowsAclAsync).toHaveBeenLastCalledWith(expect.objectContaining({ denyRead: [join(target, "foo")] }));
-      for (const [requests] of read.mock.calls) expect(requests).toEqual([join(target, "foo")]);
+      const required = [join(target, ".agents"), join(target, ".ave", "commands"), join(target, ".ave", "hooks")];
+      expect(stampWindowsAclAsync).toHaveBeenLastCalledWith(expect.objectContaining({ denyRead: [join(target, "foo"), ...required] }));
+      for (const [requests] of read.mock.calls) expect(requests).toEqual([join(target, "foo"), ...required]);
     } finally { grant.release(); }
   });
 

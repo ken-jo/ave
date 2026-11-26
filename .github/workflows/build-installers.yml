@@ -271,6 +271,9 @@ jobs:
           # explicitly uses publish=never; other builds use that script default.
           # The separate publisher assembles all platforms for tag releases.
           node scripts/build-installers.mjs "${args[@]}"
+      - name: Verify macOS app and helpers are arm64
+        if: matrix.target == 'mac'
+        run: node scripts/verify-macos-package-arch.mjs
       # Hard gate: every ELF and every .node in linux-unpacked, the AppImage
       # runtime, and the extracted deb and rpm payloads (plus their declared
       # arch) must be x86-64 by both the ELF header and file(1).
