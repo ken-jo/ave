@@ -2,7 +2,7 @@ import { type BigIntStats, lstatSync, readdirSync, readFileSync, rmdirSync, type
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
-import { renameFileOnce } from "../lib/transient-fs-lock-retry.js";
+import { renameFileOnce, renameFileOnceSync } from "../lib/transient-fs-lock-retry.js";
 import { errorMessage } from "../shared/error-message.js";
 import { setHostWorkspaceGuard } from "../shared/host-workspace-gate.js";
 import { admitLocalPath, admitLocalRoute, assertLocalityDecisionUsable, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
@@ -568,32 +568,40 @@ export function listWatchedQuarantine(): WatchedQuarantineEntry[] {
 /** User action: move a quarantined entry back. The restored path is excepted from watching for this session, unless a live launch
  * still claims it: that claim and its fence on host consumers stay until the launch's release, which checks the name again. */
 export async function restoreWatchedQuarantine(slot: string, index: number): Promise<{ readonly restored: string }> {
-  const prepare = () => {
-    const windows = process.platform === "win32";
-    const manifest = manifestPath(slot);
-    const slotPath = dirname(manifest);
-    const slotEntry = windows ? entryAt(slotPath, true) : undefined;
-    const physicalSlot = windows ? admitLocalRoute(slotPath).physical : undefined;
-    const manifestEntry = windows ? entryAt(manifest, true) : undefined;
-    if (windows && (slotEntry?.isDirectory() !== true || physicalSlot === undefined || manifestEntry?.isFile() !== true)) {
-      throw new Error("Quarantine slot or manifest is unavailable");
-    }
-    const entries = readManifest(slot);
-    const entry = entries[index];
+  let entries: ManifestEntry[];
+  let entry: ManifestEntry | undefined;
+  if (process.platform !== "win32") {
+    entries = readManifest(slot);
+    entry = entries[index];
     if (entry === undefined || !Number.isInteger(index)) throw new Error("Unknown quarantine entry");
     if (entry.restored !== undefined) throw new Error("Entry was already restored");
-    const source = entry.quarantined;
-    const destination = entry.original;
-    const parent = dirname(destination);
-    if (windows) {
+    if (basename(dirname(entry.quarantined)) !== slot) throw new Error("Quarantine entry is outside its slot");
+    if (entryAt(entry.original) !== undefined) throw new Error(`${entry.original} exists; move it aside before restoring`);
+    if (!entryAt(dirname(entry.original))?.isDirectory()) throw new Error(`The folder of ${entry.original} no longer exists`);
+    await renameFileOnce(entry.quarantined, entry.original);
+  } else {
+    ({ entries, entry } = withLocalityDecision(() => {
+      const manifest = manifestPath(slot);
+      const slotPath = dirname(manifest);
+      const slotEntry = entryAt(slotPath, true);
+      const physicalSlot = admitLocalRoute(slotPath).physical;
+      const manifestEntry = entryAt(manifest, true);
+      if (slotEntry?.isDirectory() !== true || manifestEntry?.isFile() !== true) {
+        throw new Error("Quarantine slot or manifest is unavailable");
+      }
+      const entries = readManifest(slot);
+      const entry = entries[index];
+      if (entry === undefined || !Number.isInteger(index)) throw new Error("Unknown quarantine entry");
+      if (entry.restored !== undefined) throw new Error("Entry was already restored");
+      const source = entry.quarantined;
+      const destination = entry.original;
+      const parent = dirname(destination);
       admitLocalPath(source);
       admitLocalPath(destination);
-    }
-    if (basename(dirname(source)) !== slot || (physicalSlot !== undefined && key(dirname(source)) !== key(physicalSlot))) {
-      throw new Error("Quarantine entry is outside its slot");
-    }
-    if (entryAt(destination) !== undefined) throw new Error(`${destination} exists; move it aside before restoring`);
-    if (slotEntry !== undefined && manifestEntry !== undefined) {
+      if (basename(dirname(source)) !== slot || key(dirname(source)) !== key(physicalSlot)) {
+        throw new Error("Quarantine entry is outside its slot");
+      }
+      if (entryAt(destination) !== undefined) throw new Error(`${destination} exists; move it aside before restoring`);
       const sourceEntry = entryAt(source, true);
       if (sourceEntry === undefined || (entry.restoreIdentity !== undefined && !matchesStoredFileIdentity(sourceEntry, entry.restoreIdentity.source))) {
         throw new Error("Quarantined entry changed identity");
@@ -613,13 +621,18 @@ export async function restoreWatchedQuarantine(slot: string, index: number): Pro
       if (entryAt(destination) !== undefined || !sameIdentity(parent, parentEntry)) {
         throw new Error("Quarantine restore destination folder changed identity");
       }
-    } else if (!entryAt(parent)?.isDirectory()) {
-      throw new Error(`The folder of ${destination} no longer exists`);
-    }
-    return { entries, entry, rename: renameFileOnce(source, destination) };
-  };
-  const { entries, entry, rename } = process.platform === "win32" ? withLocalityDecision(prepare) : prepare();
-  await rename;
+
+      renameFileOnceSync(source, destination);
+      const restored = entryAt(destination, true);
+      if (restored?.dev !== sourceEntry.dev || restored.ino !== sourceEntry.ino || entryAt(source) !== undefined) {
+        throw new Error("Quarantine restored entry changed identity");
+      }
+      if (!sameIdentity(parent, parentEntry)) {
+        throw new Error("Quarantine restore destination folder changed identity");
+      }
+      return { entries, entry };
+    }));
+  }
   const row = watched.get(key(entry.row));
   if (row?.exact && row.roots.size > 0) {
     // The ACL grant can still write to this name, so the next sweep must check it.

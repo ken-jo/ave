@@ -11,6 +11,10 @@ import { rankAdmittedMxcLists } from "../../__tests__/support/mxc-policy-rows.js
 import { isHostWorkspaceConsumable } from "../../shared/host-workspace-gate.js";
 
 vi.unmock("../../shared/windows-drive-locality.js");
+vi.mock("../../lib/transient-fs-lock-retry.js", async original => {
+  const actual = await original<typeof restoreRename>();
+  return { ...actual, renameFileOnceSync: vi.fn(actual.renameFileOnceSync) };
+});
 
 // The identity helper: the real one on request, else the same folder identity read through the file system.
 const pin = vi.hoisted(() => ({ real: false, fail: undefined as ((path: string) => Error | undefined) | undefined }));
@@ -75,6 +79,7 @@ describe("watched protected rows", () => {
   let tasks: string;
 
   beforeEach(() => {
+    vi.mocked(restoreRename.renameFileOnceSync).mockReset();
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     previousLocale = getLocale();
     container = mkdtempSync(join(tmpdir(), "watched-rows-"));
@@ -132,6 +137,64 @@ describe("watched protected rows", () => {
     await expect(restoreWatchedQuarantine(entry.slot, entry.index)).rejects.toThrow(/already restored/);
   });
 
+  async function quarantineTasks(commandId: string) {
+    watchAbsentProtectedRow(tasks, [workspace]);
+    mkdirSync(join(workspace, ".vscode"));
+    writeFileSync(tasks, "planted");
+    await sweepWatchedRows({ commandId });
+    const [entry] = listWatchedQuarantine();
+    if (entry === undefined) throw new Error("No quarantine entry");
+    return entry;
+  }
+
+  it.runIf(process.platform === "win32")("completes a Windows restore without an asynchronous rename", async () => {
+    const entry = await quarantineTasks("sync-restore");
+    const rename = vi.spyOn(restoreRename, "renameFileOnce");
+    try {
+      await expect(restoreWatchedQuarantine(entry.slot, entry.index)).resolves.toEqual({ restored: entry.original });
+      expect(rename).not.toHaveBeenCalled();
+      expect(readFileSync(tasks, "utf8")).toBe("planted");
+      expect(listWatchedQuarantine()[0]?.restored).toEqual(expect.any(String));
+    } finally {
+      rename.mockRestore();
+    }
+  });
+
+  it.runIf(process.platform === "win32")("reports an identity change at the restore's effect boundary", async () => {
+    const entry = await quarantineTasks("changed-parent-at-rename");
+    const watchedBefore = watchedProtectedRows();
+    const rename = vi.mocked(restoreRename.renameFileOnceSync).mockImplementationOnce((source, destination) => {
+      renameSync(workspace, join(container, "previous-workspace"));
+      mkdirSync(workspace);
+      renameSync(source, destination);
+    });
+    try {
+      await expect(restoreWatchedQuarantine(entry.slot, entry.index)).rejects.toThrow("Quarantine restore destination folder changed identity");
+      expect(rename).toHaveBeenCalledOnce();
+      expect(readFileSync(tasks, "utf8")).toBe("planted");
+      expect(listWatchedQuarantine()[0]?.restored).toBeUndefined();
+      expect(watchedProtectedRows()).toEqual(watchedBefore);
+    } finally {
+      rename.mockClear();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("restores by pathname off Windows exactly as before", async () => {
+    const entry = await quarantineTasks("pathname-restore");
+    resetWatchedRows();
+    renameSync(workspace, join(container, "previous-workspace"));
+    mkdirSync(workspace);
+    const rename = vi.spyOn(restoreRename, "renameFileOnce");
+    try {
+      await expect(restoreWatchedQuarantine(entry.slot, entry.index)).resolves.toEqual({ restored: entry.original });
+      expect(rename).toHaveBeenCalledExactlyOnceWith(entry.quarantined, entry.original);
+      expect(readFileSync(tasks, "utf8")).toBe("planted");
+      expect(listWatchedQuarantine()[0]?.restored).toEqual(expect.any(String));
+    } finally {
+      rename.mockRestore();
+    }
+  });
+
   it.runIf(process.platform === "win32")("stops restore at a failed source-drive query before probing the destination", async () => {
     watchAbsentProtectedRow(tasks, [workspace]);
     mkdirSync(join(workspace, ".vscode"));
@@ -145,7 +208,7 @@ describe("watched protected rows", () => {
     record.entries[0].quarantined = join(`${failedDrive}\\`, entry.slot, basename(entry.quarantined));
     writeFileSync(manifest, JSON.stringify(record));
     const failure = new Error("Quarantine source drive query failed");
-    const rename = vi.spyOn(restoreRename, "renameFileOnce").mockRejectedValue(new Error("Unexpected restore rename"));
+    const rename = vi.mocked(restoreRename.renameFileOnceSync).mockImplementationOnce(() => { throw new Error("Unexpected restore rename"); });
     const query = vi.fn((drive: string) => {
       if (drive === failedDrive) throw failure;
       return "\\Device\\HarddiskVolume1";
@@ -159,7 +222,7 @@ describe("watched protected rows", () => {
       expect(listWatchedQuarantine()[0]?.restored).toBeUndefined();
     } finally {
       setWindowsDriveQueryForTest();
-      rename.mockRestore();
+      rename.mockReset();
     }
   });
 
