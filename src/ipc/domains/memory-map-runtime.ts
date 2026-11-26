@@ -62,8 +62,10 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     });
   });
   const provider = new ProviderEmbeddings(deps.settingsService, send);
-  const localInferencePreference = () => deps.settingsService.get('memoryEmbedding')?.localInferenceWithoutSandbox
+  const storedLocalInferencePreference = () => deps.settingsService.get('memoryEmbedding')?.localInferenceWithoutSandbox
     ?? DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX;
+  let pendingInferenceDisables = 0;
+  const localInferencePreference = () => pendingInferenceDisables === 0 && storedLocalInferencePreference();
   const localRuntime = (admission: WindowsBackgroundAdmission) => assertLocalEmbeddingRuntime(localInferencePreference(), admission);
   const refreshLocalPreparation = () => refreshLocalInferenceAdmission("switches");
   let buildGeneration = 0;
@@ -99,7 +101,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   const host = new MemoryMapHost({
     provider,
     watchAuthority,
-    runWorker: (folder, task, signal, onProgress) => runMemoryWorker(folder, task, signal, onProgress, localInferencePreference()),
+    runWorker: (folder, task, signal, onProgress) => runMemoryWorker(folder, task, signal, onProgress, localInferencePreference),
     validatedModelPath: async (signal) => {
       const admission = await refreshLocalPreparation();
       signal.throwIfAborted();
@@ -152,7 +154,7 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     return {
       source: namespace.source, namespace, providers, providerAvailable: providers.some(value => value.models.length > 0),
       ...(consent ? { consent } : {}),
-      ...((await refreshLocalInferenceAdmission("switches")).areSwitchesAvailable() ? { localInferenceWithoutSandbox: localInferencePreference() } : {}),
+      ...((await refreshLocalInferenceAdmission("switches")).areSwitchesAvailable() ? { localInferenceWithoutSandbox: storedLocalInferencePreference() } : {}),
     };
   };
   return {
@@ -189,14 +191,16 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
     settingsGet: settings,
     settingsSet: async input => {
       if ('localInferenceWithoutSandbox' in input) {
+        const enabled = input.localInferenceWithoutSandbox;
+        // Host work can share the very probe this settings write is waiting for.
+        if (!enabled) pendingInferenceDisables += 1;
         const pending = settingsWrite.catch(() => {}).then(async () => {
           const admission = await refreshLocalInferenceAdmission();
           if (!admission.areSwitchesAvailable()) throw new MemoryMapHostError('local-runtime-unavailable');
           const previous = deps.settingsService.get('memoryEmbedding');
-          const enabled = input.localInferenceWithoutSandbox;
           if (!enabled && previous?.localInferenceWithoutSandbox !== false) {
             let usingHostChild = false;
-            try { usingHostChild = assertLocalEmbeddingRuntime(localInferencePreference(), admission) === 'unconfined'; } catch (error) {
+            try { usingHostChild = assertLocalEmbeddingRuntime(storedLocalInferencePreference(), admission) === 'unconfined'; } catch (error) {
               if (!(error instanceof MemoryMapHostError)) throw error;
             }
             if (usingHostChild) {
@@ -206,6 +210,8 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
           }
           await deps.settingsService.set('memoryEmbedding', { ...previous, localInferenceWithoutSandbox: enabled });
           return settings();
+        }).finally(() => {
+          if (!enabled) pendingInferenceDisables -= 1;
         });
         settingsWrite = pending;
         return pending;

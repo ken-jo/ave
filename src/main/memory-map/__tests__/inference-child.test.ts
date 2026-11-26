@@ -7,15 +7,20 @@ import { join, win32 } from 'node:path';
 import { duplexPair, PassThrough, Writable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setProcessPlatform } from '../../../__tests__/support/process-platform.js';
+import { deferred } from '../../../__tests__/support/deferred.js';
+import { MemoryMapHostError } from '../errors.js';
+import type { LocalInferenceRoute } from '../local-runtime.js';
 import type { ConfinedChildSpec } from '../../../permissions/confined-child.js';
 import { parseChildLaunchArgs } from '../../../plugins/isolation/child-loopback-link.js';
 import { runInferenceChild } from '../inference-child.js';
 import { MAX_INFERENCE_TASK_BYTES } from '../inference-request.js';
 import { MODEL_FILES } from '../model-manifest.js';
 
-const { spawn, spawnMxc, spawnHost, route, grant, createHome, connectLoopback } = vi.hoisted(() => ({
+const { spawn, spawnMxc, spawnHost, route, refreshAdmission, grant, createHome, connectLoopback } = vi.hoisted(() => ({
   spawn: vi.fn<(spec: ConfinedChildSpec) => unknown>(), grant: vi.fn(), createHome: vi.fn(), connectLoopback: vi.fn(),
-  spawnMxc: vi.fn(), spawnHost: vi.fn(), route: vi.fn(() => 'offline-sandbox'),
+  spawnMxc: vi.fn(), spawnHost: vi.fn(),
+  route: vi.fn<(_enabled?: boolean) => LocalInferenceRoute>(() => 'offline-sandbox'),
+  refreshAdmission: vi.fn<() => Promise<undefined>>(async () => undefined),
 }));
 vi.mock('../../managed-child-processes.js', () => ({ spawnManaged: spawnHost }));
 vi.mock('../../../sandbox/wrap-bundled-command.js', () => ({ spawnMxcBundledHolder: spawnMxc }));
@@ -32,7 +37,7 @@ vi.mock('../../../permissions/sandbox-process-home.js', () => ({
   isSandboxHomeUnavailable: (error: unknown) => (error as { code?: unknown } | undefined)?.code === 'sandbox-home-unavailable',
 }));
 vi.mock('../../../permissions/asrt-sandbox.js', () => ({ cleanupAsrtSandboxAfterCommand: vi.fn() }));
-vi.mock('../local-runtime.js', () => ({ assertLocalEmbeddingRuntime: route, refreshLocalInferenceAdmission: async () => undefined }));
+vi.mock('../local-runtime.js', () => ({ assertLocalEmbeddingRuntime: route, refreshLocalInferenceAdmission: refreshAdmission }));
 vi.mock('../model-manifest.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../model-manifest.js')>();
   return { ...actual, MODEL_FILES: actual.MODEL_FILES.map(file => ({
@@ -56,6 +61,7 @@ beforeEach(async () => {
   spawnMxc.mockReset();
   spawnHost.mockReset();
   route.mockReset();
+  refreshAdmission.mockReset();
   connectLoopback.mockReset();
   folder = await mkdtemp(join(tmpdir(), 'inference-stream-'));
   for (const file of MODEL_FILES) writeFileSync(join(folder, file.name), Buffer.alloc(file.bytes));
@@ -260,4 +266,55 @@ it('streams verified bytes to a managed host child only for the unconfined route
   expect(child.kill).toHaveBeenCalledOnce();
   expect(spawn).not.toHaveBeenCalled();
   expect(spawnMxc).not.toHaveBeenCalled();
+});
+
+it.each(['cancelled', 'disabled'] as const)('starts no child when shared admission is pending and inference is %s', async change => {
+  setProcessPlatform('win32');
+  vi.stubEnv('SystemRoot', FIXTURE_SYSTEM_ROOT);
+  const refresh = deferred<undefined>();
+  refreshAdmission.mockReturnValue(refresh.promise);
+  route.mockImplementation(enabled => {
+    if (enabled === false) throw new MemoryMapHostError('local-inference-disabled');
+    return 'unconfined';
+  });
+  createHome.mockReturnValue({ env: {}, cleanup: vi.fn() });
+  spawnHost.mockImplementation(() => { throw new Error('Unexpected host spawn'); });
+  const controllers = [new AbortController(), new AbortController()];
+  let enabled = true;
+  const reason = new Error('Inference cancelled during admission');
+  const runs = controllers.map(({ signal }) =>
+    runInferenceChild(folder, TASK, signal, undefined, () => enabled).then(value => value, error => error),
+  );
+  expect(refreshAdmission).toHaveBeenCalledTimes(2);
+  if (change === 'cancelled') for (const controller of controllers) controller.abort(reason);
+  else enabled = false;
+  refresh.resolve(undefined);
+  const outcomes = await Promise.all(runs);
+
+  expect.soft(spawnHost).not.toHaveBeenCalled();
+  expect(spawn).not.toHaveBeenCalled();
+  expect(spawnMxc).not.toHaveBeenCalled();
+  if (change === 'cancelled') expect(outcomes).toEqual([reason, reason]);
+  else expect(outcomes).toEqual([expect.objectContaining({ code: 'local-inference-disabled' }), expect.objectContaining({ code: 'local-inference-disabled' })]);
+});
+
+it('checks live preference again after preparing the host child', async () => {
+  setProcessPlatform('win32');
+  vi.stubEnv('SystemRoot', FIXTURE_SYSTEM_ROOT);
+  let enabled = true;
+  route.mockImplementation(preference => {
+    if (preference === false) throw new MemoryMapHostError('local-inference-disabled');
+    return 'unconfined';
+  });
+  const cleanup = vi.fn();
+  createHome.mockImplementationOnce(() => {
+    enabled = false;
+    return { env: {}, cleanup };
+  });
+  spawnHost.mockImplementation(() => { throw new Error('Unexpected host spawn'); });
+
+  await expect(runInferenceChild(folder, TASK, new AbortController().signal, undefined, () => enabled))
+    .rejects.toMatchObject({ code: 'local-inference-disabled' });
+  expect(spawnHost).not.toHaveBeenCalled();
+  expect(cleanup).toHaveBeenCalledOnce();
 });

@@ -8,18 +8,22 @@ import type { MemoryEmbeddingConfig } from '../../shared/memory-embedding-config
 import { CHANNELS } from '../../contract/app-contract.js';
 import { graphMemoryRevision, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
 import { MemoryMapHostError } from '../../main/memory-map/errors.js';
+import type { MemoryWorkerRunner } from '../../main/memory-map/worker-client.js';
 const state = vi.hoisted(() => ({
   handles: new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>>(),
   get: vi.fn(async (_readCatalog: ReadMemoryMapCatalog) => null), build: vi.fn(async () => ({ snapshotId: 'snapshot' })), cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
   status: vi.fn(async () => ({ status: 'unconfigured' })), download: vi.fn(async () => ({ status: 'ready' })), modelCancel: vi.fn(), adoptExistingFolder: vi.fn(async () => ({ status: 'ready' })),
   readModelPath: undefined as ((signal: AbortSignal) => Promise<string>) | undefined,
   validatedPath: vi.fn(async () => '/example/model'),
+  startWorker: undefined as MemoryWorkerRunner | undefined,
+  runWorker: vi.fn(),
   refreshAdmission: vi.fn<() => Promise<{ areSwitchesAvailable: () => boolean }>>(),
   dialog: vi.fn(async () => ({ canceled: true, filePaths: [] as string[] })), audit: vi.fn(), localConfined: true, releaseGateOpen: false,
 }));
 vi.mock('electron', () => ({ ipcMain: { handle: (channel: string, handler: never) => state.handles.set(channel, handler) }, dialog: { showOpenDialog: state.dialog } }));
-vi.mock('../../main/memory-map/host.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/host.js')>(), MemoryMapHost: class { constructor(options: { validatedModelPath: (signal: AbortSignal) => Promise<string> }) { state.readModelPath = options.validatedModelPath; } get = state.get; build = state.build; cancel = state.cancel; invalidate = state.invalidate; retrieve = state.retrieve; } }));
+vi.mock('../../main/memory-map/host.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/host.js')>(), MemoryMapHost: class { constructor(options: { validatedModelPath: (signal: AbortSignal) => Promise<string>; runWorker: MemoryWorkerRunner }) { state.readModelPath = options.validatedModelPath; state.startWorker = options.runWorker; } get = state.get; build = state.build; cancel = state.cancel; invalidate = state.invalidate; retrieve = state.retrieve; } }));
 vi.mock('../../main/memory-map/model-manager.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/model-manager.js')>(), LocalModelManager: class { validatedPath = state.validatedPath; status = state.status; download = state.download; cancel = state.modelCancel; adoptExistingFolder = state.adoptExistingFolder; } }));
+vi.mock('../../main/memory-map/worker-client.js', () => ({ runMemoryWorker: state.runWorker }));
 vi.mock('../../main/memory-map/local-runtime.js', async () => {
   const { MemoryMapHostError } = await import('../../main/memory-map/errors.js');
   return {
@@ -51,6 +55,8 @@ beforeEach(() => {
   Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' });
   vi.clearAllMocks(); state.handles.clear(); state.localConfined = true; state.releaseGateOpen = false;
   state.readModelPath = undefined;
+  state.startWorker = undefined;
+  state.runWorker.mockReset();
   state.refreshAdmission.mockReset().mockImplementation(async () => ({ areSwitchesAvailable: () => state.releaseGateOpen }));
   state.status.mockReset().mockResolvedValue({ status: 'unconfigured' });
   registerMemoryMapHandlers({ auditLogger: { log: state.audit }, settingsService: { get: () => undefined, set: vi.fn(), hasStoredSecret: vi.fn(async () => false) } } as unknown as IpcDeps,
@@ -159,6 +165,38 @@ describe('memory map host boundary', () => {
     expect(await adoption).toEqual({ ok: false, error: 'local-runtime-unavailable' });
     expect(state.adoptExistingFolder).not.toHaveBeenCalled();
     expect(state.refreshAdmission).toHaveBeenCalledTimes(2);
+  });
+
+  it('blocks a waiting host start as soon as a disable request joins the shared probe', async () => {
+    let config: MemoryEmbeddingConfig = { source: 'local', localInferenceWithoutSandbox: true };
+    const set = vi.fn(async (_key: string, value: MemoryEmbeddingConfig) => { config = value; });
+    registerMemoryMapHandlers({
+      auditLogger: { log: state.audit },
+      settingsService: { get: (key: string) => key === 'memoryEmbedding' ? config : undefined, set, hasStoredSecret: async () => false },
+    } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
+    state.localConfined = false;
+    state.releaseGateOpen = true;
+    await invoke('settingsGet');
+    assert.ok(state.startWorker);
+    state.refreshAdmission.mockClear();
+    const shared = deferred<{ areSwitchesAvailable: () => boolean }>();
+    state.refreshAdmission.mockReturnValue(shared.promise);
+    const startHost = vi.fn();
+    state.runWorker.mockImplementationOnce(async (_folder, _task, _signal, _progress, preference: boolean | (() => boolean)) => {
+      const admission = await shared.promise;
+      if (admission.areSwitchesAvailable() && (typeof preference === 'function' ? preference() : preference)) startHost();
+    });
+    const inference = state.startWorker('/example/model', { kind: 'embed', text: 'fixture' }, new AbortController().signal);
+    const disable = invoke('settingsSet', { localInferenceWithoutSandbox: false });
+    try {
+      await vi.waitFor(() => expect(state.refreshAdmission).toHaveBeenCalledOnce());
+      expect(set).not.toHaveBeenCalled();
+    } finally {
+      shared.resolve({ areSwitchesAvailable: () => true });
+    }
+    await inference;
+    expect(startHost).not.toHaveBeenCalled();
+    await expect(disable).resolves.toMatchObject({ ok: true, value: { localInferenceWithoutSandbox: false } });
   });
 
   it('returns a distinct error for an oversized local build', async () => {

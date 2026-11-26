@@ -86,15 +86,18 @@ function sandboxHomeOrRefusal(): ReturnType<typeof createSandboxProcessHome> {
   }
 }
 
-async function spawnInferenceChild(route: LocalInferenceRoute, signal: AbortSignal): Promise<{
+async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal: AbortSignal): Promise<{
   input: Readable; output: Writable; stop: () => void | Promise<void>;
 }> {
+  signal.throwIfAborted();
+  const route = readRoute();
   const windows = process.platform === 'win32';
   const entry = join(mainDir, 'memory-map-child.js');
   const baseEnv = buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: '1', ...TELEMETRY_OPT_OUT });
   if (route === 'mxc') {
     const cwd = win32SystemBinary('');
     const runtimeReadRoots = [dirname(process.execPath), cwd];
+    signal.throwIfAborted();
     const holder = await spawnMxcBundledHolder({
       label: INFERENCE_CHILD_LABEL,
       command: process.execPath,
@@ -123,7 +126,10 @@ async function spawnInferenceChild(route: LocalInferenceRoute, signal: AbortSign
   let child: ChildProcess | undefined;
   try {
     const extraEnv = { ...home?.env, ...TELEMETRY_OPT_OUT };
+    signal.throwIfAborted();
     if (route === 'unconfined') {
+      if (readRoute() !== 'unconfined') throw new MemoryMapHostError('local-runtime-unavailable');
+      signal.throwIfAborted();
       child = spawnManaged(process.execPath, [entry], {
         cwd, env: { ...baseEnv, ...extraEnv }, stdio: ['pipe', 'pipe', 'pipe'],
       }, { label: INFERENCE_CHILD_LABEL });
@@ -171,13 +177,15 @@ async function spawnInferenceChild(route: LocalInferenceRoute, signal: AbortSign
 }
 
 export async function runInferenceChild<T>(folder: string, task: MemoryInferenceTask, signal: AbortSignal,
-  onProgress?: (progress: MemoryMapProgress) => void, localInferenceWithoutSandbox?: boolean): Promise<T> {
+  onProgress?: (progress: MemoryMapProgress) => void, readLocalInferencePreference?: () => boolean): Promise<T> {
   signal.throwIfAborted();
-  const route = assertLocalEmbeddingRuntime(localInferenceWithoutSandbox, await refreshLocalInferenceAdmission());
+  const admission = await refreshLocalInferenceAdmission();
+  const readRoute = () => assertLocalEmbeddingRuntime(readLocalInferencePreference?.(), admission);
+  signal.throwIfAborted();
   const taskJson = JSON.stringify(task);
   const lengths = [Buffer.byteLength(taskJson, 'utf8'), ...INFERENCE_FILES.map(file => file.bytes)];
   checkedInferenceFrameBytes(lengths);
-  const { input, output, stop } = await spawnInferenceChild(route, signal);
+  const { input, output, stop } = await spawnInferenceChild(readRoute, signal);
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const lines = createInterface({ input });
