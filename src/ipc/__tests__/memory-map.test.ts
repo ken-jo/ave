@@ -109,7 +109,8 @@ describe('memory map host boundary', () => {
     await expect(invoke('settingsGet')).resolves.toMatchObject({ ok: true, value: { localInferenceWithoutSandbox: true } });
     await expect(invoke('build')).resolves.toMatchObject({ ok: true });
     await expect(change()).resolves.toMatchObject({ ok: true, value: preference });
-    expect(set).toHaveBeenCalledWith('memoryEmbedding', { source: 'local', localModelPath, ...preference });
+    expect(set).toHaveBeenCalledWith('memoryEmbedding', { source: 'local', localModelPath, ...preference },
+      expect.objectContaining({ field: ['memoryEmbedding', 'localInferenceWithoutSandbox'] }));
     expect(state.cancel).toHaveBeenCalledOnce();
     await expect(invoke('modelStatus')).resolves.toEqual({ ok: false, error: 'local-inference-disabled' });
     await expect(invoke('build')).resolves.toEqual({ ok: false, error: 'local-inference-disabled' });

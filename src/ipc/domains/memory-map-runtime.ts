@@ -17,6 +17,7 @@ import { readGraphCatalog, memoryFacets, graphMemoryRevision, isGraphMemory, mat
 import { ProviderEmbeddings } from '../../main/memory-map/provider-embeddings.js';
 import { createMemoryProviderEgress } from '../../main/memory-map/provider-egress.js';
 import { DEFAULT_LOCAL_INFERENCE_WITHOUT_SANDBOX } from '../../shared/memory-embedding-config.js';
+import { SettingsWriteRefusedError } from '../../data/settings-store.js';
 import { getLlmVendorSettings, LLM_VENDORS } from '../../shared/llm-vendor-defaults.js';
 import { defaultWorkspaceProject } from '../../main/project-root-authorization.js';
 import { sendToWebContents } from '../safe-send.js';
@@ -79,7 +80,16 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
   const model = new LocalModelManager({
     refreshAdmission: refreshLocalAdmission,
     readPath: () => deps.settingsService.get('memoryEmbedding')?.localModelPath,
-    savePath: path => deps.settingsService.set('memoryEmbedding', { ...deps.settingsService.get('memoryEmbedding'), localModelPath: path }),
+    savePath: async (path, assertStillValid) => {
+      try {
+        await deps.settingsService.set('memoryEmbedding', { ...deps.settingsService.get('memoryEmbedding'), localModelPath: path },
+          { field: ['memoryEmbedding', 'localModelPath'], canCommit: () => { assertStillValid(); return true; } });
+      } catch (error) {
+        if (!(error instanceof SettingsWriteRefusedError)) throw error;
+        assertStillValid();
+        throw new MemoryMapHostError('local-runtime-unavailable');
+      }
+    },
     onProgress: status => { if (modelEvent && validateHostRendererSender(modelEvent)) sendToWebContents(modelEvent.sender, CHANNELS.memoryMap.modelProgress, status); },
   });
   const watchAuthority = (cancel: () => void) => {
@@ -212,7 +222,13 @@ export function createMemoryMapRuntime(deps: IpcDeps, resolveScope: MemoryMapSco
               cancelModel();
             }
           }
-          await deps.settingsService.set('memoryEmbedding', { ...previous, localInferenceWithoutSandbox: enabled });
+          try {
+            await deps.settingsService.set('memoryEmbedding', { ...previous, localInferenceWithoutSandbox: enabled },
+              { field: ['memoryEmbedding', 'localInferenceWithoutSandbox'], canCommit: () => admission.areSwitchesAvailable() });
+          } catch (error) {
+            if (error instanceof SettingsWriteRefusedError) throw new MemoryMapHostError('local-runtime-unavailable');
+            throw error;
+          }
           return settings();
         }).finally(() => {
           if (!enabled) pendingInferenceDisables -= 1;

@@ -64,7 +64,8 @@ interface ModelManagerOptions {
   downloadFile?: (name: string, signal: AbortSignal) => Promise<Response>;
   refreshAdmission?: () => Promise<() => void>;
   readPath: () => string | undefined;
-  savePath: (path: string) => void | Promise<void>;
+  /** `assertStillValid` is the admission the path is saved under; it holds at the step that writes the setting. */
+  savePath: (path: string, assertStillValid: () => void) => void | Promise<void>;
   onProgress?: (status: MemoryModelStatus) => void;
 }
 export class LocalModelManager {
@@ -279,7 +280,7 @@ export class LocalModelManager {
 
   private async saveManagedPath(path: string, assertStillValid: () => void): Promise<void> {
     assertStillValid();
-    try { await this.options.savePath(path); }
+    try { await this.options.savePath(path, assertStillValid); }
     finally {
       try {
         const saved = this.options.readPath();

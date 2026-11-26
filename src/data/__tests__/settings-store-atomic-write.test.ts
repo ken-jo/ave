@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { directHostFetchTransport } from "../../__tests__/support/host-fetch-transport.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { SettingsService, settingsFilePath } from "../settings-store.js";
+import { SettingsService, SettingsWriteRefusedError, settingsFilePath } from "../settings-store.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { evaluateHostFetch, runHostFetchHops } from "../../main/host-fetch-guard.js";
 
@@ -267,6 +267,38 @@ describe("settings persistence", () => {
     const saved = JSON.parse(readFileSync(settingsFilePath(root), "utf8"));
     expect(saved.system.hardwareAcceleration).toBe(true);
     expect(saved.pluginConfigs).toMatchObject({ sample: { mode: "fast" }, other: { mode: "slow" } });
+  });
+
+  it("keeps a switch that lost its admission while its save waited out of the file, and saves the changes around it", async () => {
+    const save = vi.spyOn(service as unknown as { saveSettings(settings: unknown): Promise<void> }, "saveSettings");
+    const real = (settings: unknown) => (SettingsService.prototype as unknown as { saveSettings(settings: unknown): Promise<void> }).saveSettings.call(service, settings);
+    save.mockImplementationOnce((settings) => new Promise((resolve, reject) => setTimeout(() => real(settings).then(resolve, reject), 20)));
+    let admitted = true;
+    const canCommit = () => admitted;
+
+    const first = service.patch({ system: { ...service.get("system"), hardwareAcceleration: true } });
+    const indexing = service.patch({ features: { sessionIndexingWithoutContainment: false } }, { field: ["features", "sessionIndexingWithoutContainment"], canCommit })
+      .catch((error: unknown) => error);
+    const inference = service.set("memoryEmbedding", { source: "local", localInferenceWithoutSandbox: false }, { field: ["memoryEmbedding", "localInferenceWithoutSandbox"], canCommit })
+      .catch((error: unknown) => error);
+    const around = service.setPluginConfig("sample", { mode: "fast" });
+    admitted = false;
+
+    await Promise.all([first, around]);
+    const saved = JSON.parse(readFileSync(settingsFilePath(root), "utf8"));
+    expect(saved.features.sessionIndexingWithoutContainment).toBe(true);
+    expect(saved.memoryEmbedding).toEqual({ source: "local", localInferenceWithoutSandbox: true });
+    expect(saved.system.hardwareAcceleration).toBe(true);
+    expect(saved.pluginConfigs.sample).toEqual({ mode: "fast" });
+    expect(await indexing).toBeInstanceOf(SettingsWriteRefusedError);
+    expect(await inference).toBeInstanceOf(SettingsWriteRefusedError);
+    expect(service.get("features")?.sessionIndexingWithoutContainment).toBe(true);
+    expect(service.get("memoryEmbedding")).toEqual({ source: "local", localInferenceWithoutSandbox: true });
+  });
+
+  it("saves a switch whose admission still holds in the step that writes it", async () => {
+    await service.patch({ features: { sessionIndexingWithoutContainment: false } }, { field: ["features", "sessionIndexingWithoutContainment"], canCommit: () => true });
+    expect(JSON.parse(readFileSync(settingsFilePath(root), "utf8")).features.sessionIndexingWithoutContainment).toBe(false);
   });
 });
 

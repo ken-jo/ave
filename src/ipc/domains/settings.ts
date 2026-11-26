@@ -45,7 +45,9 @@ import type {
   ShortcutSettings,
   AppSettings,
   SettingsService,
+  SettingsWriteAdmission,
 } from "../../data/settings-store.js";
+import { SettingsWriteRefusedError } from "../../data/settings-store.js";
 import type { ActiveChatModel } from "../../shared/active-chat-model.js";
 import {
   resolveMainActiveChatModel,
@@ -741,9 +743,13 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     }
     // The last await before the patch: the admission is decided here and nothing below yields until the merge is applied.
     const features = partial?.features;
-    if (features && typeof features === "object" && Object.hasOwn(features, "sessionIndexingWithoutContainment")
-      && (typeof features.sessionIndexingWithoutContainment !== "boolean" || !(await refreshWindowsBackgroundAdmission("switches")).areSwitchesAvailable())) {
-      return { ok: false, error: "invalid-input" };
+    let switchAdmission: SettingsWriteAdmission | undefined;
+    if (features && typeof features === "object" && Object.hasOwn(features, "sessionIndexingWithoutContainment")) {
+      if (typeof features.sessionIndexingWithoutContainment !== "boolean") return { ok: false, error: "invalid-input" };
+      const admission = await refreshWindowsBackgroundAdmission("switches");
+      if (!admission.areSwitchesAvailable()) return { ok: false, error: "invalid-input" };
+      // The same admission travels to the step that saves the switch.
+      switchAdmission = { field: ["features", "sessionIndexingWithoutContainment"], canCommit: () => admission.areSwitchesAvailable() };
     }
     // Reviewer LLM follows the active chat provider/model. Capture the active identity before patching
     // so provider/model/baseUrl/Vertex changes can refresh reviewer wiring and cache scope immediately.
@@ -770,7 +776,13 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       if (!parsed.ok) return { ok: false, error: "invalid-input" };
       partial = { ...partial, system: { ...partial.system, mainLayout: browserTabRegistry.prepareLayoutBindings(window.id, parsed.layout) } };
     }
-    const persistSettings = settingsService.patch(partial);
+    let switchRefused = false;
+    const persistSettings = (switchAdmission === undefined ? settingsService.patch(partial) : settingsService.patch(partial, switchAdmission)).catch((error: unknown) => {
+      if (!(error instanceof SettingsWriteRefusedError)) throw error;
+      // Only the switch was kept out of the save; the rest of the patch is on disk and still needs its follow-up.
+      switchRefused = true;
+      return settingsService.getAll();
+    });
     if (layoutPatch !== undefined) browserTabRegistry.trackBindingWrite(persistSettings);
     // SettingsService applies its merge before awaiting disk persistence. Capture this request's exact LLM snapshot before another renderer can supersede it.
     const appliedLlm = settingsService.get("llm");
@@ -866,6 +878,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     reconcileShortcutStartupIfChanged();
     if (marketplaceWritten) hooks?.marketplaceSettingsChanged();
     await broadcastSettingsSnapshot(deps);
+    if (switchRefused) return { ok: false, error: "invalid-input" };
     return rendererSettingsSnapshot(settingsService, result);
   });
 
