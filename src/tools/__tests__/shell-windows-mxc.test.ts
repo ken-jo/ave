@@ -499,6 +499,24 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(childProcessMock.spawn.mock.calls.some((call) => call[0] === WXC_EXEC)).toBe(false);
   });
 
+  it.each(["en", "ko"] as const)("keeps the refusal code and a bounded grant in the %s result for a long refused write", async (locale) => {
+    const { getLocale, setLocale } = await import("../../i18n/index.js");
+    const { ConfinementStateWriteGrantError } = await import("../../permissions/confinement-state-paths.js");
+    const grant = `D:\\${"프로젝트-작업폴더\\".repeat(16)}leaf-grant`;
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      bootMxcShells();
+      mxcLaunchMock.prepare.mockRejectedValueOnce(new ConfinementStateWriteGrantError(grant, "container-runtime"));
+      const result = await executePowerShell(context(`ps-mxc-state-${locale}`));
+      expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+      expect(result.output).toMatch(/^PowerShell spawn failed: .*D:\\프로젝트.*….*\\leaf-grant.*\(confinement-state-write-grant\)$/su);
+      expect(Buffer.byteLength(result.output.slice("PowerShell spawn failed: ".length))).toBeLessThanOrEqual(500);
+    } finally {
+      setLocale(previous);
+    }
+  });
+
   it("reports an isolated HOME that cannot be created as an unavailable spawn and prepares nothing", async () => {
     bootMxcShells();
     sandboxHomeMock.onCreate.mockImplementationOnce(() => { throw new Error("profile directory failed"); });

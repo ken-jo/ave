@@ -19,19 +19,42 @@ const STATE_CLASS_KEY = {
   "container-runtime": "be_confinementState.containerRuntimeClass",
 } as const;
 
+// The grant as shown in the message: with the longest template (277 bytes) a result's 500-byte cut keeps the code.
+const GRANT_DISPLAY_BYTES = 200;
+
+/** `path` within GRANT_DISPLAY_BYTES of UTF-8: its start and its leaf end, joined by `…`. */
+function boundedGrantDisplay(path: string): string {
+  if (Buffer.byteLength(path) <= GRANT_DISPLAY_BYTES) return path;
+  const chars = Array.from(path);
+  const take = (from: readonly string[], budget: number): string[] => {
+    const kept: string[] = [];
+    for (const char of from) {
+      budget -= Buffer.byteLength(char);
+      if (budget < 0) break;
+      kept.push(char);
+    }
+    return kept;
+  };
+  const budget = GRANT_DISPLAY_BYTES - Buffer.byteLength("…");
+  const head = take(chars, Math.floor(budget / 3));
+  const tail = take([...chars].reverse(), budget - Buffer.byteLength(head.join(""))).reverse();
+  return `${head.join("")}…${tail.join("")}`;
+}
+
 /** A write grant would equal, sit inside or contain a confinement backend's own state, or it or that state could not be
- * located. */
+ * located. `path` is the full grant; the message shows it bounded. */
 export class ConfinementStateWriteGrantError extends Error {
   readonly code = CONFINEMENT_STATE_WRITE_GRANT_CODE;
   constructor(path: undefined);
   constructor(path: string, reason: ConfinementStateClass | "grant-unresolved");
   constructor(readonly path: string | undefined, readonly reason?: ConfinementStateClass | "grant-unresolved") {
     const code = CONFINEMENT_STATE_WRITE_GRANT_CODE;
+    const shown = path === undefined ? "" : boundedGrantDisplay(path);
     super(path === undefined || reason === undefined
       ? t("be_confinementState.unresolved", { code })
       : reason === "grant-unresolved"
-        ? t("be_confinementState.grantUnresolved", { path, code })
-        : t("be_confinementState.writeGrantRefused", { path, stateClass: t(STATE_CLASS_KEY[reason]), code }));
+        ? t("be_confinementState.grantUnresolved", { path: shown, code })
+        : t("be_confinementState.writeGrantRefused", { path: shown, stateClass: t(STATE_CLASS_KEY[reason]), code }));
     this.name = "ConfinementStateWriteGrantError";
   }
 }
