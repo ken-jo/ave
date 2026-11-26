@@ -1121,37 +1121,42 @@ async function sha256OfFile(path: string): Promise<string> {
   return createHash("sha256").update(await readFile(path)).digest("hex");
 }
 
-// One verification per launcher path per process: boot, then every launch reuses it.
-const verifiedLaunchers = new Map<string, Promise<string>>();
+const verifiedLaunchers = new Map<string, { identity: string; verified: Promise<void> }>();
 
-/** The current launcher file at the installed path. Boot and launch verify its build separately. */
-export function requireHostWxcExecFile(): string {
+function getHostWxcExecFile(): { path: string; identity: string } {
   const path = wxcExecPathFor(getHostResources().resourcePath, process.arch);
-  if (path === undefined || lstatSync(path, { throwIfNoEntry: false })?.isFile() !== true) {
-    throw new Error("Contained shell launcher is missing from this installation");
-  }
-  return path;
+  if (path === undefined) throw new Error("Contained shell launcher is missing from this installation");
+  const stats = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+  if (stats?.isFile() !== true) throw new Error("Contained shell launcher is missing from this installation");
+  return { path, identity: `${path}:${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}` };
 }
 
-// The installer protects the pinned build from replacement by a signed-in user. The file can still disappear after boot.
-export async function resolveHostWxcExecPath(): Promise<string> {
-  const path = requireHostWxcExecFile();
-  let verified = verifiedLaunchers.get(path);
-  if (verified === undefined) {
+export function getHostWxcExecIdentity(): string {
+  return getHostWxcExecFile().identity;
+}
+
+// The protected installation permits reusing the digest for the same file identity.
+export async function resolveHostWxcExecPath(expectedIdentity?: string): Promise<string> {
+  const { path, identity } = getHostWxcExecFile();
+  if (expectedIdentity !== undefined && expectedIdentity !== identity) throw new Error("Contained shell launcher changed before verification");
+  let entry = verifiedLaunchers.get(path);
+  if (entry?.identity !== identity) {
     const pinned = pinnedWxcExecSha256(process.arch);
-    verified = sha256OfFile(path).then((digest) => {
-      if (digest !== pinned) throw new Error(`Microsoft Execution Containers launcher ${path} is not the pinned build`);
-      return path;
+    const verified = sha256OfFile(path).then((digest) => {
+      if (digest !== pinned) throw new Error(`Contained shell launcher ${path} is not the pinned build`);
     });
-    verifiedLaunchers.set(path, verified);
+    entry = { identity, verified };
+    verifiedLaunchers.set(path, entry);
   }
-  return await verified;
+  await entry.verified;
+  if (getHostWxcExecIdentity() !== identity) throw new Error("Contained shell launcher changed during verification");
+  return path;
 }
 
 type HostProbe = (deps: DetectMxcSupportDeps) => Promise<MxcSupport>;
 
 // Run one detection step against this host's shipped binary, in a fresh probe directory.
-async function withHostMxcDeps(step: HostProbe): Promise<MxcSupport> {
+async function withHostMxcDeps(step: HostProbe, expectedLauncherIdentity?: string): Promise<MxcSupport> {
   const [{ execFile }, { existsSync }, { mkdtemp, rm }, os, path] = await Promise.all([
     import("node:child_process"),
     import("node:fs"),
@@ -1173,6 +1178,9 @@ async function withHostMxcDeps(step: HostProbe): Promise<MxcSupport> {
       systemRoot: process.platform === "win32" ? windowsSystemRoot() : "",
       run: (file, args, timeoutMs) =>
         new Promise((resolve, reject) => {
+          if (expectedLauncherIdentity !== undefined && getHostWxcExecIdentity() !== expectedLauncherIdentity) {
+            throw new Error("Contained shell launcher changed before spawn");
+          }
           execFile(file, [...args], { cwd: path.dirname(file), timeout: timeoutMs, windowsHide: true, maxBuffer: MXC_MAX_LAUNCHER_OUTPUT_BYTES }, (error, stdout, stderr) => {
             const code = error === null ? 0 : typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : null;
             if (error !== null && code === null) {
@@ -1194,7 +1202,7 @@ export async function detectHostMxcPrerequisites(): Promise<MxcSupport> {
 }
 
 // probeMxcPowerShellStart against this host's shipped binary (after boot).
-export async function probeHostMxcPowerShellStart(): Promise<MxcSupport> {
+export async function probeHostMxcPowerShellStart(expectedLauncherIdentity?: string): Promise<MxcSupport> {
   // The probe starts a container too: a runtime root that was not proved private refuses it, under its own reason.
   const { MxcRuntimeRootError, requireMxcContainerStartRoot } = await import("./mxc-runtime-root.js");
   try {
@@ -1203,5 +1211,5 @@ export async function probeHostMxcPowerShellStart(): Promise<MxcSupport> {
     if (!(error instanceof MxcRuntimeRootError)) throw error;
     return { state: "unavailable", reason: "runtime-root-unproved", windowsBuild: null, detail: `runtime root proof failed: ${error.message}` };
   }
-  return await withHostMxcDeps(probeMxcPowerShellStart);
+  return await withHostMxcDeps(probeMxcPowerShellStart, expectedLauncherIdentity);
 }

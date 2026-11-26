@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   offlineConfinement: vi.fn(),
   accountOperational: vi.fn(),
   requireLauncher: vi.fn(),
+  verifyLauncher: vi.fn(),
   runtimeActive: vi.fn(),
   detectMxc: vi.fn(),
   startProbe: vi.fn(),
@@ -63,7 +64,8 @@ vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/mxc-windows.js")>(),
   detectHostMxcPrerequisites: h.detectMxc,
   probeHostMxcPowerShellStart: h.startProbe,
-  requireHostWxcExecFile: h.requireLauncher,
+  getHostWxcExecIdentity: h.requireLauncher,
+  resolveHostWxcExecPath: h.verifyLauncher,
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
@@ -74,6 +76,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
   return {
     appOwnedSandboxTempRoot: () => join(roots, "tmp"),
     isAsrtSandboxActive: h.runtimeActive,
+    isWindowsBackgroundConfinementRuntimeActive: h.runtimeActive,
     isOfflineProcessConfinementActive: h.offlineConfinement,
     isWindowsAccountConfinementOperational: async () => h.accountOperational(),
     getWindowsConfinementRoute: () => [h.runtimeActive(), h.offlineConfinement()],
@@ -158,6 +161,7 @@ beforeEach(() => {
   h.offlineConfinement.mockReset().mockReturnValue(false);
   h.accountOperational.mockReset().mockImplementation(() => h.offlineConfinement());
   h.requireLauncher.mockReset().mockReturnValue("C:/example/resources/wxc-exec.exe");
+  h.verifyLauncher.mockReset().mockImplementation(async () => h.requireLauncher());
   h.runtimeActive.mockReset().mockReturnValue(false);
   h.checkDeps.mockReset();
   h.detectMxc.mockReset();
@@ -398,6 +402,36 @@ it.each([
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+it.each(["route withdrawal", "launcher identity replacement", "launcher verification failure"] as const)(
+  "refuses a container receipt after %s with the same boot record", async loss => {
+    const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+    try {
+      setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+      h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+      h.detectMxc.mockResolvedValue(MXC_OK);
+      await initSandboxGate(harness.context(true, false));
+      await vi.waitFor(() => expect(getWindowsSandboxSubstrate()?.shells).toBe("mxc"));
+      const published = getWindowsSandboxSubstrate();
+      const answer = deferred<object>();
+      h.startProbe.mockClear().mockReturnValue(answer.promise);
+      if (loss === "launcher verification failure") h.verifyLauncher.mockRejectedValueOnce(new Error("launcher failed verification"));
+      const pending = refreshWindowsBackgroundAdmission();
+      if (loss !== "launcher verification failure") await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
+      if (loss === "route withdrawal") {
+        setShellSandboxRequestedAtBoot(false);
+        setShellSandboxRequestedAtBoot(true);
+      }
+      answer.resolve(MXC_OK);
+      const admission = await pending;
+      if (loss === "launcher identity replacement") h.requireLauncher.mockReturnValue("replaced launcher identity");
+      expect(getWindowsSandboxSubstrate()).toBe(published);
+      expect(admission.searchIndexPolicy(true)).toBe("inactive");
+    } finally {
+      unregister();
+    }
+  },
+);
 
 it.each([false, true])("does no SQLite work for a superseded refresh (first inventory clean: %s)", async firstClean => {
   const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);

@@ -4,6 +4,7 @@ const h = vi.hoisted(() => ({
   resourcePath: String.raw`C:\Program Files\Ave\resources`,
   readFile: vi.fn(async (_path: string) => Buffer.from("not the launcher")),
   launcherFile: true,
+  launcherIno: 1n,
 }));
 
 vi.mock("../../main/host-resources.js", () => ({
@@ -15,10 +16,10 @@ vi.mock("node:fs/promises", async (importOriginal) => ({
 }));
 vi.mock("node:fs", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:fs")>(),
-  lstatSync: vi.fn(() => h.launcherFile ? { isFile: () => true } : undefined),
+  lstatSync: vi.fn(() => h.launcherFile ? { isFile: () => true, dev: 1n, ino: h.launcherIno, size: 10n, mtimeNs: 10n, ctimeNs: 10n } : undefined),
 }));
 
-import { requireHostWxcExecFile, resolveHostWxcExecPath } from "../mxc-windows.js";
+import { getHostWxcExecIdentity, resolveHostWxcExecPath } from "../mxc-windows.js";
 
 afterEach(() => {
   h.readFile.mockClear();
@@ -27,9 +28,9 @@ afterEach(() => {
 
 describe.runIf(process.arch === "x64" || process.arch === "arm64")("resolveHostWxcExecPath", () => {
   it("requires a launcher file at the current installed path on every call", async () => {
-    expect(requireHostWxcExecFile()).toBe(`${h.resourcePath}\\mxc\\${process.arch}\\wxc-exec.exe`);
+    expect(getHostWxcExecIdentity()).toContain(`${h.resourcePath}\\mxc\\${process.arch}\\wxc-exec.exe`);
     h.launcherFile = false;
-    expect(() => requireHostWxcExecFile()).toThrow("launcher is missing");
+    expect(() => getHostWxcExecIdentity()).toThrow("launcher is missing");
     await expect(resolveHostWxcExecPath()).rejects.toThrow("launcher is missing");
     expect(h.readFile).not.toHaveBeenCalled();
   });
@@ -38,6 +39,14 @@ describe.runIf(process.arch === "x64" || process.arch === "arm64")("resolveHostW
     h.resourcePath = String.raw`C:\Ave-a\resources`;
     await expect(resolveHostWxcExecPath()).rejects.toThrow(/not the pinned build/);
     expect(h.readFile).toHaveBeenCalledWith(`${h.resourcePath}\\mxc\\${process.arch}\\wxc-exec.exe`);
+  });
+
+  it("rechecks the pinned digest when the launcher file changes at the same path", async () => {
+    h.resourcePath = String.raw`C:\Ave-c\resources`;
+    await expect(resolveHostWxcExecPath()).rejects.toThrow(/not the pinned build/);
+    h.launcherIno += 1n;
+    await expect(resolveHostWxcExecPath()).rejects.toThrow(/not the pinned build/);
+    expect(h.readFile).toHaveBeenCalledTimes(2);
   });
 
   it("hashes a launcher path once per process and keeps refusing it", async () => {

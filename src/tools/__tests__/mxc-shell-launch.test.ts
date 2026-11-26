@@ -454,7 +454,7 @@ describe("prepareMxcShellLaunch", () => {
     // Fixed words: the launcher's absolute path is not part of the failure.
     await expect(prepareMxcShellLaunch({ ...INPUT, exists: (p) => !p.endsWith("wxc-exec.exe") }, lifecycle))
       .rejects.toThrow(/^Contained shell launcher is missing from this installation$/u);
-    expect(invalidateWindowsBackendEvidence).toHaveBeenCalledOnce();
+    expect(invalidateWindowsBackendEvidence).toHaveBeenCalledExactlyOnceWith("container");
     expect(await lifecycle.dispose()).toEqual([]);
     expect(h.openRelay).not.toHaveBeenCalled();
   });
@@ -467,7 +467,7 @@ describe("prepareMxcShellLaunch", () => {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe("Contained shell launcher could not be verified on this installation");
     expect((error as Error).cause).toBeUndefined();
-    expect(invalidateWindowsBackendEvidence).toHaveBeenCalledOnce();
+    expect(invalidateWindowsBackendEvidence).toHaveBeenCalledExactlyOnceWith("container");
     expect(await lifecycle.dispose()).toEqual([]);
     expect(h.openRelay).not.toHaveBeenCalled();
   });

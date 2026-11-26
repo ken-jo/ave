@@ -60,6 +60,7 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../sandbox-capability.js";
 import * as facts from "../../shared/windows-path-facts.js";
 import * as denyAcl from "../windows-deny-acl.js";
+import * as srtIntegrity from "../srt-win-integrity.js";
 import * as stampTargets from "../windows-stamp-targets.js";
 import { windowsDenyOperandKey } from "../sandbox-write-policy.js";
 import { assertExtensionStartAllowed, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, probeExtensionStart, isAsrtSandboxActive, isOfflineProcessConfinementActive, isPluginWorkerConfinementActive, isWindowsAccountConfinementOperational, resetAsrtSandbox, wrapToolCommand, wrapWorkerCommand } from "../asrt-sandbox.js";
@@ -208,6 +209,19 @@ describe("background session isolation", () => {
     await expect(isWindowsAccountConfinementOperational()).resolves.toBe(true);
     // The blocking status query never runs for this check.
     expect(nativeWorker.getWindowsSandboxUserStatus).not.toHaveBeenCalled();
+  });
+
+  it("revalidates the private helper before every account status check", async () => {
+    await initializeAsrtSandbox({});
+    await expect(isWindowsAccountConfinementOperational()).resolves.toBe(true);
+    const verify = vi.spyOn(srtIntegrity, "prepareSrtWinExecutable").mockImplementationOnce(() => {
+      throw new Error("helper digest changed");
+    });
+    nativeWorker.getWindowsSandboxUserStatusAsync.mockClear();
+    await expect(isWindowsAccountConfinementOperational()).resolves.toBe(false);
+    expect(verify).toHaveBeenCalledOnce();
+    expect(nativeWorker.getWindowsSandboxUserStatusAsync).not.toHaveBeenCalled();
+    await expect(isWindowsAccountConfinementOperational()).resolves.toBe(true);
   });
 
   it("keeps UNC names and directory hints exact after removing the extended prefix", () => {

@@ -93,6 +93,7 @@ import {
 import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
 import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
 import { isWindowsPathAtOrUnder, MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
+import { invalidateWindowsBackendEvidence } from "../permissions/windows-confinement-evidence.js";
 import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";
 import { createContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 import { buildMandatorySandboxWritePolicy } from "../permissions/sandbox-write-policy.js";
@@ -4247,6 +4248,7 @@ async function spawnPowerShellInMxc(
     const [cmd, ...args] = launch.argv;
     if (cmd === undefined) throw new Error("Container launcher is missing");
     launch.activate();
+    const launcherEnv = buildSafeChildEnv({});
     try {
       child = spawn(cmd, args, {
         // The launcher runs from its own (per-machine, admin-only) directory, so
@@ -4257,9 +4259,10 @@ async function spawnPowerShellInMxc(
         shell: false,
         windowsHide: true,
         // The launcher's own environment: the container's is in the request.
-        env: buildSafeChildEnv({}),
+        env: launcherEnv,
       });
     } catch (error) {
+      invalidateWindowsBackendEvidence("container");
       throw launcherError(error);
     }
   } catch (error) {
@@ -4318,6 +4321,7 @@ async function spawnPowerShellInMxc(
     let lifetime: ReturnType<typeof watchShellLifetime> | undefined;
     let closed: Promise<void> | undefined;
     spawned.on("error", (err) => {
+      if (spawned.pid === undefined) invalidateWindowsBackendEvidence("container");
       void (async () => {
         if (closed !== undefined) await closed;
         // A spawn that fails (no pid) may never emit "close". A running child keeps its

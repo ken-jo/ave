@@ -418,7 +418,6 @@ type WindowsAccountRuntime = Pick<typeof import("@anthropic-ai/sandbox-runtime")
 interface AsrtSandboxSession {
   readonly linuxWrapperPrograms?: LinuxWrapperPrograms;
   readonly windowsAccountRuntime?: WindowsAccountRuntime;
-  windowsAccountHelperPath?: string;
   readonly queryWindowsDocumentsPath?: WindowsDocumentsQuery;
   sharedWindowsDocumentsPath?: () => string;
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
@@ -1372,6 +1371,11 @@ function requireWindowsSandboxUserSid(user: ReturnType<WindowsAccountRuntime["ge
   return user.sid;
 }
 
+/** The background gate must account for a live account runtime or a live container proxy. */
+export function isWindowsBackgroundConfinementRuntimeActive(): boolean {
+  return active;
+}
+
 /** Identities that every piece of Windows confinement evidence is bound to: the session, its liveness and its deny protection. */
 export function getWindowsConfinementRoute(): readonly unknown[] {
   return [sandboxSession, active, sandboxSession?.windowsDenyFailure];
@@ -1384,8 +1388,7 @@ export async function isWindowsAccountConfinementOperational(): Promise<boolean>
   if (process.platform !== "win32" || session === undefined || runtime === undefined || !isOfflineProcessConfinementActive()) return false;
   try {
     assertWindowsDenyProtection();
-    session.windowsAccountHelperPath ??= getVerifiedSrtWinExePath();
-    const srtWin = runtime.resolveSrtWin({ path: session.windowsAccountHelperPath });
+    const srtWin = runtime.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
     requireWindowsSandboxUserSid(await runtime.getWindowsSandboxUserStatusAsync({ srtWin }));
     await runtime.verifyWindowsWfpEgress({ proxyPortRange: [...getWindowsProxyPortRange()], srtWin });
     assertWindowsSession(session);

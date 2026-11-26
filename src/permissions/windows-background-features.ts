@@ -1,6 +1,6 @@
 import type { SessionSearchIndexPolicy, SessionSearchIndexPolicySource } from "../memory/session-search-index.js";
 import { isAveHomePrivacyVerifiedAtBoot } from "../shared/ave-home.js";
-import { isAsrtSandboxActive } from "./asrt-sandbox.js";
+import { isWindowsBackgroundConfinementRuntimeActive } from "./asrt-sandbox.js";
 import { hasMxcReleaseGateEvidence } from "./mxc-extension-admission.js";
 import { mxcSandboxHomesParent } from "./mxc-runtime-root.js";
 import {
@@ -49,15 +49,15 @@ function admissionOver(stateOf: (owner: WindowsBackendEvidenceOwner) => WindowsB
       && (plan.reason === (substrate.mxc.state === "unavailable" ? substrate.mxc.reason : undefined) || plan.reason === "native-validation-required"));
   };
   return {
-    areSwitchesAvailable: () => isWindowsBackgroundFeatureReleaseEnabled() && !isSandboxGateUndecidedAtBoot() && !isAsrtSandboxActive()
+    areSwitchesAvailable: () => isWindowsBackgroundFeatureReleaseEnabled() && !isSandboxGateUndecidedAtBoot() && !isWindowsBackgroundConfinementRuntimeActive()
       && hasDefinitiveBackendAbsence() && hasWindowsBackgroundHealth(),
     searchIndexPolicy: (preference) => {
       if (!isWindowsBackgroundFeatureReleaseEnabled()) return "enabled";
       if (isSandboxGateUndecidedAtBoot()) return "inactive";
       const substrate = getWindowsSandboxSubstrate();
-      const confinementOperational = substrate !== null && isAsrtSandboxActive() && WINDOWS_BACKEND_EVIDENCE
+      const confinementOperational = substrate !== null && isWindowsBackgroundConfinementRuntimeActive() && WINDOWS_BACKEND_EVIDENCE
         .some((owner) => owner.provider.isRoutePublished(substrate) && stateOf(owner) === "operational");
-      if (!confinementOperational && (isAsrtSandboxActive() || !hasDefinitiveBackendAbsence())) return "inactive";
+      if (!confinementOperational && (isWindowsBackgroundConfinementRuntimeActive() || !hasDefinitiveBackendAbsence())) return "inactive";
       if (!hasWindowsBackgroundHealth()) return "inactive";
       return !confinementOperational && preference === false ? "paused" : "enabled-with-recovery";
     },

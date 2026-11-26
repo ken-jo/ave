@@ -135,12 +135,12 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   try {
     wxcExec = await resolveHostWxcExecPath();
   } catch {
-    invalidateWindowsBackendEvidence();
+    invalidateWindowsBackendEvidence("container");
     // The resolver's failures name the launcher's absolute path.
     throw new Error("Contained shell launcher could not be verified on this installation");
   }
   if (!input.exists(wxcExec)) {
-    invalidateWindowsBackendEvidence();
+    invalidateWindowsBackendEvidence("container");
     throw new Error("Contained shell launcher is missing from this installation");
   }
   // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.

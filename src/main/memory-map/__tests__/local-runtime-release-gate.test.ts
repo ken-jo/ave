@@ -17,7 +17,7 @@ const state = vi.hoisted(() => ({
   substrate: undefined as Pick<SandboxWindowsSubstrateInfo, 'mxc' | 'srtWinReady' | 'accountBackendAbsent' | 'shells'> | undefined,
 }));
 vi.mock('../../../permissions/asrt-sandbox.js', () => ({
-  isAsrtSandboxActive: () => state.confined || state.substrate?.shells === 'mxc',
+  isWindowsBackgroundConfinementRuntimeActive: () => state.confined || state.substrate?.shells === 'mxc',
   isOfflineProcessConfinementActive: () => state.confined,
   isWindowsAccountConfinementOperational: async () => state.confined && await state.accountOperational(),
   checkAsrtDependencies: state.accountInventory,
@@ -25,7 +25,8 @@ vi.mock('../../../permissions/asrt-sandbox.js', () => ({
 }));
 vi.mock('../../../permissions/mxc-windows.js', async importOriginal => ({
   ...await importOriginal<typeof import('../../../permissions/mxc-windows.js')>(),
-  requireHostWxcExecFile: () => 'C:/example/resources/wxc-exec.exe',
+  getHostWxcExecIdentity: () => 'C:/example/resources/wxc-exec.exe',
+  resolveHostWxcExecPath: async () => 'C:/example/resources/wxc-exec.exe',
   detectHostMxcPrerequisites: state.containerInventory,
   probeHostMxcPowerShellStart: state.containerStart,
 }));

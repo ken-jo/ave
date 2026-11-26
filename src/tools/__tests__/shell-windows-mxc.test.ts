@@ -3,6 +3,7 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
 
 import { EventEmitter } from "node:events";
+import * as backendEvidence from "../../permissions/windows-confinement-evidence.js";
 import { PassThrough } from "node:stream";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -600,6 +601,7 @@ describe("builtin shell — Windows MXC containers", () => {
 
   it.each(["reports an error", "throws"] as const)("releases the listener and shows only the error code when the launcher's spawn %s", async (failure) => {
     bootMxcShells();
+    const reportLoss = vi.spyOn(backendEvidence, "invalidateWindowsBackendEvidence");
     // Node names the launcher's absolute path in the message, `syscall`, `path` and `spawnargs`.
     const spawnError = (): Error => Object.assign(new Error(`spawn ${WXC_EXEC} ENOENT`), {
       code: "ENOENT", errno: -4058, syscall: `spawn ${WXC_EXEC}`, path: WXC_EXEC, spawnargs: ["--config-base64", "eyJ9"],
@@ -616,11 +618,13 @@ describe("builtin shell — Windows MXC containers", () => {
     const result = await executePowerShell(context(`ps-mxc-enoent-${failure}`));
     expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
     expect(result.output).toBe("PowerShell spawn failed: container launcher error ENOENT");
+    expect(reportLoss).toHaveBeenCalledExactlyOnceWith("container");
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
   });
 
   it("keeps a running launcher's abort watch after an error and releases only on close", async () => {
     bootMxcShells();
+    const reportLoss = vi.spyOn(backendEvidence, "invalidateWindowsBackendEvidence");
     const container = captureCommandLaunch();
     let launcher: (EventEmitter & Record<string, unknown>) | undefined;
     childProcessMock.spawn.mockImplementation((command: string, args: readonly string[], options?: { stdio?: unknown }) => {
@@ -642,6 +646,7 @@ describe("builtin shell — Windows MXC containers", () => {
       { ...context("ps-mxc-running-error"), abortSignal: abort.signal },
     );
     expect(result.isError).toBe(true);
+    expect(reportLoss).not.toHaveBeenCalled();
     // A still-running errored child must retain its resources and abort watch.
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(1);
     abort.abort();

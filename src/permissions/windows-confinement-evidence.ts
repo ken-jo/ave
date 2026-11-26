@@ -4,7 +4,7 @@ import {
   getWindowsConfinementRoute,
   isWindowsAccountConfinementOperational,
 } from "./asrt-sandbox.js";
-import { detectHostMxcPrerequisites, probeHostMxcPowerShellStart, requireHostWxcExecFile } from "./mxc-windows.js";
+import { detectHostMxcPrerequisites, getHostWxcExecIdentity, probeHostMxcPowerShellStart, resolveHostWxcExecPath } from "./mxc-windows.js";
 import { detectMxcShellCapability, getSandboxGeneration, getWindowsSandboxSubstrate } from "./sandbox-capability.js";
 
 export type WindowsBackendState = "operational" | "absent" | "unavailable";
@@ -35,28 +35,34 @@ function sameRoute(left: readonly unknown[], right: readonly unknown[]): boolean
 export class WindowsBackendEvidenceOwner {
   private epoch = 0;
   private settled: (WindowsBackendEvidence & { readonly route: readonly unknown[] }) | undefined;
-  private pending: Promise<WindowsBackendEvidence | undefined> | undefined;
+  private pending: { route: readonly unknown[]; receipt: Promise<WindowsBackendEvidence | undefined> } | undefined;
 
   constructor(readonly provider: WindowsBackendEvidenceProvider) {}
 
   /** One probe at a time: callers arriving during a probe share its result. */
   refresh(): Promise<WindowsBackendEvidence | undefined> {
-    if (this.pending !== undefined) return this.pending;
-    const epoch = ++this.epoch;
-    this.settled = undefined;
-    const pending = Promise.resolve().then(() => this.probe(epoch)).finally(() => {
-      if (this.pending === pending) this.pending = undefined;
-    });
-    this.pending = pending;
-    return pending;
-  }
-
-  private async probe(epoch: number): Promise<WindowsBackendEvidence | undefined> {
-    if (epoch !== this.epoch) return undefined;
-    let route: readonly unknown[] | undefined;
-    let state: WindowsBackendState = "unavailable";
+    let route: readonly unknown[];
     try {
       route = this.provider.route();
+    } catch {
+      this.invalidate();
+      return Promise.resolve(undefined);
+    }
+    if (this.pending !== undefined && sameRoute(this.pending.route, route)) return this.pending.receipt;
+    const epoch = ++this.epoch;
+    this.settled = undefined;
+    const receipt = Promise.resolve().then(() => this.probe(epoch, route)).finally(() => {
+      if (this.pending?.receipt === receipt) this.pending = undefined;
+    });
+    this.pending = { route, receipt };
+    return receipt;
+  }
+
+  private async probe(epoch: number, route: readonly unknown[]): Promise<WindowsBackendEvidence | undefined> {
+    if (epoch !== this.epoch) return undefined;
+    let state: WindowsBackendState = "unavailable";
+    try {
+      if (!sameRoute(route, this.provider.route())) return undefined;
       // Only the role the boot record gives a backend is worth a native query.
       const substrate = getWindowsSandboxSubstrate();
       if (substrate !== null && this.provider.isRoutePublished(substrate)) {
@@ -70,7 +76,7 @@ export class WindowsBackendEvidenceOwner {
     // An invalidation or a route change during the probe voids its answer.
     if (epoch !== this.epoch) return undefined;
     try {
-      if (route !== undefined && sameRoute(route, this.provider.route())) {
+      if (sameRoute(route, this.provider.route())) {
         this.settled = { epoch, state, route };
         return this.settled;
       }
@@ -113,10 +119,15 @@ const accountBackend = new WindowsBackendEvidenceOwner({
 });
 
 const containerBackend = new WindowsBackendEvidenceOwner({
-  route: () => [getSandboxGeneration(), ...getWindowsConfinementRoute(), getWindowsSandboxSubstrate(), detectMxcShellCapability()],
+  route: () => {
+    const capability = detectMxcShellCapability();
+    return [getSandboxGeneration(), ...getWindowsConfinementRoute(), getWindowsSandboxSubstrate(), capability,
+      capability?.confidence === "verified" ? getHostWxcExecIdentity() : undefined];
+  },
   probeRoute: async () => {
-    requireHostWxcExecFile();
-    return (await probeHostMxcPowerShellStart()).state === "available";
+    const launcher = getHostWxcExecIdentity();
+    await resolveHostWxcExecPath(launcher);
+    return (await probeHostMxcPowerShellStart(launcher)).state === "available";
   },
   probeAbsence: async () => {
     const support = await detectHostMxcPrerequisites();
@@ -133,8 +144,9 @@ const containerBackend = new WindowsBackendEvidenceOwner({
 export const WINDOWS_BACKEND_EVIDENCE: readonly WindowsBackendEvidenceOwner[] = [accountBackend, containerBackend];
 
 /** A failed launch or a withdrawn route: nothing gathered before it may admit work. */
-export function invalidateWindowsBackendEvidence(): void {
-  for (const owner of WINDOWS_BACKEND_EVIDENCE) owner.invalidate();
+export function invalidateWindowsBackendEvidence(backend?: "account" | "container"): void {
+  if (backend !== "account") containerBackend.invalidate();
+  if (backend !== "container") accountBackend.invalidate();
 }
 
 /** Probes every backend for the calling operation and returns what each probe established. */
