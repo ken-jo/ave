@@ -252,11 +252,35 @@ async function decodeCaptureTile(
 export async function createCaptureStitch(width: number, height: number) {
   const { default: sharp } = await import("sharp");
   const pixels = Buffer.alloc(width * height * 4);
+  // A tile sent ahead waits here: at most two tiles are extracted at once, within the raw-pixel budget.
+  const waiting: Array<{ cost: number; start(): void }> = [];
+  let active = 0;
+  let activePixels = 0;
+  const admit = (): void => {
+    for (let next = waiting[0]; next && (active === 0 || (active < 2 && activePixels + next.cost <= CAPTURE_DECODE_PIXELS)); next = waiting[0]) {
+      waiting.shift();
+      active += 1;
+      activePixels += next.cost;
+      next.start();
+    }
+  };
   return {
     decode(png: Buffer, { pixelWidth, pixelHeight, scale, skip, copied, rows }: CaptureTilePlacement): Promise<void> {
+      const cost = Math.min(pixelWidth * pixelHeight, CAPTURE_DECODE_PIXELS);
       // Keep the encoded color values through resampling; the host restores their color tags after encoding.
-      const input = sharp(png, { ignoreIcc: true, limitInputPixels: BROWSER_CAPTURE_LIMITS.pixels });
-      return decodeCaptureTile(input, pixels, pixelWidth, pixelHeight, scale, skip, width, copied, rows);
+      const run = async (): Promise<void> => decodeCaptureTile(
+        sharp(png, { ignoreIcc: true, limitInputPixels: BROWSER_CAPTURE_LIMITS.pixels }), pixels, pixelWidth, pixelHeight, scale, skip, width, copied, rows);
+      return new Promise((resolve, reject) => {
+        waiting.push({ cost, start: () => {
+          // The next tile starts before this result is reported, so its extraction overlaps the sibling's filter.
+          void run().finally(() => {
+            active -= 1;
+            activePixels -= cost;
+            admit();
+          }).then(resolve, reject);
+        } });
+        admit();
+      });
     },
     async encode(): Promise<Buffer> {
       // The PNG encoder reads straight RGBA, including low-alpha channel values.

@@ -42,7 +42,7 @@ export async function captureBrowserTiles(
   throwIfAborted(signal);
   onRestore({ executionContextId, x: original.pageX, y: original.pageY });
   let copied = 0;
-  let pendingDecode: Promise<void> | undefined;
+  let pendingDecodes: Array<Promise<void>> = [];
   let initialScale: number | undefined;
   let colorProfile: Buffer | undefined;
   while (copied < height) {
@@ -83,19 +83,20 @@ export async function captureBrowserTiles(
       throwIfAborted(signal);
       return trackDecode(stitcher.decode(bytes, { pixelWidth, pixelHeight, scale, skip, copied, rows }));
     };
-    // Two small fractional tiles can decode concurrently within the raw-pixel budget.
+    // Two small fractional tiles can decode concurrently within the raw-pixel budget. A third is handed over
+    // ahead and waits in the stitcher, so a freed slot is refilled without a round trip.
     if (!Number.isInteger(scale) && pixelWidth * pixelHeight <= CAPTURE_DECODE_PIXELS / 2) {
-      const previousDecode = pendingDecode;
-      pendingDecode = decode();
-      await previousDecode;
+      const oldestDecode = pendingDecodes.length === 2 ? pendingDecodes.shift() : undefined;
+      pendingDecodes.push(decode());
+      await oldestDecode;
     } else {
-      await pendingDecode;
-      pendingDecode = undefined;
+      await Promise.all(pendingDecodes);
+      pendingDecodes = [];
       await decode();
     }
     copied += rows;
   }
-  await pendingDecode;
+  await Promise.all(pendingDecodes);
   throwIfAborted(signal);
   // The stitcher resampled the encoded color values; restore their color tags here.
   const bytes = await trackDecode(stitcher.encode());
