@@ -753,11 +753,12 @@ bounded by the character cap. General structural parsing retains its existing
 safety limits. The independent path-evidence pass uses the same complete-input
 400-record budget, including executed nested literal code. With a saved
 PowerShell deny rule, an over-limit or unreadable PowerShell command is refused
-at admission with `shell-analysis-limit` in every mode. It produces no ask-rule
-evidence and offers no review or approval. Without a saved PowerShell deny,
-an over-limit command reaches the analysis-limit floor when other admission
-and deny checks pass. Unreadable syntax within the limit continues through the
-ordinary decision pipeline.
+at admission in every mode. The fallback reason is `shell-analysis-limit` when
+no conclusive deny or earlier admission check has supplied the result. The
+refusal produces no ask-rule evidence and offers no review or approval. Without
+a saved PowerShell deny, an over-limit command reaches the analysis-limit floor
+when other admission and deny checks pass. Unreadable syntax within the limit
+continues through the ordinary decision pipeline.
 
 When a shell command reaches the analysis-limit floor, both contained and host
 routes require one-time human approval in every mode. The floor offers no
