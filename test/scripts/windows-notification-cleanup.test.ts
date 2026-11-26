@@ -80,9 +80,9 @@ function prepareRegistryFixture(clsid = legacyClsid) {
     });
   }
 
-  /** Runs cleanup until the fixture pauses in its last registry read, then lets `onPaused` answer for an Ave start. */
-  async function runPausedInLastScan(onPaused: () => "provisioned" | "exited") {
-    const child = spawn(powerShell, args, { env: environment("product-start"), windowsHide: true });
+  /** Waits for the fixture to pause, then lets `onPaused` answer for an Ave start. */
+  async function runPaused(onPaused: () => "provisioned" | "exited", scenario = "product-start") {
+    const child = spawn(powerShell, args, { env: environment(scenario), windowsHide: true });
     onTestFinished(() => void child.kill());
     let stdout = "";
     let stderr = "";
@@ -113,7 +113,7 @@ function prepareRegistryFixture(clsid = legacyClsid) {
     writeState: (state: unknown) => writeFileSync(registry, JSON.stringify(state)),
     removeShortcut: () => unlinkSync(shortcut),
     installDir,
-    runPausedInLastScan,
+    runPaused,
     writeShortcut: (content: string) => writeFileSync(shortcut, content),
     readShortcut: () => readFileSync(shortcut, "utf8"),
     quarantineShortcut: () => {
@@ -358,7 +358,7 @@ describe("current-user toast cleanup", () => {
 
     // The fixture stands in for the provisioning that follows the real startup probe.
     let lockSeen: boolean | undefined;
-    const result = await fixture.runPausedInLastScan(() => {
+    const result = await fixture.runPaused(() => {
       lockSeen = isWindowsNotificationCleanupInProgress(fixture.installDir);
       return lockSeen ? "exited" : "provisioned";
     });
@@ -371,16 +371,30 @@ describe("current-user toast cleanup", () => {
     expect(existsSync(join(fixture.installDir, lockName))).toBe(false);
   });
 
+  it.runIf(process.platform === "win32")("allows startup when an unrelated process holds a foreign lock file exclusively", async () => {
+    const { isWindowsNotificationCleanupInProgress } = await import("../../src/main/windows-notification-cleanup-lock.js");
+    const fixture = prepareRegistryFixture();
+    writeFileSync(join(fixture.installDir, lockName), "foreign file");
+
+    const result = await fixture.runPaused(
+      () => isWindowsNotificationCleanupInProgress(fixture.installDir) ? "exited" : "provisioned",
+      "unrelated-lock",
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe("provisioned");
+  });
+
   it("takes the lock that the product startup probes before checking for a running Ave", async () => {
     const lock = await import("../../src/main/windows-notification-cleanup-lock.js");
     expect(lock.WINDOWS_NOTIFICATION_CLEANUP_LOCK).toBe(lockName);
     expect(cleanup).toMatch(lockLookup);
     expect(cleanup).toMatch(
-      /\(Join-Path \$lockDirectory "\.ave-notification-cleanup\.lock"\),\s+\[System\.IO\.FileMode\]::CreateNew,\s+\[System\.IO\.FileAccess\]::ReadWrite,\s+\[System\.IO\.FileShare\]::None,\s+1,\s+\[System\.IO\.FileOptions\]::DeleteOnClose/,
+      /\(Join-Path \$lockDirectory "\.ave-notification-cleanup\.lock"\),\s+\[System\.IO\.FileMode\]::CreateNew,\s+\[System\.IO\.FileAccess\]::ReadWrite,\s+\(\[System\.IO\.FileShare\]::Read -bor \[System\.IO\.FileShare\]::Delete\),\s+1,\s+\[System\.IO\.FileOptions\]::DeleteOnClose/,
     );
     const stopped = [...cleanup.matchAll(/^\s*Assert-AveStopped /gm)];
     expect(stopped).toHaveLength(1);
-    expect(stopped[0].index).toBeGreaterThan(cleanup.indexOf("[System.IO.FileShare]::None"));
+    expect(cleanup).toContain('$cleanupLock.Lock(0, 1)');
+    expect(stopped[0].index).toBeGreaterThan(cleanup.indexOf("$cleanupLock.Flush()"));
     expect(stopped[0].index).toBeLessThan(cleanup.indexOf("Get-QuarantinedShortcuts $programs"));
     expect(cleanup).not.toMatch(/Mutex/);
 

@@ -97,18 +97,21 @@ One per-user lock replaces repeated scans.
   artifacts, and only while an Ave process of that user runs.
 - **Lock.** `build/uninstall-windows-notification-artifacts.ps1` holds the file
   `.ave-notification-cleanup.lock` in the user's roaming application data folder
-  for its whole run, opened without sharing and deleted on close. A second
-  cleanup for the same user fails at once.
+  for its whole run. It creates the file exclusively by name, locks byte zero,
+  and writes the protocol marker after that byte. The creating handle owns
+  deletion on close. An occupied path fails acquisition and its entry stays
+  untouched.
 - **Product side.** A packaged Windows start probes the lock in
   `runEarlyBootEnv` (`isWindowsNotificationCleanupInProgress` in
-  `src/main/windows-notification-cleanup-lock.ts`) before the toast activator
-  CLSID is set, and exits while the lock is held. Only a missing file or a
-  successful open counts as free.
-- **Ordering.** Cleanup takes the lock and then runs `Assert-AveStopped` once.
-  An Ave process that already existed fails the cleanup before any mutation. An
-  Ave process started later probes after the lock was taken and exits before a
-  notification presenter can provision. Either way no product write lands
-  between the process check and the release of the lock.
+  `src/main/windows-notification-cleanup-lock.ts`) before setting the toast
+  activator CLSID. It exits only after reading the exact cleanup marker and
+  getting the Windows busy result when reading byte zero on that same handle.
+  Path lookup, file open, marker read, and descriptor close errors allow an
+  ordinary startup to proceed.
+- **Ordering.** Cleanup publishes the marker and then runs
+  `Assert-AveStopped` once. An Ave process that already existed fails cleanup
+  before artifact mutation. A later Ave process whose probe confirms the held
+  lock exits before a notification presenter can provision.
 - **Deletion.** `Remove-OwnedToastRegistration` deletes values only and keeps
   keys. `Test-ToastSlotStillOwned` rereads each slot's type and data
   immediately before its delete. A slot that no longer matches
@@ -151,8 +154,9 @@ Residual limits:
   launch.
 - An unattributable quarantine entry can be an owned shortcut that could not
   be read. The legacy CLSID values it names then stay.
-- Every packaged Windows start depends on the probe. An error other than a
-  missing lock file stops the start.
+- If a startup probe cannot establish the lock state due to an I/O failure,
+  startup proceeds. Cleanup coordination then depends on the existing process
+  check seeing that start.
 
 ## Hard constraints
 

@@ -98,11 +98,18 @@ export function runEarlyBootEnv(): void {
   // before any Notification presenter can initialize so reinstall/repair does not accumulate orphaned HKCU CLSID registrations.
   if (process.platform === "win32") {
     if (!app.isPackaged) removeStaleDevToastShortcut();
-    // The uninstaller is removing this user's notification artifacts; stop before a presenter can provision them again.
-    else if (isWindowsNotificationCleanupInProgress(app.getPath("appData"))) {
-      log.error("notifications: uninstall cleanup is in progress for this user; exiting");
-      app.exit(1);
-      throw new Error("Ave is being uninstalled for this user");
+    else {
+      let cleanupInProgress = false;
+      try {
+        cleanupInProgress = isWindowsNotificationCleanupInProgress(app.getPath("appData"));
+      } catch {
+        // Startup proceeds when roaming application data cannot be resolved.
+      }
+      if (cleanupInProgress) {
+        log.error("notifications: uninstall cleanup is in progress for this user; exiting");
+        app.exit(1);
+        throw new Error("Ave is being uninstalled for this user");
+      }
     }
     app.setToastActivatorCLSID(app.isPackaged ? WINDOWS_TOAST_ACTIVATOR_CLSID : DEV_WINDOWS_TOAST_ACTIVATOR_CLSID);
   }

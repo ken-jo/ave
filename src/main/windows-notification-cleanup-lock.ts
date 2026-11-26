@@ -1,21 +1,32 @@
-import { closeSync, openSync } from "node:fs";
+import { closeSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 
-/** Held open without sharing by build/uninstall-windows-notification-artifacts.ps1 for its whole run, in the user's roaming AppData folder. */
 export const WINDOWS_NOTIFICATION_CLEANUP_LOCK = ".ave-notification-cleanup.lock";
+const CLEANUP_LOCK_MARKER = Buffer.from("Ave notification cleanup v1", "ascii");
 
-/**
- * True while this user's uninstall notification cleanup holds its lock. The cleanup takes the lock and then requires that the
- * user has no Ave process, so a process that probes here before provisioning notification artifacts either was seen by that
- * check or sees the lock. Only a missing file or a successful open means free; any other error counts as held.
- */
 export function isWindowsNotificationCleanupInProgress(appDataDir: string): boolean {
-  let fd: number;
   try {
-    fd = openSync(join(appDataDir, WINDOWS_NOTIFICATION_CLEANUP_LOCK), "r");
-  } catch (cause) {
-    return (cause as NodeJS.ErrnoException).code !== "ENOENT";
+    const fd = openSync(join(appDataDir, WINDOWS_NOTIFICATION_CLEANUP_LOCK), "r");
+    try {
+      // The cleanup writes its marker after acquiring an exclusive lock on byte zero.
+      const marker = Buffer.alloc(CLEANUP_LOCK_MARKER.length + 1);
+      const size = readSync(fd, marker, 0, marker.length, 1);
+      if (size !== CLEANUP_LOCK_MARKER.length || !marker.subarray(0, size).equals(CLEANUP_LOCK_MARKER)) return false;
+      try {
+        readSync(fd, marker, 0, 1, 0);
+        return false;
+      } catch (cause) {
+        // Windows reports a read of the locked byte as EBUSY.
+        return (cause as NodeJS.ErrnoException).code === "EBUSY";
+      }
+    } finally {
+      try {
+        closeSync(fd);
+      } catch {
+        // The probe result is independent of descriptor disposal.
+      }
+    }
+  } catch {
+    return false;
   }
-  closeSync(fd);
-  return false;
 }

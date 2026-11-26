@@ -24,7 +24,7 @@ const mockedElectron = vi.hoisted(() => ({
     setAppUserModelId: vi.fn(),
     setToastActivatorCLSID: vi.fn(),
     exit: vi.fn(),
-    getPath: vi.fn(() => ""),
+    getPath: vi.fn((_name: string) => ""),
     dock: { setIcon: vi.fn() },
     isPackaged: false,
   },
@@ -152,6 +152,24 @@ describe("runEarlyBootEnv", () => {
     mockedElectron.app.exit.mockClear();
     runEarlyBootEnv();
     expect(mockedElectron.app.exit).not.toHaveBeenCalled();
+  });
+
+  it("continues packaged Windows startup when roaming application data lookup fails", () => {
+    setProcessPlatform("win32");
+    mockedElectron.app.getPath.mockImplementation((name) => {
+      if (name === "appData") throw new Error("roaming application data lookup failed");
+      return userDataPath;
+    });
+    mockedElectron.app.isPackaged = true;
+    try {
+      runEarlyBootEnv();
+    } finally {
+      mockedElectron.app.isPackaged = false;
+      mockedElectron.app.getPath.mockReturnValue(userDataPath);
+    }
+
+    expect(mockedElectron.app.exit).not.toHaveBeenCalled();
+    expect(mockedElectron.app.setToastActivatorCLSID).toHaveBeenCalledWith("{62FD3EFB-B3D2-4235-9402-6979F52C0286}");
   });
 
   describe("a dev run's Electron.lnk", () => {

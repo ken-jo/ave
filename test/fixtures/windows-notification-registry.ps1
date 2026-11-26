@@ -82,19 +82,23 @@ class FixtureRegistryKey {
         -not [FixtureRegistryKey]::ProductStarted
       ) {
         [FixtureRegistryKey]::ProductStarted = $true
-        [System.IO.File]::WriteAllText($env:AVE_FIXTURE_SIGNAL, "started")
-        $deadline = [DateTime]::UtcNow.AddSeconds(20)
-        while (-not [System.IO.File]::Exists("$($env:AVE_FIXTURE_SIGNAL).ack")) {
-          if ([DateTime]::UtcNow -gt $deadline) { throw "fixture product start was not acknowledged" }
-          Start-Sleep -Milliseconds 50
-        }
-        if ([System.IO.File]::ReadAllText("$($env:AVE_FIXTURE_SIGNAL).ack") -eq "provisioned") {
+        if ([FixtureRegistryKey]::WaitForProductStart() -eq "provisioned") {
           [FixtureRegistryKey]::State.root |
             Add-Member -NotePropertyName defaultValue -NotePropertyValue "Electron Notification Activator"
           [FixtureRegistryKey]::Save()
         }
       }
     }
+  }
+
+  static [string] WaitForProductStart() {
+    [System.IO.File]::WriteAllText($env:AVE_FIXTURE_SIGNAL, "started")
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    while (-not [System.IO.File]::Exists("$($env:AVE_FIXTURE_SIGNAL).ack")) {
+      if ([DateTime]::UtcNow -gt $deadline) { throw "fixture product start was not acknowledged" }
+      Start-Sleep -Milliseconds 50
+    }
+    return [System.IO.File]::ReadAllText("$($env:AVE_FIXTURE_SIGNAL).ack")
   }
 
   static [void] Save() {
@@ -201,4 +205,13 @@ function Get-ShortcutRecord {
     AppUserModelId = "ai.example.toast"
     ToastClsid = $clsids[$content]
   }
+}
+
+if ($env:AVE_FIXTURE_SCENARIO -eq "unrelated-lock") {
+  $foreignLock = [System.IO.File]::Open(
+    (Join-Path $env:AVE_FIXTURE_DIRECTORY ".ave-notification-cleanup.lock"), "Open", "Read", "None"
+  )
+  try { [FixtureRegistryKey]::WaitForProductStart() }
+  finally { $foreignLock.Dispose() }
+  exit 0
 }

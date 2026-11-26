@@ -624,7 +624,7 @@ try {
       (Join-Path $lockDirectory ".ave-notification-cleanup.lock"),
       [System.IO.FileMode]::CreateNew,
       [System.IO.FileAccess]::ReadWrite,
-      [System.IO.FileShare]::None,
+      ([System.IO.FileShare]::Read -bor [System.IO.FileShare]::Delete),
       1,
       [System.IO.FileOptions]::DeleteOnClose
     )
@@ -634,6 +634,11 @@ try {
     if ($_.Exception.GetBaseException().HResult -notin @(-2147024816, -2147024713, -2147024864)) { throw }
     throw "the current user's Ave notification cleanup lock path is occupied"
   }
+  $cleanupLock.Lock(0, 1)
+  $cleanupLock.WriteByte(0)
+  $lockMarker = [System.Text.Encoding]::ASCII.GetBytes("Ave notification cleanup v1")
+  $cleanupLock.Write($lockMarker, 0, $lockMarker.Length)
+  $cleanupLock.Flush()
   $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   Assert-AveStopped $installedExe $userSid
 
