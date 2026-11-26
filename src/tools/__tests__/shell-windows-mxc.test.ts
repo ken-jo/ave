@@ -36,6 +36,10 @@ vi.mock("../mxc-shell-launch.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../mxc-shell-launch.js")>(),
   prepareMxcShellLaunch: mxcLaunchMock.prepare,
 }));
+vi.mock("../../permissions/host-shell-execution-permit.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../permissions/host-shell-execution-permit.js")>();
+  return { ...actual, holdHostShellSpawnDirectory: vi.fn(actual.holdHostShellSpawnDirectory) };
+});
 // Mock Windows profile creation on POSIX so backslash paths cannot become entries in the working tree.
 vi.mock("../../permissions/sandbox-process-home.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../permissions/sandbox-process-home.js")>();
@@ -73,7 +77,7 @@ import * as egressHostListener from "../../permissions/egress-host-listener.js";
 import { egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../../permissions/egress-invocations.js";
 import * as mxcWindows from "../../permissions/mxc-windows.js";
 import * as mxcPolicyPipe from "../../permissions/mxc-policy-pipe.js";
-import * as hostShellPermit from "../../permissions/host-shell-execution-permit.js";
+import { holdHostShellSpawnDirectory } from "../../permissions/host-shell-execution-permit.js";
 import type { WindowsHoldVerdict } from "../../shared/windows-path-facts.js";
 import * as asrtSandbox from "../../permissions/asrt-sandbox.js";
 import { AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
@@ -262,6 +266,7 @@ describe("builtin shell — Windows MXC containers", () => {
     sandboxHomeMock.onCreate.mockReset();
     sandboxHomeMock.onCleanup.mockReset();
     installationMock.resolve.mockReset();
+    vi.mocked(holdHostShellSpawnDirectory).mockReset();
     vi.restoreAllMocks();
   });
 
@@ -552,8 +557,10 @@ describe("builtin shell — Windows MXC containers", () => {
   it("reports a held launcher that never starts as an unconfirmed container spawn failure", async () => {
     bootMxcShells();
     const verdict = deferred<WindowsHoldVerdict>();
-    const holdDirectory = hostShellPermit.holdHostShellSpawnDirectory;
-    vi.spyOn(hostShellPermit, "holdHostShellSpawnDirectory").mockImplementation(async (authorization) => ({
+    const hold = vi.mocked(holdHostShellSpawnDirectory);
+    const holdDirectory = hold.getMockImplementation();
+    if (holdDirectory === undefined) throw new Error("no hold implementation");
+    hold.mockImplementation(async (authorization) => ({
       ...await holdDirectory(authorization),
       bind: (child) => {
         if (child.pid !== undefined) return undefined;
