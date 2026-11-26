@@ -1,3 +1,4 @@
+import { AsyncResource } from "node:async_hooks";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import { currentEffectGateContext } from "../permissions/effect-enforcement.js";
 /** Type into the calling conversation's confined shell, or, for a workspace terminal's own pane chat, into that bound host terminal.
@@ -30,7 +31,8 @@ import { captureShellWorkingDirectoryIdentity } from "../permissions/shell-worki
 import { canonicalizePathForMatch } from "../permissions/sensitive-paths.js";
 import type { HostTerminalControlState, TerminalLane } from "../shared/terminal-session.js";
 import type { HostTerminalDisclosure } from "../main/terminal/host-terminal-control.js";
-import { currentHostTerminalTurn, type HostTerminalTurn } from "./host-terminal-turn.js";
+import type { typeHostTerminalCommand } from "../main/terminal/pty-manager.js";
+import { currentHostTerminalTurn } from "./host-terminal-turn.js";
 import { errorMessage } from "../shared/error-message.js";
 
 const TERMINAL_RUN_TOOL_NAME = "terminal_run";
@@ -88,14 +90,7 @@ interface HostTerminalDeps {
   shellName: (ref: TerminalSessionRef, windowId: number) => string | undefined;
   control: (ref: TerminalSessionRef, windowId: number) => HostTerminalControlState | undefined;
   verifyShell: VerifyTerminalShell;
-  typeCommand: (ref: TerminalSessionRef, windowId: number, request: {
-    readonly requestingSessionId: string;
-    readonly turn: HostTerminalTurn;
-    readonly line: string;
-    readonly expectedCwd: string;
-    readonly bound: () => boolean;
-    readonly effectCheck: () => Promise<{ ok: true } | { ok: false; message: string }>;
-  }, signal?: AbortSignal) => Promise<{ ok: true; firstBlockId: number } | { ok: false; reason: string; message: string }>;
+  typeCommand: typeof typeHostTerminalCommand;
   waitDisclosure: (ref: TerminalSessionRef, windowId: number, sessionId: string, turnId: string, blockId: number, waitMs: number, signal?: AbortSignal) =>
     Promise<HostTerminalDisclosure | undefined>;
 }
@@ -406,24 +401,41 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     };
     const before = directoryChanged();
     if (before !== undefined || !tracker) return changed(before ?? `terminal ${scope.tabId} moved to another directory`);
-    // The directory proof is the last step, after the route recheck's await: nothing asynchronous lies between it and the write it guards.
+    // PTY callbacks may run outside the originating turn's async context.
+    const writeFence = AsyncResource.bind(() => directoryChanged() ?? route.refusal());
     const effectCheck = async (): Promise<{ ok: true } | { ok: false; message: string }> => {
       try {
-        await route.recheck();
         const gate = currentEffectGateContext();
-        if (!await refreshRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)
-          || !isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) return { ok: false, message: "remote-controller-revoked" };
+        const authority = gate?.permissionContext?.remoteControllerAuthority;
+        if (!await refreshRemoteControllerBoundToSession(authority, gate?.sessionId)) return { ok: false, message: "remote-controller-revoked" };
+        await route.recheck();
+        if (!isRemoteControllerBoundToSession(authority, gate?.sessionId)) return { ok: false, message: "remote-controller-revoked" };
       }
       catch (error) { return { ok: false, message: errorMessage(error) }; }
       const moved = directoryChanged();
       if (moved !== undefined) return { ok: false, message: `${moved} while the command was being prepared` };
-      return { ok: true };
+      const refusal = route.refusal();
+      return refusal === undefined ? { ok: true } : { ok: false, message: refusal };
     };
     ctx.abortSignal?.throwIfAborted();
     const typed = await deps.host.typeCommand(live, windowId, {
-      requestingSessionId: scope.sessionId, turn, line: input.command, expectedCwd: scope.cwd, bound, effectCheck,
+      requestingSessionId: scope.sessionId, turn, line: input.command, expectedCwd: scope.cwd, bound, effectCheck, writeFence,
     }, ctx.abortSignal);
-    if (!typed.ok) return fail(`nothing was typed into terminal ${scope.tabId}: ${typed.message}`);
+    if (!typed.ok) {
+      if (typed.pasteUncleared) return fail(`no command was sent in terminal ${scope.tabId}: ${typed.message}`);
+      if (typed.reason === "effect-refused") {
+        let reapprovalPending = false;
+        if (typed.abandonedControlGeneration !== undefined && !ctx.abortSignal?.aborted && bound()) {
+          const released = deps.host.control(live, windowId);
+          if (released?.mode === "available" && released.generation === typed.abandonedControlGeneration) {
+            reapprovalPending = route.onLeaseAbandoned(typed.abandonedControlGeneration);
+          }
+        }
+        const guidance = reapprovalPending ? "The host handles reapproval in a separate invocation." : "Call terminal_run again for a fresh decision.";
+        return fail(`no command was sent in terminal ${scope.tabId}: ${typed.message} ${guidance}`);
+      }
+      return fail(t("be_terminalRun.hostCommandNotSubmitted", { tabId: scope.tabId, reason: typed.message }));
+    }
     const waitMs = BLOCK_START_WAIT_MS + input.waitSeconds * 1000;
     const span = await deps.host.waitDisclosure(live, windowId, scope.sessionId, scope.turnId, typed.firstBlockId, waitMs, ctx.abortSignal);
     if (span === undefined) throw new Error("Host terminal disclosure is missing for a command its lease typed.");

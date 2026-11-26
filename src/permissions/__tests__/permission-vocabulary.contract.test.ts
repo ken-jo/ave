@@ -1,7 +1,7 @@
 // One row per permission decision point: what it answers today, in one closed vocabulary.
 // A comparison row carries `core` while its observed outcome differs from policy. When the outcomes match, its observation is the proof.
 // Each compared or resolved decision points to its proof rows. Decisions without a driven row keep a note with the available evidence.
-// Tree = docs/architecture/permission-decision-tree.md line(s), or "no row".
+// Source lines: T = docs/architecture/permission-decision-tree.md, A = docs/architecture/architecture.md.
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -89,7 +89,7 @@ const capability = (platform: NodeJS.Platform, kind: SandboxCapability["kind"], 
 // A plan is a route, not a verdict. Read as: confined -> contained, blocked -> deny, the home-privacy floor -> ask-human for the
 // session, a per-invocation host authorization -> ask once, otherwise the ordinary policy (any saved scope may answer).
 // An explicit host request also sets requiresExplicitUserApproval, yet a saved rule answers it (the permit mint accepts an issued
-// rule decision for an explicit host request, and for the exact-rule pass of the no-backend ask, D25.a).
+// rule decision for an explicit host request, and for the exact-rule pass of the no-confinement floor, D25.a and D26).
 function plan(input: Parameters<typeof buildHostShellExecutionPlan>[0]): Observation {
   const built: HostShellExecutionPlan = buildHostShellExecutionPlan(input);
   const reason = `${built.executionRequest}:${built.fallbackReason}`;
@@ -99,11 +99,12 @@ function plan(input: Parameters<typeof buildHostShellExecutionPlan>[0]): Observa
   return { outcome: "ask", reason, waiver: built.requiresExplicitUserApproval && built.executionRequest !== "host" ? "once" : "any" };
 }
 
-// A shell on a sandbox-on host with no usable backend (T:128), with one saved allow rule. The plan and the pipeline are driven. One
+// A shell on a sandbox-on host without proven shell containment (T:144-146). The plan and pipeline are driven. One
 // manager step is restated: it offers the saved rule as `exactHostRule` only when the rule is exactly the command, the plan is one
 // `exactRulePassesUnsandboxedShellAsk` marks, and no other floor applies; a second floor also withdraws the session offer.
-function noBackendShell(saved: "exact" | "prefix", boot: { homePrivacyVerified?: boolean; unavailableSandboxRequiresAsk?: boolean }, secondFloor = false): Observation {
-  const built = buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "none"), ...boot });
+function uncontainedShell(saved: "exact" | "prefix", boot: { homePrivacyVerified?: boolean; unavailableSandboxRequiresAsk?: boolean },
+  secondFloor = false, executionMode?: "default" | "host", activeCapability = capability("linux", "none")): Observation {
+  const built = buildHostShellExecutionPlan({ platform: activeCapability.platform, requestedSandbox: true, activeCapability, ...boot, executionMode });
   expect(requiresUnsandboxedShellAsk(built)).toBe(true);
   const exact = saved === "exact" && !secondFloor && exactRulePassesUnsandboxedShellAsk(built);
   return pipeline({ tool: SHELL, shell: HOST_SHELL, mode: "allow", floor: { code: "sandbox-unavailable", reason: "fixture" },
@@ -161,65 +162,65 @@ const FIXTURE_HOME = "C:\\Users\\alice\\.ave";
 
 const ROWS: readonly Row[] = [
   // Layer 1: the decision pipeline.
-  { id: "D1", point: "admission denial", tree: "T:19-20", unknown: "-",
+  { id: "D1", point: "admission denial", tree: "T:34-35", unknown: "-",
     today: { outcome: "deny", reason: "credential-store", headless: "deny" },
     observe: () => pipeline({ admissionDenial: { code: "credential-store", reason: "fixture" } }) },
-  { id: "D2", point: "deny rule", tree: "T:19", unknown: "-",
+  { id: "D2", point: "deny rule", tree: "T:34", unknown: "-",
     today: { outcome: "deny", reason: "rule-deny", headless: "deny" },
     observe: () => pipeline({ rules: { deny: "fixture", allow: "fixture" } }) },
   { id: "D3", point: "unsupported tool kind", tree: "no row", unknown: "-",
     today: { outcome: "deny", reason: "unsupported-tool-kind", headless: "deny" },
     observe: () => pipeline({ tool: { ...READ, kind: "search" as never } }) },
-  { id: "D4", point: "floor with nobody present", tree: "T:68, T:170", unknown: "-",
+  { id: "D4", point: "floor with nobody present", tree: "T:83, T:195", unknown: "-",
     today: { outcome: "deny", reason: "no-approver" },
     observe: () => headlessDenial({ floor: { code: "protected-path", reason: "fixture" } }) },
-  { id: "D5", point: "sandbox-unavailable floor, session waiver held", tree: "T:211-219", unknown: "-",
+  { id: "D5", point: "sandbox-unavailable floor, session waiver held", tree: "T:149", unknown: "-",
     today: { outcome: "allow", reason: "floor-session-allow", headless: "deny" },
     observe: () => pipeline({ tool: SHELL, shell: HOST_SHELL, floor: { code: "sandbox-unavailable", reason: "fixture" }, floorSessionEligible: true,
       rules: { floorSession: "fixture", allow: "fixture" } }) },
-  { id: "D6", point: "any floor: rules and mode never pass", tree: "T:22-23, T:259", unknown: "-",
+  { id: "D6", point: "any floor: rules and mode never pass", tree: "T:37-38, T:231-232", unknown: "-",
     today: { outcome: "ask-human", reason: "protected-path", headless: "deny", waiver: "once" },
     observe: () => pipeline({ mode: "allow", rules: { allow: "fixture" }, floor: { code: "protected-path", reason: "fixture" } }) },
   { id: "D7", point: "manual rerun", tree: "no row", unknown: "-",
     today: { outcome: "ask", reason: "manual-rerun", headless: "deny" },
     observe: () => pipeline({ mode: "allow", manualRerun: true }) },
-  { id: "D8", point: "ask rule", tree: "T:26, T:38", unknown: "-",
+  { id: "D8", point: "ask rule", tree: "T:41, T:53", unknown: "-",
     today: { outcome: "ask", reason: "rule-ask", headless: "deny" },
     observe: () => pipeline({ rules: { ask: "fixture", allow: "fixture" } }) },
-  { id: "D9", point: "user-owned surface", tree: "T:25-36, T:104", unknown: "-",
+  { id: "D9", point: "user-owned surface", tree: "T:40-51, T:119", unknown: "-",
     today: { outcome: "ask", reason: "user-owned-surface-ask", headless: "deny" },
     observe: () => pipeline({ userOwnedSurface: { kind: "browser", choice: "ask" } }) },
-  { id: "D10", point: "agent browser tool", tree: "T:100", unknown: "-",
+  { id: "D10", point: "agent browser tool", tree: "T:115", unknown: "-",
     today: { outcome: "allow", reason: "agent-browser-tool", headless: "deny" },
     observe: () => pipeline({ agentBrowser: true }) },
-  { id: "D11", point: "allow rule", tree: "T:37", unknown: "-",
+  { id: "D11", point: "allow rule", tree: "T:52", unknown: "-",
     today: { outcome: "allow", reason: "rule-allow", headless: "allow" },
     observe: () => pipeline({ tool: SHELL, shell: HOST_SHELL, rules: { allow: "fixture" } }) },
-  { id: "D12", point: "exfiltration signal", tree: "T:136-147", unknown: "-",
+  { id: "D12", point: "exfiltration signal", tree: "T:161-172", unknown: "-",
     today: { outcome: "ask", reason: "exfiltration-guardrail", headless: "deny" },
     observe: () => pipeline({ exfiltration: { reason: "fixture" } }) },
-  { id: "D13", point: "ordinary read", tree: "T:40", unknown: "-",
+  { id: "D13", point: "ordinary read", tree: "T:55", unknown: "-",
     today: { outcome: "allow", reason: "ordinary-read", headless: "allow" },
     observe: () => pipeline({}) },
-  { id: "D14", point: "restorable project write", tree: "T:42-43", unknown: "-",
+  { id: "D14", point: "restorable project write", tree: "T:57-58", unknown: "-",
     today: { outcome: "allow", reason: "project-write", headless: "allow" },
     observe: () => pipeline({ tool: WRITE, fileWrite: { insideProject: true, checkpointAvailable: true } }) },
-  { id: "D15", point: "sandboxed shell", tree: "T:45-46", unknown: "-",
+  { id: "D15", point: "sandboxed shell", tree: "T:60-61", unknown: "-",
     today: { outcome: "contained", reason: "sandboxed-shell", headless: "contained" },
     observe: () => pipeline({ tool: SHELL, shell: { ...HOST_SHELL, sandboxed: true } }) },
-  { id: "D16", point: "mode decides an ordinary ask", tree: "T:48-59", unknown: "-",
+  { id: "D16", point: "mode decides an ordinary ask", tree: "T:63-74", unknown: "-",
     today: { outcome: "allow", reason: "allow-mode", headless: "allow" },
     observe: () => pipeline({ tool: SHELL, shell: HOST_SHELL, mode: "allow" }) },
-  { id: "D17", point: "ordinary ask with nobody present", tree: "T:52, T:170", unknown: "-",
+  { id: "D17", point: "ordinary ask with nobody present", tree: "T:67, T:195", unknown: "-",
     today: { outcome: "deny", reason: "no-approver" },
     observe: () => headlessDenial({ tool: SHELL, shell: HOST_SHELL }) },
-  { id: "D20", point: "home privacy helper gave no answer", tree: "T:224-226", unknown: "U3",
+  { id: "D20", point: "home privacy helper gave no answer", tree: "T:205", unknown: "U3",
     today: { outcome: "deny", reason: "default:home-privacy-helper-unavailable", waiver: "none" },
     observe: () => {
       expect(HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL.code).toBe("home-privacy-helper-unavailable");
       return plan({ platform: "win32", requestedSandbox: true, activeCapability: capability("win32", "none"), unconfinedShellDenied: true });
     } },
-  { id: "D21", point: "host shell while boot home privacy failed", tree: "T:205-223", unknown: "U2",
+  { id: "D21", point: "host shell while boot home privacy failed", tree: "T:147-149", unknown: "U2",
     today: { outcome: "ask-human", reason: "sandbox-unavailable", headless: "deny", waiver: "session" },
     observe: () => {
       expect(plan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "none"), unavailableSandboxRequiresAsk: true }))
@@ -227,7 +228,7 @@ const ROWS: readonly Row[] = [
       return pipeline({ tool: SHELL, shell: HOST_SHELL, mode: "allow", rules: { allow: "fixture" },
         floor: { code: "sandbox-unavailable", reason: "fixture" }, floorSessionEligible: true });
     } },
-  { id: "D22", point: "protected path, critical delete, project escape, other principal", tree: "T:129-131", unknown: "-",
+  { id: "D22", point: "protected path, critical delete, project escape, other principal", tree: "T:154-156", unknown: "-",
     today: { outcome: "ask-human", reason: "floor", headless: "deny", waiver: "once" },
     observe: () => {
       const seen = FLOOR_CODES.map(code => pipeline({ floor: { code, reason: "fixture" }, floorSessionEligible: true, rules: { floorSession: "fixture" } }));
@@ -236,43 +237,56 @@ const ROWS: readonly Row[] = [
       expect(shapes).toHaveLength(1);
       return JSON.parse(shapes.join()) as Observation;
     } },
-  { id: "D23", point: "explicit host request", tree: "T:254", unknown: "-",
+  { id: "D23", point: "explicit host request", tree: "T:226", unknown: "-",
     today: { outcome: "ask", reason: "host:none", waiver: "any" },
     observe: () => plan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "asrt"), executionMode: "host" }) },
-  { id: "D24", point: "sandbox off by setting", tree: "T:128, T:254", unknown: "-",
+  { id: "D24", point: "sandbox off by setting", tree: "T:143, T:226", unknown: "-",
     today: { outcome: "ask", reason: "default:disabled-by-setting", waiver: "any" },
     observe: () => plan({ platform: "linux", requestedSandbox: false, activeCapability: capability("linux", "none") }) },
-  { id: "D25", point: "sandbox on, no usable backend", tree: "T:128", unknown: "U2",
+  { id: "D25", point: "sandbox on, no usable backend", tree: "T:144-145", unknown: "U2",
     // S1 (#664) made this the forced ask the core names. D25.a is its one saved-rule pass; D25.b-d are that pass's controls.
     today: { outcome: "ask-human", reason: "default:requested-sandbox-unavailable", waiver: "session" },
     observe: () => plan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "none") }) },
   // Nothing is unknown here: the missing boundary is the fact the saved exact rule consents to (owner decision 2026-11-25).
-  { id: "D25.a", point: "no usable backend: a saved rule that is exactly the command, boot home privacy verified", tree: "T:128, T:259", unknown: "-",
+  { id: "D25.a", point: "no usable backend: a saved rule that is exactly the command, boot home privacy verified", tree: "T:151, T:232", unknown: "-",
     today: { outcome: "allow", reason: "exact-host-rule", headless: "deny" },
-    observe: () => noBackendShell("exact", { homePrivacyVerified: true }) },
-  { id: "D25.b", point: "no usable backend: a saved prefix rule and the allow mode", tree: "T:128, T:259", unknown: "U2",
+    observe: () => uncontainedShell("exact", { homePrivacyVerified: true }) },
+  { id: "D25.b", point: "no usable backend: a saved prefix rule and the allow mode", tree: "T:151, T:232", unknown: "U2",
     today: { outcome: "ask-human", reason: "sandbox-unavailable", headless: "deny", waiver: "session" },
-    observe: () => noBackendShell("prefix", { homePrivacyVerified: true }) },
-  { id: "D25.c", point: "no usable backend: the exact rule while boot home privacy is unverified", tree: "T:128, T:205-223, T:259", unknown: "U2",
+    observe: () => uncontainedShell("prefix", { homePrivacyVerified: true }) },
+  { id: "D25.c", point: "no usable backend: the exact rule while boot home privacy is unverified", tree: "T:147, T:151, T:232", unknown: "U2",
     today: { outcome: "ask-human", reason: "sandbox-unavailable", headless: "deny", waiver: "session" },
     observe: () => {
       // A boot that published no result is not verified either.
-      expect(noBackendShell("exact", {})).toEqual(noBackendShell("exact", { unavailableSandboxRequiresAsk: true }));
-      return noBackendShell("exact", { unavailableSandboxRequiresAsk: true });
+      expect(uncontainedShell("exact", {})).toEqual(uncontainedShell("exact", { unavailableSandboxRequiresAsk: true }));
+      return uncontainedShell("exact", { unavailableSandboxRequiresAsk: true });
     } },
-  { id: "D25.d", point: "no usable backend: the exact rule with a second forced reason", tree: "T:128, T:220-221, T:259", unknown: "U2",
+  { id: "D25.d", point: "no usable backend: the exact rule with a second forced reason", tree: "T:149, T:151, T:232", unknown: "U2",
     today: { outcome: "ask-human", reason: "sandbox-unavailable", headless: "deny", waiver: "once" },
-    observe: () => noBackendShell("exact", { homePrivacyVerified: true }, true) },
-  { id: "D26", point: "Windows capability that does not contain shells", tree: "T:128", unknown: "U2",
-    today: { outcome: "ask", reason: "default:windows-partial-shell-acl-unsafe", waiver: "once" },
-    core: { outcome: "ask-human", waiver: "session" },
-    observe: () => plan({ platform: "win32", requestedSandbox: true, activeCapability: capability("win32", "asrt", false) }) },
-  // I12 removes this branch with the partial and fs-only kinds (PF3); nothing produces them today. Until then the core answer
-  // is the U2 one its neighbours D25 and D26 carry.
-  { id: "D27", point: "any other partial substrate", tree: "no row", unknown: "U2",
-    today: { outcome: "deny", reason: "default:active-sandbox-not-shell-contained", waiver: "none" },
-    core: { outcome: "ask-human", waiver: "session" },
-    observe: () => plan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "partial") }) },
+    observe: () => uncontainedShell("exact", { homePrivacyVerified: true }, true) },
+  // An explicit host request on that host is the same uncontained shell: the same pass, and the same ask without it.
+  { id: "D25.e", point: "no usable backend: an explicit host request, with the exact rule and with a prefix rule", tree: "T:149, T:151, T:232", unknown: "-",
+    today: { outcome: "allow", reason: "exact-host-rule", headless: "deny" },
+    observe: () => {
+      expect(uncontainedShell("prefix", { homePrivacyVerified: true }, false, "host")).toEqual(uncontainedShell("prefix", { homePrivacyVerified: true }));
+      expect(uncontainedShell("exact", {}, false, "host")).toEqual(uncontainedShell("exact", {}));
+      return uncontainedShell("exact", { homePrivacyVerified: true }, false, "host");
+    } },
+  { id: "D26", point: "active backend without shell containment: same floor and exact-rule pass on both host routes", tree: "T:144-151, T:232", unknown: "-",
+    today: { outcome: "allow", reason: "exact-host-rule", headless: "deny" },
+    observe: () => {
+      const active = capability("win32", "asrt", false);
+      const verified = { homePrivacyVerified: true };
+      for (const mode of ["default", "host"] as const) {
+        expect(uncontainedShell("exact", verified, false, mode, active)).toEqual(uncontainedShell("exact", verified, false, mode));
+        expect(uncontainedShell("prefix", verified, false, mode, active)).toEqual(uncontainedShell("prefix", verified, false, mode));
+        expect(uncontainedShell("exact", {}, false, mode, active)).toEqual(uncontainedShell("exact", {}, false, mode));
+      }
+      return uncontainedShell("exact", verified, false, "default", active);
+    } },
+  { id: "D27", point: "incomplete filesystem-only containment", tree: "T:144-151, T:232", unknown: "U2",
+    today: { outcome: "ask-human", reason: "default:active-sandbox-not-shell-contained", waiver: "session" },
+    observe: () => plan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "fs-only", false) }) },
   { id: "D30", point: "analysis limit other than the cd budget", tree: "no row", unknown: "U1",
     today: { outcome: "ask-human", reason: "shell-analysis-limit", headless: "deny", waiver: "once" },
     observe: () => analysisLimit(ANALYSIS_LIMIT_COMMAND) },
@@ -297,7 +311,7 @@ const ROWS: readonly Row[] = [
       reason: "relay:allow-listed-address" }) },
   // Layer 2: start and launch admission.
   // The same per-start waiver as L4 and L5: the deadline is a start with no backend, and it keeps its own cause.
-  { id: "L1", point: "extension start after the readiness deadline", tree: "T:260", unknown: "U2",
+  { id: "L1", point: "extension start after the readiness deadline", tree: "T:233", unknown: "U2",
     today: { outcome: "ask-human", reason: "unavailable:readiness-deadline", waiver: "once" },
     observe: () => {
       setProcessPlatform("win32");
@@ -350,7 +364,7 @@ const ROWS: readonly Row[] = [
           return { ...first, waiver: start() === "ask-human" ? "once" : "session" };
         });
     } },
-  { id: "L5", point: "Windows extension start, settled with no backend", tree: "T:128", unknown: "U2",
+  { id: "L5", point: "Windows extension start, settled with no backend", tree: "T:153", unknown: "U2",
     today: { outcome: "ask-human", reason: "unavailable:runtime-start-failed" },
     observe: () => {
       setProcessPlatform("win32");
@@ -395,7 +409,7 @@ const ROWS: readonly Row[] = [
     } },
   // Host-owned code: the extension-start floor never asks about it, and its own gate decides. Today that gate refuses with
   // no OS sandbox; the ruled end state (OQ-14, T:204) is a Settings switch, on by default, that runs it unconfined.
-  { id: "L20", point: "local inference child with no confinement backend", tree: "T:203-204", unknown: "-",
+  { id: "L20", point: "local inference child with no confinement backend", tree: "T:204", unknown: "-",
     today: { outcome: "deny", reason: "local-runtime-unavailable" },
     core: { outcome: "unasked", waiver: "setting" },
     observe: () => {
@@ -408,15 +422,16 @@ const ROWS: readonly Row[] = [
       expect(extensionStart({ hostOwned: true })).toEqual({ outcome: "unasked", reason: "none" });
       return { outcome: "deny", reason: refusal(assertLocalEmbeddingRuntime) };
     } },
-  { id: "L18", point: "a container route is published under the runtime-wrap name", tree: "T:128", unknown: "-",
+  // The Windows shell "Boot plan" in the architecture describes this route.
+  { id: "L18", point: "a container route is published under the runtime-wrap name", tree: "A:3467", unknown: "-",
     today: { outcome: "contained", reason: "mode=asrt kind=asrt substrate=mxc" },
     core: { reason: "containment-evidence" },
     observe: () => {
       const built = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: capability("win32", "asrt"), shellSubstrate: "mxc" });
       return { outcome: built.sandboxed ? "contained" : "ask", reason: `mode=${built.mode} kind=${built.capability.kind} substrate=${built.substrate}` };
     } },
-  // The local-network consent gate is removed (T:117): an available container carries the shells with nothing saved.
-  { id: "L18.a", point: "Windows shell route when MXC is available", tree: "T:117", unknown: "-",
+  // The local-network consent gate is removed (T:132): an available container carries the shells with nothing saved.
+  { id: "L18.a", point: "Windows shell route when MXC is available", tree: "T:132", unknown: "-",
     today: { outcome: "contained", reason: "shells=mxc substrate=mxc" },
     observe: () => {
       setProcessPlatform("win32");
@@ -428,7 +443,7 @@ const ROWS: readonly Row[] = [
       return { outcome: built.sandboxed ? "contained" : "ask", reason: `shells=${substrate.shells} substrate=${built.substrate}` };
     } },
   // Control for L18.a: the route that replaced the gate still refuses a start whose [::1]:P another process holds.
-  { id: "L18.b", point: "container shell endpoint whose IPv6 loopback port a foreign listener holds", tree: "T:117", unknown: "-",
+  { id: "L18.b", point: "container shell endpoint whose IPv6 loopback port a foreign listener holds", tree: "T:132", unknown: "-",
     today: { outcome: "deny", reason: "invocation proxy listener could not hold [::1]:P (EADDRINUSE)" },
     observe: async () => {
       const listen = net.Server.prototype.listen;
@@ -458,8 +473,6 @@ const ROWS: readonly Row[] = [
 // Compared decisions and their rows, including the proof after a divergence is fixed.
 const COMPARISON_ROWS: Readonly<Record<string, readonly string[]>> = {
   I3: ["L20"],
-  I11: ["D26"],
-  I12: ["D27"],
   I15: ["L3", "L13"],
   I16: ["L18"],
   I18: ["L6"],
@@ -472,6 +485,8 @@ const RESOLVED: Readonly<Record<string, string>> = {
   I5: "D34.b",
   I8: "L4",
   I10: "L1",
+  I11: "D26",
+  I12: "D27",
 };
 
 // Inconsistencies no driven row can show, and why.
@@ -564,7 +579,7 @@ describe("permission vocabulary contract", () => {
         if (seen.headless !== undefined) expect(OUTCOMES, row.id).toContain(seen.headless);
         if (seen.waiver !== undefined) expect(WAIVERS, row.id).toContain(seen.waiver);
       }
-      expect(row.tree, row.id).toMatch(/^(?:no row|T:\d+(?:-\d+)?(?:, T:\d+(?:-\d+)?)*)$/u);
+      expect(row.tree, row.id).toMatch(/^(?:no row|A:\d+|T:\d+(?:-\d+)?(?:, T:\d+(?:-\d+)?)*)$/u);
       // The outcome the policy core gives this row must be the one its unknown class allows.
       expect(UNKNOWN_CORE[row.unknown], row.id).toContain(row.core?.outcome ?? row.today.outcome);
     }

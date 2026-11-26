@@ -157,7 +157,8 @@ export function recordHostShellPolicyAuthorization(binding: HostShellExecutionPe
   policyAuthorizations.add(binding);
 }
 
-// Consume only action-bound host proof: a verified one-shot receipt, an exact host-request rule decision, the exact-rule pass of the no-backend ask, or the authorization pipeline's normal-policy permit. The partial Windows plan rejects rule proof; structural, unrelated or differently bound decisions fail closed.
+// Consume only action-bound host proof: a one-shot approval, a rule decision for an explicit host request or the no-confinement floor,
+// a floor session decision, or a policy authorization for this action.
 export function mintHostShellExecutionPermit(input: {
   plan: HostShellExecutionPlan;
   approvalDecision: ApprovalDecision | undefined;
@@ -205,7 +206,7 @@ export function mintHostShellExecutionPermit(input: {
   // Any receipt-bearing mint attempt consumes its receipt before checking plan compatibility, so a mismatch cannot be probed or replayed.
   if (!requiresExplicitHostShellApproval(input.plan, input.binding.toolName) && !policyApproved) return undefined;
   // On a plan under the sandbox-unavailable floor a saved rule stands in for fresh consent only as the exact-rule pass issued on this very plan
-  // (tree T:128); policy records are made only after a human card. A pass proof answers no other plan.
+  // (tree T:151); policy records are made only after a human card. A pass proof answers no other plan.
   if (allowRuleAuthorization !== undefined && (requiresUnsandboxedShellAsk(input.plan)
     ? !exactRulePassesUnsandboxedShellAsk(input.plan) || allowRuleAuthorization.floorPlanIdentity !== input.plan.identity
     : allowRuleAuthorization.floorPlanIdentity !== undefined)) return undefined;

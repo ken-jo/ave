@@ -1,7 +1,7 @@
 import "../../../../../test/renderer/setup.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
+import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 import type {
   TailnetGuidedSetupResult,
   TailnetObserverConfigView,
@@ -160,7 +160,7 @@ describe("TailnetSetupCard", () => {
       expect(guidedSetup).toHaveBeenCalledWith();
       expect(await screen.findByTestId("tailnet-setup-done-url")).toHaveTextContent(WEB_ORIGIN);
       expect(screen.getByTestId("tailnet-setup-done")).toHaveTextContent(
-        t("tailnetSetup.doneOwnDevice"),
+        "Only devices signed in to your own Tailscale account can connect. Other accounts cannot connect, even with an invitation code.",
       );
     });
 

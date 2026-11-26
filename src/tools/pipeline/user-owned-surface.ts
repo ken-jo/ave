@@ -9,8 +9,9 @@ export function userOwnedSurfaceCardFacts(
   permission: PermissionCheckResult,
 ): Pick<ApprovalRequestInput, "userOwnedSurface" | "userOwnedSurfaceReviewFallback" | "reasonCode"> {
   const request = permission.pipelineRequest;
-  if (!request?.userOwnedSurface || permission.forceModal || request.floor || request.manualRerun) return {};
-  const reviewFallback = request.exfiltration !== undefined || request.userOwnedSurface.choice === "auto" && request.reviewer !== undefined;
+  if (!request?.userOwnedSurface || permission.forceModal || request.manualRerun) return {};
+  const reviewFallback = request.exfiltration !== undefined || request.userOwnedSurface.choice === "auto" &&
+    (request.reviewer !== undefined || request.userOwnedSurface.kind === "host-terminal" && request.automationPause !== undefined);
   return {
     userOwnedSurface: request.userOwnedSurface.kind,
     // The surface card shows its own sentence for the decision that asked; no other card reads it, so no other card is sent it. A review fallback

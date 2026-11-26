@@ -7,6 +7,9 @@ import { egressProtocolCoverageFor, type EgressProtocolCoverage, type SandboxCon
 import { isRecord } from "../shared/is-record.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
+import { ASK_EVERY_COMMAND_SUFFIX, EXACT_RULE_PASS_MARKER, requiresUnsandboxedShellAsk } from "../shared/unsandboxed-shell-ask.js";
+
+export { exactRulePassesUnsandboxedShellAsk, requiresUnsandboxedShellAsk } from "../shared/unsandboxed-shell-ask.js";
 
 export const HOST_SHELL_EXECUTION_PLAN_VERSION = "host-shell-execution-plan/v4" as const;
 
@@ -54,7 +57,7 @@ export interface HostShellExecutionPlan {
   // Honest capability of the child selected by this plan.
   readonly capability: SandboxCapability;
   readonly fallbackReason: HostShellFallbackReason;
-  // True whenever this plain shell needs a per-invocation host authorization before spawn: an explicit unsandboxed request, the Windows partial-ASRT Plan B (an exact `Bash(<command>)` allow rule or a fresh approval), or a requested-but-unavailable sandbox (a human ask, once or for the session).
+  // True whenever this plain shell needs per-invocation host authorization before spawn, including explicit host requests and the no-confinement floor.
   readonly requiresExplicitUserApproval: boolean;
   // Stable identity for audit/cache consumers; contains no command or raw path.
   readonly identity: string;
@@ -210,13 +213,13 @@ export function buildHostShellExecutionPlan(input: {
   shellSubstrate?: "asrt" | "mxc";
   executionMode?: HostShellExecutionRequest;
   // Boot could not establish Ave home privacy (any category but helper-unavailable, which `unconfinedShellDenied` blocks): every plain host shell
-  // (unavailable sandbox, shell scope off, Windows partial shell or explicit host) then needs a human ask for every command.
+  // then needs a human ask for every command.
   unavailableSandboxRequiresAsk?: boolean;
   // Why boot could not start the requested sandbox; read only for the unavailable plan's install hints.
   unavailableCauses?: readonly SandboxStartFailureCause[];
   // Boot got no answer from the home privacy helper: every route above that would run unconfined is blocked instead, so no approval runs it.
   unconfinedShellDenied?: boolean;
-  // Boot published a positive Ave home privacy result. Only then may an exact saved rule pass the no-backend ask (tree T:128); absent means unverified.
+  // Boot published a positive Ave home privacy result. Only then may an exact saved rule pass the no-confinement floor (tree T:151); absent means unverified.
   homePrivacyVerified?: boolean;
 }): HostShellExecutionPlan {
   if (input.unconfinedShellDenied === true) {
@@ -248,12 +251,10 @@ export function buildHostShellExecutionPlan(input: {
   }
   const requestedSandbox = input.requestedSandbox;
   const askEveryCommand = input.unavailableSandboxRequiresAsk === true;
-  // The no-backend ask with nothing else behind it at boot: the boot home privacy floor does not govern.
-  const noBackendAskSuffix = (input.homePrivacyVerified === true && !askEveryCommand ? EXACT_RULE_PASS_MARKER : "") + ASK_EVERY_COMMAND_SUFFIX;
+  const noConfinementAskSuffix = (input.homePrivacyVerified === true && !askEveryCommand ? EXACT_RULE_PASS_MARKER : "") + ASK_EVERY_COMMAND_SUFFIX;
 
   if (executionRequest === "host") {
-    // With the requested sandbox unavailable an explicit host request is the same uncontained shell, so it takes the same ask.
-    const forcedAsk = askEveryCommand || (requestedSandbox && input.activeCapability.kind === "none");
+    const forcedAsk = askEveryCommand || (requestedSandbox && !hasShellContainment(input.activeCapability));
     return Object.freeze({
       version: HOST_SHELL_EXECUTION_PLAN_VERSION,
       platform: input.platform,
@@ -266,7 +267,7 @@ export function buildHostShellExecutionPlan(input: {
       capability: noneCapability(input.platform, "Explicit host execution runs as the current user without OS confinement."),
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: true,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":explicit-host" + (forcedAsk ? noBackendAskSuffix : ""),
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":explicit-host" + (forcedAsk ? noConfinementAskSuffix : ""),
     });
   }
 
@@ -287,18 +288,21 @@ export function buildHostShellExecutionPlan(input: {
       fallbackReason,
       // Worker-only confinement can publish a home privacy failure with the shell scope off; that plain child asks every command too.
       requiresExplicitUserApproval: askEveryCommand,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + (askEveryCommand ? ASK_EVERY_COMMAND_SUFFIX : ""),
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + (askEveryCommand ? noConfinementAskSuffix : ""),
     });
   }
 
-  // A requested sandbox that is unavailable (missing bwrap/socat, start failure, host below the documented minimums) yields a plain child on every platform, and only through the sandbox-unavailable forced ask: once or for this session, never saved; allow mode, auto review and saved prefix rules do not pass, and a headless run is denied. One saved rule passes it: an exact one, and only on a plan `exactRulePassesUnsandboxedShellAsk` marks. A helper-unavailable boot blocks it before this branch. The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
-  if (requestedSandbox && input.activeCapability.kind === "none") {
-    const fallbackReason: HostShellFallbackReason = "requested-sandbox-unavailable";
-    const capability = noneCapability(
-      input.platform,
-      "The requested OS sandbox is unavailable, so this shell will run without OS isolation until it is restored.",
-    );
-    const installHints = [...new Set((input.unavailableCauses ?? []).flatMap((cause) => INSTALL_HINT_BY_CAUSE[cause] ?? []))];
+  if (!hasShellContainment(input.activeCapability)) {
+    const missing = input.activeCapability.kind === "none";
+    const fallbackReason: HostShellFallbackReason = missing
+      ? "requested-sandbox-unavailable"
+      : "active-sandbox-not-shell-contained";
+    const capability = noneCapability(input.platform, missing
+      ? "The requested OS sandbox is unavailable, so this shell will run without OS isolation until it is restored."
+      : "The active OS sandbox does not prove containment for this shell.");
+    const installHints = missing
+      ? [...new Set((input.unavailableCauses ?? []).flatMap((cause) => INSTALL_HINT_BY_CAUSE[cause] ?? []))]
+      : [];
     return Object.freeze({
       version: HOST_SHELL_EXECUTION_PLAN_VERSION,
       platform: input.platform,
@@ -311,80 +315,27 @@ export function buildHostShellExecutionPlan(input: {
       capability,
       fallbackReason,
       requiresExplicitUserApproval: true,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + noBackendAskSuffix,
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + noConfinementAskSuffix,
       ...(installHints.length === 0 ? {} : { installHints: Object.freeze(installHints) }),
     });
   }
 
-  if (input.activeCapability.kind === "asrt" && hasShellContainment(input.activeCapability)) {
-    const capability = freezeCapability(input.activeCapability);
-    return Object.freeze({
-      version: HOST_SHELL_EXECUTION_PLAN_VERSION,
-      platform: input.platform,
-      requestedSandbox,
-      executionRequest,
-      mode: "asrt" as const,
-      sandboxed: true,
-      substrate: shellSubstrate,
-      egressProtocolCoverage: egressProtocolCoverageFor(shellSubstrate),
-      capability,
-      fallbackReason: "none" as const,
-      requiresExplicitUserApproval: false,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + shellSubstrate,
-    });
-  }
-
-  // Windows remains special only when a real ASRT substrate is active but is not shell-contained. The execution authorization itself is generic.
-  if (
-    input.platform === "win32" &&
-    requestedSandbox &&
-    input.activeCapability.kind === "asrt"
-  ) {
-    const fallbackReason: HostShellFallbackReason = "windows-partial-shell-acl-unsafe";
-    const capability = noneCapability(
-      input.platform,
-      "Windows ASRT partial shell confinement is unavailable: the host will not issue path-based ACL grants for one-shot shells.",
-    );
-    return Object.freeze({
-      version: HOST_SHELL_EXECUTION_PLAN_VERSION,
-      platform: input.platform,
-      requestedSandbox,
-      executionRequest,
-      mode: "plain" as const,
-      sandboxed: false,
-      substrate: "none" as const,
-      egressProtocolCoverage: egressProtocolCoverageFor("none"),
-      capability,
-      fallbackReason,
-      requiresExplicitUserApproval: true,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + (askEveryCommand ? ASK_EVERY_COMMAND_SUFFIX : ""),
-    });
-  }
-
-  // Only a full ASRT route and the explicitly modelled Windows ASRT Plan B may execute a requested shell. Future partial substrates (for example `partial` or `fs-only`) must not silently degrade to an ordinary host shell before they receive their own sealed execution contract.
-  const fallbackReason: HostShellFallbackReason = "active-sandbox-not-shell-contained";
-  const capability = noneCapability(
-    input.platform,
-    "The active OS sandbox does not provide both filesystem and process confinement required for shell execution.",
-  );
+  const capability = freezeCapability(input.activeCapability);
   return Object.freeze({
     version: HOST_SHELL_EXECUTION_PLAN_VERSION,
     platform: input.platform,
     requestedSandbox,
     executionRequest,
-    mode: "blocked" as const,
-    sandboxed: false,
-    substrate: "none" as const,
-    egressProtocolCoverage: egressProtocolCoverageFor("none"),
+    mode: "asrt" as const,
+    sandboxed: true,
+    substrate: shellSubstrate,
+    egressProtocolCoverage: egressProtocolCoverageFor(shellSubstrate),
     capability,
-    fallbackReason,
+    fallbackReason: "none" as const,
     requiresExplicitUserApproval: false,
-    identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
+    identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + shellSubstrate,
   });
 }
-
-const ASK_EVERY_COMMAND_SUFFIX = ":ask";
-const EXACT_RULE_PASS_MARKER = ":home-verified";
 
 // The deny for a "home-privacy-helper-unavailable" plan: shells, hooks and their tool results all carry this restart notice.
 export const HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL = Object.freeze({
@@ -394,24 +345,6 @@ export const HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL = Object.freeze({
 
 export function isHomePrivacyHelperUnavailablePlan(plan: Pick<HostShellExecutionPlan, "mode" | "fallbackReason"> | undefined): boolean {
   return plan?.mode === "blocked" && plan.fallbackReason === "home-privacy-helper-unavailable";
-}
-
-// An unconfined plan that needs a human ask for every command: the requested-but-unavailable sandbox always, an explicit host request
-// on such a host, and a shell-scope-off or explicit-host plan while boot cannot establish Ave home privacy (any category but helper-unavailable,
-// whose plan is blocked). The permission floor reads this, so saved allows, auto review and mode allows cannot run it unasked (one exception:
-// `exactRulePassesUnsandboxedShellAsk`). Otherwise an explicit-host plan keeps its ordinary rule and mode handling.
-export function requiresUnsandboxedShellAsk(plan: HostShellExecutionPlan | undefined): boolean {
-  if (plan === undefined || plan.mode !== "plain" || plan.sandboxed || plan.capability.kind !== "none" ||
-    plan.requiresExplicitUserApproval !== true || !plan.identity.endsWith(ASK_EVERY_COMMAND_SUFFIX)) return false;
-  return plan.executionRequest === "host"
-    ? plan.fallbackReason === "none"
-    : plan.executionRequest === "default" && plan.fallbackReason !== "none";
-}
-
-// The one saved-rule pass of that ask (tree T:128, T:259): the plan asks only because no backend is usable and boot verified Ave home
-// privacy. An exact saved rule may then run the command unasked; with home privacy unverified the boot floor governs and no rule passes.
-export function exactRulePassesUnsandboxedShellAsk(plan: HostShellExecutionPlan | undefined): boolean {
-  return plan !== undefined && requiresUnsandboxedShellAsk(plan) && plan.identity.endsWith(EXACT_RULE_PASS_MARKER + ASK_EVERY_COMMAND_SUFFIX);
 }
 
 // An unpinned native parser needs one-shot authority before startup. Existing

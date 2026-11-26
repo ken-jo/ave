@@ -1,5 +1,6 @@
-import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
+import type { HostShellExecutionPlan, HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
 import { t } from "../i18n/runtime.js";
+import { exactRulePassesUnsandboxedShellAsk, requiresUnsandboxedShellAsk } from "./unsandboxed-shell-ask.js";
 
 type ShellEnvironmentPlan = Pick<HostShellExecutionPlanAuditProjection,
   "platform" | "mode" | "substrate" | "capability" | "requiresExplicitUserApproval" | "fallbackReason" | "installHints">;
@@ -17,7 +18,9 @@ export function shellExecutionEnvironmentLines(plan: ShellEnvironmentPlan, optio
           ? [t("shellExecution.sandboxInstallHint", { packages: plan.installHints.map((hint) => INSTALL_HINT_NAMES[hint]).join(", ") })] : [])]
       // A shell-scope-off plan requires approval only while boot cannot establish Ave home privacy (any category but helper-unavailable, whose plan is blocked).
       : plan.requiresExplicitUserApproval && (plan.fallbackReason === "disabled-by-setting" || plan.fallbackReason === "platform-unsupported")
-        ? [t(options?.sessionOffered === false ? "shellExecution.boundaryUnverifiedOneTime" : "shellExecution.boundaryUnverifiedAsk")] : []),
+        ? [t(options?.sessionOffered === false ? "shellExecution.boundaryUnverifiedOneTime" : "shellExecution.boundaryUnverifiedAsk")]
+        : plan.fallbackReason === "active-sandbox-not-shell-contained" || plan.fallbackReason === "windows-partial-shell-acl-unsafe"
+          ? [t(options?.sessionOffered === false ? "shellExecution.shellNotContainedOneTime" : "shellExecution.shellNotContainedAsk")] : []),
     t("shellExecution.location", { platform: plan.platform }),
     plan.mode === "asrt" ? t("shellExecution.temporaryHome") : t("shellExecution.hostHome"),
     plan.mode === "asrt" ? t("shellExecution.isolatedAuthentication") : t("shellExecution.hostAuthentication"),
@@ -26,7 +29,7 @@ export function shellExecutionEnvironmentLines(plan: ShellEnvironmentPlan, optio
 }
 
 /** Describe the default route; the final per-call plan remains authoritative. */
-export function shellExecutionEnvironmentPrompt(plan: ShellEnvironmentPlan, interactive: boolean): string {
+export function shellExecutionEnvironmentPrompt(plan: ShellEnvironmentPlan, interactive: boolean, hostPlan: HostShellExecutionPlan): string {
   const confines = plan.capability.confines;
   const confinement = confines === undefined
     ? t("shellExecution.confinementUnspecified")
@@ -44,7 +47,11 @@ export function shellExecutionEnvironmentPrompt(plan: ShellEnvironmentPlan, inte
     ...(plan.mode === "asrt" && plan.substrate === "mxc" ? [t("shellExecution.mxcBashUnavailable")] : []),
     // A helper-unavailable plan blocks the host route too, so no host request is offered.
     ...(!interactive ? [t("shellExecution.noInteractiveApproval")]
-      : plan.fallbackReason === "home-privacy-helper-unavailable" ? [] : [t("shellExecution.hostRequest")]),
+      : hostPlan.fallbackReason === "home-privacy-helper-unavailable" ? []
+        : requiresUnsandboxedShellAsk(hostPlan)
+          ? [t("shellExecution.hostRequestFloor"),
+            ...(exactRulePassesUnsandboxedShellAsk(hostPlan) ? [t("shellExecution.hostRequestExactRule")] : [])]
+          : [t("shellExecution.hostRequest")]),
     t("shellExecution.pipelineStatus"),
     "</shell-execution-environment>",
   ].join("\n");

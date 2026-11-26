@@ -235,7 +235,7 @@ export class SystemPromptBuilder {
       scratch.ok
         ? "scratchDirectory is application-owned disposable space for intermediate files (downloads, build output, temporary scripts). Stage such work there rather than in the project; writes under it need no approval, and it is not backed up."
         : "No application scratch directory is available on this host (its directory did not verify as application-owned). Stage intermediate files inside the project's working directory and say so when they are left behind.",
-      shellExecutionEnvironmentPrompt(getHostShellExecutionPlan(), !execTurnRequested(process.argv)),
+      shellExecutionEnvironmentPrompt(getHostShellExecutionPlan(), !execTurnRequested(process.argv), getHostShellExecutionPlan("host")),
       // Only interactive runs may use host locale as a person-language hint.
       ...(execTurnRequested(process.argv)
         ? [t("be_systemPromptBuilder.headlessResponseLanguage")]

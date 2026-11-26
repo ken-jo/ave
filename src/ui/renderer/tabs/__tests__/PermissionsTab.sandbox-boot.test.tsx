@@ -142,7 +142,7 @@ describe("PermissionsTab — boot sandbox outcome notice", () => {
     installApi({ action: "degrade", reason: "degrade-windows-not-installed", onSignal: "default-settings", causes: [cause] });
     await renderTab();
     expect(screen.getByTestId("os-sandbox-boot-degraded-detail")).toHaveTextContent(t(key));
-    expect(document.body.textContent).not.toContain(t("inputActionBar.sandboxCauseWindowsSetupIncomplete"));
+    expect(document.body).not.toHaveTextContent("Windows 샌드박스 설정(srt-win)이 완료되지 않음");
   });
 
   it("says the sandbox did not start and directs dependency diagnostics to the log", async () => {

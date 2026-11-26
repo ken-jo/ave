@@ -182,8 +182,8 @@ describe("shell confinement and escape rules", () => {
     // Runtime confinement remains responsible for descendants not present in the command operands.
     { route: "the MXC container route", expected: { decision: "allow", reasonCode: "read-only-shell" },
       plan: () => buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: mxcShellCapability(), shellSubstrate: "mxc" }) },
-    // A host shell follows ordinary mode policy even when the command is read-only.
-    { route: "the approved-host route", expected: { decision: "ask", reasonCode: "shell-approval" },
+    // A shell the capability does not contain takes the no-confinement ask even when the command is read-only.
+    { route: "the approved-host route", expected: { decision: "ask", reasonCode: "sandbox-unavailable", forceModal: true },
       plan: () => buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: windowsProxyOnlyCapability() }) },
   ])("decides recursive link traversal without a visible sensitive path from $route", ({ plan, expected }) => {
     const clean = join(dir, "clean");
@@ -198,7 +198,7 @@ describe("shell confinement and escape rules", () => {
       shellExecution: { runsSandboxed: hostShellExecutionPlan.sandboxed },
     });
     expect(result).toMatchObject(expected);
-    expect(result.forceModal).toBeUndefined();
+    if (!("forceModal" in expected)) expect(result.forceModal).toBeUndefined();
   });
 
   describe("PowerShell on the MXC route", () => {
@@ -333,7 +333,8 @@ describe("shell confinement and escape rules", () => {
             ruleSubject: { kind: "shell", dialect: "powershell", command, cwd: dir },
             hostShellExecutionPlan,
             shellExecution: { runsSandboxed: hostShellExecutionPlan.sandboxed, pathPolicyRelaxations: [] },
-          }), command).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "project-escape" });
+            // On the approved-host route the no-confinement ask is the reported floor; the escape keeps its card once-only.
+          }), command).toMatchObject({ decision: "ask", forceModal: true, reasonCode: route === "approved host" ? "sandbox-unavailable" : "project-escape" });
         }
       }
     });

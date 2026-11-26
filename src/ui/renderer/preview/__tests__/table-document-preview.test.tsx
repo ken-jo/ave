@@ -693,7 +693,7 @@ describe("hidden panel keeps previews mounted", () => {
     expect(observationHandlers.size).toBe(1);
     expect(screen.getByText("<b>not markup</b>")).toBeTruthy();
     expect(screen.getAllByTestId("chat-side-panel-table-sheet-tab")[1]!.getAttribute("aria-selected")).toBe("true");
-    expect(screen.queryByText(previewKo["chatPreviewRail.tableSheetFallback"])).toBeNull();
+    expect(screen.queryByText("선택한 시트가 더 이상 파일에 없습니다. 첫 번째 시트를 표시합니다.")).toBeNull();
   });
 
   it("says so and shows the first sheet when the selected sheet is gone on reopen", async () => {
@@ -704,7 +704,7 @@ describe("hidden panel keeps previews mounted", () => {
     view.rerender(workbookBody(true));
     await waitFor(() => expect(readDocument).toHaveBeenLastCalledWith("/w/book.xlsx", 0, OBSERVATION_SESSION));
     await screen.findByText("North");
-    expect(screen.getByText(previewKo["chatPreviewRail.tableSheetFallback"])).toBeTruthy();
+    expect(screen.getByText("선택한 시트가 더 이상 파일에 없습니다. 첫 번째 시트를 표시합니다.")).toBeTruthy();
     expect(screen.getAllByTestId("chat-side-panel-table-sheet-tab")[0]!.getAttribute("aria-selected")).toBe("true");
     await waitFor(() => expect(acknowledgeObservation).toHaveBeenCalledWith({ action: "rendered",
       targetId: targets[2], sessionId: OBSERVATION_SESSION, seq: 0 }));
@@ -713,7 +713,7 @@ describe("hidden panel keeps previews mounted", () => {
     hidden = false;
     fireEvent.click(screen.getAllByTestId("chat-side-panel-table-sheet-tab")[1]!);
     await screen.findByText("<b>not markup</b>");
-    expect(screen.queryByText(previewKo["chatPreviewRail.tableSheetFallback"])).toBeNull();
+    expect(screen.queryByText("선택한 시트가 더 이상 파일에 없습니다. 첫 번째 시트를 표시합니다.")).toBeNull();
   });
 
   it("keeps a page preview mounted on its page across a hide and show, re-reading that page as a fresh baseline", async () => {

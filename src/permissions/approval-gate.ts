@@ -54,6 +54,7 @@ import {
   requiresUnsandboxedShellAsk,
   type HostShellExecutionPlanAuditProjection,
 } from "./host-shell-execution-plan.js";
+import { isCurrentIssuedHostShellExecutionPlan } from "./host-shell-execution-plan-issuance.js";
 import type { FloorSessionGrant } from "./permission-manager.js";
 import { errorMessage } from "../shared/error-message.js";
 import { resolve as pathResolve } from "node:path";
@@ -345,6 +346,7 @@ export type ApprovalRequestInput = Omit<
   readonly processCwd?: { readonly directory: ShellApprovalDirectory } | { readonly guestRoute: ExecutionPlan };
   // Host-only: the forced card answers the sandbox-unavailable floor alone (`offersFloorSessionAllow`), so later shells and hooks of this conversation may also pass that floor.
   readonly floorSessionAllowed?: true;
+  readonly floorSessionPolicyEpoch?: string;
   // Host-only: this request types one command into the user's own host terminal. Only the desktop window answers it (no remote, plugin,
   // parked observer or away answer), it is never remembered and offers no rule saves. Set by the
   // executor from the sealed terminal target, never by a renderer.
@@ -681,7 +683,7 @@ interface PendingEntry {
   shellRule?: ShellRuleApproval;
   shellRuleProjectRoot?: ProjectRuleRootBinding;
   // Host-only: the floor a "This session" save on this card answers (never sent to the renderer).
-  floorSessionGrant?: FloorSessionGrant;
+  floorSessionGrant?: FloorSessionGrant & { policyEpoch: string; plan: NonNullable<ApprovalRequestInput["hostShellExecutionPlan"]> };
   hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
   verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   projectCwd?: string;
@@ -1155,6 +1157,7 @@ export class ApprovalGate {
       hostShellExecutionPermitBinding,
       processCwd,
       floorSessionAllowed: requestedFloorSessionAllowed,
+      floorSessionPolicyEpoch,
       hostTerminal,
       hostTerminalAfterExternalContent: _requestedAfterExternalContent,
       homeFolderRefused: _requestedHomeFolderRefused,
@@ -1236,13 +1239,18 @@ export class ApprovalGate {
       req.source === "builtin" && (req.toolName === "bash" || req.toolName === "powershell" || hostTerminal !== undefined) && req.toolCategory === "shell" &&
       req.category === "tool" && (req.kind === undefined || req.kind === "tool");
     const hasHostShellApprovalContract = hasOneShotHostShellApprovalContract || hasShellRuleApprovalContract;
-    // The sandbox-unavailable floor card keeps its one-shot answer and permit binding; its only lasting choice is this conversation's later shells and hooks.
-    const floorSessionGrant: FloorSessionGrant | undefined = requestedFloorSessionAllowed === true && hasOneShotHostShellApprovalContract &&
-      hostShellExecutionPermitBinding !== undefined && requiresUnsandboxedShellAsk(hostShellExecutionPermitBinding.plan) &&
-      hostTerminal === undefined && typeof req.sessionId === "string" && req.sessionId.length > 0 && req.source === "builtin" &&
-      (req.toolName === "bash" || req.toolName === "powershell") && req.toolCategory === "shell" &&
+    // A terminal types into an existing shell, so its sealed host route carries a plan without a spawn permit binding.
+    const terminalFloorPlan = hostTerminal !== undefined && hostShellExecutionPlan?.executionRequest === "host" &&
+      isCurrentIssuedHostShellExecutionPlan(hostShellExecutionPlan) ? hostShellExecutionPlan : undefined;
+    const floorSessionPlan = hostTerminal !== undefined
+      ? terminalFloorPlan
+      : req.toolName === "bash" || req.toolName === "powershell" ? hostShellExecutionPermitBinding?.plan : undefined;
+    const floorSessionGrant: PendingEntry["floorSessionGrant"] = requestedFloorSessionAllowed === true && hasOneShotHostShellApprovalContract &&
+      floorSessionPolicyEpoch !== undefined && floorSessionPlan !== undefined &&
+      requiresUnsandboxedShellAsk(floorSessionPlan) &&
+      typeof req.sessionId === "string" && req.sessionId.length > 0 && req.source === "builtin" && req.toolCategory === "shell" &&
       req.category === "tool" && (req.kind === undefined || req.kind === "tool")
-      ? Object.freeze({ code: "sandbox-unavailable" as const })
+      ? Object.freeze({ code: "sandbox-unavailable" as const, policyEpoch: floorSessionPolicyEpoch, plan: floorSessionPlan })
       : undefined;
     if (
       hostShellExecutionPermitBinding !== undefined &&
@@ -1365,8 +1373,16 @@ export class ApprovalGate {
       }, req.sessionId, verifiedShellCommand, hostShellExecutionPlan)
       : undefined;
     // The floor's session allow covers this conversation's later shells and hooks on this floor, saved by the host from the pending card: no rule text, no project or global rule.
-    const shellRule = builtShellRule !== undefined && floorSessionGrant !== undefined
-      ? { ...builtShellRule, exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true as const }
+    const terminalFloorContext = hostTerminal !== undefined && floorSessionGrant !== undefined ? {
+      dialect: "bash" as const,
+      denyRule: null,
+      denyAllowed: false,
+      projectCwd: hostTerminal.physicalCwd,
+      projectRoot: hostTerminal.physicalCwd,
+    } : undefined;
+    const floorRuleContext = builtShellRule ?? terminalFloorContext;
+    const shellRule: ShellRuleApproval | undefined = floorRuleContext !== undefined && floorSessionGrant !== undefined
+      ? { ...floorRuleContext, exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true }
       : builtShellRule;
     const projectRootBinding = shellRule?.persistentAllowed ? captureProjectRuleRootBinding(shellRule.projectCwd) : undefined;
     const shellRuleProjectRoot = projectRootBinding?.path === shellRule?.projectRoot ? projectRootBinding : undefined;
@@ -2222,7 +2238,7 @@ export class ApprovalGate {
     projectCwd: string | undefined;
     shellRule: ShellRuleApproval | undefined;
     shellRuleProjectRoot?: ProjectRuleRootBinding;
-    floorSessionGrant?: FloorSessionGrant;
+    floorSessionGrant?: PendingEntry["floorSessionGrant"];
     hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
     verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
     egress: (NonNullable<PendingEntry["egressRule"]> & { scopes: readonly EgressGrantScope[]; terminalTabId?: string }) | undefined;
