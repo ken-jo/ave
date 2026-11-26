@@ -2200,6 +2200,7 @@ export function App() {
         <WorkBoardPanel
           api={api}
           project={activeProject ?? defaultWorkspaceProject}
+          projects={workspaceProjects}
           focusItemId={workBoardFocusItemId}
           onFocusConsumed={() => setWorkBoardFocusItemId(null)}
           approvalFocusKey={workApprovalFocusKey}

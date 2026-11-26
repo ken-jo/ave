@@ -3,6 +3,7 @@ import type { AveApi } from "../types.js";
 import type {
   RunProgressEventPayload,
   RunTranscriptEvent,
+  TemplateRunRequest,
   WorkBoardCancelIpcResult,
   WorkBoardRunToolStep,
   WorkBoardStagePhase,
@@ -76,7 +77,15 @@ export interface WorkItemRunState {
   plan?: { text: string; at: string };
   /** When each phase began, from the first event this board saw in it. */
   phaseAt: Partial<Record<RunPhase, string>>;
+  stageUpdates?: Record<string, WorkflowStageUpdate>;
 }
+
+export type WorkflowStageUpdate = Pick<RunProgressEventPayload, "judgedBy" | "at"> & {
+  stageId: string;
+  attempt: number;
+  phase: WorkBoardStagePhase | "executing";
+  sessionId?: string;
+};
 
 export type RunStateMap = Record<number, WorkItemRunState | undefined>;
 
@@ -366,7 +375,7 @@ export function useWorkBoardRun(
   onPhaseEntered?: () => void,
 ): {
   runState: RunStateMap;
-  runItem: (id: number) => void;
+  runItem: (id: number, template?: TemplateRunRequest, intent?: UserKeyboardIntentSnapshot) => void;
   /** Send a steer to the item's execute child. A queued steer is recorded as `sent`; a refusal records nothing. */
   steer: (
     id: number,
@@ -432,9 +441,23 @@ export function useWorkBoardRun(
             }
             return;
           }
-          // A stage event of a template run is not the run's phase; the host sends an item change beside it and the board re-lists.
-          if (ev.phase === "stage_gate" || ev.phase === "stage_passed" || ev.phase === "stage_failed") return;
-          const runPhase = ev.phase;
+          const { stageId, attempt, phase } = ev;
+          if (stageId !== undefined && attempt !== undefined
+            && (phase === "executing" || phase === "stage_gate" || phase === "stage_passed" || phase === "stage_failed")) {
+            update(ev.itemId, cur => {
+              const prior = cur.stageUpdates?.[stageId];
+              if (prior && (prior.attempt > attempt || (prior.attempt === attempt && (phase === "executing" || prior.at > ev.at)))) return cur;
+              const sessionId = ev.runSessionId ?? (prior?.attempt === attempt ? prior.sessionId : undefined);
+              return {
+                ...cur,
+                stageUpdates: { ...cur.stageUpdates, [stageId]: { stageId, attempt, phase, at: ev.at, judgedBy: ev.judgedBy, sessionId } },
+                sessionIds: withSession(cur.sessionIds, ev.runSessionId),
+              };
+            });
+            return;
+          }
+          if (phase === "stage_gate" || phase === "stage_passed" || phase === "stage_failed") return;
+          const runPhase = phase;
           // A tool step update is not a phase entry either; it only revises that phase's steps.
           const tools = ev.tools;
           if (tools !== undefined) {
@@ -472,7 +495,7 @@ export function useWorkBoardRun(
             };
           });
           // A child's link event (it carries the session and no turn) is not a phase entry: the phase's own entry event already re-listed.
-          if (ev.turn === undefined && ev.runSessionId === undefined && (isActivePhase(ev.phase) || ev.phase === "awaiting_approval")) {
+          if (ev.turn === undefined && ev.runSessionId === undefined && (isActivePhase(runPhase) || runPhase === "awaiting_approval")) {
             onPhaseEnteredRef.current?.();
           }
         }),
@@ -545,26 +568,33 @@ export function useWorkBoardRun(
   }, [api, items, update]);
 
   const runItem = useCallback(
-    (id: number) => {
+    (id: number, template?: TemplateRunRequest, intent?: UserKeyboardIntentSnapshot) => {
       if (typeof api.runWorkBoardItem !== "function") return;
       // Optimistic: show a starting indicator before runStarted lands.
       resetRun(id, { busy: true });
-      void api.runWorkBoardItem(id).then((result) => {
+      const request = template ? api.runWorkBoardItem(id, { template }, intent) : api.runWorkBoardItem(id);
+      const templateError = (code?: string) => {
+        const key = `reasonCodes.${code}`;
+        const translated = t(key);
+        return translated === key ? t("workflowTemplates.runFailed") : translated;
+      };
+      void request.then((result) => {
         if (!mountedRef.current) return;
         if (result && "ok" in result && result.ok === false) {
-          patch(id, { busy: false, phase: "error", reason: reasonText(result.error), heldNotice: undefined });
+          patch(id, { busy: false, phase: "error", reason: template ? templateError(result.error) : reasonText(result.error), heldNotice: undefined });
           return;
         }
         if (result && "status" in result) {
           update(id, (cur) => {
-            const phase = phaseForRunResult(result.status);
+            const phase = template && result.status === "already_running" ? "error" : phaseForRunResult(result.status);
             // A result that names no reason keeps the text its event already showed for the same end.
             const kept = result.reason === undefined && phase === cur.phase && (phase === "error" || phase === "denied") ? cur.reason : undefined;
             return {
               ...cur,
               busy: false,
               phase,
-              reason: reasonText(result.reason) ?? kept,
+              reason: template && (result.status === "error" || result.status === "not_found" || result.status === "already_running")
+                ? templateError(result.reasonCode) : reasonText(result.reason) ?? kept,
               heldNotice: phase !== undefined && isTerminalPhase(phase) ? undefined : cur.heldNotice,
               endUnconfirmed: phase === "cancelled" && result.reasonCode === END_UNCONFIRMED,
               runSessionId: result.runSessionId ?? cur.runSessionId,
@@ -573,7 +603,7 @@ export function useWorkBoardRun(
         }
       }).catch((err: unknown) => {
         if (!mountedRef.current) return;
-        patch(id, { busy: false, phase: "error", reason: errorMessage(err), heldNotice: undefined });
+        patch(id, { busy: false, phase: "error", reason: template ? templateError() : errorMessage(err), heldNotice: undefined });
       });
     },
     [api, patch, resetRun, update],

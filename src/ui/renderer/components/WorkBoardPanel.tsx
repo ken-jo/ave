@@ -4,6 +4,8 @@ import { BoardStageTab } from "./work-board/BoardStageTab.js";
 import { BoardMoveDialog } from "./work-board/BoardMoveDialog.js";
 import type { WorkBoardStage } from "../../../shared/work-board-lifecycle.js";
 import { ReviewInspector } from "./work-board/ReviewInspector.js";
+import { WorkflowRunDialog } from "./work-board/WorkflowRunDialog.js";
+import { WorkflowTemplateLibrary } from "./work-board/WorkflowTemplateLibrary.js";
 import { workBoardStage } from "../../../shared/work-board-lifecycle.js";
 import { EmptyState } from "../../../components/ui/empty-state.js";
 import { Loader } from "../../../components/ui/loader.js";
@@ -46,6 +48,8 @@ import type {
 } from "../../../shared/work-board-types.js";
 import type { WorkBoardToolApprovalSurface } from "../../../shared/work-board-types.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
+import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
+import type { TemplateVersion } from "../../../shared/workflow-template-types.js";
 import { localDateKey, localDayStart } from "../../../shared/local-date.js";
 import { formatLocalClock } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
@@ -80,6 +84,7 @@ import { PlanDecisionControls } from "./work-approvals/PlanDecisionControls.js";
 export interface WorkBoardPanelProps {
   api: AveApi;
   project?: ProjectIdentity;
+  projects?: readonly ProjectIdentity[];
   /** An item another surface asked the board to open — the sidebar's conversation row. The board opens the item's detail with
    * its latest run transcript expanded, then reports the request consumed. */
   focusItemId?: number | null;
@@ -416,6 +421,7 @@ interface CardActions {
   onOpenDetail: (id: number) => void;
   /** Open the live step panel on the item's run. */
   onShowSteps: (id: number) => void;
+  onOpenWorkflowRun: (item: WorkItemResolved) => void;
   /** The item the open step panel shows, or null when it is closed. */
   stepsShowingId: number | null;
   /** The head tool approval each item's run waits on, for items whose run waits on one. */
@@ -570,7 +576,13 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
         <Button size="sm" variant="ghost" className="h-6 px-2 text-dense" onClick={(event) => { event.stopPropagation(); onMove(item.id); }} data-testid="work-board-move">
           {t("workBoard.moveTitle")}
         </Button>
-        {live && (
+        {item.templateId && item.runId ? (
+          <Button type="button" size="sm" variant="ghost" className="mr-auto h-6 px-2 text-dense"
+            disabled={item.templateRunError !== undefined}
+            onClick={event => { event.stopPropagation(); actions.onOpenWorkflowRun(item); }}>
+            {t("workflowTemplates.openRun")}
+          </Button>
+        ) : live && (
           <Button
             size="sm"
             variant={stepsShowing ? "secondary" : "ghost"}
@@ -602,7 +614,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
             {t("workBoard.clearRunButton")}
           </Button>
         )}
-        {!isCompleted && !live && !runMissing && (
+        {!isCompleted && !live && !runMissing && item.templateRunState === undefined && (
           <Button
             size="sm"
             variant="ghost"
@@ -1681,7 +1693,7 @@ function UnreadableRunCards({ runs, onDiscard }: { runs: readonly WorkItemUnread
 }
 
 export function WorkBoardPanel({
-  api, project, focusItemId, onFocusConsumed, approvalFocusKey, onApprovalFocusConsumed, approvalShowAll, onApprovalShowAllConsumed,
+  api, project, projects, focusItemId, onFocusConsumed, approvalFocusKey, onApprovalFocusConsumed, approvalShowAll, onApprovalShowAllConsumed,
   onOpenRoutine, onOpenSchedule, onOpenSession,
 }: WorkBoardPanelProps) {
   const projectRoot = project?.projectRoot;
@@ -1718,6 +1730,27 @@ export function WorkBoardPanel({
   }, [approvalFocusKey, approvalShowAll, narrow]);
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  const [workflowDialog, setWorkflowDialog] = useState<
+    { kind: "library"; item?: WorkItemResolved } | { kind: "run"; item: WorkItemResolved; requestedVersion?: TemplateVersion }
+  >();
+  const workflowTrigger = useRef<HTMLElement | null>(null);
+  const restoreWorkflowFocus = useRef(false);
+  const templatesButton = useRef<HTMLButtonElement>(null);
+  const openWorkflowDialog = useCallback((dialog: NonNullable<typeof workflowDialog>) => {
+    workflowTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    restoreWorkflowFocus.current = false;
+    setWorkflowDialog(dialog);
+  }, []);
+  const closeWorkflowDialog = () => {
+    restoreWorkflowFocus.current = true;
+    setWorkflowDialog(undefined);
+  };
+  const focusWorkflowTrigger = () => {
+    if (!restoreWorkflowFocus.current) return;
+    const trigger = workflowTrigger.current;
+    if (trigger?.isConnected) trigger.focus();
+    else templatesButton.current?.focus();
+  };
   const [moveRequest, setMoveRequest] = useState<{ itemId: number; target?: WorkBoardStage } | null>(null);
   const [reviewId, setReviewId] = useState<number | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
@@ -1864,8 +1897,40 @@ export function WorkBoardPanel({
   // the hook).
   // A run entering a phase has just written its run fields (runId, runHistory, runStatus) to the item. Re-list so the card's elapsed
   // time reads this run's start rather than the previous run's; turn events do not re-list.
-  const { runState, runItem, steer, stop } = useWorkBoardRun(api, items, refresh);
-  const { byItem: toolApprovals, surface: approvalSurfaceValue } = useBoardApprovals(items, runState);
+  const workflowItemInBoard = workflowDialog?.kind === "run" ? items.find(item => item.id === workflowDialog.item.id) : undefined;
+  const detachedWorkflowId = workflowDialog?.kind === "run" && !workflowItemInBoard ? workflowDialog.item.id : undefined;
+  const [detachedWorkflowItem, setDetachedWorkflowItem] = useState<WorkItemResolved>();
+  useEffect(() => {
+    if (detachedWorkflowId === undefined) return;
+    let revision = 0;
+    const read = async () => {
+      const current = ++revision;
+      try {
+        const result = await api.getWorkBoardItem(detachedWorkflowId);
+        if (current === revision && "status" in result && result.status === "found") setDetachedWorkflowItem(result.item);
+      } catch {
+        // The launch already returned the row. Progress and decisions still come from the host's run channels.
+      }
+    };
+    const changed = api.onWorkBoardItemChanged(({ itemId }) => { if (itemId === undefined || itemId === detachedWorkflowId) void read(); });
+    const finished = api.onWorkBoardRunFinished(({ itemId }) => { if (itemId === detachedWorkflowId) void read(); });
+    void read();
+    return () => { ++revision; changed(); finished(); };
+  }, [api, detachedWorkflowId]);
+  const workflowItem = workflowDialog?.kind === "run"
+    ? workflowItemInBoard ?? (detachedWorkflowItem?.id === detachedWorkflowId ? detachedWorkflowItem : undefined) ?? workflowDialog.item
+    : undefined;
+  const visibleRunItems = useMemo(() => workflowItem && !workflowItemInBoard ? [...items, workflowItem] : items, [items, workflowItem, workflowItemInBoard]);
+  const { runState, runItem, steer, stop } = useWorkBoardRun(api, visibleRunItems, refresh);
+  const launchWorkflow = (item: WorkItemResolved, version: TemplateVersion, intent: UserKeyboardIntentSnapshot) => {
+    runItem(item.id, {
+      templateId: version.templateId, version: version.version, graphHash: version.graphHash,
+      ...(item.projectRoot !== undefined && { projectRoot: item.projectRoot }),
+    }, intent);
+    setWorkflowDialog({ kind: "run", item, requestedVersion: version });
+    void refresh();
+  };
+  const { byItem: toolApprovals, surface: approvalSurfaceValue } = useBoardApprovals(visibleRunItems, runState);
   const approvalSurface = useToolApprovalSurface(api);
 
   // The live step panel: which run it follows, whether it jumps to a newly started run, and whether a settled run stays listed.
@@ -1990,16 +2055,27 @@ export function WorkBoardPanel({
   const onStart = useCallback((id: number) => void handleTransition(id, "in_progress"), [handleTransition]);
   const onComplete = useCallback((id: number) => void handleComplete(id), [handleComplete]);
   const onReopen = useCallback((id: number) => void handleReopen(id), [handleReopen]);
-  const onRun = useCallback((id: number) => runItem(id), [runItem]);
+  const onRun = useCallback((id: number) => {
+    const item = items.find(entry => entry.id === id);
+    if (item?.templateId) openWorkflowDialog({ kind: "library", item });
+    else runItem(id);
+  }, [items, openWorkflowDialog, runItem]);
+  const onOpenWorkflowRun = useCallback((item: WorkItemResolved) => openWorkflowDialog({ kind: "run", item }), [openWorkflowDialog]);
   const onOpenDetail = useCallback((id: number) => {
     const item = items.find((entry) => entry.id === id);
-    if (item && workBoardStage(item) === "review") setReviewId(id);
+    if (item?.templateId && item.runId && workBoardStage(item) === "review") onOpenWorkflowRun(item);
+    else if (item && workBoardStage(item) === "review") setReviewId(id);
     else setDetailId(id);
-  }, [items]);
+  }, [items, onOpenWorkflowRun]);
   const onOpenRecord = useCallback((id: number) => {
+    const item = items.find(entry => entry.id === id);
+    if (item?.templateId && item.runId) {
+      onOpenWorkflowRun(item);
+      return;
+    }
     setDetailId(id);
     setDetailOpensLatestRun(true);
-  }, []);
+  }, [items, onOpenWorkflowRun]);
   const cardActions = useMemo<CardActions>(() => ({
     onStart,
     onComplete,
@@ -2007,11 +2083,12 @@ export function WorkBoardPanel({
     onRun,
     onClearRun: (item) => { void clearRun(item); },
     onOpenDetail,
+    onOpenWorkflowRun,
     onShowSteps: showSteps,
     stepsShowingId: stepsOpen ? stepsItemId : null,
     toolApprovals,
     approvalSurface,
-  }), [onStart, onComplete, onReopen, onRun, clearRun, onOpenDetail, showSteps, stepsOpen, stepsItemId, toolApprovals, approvalSurface]);
+  }), [onStart, onComplete, onReopen, onRun, clearRun, onOpenDetail, onOpenWorkflowRun, showSteps, stepsOpen, stepsItemId, toolApprovals, approvalSurface]);
 
   // Below the narrow panel width the overview's columns become status tabs and the step panel docks below the board.
   const [statusTab, setStatusTab] = useState<"planned" | "in-progress" | "review" | "completed">("in-progress");
@@ -2098,8 +2175,8 @@ export function WorkBoardPanel({
     void approvalSurfaceValue.decide(head.id, choice, pattern, extras);
   };
   // One lane per stage session of the run: each stage's head card is drawn and answered on its own.
-  const renderApproval = (entry: LiveRunEntry) => {
-    const lanes = stageApprovalLanes(entry.approvals);
+  const renderApproval = (item: WorkItemResolved, requests: readonly ApprovalRequest[]) => {
+    const lanes = stageApprovalLanes(requests);
     if (lanes.length === 0) return null;
     return lanes.map((lane) => {
       const head = lane.requests[0];
@@ -2112,7 +2189,7 @@ export function WorkBoardPanel({
           ) : null}
           <ApprovalLaneCard
             queue={lane.requests}
-            conversationLabel={entry.item.title}
+            conversationLabel={item.title}
             proposedChoice={approvalSurfaceValue.proposal?.requestId === head.id ? approvalSurfaceValue.proposal.choice : null}
             onDecide={decideHead(head)}
             onOpenPermanentDeny={approvalSurfaceValue.openPermanentDeny}
@@ -2124,8 +2201,9 @@ export function WorkBoardPanel({
     });
   };
   // Dialog mode: one card over the board for every run's approvals, in the window queue's order.
+  const workflowApprovals = workflowItem ? toolApprovals.get(workflowItem.id) ?? [] : [];
   const dialogQueue = approvalSurface === "dialog"
-    ? approvalSurfaceValue.queue.filter((request) => [...toolApprovals.values()].some((list) => list.includes(request)))
+    ? approvalSurfaceValue.queue.filter(request => !workflowApprovals.includes(request) && [...toolApprovals.values()].some(list => list.includes(request)))
     : [];
   const dialogHead = dialogQueue[0];
   const dialogItem = dialogHead ? items.find((item) => toolApprovals.get(item.id)?.includes(dialogHead)) : undefined;
@@ -2141,7 +2219,7 @@ export function WorkBoardPanel({
       onPinnedChange={setPinned}
       onClose={() => setStepsOpen(false)}
       approvalSurface={approvalSurface}
-      renderApproval={renderApproval}
+      renderApproval={entry => renderApproval(entry.item, entry.approvals)}
       onSteer={steer}
       onStop={stop}
       onRerun={onRun}
@@ -2200,6 +2278,9 @@ export function WorkBoardPanel({
       <div className="flex flex-col gap-3 pb-4 sm:flex-row sm:items-start sm:justify-between">
         <p className="min-w-0 text-sm text-muted-foreground">{t("workBoard.panelDescription")}</p>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <Button ref={templatesButton} type="button" variant="outline" size="sm" onClick={() => openWorkflowDialog({ kind: "library" })}>
+            {t("workflowTemplates.library")}
+          </Button>
           <Label className="flex items-center gap-1.5 whitespace-nowrap text-xs">
             <Checkbox
               checked={showSchedule}
@@ -2330,6 +2411,26 @@ export function WorkBoardPanel({
         )}
       </div>
 
+      {workflowDialog?.kind === "library" && (
+        <WorkflowTemplateLibrary api={api} project={project} projects={projects ?? (project ? [project] : [])}
+          existingItem={workflowDialog.item} onClose={closeWorkflowDialog} restoreFocus={focusWorkflowTrigger} onLaunch={launchWorkflow} />
+      )}
+      {workflowDialog?.kind === "run" && workflowItem && (
+        <WorkflowRunDialog item={workflowItem} run={runState[workflowItem.id]} requestedVersion={workflowDialog.requestedVersion}
+          approvals={renderApproval(workflowItem, workflowApprovals)}
+          onStop={stop} onRetry={(id, input) => api.retryWorkStage(id, input)} onClose={closeWorkflowDialog} restoreFocus={focusWorkflowTrigger}
+          onHistory={() => {
+            setWorkflowDialog(undefined);
+            setDetailId(workflowItem.id);
+            setDetailOpensLatestRun(true);
+          }}
+          onComplete={async id => {
+            const result = await api.completeWorkBoardItem(id, workflowItem.mutationRevision);
+            if (!("status" in result) || result.status !== "completed") throw new Error("Workflow completion refused");
+            if (detachedWorkflowId === id) setDetachedWorkflowItem(result.item);
+            await refresh();
+          }} />
+      )}
       {showCreate && (
         <WorkItemCreateDialog
           api={api}

@@ -1044,8 +1044,11 @@ export function buildInternalApiSurface() {
   // Agent-orchestration run: kick off plan→approve→execute for one item. The promise resolves with the terminal WorkItemRunResult, but live phase updates flow over
   // onWorkBoardRunProgress; coarse started/finished/failed markers (for the per-item running indicator) flow over the on* siblings. `opts.agentName` selects a named agent profile (drives the child model).
   // A template run also names the tuple (and project) the card showed and carries the click's own activation; other runs send neither.
-  runWorkBoardItem: async (id: number, opts?: { agentName?: string; template?: import("../shared/work-board-types.js").TemplateRunRequest }) =>
-    (opts?.template ? ipcRenderer.invoke(WORK_BOARD.run, id, opts, ipcUserKeyboardIntent()) : ipcRenderer.invoke(WORK_BOARD.run, id, opts)) as Promise<
+  runWorkBoardItem: async (id: number, opts?: { agentName?: string; template?: import("../shared/work-board-types.js").TemplateRunRequest }, userIntent?: UserKeyboardIntentSnapshot) =>
+    (opts?.template ? ipcRenderer.invoke(WORK_BOARD.run, id, opts, userIntent === undefined ? ipcUserKeyboardIntent() : {
+      inputOrigin: "user-keyboard",
+      userActivation: consumeUserKeyboardIntent(userIntent),
+    }) : ipcRenderer.invoke(WORK_BOARD.run, id, opts)) as Promise<
       | import("../shared/work-board-types.js").WorkItemRunResult
       | { ok: false; error: string }
     >,
