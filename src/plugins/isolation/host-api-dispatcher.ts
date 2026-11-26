@@ -19,6 +19,9 @@ import {
   runUnattributedEffectRequest,
   sameEffectAuthority,
 } from "../../permissions/effect-enforcement.js";
+import type { AuditLogger } from "../../audit/audit-logger.js";
+import { createEffectLedger, currentEffectLedger, runWithEffectLedger } from "../../permissions/effect-ledger.js";
+import { emitEffectShadowLog } from "../../permissions/reviewer/risk-shadow-log.js";
 import { ManifestIntegrityError } from "../../permissions/manifest-integrity.js";
 import { PluginRuntimeDetachedOperationError } from "../runtime/detached-operation.js";
 import { currentInvocationOrigin } from "../runtime/origin-chain.js";
@@ -1352,6 +1355,7 @@ export interface HostApiDispatcherOptions {
   readonly reportUnknownField: (report: UnknownFieldReport) => void;
   /** Host-owned, coalesced diagnostics. The callback must not include caller payloads. */
   readonly reportBudgetAudit?: (entry: HostApiBudgetAudit) => void;
+  readonly effectAudit?: Pick<AuditLogger, "logShadow">;
   readonly table?: Record<HostApiPath, HostApiPathHandler>;
   /** Connections without invocation tracking must refuse tokens rather than fabricate authority. */
   readonly invocations?: HostInvocationTable;
@@ -1461,7 +1465,7 @@ export class HostApiDispatcher {
   }
 
   /** A named invocation must resolve; a gated effect also needs that call to be live. */
-  private runInInvocation<R>(path: HostApiPath, token: string, invoke: () => R): R {
+  private async runInInvocation(path: HostApiPath, token: string, invoke: () => Promise<unknown>): Promise<unknown> {
     const invocation = this.options.invocations?.resolve(token);
     if (invocation === undefined) {
       throw new HostApiBoundaryError(
@@ -1469,19 +1473,20 @@ export class HostApiDispatcher {
         `[host-api-dispatcher] '${path}' names an invocation this connection does not hold`,
       );
     }
-    if (!invocation.live && readsEffectFrame(path)) {
+    const gated = readsEffectFrame(path);
+    if (!invocation.live && gated) {
       throw new HostApiBoundaryError(
         "argument-marshalling-rejected",
         `[host-api-dispatcher] '${path}' names a tool call that has already settled`,
         { reason: SETTLED_INVOCATION_TOKEN },
       );
     }
-    if (invocation.live && readsEffectFrame(path)) {
-      const named = invocation.run(currentEffectGateContext);
-      let sibling = false;
-      for (const other of this.options.invocations?.live() ?? []) {
-        if (other === invocation.run) continue;
-        sibling = true;
+    if (!invocation.live) return invocation.run(invoke);
+    const siblings = [...this.options.invocations?.live() ?? []].filter((other) => other !== invocation.run);
+    if (siblings.length === 0) return invocation.run(invoke);
+    const named = invocation.run(currentEffectGateContext);
+    if (gated) {
+      for (const other of siblings) {
         const otherFrame = other(currentEffectGateContext);
         // A frameless call cannot weaken the named call's gate.
         if (named !== undefined && otherFrame === undefined) continue;
@@ -1493,10 +1498,25 @@ export class HostApiDispatcher {
           );
         }
       }
-      // The child supplies the token. Any other live call makes attribution ambiguous, even when it has no gate.
-      if (named !== undefined && sibling) return invocation.run(() => runUnattributedEffectRequest(named, invoke));
     }
-    return invocation.run(invoke);
+
+    // Mark every possible owner before the request yields and a sibling can finish.
+    for (const candidate of [invocation.run, ...siblings]) {
+      candidate(currentEffectLedger)?.markObservationIncomplete();
+    }
+    const ledger = createEffectLedger();
+    try {
+      return await invocation.run(() => runWithEffectLedger(ledger,
+        () => named === undefined ? invoke() : runUnattributedEffectRequest(named, invoke)));
+    } finally {
+      const summary = ledger.summary();
+      if (this.options.effectAudit && summary.effects.length > 0) {
+        emitEffectShadowLog({
+          hostApiPath: path, source: "plugin", pluginId: this.options.pluginId,
+          hostObservable: true, hostObservedEffect: summary,
+        }, this.options.effectAudit);
+      }
+    }
   }
 
   /** Accept only declared child notification kinds; dispatch release, cancellation and logs through their owners. */

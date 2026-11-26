@@ -1524,11 +1524,12 @@ export async function executeAuthorizedToolInvocation(
   // read/write classification for this call; it drives NO permission decision
   // here — a later read-recognition gate consumes it.
   const effectSummary = effectLedger.summary();
+  const cleanObservation = !effectSummary.observationIncomplete && !effectSummary.hasMutatingEffect;
   if (
     operationExecutionDomain &&
     resolvedPluginOperation?.rule.kind === "read" &&
     !outcome.settlement &&
-    effectSummary.hasMutatingEffect
+    !cleanObservation
   ) {
     services.pluginOperationGrants.markDomainMutation(
       operationExecutionDomain,
@@ -1560,7 +1561,7 @@ export async function executeAuthorizedToolInvocation(
       pluginOperationPrincipal,
       operationExecutionDomain!,
     ) &&
-    !effectSummary.hasMutatingEffect &&
+    cleanObservation &&
     satisfiesDeclaredReadResultStatus(
       rawResult,
       resolvedPluginOperation.rule.successfulResultStatuses,

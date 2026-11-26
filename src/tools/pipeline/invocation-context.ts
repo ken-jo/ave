@@ -72,7 +72,7 @@ export function createInvocationContext(
   // Capture the parent ledger first so delegated mutations propagate to wrappers and cannot appear read-only.
   const parentEffectLedger = currentEffectLedger();
   // Create a fresh observability ledger before classification so category and effect audit share correlationId.
-  const effectLedger = createEffectLedger();
+  const effectLedger = createEffectLedger(undefined, parentEffectLedger);
   return {
     baseAdditionalDirectories,
     allowedScope,

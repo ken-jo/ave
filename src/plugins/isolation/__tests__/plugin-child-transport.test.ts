@@ -15,6 +15,8 @@ import { currentEffectGateContext, enforceMutatingEffects, GATED_EFFECT_PATHS, g
 import { runWithInvocationOrigin } from "../../runtime/origin-chain.js";
 import { ApprovalGate, type ApprovalRequest } from "../../../permissions/approval-gate.js";
 import { AuditLogger } from "../../../audit/audit-logger.js";
+import { instrumentEffectsByPath } from "../../../permissions/hostapi-effect-recorder.js";
+import { PluginOperationGrantCoordinator } from "../../../permissions/plugin-operation-grant.js";
 import { createDynamicTool } from "../../../tools/base.js";
 import { ToolExecutor } from "../../../tools/executor.js";
 import { ToolRegistry } from "../../../tools/registry.js";
@@ -394,6 +396,7 @@ interface InvocationRig {
 /** Construct inside a marker to test spawn-context isolation. */
 function invocationRig(options: {
   pluginId?: string; teardown?: () => void; terminate?: () => void; table?: Record<string, HostApiPathHandler>;
+  effectAudit?: Pick<AuditLogger, "logShadow">;
 } = {}): InvocationRig {
   const { link, childToHost, sent, fireGone, fireFault } = recordedLink();
   const pluginId = options.pluginId ?? "transportprobe";
@@ -403,6 +406,7 @@ function invocationRig(options: {
     const transport = new PluginChildTransport({
       pluginId,
       reportBudgetAudit: audit,
+      effectAudit: options.effectAudit,
       isActive: () => true,
       reportUnknownField: () => undefined,
       link: options.terminate === undefined ? link : { ...link, terminate: options.terminate },
@@ -1014,11 +1018,12 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
     } };
     const gate = new ApprovalGate(desk as never);
     const write = vi.fn(async (_path: string, _contents: string) => undefined);
-    const api = enforceMutatingEffects({ storage: { write } }, {
+    const api = enforceMutatingEffects(instrumentEffectsByPath({ storage: { write } }), {
       pluginId: PLUGIN, approvalGate: gate, permissionManager: manager,
       resolveStoragePath: (relativePath) => join(root, relativePath), assertActive: vi.fn(),
     });
-    const rig = invocationRig({ pluginId: PLUGIN, table: {
+    const shadowLog = vi.spyOn(audit, "logShadow");
+    const rig = invocationRig({ pluginId: PLUGIN, effectAudit: audit, table: {
       raiseAlert: defineHostApiPath("raiseAlert", async () => {
         await api.storage.write("overlap.txt", "effect");
         return { status: "raised", alertId: "alert" } as never;
@@ -1031,18 +1036,38 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
         await rig.transport.requestMcp("tools/call", { name: "speak", arguments: {} });
         return { output: "spoke", isError: false };
       } }));
-    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
+    const generationId = "overlap-generation";
+    const operationGrants = new PluginOperationGrantCoordinator();
+    const readReceipt = vi.spyOn(operationGrants, "recordRead");
+    registry.register(createDynamicTool({ name: "overlap_read", source: "plugin", pluginId: PLUGIN,
+      description: "Reads through the plugin child.", category: "read", pathFields: [],
+      jsonSchema: { type: "object" }, pluginGeneration: { pluginId: PLUGIN, generationId },
+      operationPolicy: { discriminant: "operation", operations: { status: { kind: "read", minimumRisk: "read" } } },
+      execute: async () => {
+        await rig.transport.requestMcp("tools/call", { name: "status", arguments: {} });
+        return { output: "read", isError: false };
+      } }));
+    const generationAccess = {
+      acquireExact: async () => ({ generation: { state: { runtime: { instance: { handlers: {} } } } }, release: () => {} }),
+      runWithLease: async (_lease: unknown, run: () => Promise<unknown>) => run(),
+    };
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit,
+      undefined, undefined, operationGrants, () => generationAccess as never,
+      () => ({ ownerVersion: "1.0.0", generationId, appSessionId: SESSION,
+        accountScopeHash: "scope", accountHash: "account", appGrantRequired: false }));
     const pending: Promise<unknown>[] = [];
     /** One executor invocation, parked on its tools/call to the child. */
-    const call = async (id: string) => {
+    const call = async (id: string, name = "overlap_probe") => {
       const before = rig.sent.length;
-      const result = executor.executeAll([{ id, name: "overlap_probe", input: {} }], {
+      const result = executor.executeAll([{ id, name, input: name === "overlap_read" ? { operation: "status" } : {} }], {
         sessionId: SESSION, executionCwd: root, permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg" }),
       });
       pending.push(result.catch(() => undefined));
+      let finished: unknown;
+      void result.then((results) => { finished = results; }, (error: unknown) => { finished = String(error); });
       const [frame] = await vi.waitFor(() => {
         const calls = rig.sent.slice(before).filter((candidate) => candidate.method === "tools/call");
-        expect(calls).toHaveLength(1);
+        expect(calls, JSON.stringify(finished)).toHaveLength(1);
         return calls as [typeof calls[number]];
       });
       return { result, token: tokenOf(frame), finish: () => rig.deliver({ jsonrpc: "2.0", id: frame.id as string, result: { content: [] } }) };
@@ -1066,8 +1091,88 @@ describe("an effect refusal while two tool calls of one plugin are live", () => 
       await audit.close();
       rmSync(root, { recursive: true, force: true });
     };
-    return { rig, manager, gate, desk, cards, write, call, effectFromChild, replyTo, terminal, close };
+    const observations = () => shadowLog.mock.calls
+      .map(([row]) => JSON.parse(row.output ?? "{}") as Record<string, unknown>)
+      .filter((row) => row.event === "effect-shadow");
+    return { rig, manager, gate, desk, cards, write, call, effectFromChild, replyTo, terminal, observations, readReceipt, close };
   }
+
+  it.each(["framed", "frameless"] as const)("audits a standing-allowed write without an owner with a %s sibling", async (topology) => {
+    const t = await overlap();
+    let pendingPoll: Promise<unknown> | undefined;
+    try {
+      t.manager.setMode("allow");
+      const read = await t.call("overlap-read", "overlap_read");
+      let sibling;
+      if (topology === "framed") {
+        sibling = await t.call("overlap-sibling");
+      } else {
+        const before = t.rig.sent.length;
+        const poll = runWithInvocationOrigin("ui", undefined,
+          () => t.rig.transport.requestMcp("tools/call", { name: "poll", arguments: {} }));
+        pendingPoll = Promise.allSettled([poll]);
+        const [frame] = await vi.waitFor(() => {
+          const calls = t.rig.sent.slice(before).filter((candidate) => candidate.method === "tools/call");
+          expect(calls).toHaveLength(1);
+          return calls as [Frame];
+        });
+        sibling = { token: read.token, result: poll, finish: () => t.rig.deliver({
+          jsonrpc: "2.0", id: frame.id as string, result: { content: [] },
+        }) };
+      }
+      t.effectFromChild("allowed-effect", sibling.token);
+      expect(await t.replyTo("allowed-effect")).toMatchObject({ result: { status: "raised" } });
+      expect(t.write).toHaveBeenCalledExactlyOnceWith("overlap.txt", "effect");
+      expect(t.cards).toEqual([]);
+      read.finish();
+      sibling.finish();
+      await sibling.result;
+      await expect(read.result).resolves.toEqual([expect.objectContaining({ content: "read" })]);
+      expect(t.readReceipt).not.toHaveBeenCalled();
+      const observed = t.observations();
+      const unattributed = observed.filter((row) => row.hostApiPath === "raiseAlert");
+      expect(unattributed).toEqual([expect.objectContaining({
+        source: "plugin", pluginId: PLUGIN, hasMutatingEffect: true,
+        effects: [expect.objectContaining({ kind: "storageWrite", effect: "write", target: "overlap.txt" })],
+      })]);
+      expect(unattributed[0]).not.toHaveProperty("toolName");
+      const expectedTools = topology === "framed" ? ["overlap_probe", "overlap_read"] : ["overlap_read"];
+      const invocationRows = observed.filter((row) => row.toolName !== undefined);
+      expect(invocationRows.map((row) => row.toolName).sort()).toEqual(expectedTools);
+      for (const row of invocationRows) {
+        expect(row).toMatchObject({ hasMutatingEffect: false, effects: [], observationIncomplete: true });
+      }
+    } finally {
+      await t.close();
+      await pendingPoll;
+    }
+  });
+
+  it("keeps lone-call write attribution and lets a subsequently clean read qualify", async () => {
+    const t = await overlap();
+    try {
+      t.manager.setMode("allow");
+      const read = await t.call("lone-mutating-read", "overlap_read");
+      t.effectFromChild("lone-effect", read.token);
+      expect(await t.replyTo("lone-effect")).toMatchObject({ result: { status: "raised" } });
+      read.finish();
+      await expect(read.result).resolves.toEqual([expect.objectContaining({ content: "read" })]);
+      expect(t.readReceipt).not.toHaveBeenCalled();
+      const observed = t.observations();
+      expect(observed).toEqual([expect.objectContaining({
+        toolName: "overlap_read", hasMutatingEffect: true,
+        effects: [expect.objectContaining({ kind: "storageWrite", effect: "write" })],
+      })]);
+      expect(observed[0]).not.toHaveProperty("observationIncomplete");
+
+      const clean = await t.call("lone-clean-read", "overlap_read");
+      clean.finish();
+      await expect(clean.result).resolves.toEqual([expect.objectContaining({ content: "read" })]);
+      expect(t.readReceipt).toHaveBeenCalledTimes(1);
+    } finally {
+      await t.close();
+    }
+  });
 
   it("refuses an effect that would ask while a frameless app poll is live without settling either call", async () => {
     const t = await overlap();
