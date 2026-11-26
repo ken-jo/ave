@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync, type BigIntStats } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import { admitLocalRoute, admitRouteAncestor, localFs, withLocalityDecision } from "../../shared/local-path-io.js";
 import { admitWindowsReparse, pinWindowsPaths } from "../../shared/windows-path-facts.js";
+import { admitObligations, consumeObligations, windowsObligationsApply } from "../admitted-obligation.js";
 
 export interface GitRepositoryInputs {
   readonly gitDirectory: string;
@@ -56,8 +58,9 @@ function metadataIdentity(stat: BigIntStats): string {
   return [stat.dev, stat.ino, stat.mode, stat.uid, stat.gid, stat.size, stat.nlink, stat.mtimeNs, stat.ctimeNs].join(":");
 }
 
-function readControlFingerprint(path: string, expectedIdentity: string, maxBytes: number, isConfig: boolean): { hash: string; bytes: number } | null {
-  const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+function readControlFingerprint(path: string, expectedIdentity: string, maxBytes: number, isConfig: boolean, nativeWindows: boolean): { hash: string; bytes: number } | null {
+  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+  const descriptor = nativeWindows ? localFs.open(ordinaryLocalRoute(path).verdict, flags) : openSync(path, flags);
   try {
     const stat = fstatSync(descriptor, { bigint: true });
     if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(maxBytes) || metadataIdentity(stat) !== expectedIdentity) return null;
@@ -76,8 +79,9 @@ function readControlFingerprint(path: string, expectedIdentity: string, maxBytes
       if (isConfig) configChunks.push(Buffer.from(bytes));
     }
     if ((isConfig && !hasSupportedConfig(Buffer.concat(configChunks, length)))
-      || metadataIdentity(fstatSync(descriptor, { bigint: true })) !== expectedIdentity
-      || metadataIdentity(lstatSync(path, { bigint: true })) !== expectedIdentity) return null;
+      || metadataIdentity(fstatSync(descriptor, { bigint: true })) !== expectedIdentity) return null;
+    const current = nativeWindows ? localFs.lstatBigint(ordinaryLocalRoute(path).verdict) : lstatSync(path, { bigint: true });
+    if (current === undefined || metadataIdentity(current) !== expectedIdentity) return null;
     return { hash: hash.digest("hex"), bytes: length };
   } finally {
     closeSync(descriptor);
@@ -116,86 +120,124 @@ function areOrdinaryWindowsPaths(paths: readonly string[]): boolean {
   return true;
 }
 
+function admitGitPaths(paths: readonly string[]): readonly string[] | undefined {
+  const set = admitObligations({
+    purpose: "git-pin", principal: "host-lookup",
+    rows: paths.map(path => ({
+      spelling: { path, literal: true }, polarity: { effect: "allow", access: "lookup" }, source: "command-operand",
+    })),
+  });
+  const entries = consumeObligations(set, "git-pin");
+  if (entries.length !== paths.length || entries.some(entry => entry.kind === "missing" || !entry.followCapable)) return undefined;
+  return entries.map(entry => entry.target);
+}
+
 /** Bounded evidence for pre/post comparison; metadata is not atomically sealed. */
 export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
   if (!isAbsolute(cwd) || cwd.includes("\0")) return null;
   try {
-    // Pinning the requested spelling first means realpath follows no reparse point.
-    if (process.platform === "win32" && !areOrdinaryWindowsPaths([cwd])) return null;
-    const workTree = realpathSync(cwd);
-    const provenance: [string, string][] = [];
-    let ancestor = workTree;
-    for (let depth = 0; ; depth += 1) {
-      if (depth > MAX_METADATA_DEPTH) return null;
-      const stat = lstatSync(ancestor, { bigint: true });
-      if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
-      provenance.push([ancestor, metadataIdentity(stat)]);
-      const parent = dirname(ancestor);
-      if (parent === ancestor) break;
-      ancestor = parent;
-    }
-    const evidence: [string, string, string][] = [];
-    const gitDirectory = join(workTree, ".git");
-    let entries = 0;
-    let controlBytes = 0;
-    const inspect = (path: string, relative: string, depth: number): boolean => {
-      const metadataPath = relative.toLowerCase();
-      if (++entries > MAX_METADATA_ENTRIES || depth > MAX_METADATA_DEPTH
-        || FORBIDDEN_METADATA_PATHS.has(metadataPath) || metadataPath.endsWith("/commondir")) return false;
-      // The caller pinned this path, alone for the root and with its siblings otherwise.
-      const stat = lstatSync(path, { bigint: true });
-      if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory()) || (stat.isFile() && stat.nlink !== 1n)) return false;
-      const identity = metadataIdentity(stat);
-      if (relative === "" && !stat.isDirectory()) return false;
-      const isConfig = metadataPath === "config" || metadataPath === "config.worktree";
-      if (stat.isFile()) {
-        let contentHash = "";
-        if (needsContentEvidence(metadataPath)) {
-          const fingerprint = readControlFingerprint(path, identity,
-            Math.min(MAX_CONTROL_FILE_BYTES, MAX_CONTROL_TOTAL_BYTES - controlBytes), isConfig);
-          if (fingerprint === null) return false;
-          controlBytes += fingerprint.bytes;
-          contentHash = fingerprint.hash;
-        }
-        evidence.push([relative, identity, contentHash]);
-        return true;
-      }
-      if (isConfig) return false;
-      evidence.push([relative, identity, ""]);
-      const names: string[] = [];
-      const directory = opendirSync(path);
-      try {
-        let entry;
-        while ((entry = directory.readSync()) !== null) {
-          if (entries + names.length >= MAX_METADATA_ENTRIES) return false;
-          names.push(entry.name);
-        }
-      } finally {
-        directory.closeSync();
-      }
-      if (process.platform === "win32" && !areOrdinaryWindowsPaths(names.map(name => join(path, name)))) return false;
-      for (const name of names) {
-        if (!inspect(join(path, name), relative ? `${relative}/${name}` : name, depth + 1)) return false;
-      }
-      return true;
-    };
-    // This pin uses the realpath spelling, so its ancestor components cover every
-    // provenance directory walked above as well as the metadata root itself.
-    if (process.platform === "win32" && !areOrdinaryWindowsPaths([gitDirectory])) return null;
-    if (!inspect(gitDirectory, "", 0)) return null;
-    // Catch paths changed while another part of the bounded walk was inspected.
-    // This is a consistency check, not a lock on later path opens.
-    // A same-object rename and restore within one filesystem timestamp tick is indistinguishable.
-    for (const [path, identity] of provenance) {
-      if (metadataIdentity(lstatSync(path, { bigint: true })) !== identity) return null;
-    }
-    for (const [relative, identity] of evidence) {
-      if (metadataIdentity(lstatSync(join(gitDirectory, relative), { bigint: true })) !== identity) return null;
-    }
-    evidence.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
-    const stateFingerprint = createHash("sha256").update(JSON.stringify([provenance, evidence])).digest("hex");
-    return { gitDirectory, workTree, referenceBackend: "files", stateFingerprint };
+    return withLocalityDecision(() => inspectRepositoryInDecision(cwd));
   } catch {
     return null;
   }
+}
+
+function inspectRepositoryInDecision(cwd: string): GitRepositoryInputs | null {
+  const nativeWindows = windowsObligationsApply();
+  if (!nativeWindows && process.platform === "win32" && !areOrdinaryWindowsPaths([cwd])) return null;
+  const workTree = nativeWindows ? admitGitPaths([cwd])?.[0] : realpathSync(cwd);
+  if (workTree === undefined) return null;
+  let provenanceRoute = nativeWindows ? ordinaryLocalRoute(workTree) : undefined;
+  const captureAncestor = (path: string): BigIntStats | undefined => provenanceRoute !== undefined
+    ? localFs.lstatBigint(admitRouteAncestor(provenanceRoute, path))
+    : lstatSync(path, { bigint: true });
+  const provenance: [string, string][] = [];
+  let ancestor = workTree;
+  for (let depth = 0; ; depth += 1) {
+    if (depth > MAX_METADATA_DEPTH) return null;
+    const stat = captureAncestor(ancestor);
+    if (stat === undefined || !stat.isDirectory() || stat.isSymbolicLink()) return null;
+    provenance.push([ancestor, metadataIdentity(stat)]);
+    const parent = dirname(ancestor);
+    if (parent === ancestor) break;
+    ancestor = parent;
+  }
+  const evidence: [string, string, string][] = [];
+  const requestedGitDirectory = join(workTree, ".git");
+  const gitDirectory = nativeWindows ? admitGitPaths([requestedGitDirectory])?.[0] : requestedGitDirectory;
+  if (gitDirectory === undefined) return null;
+  let entries = 0;
+  let controlBytes = 0;
+  const inspect = (path: string, relative: string, depth: number): boolean => {
+    const metadataPath = relative.toLowerCase();
+    if (++entries > MAX_METADATA_ENTRIES || depth > MAX_METADATA_DEPTH
+      || FORBIDDEN_METADATA_PATHS.has(metadataPath) || metadataPath.endsWith("/commondir")) return false;
+    // The caller pinned this path, alone for the root and with its siblings otherwise.
+    const route = nativeWindows ? ordinaryLocalRoute(path) : undefined;
+    const stat = route === undefined ? lstatSync(path, { bigint: true }) : localFs.lstatBigint(route.verdict);
+    if (stat === undefined || stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory()) || (stat.isFile() && stat.nlink !== 1n)) return false;
+    const identity = metadataIdentity(stat);
+    if (relative === "" && !stat.isDirectory()) return false;
+    const isConfig = metadataPath === "config" || metadataPath === "config.worktree";
+    if (stat.isFile()) {
+      let contentHash = "";
+      if (needsContentEvidence(metadataPath)) {
+        const fingerprint = readControlFingerprint(path, identity,
+          Math.min(MAX_CONTROL_FILE_BYTES, MAX_CONTROL_TOTAL_BYTES - controlBytes), isConfig, nativeWindows);
+        if (fingerprint === null) return false;
+        controlBytes += fingerprint.bytes;
+        contentHash = fingerprint.hash;
+      }
+      evidence.push([relative, identity, contentHash]);
+      return true;
+    }
+    if (isConfig) return false;
+    evidence.push([relative, identity, ""]);
+    const names: string[] = [];
+    const directory = route === undefined ? opendirSync(path) : localFs.opendir(route.verdict);
+    try {
+      let entry;
+      while ((entry = directory.readSync()) !== null) {
+        if (entries + names.length >= MAX_METADATA_ENTRIES) return false;
+        names.push(entry.name);
+      }
+    } finally {
+      directory.closeSync();
+    }
+    const children = names.map(name => join(path, name));
+    if (nativeWindows) {
+      const admitted = admitGitPaths(children);
+      if (admitted === undefined || admitted.some((target, index) => target !== children[index])) return false;
+    } else if (process.platform === "win32" && !areOrdinaryWindowsPaths(children)) return false;
+    for (const name of names) {
+      if (!inspect(join(path, name), relative ? `${relative}/${name}` : name, depth + 1)) return false;
+    }
+    return true;
+  };
+  if (!nativeWindows && process.platform === "win32" && !areOrdinaryWindowsPaths([gitDirectory])) return null;
+  if (!inspect(gitDirectory, "", 0)) return null;
+  // Catch paths changed while another part of the bounded walk was inspected.
+  // This is a consistency check, not a lock on later path opens.
+  // A same-object rename and restore within one filesystem timestamp tick is indistinguishable.
+  if (nativeWindows) provenanceRoute = ordinaryLocalRoute(workTree);
+  for (const [path, identity] of provenance) {
+    const stat = captureAncestor(path);
+    if (stat === undefined || metadataIdentity(stat) !== identity) return null;
+  }
+  for (const [relative, identity] of evidence) {
+    const path = join(gitDirectory, relative);
+    const stat = nativeWindows
+      ? localFs.lstatBigint(ordinaryLocalRoute(path).verdict)
+      : lstatSync(path, { bigint: true });
+    if (stat === undefined || metadataIdentity(stat) !== identity) return null;
+  }
+  evidence.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+  const stateFingerprint = createHash("sha256").update(JSON.stringify([provenance, evidence])).digest("hex");
+  return { gitDirectory, workTree, referenceBackend: "files", stateFingerprint };
+}
+
+function ordinaryLocalRoute(path: string) {
+  const route = admitLocalRoute(path);
+  if (route.followedLink || route.physical !== path) throw new Error("Git metadata path changed during inspection");
+  return route;
 }

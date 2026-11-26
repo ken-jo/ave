@@ -1,5 +1,5 @@
 // Sensitive-path denies always override allowed roots; temp grants join the separate per-turn base set. Callers canonicalize and case-fold once; prefix checks must not resolve paths again (docs/architecture/permission-policy-design.md).
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { admitLocalRoute, localFs, type LocalPathVerdict, withLocalityDecision } from "../shared/local-path-io.js";
 import { dirname, resolve as pathResolve, sep as pathSep } from "node:path";
 import {
   canonicalizePathForMatch,
@@ -9,6 +9,7 @@ import {
   isConfiguredSessionReadPath,
 } from "./sensitive-paths.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
+import { isWindowsNetworkOrDevicePath } from "../shared/shell-native-path.js";
 import { aveHome } from "../shared/ave-home.js";
 import { verifyAveScratchDir } from "../shared/ave-scratch.js";
 
@@ -46,13 +47,23 @@ export function computeDefaultRuntimeAllowedDirectories(cwd: string = process.cw
  * Whether two spellings name one folder, by device and inode; false when either is gone, or when the filesystem reports no
  * file ID (inode 0), so the realpath decides.
  */
-function sameFolder(a: string, b: string): boolean {
+function sameFolder(a: LocalPathVerdict, b: LocalPathVerdict): boolean {
   try {
-    const left = statSync(a, { bigint: true });
-    const right = statSync(b, { bigint: true });
+    const left = localFs.statBigint(a);
+    const right = localFs.statBigint(b);
     return left.ino !== 0n && left.dev === right.dev && left.ino === right.ino;
   } catch {
     return false;
+  }
+}
+
+/** A route verdict for `path`, or why there is none: a share, device or mapped spelling, or a walk that cannot finish. */
+function localRoute(path: string): LocalPathVerdict | "share" | "unproven" {
+  try { return admitLocalRoute(path).verdict; }
+  catch (error) {
+    const { code, incomplete } = error as { code?: unknown; incomplete?: unknown };
+    if (code !== "ENETWORKSHAREPATH") throw error;
+    return incomplete === true ? "unproven" : "share";
   }
 }
 
@@ -65,18 +76,29 @@ function sameFolder(a: string, b: string): boolean {
  * different folder.
  */
 function runtimeRootSpelling(raw: string, canonical: string): string | null {
-  const resolved = pathResolve(raw);
-  if (!existsSync(resolved)) {
+  return withLocalityDecision(() => runtimeRootSpellingInDecision(raw, canonical));
+}
+
+function runtimeRootSpellingInDecision(raw: string, canonical: string): string | null {
+  const resolved = localRoute(pathResolve(raw));
+  // A share, device or mapped root keeps its lexical matching form: nothing is opened to spell it.
+  if (resolved === "share") return canonical;
+  const matching = localRoute(canonical);
+  if (resolved === "unproven" || matching === "unproven") {
+    console.warn("[allowed-directories] a runtime root was left out: its route could not be proven local");
+    return null;
+  }
+  if (!localFs.exists(resolved)) {
     // A folder that does not exist yet keeps the matching form, unless that form names another folder (an NFC sibling on
     // ext4): granting the sibling would widen the root, so it is left out.
-    if (!existsSync(canonical)) return canonical;
+    if (matching === "share" || !localFs.exists(matching)) return canonical;
     console.warn("[allowed-directories] a runtime root was left out: it does not exist and its matching form names another folder");
     return null;
   }
-  if (sameFolder(canonical, resolved)) return canonical;
+  if (matching !== "share" && sameFolder(matching, resolved)) return canonical;
   let onDisk: string;
   try {
-    onDisk = realpathSync.native(resolved);
+    onDisk = localFs.realpathNative(resolved);
   } catch {
     // The folder went away between the existence check and the realpath: there is no spelling to keep, so only this root
     // is left out.
@@ -101,16 +123,22 @@ function computeDefaultAllowedDirectoryEntries(cwd: string, foldCase: boolean): 
   for (const raw of candidates) {
     const canonical = canonicalizePathForMatch(raw);
     const folded = caseFoldForMatch(canonical);
-    const value = foldCase ? folded : runtimeRootSpelling(raw, canonical);
+    const key = directoryKey(raw, folded);
+    const value = foldCase ? key : runtimeRootSpelling(raw, canonical);
     if (value === null) continue;
-    if (isFilesystemRootPath(folded)) continue;
+    if (isFilesystemRootPath(folded) || isFilesystemRootPath(key)) continue;
     // Layer 0 always wins — if a default candidate is itself sensitive, skip it (the more-specific deny patterns inside still hard-block any leaf access, so excluding the default is mostly hygiene).
-    if (isAdmissionDeniedPath(folded)) continue;
-    if (seen.has(folded)) continue;
-    seen.add(folded);
+    if (isAdmissionDeniedPath(folded) || isAdmissionDeniedPath(key)) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push(value);
   }
   return out;
+}
+
+/** The Layer 1 key of a directory or target: a share or device spelling keeps its own, so the drive it names lends no authority. */
+export function directoryKey(raw: string, folded: string): string {
+  return isWindowsNetworkOrDevicePath(raw) ? caseFoldForMatch(foldCanonicalPathSeparators(raw)) : folded;
 }
 
 // Sanitize a user-provided allow-list (e.g. from `permissions.additionalDirectories` in settings.json). - Resolves `~` to `homedir`. - Canonicalizes via canonicalizePathForMatch + case-fold. - Drops any entry that hits Layer 0 (sensitive path). - De-duplicates. this DOES NOT include the host defaults. Callers should `[...computeDefaultAllowedDirectories,...sanitizeAllowedDirectories(...)]` to assemble the final scope.
@@ -136,12 +164,13 @@ function sanitizeAllowedDirectoryEntries(
     if (isFilesystemRootPath(expanded)) continue;
     const canonical = canonicalizePathForMatch(expanded);
     const folded = caseFoldForMatch(canonical);
-    const value = foldCase ? folded : runtimeRootSpelling(expanded, canonical);
+    const key = directoryKey(expanded, folded);
+    const value = foldCase ? key : runtimeRootSpelling(expanded, canonical);
     if (value === null) continue;
-    if (isFilesystemRootPath(folded)) continue;
-    if (isAdmissionDeniedPath(folded)) continue;
-    if (seen.has(folded)) continue;
-    seen.add(folded);
+    if (isFilesystemRootPath(folded) || isFilesystemRootPath(key)) continue;
+    if (isAdmissionDeniedPath(folded) || isAdmissionDeniedPath(key)) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push(value);
   }
   return out;

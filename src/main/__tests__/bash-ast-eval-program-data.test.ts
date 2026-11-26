@@ -2,11 +2,15 @@ import { allowedCommandCase, deniedCommandCase } from "./support/bash-validation
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import { configureHostResources } from "../host-resources.js";
 import { useBashStructuralFixture } from "../../__tests__/support/bash-structural.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { isReadOnlyCommand } from "../../permissions/reviewer/host-risk-inspector.js";
 import { BashAstValidator } from "../bash-ast-validator.js";
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 const fixture = useBashStructuralFixture();
 const { validate, validator } = fixture;

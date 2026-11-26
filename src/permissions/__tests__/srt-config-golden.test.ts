@@ -16,7 +16,9 @@ const fixture = await vi.hoisted(async () => {
   const fs = await import("node:fs");
   const os = await import("node:os");
   const path = await import("node:path");
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ave-srt-golden-")));
+  const { randomUUID } = await import("node:crypto");
+  // Made by beforeAll, so a host that skips every case (whose hooks never run) leaves nothing behind.
+  const root = path.join(fs.realpathSync(os.tmpdir()), `ave-srt-golden-${randomUUID()}`);
   // Not named `home`: its children would read as account names to the repository's home-path check.
   return { root, home: path.join(root, "account") };
 });

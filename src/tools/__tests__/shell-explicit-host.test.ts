@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +30,9 @@ afterEach(async () => {
   __resetSandboxRequestedAtBootForTest();
   for (const dir of temporaryDirectories.splice(0)) await cleanupTmpDir(dir);
 });
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("explicit host shell authorization", () => {
   it.each(["host", "default"] as const)("does not ask for %s host consent when the exact action would be masked", async (executionMode) => {

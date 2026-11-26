@@ -2,12 +2,16 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ScriptHookManager } from "../script-hook-manager.js";
 import { filterRegistryByEventAndTool } from "../hook-registry.js";
 import { PluginHookTrustStore, preparePluginHookGeneration as prepareWithDigests } from "../plugin-hook-projection.js";
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 // Prepare with an approval digest per hook that follows its fingerprint, as `extensionComponentDigests` gives for changed bytes.
 function preparePluginHookGeneration(generation: ActivePluginGeneration, root: string, dataDir: string) {

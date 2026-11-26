@@ -1,12 +1,15 @@
 import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { ScriptHookManager } from "../script-hook-manager.js";
 import { parseHookConfig } from "../hook-config.js";
 import { bindHookConfigPaths } from "../hook-config-trust.js";
 import { hookJsonInput, stopHookBlockFeedback, type HookEventName } from "../hook-contract.js";
 import { parseHookStdout, runOneHookScript } from "../script-hook-runner.js";
 import type { HookEvent, LifecycleEventPayload, ScriptHookStdin } from "../script-hook-types.js";
+import { configureHostResources } from "../../main/host-resources.js";
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 const COMMAND = resolve(__dirname, "../../../test/fixtures/hooks/contract-command.cjs");
 const CONFIG_DIR = realpathSync(dirname(COMMAND));

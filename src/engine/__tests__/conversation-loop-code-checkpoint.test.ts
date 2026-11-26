@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtemp, realpath, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage, LLMProvider, StreamEvent } from "../llm/types.js";
@@ -12,6 +13,7 @@ import { makeConversationLoopDeps } from "./conversation-loop-test-helpers.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 let root: string;
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "ave-turn-checkpoint-")));
   vi.stubEnv("AVE_HOME", join(root, "state"));

@@ -1819,7 +1819,7 @@
     "src/tools/__tests__/shell-option-tables.test.ts": 34,
     "src/tools/__tests__/shell-path-policy-config.test.ts": 2532,
     "src/tools/__tests__/shell-path-policy-continuation.test.ts": 376,
-    "src/tools/__tests__/shell-path-policy-cwd-tracking.test.ts": 72867,
+    "src/tools/__tests__/shell-path-policy-cwd-tracking.test.ts": 186740,
     "src/tools/__tests__/shell-path-policy-debugger.test.ts": 785,
     "src/tools/__tests__/shell-path-policy-find.test.ts": 6186,
     "src/tools/__tests__/shell-path-policy-findstr.test.ts": 269,

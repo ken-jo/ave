@@ -28,7 +28,7 @@
  *   - Ave-internal sensitive paths: secrets/, audit*, recently-denied,
  *     hooks/ (relocated to ~/.config/ave/hooks). Saved sessions allow reads only.
  */
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readlinkSync, readSync, realpathSync, type BigIntStats } from "node:fs";
+import { closeSync, constants, fstatSync, readSync, type BigIntStats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, sep, resolve as pathResolve, relative as pathRelative, posix } from "node:path";
 import { sameFileIdentity } from "../lib/file-identity.js";
@@ -38,8 +38,12 @@ import { sessionStorePath } from "../shared/session-store-path.js";
 import type { PathEffect } from "./allowed-directories.js";
 import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { compileSensitivePathGlob } from "./sensitive-path-glob.js";
-import { isWindowsNetworkOrDevicePath, modelShellPath } from "../shared/shell-native-path.js";
-import { verifyLocalFilesystemChain } from "../shared/shell-filesystem-path.js";
+import { isWindowsNetworkOrDevicePath, localDriveAlias, modelShellPath, withoutStreamSuffixes } from "../shared/shell-native-path.js";
+import {
+  admitLocalPath, admitLocalRoute, admitRouteAncestor, createRunLocality, type LocalFilesystemFacts, localFs, type LocalityDecision,
+  type LocalRoute, unprovenLookup, withLocalityDecision,
+} from "../shared/local-path-io.js";
+import { classifyWindowsSpelling } from "../shared/windows-path-spelling.js";
 
 // Bounded walk-up depth used by canonicalizePathForMatch when the input path does not yet exist on disk. We try `realpathSync.native` on progressively higher ancestors until we find one that exists, then compose `<resolvedAncestor>/<remainder>`. Capped to defend against adversarial inputs (deep paths, symlink cycles).
 export const MAX_WALK_UP = 64;
@@ -80,7 +84,7 @@ export function getRuntimeSensitiveKeyPaths(): readonly string[] {
   assertSandboxLiteral(configured);
   let canonical: string;
   try {
-    canonical = realpathSync.native(configured);
+    canonical = withLocalityDecision(() => localFs.realpathNative(admitLocalRoute(configured).verdict));
   } catch {
     throw new Error("AVE_SECRET_KEY_FILE could not be resolved safely");
   }
@@ -446,30 +450,47 @@ export function createAdmissionDeniedPathMatcher(effect: PathEffect = "write", s
 
 // Public helpers
 
-type PathResolutionFacts = Parameters<typeof verifyLocalFilesystemChain>[3];
+type PathResolutionFacts = LocalFilesystemFacts;
 
 // Resolve once, walk existing ancestors with a bounded realpath lookup, normalize separators/Unicode/case and pass the frozen string to all policy layers; resolving again admits symlink TOCTOU. If no ancestor resolves within the bound, treat the resolved path as opaque and deny it in allowed-scope checks.
 // `facts` shares a decision-scoped cache across the Step 1 chain walk only, so the common Ave-home prefix is walked once per decision; it never feeds Step 2, so the returned canonical is byte-identical to the uncached call.
 export function canonicalizePathForMatch(rawPath: string, spend?: () => void, facts?: PathResolutionFacts): string {
-  return foldCanonicalPathSeparators(resolvePathForPolicy(rawPath, spend, facts));
+  return withLocalityDecision(() => foldCanonicalPathSeparators(resolvePathForPolicy(rawPath, spend, facts)));
+}
+
+const OPAQUE_NATIVE_PATH = "network-or-device-path";
+
+/** A device or share spelling that names no local drive. Permission evidence treats its target as protected. */
+function isOpaqueNativePath(path: string): boolean {
+  return isWindowsNetworkOrDevicePath(path) && localDriveAlias(path) === undefined;
 }
 
 /** Resolve a policy operand while retaining the stored spelling needed for content inspection. */
 export function resolvePathForPolicy(rawPath: string, spend?: () => void, facts?: PathResolutionFacts): string {
-  if (isWindowsNetworkOrDevicePath(rawPath)) return rawPath;
+  if (isOpaqueNativePath(rawPath)) return rawPath;
+  return withLocalityDecision(() => resolveLocalPathForPolicy(localDriveAlias(rawPath) ?? rawPath, spend, facts));
+}
+
+/** The spelling a path reaches at a link to a network or device target, which nothing past the link has opened. */
+function reachedSpelling(error: unknown, fallback: string): string {
+  if (!(error instanceof Error) || !("code" in error) || error.code !== "ENETWORKSHAREPATH") throw error;
+  return "reached" in error && typeof error.reached === "string" ? error.reached : fallback;
+}
+
+function resolveLocalPathForPolicy(rawPath: string, spend?: () => void, facts?: PathResolutionFacts): string {
   let canonical = pathResolve(rawPath);
-  try { verifyLocalFilesystemChain(canonical, process.platform, MAX_WALK_UP, facts); }
+  let route: LocalRoute;
+  try { route = admitLocalRoute(canonical, { maxSymlinkHops: MAX_WALK_UP, facts }); }
   catch (error) {
-    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENETWORKSHAREPATH") throw error;
-    // Matching stays lexical for opaque network identities, as for direct operands.
-    // Physical shell resolution separately propagates the authority error.
-    return canonical;
+    // Matching stays lexical for opaque network identities, as for direct operands: a link to one is judged by the spelling
+    // it reaches, never the local spelling before it. Physical shell resolution separately propagates the error.
+    return reachedSpelling(error, canonical);
   }
 
   // Step 2 — realpath walk-up. Try the path itself first; if missing, walk up to the nearest existing ancestor and compose the unresolved tail.
   spend?.();
   try {
-    canonical = realpathSync.native(canonical);
+    canonical = localFs.realpathNative(route.verdict);
   } catch {
     let parent = canonical;
     let resolved = false;
@@ -479,7 +500,7 @@ export function resolvePathForPolicy(rawPath: string, spend?: () => void, facts?
       parent = next;
       spend?.();
       try {
-        const realParent = realpathSync.native(parent);
+        const realParent = localFs.realpathNative(admitRouteAncestor(route, parent));
         // Compose: realpath'd ancestor + remainder of original path.
         const remainder = pathRelative(parent, canonical);
         canonical = remainder ? pathResolve(realParent, remainder) : realParent;
@@ -512,7 +533,7 @@ export function createPathCanonicalizer(): (rawPath: string, normalized?: boolea
       : foldCanonicalPathSeparators(canonical);
     return { canonical, folded, missing: true };
   };
-  const resolvePath = (path: string, depth: number): PathFact => {
+  const resolvePath = (path: string, depth: number, route: LocalRoute): PathFact => {
     const known = paths.get(path);
     if (known !== undefined) return known;
     const parent = dirname(path);
@@ -522,32 +543,47 @@ export function createPathCanonicalizer(): (rawPath: string, normalized?: boolea
       paths.set(path, result);
       return result;
     }
-    let result: PathFact;
-    try {
-      if (!existsSync(path)) result = missing(path, parent === path || depth >= MAX_WALK_UP ? undefined : resolvePath(parent, depth + 1));
-      else {
-        const canonical = realpathSync.native(path);
-        result = { canonical, folded: foldCanonicalPathSeparators(canonical), missing: false };
-      }
-    } catch { result = missing(path, parent === path || depth >= MAX_WALK_UP ? undefined : resolvePath(parent, depth + 1)); }
+    // A refused ancestor walk propagates: the path is then judged by the spelling it reaches.
+    const verdict = admitRouteAncestor(route, path);
+    let canonical: string | undefined;
+    if (localFs.exists(verdict)) {
+      // A present entry that cannot be canonicalized proves no identity, and is never recorded as missing either.
+      try { canonical = localFs.realpathNative(verdict); }
+      catch (error) { throw unprovenLookup(path, [], error); }
+    }
+    const result: PathFact = canonical !== undefined ? { canonical, folded: foldCanonicalPathSeparators(canonical), missing: false }
+      : missing(path, parent === path || depth >= MAX_WALK_UP ? undefined : resolvePath(parent, depth + 1, route));
     paths.set(path, result);
     return result;
   };
+  // Recorded facts serve only the decision that observed them.
+  const locality = createRunLocality();
+  let observedIn: LocalityDecision | undefined;
   return (rawPath, normalized = false) => {
-    if (isWindowsNetworkOrDevicePath(rawPath)) return foldCanonicalPathSeparators(rawPath);
-    const path = normalized ? rawPath : pathResolve(rawPath);
-    try {
-      verifyLocalFilesystemChain(path, process.platform, MAX_WALK_UP, {
-        knownPath: (prefix) => paths.get(prefix),
-        onLocalPath: (prefix, canonical, absent) => {
-          paths.set(prefix, { canonical, folded: foldCanonicalPathSeparators(canonical), missing: absent });
-        },
-      });
-    } catch (error) {
-      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENETWORKSHAREPATH") throw error;
-      return foldCanonicalPathSeparators(path);
+    if (isOpaqueNativePath(rawPath)) return foldCanonicalPathSeparators(rawPath);
+    const local = localDriveAlias(rawPath);
+    const path = local !== undefined ? pathResolve(local) : normalized ? rawPath : pathResolve(rawPath);
+    const decision = locality();
+    if (decision !== observedIn) {
+      paths.clear();
+      observedIn = decision;
     }
-    return resolvePath(path, 0).folded;
+    return withLocalityDecision(() => {
+      try {
+        const route = admitLocalRoute(path, {
+          maxSymlinkHops: MAX_WALK_UP,
+          facts: {
+            knownPath: (prefix) => paths.get(prefix),
+            onLocalPath: (prefix, canonical, absent) => {
+              paths.set(prefix, { canonical, folded: foldCanonicalPathSeparators(canonical), missing: absent });
+            },
+          },
+        });
+        return resolvePath(path, 0, route).folded;
+      } catch (error) {
+        return foldCanonicalPathSeparators(reachedSpelling(error, path));
+      }
+    }, decision);
   };
 }
 
@@ -586,7 +622,8 @@ export const PROTECTED_ROOT_ENTRIES = [
 ] as const;
 
 export function protectedControlEntryFor(path: string, canonicalize: (path: string) => string = canonicalizePathForMatch, options: { inspectHostFiles?: boolean } = {}): string | undefined {
-  const normalized = normalizePath(path).normalize("NFC").toLowerCase().replace(/\/+$/u, "");
+  const local = withoutStreamSuffixes(localDriveAlias(path) ?? path);
+  const normalized = normalizePath(local).normalize("NFC").toLowerCase().replace(/\/+$/u, "");
   const segments = normalized.split("/").filter(Boolean);
   const entry = PROTECTED_ROOT_ENTRIES.find((entry) => {
     const parts = entry.split("/");
@@ -602,7 +639,7 @@ export function protectedControlEntryFor(path: string, canonicalize: (path: stri
   const homes = [pathResolve(aveHome()), canonicalize(aveHome()), pathResolve(homedir(), ".config", "ave")]
     .map((home) => normalizePath(home).normalize("NFC").toLowerCase().replace(/\/+$/u, ""));
   // The exception keys on the platform's case rule and never applies to an uncollapsed `..` spelling.
-  const folded = caseFoldForMatch(normalizePath(path).normalize("NFC")).replace(/\/+$/u, "");
+  const folded = caseFoldForMatch(normalizePath(local).normalize("NFC")).replace(/\/+$/u, "");
   const workspace = segments.includes("..") ? undefined : [pathResolve(aveHome()), canonicalize(aveHome())]
     .map((home) => caseFoldForMatch(normalizePath(home).normalize("NFC")).replace(/\/+$/u, "") + "/workspace")
     .find((base) => folded === base || folded.startsWith(base + "/"));
@@ -674,7 +711,21 @@ export function createPermissionPathEvidence(
   return path => {
     const lexical = normalize(path.lexical);
     const canonical = normalize(path.canonical);
-    const native = inspectHostFiles && (requiresInspection(path.lexical) || requiresInspection(path.canonical))
+    // A device or share spelling is judged as the drive path it names and, since no spelling proves that identity, also as
+    // an opaque target. Only a plain share spelling of another host that names no local drive and lies in the project,
+    // whose root may be a share, is ordinary project access; an ambiguous, device, extended or loopback spelling never is.
+    // Its content is never inspected.
+    const unresolved = (value: string) => {
+      if (!isWindowsNetworkOrDevicePath(value)) return false;
+      const spelling = classifyWindowsSpelling(value);
+      return spelling.kind !== "share" || spelling.loopback || spelling.extended || spelling.driveAlias !== undefined
+        || normalize(value).split("/").includes("..") || !inProject(value);
+    };
+    const opaque = unresolved(path.lexical) || unresolved(path.canonical) ? OPAQUE_NATIVE_PATH : undefined;
+    // A spelling that names no local drive cannot be shown to avoid a protected target, so it always needs a person.
+    const unmapped = [path.lexical, path.canonical].some(value => unresolved(value) && localDriveAlias(value) === undefined);
+    const networked = isWindowsNetworkOrDevicePath(path.lexical) || isWindowsNetworkOrDevicePath(path.canonical);
+    const native = inspectHostFiles && !networked && (requiresInspection(path.lexical) || requiresInspection(path.canonical))
       ? (options.resolveNativePath ?? resolvePathForPolicy)(path.lexical) : undefined;
     const sealedNative = native === undefined ? undefined : path.runtimePath;
     if (native !== undefined && (normalize(foldCanonicalPathSeparators(native)) !== normalize(foldCanonicalPathSeparators(path.canonical))
@@ -698,11 +749,12 @@ export function createPermissionPathEvidence(
       : createPathSensitivityMatcher(path.effect, undefined, matchingCanonicalize, false, "agent", undefined, 0, sealedNative ?? native);
     const secretLexical = native === undefined ? lexical : path.lexical;
     const secretCanonical = canonical;
+    const named = normalize(localDriveAlias(path.lexical) ?? path.lexical);
     const observation = {
-      secret: secretMatcher(secretLexical) ?? (secretCanonical === secretLexical ? null : secretMatcher(secretCanonical)),
+      secret: secretMatcher(secretLexical) ?? (secretCanonical === secretLexical ? null : secretMatcher(secretCanonical)) ?? opaque ?? null,
       admissionDenial: matcher.admission(lexical) ?? (canonical === lexical ? null : matcher.admission(canonical)),
-      protectedControl: path.effect === "write" ? protectedControlEntryFor(lexical, matchingCanonicalize, { inspectHostFiles }) ?? protectedControlEntryFor(canonical, matchingCanonicalize, { inspectHostFiles }) : undefined,
-      projectEscape: (within(lexical) || lexical.split("/").includes("..")) && !inProject(canonical),
+      protectedControl: path.effect === "write" ? protectedControlEntryFor(lexical, matchingCanonicalize, { inspectHostFiles }) ?? protectedControlEntryFor(canonical, matchingCanonicalize, { inspectHostFiles }) ?? opaque : undefined,
+      projectEscape: unmapped || (within(named) || named.split("/").includes("..")) && !inProject(canonical),
     };
     // Content and inode can change at an unchanged native name; only name-based evidence is reusable.
     if (native === undefined) observations.set(key, observation);
@@ -779,9 +831,9 @@ function isSessionReadPathUnderRoot(canonicalPath: string, root: string | undefi
   return foldedPath === foldedRoot || foldedPath.startsWith(`${foldedRoot}/`);
 }
 
-// Project the existing sensitive rules beneath a host-resolved session root. This function never scans stored data: where the native layer has glob
-// rules it owns recursion, and Windows MXC (literal rules only) expands each pattern over the read-only root at every shell start, failing closed past
-// its walk cap (`rankMxcFilesystem`).
+// Project the sensitive rules beneath the resolved session root. Shell backends
+// that grant session reads enforce these exclusions. Windows shell policy
+// withholds the session read grant.
 function getSessionReadDenyPatterns(sessionReadRoot: string): readonly string[] {
   return Object.freeze(SENSITIVE_PATH_PATTERNS.map((pattern) =>
     `${sessionReadRoot}/${pattern.endsWith("/**") ? pattern.slice(0, -3) : pattern}`));
@@ -853,7 +905,11 @@ export function isSensitivePath(absPath: string, effect: PathEffect = "write", a
  */
 export function createSensitivePathCheck(effect: PathEffect = "write", audience: KeyMaterialAudience = "agent"): (absPath: string) => string | null {
   const decision = createRevalidatingCanonicalizer();
-  return (absPath) => absPath ? createPathSensitivityMatcher(effect, undefined, decision(), false, audience)(absPath) : null;
+  // Rows of one synchronous run share drive answers; the first row after an await reads them again.
+  const locality = createRunLocality();
+  return (absPath) => absPath
+    ? withLocalityDecision(() => createPathSensitivityMatcher(effect, undefined, decision(), false, audience)(absPath), locality())
+    : null;
 }
 
 // One lstat: identity, type, change time and link target; null when nothing is there; undefined when it cannot vouch for a
@@ -863,11 +919,13 @@ type ChainEntry = { dev: bigint; ino: bigint; type: bigint; changed: bigint; lin
 
 function readChainEntry(path: string): ChainEntry | undefined {
   try {
-    const entry = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+    // The chain is read from its volume root, so each parent was read first; a refused spelling cannot vouch.
+    const verdict = admitLocalPath(path);
+    const entry = localFs.lstatBigint(verdict);
     if (entry === undefined) return null;
     if (entry.ino === 0n) return undefined;
     const read = { dev: entry.dev, ino: entry.ino, type: entry.mode & BigInt(constants.S_IFMT), changed: entry.ctimeNs };
-    return entry.isSymbolicLink() ? { ...read, link: readlinkSync(path) } : read;
+    return entry.isSymbolicLink() ? { ...read, link: localFs.readlink(verdict) } : read;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOTDIR" ? null : undefined;
   }
@@ -881,10 +939,11 @@ function sameChainEntry(left: ChainEntry | undefined, right: ChainEntry, compare
 
 // Record each entry from the volume root that resolving `path` passes through, and each entry of the targets of links on
 // the way. False when the walk meets what it cannot vouch for, or would touch what resolution never touches: a network or
-// device location, a target with "..", a drive-relative or root-relative target, or too many links.
+// device location, a drive mapped to one, a target with "..", a drive-relative or root-relative target, or too many links.
 function recordResolutionChain(path: string, read: (path: string) => ChainEntry | undefined, entries: Map<string, ChainEntry>, links = { count: 0 }): boolean {
   const resolved = pathResolve(path);
-  if (process.platform === "win32" ? !/^[A-Za-z]:\\/u.test(resolved) : !resolved.startsWith("/")) return false;
+  if (process.platform === "win32" ? !/^[A-Za-z]:\\/u.test(resolved)
+    : !resolved.startsWith("/")) return false;
   const { root } = parse(resolved);
   const names = resolved.slice(root.length).split(sep).filter(Boolean);
   let prefix = root;
@@ -929,8 +988,7 @@ function createRevalidatingCanonicalizer(): () => (path: string) => string {
       if (recorded !== undefined) return recorded;
       let confirmed = false;
       try {
-        verifyLocalFilesystemChain(path);
-        confirmed = foldCanonicalPathSeparators(realpathSync.native(path)) === foldCanonicalPathSeparators(path);
+        confirmed = foldCanonicalPathSeparators(localFs.realpathNative(admitLocalRoute(path).verdict)) === foldCanonicalPathSeparators(path);
       } catch { /* Unconfirmed spellings require live resolution. */ }
       known.confirmed.set(path, confirmed);
       return confirmed;
@@ -1066,12 +1124,18 @@ function keyMaterialEvidenceOf(bytes: Buffer, size: number): "none" | "key" | "u
  */
 export function judgedPathNamesOpenedFile(judged: string, opened: BigIntStats): boolean {
   const spelled = (path: string): string => caseFoldForMatch(foldCanonicalPathSeparators(path));
-  let real: string;
-  try { real = realpathSync(judged); } catch { return false; }
-  if (spelled(real) !== spelled(judged)) return false;
-  let named: BigIntStats | undefined;
-  try { named = lstatSync(real, { bigint: true, throwIfNoEntry: false }); } catch { return false; }
-  return named?.isFile() === true && opened.isFile() && sameFileIdentity(named, opened);
+  return withLocalityDecision(() => {
+    let route: LocalRoute;
+    let real: string;
+    try {
+      route = admitLocalRoute(judged);
+      real = localFs.realpath(route.verdict);
+    } catch { return false; }
+    if (spelled(real) !== spelled(judged)) return false;
+    let named: BigIntStats | undefined;
+    try { named = localFs.lstatBigint(admitRouteAncestor(route, real)); } catch { return false; }
+    return named?.isFile() === true && opened.isFile() && sameFileIdentity(named, opened);
+  });
 }
 
 /**
@@ -1086,13 +1150,19 @@ export function judgedPathNamesOpenedFile(judged: string, opened: BigIntStats): 
  * handle, and its bytes count only if the path still names that file after the read (`judgedPathNamesOpenedFile`).
  */
 function keyMaterialEvidence(path: string): "none" | "key" | "unknown" {
+  return withLocalityDecision(() => readKeyMaterialEvidence(path));
+}
+
+function readKeyMaterialEvidence(path: string): "none" | "key" | "unknown" {
   let descriptor: number | undefined;
   try {
-    const named = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+    // A spelling the walk refuses is unknown, never a missing file.
+    const { verdict } = admitLocalRoute(path);
+    const named = localFs.lstatBigint(verdict);
     if (named === undefined) return "none";
     if (named.isDirectory()) return "none";
     if (!named.isFile()) return "unknown";
-    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    descriptor = localFs.open(verdict, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     const opened = fstatSync(descriptor, { bigint: true });
     if (!opened.isFile()) return "unknown";
     const wanted = Number(opened.size > BigInt(KEY_MATERIAL_SCAN_BYTES) ? BigInt(KEY_MATERIAL_SCAN_BYTES) : opened.size);
@@ -1118,12 +1188,12 @@ const NON_ASCII = /\P{ASCII}/u;
 
 /**
  * Whether `path` may be looked up on the filesystem: not a network or device path, and reached only through local folders
- * (`verifyLocalFilesystemChain`), the checks `canonicalizePathForMatch` makes before it touches a path.
+ * (`admitLocalRoute`), the checks `canonicalizePathForMatch` makes before it touches a path.
  */
 function onLocalFilesystem(path: string): boolean {
   if (isWindowsNetworkOrDevicePath(path)) return false;
   try {
-    verifyLocalFilesystemChain(pathResolve(path));
+    withLocalityDecision(() => admitLocalRoute(pathResolve(path)));
     return true;
   } catch {
     return false;
@@ -1262,11 +1332,9 @@ function createPathSensitivityMatcher(
     applicationParents.set(path, directories);
     return directories;
   };
-  return (absPath) => {
-    if (!absPath) return null;
+  // `spelled` is the caller's own spelling, in which the path is resolved; `candidates` are for matching names.
+  const matchSpelling = (absPath: string, spelled: string): string | null => {
     const candidates = policyMatchPaths(absPath);
-    // The caller's own spelling, in which the path is resolved; `candidates` are for matching names.
-    const spelled = absPath;
     const normalizedPath = candidates[0]!;
     const eligible = candidatesFor(normalizedPath);
     if (!nameOnly && effect === "write") {
@@ -1360,6 +1428,12 @@ function createPathSensitivityMatcher(
       return `ave-home:${entry.segments.join("/")}`;
     }
     return null;
+  };
+  // A stream names data of its file, and a device or loopback share alias the drive path, which are judged as well.
+  return (absPath) => {
+    if (!absPath) return null;
+    const named = withoutStreamSuffixes(localDriveAlias(absPath) ?? absPath);
+    return matchSpelling(absPath, absPath) ?? (named === absPath ? null : matchSpelling(named, absPath));
   };
 }
 

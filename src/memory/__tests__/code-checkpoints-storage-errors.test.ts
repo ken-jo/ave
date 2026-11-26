@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
-import { join, basename } from "node:path";
+import { join, basename, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { BACKGROUND_ATTEMPTS } from "../../lib/transient-fs-lock-retry.js";
@@ -80,6 +81,8 @@ afterEach(async () => {
 const turn = (messageId: string, run = async () => {}) => withCodeCheckpoint({ sessionId, messageId }, run);
 const edit = createCodeCheckpointEdit(() => file);
 const restore = (message: string) => restoreCodeCheckpoint(sessionId, message, { cwd: root, extraAllowedDirectories: [] });
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("checkpoint storage recovery", () => {
   it("bounds deferred turns during persistent read errors and persists unavailable ranges on recovery", async () => {

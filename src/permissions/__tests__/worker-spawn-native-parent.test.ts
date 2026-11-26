@@ -1,8 +1,9 @@
 // A contained worker under a real row-2 plugin child parent: the plugin child adapter, the worker route, the holder
 // adapter and row 2 run for real; only admission ranking input, the egress lease and the native process are mocked.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { PassThrough } from "node:stream";
 
 const state = vi.hoisted(() => ({ plan: undefined as unknown, holdCompletion: false, denyWrite: [] as string[],
@@ -67,11 +68,15 @@ const { prepareMxcPluginChildLaunch } = await import("../../plugins/isolation/mx
 const { spawnMxcPluginChild } = await import("../../plugins/isolation/mxc-plugin-child.js");
 const { resolvePluginPaths } = await import("../../plugins/plugin-paths.js");
 const { aveHome } = await import("../../shared/ave-home.js");
-const { suiteMxcStagingParent } = await import("../../__tests__/support/mxc-staging-parent.js");
+const { removeSuiteMxcStagingParent, suiteMxcStagingParent } = await import("../../__tests__/support/mxc-staging-parent.js");
+afterAll(removeSuiteMxcStagingParent);
 const { buildSafeChildEnv } = await import("../../tools/safe-env.js");
 const { __resetActiveWrappedWorkersForTest, spawnWorker } = await import("../worker-spawn.js");
 
 const PLUGIN = "example-plugin";
+
+// Windows path admission runs through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe.skipIf(process.platform !== "win32")("contained worker under a real plugin child parent", () => {
   let unregisterReleaseGate: () => void = () => {};

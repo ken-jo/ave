@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { build } from "esbuild";
@@ -22,6 +22,8 @@ describe("workbook publication barrier", () => {
     const workspace = join(root, "workspace");
     const home = join(root, "home");
     mkdirSync(scripts, { recursive: true });
+    // The packaged path-facts helper admits each workspace path.
+    if (process.platform === "win32") cpSync(resolve("resources", "windows-path-kind"), join(resources, "windows-path-kind"), { recursive: true });
     mkdirSync(workspace);
     mkdirSync(join(home, "document-observation"), { recursive: true });
     const producer = join(scripts, "edit-xlsx.cjs");

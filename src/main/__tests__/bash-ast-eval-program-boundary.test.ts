@@ -1,11 +1,13 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { expect, it } from "vitest";
+import { join, resolve } from "node:path";
+import { beforeAll, expect, it } from "vitest";
+import { configureHostResources } from "../host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { findShellPathPolicyViolation } from "../../tools/shell-path-policy.js";
 import { BashAstValidator } from "../bash-ast-validator.js";
 
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 it("keeps the original command subject to independent directory and file containment", async () => {
   const fixture = mkdtempSync(join(tmpdir(), "eval-program-boundary-"));
   const allowed = join(fixture, "allowed");

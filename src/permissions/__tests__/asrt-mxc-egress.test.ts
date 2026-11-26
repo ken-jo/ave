@@ -81,15 +81,15 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
   }
 
   async function launchShell(token = invocation.token, activate = true) {
+    const cwd = policyFixture();
     const launch = await prepareOwnedMxcShellLaunch({
       egressToken: token,
       commandLine: "contained command",
-      cwd: "C:\\work",
-      filesystem: { allowRead: [], allowWrite: ["C:\\work"], denyRead: [], denyWrite: [] },
+      cwd,
+      filesystem: { allowRead: [], allowWrite: [cwd], denyRead: [], denyWrite: [] },
       env: { LOCALAPPDATA: "C:\\example\\AppData\\Local" },
       timeoutMs: 1_000,
       exists: () => true,
-      list: () => [],
     });
     cleanups.push(launch.release);
     if (activate) launch.activate();

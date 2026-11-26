@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { SandboxManager, type SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import { connect, createServer, Server, Socket, type AddressInfo } from "node:net";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { type EgressApprovalAnswer, type EgressApprovalRequest } from "../egress-ask.js";
 import { createEgressAskCallback } from "../../__tests__/support/egress-permission.js";
 import { EgressGrantStore, type EgressGrantSubject } from "../egress-grants.js";
@@ -56,6 +57,7 @@ const GRANT_CASES = [
 
 const directories: string[] = [];
 
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 beforeEach(async (context) => {
   if (process.platform !== "win32" && !(await sandboxCasesRun())) context.skip("sandbox backend is unavailable");
 });
@@ -235,11 +237,14 @@ describe.runIf(process.platform === "win32")("egress grant class through the con
   }
 
   async function launchFor(token: string) {
+    // The launch admits its grants on native path facts, so the workspace is a real folder.
+    const workspace = realpathSync.native(mkdtempSync(join(tmpdir(), "egress-class-workspace-")));
+    directories.push(workspace);
     const launch = await prepareOwnedMxcShellLaunch({
       egressToken: token,
       commandLine: "cmd.exe /d /c echo hi",
-      cwd: String.raw`C:\work\repo`,
-      filesystem: { allowWrite: [String.raw`C:\work\repo`], allowRead: [], denyRead: [], denyWrite: [] },
+      cwd: workspace,
+      filesystem: { allowWrite: [workspace], allowRead: [], denyRead: [], denyWrite: [] },
       env: { SYSTEMROOT: String.raw`C:\Windows`, LOCALAPPDATA: String.raw`C:\Users\u\AppData\Local` },
       timeoutMs: 5_000,
       exists: () => true,

@@ -5,9 +5,10 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 // Keep module-wide filesystem and retry mocks isolated from real-filesystem checkpoint tests.
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { transientFsLockDelayMs } from "../../lib/transient-fs-lock-retry.js";
@@ -40,6 +41,7 @@ let root: string;
 let file: string;
 let sessionId: string;
 
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "ave-code-rewind-rename-")));
   file = join(root, "source.txt");

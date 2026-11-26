@@ -15,7 +15,7 @@ import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-sh
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../../shared/windows-command-line.js";
 import { buildMxcShellRequest, isWindowsPathAtOrUnder, mxcRequestArgs, MXC_REQUEST_CHARACTER_LIMIT, openMxcRequestTransport, parseMxcDryRunOutput, parseMxcProbeOutput, resolveHostWxcExecPath } from "../mxc-windows.js";
-import { rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
+import { rankAdmittedMxcLists, rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 
 const LAUNCHER = String.raw`C:\Program Files\Ave\resources\mxc\x64\wxc-exec.exe`;
 function request(padding = 0) {
@@ -262,10 +262,12 @@ describe.skipIf(process.platform !== "win32")("named-pipe policy delivery", () =
         vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([home!]);
         const floor = getProtectedReadDenyFloor();
         const filesystem = { allowWrite: [directory], allowRead: [home!], denyRead: floor, denyWrite: getDefaultSensitiveWriteDenyPaths() };
-        const env = { SYSTEMROOT: process.env.SystemRoot!, LOCALAPPDATA: directory };
+        const env = { SYSTEMROOT: process.env.SystemRoot!, LOCALAPPDATA: directory,
+          ...(label === "long" ? { AVE_FIXTURE_PADDING: "x".repeat(9000) } : {}),
+        };
         const launch = await prepareOwnedMxcShellLaunch({ egressToken: "length", cwd: directory, commandLine: "cmd.exe /d /c exit 0", filesystem, env, timeoutMs: 1000, exists: () => true });
         try {
-          const grants = rankMxcLists({ ...filesystem, protectedFloor: floor }, () => true);
+          const grants = rankAdmittedMxcLists({ ...filesystem, protectedFloor: floor });
           const body = buildMxcShellRequest({ cwd: directory, commandLine: "cmd.exe /d /c exit 0", grants, env, proxyUrl: `http://127.0.0.1:${launch.proxyPort}`, timeoutMs: 31_000 });
           const inlineLength = windowsCommandLineLength(launcher, ["--config-base64", Buffer.from(JSON.stringify(body)).toString("base64")]);
           const length = windowsCommandLineLength(launch.argv[0]!, launch.argv.slice(1));

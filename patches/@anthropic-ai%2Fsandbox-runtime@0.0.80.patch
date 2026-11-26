@@ -270,6 +270,18 @@ the installed package.
     subprocess missing its one-second scheduling deadline must not classify an
     installed shell as absent during wrapper preparation. Native confinement
     still verifies the resulting wrapper by executing it.
+
+18. Admitted Windows entries (Ave). `admittedWindowsEntry(path, admission)`
+    builds a plain-data entry that the embedder already resolved to its
+    object's final path, and `isAdmittedWindowsEntry` recognises it after
+    updateConfig's structuredClone. `expandWindowsFsPaths` emits it verbatim,
+    and `rankWindowsFsAccess` keys it as spelled. A path that is not an
+    absolute local drive path, or that holds a glob character, throws
+    `unadmitted_fs_entry` rather than being skipped. A grant takes only an
+    admitted existing path. Repro of the second
+    resolution this removes: sandbox-utils.js:482-492 resolves a marked
+    literal again, windows-sandbox-utils.js:1026 stats each candidate by its
+    spelling, and :1056 resolves it again for ranking.
 diff --git a/dist/index.d.ts b/dist/index.d.ts
 index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
 --- a/dist/index.d.ts
@@ -1695,7 +1707,7 @@ index 0000000000000000000000000000000000000000..344c83b28b06e2ab293471df4935b228
 +    res.end(failure.message + '\n');
 +}
 diff --git a/dist/sandbox/sandbox-config.d.ts b/dist/sandbox/sandbox-config.d.ts
-index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf68d4b71b9 100644
+index 6a929a0f2..94a9e9066 100644
 --- a/dist/sandbox/sandbox-config.d.ts
 +++ b/dist/sandbox/sandbox-config.d.ts
 @@ -43,14 +43,17 @@ declare const ParentProxyConfigSchema: z.ZodObject<{
@@ -1750,7 +1762,31 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
      } | undefined;
  }>;
  /**
-@@ -1014,14 +1022,17 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+@@ -901,6 +909,7 @@ export declare const SrtWinConfigSchema: z.ZodObject<{
+  * `.extend()`/`.shape` it.
+  */
+ export declare const WindowsConfigSchema: z.ZodObject<{
++    admittedEntriesOnly: z.ZodOptional<z.ZodBoolean>;
+     sandboxUser: z.ZodOptional<z.ZodString>;
+     sublayerGuid: z.ZodOptional<z.ZodString>;
+     wfpSublayerGuid: z.ZodOptional<z.ZodString>;
+@@ -913,6 +922,7 @@ export declare const WindowsConfigSchema: z.ZodObject<{
+         path: string;
+     }>>;
+ }, "strip", z.ZodTypeAny, {
++    admittedEntriesOnly?: boolean | undefined;
+     sandboxUser?: string | undefined;
+     sublayerGuid?: string | undefined;
+     wfpSublayerGuid?: string | undefined;
+@@ -921,6 +931,7 @@ export declare const WindowsConfigSchema: z.ZodObject<{
+         path: string;
+     } | undefined;
+ }, {
++    admittedEntriesOnly?: boolean | undefined;
+     sandboxUser?: string | undefined;
+     sublayerGuid?: string | undefined;
+     wfpSublayerGuid?: string | undefined;
+@@ -1014,14 +1025,17 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
              http: z.ZodOptional<z.ZodString>;
              https: z.ZodOptional<z.ZodString>;
              noProxy: z.ZodOptional<z.ZodString>;
@@ -1768,7 +1804,7 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
          }>>;
      }, "strip", z.ZodTypeAny, {
          allowedDomains: string[];
-@@ -1057,6 +1068,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+@@ -1057,6 +1071,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
              http?: string | undefined;
              https?: string | undefined;
              noProxy?: string | undefined;
@@ -1776,7 +1812,7 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
          } | undefined;
      }, {
          allowedDomains: string[];
-@@ -1092,6 +1104,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+@@ -1092,6 +1107,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
              http?: string | undefined;
              https?: string | undefined;
              noProxy?: string | undefined;
@@ -1784,7 +1820,31 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
          } | undefined;
      }>;
      filesystem: z.ZodObject<{
-@@ -1499,6 +1512,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+@@ -1429,6 +1445,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+     socatPath: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
+     javaAgentJarPath: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
+     windows: z.ZodOptional<z.ZodObject<{
++        admittedEntriesOnly: z.ZodOptional<z.ZodBoolean>;
+         sandboxUser: z.ZodOptional<z.ZodString>;
+         sublayerGuid: z.ZodOptional<z.ZodString>;
+         wfpSublayerGuid: z.ZodOptional<z.ZodString>;
+@@ -1441,6 +1458,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+             path: string;
+         }>>;
+     }, "strip", z.ZodTypeAny, {
++        admittedEntriesOnly?: boolean | undefined;
+         sandboxUser?: string | undefined;
+         sublayerGuid?: string | undefined;
+         wfpSublayerGuid?: string | undefined;
+@@ -1449,6 +1467,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+             path: string;
+         } | undefined;
+     }, {
++        admittedEntriesOnly?: boolean | undefined;
+         sandboxUser?: string | undefined;
+         sublayerGuid?: string | undefined;
+         wfpSublayerGuid?: string | undefined;
+@@ -1499,6 +1518,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
              http?: string | undefined;
              https?: string | undefined;
              noProxy?: string | undefined;
@@ -1792,7 +1852,15 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
          } | undefined;
      };
      filesystem: {
-@@ -1619,6 +1633,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+@@ -1522,6 +1542,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+         })[] | undefined;
+     };
+     windows?: {
++        admittedEntriesOnly?: boolean | undefined;
+         sandboxUser?: string | undefined;
+         sublayerGuid?: string | undefined;
+         wfpSublayerGuid?: string | undefined;
+@@ -1619,6 +1640,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
              http?: string | undefined;
              https?: string | undefined;
              noProxy?: string | undefined;
@@ -1800,7 +1868,15 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
          } | undefined;
      };
      filesystem: {
-@@ -1739,6 +1754,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+@@ -1642,6 +1664,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+         })[] | undefined;
+     };
+     windows?: {
++        admittedEntriesOnly?: boolean | undefined;
+         sandboxUser?: string | undefined;
+         sublayerGuid?: string | undefined;
+         wfpSublayerGuid?: string | undefined;
+@@ -1739,6 +1762,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
              http?: string | undefined;
              https?: string | undefined;
              noProxy?: string | undefined;
@@ -1808,7 +1884,15 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
          } | undefined;
      };
      filesystem: {
-@@ -1859,6 +1875,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+@@ -1762,6 +1786,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+         })[] | undefined;
+     };
+     windows?: {
++        admittedEntriesOnly?: boolean | undefined;
+         sandboxUser?: string | undefined;
+         sublayerGuid?: string | undefined;
+         wfpSublayerGuid?: string | undefined;
+@@ -1859,6 +1884,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
              http?: string | undefined;
              https?: string | undefined;
              noProxy?: string | undefined;
@@ -1816,8 +1900,16 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
          } | undefined;
      };
      filesystem: {
+@@ -1882,6 +1908,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+         })[] | undefined;
+     };
+     windows?: {
++        admittedEntriesOnly?: boolean | undefined;
+         sandboxUser?: string | undefined;
+         sublayerGuid?: string | undefined;
+         wfpSublayerGuid?: string | undefined;
 diff --git a/dist/sandbox/sandbox-config.js b/dist/sandbox/sandbox-config.js
-index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa57eb7a2b 100644
+index d52e0f809..4ca4c004c 100644
 --- a/dist/sandbox/sandbox-config.js
 +++ b/dist/sandbox/sandbox-config.js
 @@ -110,6 +110,12 @@ const ParentProxyConfigSchema = z.object({
@@ -1833,6 +1925,21 @@ index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa
  });
  /**
   * Schema for the access mode of a declared credential source.
+@@ -891,6 +897,7 @@ export const SrtWinConfigSchema = z.object({
+  * `.extend()`/`.shape` it.
+  */
+ export const WindowsConfigSchema = z.object({
++    admittedEntriesOnly: z.boolean().optional(),
+     sandboxUser: z
+         .string()
+         .min(1)
+@@ -1287,4 +1294,4 @@ export const SandboxRuntimeConfigSchema = z
+         });
+     }
+ });
+-//# sourceMappingURL=sandbox-config.js.map
+\ No newline at end of file
++//# sourceMappingURL=sandbox-config.js.map
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
 index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..5aea50d2b57919fb5a2d8d4e021ab72580cdcfb3 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
@@ -2041,7 +2148,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..5aea50d2b57919fb5a2d8d4e021ab725
 +export declare function setWindowsIsolationForTesting(srtWin: { exe: string; prependArgs: string[] } | undefined): void;
  //# sourceMappingURL=sandbox-manager.d.ts.map
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa..1e6ba3e 100644
+index 810b0aa54..e4f008dac 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -1,3 +1,4 @@
@@ -2057,7 +2164,7 @@ index 810b0aa..1e6ba3e 100644
 +import { assertPtySlavePaths, wrapCommandWithSandboxMacOS, startMacOSSandboxLogMonitor, } from './macos-sandbox-utils.js';
  import { startLinuxSandboxViolationMonitor, } from './linux-violation-monitor.js';
 -import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, stampWindowsAcl, restoreWindowsAcl, grantWindowsAcl, revokeWindowsAcl, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
-+import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, assertWindowsAclPolicyBudget, expandWindowsAclDenyLists, restoreWindowsAcl, revokeWindowsAcl, stampWindowsAclAsync, restoreWindowsAclAsync, grantWindowsAclAsync, revokeWindowsAclAsync, recoverWindowsAclAsync, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
++import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, assertWindowsAclPolicyBudget, assertWindowsEntriesAdmitted, expandWindowsAclDenyLists, restoreWindowsAcl, revokeWindowsAcl, stampWindowsAclAsync, restoreWindowsAclAsync, grantWindowsAclAsync, revokeWindowsAclAsync, recoverWindowsAclAsync, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
  import { getDefaultWritePaths, containsGlobChars, globBaseDirIsRoot, globPatternBaseDir, normalizePathForSandbox, removeTrailingGlobSuffix, walkGlobPatternSteps, workingDirectory, finish, finishInTurns, attributionKeyFor, decodeSandboxedCommand, encodeSandboxedCommand, } from './sandbox-utils.js';
  import { ownInstallWarning } from './own-files.js';
  import { SandboxViolationStore, sanitizeDenialReason, sanitizeUnregisteredCommandKey, shouldIgnoreViolation, } from './sandbox-violation-store.js';
@@ -2691,7 +2798,7 @@ index 810b0aa..1e6ba3e 100644
      });
      const mux = muxProxyServer;
      // Backend first so the front-end never accepts a connection that would
-@@ -588,6 +1013,937 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -588,10 +1013,942 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
      logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
      return muxPort;
  }
@@ -3629,7 +3736,12 @@ index 810b0aa..1e6ba3e 100644
  // ============================================================================
  // Public Module Functions (will be exported via namespace)
  // ============================================================================
-@@ -604,6 +1960,222 @@ async function initialize(runtimeConfig, sandboxAskCallback, enableLogMonitor =
+ async function initialize(runtimeConfig, sandboxAskCallback, enableLogMonitor = false) {
++    if (getPlatform() === 'windows') requireWindowsFilesystemAdmission(runtimeConfig);
+     try {
+         await initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonitor);
+     }
+@@ -604,6 +1961,222 @@ async function initialize(runtimeConfig, sandboxAskCallback, enableLogMonitor =
          throw error;
      }
  }
@@ -3852,7 +3964,7 @@ index 810b0aa..1e6ba3e 100644
  async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonitor) {
      // Return if already initializing
      if (initializationPromise) {
-@@ -616,7 +2188,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -616,7 +2189,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -3865,7 +3977,7 @@ index 810b0aa..1e6ba3e 100644
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -705,171 +2282,18 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -705,171 +2283,18 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // sandboxed child can be spawned. Doing this at initialize() (not
      // wrap-time) means the host gets a single actionable error before
      // any per-exec work happens, instead of exit-15 on every command.
@@ -4049,7 +4161,7 @@ index 810b0aa..1e6ba3e 100644
      }
      // Initialize network infrastructure
      initializationPromise = (async () => {
-@@ -992,6 +2416,12 @@ function checkDependenciesCommon(ripgrepConfig) {
+@@ -992,6 +2417,12 @@ function checkDependenciesCommon(ripgrepConfig) {
          errors.push(...linuxDeps.errors);
          warnings.push(...linuxDeps.warnings);
      }
@@ -4062,29 +4174,52 @@ index 810b0aa..1e6ba3e 100644
      else if (platform === 'windows') {
          let srtWin;
          try {
-@@ -1306,16 +2736,14 @@ function computeWindowsFsAccessSet(c, maskedFiles) {
+@@ -1284,6 +2715,17 @@ function getFsWriteConfig() {
+  *
+  * `maskedFiles`: see {@link windowsMaskedFileDenies}.
+  */
++function requireWindowsFilesystemAdmission(runtimeConfig, required = runtimeConfig.windows?.admittedEntriesOnly === true) {
++    if (!required) return;
++    if (runtimeConfig.windows?.admittedEntriesOnly !== true) {
++        throw new WindowsSandboxError('unadmitted_fs_entry', 'Windows filesystem policy cannot disable admission during an update');
++    }
++    const fs = runtimeConfig.filesystem;
++    assertWindowsEntriesAdmitted([
++        ...(fs?.allowRead ?? []), ...(fs?.allowWrite ?? []), ...(fs?.denyRead ?? []), ...(fs?.denyWrite ?? []),
++        ...getCredentialDenyReadPaths(runtimeConfig.credentials),
++    ]);
++}
+ function computeWindowsFsAccessSet(c, maskedFiles) {
+     const fs = c.filesystem;
+     // filesystem.disabled bypasses ALL filesystem rule generation —
+@@ -1306,16 +2748,17 @@ function computeWindowsFsAccessSet(c, maskedFiles) {
      // creates a placeholder chain and stamps it (deny lands on the
      // exact target path). `mode: 'grant'` drops them (a grant on
      // nothing is meaningless).
 -    return rankWindowsFsAccess({
-+    const denies = expandWindowsAclDenyLists(fs?.denyRead, fs?.denyWrite, getCredentialDenyReadPaths(c.credentials), maskedFiles);
-+    const ranked = rankWindowsFsAccess({
-         allowRead: expand(fs?.allowRead ?? [], { mode: 'grant' }),
-         allowWrite: expand(fs?.allowWrite ?? [], { mode: 'grant' }),
+-        allowRead: expand(fs?.allowRead ?? [], { mode: 'grant' }),
+-        allowWrite: expand(fs?.allowWrite ?? [], { mode: 'grant' }),
 -        denyRead: expand(fs?.denyRead ?? [], { mode: 'deny' }),
 -        denyWrite: expand(fs?.denyWrite ?? [], { mode: 'deny' }),
 -        credentialDeny: [
 -            ...expand(getCredentialDenyReadPaths(c.credentials), { mode: 'deny' }),
 -            ...maskedFiles,
 -        ],
++    const admittedEntriesOnly = c.windows?.admittedEntriesOnly === true;
++    const denies = expandWindowsAclDenyLists(fs?.denyRead, fs?.denyWrite, getCredentialDenyReadPaths(c.credentials), maskedFiles, admittedEntriesOnly);
++    const admitted = new Set(denies.admitted);
++    const ranked = rankWindowsFsAccess({
++        allowRead: expand(fs?.allowRead ?? [], { mode: 'grant', admitted, admittedEntriesOnly }),
++        allowWrite: expand(fs?.allowWrite ?? [], { mode: 'grant', admitted, admittedEntriesOnly }),
 +        ...denies,
++        admitted: [...admitted],
      });
 +    assertWindowsAclPolicyBudget(ranked.denyRead, ranked.denyWrite);
 +    return ranked;
  }
  /**
   * The `mode: "mask"` files, as credential denies: an ACL cannot redirect a
-@@ -1515,6 +2943,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2958,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -4094,7 +4229,7 @@ index 810b0aa..1e6ba3e 100644
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +3141,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +3156,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -4116,7 +4251,7 @@ index 810b0aa..1e6ba3e 100644
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1728,29 +3162,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1728,29 +3177,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  setEnvVars: credentialRestrictions.setEnvVars,
                  maskedFileBinds: credentialRestrictions.maskedFileBinds,
                  degradeToDenyPaths: credentialRestrictions.degradeToDenyPaths,
@@ -4159,7 +4294,7 @@ index 810b0aa..1e6ba3e 100644
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1769,7 +3211,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1769,7 +3226,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  maskedFileStoreDir: credentialRestrictions.maskedFileStoreDir,
                  enableWeakerNestedSandbox: getEnableWeakerNestedSandbox(),
                  allowNestedUserNamespaces,
@@ -4169,7 +4304,7 @@ index 810b0aa..1e6ba3e 100644
                  binShell,
                  ripgrepConfig: getRipgrepConfig(),
                  mandatoryDenySearchDepth: getMandatoryDenySearchDepth(),
-@@ -1786,6 +3229,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +3244,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -4177,7 +4312,7 @@ index 810b0aa..1e6ba3e 100644
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,7 +3265,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,7 +3280,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -4194,7 +4329,15 @@ index 810b0aa..1e6ba3e 100644
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
              config?.network?.allowedDomains !== undefined;
-@@ -1877,16 +3330,10 @@ async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal,
+@@ -1853,6 +3321,7 @@ async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal,
+         // Per-exec allowRead/allowWrite throw — `srt-win exec` only
+         // exposes `--deny-*`; per-exec grants are not implemented.
+         const fsCfg = customConfig?.filesystem;
++        const admittedEntriesOnly = config?.windows?.admittedEntriesOnly === true || customConfig?.windows?.admittedEntriesOnly === true;
+         const maskedFiles = windowsMaskedFileDenies(credentialRestrictions);
+         let rawRead = [];
+         let rawWrite = [];
+@@ -1877,16 +3346,10 @@ async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal,
              maskedFiles.length > 0) {
              const sessRead = new Set(windowsFsStampedSet?.denyRead ?? []);
              const sessWrite = new Set(windowsFsStampedSet?.denyWrite ?? []);
@@ -4208,11 +4351,11 @@ index 810b0aa..1e6ba3e 100644
 -                    ...expand(rawCredential, { mode: 'deny' }),
 -                    ...maskedFiles,
 -                ],
-+                ...expandWindowsAclDenyLists(rawRead, rawWrite, rawCredential, maskedFiles),
++                ...expandWindowsAclDenyLists(rawRead, rawWrite, rawCredential, maskedFiles, admittedEntriesOnly),
                  held: windowsFsStampedSet,
              });
              perExecDenyRead = ranked.denyRead.filter(p => !sessRead.has(p));
-@@ -1950,7 +3397,7 @@ function getConfig() {
+@@ -1950,7 +3413,7 @@ function getConfig() {
   *
   * **Network/allowlist changes are a live swap**: the running
   * mux proxy reads `config.network.allowedDomains` /
@@ -4221,7 +4364,17 @@ index 810b0aa..1e6ba3e 100644
   * reassigning `config` here takes effect on the next connection
   * with no proxy rebind and no port change — on every platform,
   * including Windows. This is what lets a host enable/deny domains
-@@ -1989,6 +3436,7 @@ function updateConfig(newConfig) {
+@@ -1965,6 +3428,9 @@ function getConfig() {
+  * @param newConfig - The new configuration to use
+  */
+ function updateConfig(newConfig) {
++    if (getPlatform() === 'windows') {
++        requireWindowsFilesystemAdmission(newConfig, config?.windows?.admittedEntriesOnly === true || newConfig.windows?.admittedEntriesOnly === true);
++    }
+     if (getPlatform() === 'windows' &&
+         config &&
+         !sameWindowsStampSet(newConfig)) {
+@@ -1989,6 +3455,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -4229,7 +4382,7 @@ index 810b0aa..1e6ba3e 100644
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2113,7 +3561,30 @@ function forceCloseHttpServer(server) {
+@@ -2113,7 +3580,30 @@ function forceCloseHttpServer(server) {
          });
      });
  }
@@ -4261,7 +4414,7 @@ index 810b0aa..1e6ba3e 100644
      // Windows: release this session's sandbox-user ACEs. Best-effort
      // — log anomalies rather than throw, so teardown always
      // completes. Leftover ACEs are recoverable later via
-@@ -2123,28 +3594,54 @@ async function reset() {
+@@ -2123,28 +3613,54 @@ async function reset() {
          // Captured at initialize() — the SAME binary the grants/stamps
          // were applied with, immune to `config` mutation between.
          const srtWin = srtWinSpawn;
@@ -4335,7 +4488,7 @@ index 810b0aa..1e6ba3e 100644
      // windowsWfpVerified is NOT cleared — per-process, not per-session.
      // Clean up any leftover bwrap mount points. Force past the
      // active-sandbox counter — reset() means the session is over.
-@@ -2222,6 +3719,8 @@ async function reset() {
+@@ -2222,6 +3738,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -4344,7 +4497,7 @@ index 810b0aa..1e6ba3e 100644
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,7 +3728,50 @@ async function reset() {
+@@ -2229,7 +3747,50 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -4395,7 +4548,7 @@ index 810b0aa..1e6ba3e 100644
  }
  function getSandboxViolationStore() {
      return sandboxViolationStore;
-@@ -2314,6 +3856,7 @@ function getLinuxGlobPatternWarnings() {
+@@ -2314,6 +3875,7 @@ function getLinuxGlobPatternWarnings() {
   */
  export const SandboxManager = {
      initialize,
@@ -4403,7 +4556,7 @@ index 810b0aa..1e6ba3e 100644
      isSupportedPlatform,
      isSandboxingEnabled,
      checkDependencies,
-@@ -2336,6 +3879,12 @@ export const SandboxManager = {
+@@ -2336,6 +3898,12 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,
@@ -4416,6 +4569,13 @@ index 810b0aa..1e6ba3e 100644
      askCallbackDenyReason: true,
      cleanupAfterCommand,
      reset,
+@@ -2349,4 +3917,4 @@ export const SandboxManager = {
+     getConfig,
+     updateConfig,
+ };
+-//# sourceMappingURL=sandbox-manager.js.map
+\ No newline at end of file
++//# sourceMappingURL=sandbox-manager.js.map
 diff --git a/dist/sandbox/sandbox-schemas.d.ts b/dist/sandbox/sandbox-schemas.d.ts
 index 4c0be53fa68af536b0dcf49192421651d7b51476..63657daab9a18cf9b9718b95f2c066143bf08742 100644
 --- a/dist/sandbox/sandbox-schemas.d.ts
@@ -4504,10 +4664,39 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..63657daab9a18cf9b9718b95f2c06614
  //# sourceMappingURL=sandbox-schemas.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-utils.js b/dist/sandbox/sandbox-utils.js
-index 3c92084..598e094 100644
+index 3c92084..620c33e 100644
 --- a/dist/sandbox/sandbox-utils.js
 +++ b/dist/sandbox/sandbox-utils.js
-@@ -515,44 +515,15 @@ const HOME_CONVENIENCE_WRITE_DIRS = [
+@@ -377,6 +377,8 @@ function warnIfParentRefUnfolded(normalizedPath) {
+  */
+ export function normalizePathForSandbox(pathPattern, opts) {
+     const isGlobSpelling = (p) => !opts?.literal && containsGlobCharsForPlatform(p);
++    // Ave patch: Windows spellings take Windows path rules whatever module the host loads.
++    const platformPath = getPlatform() === 'windows' ? path.win32 : path;
+     // Windows pre-processing: expand `%USERPROFILE%` / `%HOMEDRIVE%` /
+     // `%HOMEPATH%`, strip the `\\?\` / `\\?\UNC\` extended prefix (its
+     // `?` is a literal, not a glob char), and uppercase the drive
+@@ -417,8 +419,8 @@ export function normalizePathForSandbox(pathPattern, opts) {
+     // A pattern with no tilde to expand and no root is resolved against the
+     // working directory; path.resolve covers './', '../', '.' and a bare
+     // relative name alike.
+-    if (normalizedPath === pathPattern && !path.isAbsolute(pathPattern)) {
+-        normalizedPath = path.resolve(process.cwd(), pathPattern);
++    if (normalizedPath === pathPattern && !platformPath.isAbsolute(pathPattern)) {
++        normalizedPath = platformPath.resolve(process.cwd(), pathPattern);
+     }
+     // POSIX: collapse the interior spellings realpath would have removed, on the
+     // EXPANDED path — the trailing strip above runs before expansion and only
+@@ -451,7 +453,7 @@ export function normalizePathForSandbox(pathPattern, opts) {
+             // If staticPrefix ends with /, remove it to get the directory
+             const baseDir = staticPrefix.endsWith('/')
+                 ? staticPrefix.slice(0, -1)
+-                : path.dirname(staticPrefix);
++                : platformPath.dirname(staticPrefix);
+             // Try to resolve symlinks for the base directory
+             try {
+                 const resolvedBaseDir = realPathOf(baseDir);
+@@ -515,44 +517,15 @@ const HOME_CONVENIENCE_WRITE_DIRS = [
      '.npm/_logs',
      '.claude/debug',
  ];
@@ -4559,7 +4748,7 @@ index 3c92084..598e094 100644
      ];
  }
  /**
-@@ -1329,6 +1300,7 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
+@@ -1329,6 +1302,7 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
      const listings = opts.listings ?? new Map();
      const pending = [];
      const codeOf = (err) => err?.code;
@@ -4567,7 +4756,7 @@ index 3c92084..598e094 100644
      /**
       * A filesystem call on a real path and, when that fails, on a shorter name
       * for it. The real path crosses no link, so a long chain of them cannot fail
-@@ -1349,13 +1321,15 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
+@@ -1349,13 +1323,15 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
              return call(real);
          }
          catch (first) {
@@ -4584,7 +4773,7 @@ index 3c92084..598e094 100644
                  throw absent(first) && !absent(second) ? second : first;
              }
              if (!absent(first) && codeOf(first) !== 'ENAMETOOLONG') {
-@@ -1441,6 +1415,22 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
+@@ -1441,6 +1417,22 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
              isSymbolicLink: () => type === 'link',
          };
      };
@@ -4607,7 +4796,7 @@ index 3c92084..598e094 100644
      // The base as the filesystem is asked about it: a drive root gets back its
      // separator, since 'C:' on its own names the drive's current directory.
      // The positions are still reached from the base without one.
-@@ -1472,6 +1462,7 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
+@@ -1472,6 +1464,7 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
          const fresh = frame.positions.filter(p => !record.listedFor.has(p));
          if (fresh.length === 0)
              continue;
@@ -4615,7 +4804,7 @@ index 3c92084..598e094 100644
          yield;
          // Once. What one pattern denies is denied for the whole configuration, so
          // what the short name listed is kept for the next pattern like any other.
-@@ -1490,12 +1481,12 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
+@@ -1490,12 +1483,12 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
                  throw known;
              entries =
                  known ??
@@ -4631,7 +4820,7 @@ index 3c92084..598e094 100644
              const errorCode = codeOf(err);
              logForDebugging(`[Sandbox] Error listing ${dir} for glob pattern ${globPath}: ${err}`, { level: errorCode === 'ENOENT' ? 'info' : 'warn' });
              if (errorCode !== 'ENOENT') {
-@@ -1533,8 +1524,10 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
+@@ -1533,8 +1526,10 @@ export function* walkGlobPatternSteps(globPath, opts = {}) {
                  ? spelled.slice(anchor.length)
                  : spelled;
              const isMatch = positions.matches(fresh, entry.name, candidate);
@@ -4745,10 +4934,10 @@ index 760a10b1d1c475a7636ff78092d3c9daaafe7335..a7a39777c3584689fc7efd44e8f298e1
              if (!clientGone) {
                  try {
 diff --git a/dist/sandbox/windows-sandbox-utils.d.ts b/dist/sandbox/windows-sandbox-utils.d.ts
-index 65b8eef..40dec6d 100644
+index 65b8eefe5..3116fa929 100644
 --- a/dist/sandbox/windows-sandbox-utils.d.ts
 +++ b/dist/sandbox/windows-sandbox-utils.d.ts
-@@ -76,6 +76,8 @@ export type WindowsSandboxErrorCode =
+@@ -76,10 +76,14 @@ export type WindowsSandboxErrorCode =
   | 'uninstall_failed'
  /** `srt-win acl stamp` exited non-zero. */
   | 'acl_stamp_failed'
@@ -4757,7 +4946,57 @@ index 65b8eef..40dec6d 100644
  /** `srt-win acl grant` exited non-zero. */
   | 'acl_grant_failed'
  /** `srt-win exec` argv would exceed CreateProcessW's 32 767-char limit. */
-@@ -847,7 +849,7 @@ export interface WindowsAclStampOptions {
+  | 'argv_too_long'
++/** Ave patch (admitted entries): an entry that is not an absolute local drive path of an admitted kind. */
++ | 'unadmitted_fs_entry'
+ /** Sandbox user account / credential not present — run install. */
+  | 'not_provisioned'
+ /**
+@@ -770,13 +774,33 @@ export declare function uninstallWindowsSandbox(opts?: {
+  */
+ export declare function expandWindowsFsPaths(patterns: readonly FilesystemPathEntry[], opts?: {
+     mode?: 'grant' | 'deny';
++    admitted?: Set<string>;
++    admittedEntriesOnly?: boolean;
+ }): string[];
++/** Ave patch (admitted entries): what the embedder proved about an entry's object. */
++export interface WindowsAdmission {
++    kind: 'file' | 'dir' | 'missing';
++    volumeSerial?: string;
++    fileId?: string;
++}
++/** Ave patch (admitted entries): an entry passed through verbatim, at its object's final path. */
++export interface AdmittedWindowsEntry {
++    readonly path: string;
++    readonly literal: true;
++    readonly admitted: Readonly<WindowsAdmission>;
++}
++/** @throws WindowsSandboxError `unadmitted_fs_entry` for a path that is not an absolute local drive path. */
++export declare function admittedWindowsEntry(path: string, admitted: WindowsAdmission): AdmittedWindowsEntry;
++export declare function isAdmittedWindowsEntry(entry: unknown): entry is AdmittedWindowsEntry;
++export declare function assertWindowsEntriesAdmitted(entries: readonly FilesystemPathEntry[]): void;
+ /** What `srt-win` is handed: see {@link rankWindowsFsAccess}. */
+ export interface WindowsFsAccessSet {
+     grantRead: string[];
+     grantWrite: string[];
+     denyRead: string[];
+     denyWrite: string[];
++    /** Ave patch (admitted entries): the admitted paths among the lists. */
++    admitted?: string[];
+ }
+ /**
+  * Ranks the lists against each other, as on the other platforms, and returns
+@@ -805,7 +829,8 @@ export declare function rankWindowsFsAccess(lists: {
+     denyRead: readonly string[];
+     denyWrite: readonly string[];
+     credentialDeny: readonly string[];
+-    held?: Pick<WindowsFsAccessSet, 'grantRead' | 'grantWrite'>;
++    admitted?: readonly string[];
++    held?: Pick<WindowsFsAccessSet, 'grantRead' | 'grantWrite' | 'admitted'>;
+ }): WindowsFsAccessSet;
+ /**
+  * {@link WindowsSandboxError} narrowed to `mapped_drive_cwd`,
+@@ -847,7 +872,7 @@ export interface WindowsAclStampOptions {
  /**
   * Apply the file-deny ACE set for one host session: an additive
   * `(D;OICI;mask;;;<sb-SID>)` on the target plus a
@@ -4766,12 +5005,12 @@ index 65b8eef..40dec6d 100644
   * PROTECTED rewrite, no SD snapshot. Idempotent and refcounted via
   * srt-win's `working_aces` table.
   *
-@@ -860,7 +862,26 @@ export interface WindowsAclStampOptions {
+@@ -860,7 +885,26 @@ export interface WindowsAclStampOptions {
   *   2, so on throw the caller should call {@link restoreWindowsAcl}
   *   to release whatever WAS stamped.
   */
 +export declare function assertWindowsAclPolicyBudget(denyRead?: readonly FilesystemPathEntry[], denyWrite?: readonly FilesystemPathEntry[], extraRead?: readonly FilesystemPathEntry[]): void;
-+export declare function expandWindowsAclDenyLists(read?: readonly FilesystemPathEntry[], write?: readonly FilesystemPathEntry[], credential?: readonly FilesystemPathEntry[], masked?: readonly string[]): { denyRead: string[]; denyWrite: string[]; credentialDeny: string[] };
++export declare function expandWindowsAclDenyLists(read?: readonly FilesystemPathEntry[], write?: readonly FilesystemPathEntry[], credential?: readonly FilesystemPathEntry[], masked?: readonly string[], admittedEntriesOnly?: boolean): { denyRead: string[]; denyWrite: string[]; credentialDeny: string[]; admitted: string[] };
  export declare function stampWindowsAcl(opts: WindowsAclStampOptions): void;
 +export declare function stampWindowsAclAsync(opts: WindowsAclStampOptions): Promise<void>;
 +/** Ave patch (recovery report): counts from one `srt-win acl recover` run. */
@@ -4793,7 +5032,7 @@ index 65b8eef..40dec6d 100644
  /**
   * Per-path outcome from `srt-win acl restore --json` /
   * `revoke --json`. The status set is intentionally loose: the
-@@ -884,7 +904,16 @@ export declare function restoreWindowsAcl(opts: {
+@@ -884,7 +928,16 @@ export declare function restoreWindowsAcl(opts: {
      sandboxUserSid: string;
      holderPid?: number;
      srtWin?: SrtWinSpawn;
@@ -4810,7 +5049,7 @@ index 65b8eef..40dec6d 100644
  export interface WindowsAclGrantOptions {
      /** Paths to grant `MODIFY_NO_FDC` on (the working tree, `allowWrite`). */
      write: readonly string[];
-@@ -909,6 +938,7 @@ export interface WindowsAclGrantOptions {
+@@ -909,6 +962,7 @@ export interface WindowsAclGrantOptions {
   *   {@link revokeWindowsAcl} to release whatever WAS granted.
   */
  export declare function grantWindowsAcl(opts: WindowsAclGrantOptions): void;
@@ -4818,7 +5057,7 @@ index 65b8eef..40dec6d 100644
  /**
   * Release this holder's grants and remove the sandbox-user ACE on
   * any path whose refcount falls to zero. Best-effort (does not
-@@ -918,7 +948,16 @@ export declare function revokeWindowsAcl(opts: {
+@@ -918,7 +972,16 @@ export declare function revokeWindowsAcl(opts: {
      sandboxUserSid: string;
      holderPid?: number;
      srtWin?: SrtWinSpawn;
@@ -4835,8 +5074,15 @@ index 65b8eef..40dec6d 100644
  /**
   * Build the spawn descriptor for running `command` inside the Windows
   * sandbox: an `argv` array plus the `env` to spawn it with.
+@@ -966,4 +1029,4 @@ export declare function checkWindowsDependenciesAsync(opts?: {
+     sublayerGuid?: string;
+     srtWin?: SrtWinSpawn;
+ }): Promise<SandboxDependencyCheck>;
+-//# sourceMappingURL=windows-sandbox-utils.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=windows-sandbox-utils.d.ts.map
 diff --git a/dist/sandbox/windows-sandbox-utils.js b/dist/sandbox/windows-sandbox-utils.js
-index 540c566..337dca5 100644
+index 3e8876a37..5f88d4dd3 100644
 --- a/dist/sandbox/windows-sandbox-utils.js
 +++ b/dist/sandbox/windows-sandbox-utils.js
 @@ -312,6 +312,18 @@ function runSrtWinJsonAllowFail(args, opts) {
@@ -4867,7 +5113,28 @@ index 540c566..337dca5 100644
              timeoutMs: 30000,
              srtWin: opts.srtWin,
          });
-@@ -983,7 +995,9 @@ export function expandWindowsFsPaths(patterns, opts) {
+@@ -976,13 +988,29 @@ export function uninstallWindowsSandbox(opts = {}) {
+  * An entry marked `{ path, literal: true }` is a literal whatever it holds.
+  * One that holds `*` or `?` is skipped: no Win32 name has them, and
+  * `srt-win` refuses the characters outright.
++ *
++ * Ave patch (admitted entries): an {@link admittedWindowsEntry} is emitted
++ * verbatim, with no normalize, stat or walk, and added to `opts.admitted`.
++ * An admitted deny can name a missing target. Grants require existing
++ * targets. The entry's shape is validated before either is emitted.
+  */
+ export function expandWindowsFsPaths(patterns, opts) {
++    if (opts?.admittedEntriesOnly) assertWindowsEntriesAdmitted(patterns);
+     const out = new Set();
+     for (const entry of patterns) {
++        if (typeof entry === 'object' && entry !== null && 'admitted' in entry) {
++            const { path: finalPath, literal, admitted } = entry;
++            if (!isAdmittedWindowsEntry({ path: finalPath, literal, admitted })) throw new WindowsSandboxError('unadmitted_fs_entry', `Not an admitted local path: ${finalPath}`);
++            if (opts?.mode !== 'deny' && admitted.kind === 'missing') continue;
++            out.add(finalPath);
++            opts?.admitted?.add(finalPath);
++            continue;
++        }
          const marked = typeof entry !== 'string';
          const raw = marked ? markedLiteralPath(entry) : entry;
 -        const norm = normalizePathForSandbox(raw, marked ? { literal: true } : undefined);
@@ -4877,8 +5144,7 @@ index 540c566..337dca5 100644
          if (marked && containsGlobCharsWin(norm)) {
              logForDebugging(`[Sandbox Windows] Skipping a literal path that no file can have: ${norm}`, { level: 'warn' });
              continue;
-         }
-@@ -996,13 +1010,14 @@ export function expandWindowsFsPaths(patterns, opts) {
+@@ -996,13 +1024,14 @@ export function expandWindowsFsPaths(patterns, opts) {
          }
          const candidates = isGlob
              ? [
@@ -4894,7 +5160,94 @@ index 540c566..337dca5 100644
                      })
                      : []),
              ]
-@@ -1163,7 +1176,7 @@ export function parseWindowsSandboxError(stderr) {
+@@ -1023,6 +1052,37 @@ export function expandWindowsFsPaths(patterns, opts) {
+     }
+     return [...out];
+ }
++const ADMITTED_KINDS = new Set(['file', 'dir', 'missing']);
++/**
++ * Ave patch (admitted entries): a filesystem entry whose path the embedder
++ * already resolved to its object's final path. It is plain data, so a cloned
++ * config keeps it. A path that is not an absolute local drive path, or holds
++ * a glob character, is refused here rather than skipped later.
++ */
++export function admittedWindowsEntry(entryPath, admitted) {
++    if (!isAdmittedWindowsEntry({ path: entryPath, literal: true, admitted })) {
++        throw new WindowsSandboxError('unadmitted_fs_entry', `Not an admitted local path: ${entryPath}`);
++    }
++    return Object.freeze({ path: entryPath, literal: true, admitted: Object.freeze({ ...admitted }) });
++}
++export function isAdmittedWindowsEntry(entry) {
++    return (typeof entry === 'object' &&
++        entry !== null &&
++        entry.literal === true &&
++        typeof entry.path === 'string' &&
++        /^[A-Za-z]:\\/.test(entry.path) &&
++        !/[*?"<>|/]/.test(entry.path.slice(2)) && !/\\\.{1,2}(?:\\|$)/.test(entry.path) &&
++        typeof entry.admitted === 'object' &&
++        entry.admitted !== null &&
++        ADMITTED_KINDS.has(entry.admitted.kind));
++}
++export function assertWindowsEntriesAdmitted(entries) {
++    for (const entry of entries) {
++        if (!isAdmittedWindowsEntry(entry)) {
++            throw new WindowsSandboxError('unadmitted_fs_entry', 'Windows filesystem policy contains an unadmitted entry');
++        }
++    }
++}
+ /**
+  * `p` for comparison with another path, as the object `srt-win` opens for it:
+  * links, junctions, 8.3 names and the case on disk are resolved by the same
+@@ -1031,9 +1091,9 @@ export function expandWindowsFsPaths(patterns, opts) {
+  * spelled, and so is a UNC path, which is never probed (see
+  * {@link isUncPath}).
+  */
+-function windowsPathKey(p) {
++function windowsPathKey(p, admitted) {
+     let resolved = p;
+-    if (!isUncPath(p)) {
++    if (!isUncPath(p) && !admitted?.has(p)) {
+         try {
+             // The final-path lookup itself, which also resolves 8.3 names and the
+             // case on disk.
+@@ -1050,12 +1110,12 @@ function windowsPathKey(p) {
+         .replace(/\/+$/, ''));
+ }
+ /** The one of `dirs` that a path is, or lies beneath. */
+-function coveringWindowsPath(dirs) {
+-    const keys = dirs.map(windowsPathKey);
++function coveringWindowsPath(dirs, admitted) {
++    const keys = dirs.map(dir => windowsPathKey(dir, admitted));
+     return p => {
+         if (keys.length === 0)
+             return undefined;
+-        const key = windowsPathKey(p);
++        const key = windowsPathKey(p, admitted);
+         const covering = keys.findIndex(dir => isAtOrUnder(key, dir));
+         return covering < 0 ? undefined : dirs[covering];
+     };
+@@ -1082,8 +1142,10 @@ function coveringWindowsPath(dirs) {
+  * each gets the deny at its own path, where `srt-win` puts DENY first.
+  */
+ export function rankWindowsFsAccess(lists) {
+-    const credentialDenyOver = coveringWindowsPath(lists.credentialDeny);
+-    const writeDenyOver = coveringWindowsPath(lists.denyWrite);
++    // Ave patch (admitted entries): admitted paths are final paths, keyed as spelled.
++    const admitted = new Set([...(lists.admitted ?? []), ...(lists.held?.admitted ?? [])]);
++    const credentialDenyOver = coveringWindowsPath(lists.credentialDeny, admitted);
++    const writeDenyOver = coveringWindowsPath(lists.denyWrite, admitted);
+     const grantRead = new Set();
+     const grantWrite = new Set();
+     const rank = (list, p) => {
+@@ -1123,6 +1185,7 @@ export function rankWindowsFsAccess(lists) {
+                 ...heldWrite.filter(p => writeDenyOver(p) !== undefined),
+             ]),
+         ],
++        admitted: [...admitted],
+     };
+ }
+ /**
+@@ -1163,7 +1226,7 @@ export function parseWindowsSandboxError(stderr) {
  /**
   * Apply the file-deny ACE set for one host session: an additive
   * `(D;OICI;mask;;;<sb-SID>)` on the target plus a
@@ -4903,7 +5256,7 @@ index 540c566..337dca5 100644
   * PROTECTED rewrite, no SD snapshot. Idempotent and refcounted via
   * srt-win's `working_aces` table.
   *
-@@ -1176,12 +1189,83 @@ export function parseWindowsSandboxError(stderr) {
+@@ -1176,12 +1239,85 @@ export function parseWindowsSandboxError(stderr) {
   *   2, so on throw the caller should call {@link restoreWindowsAcl}
   *   to release whatever WAS stamped.
   */
@@ -4950,7 +5303,8 @@ index 540c566..337dca5 100644
 +// 16,384-entry scale as repository-control discovery, shared by the three
 +// deny lists. Stop on exhaustion so no partial expansion reaches a stamp.
 +const WINDOWS_ACL_SCAN_VISITS = 16_384;
-+export function expandWindowsAclDenyLists(read = [], write = [], credential = [], masked = []) {
++export function expandWindowsAclDenyLists(read = [], write = [], credential = [], masked = [], admittedEntriesOnly = false) {
++    if (admittedEntriesOnly) assertWindowsEntriesAdmitted([...read, ...write, ...credential]);
 +    assertWindowsAclPolicyBudget(read, write, [...credential, ...masked]);
 +    let visits = 0;
 +    let matches = 0;
@@ -4968,12 +5322,13 @@ index 540c566..337dca5 100644
 +                throw error;
 +        },
 +    };
-+    const expand = entries => expandWindowsFsPaths(entries, { mode: 'deny', windowsAclWork });
++    const admitted = new Set();
++    const expand = entries => expandWindowsFsPaths(entries, { mode: 'deny', windowsAclWork, admitted });
 +    const denyRead = expand(read);
-+    const denyWrite = expandWindowsFsPaths(write, { mode: 'deny', windowsAclWork, preserveLiteralWriteDenies: true });
++    const denyWrite = expandWindowsFsPaths(write, { mode: 'deny', windowsAclWork, preserveLiteralWriteDenies: true, admitted });
 +    const credentialDeny = [...expand(credential), ...masked];
 +    assertWindowsAclPolicyBudget(denyRead, denyWrite, credentialDeny);
-+    return { denyRead, denyWrite, credentialDeny };
++    return { denyRead, denyWrite, credentialDeny, admitted: [...admitted] };
 +}
 +function windowsAclStampInput(opts) {
 +    assertWindowsAclPolicyBudget(opts.denyRead, opts.denyWrite);
@@ -4991,7 +5346,7 @@ index 540c566..337dca5 100644
      const r = runSrtWin([
          'acl',
          'stamp',
-@@ -1190,13 +1274,70 @@ export function stampWindowsAcl(opts) {
+@@ -1190,13 +1326,70 @@ export function stampWindowsAcl(opts) {
          '--sandbox-user-sid',
          opts.sandboxUserSid,
      ], { timeoutMs: 60000, stdin, srtWin: opts.srtWin });
@@ -5063,7 +5418,7 @@ index 540c566..337dca5 100644
  /**
   * Release this holder's deny ACEs and remove the sandbox-user ACE
   * on any path whose refcount falls to zero. Best-effort (does not
-@@ -1221,6 +1362,47 @@ export function restoreWindowsAcl(opts) {
+@@ -1221,6 +1414,47 @@ export function restoreWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });
@@ -5111,7 +5466,7 @@ index 540c566..337dca5 100644
          if (!r.ok) {
              logForDebugging(`[Sandbox Windows] acl restore exited non-zero (per-path ` +
                  `outcomes preserved): ${r.stderr}`, { level: 'error' });
-@@ -1266,6 +1448,22 @@ export function grantWindowsAcl(opts) {
+@@ -1266,6 +1500,22 @@ export function grantWindowsAcl(opts) {
          throw new WindowsSandboxError('acl_grant_failed', `srt-win acl grant exited ${r.status}: ${r.stderr || r.stdout}`);
      }
  }
@@ -5134,7 +5489,7 @@ index 540c566..337dca5 100644
  /**
   * Release this holder's grants and remove the sandbox-user ACE on
   * any path whose refcount falls to zero. Best-effort (does not
-@@ -1283,6 +1481,34 @@ export function revokeWindowsAcl(opts) {
+@@ -1283,6 +1533,34 @@ export function revokeWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });
@@ -5169,7 +5524,7 @@ index 540c566..337dca5 100644
          if (!r.ok) {
              logForDebugging(`[Sandbox Windows] acl revoke exited non-zero: ${r.stderr}`, { level: 'error' });
          }
-@@ -1298,6 +1524,25 @@ export function revokeWindowsAcl(opts) {
+@@ -1298,6 +1576,25 @@ export function revokeWindowsAcl(opts) {
  // ────────────────────────────────────────────────────────────────────
  // Wrap
  // ────────────────────────────────────────────────────────────────────
@@ -5195,7 +5550,7 @@ index 540c566..337dca5 100644
  /**
   * Build the spawn descriptor for running `command` inside the Windows
   * sandbox: an `argv` array plus the `env` to spawn it with.
-@@ -1393,14 +1638,11 @@ export function wrapCommandWithSandboxWindows(p) {
+@@ -1393,14 +1690,11 @@ export function wrapCommandWithSandboxWindows(p) {
      // cmd /s) so the inner shell receives it intact. See launch.rs.
      const sh = p.binShell ?? parseWindowsBinShell(undefined);
      argv.push(sh.exe, ...sh.args, p.command);

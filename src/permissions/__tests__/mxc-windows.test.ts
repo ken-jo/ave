@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { beforeEach, describe, expect, it } from "vitest";
+import { setLocale } from "../../i18n/index.js";
+import { configureHostResources } from "../../main/host-resources.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../../shared/windows-command-line.js";
 
 import {
@@ -18,7 +23,7 @@ import {
   type DetectMxcSupportDeps,
   type MxcRunResult,
 } from "../mxc-windows.js";
-import { rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
+import { rankAdmittedMxcLists, rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 
 // Verbatim shapes captured from wxc-exec 1.0.0 on Windows 11 26300.9711 (2026-10-19).
 const PROBE_BASE_CONTAINER = `{
@@ -269,6 +274,7 @@ describe("isWindowsPathAtOrUnder", () => {
 });
 
 describe("rankMxcFilesystem", () => {
+  beforeEach(() => setLocale("en"));
   const home = "C:\\Users\\u";
   const repo = "C:\\Users\\u\\src\\repo";
   const sandboxHome = "C:\\Users\\u\\AppData\\Roaming\\Ave\\sandbox-homes\\h1";
@@ -300,19 +306,49 @@ describe("rankMxcFilesystem", () => {
     expect(grants).toEqual({ readwrite: [], readonly: ["C:\\Users\\u\\.config\\fish"], denied: [] });
   });
 
-  it("keeps the saved-session grant that deliberately pierces the floor, with its nested denies", () => {
-    const userData = "C:\\Users\\u\\AppData\\Roaming\\Ave";
-    const sessions = `${userData}\\sessions`;
-    const grants = rankMxcLists({
-      allowWrite: [repo],
-      allowRead: [repo, sessions],
-      denyRead: [`${sessions}\\secrets`],
-      denyWrite: [],
-      protectedFloor: [userData],
-      floorPierces: [sessions],
-    }, exists);
-    expect(grants.readonly).toEqual([sessions]);
-    expect(grants.denied).toEqual([`${sessions}\\secrets`]);
+  it.runIf(process.platform === "win32")("keeps an admitted read pierce with its nested denies", () => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    const userData = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-read-pierce-")));
+    try {
+      const protectedRoot = join(userData, "protected");
+      const certs = join(protectedRoot, "certs");
+      const nestedDeny = join(certs, "private");
+      const deeperGrant = join(nestedDeny, "deeper");
+      const mask = join(userData, "namespace");
+      const owned = join(mask, "owned");
+      mkdirSync(deeperGrant, { recursive: true });
+      mkdirSync(owned, { recursive: true });
+      const policy = {
+        allowWrite: [userData],
+        allowRead: [certs, deeperGrant, owned],
+        denyRead: [mask],
+        denyWrite: [],
+        protectedFloor: [protectedRoot, certs, nestedDeny],
+        floorPierces: [certs],
+      };
+      const grants = rankAdmittedMxcLists(policy);
+      expect(grants.readonly.toSorted()).toEqual([certs, owned].toSorted());
+      expect(grants.denied.toSorted()).toEqual([protectedRoot, nestedDeny, mask].toSorted());
+      // The user's own deny of the pierced path wins: the launch is refused and names that rule.
+      expect(() => rankAdmittedMxcLists({ ...policy, userDenyRead: [certs] })).toThrow(`Your read deny ${certs} covers ${certs}`);
+      expect(() => rankAdmittedMxcLists({ ...policy, userDenyRead: [protectedRoot] })).toThrow(`Your read deny ${protectedRoot} covers ${certs}`);
+      expect(() => rankAdmittedMxcLists({ ...policy, userDenyRead: [join(protectedRoot, "cert*")] }))
+        .toThrow(`Your read deny ${join(protectedRoot, "cert*")} covers ${certs}`);
+      // A pattern over the pierce's whole contents covers it; one naming some files beneath keeps the pierce and denies its matches.
+      expect(() => rankAdmittedMxcLists({ ...policy, userDenyRead: [join(certs, "**")] }))
+        .toThrow(`Your read deny ${join(certs, "**")} covers ${certs}`);
+      const key = join(certs, "a.key");
+      writeFileSync(key, "");
+      const keys = rankAdmittedMxcLists({ ...policy, userDenyRead: [join(certs, "*.key")] });
+      expect(keys.readonly.toSorted()).toEqual([certs, owned].toSorted());
+      expect(keys.denied).toContain(key);
+      // A user deny beneath the pierce stays a deny, and one elsewhere drops the grant beneath it.
+      const beneath = rankAdmittedMxcLists({ ...policy, userDenyRead: [nestedDeny, mask] });
+      expect(beneath.readonly).toEqual([certs]);
+      expect(beneath.denied.toSorted()).toEqual([protectedRoot, nestedDeny, mask].toSorted());
+    } finally {
+      rmSync(userData, { recursive: true, force: true });
+    }
   });
 
   it("denies a write-floor row whose nearest rule is a read deny instead of granting it read-only beneath that deny", () => {

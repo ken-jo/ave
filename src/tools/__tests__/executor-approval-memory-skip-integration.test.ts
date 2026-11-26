@@ -1,6 +1,7 @@
 /** Exercise real approval, permission, store, and audit boundaries with an isolated home.
  * Deny and forced-modal rules outrank remembered approval; persistent matching tuples skip ordinary asks, while identity changes re-prompt. */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { beforeAll, describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { readFile, writeFile } from "node:fs/promises";
 import { mkdirSync, mkdtempSync } from "node:fs";
@@ -27,6 +28,9 @@ import { approvalCacheKeyFor } from "../pipeline/display-mask.js";
 import { WriteFileTool } from "../file-tools.js";
 import { createDynamicTool } from "../base.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManager + real store)", () => {
   let dir: string;

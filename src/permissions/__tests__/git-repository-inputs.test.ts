@@ -385,6 +385,14 @@ describe("checked repository metadata inputs", () => {
     expect(inspectGitRepository(path)).toBeNull();
   });
 
+  it("refuses a shared repository spelling before passing it to the Windows helper", () => {
+    setProcessPlatform("win32");
+    const remote = "\\\\fixture-server\\fixture-share\\work";
+    vi.mocked(windowsPathFacts.pinWindowsPaths).mockReturnValue([]);
+    expect(inspectGitRepository(remote)).toBeNull();
+    expect(windowsPathFacts.pinWindowsPaths).not.toHaveBeenCalled();
+  });
+
   it("does not discover a repository in an ancestor", () => {
     const nested = join(cwd, "nested");
     fs.mkdirSync(nested);

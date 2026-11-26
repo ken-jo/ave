@@ -79,6 +79,14 @@ describe("simulated configuration boundary", () => {
     expect(readAveHomeConfigurationFile(file)?.toString()).toBe('{"restricted":"queued"}');
     expect(childProcess.execFileSync).not.toHaveBeenCalled();
   });
+
+  it("reports a simulated drive's volume root as an existing directory, as every Windows walk finds it", () => {
+    setProcessPlatform("win32");
+    const runtimeRoot = String.raw`Q:\runtime-cache\ave\mxc-runtime\ `.trim();
+    const [row] = pathFacts.pinWindowsPaths([runtimeRoot]);
+    expect(row).toMatchObject({ exists: false, ancestors: [{ exists: true, directory: true, canonical: "Q:\\" }, { exists: false }, { exists: false }] });
+    expect(childProcess.execFileSync).not.toHaveBeenCalled();
+  });
 });
 
 describe("simulated sandbox process HOME", () => {

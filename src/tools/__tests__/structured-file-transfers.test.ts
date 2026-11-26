@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { create as createTar } from "tar";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -79,6 +80,9 @@ async function fixtureArchive(gzip = false): Promise<string> {
   await createTar({ cwd: source, file: archive, gzip }, ["nested", ".ordinary-hidden"]);
   return archive;
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("structured transfer registration and permission routing", () => {
   it("rejects a copy destination parent swapped outside the project during checkpoint capture", async () => {

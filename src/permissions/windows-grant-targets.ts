@@ -1,5 +1,6 @@
 import { stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { win32 } from "node:path";
+import { routeLocality, withLocalityDecision } from "../shared/local-path-io.js";
 import { admitWindowsReparse, pinWindowsPaths, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 
 export function assertWindowsGrantGrammar(path: string): void {
@@ -21,6 +22,9 @@ export function pinWindowsGrantTargets(paths: readonly string[], options: {
   let pending = paths.map((path, index) => ({ path, index }));
   const result: WindowsPathFacts[] = [];
   for (let hop = 0; pending.length > 0 && hop < 40; hop++) {
+    // The pin opens each path from its volume root, so its route, and each link target it reaches, is proven local first.
+    const unproven = withLocalityDecision(() => pending.find(row => routeLocality(row.path) !== "local"));
+    if (unproven !== undefined) throw new Error(`Windows filesystem grant names no proven local path: ${unproven.path}`);
     const rows = pinWindowsPaths(pending.map(row => row.path));
     const next: typeof pending = [];
     for (const [offset, request] of pending.entries()) {
