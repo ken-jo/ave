@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import type { ConversationLoop, SessionTransitionLease } from "../conversation-loop.js";
 import { posix, win32 } from "node:path";
 import { isValidSessionId } from "../../shared/session-id.js";
@@ -146,9 +147,12 @@ function workspaceRootRemovalOwnsSession(self: ConversationLoop, removedRoot: st
   if (self.sessionProjectIsDefault && self.deps.isDefaultProjectRoot?.(projectRoot) === false) {
     throw new Error("Active turn project binding is inconsistent");
   }
-  const normalizedRoot = normalizeProjectString(removedRoot);
-  if (!normalizedRoot) return false;
-  return projectRootEquals(projectRoot, normalizedRoot);
+  return withLocalityDecision(() => {
+    const normalizedRoot = normalizeProjectString(removedRoot);
+    if (!normalizedRoot) return false;
+    return projectRootEquals(projectRoot, normalizedRoot);
+  });
+
 }
 
 // Revoke grants under removed roots; keep independently authorized children and fall back for unauthorized projects.

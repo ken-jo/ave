@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { effectiveShellWords } from "../../shared/shell-effective-command.js";
 import { literalWord } from "../../shared/shell-analysis.js";
 import { literalShellBodies, literalShellFlow, recordLiteralShellFlow, type LiteralShellArgument, type LiteralBodyBudget } from "../../shared/shell-literal-bodies.js";
@@ -1269,7 +1270,13 @@ function permissionStages(pipelines: readonly PsPipeline[], program: StaticProgr
 
 /** Report parsed filesystem bindings, retaining repeated targets and their individual effects.
  * When unproven is true, paths may be partial; route uncertainty through the pipeline. */
-export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, cwd: string, environment: Readonly<Record<string, string | undefined>> = {}, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }, options: { inspectHostFiles?: boolean } = {}): {
+export function inspectPowerShellPermissionPaths(
+  ...args: Parameters<typeof inspectPowerShellPermissionPathsInDecision>
+): ReturnType<typeof inspectPowerShellPermissionPathsInDecision> {
+  return withLocalityDecision(() => inspectPowerShellPermissionPathsInDecision(...args));
+}
+
+function inspectPowerShellPermissionPathsInDecision(input: PowerShellCommandInput, cwd: string, environment: Readonly<Record<string, string | undefined>> = {}, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }, options: { inspectHostFiles?: boolean } = {}): {
   paths: readonly PermissionPathEvidence[];
   unproven: boolean;
   credentialStore: string | null;

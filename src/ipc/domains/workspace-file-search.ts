@@ -1,4 +1,5 @@
 // Search current workspace roots and recheck every result with the read guard.
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { collectFiles } from "../../tools/file-tools.js";
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
 import { resolvePathForPolicy } from "../../permissions/sensitive-paths.js";
@@ -99,9 +100,13 @@ export async function searchWorkspaceFiles(args: {
   const now = args.now ?? Date.now();
   const scored: Array<{ score: number; match: WorkspaceFileMatch }> = [];
   let truncated = false;
-  if (args.folder) {
-    const root = resolvePathForPolicy(args.folder.root);
-    const listed = await collectFiles(resolvePathForPolicy(args.folder.path), MAX_FILES_PER_ROOT);
+  const folder = args.folder;
+  if (folder) {
+    const { root, path } = withLocalityDecision(() => ({
+      root: resolvePathForPolicy(folder.root),
+      path: resolvePathForPolicy(folder.path),
+    }));
+    const listed = await collectFiles(path, MAX_FILES_PER_ROOT);
     if (listed.ok) {
       truncated = listed.value.truncated;
       for (const file of listed.value.files) {
@@ -126,22 +131,24 @@ export async function searchWorkspaceFiles(args: {
     a.score - b.score
     || a.match.relativePath.length - b.match.relativePath.length
     || a.match.relativePath.localeCompare(b.match.relativePath));
-  const matches: WorkspaceFileMatch[] = [];
-  const seen = new Set<string>();
-  for (const { match } of scored) {
-    if (matches.length >= MAX_MATCHES) {
-      truncated = true;
-      break;
+  return withLocalityDecision(() => {
+    const matches: WorkspaceFileMatch[] = [];
+    const seen = new Set<string>();
+    for (const { match } of scored) {
+      if (matches.length >= MAX_MATCHES) {
+        truncated = true;
+        break;
+      }
+      const key = resolvePathForPolicy(match.path);
+      if (seen.has(key)) continue;
+      // The read guard decides, not the walk: same answer read_file would give.
+      const verdict = assertReadableFilePath(match.path, args.cwd, args.extraAllowed);
+      if (!verdict.ok) continue;
+      seen.add(key);
+      matches.push(match);
     }
-    const key = resolvePathForPolicy(match.path);
-    if (seen.has(key)) continue;
-    // The read guard decides, not the walk: same answer read_file would give.
-    const verdict = assertReadableFilePath(match.path, args.cwd, args.extraAllowed);
-    if (!verdict.ok) continue;
-    seen.add(key);
-    matches.push(match);
-  }
-  return { matches, truncated };
+    return { matches, truncated };
+  });
 }
 
 export function clearWorkspaceFileSearchCache(): void {

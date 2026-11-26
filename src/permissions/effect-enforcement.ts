@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { answerEpochsOf, personAnswerStands } from "./pending-answer-policy.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf, type RemoteControllerAuthority } from "../shared/chat-origin.js";
 // Actual host effects enter the common permission pipeline before recording and execution.
@@ -222,26 +223,28 @@ function descriptorKey(pluginId: string, methodPath: string, identity: unknown):
 type EffectPath = { lexical: string; canonical: string; effect: "read" | "write" };
 
 function effectPaths(methodPath: string, effect: Effect, args: readonly unknown[], resolveStoragePath?: (relativePath: string) => string): EffectPath[] {
-  const paths: EffectPath[] = [];
-  if (methodPath.startsWith("storage.")) {
-    const relativePath = methodPath === "storage.list" && args[0] === undefined ? "." : args[0];
-    if (typeof relativePath !== "string" || !resolveStoragePath) throw new Error("Storage effects require a bound path resolver");
-    const lexical = resolveStoragePath(relativePath);
-    paths.push({ lexical, canonical: canonicalizePathForMatch(lexical), effect });
-  }
-  if (methodPath === "spawnWorker") {
-    const worker = args[0];
-    if (worker !== null && typeof worker === "object") {
-      for (const [field, effect] of [["allowReadPaths", "read"], ["allowWritePaths", "write"]] as const) {
-        const grants = (worker as Record<string, unknown>)[field];
-        if (Array.isArray(grants)) for (const path of grants) {
-          if (typeof path !== "string") throw new Error("Worker filesystem grants must be paths");
-          paths.push({ lexical: path, canonical: canonicalizePathForMatch(path), effect });
+  return withLocalityDecision(() => {
+    const paths: EffectPath[] = [];
+    if (methodPath.startsWith("storage.")) {
+      const relativePath = methodPath === "storage.list" && args[0] === undefined ? "." : args[0];
+      if (typeof relativePath !== "string" || !resolveStoragePath) throw new Error("Storage effects require a bound path resolver");
+      const lexical = resolveStoragePath(relativePath);
+      paths.push({ lexical, canonical: canonicalizePathForMatch(lexical), effect });
+    }
+    if (methodPath === "spawnWorker") {
+      const worker = args[0];
+      if (worker !== null && typeof worker === "object") {
+        for (const [field, effect] of [["allowReadPaths", "read"], ["allowWritePaths", "write"]] as const) {
+          const grants = (worker as Record<string, unknown>)[field];
+          if (Array.isArray(grants)) for (const path of grants) {
+            if (typeof path !== "string") throw new Error("Worker filesystem grants must be paths");
+            paths.push({ lexical: path, canonical: canonicalizePathForMatch(path), effect });
+          }
         }
       }
     }
-  }
-  return paths;
+    return paths;
+  });
 }
 
 function insideOwnStorage(paths: readonly EffectPath[], resolveStoragePath?: (relativePath: string) => string): boolean {
@@ -255,7 +258,7 @@ function insideOwnStorage(paths: readonly EffectPath[], resolveStoragePath?: (re
 }
 
 function assertEffectPaths(paths: readonly EffectPath[]): void {
-  if (paths.some((path) => canonicalizePathForMatch(path.lexical) !== path.canonical)) {
+  if (withLocalityDecision(() => paths.some((path) => canonicalizePathForMatch(path.lexical) !== path.canonical))) {
     throw new Error("Effect target changed during approval");
   }
 }

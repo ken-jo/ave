@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { isDestructiveShellArgv, noReusableRuleReason } from "../rules/shell-prefix-values.js";
 // Disabled mode yields LOW while mandatory gates still apply. Model review composes conservatively with deterministic evidence and redacts provider input.
 import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../../tools/types.js";
@@ -1278,23 +1279,25 @@ function isGraphMetadataRead(input: Record<string, unknown>, target: NetworkTarg
 
 // Resolve native targets once before deriving policy keys. Distinct native names can share a folded key but still require separate content inspection.
 function extractDeclaredPathTargets(ctx: ToolInvocationContext): Array<{ nativePath: string; canonicalPath: string }> {
-  const paths = new Map<string, string>();
-  const guest = isDisposableSubstrateCapability(ctx.sandboxCapability);
-  for (const field of ctx.pathFields) {
-    const values = selectDeclaredPathValues(ctx.finalInput, field);
-    for (const value of values) {
-      if (typeof value !== "string" || value.length === 0) continue;
-      if (guest && !posix.isAbsolute(value)) continue;
-      try {
-        const nativePath = guest ? posix.normalize(value)
-          : resolvePathForPolicy(resolveToolPathForPermission(value, ctx.executionCwd));
-        paths.set(nativePath, caseFoldForMatch(foldCanonicalPathSeparators(nativePath)));
-      } catch {
-        // Mirror the enforcer: tool schema validation owns argument-type failures. An unresolvable path contributes nothing, and an empty path list falls through to the "write path not declared" HIGH rule — the safe direction.
+  return withLocalityDecision(() => {
+    const paths = new Map<string, string>();
+    const guest = isDisposableSubstrateCapability(ctx.sandboxCapability);
+    for (const field of ctx.pathFields) {
+      const values = selectDeclaredPathValues(ctx.finalInput, field);
+      for (const value of values) {
+        if (typeof value !== "string" || value.length === 0) continue;
+        if (guest && !posix.isAbsolute(value)) continue;
+        try {
+          const nativePath = guest ? posix.normalize(value)
+            : resolvePathForPolicy(resolveToolPathForPermission(value, ctx.executionCwd));
+          paths.set(nativePath, caseFoldForMatch(foldCanonicalPathSeparators(nativePath)));
+        } catch {
+          // Mirror the enforcer: tool schema validation owns argument-type failures. An unresolvable path contributes nothing, and an empty path list falls through to the "write path not declared" HIGH rule — the safe direction.
+        }
       }
     }
-  }
-  return [...paths].map(([nativePath, canonicalPath]) => ({ nativePath, canonicalPath }));
+    return [...paths].map(([nativePath, canonicalPath]) => ({ nativePath, canonicalPath }));
+  });
 }
 
 // Resolve ~ and relative operands against invocation cwd with the same resolver as enforcement, then canonicalize/case-fold before comparing. Both sides need identical normalization so traversal, symlink, Unicode or case spelling cannot bypass sandbox containment.

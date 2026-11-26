@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { app, dialog, ipcMain, nativeImage } from "electron";
 import { t } from "../../i18n/index.js";
 import { promises as fs } from "node:fs";
@@ -326,15 +327,17 @@ function senderIdOf(e: IpcMainInvokeEvent): number | null {
 /** Judge a file the person is bringing in right now. Dropping it is what lets a `.pem` or `.key` name be opened to see
  * whether it holds a private key; without that, a presentation document from the desktop could not be attached. */
 function sensitiveForRead(p: string): boolean {
-  const key = chosenFileKey(p);
-  const added = !BEING_CHOSEN.has(key);
-  if (added) BEING_CHOSEN.add(key);
-  try {
-    // The person's own drop: a key-extension file is refused only when it holds a key.
-    return isSensitivePath(p, "read", "person") !== null;
-  } finally {
-    if (added) BEING_CHOSEN.delete(key);
-  }
+  return withLocalityDecision(() => {
+    const key = chosenFileKey(p);
+    const added = !BEING_CHOSEN.has(key);
+    if (added) BEING_CHOSEN.add(key);
+    try {
+      // The person's own drop: a key-extension file is refused only when it holds a key.
+      return isSensitivePath(p, "read", "person") !== null;
+    } finally {
+      if (added) BEING_CHOSEN.delete(key);
+    }
+  });
 }
 
 async function validateDroppedPath(
@@ -562,7 +565,9 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         return { ok: false, error: "drop-token-invalid" };
       }
       if (Date.now() > pending.expires) return { ok: false, error: "drop-token-expired" };
-      for (const file of pending.files) authorizePath(file.path);
+      withLocalityDecision(() => {
+        for (const file of pending.files) authorizePath(file.path);
+      });
       return { ok: true, files: pending.files };
     },
   );

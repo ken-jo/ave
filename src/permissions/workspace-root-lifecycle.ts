@@ -1,4 +1,5 @@
 // Keep the workspace-root lock, host-owned lifecycle holder and revocation predicate together so add/remove uses one coordinated sweep.
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import type { PermissionDirectoryLifecycle } from "./permission-slash.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { projectRootEquals } from "../shared/project-identity.js";
@@ -58,12 +59,12 @@ export function createWorkspaceRootRevocationFilter(
   removedRoot: string,
   preserveRoots: readonly string[] = [],
 ): (directory: string) => boolean {
-  const preserved = preserveRoots.filter(
+  const preserved = withLocalityDecision(() => preserveRoots.filter(
     (preserveRoot) =>
       !projectRootEquals(removedRoot, preserveRoot)
       && isPathAtOrBelow(removedRoot, preserveRoot),
-  );
-  return (directory: string): boolean =>
+  ));
+  return (directory: string): boolean => withLocalityDecision(() =>
     isPathAtOrBelow(removedRoot, directory)
-    && !preserved.some((preserveRoot) => isPathAtOrBelow(preserveRoot, directory));
+    && !preserved.some((preserveRoot) => isPathAtOrBelow(preserveRoot, directory)));
 }

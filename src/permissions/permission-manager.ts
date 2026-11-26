@@ -1391,9 +1391,11 @@ export class PermissionManager {
     root: string,
     options?: { preserveRoots?: readonly string[] },
   ): Promise<number> {
-    const isUnderRoot = pathGrantRemovalMatcher(root, options?.preserveRoots);
     const file = await readPermissionsFile(this.permissionsFilePath);
-    return (file?.rules ?? []).filter((r) => r.action === "allow" && !r.source && isUnderRoot(r.pattern)).length;
+    return withLocalityDecision(() => {
+      const isUnderRoot = pathGrantRemovalMatcher(root, options?.preserveRoots);
+      return (file?.rules ?? []).filter((r) => r.action === "allow" && !r.source && isUnderRoot(r.pattern)).length;
+    });
   }
 
   // Removing a root must also prune its inclusive single-path allow grants so re-add cannot revive revoked authority; preserve separately registered descendants, non-path allows and denies. Compare canonical and raw stored forms to cover symlinks/case without changing hot-path identity. Return redacted per-pattern audit provenance; only the count crosses IPC.
@@ -1401,25 +1403,31 @@ export class PermissionManager {
     root: string,
     options?: { preserveRoots?: readonly string[] },
   ): Promise<PrunedGrant[]> {
-    const isUnderRoot = pathGrantRemovalMatcher(root, options?.preserveRoots);
     // The persisted file is the SOT for path grants: addAlwaysAllowedPersist writes the allow rule to the file + the in-memory alwaysAllowed Map, but NOT to `this.rules` (that array is only hydrated from the file at boot via loadRulesFromFile). Scan the file, not `this.rules`, so a grant made this session is still pruned. Do the read + filter inside ONE updatePermissionsFile pass (atomic under the store lock) and collect the pruned grants so in-memory state (rules + alwaysAllowed) is reconciled and the caller can audit per-pattern tuples.
     const pruned: PrunedGrant[] = [];
-    await this.updateRulesFile((file) => {
+    const prunedPatterns = new Set<string>();
+    await this.updateRulesFile((file) => withLocalityDecision(() => {
+      const isUnderRoot = pathGrantRemovalMatcher(root, options?.preserveRoots);
       file.rules = file.rules.filter((r) => {
         if (r.action === "allow" && !r.source && isUnderRoot(r.pattern)) {
+          prunedPatterns.add(r.pattern);
           pruned.push(describePrunedGrant(r.pattern, r.tier));
           return false;
         }
         return true;
       });
-    });
+    }));
     // Reconcile by scope on every retry, not only by patterns removed in this disk pass. A prior attempt may have committed the file shrink and then thrown while broadcasting/revoking bearers; the retry must still remove stale live cache entries and re-run the revoke signal.
-    this.rules = this.rules.filter(
-      (r) => !(r.action === "allow" && !r.source && isUnderRoot(r.pattern)),
-    );
-    for (const pattern of [...this.alwaysAllowed.keys()]) {
-      if (isUnderRoot(pattern)) this.alwaysAllowed.delete(pattern);
-    }
+    withLocalityDecision(() => {
+      const isUnderRoot = pathGrantRemovalMatcher(root, options?.preserveRoots);
+      const shouldRevoke = (pattern: string): boolean => prunedPatterns.has(pattern) || isUnderRoot(pattern);
+      this.rules = this.rules.filter(
+        (r) => !(r.action === "allow" && !r.source && shouldRevoke(r.pattern)),
+      );
+      for (const pattern of [...this.alwaysAllowed.keys()]) {
+        if (shouldRevoke(pattern)) this.alwaysAllowed.delete(pattern);
+      }
+    });
 
     this.policyGeneration += 1;
     this.broadcastConfigChanged?.();

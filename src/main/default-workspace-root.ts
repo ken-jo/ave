@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { realpathSync } from "node:fs";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 
@@ -8,8 +9,8 @@ export function getDefaultWorkspaceRoot(): string {
 
 export function isDefaultWorkspaceRoot(projectRoot: string, defaultWorkspaceRoot = getDefaultWorkspaceRoot()): boolean {
   try {
-    return caseFoldForMatch(canonicalizePathForMatch(projectRoot)) ===
-      caseFoldForMatch(canonicalizePathForMatch(defaultWorkspaceRoot));
+    return withLocalityDecision(() => caseFoldForMatch(canonicalizePathForMatch(projectRoot))
+      === caseFoldForMatch(canonicalizePathForMatch(defaultWorkspaceRoot)));
   } catch {
     return projectRoot.trim() === defaultWorkspaceRoot.trim();
   }

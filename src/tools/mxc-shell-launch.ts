@@ -1,5 +1,6 @@
 // Prepare invocation-scoped container launch resources. The invocation's lifecycle closes the proxy only after the launcher and its job
 // have exited, so a surviving process can never reach a port reused by another invocation.
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { win32 as winPath } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
@@ -143,30 +144,32 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   if (!input.exists(wxcExec)) {
     throw new Error("Contained shell launcher is missing from this installation");
   }
-  // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.
-  const insideBoundary = (path: string): boolean => aveHomeReadBoundaryCovering(path) !== undefined;
-  // The container runtime root is closed to reads and writes alike: a grant inside it would outrank its deny. Only this invocation's own HOME is granted there, and the deny is restated so it holds beneath a granted ancestor.
-  const privateRoots = appOwnedSandboxPrivateRoots();
-  const privateRootCovering = protectedReadDenyMatcher(privateRoots);
-  const insideClosedRoot = (path: string): boolean =>
-    privateRootCovering(path) !== undefined && !insideOwnWindowsSandboxHome(path, input.sandboxHome);
-  assertIssuedContainerHomeInPlace(input.sandboxHome);
-  // No working directory inside the root except the invocation's own issued HOME itself, by identity.
-  if (privateRootCovering(input.cwd) !== undefined && !isIssuedContainerHome(input.cwd, input.sandboxHome)) throw new Error("Container shell working directory is inside the sandbox runtime root");
   // The invocation's own HOME lies in the runtime root's state; it is passed only while live and still the issuance held.
   const ownHome = (): string | undefined => {
     if (issuedHome === undefined) return undefined;
     const held = heldIssuedContainerHome(issuedHome);
     return insideOwnWindowsSandboxHome(issuedHome.home, issuedHome.home) ? held : undefined;
   };
-  // Before ranking: the runtime root is only an ordinary read deny there, which an equal or enclosing write survives.
-  assertWriteGrantsOutsideConfinementState(input.filesystem.allowWrite, declaredConfinementStatePaths(), undefined, ownHome());
-  const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
-  const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
-  const denyRead = [...new Set([...input.filesystem.denyRead, ...privateRoots])];
-  const userDenyRead = getUserReadDenies();
-  const protectedFloor = getProtectedReadDenyFloor().filter((path) => !userDenyRead.includes(path));
-  const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, denyRead, protectedFloor, userDenyRead }));
+  // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.
+  const grants = withLocalityDecision(() => {
+    const insideBoundary = (path: string): boolean => aveHomeReadBoundaryCovering(path) !== undefined;
+    // The container runtime root is closed to reads and writes alike: a grant inside it would outrank its deny. Only this invocation's own HOME is granted there, and the deny is restated so it holds beneath a granted ancestor.
+    const privateRoots = appOwnedSandboxPrivateRoots();
+    const privateRootCovering = protectedReadDenyMatcher(privateRoots);
+    const insideClosedRoot = (path: string): boolean =>
+      privateRootCovering(path) !== undefined && !insideOwnWindowsSandboxHome(path, input.sandboxHome);
+    assertIssuedContainerHomeInPlace(input.sandboxHome);
+    // No working directory inside the root except the invocation's own issued HOME itself, by identity.
+    if (privateRootCovering(input.cwd) !== undefined && !isIssuedContainerHome(input.cwd, input.sandboxHome)) throw new Error("Container shell working directory is inside the sandbox runtime root");
+    // Before ranking: the runtime root is only an ordinary read deny there, which an equal or enclosing write survives.
+    assertWriteGrantsOutsideConfinementState(input.filesystem.allowWrite, declaredConfinementStatePaths(), undefined, ownHome());
+    const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
+    const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path) && !insideClosedRoot(path));
+    const denyRead = [...new Set([...input.filesystem.denyRead, ...privateRoots])];
+    const userDenyRead = getUserReadDenies();
+    const protectedFloor = getProtectedReadDenyFloor().filter((path) => !userDenyRead.includes(path));
+    return rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, denyRead, protectedFloor, userDenyRead }));
+  });
   assertAdmission();
   const relay = await openHostEgressListener(token, admission);
   assertAdmission();

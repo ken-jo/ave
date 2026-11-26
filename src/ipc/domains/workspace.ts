@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { dialog, ipcMain, shell } from "electron";
 import { t } from "../../i18n/index.js";
 import { promises as fs, type Dirent } from "node:fs";
@@ -253,19 +254,23 @@ function keyWithin(rootKey: string, key: string): boolean {
 
 /** The registered root `projectRoot` names, compared canonically; null when it is not (or no longer) a project root. */
 function registeredRoot(projectRoot: string): WorkspaceRoot | null {
-  const key = matchKey(projectRoot);
-  return computeRoots().find((root) => matchKey(root.path) === key) ?? null;
+  return withLocalityDecision(() => {
+    const key = matchKey(projectRoot);
+    return computeRoots().find((root) => matchKey(root.path) === key) ?? null;
+  });
 }
 
 /** The innermost registered root containing `dir`; links in a folder outside every root count as outside. */
 function containingRoot(dir: string): { key: string; path: string } | null {
-  const dirKey = matchKey(dir);
-  let best: { key: string; path: string } | null = null;
-  for (const root of computeRoots()) {
-    const key = matchKey(root.path);
-    if (keyWithin(key, dirKey) && (best === null || key.length > best.key.length)) best = { key, path: root.path };
-  }
-  return best;
+  return withLocalityDecision(() => {
+    const dirKey = matchKey(dir);
+    let best: { key: string; path: string } | null = null;
+    for (const root of computeRoots()) {
+      const key = matchKey(root.path);
+      if (keyWithin(key, dirKey) && (best === null || key.length > best.key.length)) best = { key, path: root.path };
+    }
+    return best;
+  });
 }
 
 /**
@@ -350,18 +355,20 @@ function listDirFailure(err: unknown): "permission-denied" | "not-found" | "read
 }
 
 function computeRoots(): WorkspaceRoot[] {
-  const defaultRoot = getDefaultWorkspaceRoot();
-  const additional = readPermissionSettings().permissions.additionalDirectories;
-  const canonicalAdds = sanitizeRuntimeAllowedDirectories(additional);
-  const seen = new Set<string>([matchKey(defaultRoot)]);
-  const roots: WorkspaceRoot[] = [{ path: defaultRoot, isDefault: true }];
-  for (const dir of canonicalAdds) {
-    const key = matchKey(dir);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    roots.push({ path: resolvePathForPolicy(dir), isDefault: false });
-  }
-  return roots;
+  return withLocalityDecision(() => {
+    const defaultRoot = getDefaultWorkspaceRoot();
+    const additional = readPermissionSettings().permissions.additionalDirectories;
+    const canonicalAdds = sanitizeRuntimeAllowedDirectories(additional);
+    const seen = new Set<string>([matchKey(defaultRoot)]);
+    const roots: WorkspaceRoot[] = [{ path: defaultRoot, isDefault: true }];
+    for (const dir of canonicalAdds) {
+      const key = matchKey(dir);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      roots.push({ path: resolvePathForPolicy(dir), isDefault: false });
+    }
+    return roots;
+  });
 }
 
 export function registerWorkspaceHandlers(deps: IpcDeps): void {
@@ -722,10 +729,9 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       }
       const current = readPermissionSettings().permissions.additionalDirectories;
       const runtimeKey = caseFoldForMatch(runtimeRoot);
-      const alreadyRegistered = current.some(
-        (candidate) =>
-          caseFoldForMatch(canonicalizePathForMatch(candidate)) === runtimeKey,
-      );
+      const alreadyRegistered = withLocalityDecision(() => current.some(
+        (candidate) => caseFoldForMatch(canonicalizePathForMatch(candidate)) === runtimeKey,
+      ));
       if (alreadyRegistered) return current;
       const preserveRoots = retainedDescendantWorkspaceRoots(runtimeRoot, current);
       await pruneWorkspaceRootGrants(runtimeRoot, source, preserveRoots);
@@ -1090,8 +1096,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       let scope: { cwd: string; extraAllowed: string[] };
       let roots: WorkspaceRoot[];
       try {
-        scope = currentScope();
-        roots = computeRoots();
+        ({ scope, roots } = withLocalityDecision(() => ({ scope: currentScope(), roots: computeRoots() })));
       } catch (error) {
         if (error instanceof PermissionSettingsUnreadableError) {
           return { ok: false, error: "settings-unreadable" };
@@ -1129,15 +1134,20 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         return { ok: false, error: "unauthorized" };
       }
       if (typeof rawPath !== "string" || rawPath.length === 0) return { ok: false, error: "invalid-path" };
-      const rootKey = (value: string) => caseFoldForMatch(canonicalizePathForMatch(resolvePath(value)));
-      const targetKey = rootKey(rawPath);
-      if (targetKey === rootKey(getDefaultWorkspaceRoot())) return { ok: false, error: "cannot-remove-default" };
-      const active = readPermissionSettings().permissions.additionalDirectories;
-      const stored = active.find((candidate) => rootKey(candidate) === targetKey);
-      if (!stored) return { ok: false, error: "not-an-additional-root" };
-      const runtimePath = canonicalizePathForMatch(resolvePath(stored));
-      // The context the removal itself hands each store and loop.
-      const context = workspaceRootRemovalContext(runtimePath, active);
+      const target = withLocalityDecision(() => {
+        const rootKey = (value: string) => caseFoldForMatch(canonicalizePathForMatch(resolvePath(value)));
+        const targetKey = rootKey(rawPath);
+        if (targetKey === rootKey(getDefaultWorkspaceRoot())) return { ok: false, error: "cannot-remove-default" } as const;
+        const active = readPermissionSettings().permissions.additionalDirectories;
+        const stored = active.find((candidate) => rootKey(candidate) === targetKey);
+        if (!stored) return { ok: false, error: "not-an-additional-root" } as const;
+        const runtimePath = canonicalizePathForMatch(resolvePath(stored));
+        // The context the removal itself hands each store and loop.
+        const context = workspaceRootRemovalContext(runtimePath, active);
+        return { ok: true, runtimePath, context } as const;
+      });
+      if (!target.ok) return target;
+      const { runtimePath, context } = target;
       const options = { preserveRoots: context.preserveRoots };
       try {
         const permissionManager = deps.conversationLoop?.permissionManager;

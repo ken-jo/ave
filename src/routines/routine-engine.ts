@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../shared/local-path-io.js";
 /**
  * RoutineEngine — routine execution engine.
  *
@@ -163,13 +164,16 @@ export class RoutineEngine {
     root: string,
     options?: { preserveRoots?: readonly string[]; globalScopeWasAuthorized?: boolean },
   ): number {
-    const canonicalRoot = this.workspaceRootKey(root);
-    if (!canonicalRoot) return 0;
-    const revocation = {
-      preserveRoots: this.preservedRootsUnder(canonicalRoot, options?.preserveRoots),
-      globalScopeWasAuthorized: options?.globalScopeWasAuthorized,
-    };
-    return [...this.activeLoops].filter((loop) => loop.wouldWorkspaceRootRemovalAbortTurn(canonicalRoot, revocation)).length;
+    return withLocalityDecision(() => {
+      const canonicalRoot = this.workspaceRootKey(root);
+      if (!canonicalRoot) return 0;
+      const revocation = {
+        preserveRoots: this.preservedRootsUnder(canonicalRoot, options?.preserveRoots),
+        globalScopeWasAuthorized: options?.globalScopeWasAuthorized,
+      };
+      return [...this.activeLoops].filter((loop) => loop.wouldWorkspaceRootRemovalAbortTurn(canonicalRoot, revocation)).length;
+    });
+
   }
 
   /** Revoke a root from live loops and stale future-fire scope snapshots. */
@@ -183,40 +187,43 @@ export class RoutineEngine {
     activeLoopsVisited: number;
     liveScopesRevoked: number;
   } {
-    const canonicalRoot = this.recordWorkspaceRootPolicy(root, false);
-    if (!canonicalRoot) return { activeLoopsVisited: 0, liveScopesRevoked: 0 };
-    const preservedRoots = this.preservedRootsUnder(canonicalRoot, options?.preserveRoots);
-    // A separately registered descendant is a narrower, later policy override:
-    // the parent stays denied while the child remains eligible for future fires.
-    for (const preserveRoot of preservedRoots) {
-      this.recordWorkspaceRootPolicy(preserveRoot, true);
-    }
-    let activeLoopsVisited = 0;
-    let liveScopesRevoked = 0;
-    const errors: unknown[] = [];
-    for (const loop of [...this.activeLoops]) {
-      activeLoopsVisited += 1;
-      try {
-        const result = loop.revokeWorkspaceRoot(canonicalRoot, {
-          preserveRoots: preservedRoots,
-          globalScopeWasAuthorized: options?.globalScopeWasAuthorized,
-        });
-        liveScopesRevoked += result.sessionDirectoriesRemoved + result.turnDirectoriesRemoved;
-      } catch (error: unknown) {
-        errors.push(error);
-        log.warn(
-          "routine workspace scope revocation failed (%s)",
-          error instanceof Error ? error.name : "UnknownError",
+    return withLocalityDecision(() => {
+      const canonicalRoot = this.recordWorkspaceRootPolicy(root, false);
+      if (!canonicalRoot) return { activeLoopsVisited: 0, liveScopesRevoked: 0 };
+      const preservedRoots = this.preservedRootsUnder(canonicalRoot, options?.preserveRoots);
+      // A separately registered descendant is a narrower, later policy override:
+      // the parent stays denied while the child remains eligible for future fires.
+      for (const preserveRoot of preservedRoots) {
+        this.recordWorkspaceRootPolicy(preserveRoot, true);
+      }
+      let activeLoopsVisited = 0;
+      let liveScopesRevoked = 0;
+      const errors: unknown[] = [];
+      for (const loop of [...this.activeLoops]) {
+        activeLoopsVisited += 1;
+        try {
+          const result = loop.revokeWorkspaceRoot(canonicalRoot, {
+            preserveRoots: preservedRoots,
+            globalScopeWasAuthorized: options?.globalScopeWasAuthorized,
+          });
+          liveScopesRevoked += result.sessionDirectoriesRemoved + result.turnDirectoriesRemoved;
+        } catch (error: unknown) {
+          errors.push(error);
+          log.warn(
+            "routine workspace scope revocation failed (%s)",
+            error instanceof Error ? error.name : "UnknownError",
+          );
+        }
+      }
+      if (errors.length > 0) {
+        throw Object.assign(
+          new AggregateError(errors, "routine-workspace-root-revoke-failed"),
+          { code: "ROUTINE_WORKSPACE_ROOT_REVOKE_FAILED" },
         );
       }
-    }
-    if (errors.length > 0) {
-      throw Object.assign(
-        new AggregateError(errors, "routine-workspace-root-revoke-failed"),
-        { code: "ROUTINE_WORKSPACE_ROOT_REVOKE_FAILED" },
-      );
-    }
-    return { activeLoopsVisited, liveScopesRevoked };
+      return { activeLoopsVisited, liveScopesRevoked };
+    });
+
   }
 
   /**
@@ -246,9 +253,9 @@ export class RoutineEngine {
             ? { mode: "allow", ids: [...scope.pluginIds.ids] }
             : { mode: "deny-all" }),
       forcedPluginIds: [...scope.forcedPluginIds],
-      directories: scope.directories.filter(
+      directories: withLocalityDecision(() => scope.directories.filter(
         (directory) => !this.isWorkspaceDirectoryRevoked(directory),
-      ),
+      )),
     };
   }
 

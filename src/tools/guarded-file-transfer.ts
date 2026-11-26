@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { terminalFileEvidence, writtenFileIdentity, type WrittenFileIdentity } from "../main/terminal/changed-file-evidence.js";
 import { constants, createReadStream, read, type BigIntStats, type ReadStream } from "node:fs";
 import { lstat, mkdir, open, opendir, realpath, rmdir, unlink, type FileHandle } from "node:fs/promises";
@@ -75,8 +76,10 @@ function ownedPathKey(path: string): string {
 }
 
 function containsPath(parent: string, child: string): boolean {
-  const suffix = relative(pathKey(parent), pathKey(child));
-  return suffix === "" || (!isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(`..${sep}`));
+  return withLocalityDecision(() => {
+    const suffix = relative(pathKey(parent), pathKey(child));
+    return suffix === "" || (!isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(`..${sep}`));
+  });
 }
 
 function resolvedInput(path: string, context: ToolExecutionContext): string {
@@ -223,7 +226,7 @@ class OwnedTransfer {
     this.sourceStats = source.stats;
     const lexicalDestination = resolvedInput(this.request.destinationPath, this.context);
     assertAccess(lexicalDestination, this.context, this.request.assertPath);
-    if (containsPath(source.path, lexicalDestination) || containsPath(lexicalDestination, source.path)) {
+    if (withLocalityDecision(() => containsPath(source.path, lexicalDestination) || containsPath(lexicalDestination, source.path))) {
       throw new FileTransferError("source-destination-overlap", "Source and destination paths overlap");
     }
     // Inspect the entry itself before canonical resolution can follow a link.
@@ -244,7 +247,7 @@ class OwnedTransfer {
     // The canonical child and parent identity are still checked independently.
     this.summary.destinationPath = join(parent, basename(lexicalDestination));
     assertAccess(this.summary.destinationPath, this.context, this.request.assertPath);
-    if (containsPath(source.path, this.summary.destinationPath) || containsPath(this.summary.destinationPath, source.path)) {
+    if (withLocalityDecision(() => containsPath(source.path, this.summary.destinationPath) || containsPath(this.summary.destinationPath, source.path))) {
       throw new FileTransferError("source-destination-overlap", "Source and destination paths overlap");
     }
     this.sourceAnchors = await ancestorChain(dirname(source.path));

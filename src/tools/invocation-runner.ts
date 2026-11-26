@@ -1739,9 +1739,11 @@ async function runToolInvocationAttempt(
               if (denied) throw new RationaleHumanApprovalDeniedError(denied.content);
               const afterDirectories = [...(invocationPermissionContext.getAdditionalDirectories?.() ?? invocationPermissionContext.additionalDirectories ?? [])];
               if (canonicalStringify([...new Set(beforeDirectories)].sort()) !== canonicalStringify([...new Set(afterDirectories)].sort())) {
-                const approvedIdentity = caseFoldForMatch(canonicalizePathForMatch(resolution.approvedDirectory));
-                const storedDirectory = afterDirectories.find(directory =>
-                  caseFoldForMatch(canonicalizePathForMatch(directory)) === approvedIdentity);
+                const storedDirectory = withLocalityDecision(() => {
+                  const approvedIdentity = caseFoldForMatch(canonicalizePathForMatch(resolution.approvedDirectory));
+                  return afterDirectories.find(directory =>
+                    caseFoldForMatch(canonicalizePathForMatch(directory)) === approvedIdentity);
+                });
                 if (storedDirectory === undefined) throw new Error("Approved directory was not added to the active scope");
                 services.approvalGate!.recordApprovedDirectoryMutation(resolution.approvalDecision,
                   { from: beforeDirectories, to: afterDirectories, directory: storedDirectory, scope: resolution.scope });

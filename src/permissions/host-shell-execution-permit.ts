@@ -1,4 +1,5 @@
 // Plans describe substrates, not authorization. Bind proof privately to one final action and consume it before plain-host spawn.
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
@@ -87,10 +88,12 @@ export function resolveHostShellWorkingDirectory(
 export function canonicalizeHostShellAllowedDirectories(
   directories: readonly string[],
 ): readonly string[] {
-  const canonical = directories
-    .filter((directory) => directory.length > 0)
-    .map((directory) => caseFoldForMatch(canonicalizePathForMatch(directory)));
-  return Object.freeze([...new Set(canonical)].sort());
+  return withLocalityDecision(() => {
+    const canonical = directories
+      .filter((directory) => directory.length > 0)
+      .map((directory) => caseFoldForMatch(canonicalizePathForMatch(directory)));
+    return Object.freeze([...new Set(canonical)].sort());
+  });
 }
 
 // Build the host-only action binding after all path grants and hooks have finalized the invocation. Undefined means the raw input cannot represent a native shell spawn, so the invocation must fail closed before requesting a permit.
