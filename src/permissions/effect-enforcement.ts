@@ -455,7 +455,7 @@ export async function gateMutatingEffect(params: {
   // and no policy step of the card's own is honored.
   const staleAudit: Partial<Pick<ApprovalGate, "recordStaleAnswer">> = params.approvalGate;
   const card = openPendingAnswerCard(manager, permission, checkEffect, "stale-refused",
-    { gate: { recordStaleAnswer: (...stale) => staleAudit.recordStaleAnswer?.(...stale) }, requestId, action });
+    { gate: { recordStaleAnswer: (...stale) => staleAudit.recordStaleAnswer?.(...stale) }, requestId, action, uses: ["effect"] });
   const decision = await params.approvalGate.requestAndWait({
     id: requestId,
     category: "agent-action",

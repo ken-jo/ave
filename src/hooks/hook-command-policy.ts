@@ -99,7 +99,7 @@ export function createHookCommandAuthorizer(deps: {
     let approval: ApprovalDecision | undefined;
     const asksPerson = result.decision === "ask";
     const card = asksPerson ? openPendingAnswerCard(deps.permissionManager, result, check, "stale-refused",
-      { gate: deps.approvalGate, requestId: id, action: toolUseAction(id) }) : undefined;
+      { gate: deps.approvalGate, requestId: id, action: toolUseAction(id), uses: ["shell-permit", "shell-policy"] }) : undefined;
     const opened = card?.epochs;
     let answer: StandingAnswer | undefined;
     if (asksPerson) {

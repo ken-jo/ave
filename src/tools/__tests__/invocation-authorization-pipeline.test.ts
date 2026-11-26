@@ -46,6 +46,7 @@ function fixture(options: {
     source: tool.source, trust: "high", invocationCategory: tool.category,
     approvalReasonPrefix: options.prefix, overlayTriggerOrigin: undefined,
     hostShellRequiresExplicitApproval: options.category === "shell",
+    answerUses: options.category === "shell" ? ["shell-permit", "shell-policy"] : [],
     hostShellExecutionPlan: undefined, hostShellExecutionPlanAudit: undefined,
     hostShellPathPolicyRelaxations: undefined, hostShellExecutionPermitBinding: undefined,
     hostShellAnswer: undefined, finalInput: {},

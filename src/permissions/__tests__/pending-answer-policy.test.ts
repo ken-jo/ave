@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionCheckResult } from "../permission-manager.js";
-import { answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingQuestionStillAsked, permissionQuestionOf, personAnswerStands, samePermissionQuestion, spendStandingAnswer, standingAnswerFor, type PendingAnswerBinding, type StandingAnswer } from "../pending-answer-policy.js";
+import { answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingQuestionStillAsked, permissionQuestionOf, personAnswerStands, samePermissionQuestion, spendStandingAnswer, standingAnswerFor, type PendingAnswerBinding, type StandingAnswer, type StandingAnswerUse } from "../pending-answer-policy.js";
 
 /** A manager's two epochs, moved by hand. */
 function policy() {
@@ -19,7 +19,8 @@ const allow = { decision: "allow" as const };
 const deny = { decision: "deny" as const };
 const action = "tool-use:call";
 /** What the owner binds a card to at open. */
-const bound = (gate: PendingAnswerBinding["gate"] = {}, requestId = "card"): PendingAnswerBinding => ({ gate, requestId, action });
+const bound = (gate: PendingAnswerBinding["gate"] = {}, requestId = "card", uses: readonly StandingAnswerUse[] = ["shell-permit", "terminal-write"]): PendingAnswerBinding =>
+  ({ gate, requestId, action, uses });
 
 describe("a person's answer across a policy change", () => {
   it("stands without a re-check when nothing changed", () => {
@@ -199,6 +200,29 @@ describe("a person's answer across a policy change", () => {
     expect(spendStandingAnswer(proof, "shell-permit", action)).toBeUndefined();
     expect(spendStandingAnswer(proof, "terminal-write", action)).toBeDefined();
     expect(spendStandingAnswer(proof, "terminal-write", action)).toBeUndefined();
+  });
+
+  it("refuses a use the card did not declare when it was opened", () => {
+    const declared: StandingAnswerUse[] = ["shell-permit"];
+    const card = openPendingAnswerCard(policy(), floorAsk(true), () => floorAsk(true), "stale-refused", bound({}, "card", declared));
+    // The set is fixed at open: a kind added afterwards is not declared.
+    declared.push("terminal-write");
+    expect(personAnswerStands(card, allowOnce())).toBe(true);
+    const proof = proofOf(card);
+    for (const undeclared of ["terminal-write", "directory-grant", "shell-policy", "effect"] as const) {
+      expect(spendStandingAnswer(proof, undeclared, action)).toBeUndefined();
+    }
+    expect(spendStandingAnswer(proof, "shell-permit", action)).toBeDefined();
+  });
+
+  it("refuses a second spend of a declared use", () => {
+    const card = openPendingAnswerCard(policy(), floorAsk(true), () => floorAsk(true), "stale-refused", bound({}, "card", ["shell-permit", "shell-policy"]));
+    expect(personAnswerStands(card, allowOnce())).toBe(true);
+    const proof = proofOf(card);
+    expect(spendStandingAnswer(proof, "shell-policy", action)).toBeDefined();
+    expect(spendStandingAnswer(proof, "shell-policy", action)).toBeUndefined();
+    expect(spendStandingAnswer(proof, "shell-permit", action)).toBeDefined();
+    expect(spendStandingAnswer(proof, "shell-permit", action)).toBeUndefined();
   });
 
   it("gives a card one judgement: a second answer mints nothing", () => {

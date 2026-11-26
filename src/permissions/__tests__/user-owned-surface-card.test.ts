@@ -177,7 +177,7 @@ describe("authenticated user-owned surface choices", () => {
       const permission: PermissionCheckResult = { decision: "ask", reason: "Approval required" };
       const recheck = vi.spyOn(manager, "recheckPermission").mockReturnValue(permission);
       const resolved = resolveUserOwnedSurfaceApproval({
-        manager, gate: f.gate, permission, decision, answer: standingAnswer("tool-use:surface", decision), action: "tool-use:surface", request: f.request,
+        manager, gate: f.gate, permission, decision, answer: standingAnswer("tool-use:surface", decision), action: "tool-use:surface", uses: [], request: f.request,
         sessionId: f.request.sessionId, review: async (checked) => checked,
       });
 

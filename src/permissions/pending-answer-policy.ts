@@ -11,6 +11,7 @@
 //
 // A standing Allow is handed on as a `StandingAnswer`, which only `personAnswerStands` makes. Whatever acts on a person's answer (a
 // folder grant, a shell permit, terminal typing, a remembered effect grant) takes that object and spends it, once per kind of use.
+// The kinds an action needs are named when its card is opened; the answer can be spent on no other kind.
 import { decidePermission } from "./decision-pipeline.js";
 import type { PermissionCheckResult, PermissionManager } from "./permission-manager.js";
 import type { ApprovalDecision, ApprovalGate } from "./approval-gate.js";
@@ -110,7 +111,7 @@ export interface PendingAnswerCard {
   readonly verdict?: PendingAnswerVerdict;
 }
 
-/** What a standing answer may be spent on. Each use is taken once per answer. */
+/** What a standing answer may be spent on. A card names the kinds its action needs at open; each is taken once per answer. */
 export type StandingAnswerUse = "directory-grant" | "shell-permit" | "shell-policy" | "terminal-write" | "effect";
 
 /** What a standing answer is bound to: the card's request, the answer it got, the action it was asked for and the question it put. */
@@ -123,17 +124,17 @@ export interface StandingAnswerFacts {
   readonly fresh: PermissionCheckResult;
 }
 
-const standingAnswers = new WeakMap<StandingAnswer, { readonly facts: StandingAnswerFacts; readonly spent: Set<StandingAnswerUse> }>();
-let issueStandingAnswer: (facts: StandingAnswerFacts) => StandingAnswer;
+const standingAnswers = new WeakMap<StandingAnswer, { readonly facts: StandingAnswerFacts; readonly uses: ReadonlySet<StandingAnswerUse>; readonly spent: Set<StandingAnswerUse> }>();
+let issueStandingAnswer: (facts: StandingAnswerFacts, uses: ReadonlySet<StandingAnswerUse>) => StandingAnswer;
 
 /** Proof that a person's Allow stood. Only this module makes one, and only its entry in the registry above makes one valid. */
 class StandingAnswer {
   declare private readonly standing: true;
   private constructor() { Object.freeze(this); }
   static {
-    issueStandingAnswer = (facts) => {
+    issueStandingAnswer = (facts, uses) => {
       const proof = new StandingAnswer();
-      standingAnswers.set(proof, { facts: Object.freeze(facts), spent: new Set() });
+      standingAnswers.set(proof, { facts: Object.freeze(facts), uses, spent: new Set() });
       return proof;
     };
   }
@@ -151,23 +152,27 @@ export function standingAnswerFor(answer: unknown, action: string): StandingAnsw
   return typeof answer === "object" && answer !== null && standingAnswers.get(proof)?.facts.action === action ? proof : undefined;
 }
 
-/** Spend the answer on one use for `action`. Undefined when it is no standing answer to that action or was already spent on that use. */
+/** Spend the answer on one use for `action`. Undefined when it is no standing answer to that action, its card did not name that
+ * use at open, or it was already spent on it. */
 export function spendStandingAnswer(answer: StandingAnswer | undefined, use: StandingAnswerUse, action: string): StandingAnswerFacts | undefined {
   const proof = standingAnswerFor(answer, action);
   const entry = proof && standingAnswers.get(proof);
-  if (!entry || entry.spent.has(use)) return undefined;
+  if (!entry || !entry.uses.has(use) || entry.spent.has(use)) return undefined;
   entry.spent.add(use);
   return entry.facts;
 }
 
-/** What a card is bound to at open: the gate that asks it, the request it is asked under and the action it is asked for. */
+/** What a card is bound to at open: the gate that asks it, the request it is asked under, the action it is asked for and the
+ * kinds of use that action needs. */
 export interface PendingAnswerBinding {
   readonly gate: Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer">>;
   readonly requestId: string;
   readonly action: string;
+  readonly uses: readonly StandingAnswerUse[];
 }
 
-interface BoundCard extends PendingAnswerBinding {
+interface BoundCard extends Omit<PendingAnswerBinding, "uses"> {
+  readonly uses: ReadonlySet<StandingAnswerUse>;
   readonly manager: EpochSource;
   readonly check: () => PermissionCheckResult;
   readonly onStale: StaleAnswerOutcome;
@@ -180,7 +185,8 @@ const boundCards = new WeakMap<PendingAnswerCard, BoundCard>();
 export function openPendingAnswerCard(manager: EpochSource, opened: Questioned, check: () => PermissionCheckResult, onStale: StaleAnswerOutcome,
   binding: PendingAnswerBinding): PendingAnswerCard {
   const card: PendingAnswerCard = { epochs: answerEpochsOf(manager), question: permissionQuestionOf(opened), forced: opened.forceModal === true };
-  boundCards.set(card, { manager, check, onStale, gate: binding.gate, requestId: binding.requestId, action: binding.action, judged: false });
+  boundCards.set(card, { manager, check, onStale, gate: binding.gate, requestId: binding.requestId, action: binding.action,
+    uses: new Set(binding.uses), judged: false });
   return card;
 }
 
@@ -207,7 +213,7 @@ function judgeCard(card: PendingAnswerCard, bound: BoundCard, decision: Approval
   if (!allows) return { kind: "declined" };
   if (!asksNoMoreThan(card.question, card.forced, fresh)) return { kind: "stale", fresh, from: card.question, to: permissionQuestionOf(fresh) };
   return { kind: "stands", fresh,
-    proof: issueStandingAnswer({ requestId: bound.requestId, decision, action: bound.action, question: card.question, forced: card.forced, fresh }) };
+    proof: issueStandingAnswer({ requestId: bound.requestId, decision, action: bound.action, question: card.question, forced: card.forced, fresh }, bound.uses) };
 }
 
 /** The whole rule. With a `PendingAnswerCard`, the card's bound check judges the answer on every path, the verdict is left on the

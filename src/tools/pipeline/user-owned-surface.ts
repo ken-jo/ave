@@ -1,5 +1,5 @@
 import { t } from "../../i18n/runtime.js";
-import { openPendingAnswerCard, personAnswerStands, type StandingAnswer } from "../../permissions/pending-answer-policy.js";
+import { openPendingAnswerCard, personAnswerStands, type StandingAnswer, type StandingAnswerUse } from "../../permissions/pending-answer-policy.js";
 import { randomUUID } from "node:crypto";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { isHostApprovalRejectedDecision } from "../../permissions/approval-gate.js";
@@ -30,6 +30,8 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   decision: ApprovalDecision;
   answer: StandingAnswer | undefined;
   action: string;
+  /** The kinds of use `action` needs; the fallback card declares the same ones. */
+  uses: readonly StandingAnswerUse[];
   request: ApprovalRequestInput;
   sessionId: string | undefined;
   review: (permission: PermissionCheckResult) => Promise<PermissionCheckResult>;
@@ -60,7 +62,7 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   const fallbackId = randomUUID();
   const card = openPendingAnswerCard(manager, permission, () => manager.getPolicyEpoch() === openedEpoch
     ? manager.recheckPermission(permission) : manager.recheckPermission(permission, { acrossMemoryRuleChanges: true }), "stale-refused",
-    { gate, requestId: fallbackId, action: input.action });
+    { gate, requestId: fallbackId, action: input.action, uses: input.uses });
   const fallback: ApprovalRequestInput = {
     ...request,
     id: fallbackId,

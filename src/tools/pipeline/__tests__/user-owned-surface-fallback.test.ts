@@ -60,7 +60,7 @@ async function answerFallback(change: Change, rechecked: Partial<PermissionCheck
   const decision = { requestId: request.id, choice: "allow-once" as const };
   const answer = standingAnswer(ACTION, decision);
   const resolving = resolveUserOwnedSurfaceApproval({
-    manager, gate, permission: ask, decision, answer, action: ACTION, request, sessionId: "stage-session",
+    manager, gate, permission: ask, decision, answer, action: ACTION, uses: [], request, sessionId: "stage-session",
     review: async permission => permission,
   });
   return { resolving, cards, rechecks, answer };
@@ -111,7 +111,7 @@ describe("a user-owned surface's review fallback card", () => {
     const manager = { recheckPermission: vi.fn() } as unknown as PermissionManager;
     const request = { id: "plain-card", sessionId: "stage-session", category: "tool", kind: "tool", toolName: "write_probe", toolCategory: "write", args: {}, reason: "paused", createdAt: 0 } as ApprovalRequestInput;
     const resolved = await resolveUserOwnedSurfaceApproval({
-      manager, gate: {} as ApprovalGate, permission: allowed, decision: { requestId: request.id, choice: "deny-once" }, answer: undefined, action: ACTION, request, sessionId: "stage-session",
+      manager, gate: {} as ApprovalGate, permission: allowed, decision: { requestId: request.id, choice: "deny-once" }, answer: undefined, action: ACTION, uses: [], request, sessionId: "stage-session",
       review: async permission => permission,
     });
     expect(resolved).toMatchObject({ answer: undefined, permission: { decision: "deny" }, decision: { choice: "deny-once" } });

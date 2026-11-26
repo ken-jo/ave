@@ -1,4 +1,4 @@
-import { openPendingAnswerCard, personAnswerStands, spendStandingAnswer, toolUseAction, type StandingAnswer } from "../permissions/pending-answer-policy.js";
+import { openPendingAnswerCard, personAnswerStands, spendStandingAnswer, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { issueReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
@@ -1491,6 +1491,12 @@ async function runToolInvocationAttempt(
     );
     // The same physical cwd supplies project policy, every card, and the native launch.
     let hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
+    // What a person's answer to this call may be spent on, named on every card the call opens: a host shell's permit and policy
+    // record, and typing into the user's host terminal.
+    const answerUses = (): readonly StandingAnswerUse[] => [
+      ...(hostShellExecutionPermitBinding === undefined ? [] : ["shell-permit", "shell-policy"] as const),
+      ...(hostTerminalRoute === undefined ? [] : ["terminal-write"] as const),
+    ];
     if (hostShellExecutionPlan !== undefined && hostShellToolName !== undefined && !brokeredHostShellRouteSelected()) {
       hostShellExecutionPermitBinding = buildHostShellExecutionPermitBinding({
         plan: hostShellExecutionPlan, toolName: hostShellToolName, toolUseId: toolUse.id,
@@ -1614,8 +1620,10 @@ async function runToolInvocationAttempt(
       dirLayerResult = directoryPermission;
       const directoryRequestId = behavior?.requestId ?? randomUUID();
       const directoryAction = toolUseAction(toolUse.id);
+      // The folder card's answer also stands for the call itself, so it names the call's kinds beside its own grant.
+      const directoryUses: readonly StandingAnswerUse[] = ["directory-grant", ...answerUses()];
       const directoryCard = openPendingAnswerCard(manager, dirLayerResult, checkDirectoryPermission, "stale-refused",
-        { gate: services.approvalGate ?? {}, requestId: directoryRequestId, action: directoryAction });
+        { gate: services.approvalGate ?? {}, requestId: directoryRequestId, action: directoryAction, uses: directoryUses });
 
       const trustOrigin = invocationPermissionContext.trustOrigin;
       // A directory-confirm modal is an approval like any other, so it carries
@@ -1882,7 +1890,7 @@ async function runToolInvocationAttempt(
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: denied.reason, is_error: true, durationMs: Date.now() - startTime }) };
         }
         const surfaceResolution = await resolveUserOwnedSurfaceApproval({ manager, gate: services.approvalGate, permission: dirLayerResult, decision,
-          answer: directoryAnswer, action: directoryAction, request: { ...approvalRequest, abortSignal: directorySignal }, sessionId,
+          answer: directoryAnswer, action: directoryAction, uses: directoryUses, request: { ...approvalRequest, abortSignal: directorySignal }, sessionId,
           review: async permission => await dispatchReviewerForInteractiveAuto(manager, toolUse.name, source, invocationCategory, reviewerPathFields, finalInput, directoryScope, [], invocationPermissionContext, makeDirectoryEvaluationContext({ pathFields: reviewerPathFields, targetFilePaths: [outOfAllowedTarget.filePath] }), {}, callbacks, meta, approvalPurpose, hostShellExecutionPlan, directorySignal, auditInput, sessionId, permission) ?? permission,
         }).catch(async (error: unknown) => {
           if (!grantGuard || grantGuard.isCurrent()) throw error;
@@ -2568,6 +2576,7 @@ async function runToolInvocationAttempt(
       hostShellExecutionPlanAudit,
       hostShellPathPolicyRelaxations: executionRoutePathPolicyRelaxations,
       hostShellExecutionPermitBinding,
+      answerUses: answerUses(),
       processCwd,
       hostShellAnswer,
       verifiedShellCommand,
@@ -2719,6 +2728,7 @@ async function runToolInvocationAttempt(
       replayRootBinding: opts.replayRootBinding,
       abortSignal,
       hostShellExecutionPermitBinding,
+      answerUses: answerUses(),
       processCwd,
       hostShellAnswer,
       hostShellAllowRuleDecision,

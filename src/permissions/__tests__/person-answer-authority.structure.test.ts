@@ -61,7 +61,8 @@ const policy = { getPolicyEpoch: () => "1:0:0", getPolicyContextEpoch: () => "1"
 const asked: PermissionCheckResult = { decision: "ask", reason: "Run it on the host." };
 const ACTION = toolUseAction("probe");
 const decisionFor = (requestId: string): ApprovalDecision => ({ requestId, choice: "allow-once" });
-const openCard = (requestId: string, action = ACTION) => openPendingAnswerCard(policy, asked, () => asked, "stale-refused", { gate: {}, requestId, action });
+const openCard = (requestId: string, action = ACTION) => openPendingAnswerCard(policy, asked, () => asked, "stale-refused",
+  { gate: {}, requestId, action, uses: ["shell-permit", "shell-policy", "terminal-write"] });
 const proofOf = (card: ReturnType<typeof openCard>): StandingAnswer | undefined => card.verdict?.kind === "stands" ? card.verdict.proof : undefined;
 
 /** A host shell action that needs a person's answer. */

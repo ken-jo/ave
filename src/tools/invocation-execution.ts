@@ -1,4 +1,4 @@
-import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingQuestionStillAsked, personAnswerStands, standingAnswerFor, toolUseAction, type StandingAnswer } from "../permissions/pending-answer-policy.js";
+import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, openPendingAnswerCard, pendingQuestionStillAsked, personAnswerStands, standingAnswerFor, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
@@ -200,6 +200,8 @@ export interface ExecutionStageContext {
   replayRootBinding?: ReplayRootBinding;
   abortSignal: AbortSignal | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
+  /** The kinds of use this call's cards declare for a standing answer. */
+  answerUses: readonly StandingAnswerUse[];
   processCwd?: import("../permissions/approval-gate.js").ApprovalRequestInput["processCwd"];
   hostShellAnswer: StandingAnswer | undefined;
   hostShellAllowRuleDecision: PermissionCheckResult | undefined;
@@ -268,6 +270,7 @@ export async function executeAuthorizedToolInvocation(
     humanApproved: initialHumanApproved,
     abortSignal,
     hostShellExecutionPermitBinding,
+    answerUses,
     processCwd,
     hostShellAnswer,
     hostShellAllowRuleDecision,
@@ -1186,7 +1189,7 @@ export async function executeAuthorizedToolInvocation(
     const manager = services.permissionManager;
     const card = manager ? openPendingAnswerCard(manager, permissionResult,
       () => context.checkCurrentPermission?.() ?? { decision: "deny", reason: policyChanged }, "stale-reasked",
-      { gate: services.approvalGate!, requestId: liveRequest.id, action: cardAction }) : undefined;
+      { gate: services.approvalGate!, requestId: liveRequest.id, action: cardAction, uses: answerUses }) : undefined;
     let decision = await services.approvalGate!.requestAndWait(liveRequest);
     abortSignal?.throwIfAborted();
     const currentEpoch = manager?.getPolicyEpoch();
@@ -1211,7 +1214,7 @@ export async function executeAuthorizedToolInvocation(
     }
     const surfaceResolution = services.permissionManager ? await resolveUserOwnedSurfaceApproval({
       manager: services.permissionManager, gate: services.approvalGate!, permission: permissionResult, decision,
-      answer: cardAnswer, action: cardAction, request: liveRequest, sessionId,
+      answer: cardAnswer, action: cardAction, uses: answerUses, request: liveRequest, sessionId,
       review: async permission => await dispatchReviewerForInteractiveAuto(services.permissionManager, toolUse.name, source, invocationCategory, tool.pathFields ?? [], finalInput, invocationAllowedScope.directories, sensitivePathPattern ? [sensitivePathPattern] : [], invocationPermissionContext, evaluationContext, { ...(ownerPluginSandboxRoot ? { ownerPluginSandboxRoot } : {}) }, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, undefined, sessionId, permission) ?? permission,
     }) : { permission: permissionResult, decision, answer: undefined };
     permissionResult = surfaceResolution.permission;

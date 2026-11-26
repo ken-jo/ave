@@ -1,4 +1,4 @@
-import { openPendingAnswerCard, personAnswerStands, standingAnswerFor, toolUseAction, type StandingAnswer } from "../permissions/pending-answer-policy.js";
+import { openPendingAnswerCard, personAnswerStands, standingAnswerFor, toolUseAction, type StandingAnswer, type StandingAnswerUse } from "../permissions/pending-answer-policy.js";
 import { RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
@@ -108,6 +108,8 @@ export interface AuthorizationStageContext {
   // Relaxations of the selected execution-route plan (execution-router).
   hostShellPathPolicyRelaxations: readonly DisposablePathPolicyRelaxation[] | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
+  /** The kinds of use this call's cards declare for a standing answer. */
+  answerUses: readonly StandingAnswerUse[];
   processCwd?: import("../permissions/approval-gate.js").ApprovalRequestInput["processCwd"];
   hostShellAnswer: StandingAnswer | undefined;
   finalInput: Record<string, unknown>;
@@ -193,6 +195,7 @@ export async function authorizeToolInvocation(
     hostShellExecutionPlanAudit,
     hostShellPathPolicyRelaxations,
     hostShellExecutionPermitBinding,
+    answerUses,
     processCwd,
     finalInput,
     invocationAllowedScope,
@@ -955,7 +958,7 @@ export async function authorizeToolInvocation(
         const approvalRequestId = context.cardRequestId ?? randomUUID();
         const approvalCard = services.permissionManager ? openPendingAnswerCard(services.permissionManager, permissionResult,
           () => checkCurrentPermission?.() ?? { decision: "deny", reason: "Permission manager is unavailable" }, "stale-refused",
-          { gate: services.approvalGate, requestId: approvalRequestId, action: cardAction }) : undefined;
+          { gate: services.approvalGate, requestId: approvalRequestId, action: cardAction, uses: answerUses }) : undefined;
         const approvalPolicyEpoch = approvalCard?.epochs.epoch;
         const readjudicationAssessment = source === "plugin" && context.pluginRuntimeInstance !== undefined &&
           permissionResult.forceModal !== true && !evaluationContext.headless &&
@@ -1256,7 +1259,7 @@ export async function authorizeToolInvocation(
         if (hostShellExecutionPermitBinding !== undefined && hostShellRequiresExplicitApproval) hostShellAnswer = cardAnswer;
         const surfaceResolution = services.permissionManager ? await resolveUserOwnedSurfaceApproval({
           manager: services.permissionManager, gate: services.approvalGate, permission: permissionResult, decision,
-          answer: cardAnswer, action: cardAction,
+          answer: cardAnswer, action: cardAction, uses: answerUses,
           request: { ...approvalRequest, abortSignal }, sessionId,
           review: async permission => await dispatchReviewerForInteractiveAutoImpl(services.permissionManager, toolUse.name, source, invocationCategory, tool.pathFields ?? [], finalInput, invocationAllowedScope.directories, sensitivePathPattern ? [sensitivePathPattern] : [], invocationPermissionContext, evaluationContext, sandboxAttestation, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, auditInput, sessionId, permission) ?? permission,
         }) : { permission: permissionResult, decision, answer: undefined };

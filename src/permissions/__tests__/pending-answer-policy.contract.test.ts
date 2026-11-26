@@ -56,7 +56,7 @@ describe("the policy of a pending tool answer", () => {
     const manager = { getPolicyEpoch: () => now.epoch, getPolicyContextEpoch: () => now.context };
     const check = vi.fn(() => test.rechecked as unknown as PermissionCheckResult);
     const allowsPolicyTransition = vi.fn(() => false).mockReturnValueOnce(test.signed);
-    const bound = { gate: { allowsPolicyTransition }, requestId: decision.requestId, action: "tool-use:call" };
+    const bound = { gate: { allowsPolicyTransition }, requestId: decision.requestId, action: "tool-use:call", uses: [] };
     const card = openPendingAnswerCard(manager, { decision: "ask" }, check, "stale-refused", bound);
     Object.assign(now, { epoch: test.epoch, context: test.context });
     expect(personAnswerStands(card, decision)).toBe(test.verdict === "stands");
