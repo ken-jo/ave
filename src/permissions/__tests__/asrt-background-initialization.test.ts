@@ -112,8 +112,7 @@ function wrapWriteDenies(wrap: typeof wrapToolCommand, denyWrite: string[]) {
 }
 
 // A write deny outside every write grant restricts nothing and is no policy row, so budget rows lie inside one.
-// A present loader file under the grant is a mandatory row on every host. The app-owned rows outside every grant are
-// retained only by admitted origin, which a simulated layout on a POSIX host does not have.
+// A present loader file under the grant is a mandatory row on every host.
 function grantedFixture(): string[] {
   mkdirSync(fixtureRoot, { recursive: true });
   present([win32.join(fixtureRoot, ".npmrc")]);
@@ -269,13 +268,16 @@ describe("background session isolation", () => {
   });
 
   it.each(WIN32_WRAPPERS)("keeps the next %s wrap admissible after mandatory rows exceed the budget", async (_name, wrap) => {
+    const allowWrite = grantedFixture();
     const quarantineDirectory = sandboxQuarantineRoot();
     const permissionsFile = permissionsFilePath();
     if (ORIGINAL_PLATFORM === "win32") {
       mkdirSync(quarantineDirectory, { recursive: true });
       present([permissionsFile]);
+      // Windows omits profile-local floor rows disjoint from the requested grants.
+      allowWrite.push(win32.dirname(permissionsFile));
     }
-    await initializeAsrtSandbox({ allowWrite: grantedFixture() });
+    await initializeAsrtSandbox({ allowWrite });
     const oversized = denyRows("oversized", 1024);
     present(oversized);
     await expect(wrapWriteDenies(wrap, oversized))
