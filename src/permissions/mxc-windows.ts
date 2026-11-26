@@ -931,9 +931,14 @@ export function assertMxcDenyOutcomes(input: MxcDenyOutcomeInput): void {
 
 // The Windows container adapter: policy rows in, the three container lists out. Every row is admitted to the object it names
 // first, and the ranking compares those objects, never spellings.
-export function rankMxcFilesystem(model: PolicyModel): MxcFilesystemGrants {
+export interface MxcRankedPath {
+  readonly path: string;
+  readonly obligation: AdmittedObligation;
+}
+
+export function rankMxcFilesystem(model: PolicyModel, retainPaths?: (paths: readonly MxcRankedPath[]) => void): MxcFilesystemGrants {
   const { patterns, userPatterns, required } = obligationRowsOf(model);
-  return rankAdmittedMxcFilesystem(admitMxcFilesystem(model), patterns, userPatterns, required);
+  return rankAdmittedMxcFilesystem(admitMxcFilesystem(model), patterns, userPatterns, required, retainPaths);
 }
 
 /** The model's literal rows admitted for one container launch; pattern denies are admitted when the launch is ranked. */
@@ -943,6 +948,7 @@ export function admitMxcFilesystem(model: PolicyModel): ObligationSet {
 
 function rankAdmittedMxcFilesystem(
   set: ObligationSet, requestedPatterns: readonly string[], userPatterns: readonly string[], required: ReadonlySet<string>,
+  retainPaths?: (paths: readonly MxcRankedPath[]) => void,
 ): MxcFilesystemGrants {
   requireEnforceable(set);
   if (set.scope.principal !== "mxc") throw new TypeError("Filesystem obligations were issued for another principal");
@@ -1018,8 +1024,8 @@ function rankAdmittedMxcFilesystem(
   const missingCarriers = new Set(denied.filter(deny => deny.polarity.access === "write" && required.has(deny.origin.row) && inexact(deny))
     .map(deny => foldPath(firstMissingOf(deny))));
   const watched: AdmittedObligation[] = [];
-  const raised = denied.flatMap(deny => {
-    if (!inexact(deny)) return deny.target;
+  const deniedPaths = denied.flatMap(deny => {
+    if (!inexact(deny)) return { path: deny.target, obligation: deny };
     const firstMissing = firstMissingOf(deny);
     // A missing parent cannot carry an exact deny, and a deny on the parent would take its other children: a protected name is
     // watched, and any other deny there refuses the launch.
@@ -1039,8 +1045,9 @@ function rankAdmittedMxcFilesystem(
       || !writes.some(grant => strictlyUnder(firstMissing, grant.target))) {
       throw new Error("Windows sandbox policy cannot raise missing deny within a writable grant");
     }
-    return firstMissing;
+    return { path: firstMissing, obligation: deny };
   });
+  const raised = deniedPaths.map(({ path }) => path);
   const readwrite = dedupe(writes.map(entry => entry.target)).map(withoutTrailingSeparator);
   const result: MxcFilesystemGrants = {
     readwrite,
@@ -1060,6 +1067,12 @@ function rankAdmittedMxcFilesystem(
   ];
   assertMxcDenyOutcomes({ denies: [...allReadDenies, ...writeDenies, ...patternDenies], exceptions, patterns,
     outcomes: patternOutcomes, reachable: baseAllows, reach: allows, result });
+  if (retainPaths !== undefined) {
+    const emitted = new Set([...result.readwrite, ...result.readonly, ...result.denied].map(foldPath));
+    retainPaths([...writes.map(obligation => ({ path: obligation.target, obligation })),
+      ...reads.map(obligation => ({ path: obligation.target, obligation })), ...deniedPaths]
+      .filter(({ path }) => emitted.has(foldPath(path))));
+  }
   return result;
 }
 

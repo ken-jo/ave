@@ -25,6 +25,8 @@ const h = vi.hoisted(() => ({
   // vanished entry is still listed but gone when looked up; a listing reports both, and every link, as a link.
   drive: new Map<string, { path: string; kind: DriveKind; target?: string }>(),
   listed: [] as string[],
+  replaced: new Set<string>(),
+  afterRanking: vi.fn(),
   // Keep native scratch paths on the same volume outside the synthetic fixture tree.
   synthetic: /^(?:\\\\\?\\)?c:\\(?:(?:work|users\\(?:alice|bob))(?:\\|$)|users\\?$|$)/iu,
   // The runtime root start-up proved, or the refusal of one that was not.
@@ -119,7 +121,7 @@ vi.mock("../../shared/windows-path-facts.js", async (importOriginal) => {
     const link = entry?.isSymbolicLink() === true;
     const reparseTag = link ? 0xa0000003 : listed?.kind === "placeholder" ? 0x9000001a : 0;
     const directory = entry?.isDirectory() === true || link;
-    const id = canonical === null ? null : `0x${createHash("md5").update(canonical.toLowerCase()).digest("hex")}`;
+    const id = canonical === null ? null : `0x${createHash("md5").update(canonical.toLowerCase() + (h.replaced.has(path.toLowerCase()) ? ":replacement" : "")).digest("hex")}`;
     const volume = id === null ? null : "0x0000000000000007";
     return { exists: canonical !== null, canonical, directory, attributes: (directory ? 0x10 : 0) | (reparseTag === 0 ? 0 : 0x400),
       volumeSerial: volume, volumeSerialNumber: volume, fileId: id, fileIndex: id, changeTime: id === null ? null : "0x0000000000000001",
@@ -159,11 +161,18 @@ vi.mock("../../permissions/asrt-sandbox.js", () => ({
   getUserReadDenies: h.userDenies,
   getWindowsProxyPortRange: () => [60080, 60089],
 }));
-vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../permissions/mxc-windows.js")>()),
-  getHostWxcExecIdentity: () => "verified-launcher",
-  resolveHostWxcExecPath: h.wxcExec,
-}));
+vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../permissions/mxc-windows.js")>();
+  return { ...actual,
+    rankMxcFilesystem: (...args: Parameters<typeof actual.rankMxcFilesystem>) => {
+      const ranked = actual.rankMxcFilesystem(...args);
+      h.afterRanking();
+      return ranked;
+    },
+    getHostWxcExecIdentity: () => "verified-launcher",
+    resolveHostWxcExecPath: h.wxcExec,
+  };
+});
 vi.mock("../../permissions/windows-confinement-evidence.js", () => {
   const observation = { backend: "container" };
   return { observeWindowsBackend: vi.fn(() => observation), reportWindowsBackendLoss: vi.fn() };
@@ -192,6 +201,8 @@ const WS = String.raw`C:\work\repo`;
 beforeEach(() => {
   vi.stubEnv("SystemRoot", "C:\\Windows");
   h.drive.clear();
+  h.replaced.clear();
+  h.afterRanking.mockReset();
   h.listed.length = 0;
   onDrive(WS);
 });
@@ -226,6 +237,18 @@ afterEach(() => {
 });
 
 describe("prepareMxcShellLaunch", () => {
+  it.each(["target", "ancestor"] as const)("refuses a stable %s replacement made after ranking", async replacement => {
+    const lifecycle = createContainedShellLifecycle();
+    relay();
+    h.afterRanking.mockImplementationOnce(() => {
+      h.replaced.add((replacement === "target" ? WS : winPath.dirname(WS)).toLowerCase());
+    });
+    try {
+      const input = { ...INPUT, filesystem: { ...INPUT.filesystem, allowWrite: [], allowRead: [WS] } };
+      await expect(prepareMxcShellLaunch(input, lifecycle)).rejects.toThrow(/filesystem grant changed/iu);
+      expect(h.openRelay).not.toHaveBeenCalled();
+    } finally { await lifecycle.dispose(); }
+  });
   it.each(["HOME", "command", "grant"] as const)("refuses a prepared launch after its %s proof changes", async change => {
     const lifecycle = createContainedShellLifecycle();
     const preparing = deferred<void>();

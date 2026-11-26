@@ -3,7 +3,7 @@
 import { win32 as winPath } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
-import { pinWindowsPaths, windowsObjectKey } from "../shared/windows-path-facts.js";
+import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, windowsPathKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 
 import { appOwnedSandboxPrivateRoots, aveHomeReadBoundaryCovering, getProtectedReadDenyFloor, getUserReadDenies, insideOwnWindowsSandboxHome, protectedReadDenyMatcher } from "../permissions/asrt-sandbox.js";
 import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "../permissions/confinement-state-paths.js";
@@ -17,6 +17,7 @@ import {
   getHostWxcExecIdentity,
   isWindowsPathAtOrUnder,
   MxcLauncherIntegrityError,
+  type MxcRankedPath,
   openMxcRequestTransport,
   rankMxcFilesystem,
   resolveHostWxcExecPath,
@@ -96,6 +97,17 @@ export interface PrepareMxcShellLaunchInput {
   readonly timeoutMs: number;
   readonly exists: (path: string) => boolean;
   readonly assertCommand?: () => void;
+}
+
+function matchesRankedPath({ path, obligation }: MxcRankedPath, facts: WindowsPathFacts | undefined): boolean {
+  if (!facts || admitWindowsReparse(facts, "grant") !== true) return false;
+  if (obligation.kind === "missing" ? facts.exists !== false : facts.exists !== true
+    || facts.directory !== obligation.directory || facts.canonical === null || windowsPathKey(facts.canonical) !== windowsPathKey(path)) return false;
+  const existing = [...facts.ancestors, facts].filter(component => component.exists === true);
+  const anchor = existing.at(-1)?.canonical;
+  return anchor != null && windowsPathKey(anchor) === windowsPathKey(obligation.anchorTarget)
+    && existing.length === obligation.chain.length
+    && obligation.chain.every((identity, index) => windowsObjectKey(identity) === windowsObjectKey(existing[index]!));
 }
 
 /** Margin MXC's own timeout keeps behind the host's lifetime watch. */
@@ -186,7 +198,9 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   const denyRead = [...new Set([...input.filesystem.denyRead, ...privateRoots])];
   const userDenyRead = getUserReadDenies();
   const protectedFloor = getProtectedReadDenyFloor().filter((path) => !userDenyRead.includes(path));
-  const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, denyRead, protectedFloor, userDenyRead }));
+  let rankedPaths: readonly MxcRankedPath[] = [];
+  const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, denyRead, protectedFloor, userDenyRead }),
+    paths => { rankedPaths = paths; });
   const allowed = [...grants.readwrite, ...grants.readonly];
   const cwd = allowed.some(path => isWindowsPathAtOrUnder(input.cwd, path)) ? [input.cwd] : [];
   const paths = [...new Set([...cwd, ...allowed, ...grants.denied]
@@ -196,6 +210,12 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     }))];
   const grantIdentity = () => {
     const facts = pinWindowsPaths(paths, { batch: true });
+    const byPath = new Map(paths.map((path, index) => [windowsPathKey(path), facts[index]]));
+    const witnessed = new Set(rankedPaths.map(({ path }) => windowsPathKey(path)));
+    if ([...allowed, ...grants.denied].some(path => !witnessed.has(windowsPathKey(path)))
+      || rankedPaths.some(proof => !matchesRankedPath(proof, byPath.get(windowsPathKey(proof.path))))) {
+      throw new Error("Container filesystem grant changed before spawn");
+    }
     return JSON.stringify(facts.map(row => [...row.ancestors, row].map(part => [part.exists,
       part.exists === true ? windowsObjectKey(part) : null, part.canonical, part.directory, part.reparseTag, part.reparseTarget])));
   };
