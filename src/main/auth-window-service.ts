@@ -384,30 +384,33 @@ async function openAuthWindowInternal(
     if (existing) inFlightVisibleAuthWindows.delete(dedupKey);
   }
 
-  // Remote pages and their child windows share an isolated session without host privileges.
-  const authWindow = presentRequiredApproval(() => new BrowserWindow({
-    parent,
-    modal: false,
-    width: 1024,
-    height: 768,
-    title: windowTitle,
-    icon: resolveAppIconPath(),
-    autoHideMenuBar: true,
-    // Native controls keep both login lanes independent of host IPC capabilities.
-    ...authWindowChromeOptions(),
-    // Explicit show:false suppresses initial display and later web-content focus while still permitting navigation and harvest.
-    show: showRequested && !isBackgroundE2eRuntime(),
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      webviewTag: true,
-      sandbox: true,
-    },
-  }));
-  if (showRequested && isBackgroundE2eRuntime()) authWindow.showInactive();
-  authWindow.webContents.on("will-attach-webview", (event, webPreferences, params) => {
-    configureAuthWebviewAttach({ event, webPreferences: webPreferences as Record<string, unknown>, params, url, partition: effectivePartition });
+  const authWindow = presentRequiredApproval(() => {
+    // Remote pages and their child windows share an isolated session without host privileges.
+    const window = new BrowserWindow({
+      parent,
+      modal: false,
+      width: 1024,
+      height: 768,
+      title: windowTitle,
+      icon: resolveAppIconPath(),
+      autoHideMenuBar: true,
+      // Native controls keep both login lanes independent of host IPC capabilities.
+      ...authWindowChromeOptions(),
+      // Explicit show:false suppresses initial display and later web-content focus while still permitting navigation and harvest.
+      show: showRequested && !isBackgroundE2eRuntime(),
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        webviewTag: true,
+        sandbox: true,
+      },
+    });
+    window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
+      configureAuthWebviewAttach({ event, webPreferences: webPreferences as Record<string, unknown>, params, url, partition: effectivePartition });
+    });
+    return window;
   });
+  if (showRequested && isBackgroundE2eRuntime()) authWindow.showInactive();
   // Centering only matters for visible windows; skip the geometry math when the caller asked for a hidden warmup.
   if (showRequested) centerAuthWindowOnScreen(authWindow);
   if (typeof authWindow.setMenu === "function") authWindow.setMenu(null);
