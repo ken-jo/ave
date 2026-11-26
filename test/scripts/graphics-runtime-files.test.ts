@@ -4,6 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeImageRuntimePackage } from "../../src/__tests__/support/image-runtime-package.js";
@@ -41,6 +42,12 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
       const verifier = require(process.argv[4]);
       const verify = verifier.assertSrtWinVendor;
       verifier.assertSrtWinVendor = (vendor, arches) => verify(vendor, arches, JSON.parse(process.env.AVE_TEST_SRT_RECEIPTS));
+      // The before-pack record of the fixture's helper, as the packager process holds it for after-pack.
+      const arch = { 1: 'x64', 3: 'arm64' }[context.arch];
+      const build = { binarySha256: process.argv[6], imageSha256: process.argv[6] };
+      (await import(process.argv[5])).recordWindowsPathKindPackageBuild({
+        appOutDir: context.appOutDir, arch, manifest: { windowsPathKind: { arch, imageSha256: build.imageSha256 } }, build,
+      });
       await require(process.argv[3])(context);
       console.log(JSON.stringify({ passed: true }));
     } catch (error) {
@@ -50,12 +57,18 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
   `;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, JSON.stringify(context),
     join(context.appOutDir, "resources", "fixture-sdk-pins.json"), require.resolve("../../scripts/electron-after-pack.cjs"),
-    require.resolve("../../scripts/lib/srt-win-integrity.cjs")], {
+    require.resolve("../../scripts/lib/srt-win-integrity.cjs"),
+    pathToFileURL(require.resolve("../../scripts/lib/windows-path-kind-package.mjs")).href, pathKindHelper(context)], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", AVE_TEST_SRT_RECEIPTS: JSON.stringify(SRT_WIN_BUILD_RECEIPTS) }, encoding: "utf8",
   });
   if (result.error) throw result.error;
   const observation = JSON.parse(result.stdout);
   if (result.status !== 0) throw Object.assign(new Error(observation.message), { name: observation.name });
+}
+function pathKindHelper(context: Awaited<ReturnType<typeof createPackage>>["context"]): string {
+  const helper = join(context.appOutDir, "resources", "windows-path-kind", context.arch === 3 ? "arm64" : "x64", "ave-path-kind.exe");
+  putFile(helper, "fixture helper");
+  return createHash("sha256").update(readFileSync(helper)).digest("hex");
 }
 const { assertGraphicsRuntimeFiles } = require("../../scripts/lib/graphics-runtime-files.cjs") as {
   assertGraphicsRuntimeFiles(directory: string, platform: string): void;
