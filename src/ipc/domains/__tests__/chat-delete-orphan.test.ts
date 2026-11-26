@@ -1,3 +1,4 @@
+import { withSourceHostResources } from "../../../__tests__/support/source-host-resources.js";
 // Deleting a chat marks its connected schedules 대화 없음. The chat is gone by then, so a failure to mark them is logged, not shown as a
 // failed delete; the next fire finds the chat missing and marks the item itself.
 import { installNativeChatWindow, invokeNativeChatHandler } from "../../../__tests__/support/native-chat-window.js";
@@ -27,6 +28,8 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const OPEN = "11111111-1111-4111-8111-111111111111";
+withSourceHostResources();
+
 const DELETED = "66666666-6666-4666-8666-666666666666";
 
 describe("ave:chat:sessionDelete", () => {

@@ -1,3 +1,4 @@
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { requestBoundShellCard } from "../../__tests__/support/host-shell-approval.js";
 import { randomUUID } from "node:crypto";
 import { wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
@@ -12,6 +13,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { approvalCacheKeyIdentity, captureApprovalWorkingDirectory, recordApproval, lookupApproval, lookupUserDecision, __resetSessionStoreForTest } from "../user-approval-store.js";
+
+withSourceHostResources();
 
 // Args-identity keys: they narrow the exact-input identity, never replace it.
 const existingPolicyKey = approvalCacheKeyIdentity("existing-policy-key", { kind: "args" })!;

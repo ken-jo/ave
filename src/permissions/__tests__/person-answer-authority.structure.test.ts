@@ -1,3 +1,4 @@
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 // A person's answer becomes authority only as a `StandingAnswer`, and only the owner (pending-answer-policy.ts) makes one. The
 // `@ts-expect-error` lines are compile-time probes: `bun run check:typecheck-tests` fails when one of them compiles.
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -17,6 +18,8 @@ import * as owner from "../pending-answer-policy.js";
 import { openPendingAnswerCard, personAnswerStands, spendStandingAnswer, standingAnswerFor, toolUseAction, type StandingAnswer } from "../pending-answer-policy.js";
 import type { PermissionCheckResult, PermissionManager } from "../permission-manager.js";
 import { captureShellWorkingDirectoryIdentity } from "../shell-working-directory-identity.js";
+
+withSourceHostResources();
 
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
 const OWNER = "permissions/pending-answer-policy.ts";
