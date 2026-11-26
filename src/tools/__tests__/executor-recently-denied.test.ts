@@ -8,7 +8,7 @@ import { enforceMutatingEffects, EffectBoundaryDeniedError } from "../../permiss
 import { ApprovalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
 import { createRecentlyDeniedReplayResolver } from "../../permissions/reviewer/recently-denied-replay.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
-import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { ApprovalGate, isAnsweredApprovalDenial, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
@@ -77,7 +77,10 @@ describe("executor denial history and manual rerun", () => {
   it.each([
     { throws: true, trustOrigin: "unknown", reason: "Permission recheck failed during approval." },
     { throws: false, trustOrigin: "llm-tool-arg", reason: "Storage write denied by a rule." },
-  ])("audits a caught effect approval refusal with $trustOrigin origin", async ({ throws, trustOrigin, reason }) => {
+  ].flatMap((recheck) => [
+    { ...recheck, retryAnswer: "integrity failure" },
+    { ...recheck, retryAnswer: "person Deny" },
+  ]))("audits a caught effect approval refusal ($trustOrigin recheck, retry $retryAnswer)", async ({ throws, trustOrigin, reason, retryAnswer }) => {
     const current = await subject();
     current.surfaces.register(SESSION_ID, current.sender as never);
     const pluginId = "nested-effect-provider";
@@ -118,20 +121,30 @@ describe("executor denial history and manual rerun", () => {
     // The identical retry in the same invocation must still need a card.
     await vi.waitFor(() => expect(current.cards).toHaveLength(2), CARD_WAIT);
     const retry = current.cards[1];
-    expect(current.gate.resolveFromDesktopRenderer(retry.id, {
-      requestId: retry.id, nonce: retry.nonce, hmac: "invalid", choice: "allow-once",
-    }, current.sender as never)).toMatchObject({ choice: "deny-once", rememberPattern: "approval integrity check failed" });
+    const personDenied = retryAnswer === "person Deny";
+    const retryDecision = current.gate.resolveFromDesktopRenderer(retry.id, {
+      requestId: retry.id, nonce: retry.nonce, hmac: personDenied ? retry.hmac : "invalid",
+      choice: personDenied ? "deny-once" : "allow-once",
+    }, current.sender as never);
+    expect(retryDecision?.choice).toBe("deny-once");
+    if (personDenied) {
+      expect(retryDecision && isAnsweredApprovalDenial(retryDecision)).toBe(true);
+    } else {
+      expect(retryDecision).toMatchObject({ rememberPattern: "approval integrity check failed" });
+    }
     const [result] = await pending;
     expect(recheck).toHaveBeenCalled();
     expect(caught).toHaveBeenCalledTimes(2);
+    expect(caught).toHaveBeenNthCalledWith(1, expect.objectContaining({ message: reason }));
     expect(write).not.toHaveBeenCalled();
     expect(existsSync(target)).toBe(false);
     expect(save).not.toHaveBeenCalled();
     const terminal = readFileSync(current.audit.getPermissionAuditLogFile(), "utf8").trim().split("\n")
       .map(line => JSON.parse(line)).filter(row => row.toolUseId === "caught-effect-recheck" && row.decision !== "ask");
-    expect(terminal).toEqual([expect.objectContaining({ decision: "deny", trustOrigin,
-      denyReasons: [expect.objectContaining({ reason })] })]);
-    expect(result).toMatchObject({ content: reason, is_error: true });
+    const terminalReason = personDenied ? "the user denied the effect approval" : reason;
+    expect(terminal).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: personDenied ? "user-keyboard" : trustOrigin,
+      denyReasons: [expect.objectContaining({ reason: terminalReason })] })]);
+    expect(result).toMatchObject({ content: terminalReason, is_error: true });
   });
 
   it.each(["headless", "owner-away-skip"] as const)("keeps a caught nested %s write denial terminal despite an enclosing allow rule", async (lane) => {
