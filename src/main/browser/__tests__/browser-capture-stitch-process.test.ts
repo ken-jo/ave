@@ -1,3 +1,4 @@
+import type { ChildProcess } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -6,11 +7,24 @@ import { buildMainBoundaryBundle, repositoryRoot } from "../../../plugins/isolat
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import type { CdpSession } from "../browser-action-guard.js";
 
-const { runtime, decoder } = vi.hoisted(() => ({ runtime: { mainDir: "" }, decoder: { stalled: false } }));
+const { runtime, decoder, termination } = vi.hoisted(() => ({
+  runtime: { mainDir: "" }, decoder: { stalled: false },
+  termination: { hold: undefined as ((child: ChildProcess) => Promise<void>) | undefined },
+}));
 vi.mock("../../main-paths.js", async (importOriginal) => ({
   ...await importOriginal<Record<string, unknown>>(),
   get mainDir() { return runtime.mainDir; },
 }));
+vi.mock("../../managed-child-processes.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../managed-child-processes.js")>();
+  return {
+    ...actual,
+    forceKillManagedChildProcess: (...args: Parameters<typeof actual.forceKillManagedChildProcess>) => {
+      const held = termination.hold?.(args[0]);
+      return held ? held.then(() => actual.forceKillManagedChildProcess(...args)) : actual.forceKillManagedChildProcess(...args);
+    },
+  };
+});
 // A stall covers tile decoding wherever it runs: a tile read in this process never returns, and neither does the child entry.
 vi.mock("sharp", async (importOriginal) => {
   const actual = (await importOriginal<{ default: (...input: unknown[]) => unknown }>()).default;
@@ -21,7 +35,9 @@ vi.mock("sharp", async (importOriginal) => {
 
 import sharp from "sharp";
 import { captureBrowserPage, captureBrowserViewport } from "../browser-capture.js";
+import { startCaptureStitcher } from "../browser-capture-stitch-process.js";
 import { getManagedChildProcessCount } from "../../managed-child-processes.js";
+import { BROWSER_CAPTURE_LIMITS } from "../../../shared/browser-capture.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 
 const ENTRY = "browser-capture-stitch-child.js";
@@ -49,8 +65,13 @@ function replyFrame(message: unknown, payload = Buffer.alloc(0)): Buffer {
   return Buffer.concat([header, json, payload]);
 }
 
-function replyEntry(...frames: Buffer[]): string {
-  return `process.stdin.once("data", () => process.stdout.write(Buffer.from(${JSON.stringify(Buffer.concat(frames).toString("base64"))}, "base64")));
+function replyEntry(frame: Buffer, { later, payloadBytes = 0 }: { later?: Buffer; payloadBytes?: number } = {}): string {
+  const write = (bytes: Buffer): string => `process.stdout.write(Buffer.from("${bytes.toString("base64")}", "base64"));`;
+  return `process.stdin.once("data", () => {
+  ${write(frame)}
+  ${payloadBytes ? `process.stdout.write(Buffer.alloc(${payloadBytes}));` : ""}
+  ${later ? `process.stdin.once("data", () => { ${write(later)} });` : ""}
+});
 setInterval(() => {}, 1000);
 `;
 }
@@ -205,6 +226,58 @@ describe("browser capture stitch process", () => {
     expect(failure).toMatchObject({ code: "screenshot-failed" });
     expect(session.restore).toHaveBeenCalledOnce();
     await recovered(session);
+  });
+
+  it.each([
+    { name: "false error", frame: replyFrame({ id: 0, error: false }) },
+    { name: "tile payload", frame: replyFrame({ id: 0 }, Buffer.from([1])) },
+    { name: "unconvertible error message", frame: replyFrame({ id: 0, error: { message: { toString: null } } }) },
+    { name: "numeric error code", frame: replyFrame({ id: 0, error: { message: "failed", code: 42 } }) },
+    { name: "error with payload", frame: replyFrame({ id: 0, error: { message: "failed" } }, Buffer.from([1])) },
+    { name: "non-object reply", frame: replyFrame([]) },
+    { name: "string request id", frame: replyFrame({ id: "0" }) },
+  ])("drains a protocol fault with $name before readmitting the tab", async ({ frame }) => {
+    const healthyEntry = await builtEntryDir();
+    runtime.mainDir = entryDir(replyEntry(frame, { later: replyFrame({ id: 0 }) }));
+    const session = tiledSession();
+    const release = Promise.withResolvers<void>();
+    let sentLateReply = false;
+    termination.hold = (child) => {
+      child.stdout?.once("data", () => { sentLateReply = true; });
+      child.stdin?.write("send late reply");
+      return release.promise;
+    };
+    try {
+      await expect(session.capture({ fullPage: true }, 2_000)).rejects.toMatchObject({ code: "screenshot-failed" });
+      expect(session.restore).toHaveBeenCalledOnce();
+      expect(session.position()).toBe(session.initial.y);
+      await expect.poll(() => sentLateReply).toBe(true);
+      expect(getManagedChildProcessCount()).toBe(1);
+      await expect(session.capture({})).rejects.toMatchObject({ code: "screenshot-busy" });
+    } finally {
+      termination.hold = undefined;
+      release.resolve();
+      await expect.poll(getManagedChildProcessCount).toBe(0);
+    }
+    await recovered(session);
+    expect(session.restore).toHaveBeenCalledOnce();
+    runtime.mainDir = healthyEntry;
+    await expect(session.capture({ fullPage: true })).resolves.toMatchObject({ height: CONTENT_HEIGHT });
+    await expect.poll(getManagedChildProcessCount).toBe(0);
+  });
+
+  it.each([0, BROWSER_CAPTURE_LIMITS.bytes + 1])("rejects an encode acknowledgement with %i payload bytes", async (payloadBytes) => {
+    const frame = replyFrame({ id: 0 });
+    frame.writeUInt32BE(payloadBytes, 4);
+    runtime.mainDir = entryDir(replyEntry(frame, { payloadBytes }));
+    const stitcher = startCaptureStitcher(WIDTH, CONTENT_HEIGHT);
+    try {
+      const reply = await stitcher.encode().then((payload) => ({ bytes: payload.length }), (error: unknown) => error);
+      expect(reply).toMatchObject({ code: "screenshot-failed" });
+    } finally {
+      stitcher.stop();
+      await expect.poll(getManagedChildProcessCount).toBe(0);
+    }
   });
 
   it.each([

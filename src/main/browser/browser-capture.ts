@@ -119,9 +119,6 @@ async function capturePage(
       const decodeFailure = new Promise<never>((_resolve, reject) => {
         decoder.signal.addEventListener("abort", () => reject(decoder.signal.reason), { once: true });
       });
-      // Composition runs in a child that ends with this capture, so a decode that never returns is reclaimed.
-      const active = startCaptureStitcher(originalWidth, captureHeight);
-      stitcher = active;
       const trackDecode = <T>(decode: Promise<T>): Promise<T> => {
         tileDecodes.add(decode);
         void decode.then(
@@ -133,6 +130,13 @@ async function capturePage(
         );
         return decode;
       };
+      // Composition runs in a child that ends with this capture, so a decode that never returns is reclaimed.
+      const active = startCaptureStitcher(originalWidth, captureHeight, (error, closed) => {
+        // An unsolicited reply can fault the protocol even when no request is outstanding.
+        trackDecode(closed);
+        decoder.abort(error);
+      });
+      stitcher = active;
       try {
         result = await Promise.race([
           captureBrowserTiles(cdp, tileSignal, captureHeight, viewport, captureViewport, (position) => { scrollRestore = position; }, active, trackDecode),

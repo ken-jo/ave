@@ -2,13 +2,15 @@ import { statSync } from "node:fs";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import type { Writable } from "node:stream";
+import { BROWSER_CAPTURE_LIMITS } from "../../shared/browser-capture.js";
+import { hasOnlyKeys, isRecord } from "../../shared/is-record.js";
 import { mainDir } from "../main-paths.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../managed-child-processes.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { BrowserActionError } from "./browser-action-guard.js";
 import {
   CAPTURE_STITCH_CHILD_FILE, captureStitchFrame, captureStitchFrames,
-  type CaptureStitchReply, type CaptureStitchRequest, type CaptureTilePlacement,
+  type CaptureStitchRequest, type CaptureTilePlacement,
 } from "./browser-capture-stitch-protocol.js";
 
 export interface CaptureStitcher {
@@ -18,14 +20,17 @@ export interface CaptureStitcher {
   stop(): void;
 }
 
-interface StitchJob { resolve(payload: Buffer): void; reject(error: Error): void }
+interface StitchJob { expectsPayload: boolean; resolve(payload: Buffer): void; reject(error: Error): void }
 
 /**
  * Composes one capture in a child process, so a decode that never returns is reclaimed
  * with its memory by ending that process. A job settles on its reply or on the confirmed exit.
  */
-export function startCaptureStitcher(width: number, height: number): CaptureStitcher {
+export function startCaptureStitcher(
+  width: number, height: number, onProtocolFault?: (error: Error, closed: Promise<void>) => void,
+): CaptureStitcher {
   const jobs = new Map<number, StitchJob>();
+  const closed = Promise.withResolvers<void>();
   let nextId = 0;
   let exited = false;
   let stopped = false;
@@ -42,6 +47,7 @@ export function startCaptureStitcher(width: number, height: number): CaptureStit
     exited = true;
     for (const job of jobs.values()) job.reject(failure());
     jobs.clear();
+    closed.resolve();
   };
   try {
     // Resolve from the runtime asset root: this module may live in a split chunk.
@@ -59,18 +65,35 @@ export function startCaptureStitcher(width: number, height: number): CaptureStit
     if (!stdin || !stdout) throw new Error("the capture decoder has no pipes");
     input = stdin;
     const readFrames = captureStitchFrames((message, payload) => {
-      const { id, error } = message as CaptureStitchReply;
+      if (!isRecord(message) || !hasOnlyKeys(message, ["id", "error"]) || typeof message.id !== "number") {
+        throw new Error("invalid capture decoder reply");
+      }
+      const { id, error } = message;
       const job = jobs.get(id);
       if (!job) throw new Error("unexpected capture decoder reply");
-      if (error && typeof error.message !== "string") throw new Error("invalid capture decoder error message");
-      const replyError = error && (error.code === "screenshot-limit" || error.code === "screenshot-unavailable"
-        ? new BrowserActionError(error.code, error.message) : new Error(error.message));
+      const expectsPayload = job.expectsPayload && error === undefined;
+      if (expectsPayload ? payload.length === 0 || payload.length > BROWSER_CAPTURE_LIMITS.bytes : payload.length !== 0) {
+        throw new Error("invalid capture decoder reply payload");
+      }
+      let replyError: Error | undefined;
+      if (error !== undefined) {
+        if (!isRecord(error) || !hasOnlyKeys(error, ["message", "code"]) || typeof error.message !== "string"
+          || (error.code !== undefined && typeof error.code !== "string")) {
+          throw new Error("invalid capture decoder error");
+        }
+        replyError = error.code === "screenshot-limit" || error.code === "screenshot-unavailable"
+          ? new BrowserActionError(error.code, error.message) : new Error(error.message);
+      }
       jobs.delete(id);
       if (replyError) job.reject(replyError);
       else job.resolve(payload);
     });
     stdout.on("data", (chunk: Buffer) => {
-      try { readFrames(chunk); } catch { stop(); }
+      if (stopped || exited) return;
+      try { readFrames(chunk); } catch {
+        stop();
+        onProtocolFault?.(failure(), closed.promise);
+      }
     });
     stdin.on("error", stop);
     spawned.once("error", () => {
@@ -92,7 +115,7 @@ export function startCaptureStitcher(width: number, height: number): CaptureStit
       return;
     }
     const message: CaptureStitchRequest = { id: nextId++, ...(tile ? { tile } : {}) };
-    jobs.set(message.id, { resolve, reject });
+    jobs.set(message.id, { expectsPayload: tile === undefined, resolve, reject });
     input.write(captureStitchFrame(message, png));
   });
   return {
