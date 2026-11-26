@@ -21,6 +21,7 @@ import {
   appOwnedSandboxTempRoot,
   appOwnedTerminalHandoffRoot,
   runWithSandboxWritePreflight,
+  userDenyInsidePierceNotices,
   wrapWorkerCommand,
   type SandboxTempPrincipal,
   type WrapOptions,
@@ -332,13 +333,17 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   spec.assertStillValid?.();
   assertManagedChildProcessAdmissionOpen(spec.label);
   // The floor and the admission share one Ave home boundary snapshot.
-  const admitted = await runWithSandboxWritePreflight(spec.signal, () => createAveHomeBoundarySnapshot().run(() => admitMxcExtensionFilesystem({
+  const boundary = createAveHomeBoundarySnapshot();
+  const admitted = await runWithSandboxWritePreflight(spec.signal, () => boundary.run(() => admitMxcExtensionFilesystem({
     allowRead: [...(spec.allowRead ?? [])], allowWrite: [...(spec.allowWrite ?? [])],
     denyWrite: getDefaultSensitiveWriteDenyEntries(),
     floorPierces: spec.floorPierces, denyPluginsRoot: true, pinWriteRoots: true,
   }, spec.filesystemOwnership)));
   const grants = rankMxcFilesystem(admitted.model);
   assertWritesInsideEnvelope(grants, spec.filesystemOwnership);
+  boundary.run(() => {
+    for (const notice of userDenyInsidePierceNotices(spec.floorPierces ?? [])) log.warn(notice);
+  });
   assertMxcHolderPrivateDirectories({ home: spec.home, temp: spec.temp, ownership: spec.filesystemOwnership,
     sharedPrivateRoots: [appOwnedSandboxHomeRoot(), appOwnedSandboxTempRoot(), appOwnedTerminalHandoffRoot()] });
   const footprintPaths = admitWindowsLookupPaths([

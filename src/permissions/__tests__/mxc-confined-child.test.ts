@@ -41,6 +41,7 @@ vi.mock("../sandbox-home-registry.js", async (original) => ({
 vi.mock("../asrt-sandbox.js", () => ({
   assertExtensionStartAllowed: () => state.allowed(), admitMxcExtensionFilesystem: (...args: unknown[]) => state.admit(...args),
   runWithSandboxWritePreflight: async (_signal: AbortSignal | undefined, compose: () => unknown) => compose(),
+  userDenyInsidePierceNotices: () => [],
   getDefaultSensitiveReadDenyPaths: () => ["C:\\private"], getDefaultSensitiveWriteDenyEntries: () => ["D:\\work\\.git"],
   appOwnedSandboxHomeRoot: () => "C:\\ave\\sandbox\\home", appOwnedSandboxTempRoot: () => "C:\\ave\\sandbox\\temp",
   appOwnedTerminalHandoffRoot: () => "C:\\ave\\sandbox\\handoff",
