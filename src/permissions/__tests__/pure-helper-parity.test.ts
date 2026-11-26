@@ -236,9 +236,17 @@ describe("path spelling", () => {
   });
 
   it.each([
-    "C:\\Users\\alice", "c:\\users\\bob", "D:\\", "\\\\server\\share\\alice", "/home/alice", "C:\\Users\\a$&b", "C:\\Users\\$1$$alice", "relative",
+    "C:\\Users\\alice", "c:\\users\\bob", "D:\\", "\\\\server\\share\\alice", "/home/alice", "relative",
   ])("expands env refs alike with the home at %s", (home) => withHome(home, () => {
     both(spelling.expandWindowsEnvRefs, runtimePath.expandWindowsEnvRefs, one(PATHS));
+  }));
+
+  it.each([
+    "C:\\Users\\alice\\a$&b",
+    "C:\\Users\\alice\\$1$$data",
+  ])("expands env refs literally with the home at %s", (home) => withHome(home, () => {
+    expect(spelling.expandWindowsEnvRefs("%USERPROFILE%")).toBe(home);
+    expect(spelling.expandWindowsEnvRefs("%HOMEDRIVE%%HOMEPATH%")).toBe(home);
   }));
 
   it("leaves the drive empty for a home without one", () => withHome("\\\\server\\share\\alice", () => {

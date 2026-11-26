@@ -30,9 +30,9 @@ export function expandWindowsEnvRefs(path: string): string {
   const home = os.homedir();
   const drive = /^[A-Za-z]:/.test(home) ? home.slice(0, 2) : "";
   return path
-    .replace(/%USERPROFILE%/gi, home)
+    .replace(/%USERPROFILE%/gi, () => home)
     .replace(/%HOMEDRIVE%/gi, drive)
-    .replace(/%HOMEPATH%/gi, home.slice(drive.length));
+    .replace(/%HOMEPATH%/gi, () => home.slice(drive.length));
 }
 
 // The directory a forward-slash pattern cannot match above; empty when the pattern starts with a wildcard.
