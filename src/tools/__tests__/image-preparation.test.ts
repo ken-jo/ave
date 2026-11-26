@@ -358,7 +358,7 @@ describe("bounded image preparation", () => {
 
     const result = await executeSealedImage(path);
     expect(existsSync(path)).toBe(false);
-    expect(result).toMatchObject({ image: { originalWidth: 8, originalHeight: 4, bytes: expect.any(Number) } });
+    expect(result).toMatchObject({ image: { width: 8, height: 4, bytes: expect.any(Number) } });
     expect(result?.is_error).not.toBe(true);
   });
 

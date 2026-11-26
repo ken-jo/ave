@@ -199,8 +199,12 @@ describe("checkpoint mutation locality", () => {
 
     await withCodeCheckpoint({ sessionId, messageId: "mutation" }, async () => {
       await checkpointFileMutation([{ path: second, content: "prior edit" }], () => writeFile(second, "prior edit"));
-      await expect(new WriteFileTool().execute({ path: first, content: "attempted edit" }, context))
-        .rejects.toBe(unavailable);
+      const write = new WriteFileTool().execute({ path: first, content: "attempted edit" }, context);
+      if (windows) {
+        await expect(write).rejects.toMatchObject({ code: "ENETWORKSHAREPATH", cause: unavailable });
+      } else {
+        await expect(write).rejects.toBe(unavailable);
+      }
     });
 
     expect(failAttribution).toHaveBeenCalledOnce();
