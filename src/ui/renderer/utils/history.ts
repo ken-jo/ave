@@ -198,12 +198,32 @@ export function historyToEntries(
           vendorModel: m.turnSummary.vendorModel,
           pricing: parseResolvedModelPricing(m.turnSummary.modelSettings?.pricing),
         };
-        const usageByModel = primary.pricing === undefined ? m.turnSummary.usageByModel
-          : m.turnSummary.usageByModel?.map((segment) => {
+        const recordedSegments = m.turnSummary.usageByModel;
+        const cacheRead = m.turnSummary.cacheReadTokens ?? 0;
+        const cacheWrite = m.turnSummary.cacheWriteTokens ?? 0;
+        const usageByModel = primary.pricing === undefined ? recordedSegments
+          : recordedSegments?.length
+          ? recordedSegments.map((segment) => {
               if (segment.pricing !== undefined) return segment;
               const pricing = recordedUsageSegmentPricing(segment, primary);
               return pricing === undefined ? segment : { ...segment, pricing };
-            });
+            })
+          // A turn recorded before per-request segments is one request on its recorded
+          // route: its totals take the turn's own price snapshot, as Usage reads it.
+          : primary.vendorProvider !== undefined && primary.vendorModel !== undefined && subscriptionUsage === undefined
+          ? [{
+              vendorProvider: primary.vendorProvider,
+              vendorModel: primary.vendorModel,
+              pricing: primary.pricing,
+              tokenUsage: {
+                // Request usage counts cached tokens inside the prompt.
+                inputTokens: m.turnSummary.freshInputTokens + cacheRead + cacheWrite,
+                outputTokens: m.turnSummary.tokensOut,
+                ...(cacheRead > 0 ? { cacheReadTokens: cacheRead } : {}),
+                ...(cacheWrite > 0 ? { cacheWriteTokens: cacheWrite } : {}),
+              },
+            }]
+          : recordedSegments;
         out.push({
           kind: "turn_summary",
           ...(m.turnSummary.endedByEndTurn === true ? { endedByEndTurn: true as const } : {}),
