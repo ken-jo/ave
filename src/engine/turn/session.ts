@@ -174,7 +174,56 @@ export function revokeWorkspaceRoot(
   removedRoot: string,
   options: WorkspaceRootRevocationOptions = {},
 ): WorkspaceRootRevocationResult {
-  return planWorkspaceRootRevocation(self, removedRoot, options)();
+  if (process.platform === "win32") return planWorkspaceRootRevocation(self, removedRoot, options)();
+  const normalizedRoot = normalizeProjectString(removedRoot);
+  if (!normalizedRoot) {
+    return { sessionDirectoriesRemoved: 0, turnDirectoriesRemoved: 0, projectRebound: false };
+  }
+  const previousSessionDirectories = [...self.sessionAdditionalDirectories];
+  const previousTurnDirectories = [...self.turnAdditionalDirectories];
+  const previousProjectRoot = self.sessionProjectRoot;
+  const previousProjectName = self.sessionProjectName;
+  const previousProjectWasDefault = self.sessionProjectIsDefault;
+  // Share the workspace-root lifecycle revocation predicate with other live-scope owners.
+  const isRevoked = createWorkspaceRootRevocationFilter(
+    normalizedRoot,
+    options.preserveRoots ?? [],
+  );
+  if (workspaceRootRemovalOwnsSession(self, removedRoot)) {
+    self.revokeProjectWork();
+  }
+
+  const retainedSessionDirectories = withLocalityDecision(() => previousSessionDirectories.filter(
+    (directory) => !isRevoked(directory),
+  ));
+  self.turnAdditionalDirectories = withLocalityDecision(() => previousTurnDirectories.filter(
+    (directory) => !isRevoked(directory),
+  ));
+  const projectNeedsReauthorization = Boolean(
+    previousProjectRoot && isRevoked(previousProjectRoot),
+  );
+
+  self.sessionAdditionalDirectories = retainedSessionDirectories;
+  if (projectNeedsReauthorization) {
+    applyProjectContext(self, currentProjectContext(self));
+    for (const directory of retainedSessionDirectories) {
+      if (!self.sessionAdditionalDirectories.some((current) => projectRootEquals(current, directory))) {
+        self.sessionAdditionalDirectories.push(directory);
+      }
+    }
+  }
+
+  const projectRebound = projectNeedsReauthorization && (
+    !projectRootEquals(previousProjectRoot ?? "", self.sessionProjectRoot ?? "")
+    || previousProjectName !== self.sessionProjectName
+    || previousProjectWasDefault !== self.sessionProjectIsDefault
+  );
+  const sessionDirectoriesRemoved = previousSessionDirectories.length - retainedSessionDirectories.length;
+  const turnDirectoriesRemoved = previousTurnDirectories.length - self.turnAdditionalDirectories.length;
+  if (projectNeedsReauthorization || sessionDirectoriesRemoved > 0 || turnDirectoriesRemoved > 0) {
+    self.deps.broadcastPermissionConfigChanged?.();
+  }
+  return { sessionDirectoriesRemoved, turnDirectoriesRemoved, projectRebound };
 }
 
 /**

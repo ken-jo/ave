@@ -2751,7 +2751,7 @@ describe("SubAgentRunner workspace lifecycle", () => {
       childSessionId,
       title: childSessionId,
       background: true,
-      loop: { planWorkspaceRootRevocation: (root: string, options: unknown) => () => revokeWorkspaceRoot(root, options) },
+      loop: { revokeWorkspaceRoot, planWorkspaceRootRevocation: (root: string, options: unknown) => () => revokeWorkspaceRoot(root, options) },
     });
     activeChildren.set("child-one", child("child-one", first));
     activeChildren.set("child-failing", child("child-failing", failing));
@@ -2904,6 +2904,18 @@ describe("SubAgentRunner workspace lifecycle", () => {
       hasProviderSpy.mockRestore();
       runTurnSpy.mockRestore();
     }
+  });
+
+  it.skipIf(process.platform === "win32")("returns the durable POSIX detach count when child cancellation throws", async () => {
+    const detachSessionsFromProject = vi.fn(async () => 2);
+    const runner = new SubAgentRunner({ subAgentMemoryManager: { sessions: { detachSessionsFromProject } } } as never);
+    const root = join(tmpdir(), "removed-subagent-workspace");
+    const activeChildren = (runner as unknown as { activeChildren: Map<string, unknown> }).activeChildren;
+    const abortCurrentTurn = vi.fn(() => { throw new Error("child cancellation failed"); });
+    activeChildren.set("wire-child", { childSessionId: "wire-child", wireProjectRoot: root, loop: { abortCurrentTurn } });
+
+    await expect(runner.detachSessionsFromProject(root)).resolves.toBe(2);
+    expect(abortCurrentTurn).toHaveBeenCalledOnce();
   });
 
   it("delegates project detach and re-add to the isolated metadata store", async () => {
