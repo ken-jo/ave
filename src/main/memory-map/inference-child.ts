@@ -2,7 +2,7 @@ import type { ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { BigIntStats } from 'node:fs';
 import { type FileHandle, open } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { cleanupAsrtSandboxAfterCommand } from '../../permissions/asrt-sandbox.js';
@@ -15,7 +15,7 @@ import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
 import { win32SystemBinary } from '../../shared/windows-system-path.js';
 import { buildSafeChildEnv } from '../../tools/safe-env.js';
 import { mainDir } from '../main-paths.js';
-import { spawnManagedNodeChild } from '../managed-child-processes.js';
+import { spawnManaged } from '../managed-child-processes.js';
 import { MemoryMapHostError } from './errors.js';
 import { checkedInferenceFrameBytes, INFERENCE_FILES, INFERENCE_PREFIX_BYTES } from './inference-request.js';
 import { assertLocalEmbeddingRuntime, bindLocalEmbeddingRuntime, refreshLocalInferenceAdmission, type LocalInferenceRoute } from './local-runtime.js';
@@ -135,7 +135,10 @@ async function spawnInferenceChild(readRoute: () => LocalInferenceRoute, signal:
     const extraEnv = { ...home?.env, ...TELEMETRY_OPT_OUT };
     assertStillValid();
     if (route === 'unconfined') {
-      child = spawnManagedNodeChild(entry, { cwd, env: { ...baseEnv, ...extraEnv } }, INFERENCE_CHILD_LABEL);
+      if (!isAbsolute(entry)) throw new Error('Inference child entry must be absolute');
+      child = spawnManaged(process.execPath, [entry], {
+        cwd, env: { ...baseEnv, ...extraEnv, ELECTRON_RUN_AS_NODE: '1' }, shell: false, stdio: ['pipe', 'pipe', 'pipe'],
+      }, { label: INFERENCE_CHILD_LABEL });
     } else {
       // The account backend delivers no spawn environment or stdin, so it uses authenticated loopback.
       const launch = home
