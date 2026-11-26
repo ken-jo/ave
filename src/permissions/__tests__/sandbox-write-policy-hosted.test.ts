@@ -117,7 +117,8 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js", async ori
 });
 
 // The package runs outside the module mocks and expands on the host's own fs, where a drive spelling is one over-long relative name.
-// On a POSIX host each drive-spelled row is expanded at its backing file and named back on the drive.
+// On a POSIX host each drive-spelled row is expanded at its backing file and named back on the drive. A host-spelled row is no win32
+// policy row, so it passes through unexpanded.
 vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", async original => {
   const actual = await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>();
   const onDrive = (path: string): boolean => /^[A-Za-z]:[\\/]/u.test(path);
@@ -125,7 +126,9 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", a
     if (!driveFixture.enabled || driveFixture.nativeHost === "win32") return actual.expandWindowsFsPaths(patterns, opts);
     return [...new Set([...patterns].flatMap(entry => {
       const path = typeof entry === "string" ? entry : entry.path;
-      if (!onDrive(path)) return actual.expandWindowsFsPaths([entry], opts);
+      if (!onDrive(path)) return [path];
+      // An admitted row is already its final drive path and is taken without a lookup.
+      if (typeof entry !== "string" && "admitted" in entry) return actual.expandWindowsFsPaths([entry], opts);
       const host = driveFixture.toHost(path);
       return actual.expandWindowsFsPaths([typeof entry === "string" ? host : { ...entry, path: host }], opts).map(driveFixture.toNative);
     }))];
@@ -320,8 +323,8 @@ describe("hosted write policy spellings", () => {
       // The native expander retains the spelling of an absent literal.
       // Check the actual operand before mapping it to the simulated drive's backing directory.
       expect(entryPaths(filesystem?.denyWrite)).toContain(deniedChild);
-      const denyWrite = expandWindowsFsPaths((filesystem?.denyWrite ?? []).map(entry =>
-        typeof entry === "string" ? driveFixture.toHost(entry) : { ...entry, path: driveFixture.toHost(entry.path) }), { mode: "deny" });
+      // The operand as the product built it, on the drive; the checks below read it at the backing files.
+      const denyWrite = expandWindowsFsPaths(filesystem?.denyWrite ?? [], { mode: "deny" }).map(driveFixture.toHost);
       const atOrUnder = (parent: string, path: string): boolean => {
         const relative = win32.relative(parent, path);
         return relative === "" || relative !== ".." && !relative.startsWith("..\\") && !win32.isAbsolute(relative);
