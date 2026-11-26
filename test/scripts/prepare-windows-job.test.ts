@@ -2,7 +2,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildWindowsPathKind } from "../../scripts/build-windows-path-kind.mjs";
 import {
   hasCppBuildTools,
   missingBuildToolsMessage,
@@ -13,7 +14,14 @@ import {
 } from "../../scripts/prepare-windows-job.mjs";
 import {
   WINDOWS_PATH_KIND_PROFILE, WINDOWS_PATH_KIND_RUSTFLAGS, windowsPathKindReceipt, windowsPathKindReceiptPath,
+  verifyWindowsPathKindBuild,
 } from "../../scripts/lib/windows-path-kind-build.mjs";
+
+const execFile = vi.hoisted(() => vi.fn());
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:child_process")>(),
+  execFileSync: execFile,
+}));
 
 const roots: string[] = [];
 const OLD = new Date("2026-01-01T00:00:00Z");
@@ -25,13 +33,33 @@ const PIN = 'channel = "1.92.0"\n';
 const RUST_INPUTS = ["native/windows-path-kind/src/main.rs", "native/windows-path-kind/Cargo.toml",
   "native/windows-path-kind/Cargo.lock", "scripts/build-windows-path-kind.mjs", "scripts/lib/windows-path-kind-build.mjs"];
 
-function stagePathKind(root: string, machine = 0x8664): void {
-  const binary = Buffer.alloc(90);
+function pathKindPe(dll = "KERNEL32.dll", delayed = false): Buffer {
+  const binary = Buffer.alloc(0x400);
   binary.writeUInt16LE(0x5a4d);
   binary.writeUInt32LE(64, 60);
   binary.writeUInt32LE(0x4550, 64);
   binary.writeUInt16LE(0x8664, 68);
-  binary.writeUInt16LE(0x20b, 88);
+  binary.writeUInt16LE(1, 70); // One section
+  binary.writeUInt16LE(240, 84); // Optional header size
+  const optional = 88;
+  binary.writeUInt16LE(0x20b, optional);
+  binary.writeUInt32LE(16, optional + 108); // Data directory count
+  const directory = optional + 112 + 8 * (delayed ? 13 : 1);
+  binary.writeUInt32LE(0x1000, directory);
+  binary.writeUInt32LE(delayed ? 64 : 40, directory + 4);
+  const section = optional + 240;
+  binary.writeUInt32LE(0x200, section + 8);
+  binary.writeUInt32LE(0x1000, section + 12);
+  binary.writeUInt32LE(0x200, section + 16);
+  binary.writeUInt32LE(0x200, section + 20);
+  if (delayed) binary.writeUInt32LE(1, 0x200);
+  binary.writeUInt32LE(0x1080, 0x200 + (delayed ? 4 : 12));
+  binary.write(dll, 0x280, "ascii");
+  return binary;
+}
+
+function stagePathKind(root: string, machine = 0x8664): void {
+  const binary = pathKindPe();
   const toolchain = /^channel = "(.*)"/mu.exec(readFileSync(join(root, "rust-toolchain.toml"), "utf8"))?.[1];
   if (!toolchain) throw new Error("Missing fixture toolchain");
   const receipt = windowsPathKindReceipt(root, "x64", {
@@ -73,7 +101,47 @@ function buildStub(root: string, calls: string[][]) {
 }
 
 afterEach(() => {
+  execFile.mockReset();
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe("Windows path helper build", () => {
+  it.skipIf(process.platform !== "win32")("probes and builds with the same pinned compiler despite environment overrides", () => {
+    const root = fixtureRoot();
+    const rustc = join(root, "pinned", "rustc.exe");
+    const override = join(root, "override.exe");
+    for (const key of ["RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
+      "CARGO_BUILD_RUSTC", "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"]) {
+      vi.stubEnv(key, override);
+    }
+    execFile.mockImplementation((file: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+      if (args.includes("which")) return `${rustc}\n`;
+      if (args.includes("-vV")) return "release: 1.92.0\n";
+      expect(file).toBe("rustup");
+      expect(options.env?.RUSTC).toBe(rustc);
+      expect(options.env?.RUSTC_WRAPPER).toBe("");
+      expect(options.env?.RUSTC_WORKSPACE_WRAPPER).toBe("");
+      expect(Object.values(options.env ?? {})).not.toContain(override);
+      const output = join(args[args.indexOf("--target-dir") + 1], "x86_64-pc-windows-msvc", "release");
+      mkdirSync(output, { recursive: true });
+      writeFileSync(join(output, "ave-path-kind.exe"), pathKindPe());
+    });
+
+    buildWindowsPathKind({ root, arch: "x64" });
+    expect(execFile.mock.calls.find(([, args]) => args.includes("-vV"))?.slice(0, 2)).toEqual([rustc, ["-vV"]]);
+    expect(() => verifyWindowsPathKindBuild(root, "x64")).not.toThrow();
+  });
+
+  it.each([
+    ["VCRUNTIME140.dll", false],
+    ["api-ms-win-crt-runtime-l1-1-0.dll", true],
+  ] as const)("rejects a receipt for an executable importing %s", (dll, delayed) => {
+    const root = fixtureRoot();
+    const { identity } = JSON.parse(readFileSync(join(root, RECEIPT), "utf8"));
+    expect(() => windowsPathKindReceipt(root, "x64", identity, pathKindPe(dll, delayed)))
+      .toThrow(`Windows path helper imports a dynamic CRT: ${dll}`);
+  });
 });
 
 describe("windowsJobLauncherState", () => {

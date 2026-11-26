@@ -10,7 +10,7 @@ export const WINDOWS_PATH_KIND_PROFILE: string;
 export const WINDOWS_PATH_KIND_RUSTFLAGS: string;
 export function windowsPathKindToolchain(root: string): string;
 export function windowsPathKindTarget(arch: string): string;
-export function windowsPathKindCompiler(root: string, arch: string): WindowsPathKindCompiler;
+export function windowsPathKindCompiler(root: string, arch: string): { executable: string; identity: WindowsPathKindCompiler };
 export function windowsPathKindPath(arch: string): string;
 export function windowsPathKindReceiptPath(arch: string): string;
 export function windowsPathKindSourceDigest(root: string): string;
