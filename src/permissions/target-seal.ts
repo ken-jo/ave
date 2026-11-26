@@ -10,6 +10,12 @@ export interface TargetSeal {
   verify(): void;
 }
 
+export class TargetIdentityChangedError extends Error {
+  constructor() {
+    super("Target identity changed");
+  }
+}
+
 /** Seal what `observe` reports now. Inside a running decision the seal shares that decision's observations. */
 export function sealTargets(observe: () => string): TargetSeal {
   return sealTargetObservation(observe, (identity) => identity).seal;
@@ -22,7 +28,7 @@ export function sealTargetObservation<T>(observe: () => T, identity: (observatio
     observation,
     seal: {
       verify: () => {
-        if (identity(withLocalityDecision(observe)) !== expected) throw new Error("Target identity changed");
+        if (identity(withLocalityDecision(observe)) !== expected) throw new TargetIdentityChangedError();
       },
     },
   };

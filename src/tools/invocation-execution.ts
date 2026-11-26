@@ -1218,6 +1218,7 @@ export async function executeAuthorizedToolInvocation(
       : await finalizeExecutionRouteGrant();
     const ctx: ToolExecutionContext = {
       ...executionContext,
+      ...(context.fileTargetSeal === undefined ? {} : { fileTargetSeal: context.fileTargetSeal }),
       ...(approvalMemory?.kind === "key" ? { metadata: {
         ...executionContext.metadata, [APPROVAL_MEMORY_SCOPE_METADATA_KEY]: approvalMemory.scope,
       } } : {}),

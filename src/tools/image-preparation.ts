@@ -5,6 +5,7 @@ import { spawnManaged, forceKillManagedChildProcess } from "../main/managed-chil
 import { buildSafeChildEnv } from "./safe-env.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
+import type { TargetSeal } from "../permissions/target-seal.js";
 import {
   IMAGE_PREPARATION_POLICY, ImagePreparationBytesRequestSchema,
   ImagePreparationRequestSchema, PreparedImageSchema,
@@ -126,6 +127,7 @@ async function prepareImageRequest(
   request: ImagePreparationChildRequest,
   stdinBytes: Buffer | undefined,
   callerSignal?: AbortSignal,
+  seal?: TargetSeal,
 ): Promise<PreparedImage> {
   const controller = new AbortController();
   const abort = (): void => controller.abort(new Error("image-cancelled: Image preparation was cancelled."));
@@ -135,6 +137,7 @@ async function prepareImageRequest(
   let release: (() => void) | undefined;
   try {
     release = await acquireImageSlot(controller.signal);
+    seal?.verify();
     return await runImageChild(request, controller.signal, stdinBytes);
   } finally {
     clearTimeout(timer);
@@ -148,10 +151,11 @@ export async function prepareImageFile(
   readScope: ImageReadScope,
   requested: Partial<ImagePreparationOptions> = {},
   callerSignal?: AbortSignal,
+  seal?: TargetSeal,
 ): Promise<PreparedImage> {
   // Parsing copies the scope/options before admission; callers cannot mutate a queued request.
   const request = ImagePreparationRequestSchema.parse({ path, options: requested, scope: readScope });
-  return prepareImageRequest(request, undefined, callerSignal);
+  return prepareImageRequest(request, undefined, callerSignal, seal);
 }
 
 // Copy and bound broker input before queuing; pass bytes through stdin to the isolated decoder, never argv or base64.

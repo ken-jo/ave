@@ -181,6 +181,7 @@ class OwnedTransfer {
   check(): void {
     if (this.signal.aborted) throw new FileTransferError("cancelled", "File transfer was cancelled");
     if (this.stopping) throw this.firstFailure ?? new Error("File transfer is stopped");
+    this.context.fileTargetSeal?.verify();
   }
 
   stop(error: unknown): void {

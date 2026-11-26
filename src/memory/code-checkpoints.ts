@@ -12,6 +12,8 @@ import { FILE_MENTION_REFERENCE_POLICY } from "../shared/file-mention-reference.
 import { countFileChangeLines } from "../shared/file-change-counts.js";
 import type { TurnChangeReview, TurnReviewDecision, TurnReviewError, TurnReviewResult } from "../shared/turn-change-review.js";
 import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directories.js";
+import { TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
+import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { assertReadableFilePath } from "../tools/file-read-core.js";
 import { ensureFileAccess } from "../tools/file-access-policy.js";
 import { isTerminalReviewUnavailable, readTerminalReviewText, terminalFileEvidence, withOwnedWrites } from "../main/terminal/changed-file-evidence.js";
@@ -374,9 +376,11 @@ export async function checkpointMutationIdentity(filePath: string): Promise<stri
   catch { return resolved; }
 }
 
-async function snapshot(path: string): Promise<{ bytes: Buffer | null; mode: number }> {
+async function snapshot(path: string, seal?: TargetSeal): Promise<{ bytes: Buffer | null; mode: number }> {
   // Refuse changed parent links, file links and special files, including dangling links.
+  seal?.verify();
   if (await canonicalPath(path) !== path) throw new Error("Code checkpoint path changed");
+  seal?.verify();
   let pathInfo;
   try { pathInfo = await lstat(path, { bigint: true }); }
   catch (error) {
@@ -386,8 +390,10 @@ async function snapshot(path: string): Promise<{ bytes: Buffer | null; mode: num
   if (!pathInfo.isFile() || pathInfo.isSymbolicLink() || pathInfo.nlink !== 1n) {
     throw new Error("Code checkpoint requires an unlinked regular file");
   }
+  seal?.verify();
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
+    seal?.verify();
     if (!sameFileIdentity(pathInfo, await handle.stat({ bigint: true }))) throw new Error("Code checkpoint file identity changed");
     const info = await handle.stat();
     if (!info.isFile() || info.nlink !== 1 || info.size > CODE_CHECKPOINT_POLICY.maxFileBytes) {
@@ -397,11 +403,13 @@ async function snapshot(path: string): Promise<{ bytes: Buffer | null; mode: num
     const bytes = Buffer.alloc(Math.min(info.size + 1, CODE_CHECKPOINT_POLICY.maxFileBytes + 1));
     let length = 0;
     while (length < bytes.length) {
+      seal?.verify();
       const read = await handle.read(bytes, length, bytes.length - length, length);
       if (read.bytesRead === 0) break;
       length += read.bytesRead;
     }
     const after = await handle.stat();
+    seal?.verify();
     const pathAfter = await lstat(path, { bigint: true });
     if (length !== info.size || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs
       || pathAfter.mtimeNs !== pathInfo.mtimeNs || pathAfter.ctimeNs !== pathInfo.ctimeNs) {
@@ -537,12 +545,17 @@ export async function deleteCodeCheckpoints(sessionId: string): Promise<void> {
 export async function checkpointFileMutation<T>(
   effects: Array<{ path: string } & ({ content: Buffer | string | null } | { copyFrom: string })>,
   run: () => Promise<T>,
+  seal?: TargetSeal,
 ): Promise<T> {
+  seal?.verify();
   const sessionId = turnContext.getStore()?.sessionId ?? currentAgentObservationIdentity()?.sessionId;
-  if (!sessionId) return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, run));
+  if (!sessionId) return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, run, seal));
   const originals = await Promise.all(effects.map(async (effect) => {
     try {
-      const path = resolvePhysicalFilesystemPath(effect.path, process.cwd(), 64);
+      const path = withLocalityDecision(() => {
+        seal?.verify();
+        return resolvePhysicalFilesystemPath(effect.path, process.cwd(), 64);
+      });
       return { path, requestedPath: effect.path, before: await readTerminalReviewText(path) };
     } catch (error) {
       if (!isTerminalReviewUnavailable(error)) throw error;
@@ -557,13 +570,15 @@ export async function checkpointFileMutation<T>(
       for (const original of originals) await terminalFileEvidence.recordWrite(sessionId, original.requestedPath, original.before, owned.get(original.path));
     }
     return result;
-  }));
+  }, seal));
 }
 
 async function checkpointMutation<T>(
   effects: Array<{ path: string } & ({ content: Buffer | string | null } | { copyFrom: string })>,
   run: () => Promise<T>,
+  seal?: TargetSeal,
 ): Promise<T> {
+  seal?.verify();
   const identity = turnContext.getStore();
   requireAvailableCheckpoint(identity);
   if (!identity || identity.deleted) return run();
@@ -587,24 +602,30 @@ async function checkpointMutation<T>(
     const changes: StoredChange[] = [];
     try {
       for (const effect of effects) {
+        seal?.verify();
         const path = await canonicalPath(resolve(effect.path));
-        const before = await snapshot(path);
+        const before = await snapshot(path, seal);
+        seal?.verify();
         const content = "copyFrom" in effect
-          ? (await snapshot(await canonicalPath(resolve(effect.copyFrom)))).bytes
+          ? (await snapshot(await canonicalPath(resolve(effect.copyFrom)), seal)).bytes
           : effect.content;
+        seal?.verify();
         const after = typeof content === "string" ? Buffer.from(content) : content;
         if (after && after.length > CODE_CHECKPOINT_POLICY.maxFileBytes) throw new Error("Code checkpoint file limit exceeded");
         const previous = changes.find((change) => change.path === path);
         if (previous) previous.afterHash = hash(after);
         else changes.push({ path, ...await storeImage(before.bytes), mode: before.mode, afterHash: hash(after) });
       }
-    } catch {
+    } catch (error) {
+      rethrowLocalityFailure(error);
+      if (error instanceof TargetIdentityChangedError) throw error;
       // No effect ran: preserve earlier rewind images and require a person on retry.
       if (requiredCheckpointContext.getStore() === true) blockAutomaticWrites(identity);
       await makeUnavailable(turns, identity, "uncapturable original");
       requireAvailableCheckpoint(identity);
       return run();
     }
+    seal?.verify();
     turn.changes.push(...changes);
     if (requiredCheckpointContext.getStore() === true && ledgerStorageBytes(turns) > CODE_CHECKPOINT_POLICY.maxStorageBytes) {
       turn.changes = turn.changes.filter((entry) => !changes.includes(entry));
@@ -628,13 +649,19 @@ async function checkpointMutation<T>(
       requireAvailableCheckpoint(identity);
       return run();
     }
-    for (const change of changes) {
-      const current = await snapshot(change.path).catch(() => undefined);
-      if (!current || hash(current.bytes) !== change.beforeHash) {
-        turn.changes = turn.changes.filter((entry) => !changes.includes(entry));
-        await save(turns, turn);
-        throw new Error("File changed before checkpointed mutation");
+    try {
+      for (const change of changes) {
+        const current = await snapshot(change.path, seal).catch((error: unknown) => {
+          rethrowLocalityFailure(error);
+          if (error instanceof TargetIdentityChangedError) throw error;
+          return undefined;
+        });
+        if (!current || hash(current.bytes) !== change.beforeHash) throw new Error("File changed before checkpointed mutation");
       }
+    } catch (error) {
+      turn.changes = turn.changes.filter((entry) => !changes.includes(entry));
+      await save(turns, turn);
+      throw error;
     }
     requireAvailableCheckpoint(identity);
     const removeUnchanged = async () => {
@@ -686,6 +713,7 @@ async function checkpointMutation<T>(
       }
       return result;
     } catch (error) {
+      rethrowLocalityFailure(error);
       await removeUnchanged();
       throw error;
     } finally {

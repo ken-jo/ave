@@ -1,4 +1,4 @@
-import { withLocalityDecision } from "../shared/local-path-io.js";
+import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { noteOwnedWrite, terminalFileEvidence, writtenFileIdentity, type WrittenFileIdentity } from "../main/terminal/changed-file-evidence.js";
 import { checkpointFileMutation, markCodeCheckpointUnavailable } from "../memory/code-checkpoints.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -18,6 +18,7 @@ import {
   type FileHandle,
 } from "node:fs/promises";
 import {
+  basename,
   dirname,
   isAbsolute,
   join,
@@ -30,6 +31,8 @@ import { z } from "zod";
 import type { PathEffect } from "../permissions/allowed-directories.js";
 import { isPathAllowed } from "../permissions/allowed-directories.js";
 import { canonicalizePathForMatch, caseFoldForMatch, judgedPathNamesOpenedFile } from "../permissions/sensitive-paths.js";
+import type { TargetSeal } from "../permissions/target-seal.js";
+import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import type { ApprovalMemoryScope } from "../shared/permissions-events.js";
 import { consumeExecutionGrantForBuiltinToolInvocation } from "../permissions/execution-router.js";
 import {
@@ -326,12 +329,22 @@ abstract class FileTool<TSchema extends z.ZodTypeAny> extends ZodTool<TSchema> {
     return isAbsolute(expanded) ? pathResolve(expanded) : pathResolve(ctx.cwd, expanded);
   }
 
+  protected resolveOpenedPath(path: string, ctx: ToolExecutionContext): string | Promise<string> {
+    const seal = ctx.fileTargetSeal;
+    if (!seal) return realpath(path);
+    return withLocalityDecision(() => {
+      seal.verify();
+      return resolvePhysicalFilesystemPath(path, ctx.cwd, 64);
+    });
+  }
+
   protected resolveExecutionPath(
     inputPath: string,
     ctx: ToolExecutionContext,
     transport: Exclude<FileExecutionTransport, { readonly kind: "failure" }>,
   ): Result<string> {
     try {
+      ctx.fileTargetSeal?.verify();
       const value = transport.kind === "broker"
         ? transport.runtime.resolveBrokeredWorkloadPath(transport.capability, inputPath)
         : this.resolvePath(inputPath, ctx);
@@ -437,8 +450,12 @@ export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
     let judged: string;
     let handle: FileHandle;
     try {
-      judged = await realpath(target);
-      const judgedBlocked = this.ensureAllowed(judged, ctx, "read");
+      ctx.fileTargetSeal?.verify();
+      judged = await this.resolveOpenedPath(target, ctx);
+      const judgedBlocked = withLocalityDecision(() => {
+        ctx.fileTargetSeal?.verify();
+        return this.ensureAllowed(judged, ctx, "read");
+      });
       if (judgedBlocked) return judgedBlocked;
       handle = await open(judged, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     } catch (error) {
@@ -447,25 +464,33 @@ export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
     let window: Awaited<ReturnType<typeof readTextFileWindow>>;
     let whole: Awaited<ReturnType<typeof hashAndCountLines>>;
     try {
+      ctx.fileTargetSeal?.verify();
       const opened = await handle.stat({ bigint: true });
       if (!opened.isFile()) {
         return toolError(`read_file requires a regular file: ${target}`);
       }
+      ctx.fileTargetSeal?.verify();
       if (await isBinaryFile(handle)) {
         return toolError(`read_file refused binary file: ${target}`);
       }
+      ctx.fileTargetSeal?.verify();
       window = await readTextFileWindow(handle, input.offset, input.limit);
+      ctx.fileTargetSeal?.verify();
       whole = await hashAndCountLines(handle);
+      ctx.fileTargetSeal?.verify();
       if (!judgedPathNamesOpenedFile(judged, opened)) {
         return toolError(`read_file: ${target} changed while it was read; read it again`);
       }
     } finally {
       await handle.close();
     }
+    ctx.fileTargetSeal?.verify();
     const shown = fitReadWindow(target, input.offset, window.lines, whole.lineCount);
     const sessionId = sessionIdOf(ctx);
     if (sessionId !== undefined) {
-      recordFileRead(sessionId, await fileReadKey(target), {
+      const key = await fileReadKey(target);
+      ctx.fileTargetSeal?.verify();
+      recordFileRead(sessionId, key, {
         mtimeMs: fileStat.value.mtimeMs,
         size: whole.size,
         sha256: whole.sha256,
@@ -751,7 +776,8 @@ export class ViewImageTool extends FileTool<typeof ViewImageInputSchema> {
       const prepared = await prepareImageFile(target, {
         cwd: ctx.cwd, extraAllowedDirectories: [...ctx.extraAllowedDirectories],
         blockReadsOutsideWorkingDirectories: ctx.blockReadsOutsideWorkingDirectories === true,
-      }, { maxBytes: input.maxBytes, maxDimension: input.maxDimension }, ctx.abortSignal);
+      }, { maxBytes: input.maxBytes, maxDimension: input.maxDimension }, ctx.abortSignal, ctx.fileTargetSeal);
+      ctx.fileTargetSeal?.verify();
       const { data, ...details } = prepared;
       return {
         output: JSON.stringify({ path: target, ...details, loaded: true }),
@@ -808,7 +834,7 @@ export class ReadDocumentTool extends FileTool<typeof ReadDocumentInputSchema> {
     if (transport.kind === "local") {
       const denied = this.ensureAllowed(target, ctx, "read");
       if (denied) return documentPolicyFailure(denied);
-      try { target = await realpath(target); }
+      try { target = await this.resolveOpenedPath(target, ctx); ctx.fileTargetSeal?.verify(); }
       catch { return documentToolFailure("read-failed", "Document could not be read"); }
       const canonicalDenied = this.ensureAllowed(target, ctx, "read");
       if (canonicalDenied) return documentPolicyFailure(canonicalDenied);
@@ -841,8 +867,10 @@ export class ReadDocumentTool extends FileTool<typeof ReadDocumentInputSchema> {
           }
         } else {
           // The document reaches the model: its bytes count only if `target`, judged above, still names the file read.
+          ctx.fileTargetSeal?.verify();
           bytes = await readJudgedDocumentInput(target, slot.signal);
         }
+        ctx.fileTargetSeal?.verify();
         slot.signal.throwIfAborted();
         const index = selection.kind === "sheet" ? selection.sheet : selection.kind === "page" ? selection.page - 1 : 0;
         const window = selection.kind === "sheet" ? {
@@ -851,6 +879,7 @@ export class ReadDocumentTool extends FileTool<typeof ReadDocumentInputSchema> {
         } : table ? { rowCount: 1, columnCount: 1 } : undefined;
         const document = await slot.parse(bytes, format, index, window);
         slot.signal.throwIfAborted();
+        ctx.fileTargetSeal?.verify();
         return formatDocumentToolOutput(target, document, selection);
       } finally { slot.release(); }
     } catch (error) {
@@ -894,7 +923,7 @@ export class OpenDocumentTool extends FileTool<typeof OpenDocumentInputSchema> {
     let target = resolved.value;
     const denied = this.ensureAllowed(target, ctx, "read");
     if (denied) return documentPolicyFailure(denied);
-    try { target = await realpath(target); }
+    try { target = await this.resolveOpenedPath(target, ctx); ctx.fileTargetSeal?.verify(); }
     catch { return documentToolFailure("read-failed", "Document could not be read"); }
     const canonicalDenied = this.ensureAllowed(target, ctx, "read");
     if (canonicalDenied) return documentPolicyFailure(canonicalDenied);
@@ -903,6 +932,7 @@ export class OpenDocumentTool extends FileTool<typeof OpenDocumentInputSchema> {
     }
     const file = await statFile(target);
     if (!file.ok || !file.value.isFile()) return documentToolFailure("not-a-file", "Document must be a regular file");
+    ctx.fileTargetSeal?.verify();
     return requestDocumentPanel(target, ctx);
   }
 }
@@ -939,7 +969,7 @@ export class ListFilesTool extends FileTool<typeof ListFilesInputSchema> {
     const blocked = this.ensureAllowed(root, ctx, "read");
     if (blocked) return blocked;
 
-    const listed = await listEntries(root, input.depth, input.limit);
+    const listed = await listEntries(root, input.depth, input.limit, ctx.fileTargetSeal);
     if (!listed.ok) return listed.error;
     return {
       output: JSON.stringify({
@@ -988,7 +1018,7 @@ export class GlobFilesTool extends FileTool<typeof GlobFilesInputSchema> {
     if (blocked) return blocked;
 
     const regex = globToRegExp(input.pattern);
-    const listed = await collectFiles(root, MAX_SCAN_FILES);
+    const listed = await collectFiles(root, MAX_SCAN_FILES, ctx.fileTargetSeal);
     if (!listed.ok) return listed.error;
     const allMatches = listed.value.files
       .filter((entry) => regex.test(entry.relativePath))
@@ -1052,7 +1082,7 @@ export class GrepFilesTool extends FileTool<typeof GrepFilesInputSchema> {
     }
     const blocked = this.ensureAllowed(root, ctx, "read");
     if (blocked) return blocked;
-    return searchWithRipgrep(root, input, ctx.abortSignal);
+    return searchWithRipgrep(root, input, ctx.abortSignal, undefined, ctx.fileTargetSeal);
   }
 }
 
@@ -1115,7 +1145,9 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
       if (!existing.value.isFile()) {
         return toolError(`write_file requires a regular file target: ${target}`);
       }
+      ctx.fileTargetSeal?.verify();
       const { sha256 } = await hashAndCountLines(target);
+      ctx.fileTargetSeal?.verify();
       const fresh = await requireFreshRead(this.name, target, ctx, {
         sha256,
         mtimeMs: existing.value.mtimeMs,
@@ -1130,20 +1162,24 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
     let before = "";
     let skipSidecar = false;
     // Bind stat and read to one handle so pathname replacement cannot switch the inode between checks.
+    ctx.fileTargetSeal?.verify();
     const fh = await open(target, "r").catch(() => null);
     if (fh !== null) {
       try {
+        ctx.fileTargetSeal?.verify();
         const fhStat = await fh.stat();
         if (fhStat.size > MAX_TEXT_FILE_BYTES) {
           skipSidecar = true;
         } else {
           // The size check binds to this inode; concurrent truncation may shrink the read.
+          ctx.fileTargetSeal?.verify();
           before = await fh.readFile("utf8");
         }
       } finally {
         await fh.close();
       }
       // Binary sniffing reopens the path but retains its own bound after the size check.
+      ctx.fileTargetSeal?.verify();
       if (!skipSidecar && (await isBinaryFile(target))) {
         skipSidecar = true;
         before = "";
@@ -1151,9 +1187,10 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
     }
     const after = input.content;
 
+    ctx.fileTargetSeal?.verify();
     assertProjectWritePath(target);
     await mkdir(dirname(target), { recursive: true });
-    const written = await atomicTextWrite(target, after);
+    const written = await atomicTextWrite(target, after, ctx.fileTargetSeal);
     if (readSession !== undefined) await recordOwnWrite(readSession, target, after, skipSidecar ? undefined : existing.value === null ? null : before, written);
 
     const afterBytes = Buffer.byteLength(after, "utf8");
@@ -1220,10 +1257,12 @@ export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
     if (fileStat.value.size > MAX_TEXT_FILE_BYTES) {
       return toolError(`edit_file refused large file > ${MAX_TEXT_FILE_BYTES} bytes: ${target}`);
     }
+    ctx.fileTargetSeal?.verify();
     if (await isBinaryFile(target)) {
       return toolError(`edit_file refused binary file: ${target}`);
     }
 
+    ctx.fileTargetSeal?.verify();
     const bytes = await readFile(target);
     const fresh = await requireFreshRead(this.name, target, ctx, {
       sha256: sha256Hex(bytes),
@@ -1246,7 +1285,7 @@ export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
     const next = input.replaceAll
       ? current.split(oldText).join(newText)
       : current.replace(oldText, () => newText);
-    const written = await atomicTextWrite(target, next);
+    const written = await atomicTextWrite(target, next, ctx.fileTargetSeal);
     await recordOwnWrite(fresh.value.sessionId, target, next, bytes.toString("utf8"), written);
     const details = {
       path: target,
@@ -1307,10 +1346,12 @@ export class MultiEditTool extends FileTool<typeof MultiEditInputSchema> {
     if (fileStat.value.size > MAX_TEXT_FILE_BYTES) {
       return toolError(`multi_edit refused large file > ${MAX_TEXT_FILE_BYTES} bytes: ${target}`);
     }
+    ctx.fileTargetSeal?.verify();
     if (await isBinaryFile(target)) {
       return toolError(`multi_edit refused binary file: ${target}`);
     }
 
+    ctx.fileTargetSeal?.verify();
     const bytes = await readFile(target);
     const fresh = await requireFreshRead(this.name, target, ctx, {
       sha256: sha256Hex(bytes),
@@ -1337,7 +1378,7 @@ export class MultiEditTool extends FileTool<typeof MultiEditInputSchema> {
         : next.replace(oldText, () => newText);
     }
 
-    const written = await atomicTextWrite(target, next);
+    const written = await atomicTextWrite(target, next, ctx.fileTargetSeal);
     await recordOwnWrite(fresh.value.sessionId, target, next, undefined, written);
     const details = {
       path: target,
@@ -1487,17 +1528,18 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
     for (const change of planned) {
       if (change.kind === "delete") {
         if (sessionId !== undefined) forgetFileRead(sessionId, await fileReadKey(change.path));
-        await checkpointFileMutation([{ path: change.path, content: null }], () => unlinkProjectFile(change.path));
+        await checkpointFileMutation([{ path: change.path, content: null }], () => unlinkProjectFile(change.path, ctx.fileTargetSeal), ctx.fileTargetSeal);
         summary.push(`${PATCH_CHANGE_LETTER.delete} ${change.path}`);
         continue;
       }
       const written = change.kind === "add" ? change.path : change.destination;
+      ctx.fileTargetSeal?.verify();
       assertProjectWritePath(written);
       await mkdir(dirname(written), { recursive: true });
-      const identity = await atomicTextWrite(written, change.content);
+      const identity = await atomicTextWrite(written, change.content, ctx.fileTargetSeal);
       if (change.kind === "update" && change.destination !== change.path) {
         if (sessionId !== undefined) forgetFileRead(sessionId, await fileReadKey(change.path));
-        await checkpointFileMutation([{ path: change.path, content: null }], () => unlinkProjectFile(change.path));
+        await checkpointFileMutation([{ path: change.path, content: null }], () => unlinkProjectFile(change.path, ctx.fileTargetSeal), ctx.fileTargetSeal);
       }
       if (sessionId !== undefined) await recordOwnWrite(sessionId, written, change.content, undefined, identity);
       summary.push(
@@ -1581,9 +1623,11 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
       { path: source, content: null },
       { path: destination, copyFrom: source },
     ], async () => {
+      ctx.fileTargetSeal?.verify();
       assertProjectWritePath(source);
       assertProjectWritePath(destination);
       await mkdir(dirname(destination), { recursive: true });
+      ctx.fileTargetSeal?.verify();
       if (input.overwrite) {
         const destinationStat = await statExistingPath(destination);
         if (!destinationStat.ok) return destinationStat.error;
@@ -1592,15 +1636,17 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
         }
         // The rename moves the inode this descriptor holds; a source replaced before the rename moves another file,
         // which the evidence then refuses.
+        ctx.fileTargetSeal?.verify();
         const held = await open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
         try {
           moved = writtenFileIdentity(await held.stat({ bigint: true }));
           noteOwnedWrite(destination, moved);
+          ctx.fileTargetSeal?.verify();
           await rename(source, destination);
         } finally { await held.close(); }
       } else {
         // copyFile creates the destination without a descriptor Ave holds, so the evidence records no identity.
-        const copied = await noClobberMoveFile(source, destination);
+        const copied = await noClobberMoveFile(source, destination, ctx.fileTargetSeal);
         if (!copied.ok) return copied.error;
         noteOwnedWrite(destination, undefined);
       }
@@ -1666,8 +1712,10 @@ export class CopyPathTool extends FileTool<typeof CopyPathInputSchema> {
       );
     }
     const checkpointSupported = await isFileCopyCheckpointSupported(sourcePath, ctx.cwd);
+    ctx.fileTargetSeal?.verify();
     const expectedSource = checkpointSupported ? await lstat(sourcePath, { bigint: true }) : undefined;
     const transfer = async () => {
+      ctx.fileTargetSeal?.verify();
       assertProjectWritePath(sourcePath);
       assertProjectWritePath(destinationPath);
       return fileTransferExecutionResult(await copyPath({ sourcePath, destinationPath }, ctx, {
@@ -1677,7 +1725,7 @@ export class CopyPathTool extends FileTool<typeof CopyPathInputSchema> {
       }));
     };
     if (checkpointSupported) {
-      return checkpointFileMutation([{ path: destinationPath, copyFrom: sourcePath }], transfer);
+      return checkpointFileMutation([{ path: destinationPath, copyFrom: sourcePath }], transfer, ctx.fileTargetSeal);
     }
     await markCodeCheckpointUnavailable();
     return transfer();
@@ -1734,6 +1782,7 @@ export class ExtractArchiveTool extends FileTool<typeof ExtractArchiveInputSchem
       );
     }
     await markCodeCheckpointUnavailable();
+    ctx.fileTargetSeal?.verify();
     let archiveFormat: ArchiveFormat | undefined;
     const result = await runOwnedTransfer({
       sourcePath: archivePath,
@@ -1809,7 +1858,8 @@ export class DeleteFileTool extends FileTool<typeof DeleteFileInputSchema> {
     if (!fileStat.value.isFile()) {
       return toolError(`delete_file requires a regular file: ${target}`);
     }
-    await checkpointFileMutation([{ path: target, content: null }], () => unlinkProjectFile(target));
+    ctx.fileTargetSeal?.verify();
+    await checkpointFileMutation([{ path: target, content: null }], () => unlinkProjectFile(target, ctx.fileTargetSeal), ctx.fileTargetSeal);
     return {
       output: JSON.stringify({ path: target, deleted: true }),
       isError: false,
@@ -1917,15 +1967,18 @@ async function listEntries(
   root: string,
   depth: number,
   limit: number,
+  seal?: TargetSeal,
 ): Promise<Result<{ entries: ListedEntry[]; truncated: boolean; skippedUnreadable: SkippedUnreadable }>> {
   try {
+    seal?.verify();
     const rootStat = await stat(root);
     if (!rootStat.isDirectory()) {
       return { ok: false, error: toolError(`list_files requires a directory: ${root}`) };
     }
     const entries: ListedEntry[] = [];
     const state = newWalkState();
-    await walk(root, root, depth, limit, entries, { filesOnly: false, skip: createStageWorkspacesSkip(root) }, state);
+    await walk(root, root, depth, limit, entries, { filesOnly: false, skip: createStageWorkspacesSkip(root), seal }, state);
+    seal?.verify();
     const truncated = entries.length >= limit || state.truncated;
     return { ok: true, value: { entries, truncated, skippedUnreadable: state.skipped } };
   } catch (err) {
@@ -1936,9 +1989,12 @@ async function listEntries(
 export async function collectFiles(
   root: string,
   limit: number,
+  seal?: TargetSeal,
 ): Promise<Result<{ files: ListedEntry[]; truncated: boolean; skippedUnreadable: SkippedUnreadable }>> {
   try {
+    seal?.verify();
     const rootStat = await stat(root);
+    seal?.verify();
     const files: ListedEntry[] = [];
     const state = newWalkState();
     if (admissionDeniedFilePattern(root)) {
@@ -1953,10 +2009,11 @@ export async function collectFiles(
         mtimeMs: rootStat.mtimeMs,
       });
     } else if (rootStat.isDirectory()) {
-      await walk(root, root, MAX_LIST_DEPTH, limit, files, { filesOnly: true, skip: createStageWorkspacesSkip(root) }, state);
+      await walk(root, root, MAX_LIST_DEPTH, limit, files, { filesOnly: true, skip: createStageWorkspacesSkip(root), seal }, state);
     } else {
       return { ok: false, error: toolError(`file search requires a file or directory: ${root}`) };
     }
+    seal?.verify();
     return { ok: true, value: { files, truncated: files.length >= limit || state.truncated, skippedUnreadable: state.skipped } };
   } catch (err) {
     return { ok: false, error: toolError(`file search failed: ${(err as Error).message}`) };
@@ -2004,12 +2061,13 @@ async function walk(
   remainingDepth: number,
   limit: number,
   output: ListedEntry[],
-  opts: { filesOnly: boolean; skip: (path: string) => boolean },
+  opts: { filesOnly: boolean; skip: (path: string) => boolean; seal?: TargetSeal },
   state: WalkState,
 ): Promise<void> {
   if (output.length >= limit || remainingDepth < 1 || state.truncated) return;
   let dirents: Dirent[];
   try {
+    opts.seal?.verify();
     dirents = await readdir(current, { withFileTypes: true });
   } catch (err) {
     if (skipUnreadable(err, root, current, state)) return;
@@ -2024,7 +2082,10 @@ async function walk(
       return;
     }
     const full = join(current, dirent.name);
-    if (withLocalityDecision(() => admissionDeniedFilePattern(full) || (!sensitiveFilePattern(root) && sensitiveFilePattern(full)) || opts.skip(full))) {
+    if (withLocalityDecision(() => {
+      opts.seal?.verify();
+      return admissionDeniedFilePattern(full) || (!sensitiveFilePattern(root) && sensitiveFilePattern(full)) || opts.skip(full);
+    })) {
       continue;
     }
     const rel = normalizeRelativePath(relative(root, full));
@@ -2059,9 +2120,11 @@ async function walk(
   }
 }
 
-async function noClobberMoveFile(source: string, destination: string): Promise<Result<null>> {
+async function noClobberMoveFile(source: string, destination: string, seal?: TargetSeal): Promise<Result<null>> {
   try {
+    seal?.verify();
     await copyFile(source, destination, constants.COPYFILE_EXCL);
+    seal?.verify();
     await unlink(source);
     return { ok: true, value: null };
   } catch (err) {
@@ -2093,33 +2156,44 @@ function temporaryWritePath(target: string): string {
 }
 
 /** Writes `content` to `target` through a temporary file, returning the identity its own descriptor saw. */
-async function atomicTextWrite(target: string, content: string): Promise<WrittenFileIdentity | undefined> {
+async function atomicTextWrite(target: string, content: string, seal?: TargetSeal): Promise<WrittenFileIdentity | undefined> {
+  seal?.verify();
   return checkpointFileMutation([{ path: target, content }], () => {
+    seal?.verify();
     assertProjectWritePath(target);
-    return writeTextAtomically(target, content);
-  });
+    return writeTextAtomically(target, content, seal);
+  }, seal);
 }
 
-function unlinkProjectFile(target: string): Promise<void> {
+function unlinkProjectFile(target: string, seal?: TargetSeal): Promise<void> {
+  seal?.verify();
   assertProjectWritePath(target);
   return unlink(target);
 }
 
-async function writeTextAtomically(target: string, content: string): Promise<WrittenFileIdentity | undefined> {
-  const temp = temporaryWritePath(target);
+async function writeTextAtomically(target: string, content: string, seal?: TargetSeal): Promise<WrittenFileIdentity | undefined> {
+  const temp = withLocalityDecision(() => {
+    seal?.verify();
+    const stableTarget = seal === undefined
+      ? target
+      : join(resolvePhysicalFilesystemPath(dirname(target), process.cwd(), 64), basename(target));
+    return temporaryWritePath(stableTarget);
+  });
   try {
     // The descriptor that wrote the bytes names the file; the rename moves that inode to the target. Anything that
     // replaces the temporary path or the target in between is a different inode, which the evidence then refuses.
     const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o666);
     let identity: WrittenFileIdentity | undefined;
     try {
+      seal?.verify();
       await handle.writeFile(content, "utf8");
       identity = writtenFileIdentity(await handle.stat({ bigint: true }));
     } finally { await handle.close(); }
+    await renameWithTransientRetry(temp, target, seal);
     noteOwnedWrite(target, identity);
-    await renameWithTransientRetry(temp, target);
     return identity;
   } catch (err) {
+    rethrowLocalityFailure(err);
     try {
       await unlink(temp);
     } catch {
@@ -2132,8 +2206,9 @@ async function writeTextAtomically(target: string, content: string): Promise<Wri
 // Tool writes use the shared asynchronous retry policy, distinct from synchronous and unattended budgets.
 const TOOL_WRITE_RENAME_ATTEMPTS = 6;
 
-async function renameWithTransientRetry(source: string, target: string): Promise<void> {
+async function renameWithTransientRetry(source: string, target: string, seal?: TargetSeal): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
+    seal?.verify();
     try {
       await rename(source, target);
       return;

@@ -1,9 +1,27 @@
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const hooks = vi.hoisted(() => ({ onExecutionRefresh: undefined as (() => void) | undefined }));
+const hooks = vi.hoisted(() => ({
+  onExecutionRefresh: undefined as (() => void) | undefined,
+  beforeRename: undefined as ((source: string, target: string) => void) | undefined,
+  opens: [] as string[],
+}));
+vi.mock("node:fs/promises", async (original) => {
+  const actual = await original<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    open: (...args: Parameters<typeof actual.open>) => {
+      hooks.opens.push(String(args[0]));
+      return actual.open(...args);
+    },
+    rename: async (source: string, target: string) => {
+      hooks.beforeRename?.(source, target);
+      await actual.rename(source, target);
+    },
+  };
+});
 vi.unmock("../../shared/windows-drive-locality.js");
 vi.mock("../../shared/chat-origin.js", async (original) => {
   const actual = await original<typeof import("../../shared/chat-origin.js")>();
@@ -15,6 +33,7 @@ vi.mock("../../shared/chat-origin.js", async (original) => {
 });
 
 import { AuditLogger } from "../../audit/audit-logger.js";
+import { configureHostResources } from "../../main/host-resources.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
@@ -32,6 +51,7 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
   let manager: PermissionManager;
 
   beforeEach(() => {
+    configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
     setWindowsDriveQueryForTest(() => LOCAL_DRIVE);
     root = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-sealed-targets-")));
     project = join(root, "project");
@@ -47,6 +67,8 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
 
   afterEach(async () => {
     hooks.onExecutionRefresh = undefined;
+    hooks.beforeRename = undefined;
+    hooks.opens.length = 0;
     await audit.close();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
@@ -85,6 +107,62 @@ describe.runIf(process.platform === "win32")("sealed file targets at handler adm
     expect(hooks.onExecutionRefresh).toBeUndefined();
     expect(result?.is_error).not.toBe(true);
     expect(result?.content).toContain("before");
+  });
+
+  it("does not open a different local file after waiting for handler transport", async () => {
+    const operand = "alias/note.txt";
+    const alias = join(project, "alias");
+    const replacement = join(project, "replacement");
+    mkdirSync(replacement);
+    writeFileSync(join(replacement, "note.txt"), "different");
+    symlinkSync(join(project, "sub"), alias, "junction");
+    const tool = new ReadFileTool();
+    const transport = vi.spyOn(tool as unknown as { executionTransport: () => Promise<{ kind: string }> }, "executionTransport");
+    transport.mockImplementationOnce(async () => {
+      await Promise.resolve();
+      unlinkSync(alias);
+      symlinkSync(replacement, alias, "junction");
+      return { kind: "local" };
+    });
+    const registry = new ToolRegistry();
+    registry.register(tool);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined, audit);
+    const [result] = await executor.executeAll([{ id: "read-target", name: tool.name, input: { path: operand } }], {
+      executionCwd: project, sessionId: "read-target", permissionContext: { trustOrigin: "user-keyboard" },
+    });
+    expect(transport).toHaveBeenCalledOnce();
+    expect(result?.is_error).toBe(true);
+    expect(hooks.opens.filter((path) => path.endsWith("note.txt"))).toEqual([]);
+  });
+
+  it("refuses a rename retry when the original write operand moves", async () => {
+    const alias = join(project, "alias");
+    const original = join(project, "sub");
+    const replacement = join(project, "replacement");
+    mkdirSync(replacement);
+    symlinkSync(original, alias, "junction");
+    const target = join(alias, "new.txt");
+    const renames: string[] = [];
+    hooks.beforeRename = (source, destination) => {
+      if (destination !== target) return;
+      renames.push(destination);
+      if (renames.length > 1) return;
+      if (!existsSync(source)) throw new Error("missing temporary write");
+      unlinkSync(alias);
+      symlinkSync(replacement, alias, "junction");
+      throw Object.assign(new Error("busy"), { code: "EBUSY" });
+    };
+    await manager.addRulePersist({ pattern: "Edit(alias/new.txt)", action: "allow" }, { kind: "user" });
+    const tool = new WriteFileTool();
+    const registry = new ToolRegistry();
+    registry.register(tool);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined, audit);
+    const [result] = await executor.executeAll([{ id: "write-target", name: tool.name, input: { path: target, content: "new" } }], {
+      executionCwd: project, sessionId: "write-target", permissionContext: { trustOrigin: "user-keyboard" },
+    });
+    expect(result?.is_error).toBe(true);
+    expect(renames, JSON.stringify(result)).toEqual([target]);
+    expect(existsSync(join(replacement, "new.txt"))).toBe(false);
   });
 
   it.each([false, true])("runs the handler only on the sealed directory (moved during the final wait: %s)", async (moved) => {

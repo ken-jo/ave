@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { ToolExecutionResult } from "./base.js";
 import { admissionDeniedFilePattern, createFilePathPolicy, createStageWorkspacesSkip } from "./file-access-policy.js";
 import { isSensitiveContent, judgedPathNamesOpenedFile, KEY_MATERIAL_SCAN_BYTES } from "../permissions/sensitive-paths.js";
+import type { TargetSeal } from "../permissions/target-seal.js";
 import { buildSafeChildEnv } from "./safe-env.js";
 import { resolvePinnedRipgrepExecutable } from "./ripgrep-executable.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../main/managed-child-processes.js";
@@ -252,6 +253,7 @@ async function runRipgrep(
   realRoot: string,
   input: GrepFilesInput,
   signal: AbortSignal | undefined,
+  seal?: TargetSeal,
 ): Promise<RipgrepRun> {
   signal?.throwIfAborted();
   const wanted = input.offset + input.limit + 1;
@@ -285,6 +287,7 @@ async function runRipgrep(
         searches.signal.throwIfAborted();
         // Check every result path: the search engine does not know the host's sensitive-path floor.
         if (withLocalityDecision(() => {
+          seal?.verify();
           const explicit = isWithinAdmittedRoot(path, root) && policy.sensitive(root) !== null;
           return policy.admissionDenied(path) !== null || (!explicit && policy.sensitive(path) !== null) || skip(resolve(cwd, path));
         })) continue;
@@ -709,10 +712,12 @@ export async function searchWithRipgrep(
   input: GrepFilesInput,
   signal: AbortSignal | undefined,
   resolveExecutable: () => string = resolveBundledRipgrep,
+  seal?: TargetSeal,
 ): Promise<ToolExecutionResult> {
   let scope: { cwd: string; realRoot: string } | null | undefined;
   try {
     scope = withLocalityDecision(() => {
+      seal?.verify();
       if (admissionDeniedFilePattern(root) !== null) return null;
       const route = admitLocalRoute(resolve(root)).verdict;
       const rootStat = localFs.stat(route);
@@ -736,7 +741,9 @@ export async function searchWithRipgrep(
 
   let run: RipgrepRun;
   try {
-    run = await runRipgrep(executable, root, scope.cwd, scope.realRoot, input, signal);
+    seal?.verify();
+    run = await runRipgrep(executable, root, scope.cwd, scope.realRoot, input, signal, seal);
+    seal?.verify();
   } catch (error) {
     return grepError(errorMessage(error));
   }

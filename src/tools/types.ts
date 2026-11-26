@@ -19,6 +19,7 @@ export type { ToolCategory, ToolSource };
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
 import type { HostShellExecutionPermit } from "../permissions/host-shell-execution-permit.js";
 import type { ExecutionGrant } from "../permissions/execution-router.js";
+import type { TargetSeal } from "../permissions/target-seal.js";
 export type TrustLevel = "high" | "medium" | "low";
 
 /** Builtin meta overrides either ask normally or execute an already-interactive question with audit; never add a second approval for asking the user. */
@@ -56,6 +57,8 @@ export function trustFromSource(source: ToolSource): TrustLevel {
  * working directory enforced by the sandbox path validator; `metadata` is a free-form bag for hooks and future plumbing. */
 export interface ToolExecutionContext {
   cwd: string;
+  /** Host authority over the original operands of a local file operation. */
+  fileTargetSeal?: TargetSeal;
   /** Host-derived execution surface; UI-opening tools must refuse unattended calls. */
   headless?: boolean;
   /** Host-built per-hop permission gate for mediated network requests. */
