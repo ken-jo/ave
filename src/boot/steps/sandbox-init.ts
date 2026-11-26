@@ -45,11 +45,15 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
     try {
       establishMxcSandboxHomesParent();
       runtimeRootFailure = undefined;
+      log.info({ mxcRuntimeRootState: "available" }, "boot: MXC runtime root proved");
     } catch (error) {
       runtimeRootFailure = errorMessage(error);
+      log.warn(
+        { mxcRuntimeRootState: "unavailable", mxcRuntimeRootReason: "runtime-root-unproved" },
+        "boot: Windows sandbox HOME root unavailable: %s", runtimeRootFailure,
+      );
       const { markSandboxHomesUnavailable } = await import("../../permissions/sandbox-capability.js");
       markSandboxHomesUnavailable();
-      log.warn("boot: Windows sandbox HOME root unavailable: %s", runtimeRootFailure);
     }
     void sweepWindowsSandboxHomes();
   }
@@ -675,9 +679,12 @@ async function detectWindowsBootInputs(
 ): Promise<WindowsSandboxPlanInputs> {
   const { detectHostMxcPrerequisites } = await import("../../permissions/mxc-windows.js");
   const mxc = await detectHostMxcPrerequisites();
-  if (runtimeRootFailure !== undefined) logMxcUnavailable("runtime-root-unproved", mxc.windowsBuild, runtimeRootFailure);
-  else if (mxc.state === "unavailable") logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
-  else log.info({ mxcState: "available" }, "boot: MXC runtime root proved");
+  if (mxc.state === "unavailable") {
+    log.warn({ mxcHostState: mxc.state, mxcHostReason: mxc.reason },
+      "boot: MXC host prerequisites unavailable (build %s): %s", mxc.windowsBuild ?? "unknown", mxc.detail);
+  } else {
+    log.info({ mxcHostState: mxc.state }, "boot: MXC host prerequisites satisfied");
+  }
   return {
     shellRequested,
     workerRequested,
@@ -697,22 +704,16 @@ async function settleWindowsMxcStartProbe(): Promise<WindowsSandboxPlanInputs["m
   const started = Date.now();
   try {
     const mxc = await probeHostMxcPowerShellStart();
-    log.info("boot: MXC PowerShell start probe finished in %d ms (%s)", Date.now() - started, mxc.state);
-    if (mxc.state === "available") return { state: "available" };
-    logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
+    if (mxc.state === "available") {
+      log.info({ mxcShellState: mxc.state }, "boot: MXC shell start probe succeeded in %d ms", Date.now() - started);
+      return { state: "available" };
+    }
+    log.warn({ mxcShellState: mxc.state, mxcShellReason: mxc.reason },
+      "boot: MXC shell start probe failed in %d ms (build %s): %s", Date.now() - started, mxc.windowsBuild ?? "unknown", mxc.detail);
     return { state: "unavailable", reason: mxc.reason };
   } catch (error) {
-    logMxcUnavailable("powershell-start-failed", null, errorMessage(error));
+    log.warn({ mxcShellState: "unavailable", mxcShellReason: "powershell-start-failed" },
+      "boot: MXC shell start probe failed in %d ms: %s", Date.now() - started, errorMessage(error));
     return { state: "unavailable", reason: "powershell-start-failed" };
   }
-}
-
-function logMxcUnavailable(reason: string, windowsBuild: string | null, detail: string): void {
-  log.warn(
-    { mxcState: "unavailable", mxcReason: reason, mxcDetail: detail },
-    "boot: Microsoft Execution Containers cannot confine agent shells on this host (%s, build %s): %s",
-    reason,
-    windowsBuild ?? "unknown",
-    detail,
-  );
 }

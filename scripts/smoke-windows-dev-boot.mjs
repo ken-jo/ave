@@ -10,10 +10,6 @@ import {
 
 const INSPECTOR_LINE = /^Debugger listening on (ws:\/\/127\.0\.0\.1:(?!9222\/)[1-9]\d*\/[\da-f-]+)$/u;
 const REPOSITORY = fileURLToPath(new URL("..", import.meta.url));
-const MXC_REASONS = new Set([
-  "binary-missing", "container-unavailable", "launcher-mismatch", "not-windows", "powershell-start-failed",
-  "probe-failed", "request-rejected", "runtime-root-unproved", "unsupported-arch", "unverified-session",
-]);
 
 class DevBootFailure extends Error {}
 
@@ -49,7 +45,7 @@ export async function checkDevBoot(child, requestQuit, {
   let interfaceLoaded = false;
   let inspectorUrl;
   let quitting = false;
-  let mxcRuntimeRoot = "unknown (no boot status reported)";
+  let mxcRuntimeRoot;
   const outputs = ["stdout", "stderr"].map((stream) => {
     const output = createInterface({ input: child[stream], crlfDelay: Infinity });
     output.on("line", (line) => {
@@ -64,10 +60,12 @@ export async function checkDevBoot(child, requestQuit, {
         inspectorUrl = endpoint[1];
       } else {
         const record = parseLog(line);
-        if (record?.mxcState === "available") {
-          mxcRuntimeRoot = "available";
-        } else if (record?.mxcState === "unavailable" && MXC_REASONS.has(record.mxcReason)) {
-          mxcRuntimeRoot = `unavailable (${record.mxcReason})`;
+        if (mxcRuntimeRoot === undefined) {
+          if (record?.mxcRuntimeRootState === "available") {
+            mxcRuntimeRoot = "available";
+          } else if (record?.mxcRuntimeRootState === "unavailable" && record.mxcRuntimeRootReason === "runtime-root-unproved") {
+            mxcRuntimeRoot = "unavailable (runtime-root-unproved)";
+          }
         }
         if (record?.msg === "main interface loaded" && record.reason === "bootstrap-complete") {
           if (!interfaceLoaded) onLine("main interface loaded (bootstrap-complete)");
@@ -110,7 +108,7 @@ export async function checkDevBoot(child, requestQuit, {
   } finally {
     shutdown.abort();
     for (const output of outputs) output.close();
-    onLine(`mxc-runtime-root: ${mxcRuntimeRoot}`);
+    onLine(`mxc-runtime-root: ${mxcRuntimeRoot ?? "unknown (not-reported)"}`);
   }
 }
 

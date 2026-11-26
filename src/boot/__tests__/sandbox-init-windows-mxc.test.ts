@@ -184,7 +184,7 @@ describe("initSandboxGate — Windows sandbox HOME parent", () => {
     expect(h.homesCalls[0]).toBe("establish");
     expect(h.homesCalls.indexOf("establish")).toBeLessThan(h.homesCalls.indexOf("parent"));
     expect(h.homesCalls.indexOf("establish")).toBeLessThan(h.homesCalls.indexOf("backend"));
-    expect(h.logger.info).toHaveBeenCalledWith({ mxcState: "available" }, "boot: MXC runtime root proved");
+    expect(h.logger.info).toHaveBeenCalledWith({ mxcRuntimeRootState: "available" }, "boot: MXC runtime root proved");
   });
 
   it("logs a HOME parent that cannot be established and still finishes boot", async () => {
@@ -193,10 +193,9 @@ describe("initSandboxGate — Windows sandbox HOME parent", () => {
     h.detectMxc.mockResolvedValue(MXC_OK);
     await expect(initSandboxGate(harness.context(true, false))).resolves.toBeUndefined();
     expect(h.homesCalls[0]).toBe("establish");
-    expect(h.logger.warn).toHaveBeenCalledWith("boot: Windows sandbox HOME root unavailable: %s", "root not private");
     expect(h.logger.warn).toHaveBeenCalledWith(
-      { mxcState: "unavailable", mxcReason: "runtime-root-unproved", mxcDetail: "root not private" },
-      expect.any(String), "runtime-root-unproved", expect.any(String), "root not private",
+      { mxcRuntimeRootState: "unavailable", mxcRuntimeRootReason: "runtime-root-unproved" },
+      "boot: Windows sandbox HOME root unavailable: %s", "root not private",
     );
     expect(h.checkDeps).toHaveBeenCalled();
     expect(getSandboxBootOutcome()).not.toBeNull();
@@ -217,11 +216,32 @@ describe("initSandboxGate — Windows sandbox HOME parent", () => {
     await initSandboxGate(harness.context(false, false));
     expect(getWindowsSandboxSubstrate()).toBeNull();
     expect(getSandboxHomesUnavailable()).toBe(true);
+    expect(h.logger.warn).toHaveBeenCalledWith(
+      { mxcRuntimeRootState: "unavailable", mxcRuntimeRootReason: "runtime-root-unproved" },
+      "boot: Windows sandbox HOME root unavailable: %s", "root not private",
+    );
+    expect(h.detectMxc).not.toHaveBeenCalled();
   });
 
-  it("reports nothing of the kind when the root is proved", async () => {
+  it("reports the proved root with the sandbox setting off", async () => {
     await initSandboxGate(harness.context(false, false));
     expect(getSandboxHomesUnavailable()).toBe(false);
+    expect(h.logger.info).toHaveBeenCalledWith({ mxcRuntimeRootState: "available" }, "boot: MXC runtime root proved");
+    expect(h.detectMxc).not.toHaveBeenCalled();
+  });
+
+  it("reports the proved root before a host prerequisites refusal", async () => {
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockImplementation(async () => {
+      expect(h.logger.info).toHaveBeenCalledWith({ mxcRuntimeRootState: "available" }, "boot: MXC runtime root proved");
+      return MXC_OLD;
+    });
+    await initSandboxGate(harness.context(true, false));
+    expect(h.logger.warn).toHaveBeenCalledWith(
+      { mxcHostState: "unavailable", mxcHostReason: "container-unavailable" },
+      expect.any(String), MXC_OLD.windowsBuild, MXC_OLD.detail,
+    );
+    expect(h.startProbe).not.toHaveBeenCalled();
   });
 
   it("reports the container prerequisites again once a later boot proves the root", async () => {
@@ -245,11 +265,16 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     await initSandboxGate(harness.context(true, false));
     await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
     expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "approved-host", mxc: { state: "checking" } });
+    expect(h.logger.info).toHaveBeenCalledWith({ mxcRuntimeRootState: "available" }, "boot: MXC runtime root proved");
+    expect(h.logger.info).toHaveBeenCalledWith({ mxcHostState: "available" }, "boot: MXC host prerequisites satisfied");
     expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", sandboxed: false });
     settle(MXC_OK);
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", mxc: { state: "available" } }));
     expect(getWindowsSandboxSubstrate()).not.toHaveProperty("shellLocalNetworkAccess");
     expect(getHostShellExecutionPlan()).toMatchObject({ substrate: "mxc", sandboxed: true });
+    expect(h.logger.info).toHaveBeenCalledWith(
+      { mxcShellState: "available" }, "boot: MXC shell start probe succeeded in %d ms", expect.any(Number),
+    );
     expect(h.startProbe).toHaveBeenCalledOnce();
   });
 
@@ -410,9 +435,8 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     });
     expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", substrate: "none", requiresExplicitUserApproval: true });
     expect(h.logger.warn).toHaveBeenCalledWith(
-      { mxcState: "unavailable", mxcReason: "container-unavailable", mxcDetail: "no container API" },
-      expect.stringContaining("Microsoft Execution Containers cannot confine agent shells"),
-      "container-unavailable",
+      { mxcHostState: "unavailable", mxcHostReason: "container-unavailable" },
+      "boot: MXC host prerequisites unavailable (build %s): %s",
       "10.0.22631.4317",
       "no container API",
     );
@@ -744,9 +768,9 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     });
     expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", requiresExplicitUserApproval: true });
     expect(h.logger.warn).toHaveBeenCalledWith(
-      { mxcState: "unavailable", mxcReason: "unverified-session", mxcDetail: "0xC0000142" },
-      expect.stringContaining("Microsoft Execution Containers cannot confine agent shells"),
-      "unverified-session",
+      { mxcShellState: "unavailable", mxcShellReason: "unverified-session" },
+      "boot: MXC shell start probe failed in %d ms (build %s): %s",
+      expect.any(Number),
       "10.0.26300.9711",
       "0xC0000142",
     );

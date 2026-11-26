@@ -72,7 +72,7 @@ it("requires the complete interface log and a per-launch loopback inspector befo
 
 it("reports the MXC startup check even when the shell probe has not finished", async () => {
   const { child, ready, requestQuit, result, exit, mxcSummaries } = fixture();
-  child.stdout.write(`${JSON.stringify({ mxcState: "available", msg: "boot: MXC runtime root proved" })}\n`);
+  child.stdout.write(`${JSON.stringify({ mxcRuntimeRootState: "available", msg: "boot: MXC runtime root proved" })}\n`);
   ready();
   await vi.waitFor(() => expect(requestQuit).toHaveBeenCalledOnce());
   exit(0);
@@ -80,28 +80,26 @@ it("reports the MXC startup check even when the shell probe has not finished", a
   expect(mxcSummaries()).toEqual(["mxc-runtime-root: available"]);
 });
 
-it.each([
-  ["runtime-root-unproved", "Container runtime root cannot be used:\r\nit resolves to another path"],
-  ["container-unavailable", "no container API"],
-])("reports an MXC refusal (%s) without failing the smoke", async (mxcReason, mxcDetail) => {
+it("reports an MXC root refusal without failing the smoke", async () => {
   const { child, ready, requestQuit, result, exit, mxcSummaries } = fixture();
+  child.stderr.write('{"mxcRuntimeRootState":"unavailable","mxcRuntimeRootReason":"runtime-root-unproved"}\n');
   ready();
   await vi.waitFor(() => expect(requestQuit).toHaveBeenCalledOnce());
-  child.stderr.write(`${JSON.stringify({ mxcState: "unavailable", mxcReason, mxcDetail })}\n`);
   exit(0);
   await expect(result).resolves.toBeUndefined();
-  expect(mxcSummaries()).toEqual([`mxc-runtime-root: unavailable (${mxcReason})`]);
+  expect(mxcSummaries()).toEqual(["mxc-runtime-root: unavailable (runtime-root-unproved)"]);
 });
 
-it("reports a late MXC refusal in place of a successful startup check", async () => {
+it("reports the proved root despite host and late shell probe refusals", async () => {
   const { child, ready, requestQuit, result, exit, mxcSummaries } = fixture();
-  child.stdout.write('{"mxcState":"available"}\n');
+  child.stdout.write('{"mxcRuntimeRootState":"available"}\n');
+  child.stderr.write('{"mxcHostState":"unavailable","mxcHostReason":"container-unavailable"}\n');
   ready();
   await vi.waitFor(() => expect(requestQuit).toHaveBeenCalledOnce());
-  child.stdout.write('{"mxcState":"unavailable","mxcReason":"powershell-start-failed","mxcDetail":"shell did not start"}\n');
+  child.stdout.write('{"mxcShellState":"unavailable","mxcShellReason":"powershell-start-failed"}\n');
   exit(0);
   await expect(result).resolves.toBeUndefined();
-  expect(mxcSummaries()).toEqual(["mxc-runtime-root: unavailable (powershell-start-failed)"]);
+  expect(mxcSummaries()).toEqual(["mxc-runtime-root: available"]);
 });
 
 it("keeps diagnostics from both app streams in the isolated local log", async () => {
@@ -110,9 +108,9 @@ it("keeps diagnostics from both app streams in the isolated local log", async ()
   const secret = "fixture-secret-sentinel";
   const detail = [path, secret].join(" ");
   const diagnostic = JSON.stringify({
-    msg: detail, mxcState: "unavailable", mxcReason: "runtime-root-unproved", mxcDetail: detail,
+    msg: detail, mxcRuntimeRootState: "unavailable", mxcRuntimeRootReason: "runtime-root-unproved", mxcDetail: detail,
   });
-  const spoofedReason = JSON.stringify({ mxcState: "unavailable", mxcReason: secret, mxcDetail: detail });
+  const spoofedReason = JSON.stringify({ mxcRuntimeRootState: "unavailable", mxcRuntimeRootReason: secret, mxcDetail: detail });
   for (const stream of [child.stdout, child.stderr]) {
     stream.write([diagnostic, detail, spoofedReason, ""].join("\n"));
   }
@@ -138,15 +136,15 @@ it("sanitizes app failure messages and rejects the boot", async () => {
   await expect(result).rejects.toThrow(/^before-quit: shutdown cleanup failed$/u);
   expect(onLine.mock.calls).toEqual([
     ["before-quit: shutdown cleanup failed"],
-    ["mxc-runtime-root: unknown (no boot status reported)"],
+    ["mxc-runtime-root: unknown (not-reported)"],
   ]);
 });
 
 it("reports a missing MXC status when boot fails before any valid status record", async () => {
   const { child, result, mxcSummaries } = fixture();
-  child.stdout.write('noise {"mxcState":"available"}\n{"mxcState":"unavailable"}\n{"msg":"bootstrap failed"}\n');
+  child.stdout.write('noise {"mxcRuntimeRootState":"available"}\n{"mxcRuntimeRootState":"unavailable"}\n{"msg":"bootstrap failed"}\n');
   await expect(result).rejects.toThrow("bootstrap failed");
-  expect(mxcSummaries()).toEqual(["mxc-runtime-root: unknown (no boot status reported)"]);
+  expect(mxcSummaries()).toEqual(["mxc-runtime-root: unknown (not-reported)"]);
 });
 
 it("fails on bootstrap failure even if the app stays open", async () => {
