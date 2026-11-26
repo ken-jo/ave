@@ -24,6 +24,7 @@ import type { JoinConflict } from "../shipped-shapes.js";
 
 export interface FakeChild {
   input: SubAgentSpawnInput;
+  callbacks?: Parameters<SubAgentRunner["spawn"]>[1];
   sessionId: string;
   ended: boolean;
   steers: string[];
@@ -212,7 +213,7 @@ export async function stageRunHarness(opts: {
     let end: (result: SubAgentSpawnResult) => void = () => undefined;
     const done = new Promise<SubAgentSpawnResult>(resolve => { end = resolve; });
     const child: FakeChild = {
-      input, sessionId, ended: false, steers: [],
+      input, callbacks: hooks, sessionId, ended: false, steers: [],
       reportActivity: (update) => {
         activities.set(sessionId, update);
         hooks?.onActivity?.(update);

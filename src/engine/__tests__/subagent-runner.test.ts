@@ -1927,7 +1927,7 @@ describe("SubAgentRunner — the child's agent context", () => {
 describe("agent_spawn — recursive call refusal", () => {
   it("returns an error when invoked from a sub-agent (spawnDepth >= 1)", async () => {
     const tool = createAgentSpawnTool({
-      getRunner: () => ({ spawn: async () => ({}) }) as never,
+      getRunner: () => ({}) as never,
       emit: () => undefined,
     });
     const ctxAsSubAgent = {
@@ -1941,7 +1941,7 @@ describe("agent_spawn — recursive call refusal", () => {
     );
     expect(r.isError).toBe(true);
     const parsed = JSON.parse(r.output);
-    expect(parsed.error).toContain("cannot be invoked from a sub-agent");
+    expect(parsed.error).toBe(t("be_agentSpawn.depthLimit"));
   });
 
   it("allows agent_spawn from the parent loop (spawnDepth=0)", async () => {

@@ -453,6 +453,10 @@ export function useWorkBoardRun(
             update(ev.itemId, cur => ({ ...cur, stageActivity: { ...cur.stageActivity, [activity.stageId]: activity } }));
             return;
           }
+          if (ev.subAgentSessionId !== undefined) {
+            update(ev.itemId, cur => ({ ...cur, sessionIds: withSession(cur.sessionIds, ev.subAgentSessionId) }));
+            return;
+          }
           const { stageId, attempt, phase } = ev;
           if (stageId !== undefined && attempt !== undefined
             && (phase === "executing" || phase === "stage_gate" || phase === "stage_passed" || phase === "stage_failed")) {

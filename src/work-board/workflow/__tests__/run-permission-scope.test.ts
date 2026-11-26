@@ -1,15 +1,18 @@
 /** A template run's permission scope: the engine links each stage child with its stage and the run's lane, tells its end, and ends the
  * scope once, when the run is over. */
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { registerRunSession, runGrantKeyOfSession, runSessionOf, __resetRunGrantsForTest } from "../../../permissions/run-grants.js";
 import { createRunScopeHooks } from "../../../permissions/run-scope.js";
 import { listSessionApprovals, lookupUserDecision, recordApproval, __resetSessionStoreForTest } from "../../../permissions/user-approval-store.js";
 import { autoStageOf, runScopePermissions, stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
+import type { StageRunEngineDeps } from "../stage-run-engine.js";
+import type { ScheduleAttachment, TemplateVersionPin } from "../../../shared/workflow-template-types.js";
 
 afterEach(() => {
   __resetRunGrantsForTest();
   __resetSessionStoreForTest();
+  vi.restoreAllMocks();
 });
 
 type Told = ["linked", string, string, { stageId: string; stageName: string; lane: string }] | ["ended", string] | ["run-ended", string];
@@ -118,6 +121,143 @@ it("on the production scope a stage session is a run member while it lives, and 
     expect(listSessionApprovals()).toEqual([]);
     expect(shell()).toMatchObject({ decision: "ask" });
     expect(() => registerRunSession(runKey, "late-session", { stageId: "b", stageName: "Stage b", lane: "attended" })).toThrow(expect.objectContaining({ code: "run-ended" }));
+  } finally {
+    await h.cleanup();
+  }
+});
+
+it("links opted-in grandchildren with the stage's own workspace and run scope", async () => {
+  const manager = runScopePermissions();
+  const bound = new Map<string, string>();
+  const h = await stageRunHarness({ workflow: {
+    runScope: createRunScopeHooks(manager),
+    workspaceBinding: { bind: (id, root) => { bound.set(id, root); }, unbind: id => { bound.delete(id); } },
+  } });
+  try {
+    const version = await h.confirm([autoStageOf("a", { allowSubAgents: true })]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [stage] = await h.untilLive(1);
+    const bind = stage.callbacks?.onStageSubAgentLinked;
+    if (!bind) throw new Error("No sub-agent link for the opted-in stage");
+    const release = bind("grandchild", "Extract");
+    expect(h.events).toContainEqual(expect.objectContaining({ stageId: "a", runSessionId: stage.sessionId, subAgentSessionId: "grandchild" }));
+    expect(stage.input.stageSubAgents).toMatchObject({ stageName: "Stage a", runKey: runGrantKeyOfSession(stage.sessionId), max: 3 });
+    expect(bound.get("grandchild")).toBe(bound.get(stage.sessionId));
+    expect(runSessionOf("grandchild")).toMatchObject({ stageId: "a", stageName: "Stage a", agentTitle: "Extract", lane: "attended" });
+    expect(runGrantKeyOfSession("grandchild")).toBe(runGrantKeyOfSession(stage.sessionId));
+    release();
+    expect(bound.has("grandchild")).toBe(false);
+    expect(runSessionOf("grandchild")).toBeUndefined();
+    stage.finish();
+    await run;
+    expect(() => bind("too-late", "Extract")).toThrow();
+  } finally {
+    await h.cleanup();
+  }
+});
+
+it("links a scheduled grandchild with the same lane, workspace and envelope as its stage", async () => {
+  const manager = runScopePermissions();
+  const links: Parameters<NonNullable<StageRunEngineDeps["lane"]>["sessionLinked"]>[0][] = [];
+  const tornDown: string[] = [];
+  const h = await stageRunHarness({ workflow: {
+    unattendedAllowed: () => ({ ok: true }),
+    runScope: createRunScopeHooks(manager),
+    workspaceBinding: { bind: () => undefined, unbind: sessionId => { tornDown.push(`workspace:${sessionId}`); } },
+    lane: {
+      admit: async () => ({ ok: true }),
+      sessionLinked: entry => {
+        links.push(entry);
+        if (entry.sessionId === "refused") throw new Error("Lane refused the session");
+      },
+      sessionEnded: sessionId => { tornDown.push(`lane:${sessionId}`); },
+      onDenied: () => () => undefined,
+    },
+  } });
+  try {
+    const version = await h.confirm([autoStageOf("a", { allowSubAgents: true, envelope: {
+      budget: { rounds: 2, minutes: 1, costUsd: 0 }, tools: ["read_file"], commands: [], readRoots: [], writePaths: [],
+      network: [], outputs: [], mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
+    } })]);
+    const id = await h.addItem(version);
+    await expect(h.attach(version)).rejects.toMatchObject({ code: "schedule-requires-read-only" });
+    // Provide a future lane's approved attachment to exercise inheritance while the shipped attachment guard is active.
+    const pin: TemplateVersionPin = { templateId: version.templateId, version: version.version, graphHash: version.graphHash };
+    const attachment: ScheduleAttachment = {
+      ...pin, id: "attachment", scheduleId: "daily", approvedScope: { kind: "all" },
+      who: "owner", at: version.confirmedAt, origin: "local-desktop",
+    };
+    const record = { ...await h.templates.get(version.templateId), scheduleAttachments: [attachment] };
+    vi.spyOn(h.templates, "get").mockResolvedValue(record);
+    vi.spyOn(h.templates, "getAttachment").mockResolvedValue(attachment);
+    vi.spyOn(h.templates, "readScheduleRunAuthority").mockResolvedValue({ record, attachment });
+    const run = h.start(id, { kind: "schedule-attachment", attachmentId: attachment.id, pin, firedAt: attachment.at });
+    const [stage] = await h.untilLive(1);
+    expect(stage.input.maxRounds).toBe(20);
+    const bind = stage.callbacks?.onStageSubAgentLinked;
+    if (!bind) throw new Error("No sub-agent link for the opted-in scheduled stage");
+    const release = bind("grandchild", "Extract");
+    expect(links).toEqual([expect.objectContaining({ sessionId: stage.sessionId }), { ...links[0], sessionId: "grandchild" }]);
+    expect(runSessionOf("grandchild")?.lane).toBe("unattended");
+    expect(runGrantKeyOfSession("grandchild")).toBeUndefined();
+    release();
+    expect(() => bind("refused", "Extract")).toThrow("Lane refused the session");
+    expect(runSessionOf("refused")).toBeUndefined();
+    expect(tornDown).toEqual(["workspace:grandchild", "lane:grandchild", "workspace:refused", "lane:refused"]);
+    stage.finish();
+    await run;
+  } finally {
+    await h.cleanup();
+  }
+});
+
+it("an attended stage keeps its existing round ceiling with an envelope", async () => {
+  const h = await stageRunHarness();
+  try {
+    const version = await h.confirm([autoStageOf("a", { allowSubAgents: true, envelope: {
+      budget: { rounds: 2, minutes: 1, costUsd: 0 }, tools: ["read_file"], commands: [], readRoots: [], writePaths: [],
+      network: [], outputs: [], mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
+    } })]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [stage] = await h.untilLive(1);
+    expect(stage.input.maxRounds).toBe(20);
+    stage.finish();
+    expect(await run).toMatchObject({ status: "completed" });
+  } finally {
+    await h.cleanup();
+  }
+});
+
+it("tears down both sessions in the same workspace and run-scope order", async () => {
+  const order: string[] = [];
+  const h = await stageRunHarness({ workflow: {
+    workspaceBinding: {
+      bind: (sessionId) => { order.push(`bind:${sessionId}`); },
+      unbind: sessionId => { order.push(`unbind:${sessionId}`); },
+    },
+    runScope: {
+      sessionLinked: (_runKey, sessionId) => { order.push(`link:${sessionId}`); },
+      sessionEnded: sessionId => { order.push(`end:${sessionId}`); },
+      runEnded: () => undefined,
+    },
+  } });
+  try {
+    const version = await h.confirm([autoStageOf("a", { allowSubAgents: true })]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [stage] = await h.untilLive(1);
+    const bind = stage.callbacks?.onStageSubAgentLinked;
+    if (!bind) throw new Error("No sub-agent link for the opted-in stage");
+    const release = bind("grandchild", "Extract");
+    release();
+    stage.finish();
+    await run;
+    expect(order).toEqual([
+      `bind:${stage.sessionId}`, `link:${stage.sessionId}`, "bind:grandchild", "link:grandchild",
+      "unbind:grandchild", "end:grandchild", `unbind:${stage.sessionId}`, `end:${stage.sessionId}`,
+    ]);
   } finally {
     await h.cleanup();
   }

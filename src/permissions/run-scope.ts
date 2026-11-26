@@ -1,12 +1,12 @@
 // What a template run's engine tells the permission layer (permission tree: run-scoped grant, per-stage breaker). The run authority
 // opens the scope as it links each stage session and closes it when the run ends; nothing else creates or revokes a run grant.
 import type { PermissionManager } from "./permission-manager.js";
-import { endRun, endRunSession, registerRunSession } from "./run-grants.js";
+import { endRun, endRunSession, registerRunSession, type RunSessionMember } from "./run-grants.js";
 import { dropRunApprovals } from "./user-approval-store.js";
 
-interface RunScopeHooks {
-  /** A stage child linked. `lane` is the run authority's verdict for the run: only an attended run takes "Allow for this run". Throws when the link is refused. */
-  sessionLinked(runKey: string, sessionId: string, member: { stageId: string; stageName: string; lane: "attended" | "unattended" }): void;
+export interface RunScopeHooks {
+  /** Links a stage session or its sub-agent. Only an attended run takes "Allow for this run". Throws when the link is refused. */
+  sessionLinked(runKey: string, sessionId: string, member: Omit<RunSessionMember, "runKey">): void;
   sessionEnded(sessionId: string): void;
   runEnded(runKey: string): void;
 }

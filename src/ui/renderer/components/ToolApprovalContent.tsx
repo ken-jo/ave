@@ -953,21 +953,28 @@ export function ToolApprovalContent({
   ]);
 
   if (!open || !request) return null;
-  if (request.browserSite !== undefined) return <BrowserSiteApprovalCard key={request.id} request={request} conversationLabel={conversationLabel} interactionLocked={interactionLocked} onDecide={onDecide} />;
+  const stageLabel = request.runStage
+    ? tHook("toolApprovalDialog.runStage", { stage: request.runStage.stageName })
+    : undefined;
+  const stageAgentLabel = stageLabel && request.requestingAgentTitle
+    ? `${stageLabel} · ${tHook("toolApprovalDialog.requestingAgent", { title: request.requestingAgentTitle })}`
+    : undefined;
+  const surfaceLabel = stageAgentLabel ?? conversationLabel;
+  if (request.browserSite !== undefined) return <BrowserSiteApprovalCard key={request.id} request={request} conversationLabel={stageLabel ?? conversationLabel} interactionLocked={interactionLocked} onDecide={onDecide} />;
   if (request.userOwnedSurface !== undefined && request.userOwnedSurfaceReviewFallback !== true) {
-    return <UserOwnedSurfaceApprovalCard key={request.id} request={request} conversationLabel={conversationLabel} interactionLocked={interactionLocked} onDecide={onDecide} pendingCount={pendingCount}
+    return <UserOwnedSurfaceApprovalCard key={request.id} request={request} conversationLabel={surfaceLabel} interactionLocked={interactionLocked} onDecide={onDecide} pendingCount={pendingCount}
       targetDescription={request.userOwnedSurface === "browser" ? browserTargetText(tHook, request) : terminalTargetText(tHook, request)}
       notes={request.userOwnedSurface === "host-terminal" ? terminalCommandNotes(tHook, request) : []}
       command={request.userOwnedSurface === "host-terminal" ? hostTerminalCommandFacts(tHook, request) : null} />;
   }
   if (request.kind === "extension-start") {
-    return <ExtensionStartApprovalCard key={request.id} request={request} conversationLabel={conversationLabel} interactionLocked={interactionLocked} onDecide={onDecide} />;
+    return <ExtensionStartApprovalCard key={request.id} request={request} conversationLabel={surfaceLabel} interactionLocked={interactionLocked} onDecide={onDecide} />;
   }
   if (request.kind === "egress-host") {
     return (
       <EgressHostApprovalCard
         request={request}
-        conversationLabel={conversationLabel}
+        conversationLabel={surfaceLabel}
         interactionLocked={interactionLocked}
         onDecide={onDecide}
       />
@@ -1081,7 +1088,7 @@ export function ToolApprovalContent({
                       <>
                         <span aria-hidden="true">·</span>
                         <span className="min-w-0 truncate" data-testid="approval-run-stage" data-stage-id={request.runStage.stageId}>
-                          {tHook("toolApprovalDialog.runStage", { stage: request.runStage.stageName })}
+                          {stageAgentLabel ?? stageLabel}
                         </span>
                       </>
                     ) : null}
