@@ -49,11 +49,69 @@ export interface FixtureDeadlines {
   readonly launchMs: number;
   readonly removeMs: number;
 }
-export const FIXTURE_DEADLINES: FixtureDeadlines & { readonly startupMs: number; readonly diagnosticMs: number } =
-  Object.freeze({ startupMs: 90_000, shutdownMs: 30_000, closeMs: 15_000, launchMs: 15_000, removeMs: 10_000, diagnosticMs: 5_000 });
+export const FIXTURE_DEADLINES: FixtureDeadlines & { readonly startupMs: number; readonly diagnosticMs: number;
+  readonly serverMs: number; readonly bodyMs: number } = Object.freeze({ startupMs: 90_000, shutdownMs: 30_000,
+  closeMs: 15_000, launchMs: 15_000, removeMs: 10_000, diagnosticMs: 5_000, serverMs: 5_000, bodyMs: 180_000 });
 /** The longest settle() takes with a profile and home seeded: close, launch settlement, then each removal. */
 export const FIXTURE_CLEANUP_MS = FIXTURE_DEADLINES.shutdownMs + FIXTURE_DEADLINES.closeMs + FIXTURE_DEADLINES.launchMs
   + 3 * FIXTURE_DEADLINES.removeMs;
+/** settle(), then the model server's close and the workspace removal. */
+export const FIXTURE_TEARDOWN_MS = FIXTURE_CLEANUP_MS + FIXTURE_DEADLINES.serverMs + FIXTURE_DEADLINES.removeMs;
+
+export interface TestBudget {
+  readonly bodyMs: number;
+  readonly diagnosticMs: number;
+  readonly teardownMs: number;
+}
+/** Body, its diagnostics, then teardown, each under its own deadline. */
+export const FIXTURE_TEST_BUDGET: TestBudget = Object.freeze({ bodyMs: FIXTURE_DEADLINES.bodyMs,
+  diagnosticMs: 3 * FIXTURE_DEADLINES.diagnosticMs, teardownMs: FIXTURE_TEARDOWN_MS });
+
+/**
+ * Runs the body under its own deadline, then diagnostics and teardown under theirs. A body past its deadline is
+ * abandoned: teardown settles the fixture, which fences its later launch or command use.
+ */
+export async function runBoundedTest(steps: { body(): Promise<void>; diagnose(error: unknown): Promise<void>;
+  teardown(): Promise<unknown[]> }, budget: TestBudget = FIXTURE_TEST_BUDGET): Promise<void> {
+  let bodyFailure: { error: unknown } | undefined;
+  try { await withinDeadline(Promise.resolve().then(() => steps.body()), budget.bodyMs, "Workbook test body"); }
+  catch (error) {
+    bodyFailure = { error };
+    await withinDeadline(Promise.resolve().then(() => steps.diagnose(error)), budget.diagnosticMs, "Workbook diagnostics")
+      .catch(() => {});
+  }
+  let failures: unknown[];
+  try { failures = await withinDeadline(Promise.resolve().then(() => steps.teardown()), budget.teardownMs, "Workbook teardown"); }
+  catch (error) { failures = [error]; }
+  if (failures.length) {
+    throw new AggregateError(bodyFailure ? [bodyFailure.error, ...failures] : failures, "Workbook observation cleanup failed");
+  }
+  if (bodyFailure) throw bodyFailure.error;
+}
+
+interface ModelServer {
+  readonly listening: boolean;
+  closeAllConnections(): void;
+  close(callback: (error?: Error) => void): unknown;
+}
+
+/** Releases and settles the fixture, closes the model server, and removes the workspace only after a confirmed close. */
+export async function teardownWorkbookTest(fixture: { release(): void;
+  settle(deadlines: FixtureDeadlines): Promise<{ closed: boolean; failures: unknown[] }> } | undefined,
+  server: ModelServer, workspace: string, deadlines: FixtureDeadlines & { readonly serverMs: number } = FIXTURE_DEADLINES): Promise<unknown[]> {
+  const failures: unknown[] = [];
+  const step = async (action: () => void | Promise<void>) => {
+    try { await action(); } catch (error) { failures.push(error); }
+  };
+  await step(() => fixture?.release());
+  const settled = fixture ? await fixture.settle(deadlines) : { closed: true, failures: [] };
+  failures.push(...settled.failures);
+  await step(() => server.closeAllConnections());
+  await step(() => server.listening ? withinDeadline(new Promise<void>((resolve, reject) =>
+    server.close((error) => error ? reject(error) : resolve())), deadlines.serverMs, "Workbook model server close") : undefined);
+  if (settled.closed) await step(() => rmSync(workspace, { recursive: true, force: true, maxRetries: 5 }));
+  return failures;
+}
 
 /** The handles a launch supplies: graceful close, and the process it started. */
 export interface OwnedApp {

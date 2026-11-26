@@ -14,7 +14,8 @@ import * as XLSX from "xlsx";
 import { offsetWorkbook } from "../../../src/__tests__/support/table-document-fixtures.js";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
-import { boundedDiagnostic, FIXTURE_CLEANUP_MS, FIXTURE_DEADLINES, prepareWorkbookPublicationBuild, renderWorkbookCommand } from "./xlsx-publication-barrier.js";
+import { boundedDiagnostic, FIXTURE_TEST_BUDGET, prepareWorkbookPublicationBuild, renderWorkbookCommand, runBoundedTest,
+  teardownWorkbookTest } from "./xlsx-publication-barrier.js";
 
 test("edited workbook shows a recalculation badge through the real viewer", async () => {
   expect(builtMainExists()).toBe(true);
@@ -164,8 +165,8 @@ contextBridge.exposeInMainWorld("workbookIpcProbe", {
 });
 
 test("approved agent edits stream into the read-only workbook panel", async () => {
-  // Adds the bounded diagnostic and settle deadlines to the budget; a body that stalls itself is not bounded here.
-  test.setTimeout(180_000 + FIXTURE_CLEANUP_MS + 3 * FIXTURE_DEADLINES.diagnosticMs);
+  // The body, its diagnostics and teardown each run under their own deadline; this is their sum plus setup.
+  test.setTimeout(FIXTURE_TEST_BUDGET.bodyMs + FIXTURE_TEST_BUDGET.diagnosticMs + FIXTURE_TEST_BUDGET.teardownMs + 10_000);
   expect(builtMainExists()).toBe(true);
   mkdirSync(join(process.cwd(), ".cache"), { recursive: true });
   const directory = mkdtempSync(join(process.cwd(), ".cache", "xlsx-agent-live-"));
@@ -222,17 +223,15 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     send(response, {}, "stop");
     response.end("data: [DONE]\n\n");
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const settings = buildLlmSettings("openai-compatible", model);
-  settings.appearance = buildE2eBaseSettings(true, "en").appearance;
-  (settings.llm as { vendors: Record<string, { baseUrl?: string }> }).vendors["openai-compatible"].baseUrl =
-    `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
-  settings.features = { ...(settings.features as Record<string, unknown>), osToolSandbox: true };
   let barrier: ReturnType<typeof prepareWorkbookPublicationBuild> | undefined;
   let ctx: Awaited<ReturnType<typeof launchSeededElectron>> | undefined;
-  const cleanupFailures: unknown[] = [];
-  let bodyFailure: { error: unknown } | undefined;
-  try {
+  await runBoundedTest({ body: async () => {
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const settings = buildLlmSettings("openai-compatible", model);
+    settings.appearance = buildE2eBaseSettings(true, "en").appearance;
+    (settings.llm as { vendors: Record<string, { baseUrl?: string }> }).vendors["openai-compatible"].baseUrl =
+      `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    settings.features = { ...(settings.features as Record<string, unknown>), osToolSandbox: true };
     const publicationBarrier = prepareWorkbookPublicationBuild(REPO_ROOT, directory);
     barrier = publicationBarrier;
     ctx = await publicationBarrier.launch(() => launchSeededElectron({ sessionTitle: "Agent document observation", settings,
@@ -363,8 +362,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
       expect(layout.result.value.inputs).toBe(0);
       expect(layout.result.value.grid.width).toBeLessThanOrEqual(layout.result.value.preview.width + 1);
     } finally { await cdp.detach(); }
-  } catch (error) {
-    bodyFailure = { error };
+  }, diagnose: async () => {
     const page = ctx?.page;
     const diagnostic = {
       toolResults, modelCalls, provisionalFrames, backup: existsSync(`${path}.ave-bak`),
@@ -376,20 +374,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     writeFileSync(failurePath, JSON.stringify(diagnostic, null, 2));
     await boundedDiagnostic(() => test.info().attach("agent-document-failure", { path: failurePath, contentType: "application/json" }), undefined);
     if (page) await boundedDiagnostic(() => page.screenshot({ path: test.info().outputPath("agent-document-failure.png") }), undefined);
-  } finally {
-    const cleanup = async (action: () => void | Promise<void>): Promise<void> => {
-      try { await action(); } catch (error) { cleanupFailures.push(error); }
-    };
-    await cleanup(() => { barrier?.release(); });
-    const settled = barrier ? await barrier.settle() : { closed: true, failures: [] };
-    cleanupFailures.push(...settled.failures);
-    await cleanup(() => { server.closeAllConnections(); });
-    await cleanup(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
-    if (settled.closed) await cleanup(() => { rmSync(directory, { recursive: true, force: true }); });
-  }
-  if (cleanupFailures.length) throw new AggregateError(bodyFailure
-    ? [bodyFailure.error, ...cleanupFailures] : cleanupFailures, "Workbook observation cleanup failed");
-  if (bodyFailure) throw bodyFailure.error;
+  }, teardown: () => teardownWorkbookTest(barrier, server, directory) });
 });
 
 test("approved native edits highlight lines in the read-only code viewer", async () => {

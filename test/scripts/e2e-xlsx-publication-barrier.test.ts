@@ -2,6 +2,7 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -22,7 +23,8 @@ import { preparePowerShellLaunch } from "../../src/tools/powershell-launch.js";
 import { buildSafeChildEnv } from "../../src/tools/safe-env.js";
 import { findShellPathPolicyViolation } from "../../src/tools/shell-path-policy.js";
 import { awaitedHostScriptCommand, findPowerShellAstPathViolation, powerShellHostScriptReadPaths, resolvePowerShellExecutable } from "../../src/tools/shell-tools.js";
-import { boundedDiagnostic, fileSystemIo, type FixtureBuildIo, type OwnedApp, prepareWorkbookPublicationBuild, renderWorkbookCommand } from "../e2e/ui/xlsx-publication-barrier.js";
+import { boundedDiagnostic, fileSystemIo, type FixtureBuildIo, type OwnedApp, prepareWorkbookPublicationBuild, renderWorkbookCommand,
+  runBoundedTest, teardownWorkbookTest } from "../e2e/ui/xlsx-publication-barrier.js";
 
 let root: string;
 let checkout: string;
@@ -466,6 +468,78 @@ describe("workbook publication build", () => {
       await fixture.settle(quick);
       expect(() => fixture.argv(process.execPath, "book.xlsx", "edits.json")).toThrow("settled before its command was built");
       expect(() => fixture.launch(async () => {})).toThrow("settled before its launch");
+    });
+
+    describe("bounded test run", () => {
+      const budget = { bodyMs: 100, diagnosticMs: 100, teardownMs: 6 * 200 + 2 * 200 };
+      const deadlines = { ...quick, serverMs: 200 };
+      async function listening() {
+        const server = createServer((_request, response) => { response.writeHead(200); response.write("open"); });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        return server;
+      }
+
+      it("abandons a hung body, then releases, closes the owned app and reports kept paths within the teardown budget", async () => {
+        const fixture = prepared();
+        const seeds = seededDirectories();
+        const { app, child, calls } = fakeApp(never);
+        const server = await listening();
+        let lateLaunch: Promise<unknown> | undefined;
+        let resume: () => void = () => {};
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        const started = Date.now();
+        const failure = await runBoundedTest({
+          body: async () => {
+            await fixture.launch(async () => { seedAll(fixture, seeds); fixture.starting(); fixture.own(app); });
+            await new Promise<void>((resolve) => { resume = resolve; });
+            lateLaunch = Promise.resolve().then(() => fixture.launch(async () => {})).then(() => "launched", String);
+          },
+          diagnose: never,
+          teardown: () => teardownWorkbookTest(fixture, server, fixture.workspace, deadlines),
+        }, budget).catch((error: unknown) => error);
+        const elapsed = Date.now() - started;
+        try {
+          expect(failure).toBeInstanceOf(AggregateError);
+          const messages = (failure as AggregateError).errors.map(String);
+          expect(messages[0]).toBe("Error: Workbook test body exceeded 100 ms");
+          expect(messages).toContain(`Error: Workbook fixture paths retained because the owned app did not close: ${
+            [fixture.root, ...seeds, fixture.workspace].join(", ")}`);
+          expect(existsSync(fixture.releasePath)).toBe(true);
+          expect(calls.close).toBe(1);
+          expect(child.kills).toHaveLength(1);
+          expect(server.listening).toBe(false);
+          for (const path of [fixture.root, ...seeds, fixture.workspace]) expect(existsSync(path)).toBe(true);
+          expect(elapsed).toBeLessThan(budget.bodyMs + budget.diagnosticMs + budget.teardownMs);
+          resume();
+          await new Promise((resolve) => setImmediate(resolve));
+          expect(await lateLaunch).toBe("Error: The workbook fixture was settled before its launch");
+        } finally {
+          child.exit();
+          child.closePipes();
+          await new Promise((resolve) => setImmediate(resolve));
+          errors.mockRestore();
+          for (const path of [fixture.root, ...seeds, fixture.workspace]) rmSync(path, { recursive: true, force: true });
+        }
+      });
+
+      it("removes every path after a hung body whose app closes, and surfaces only the body deadline", async () => {
+        const fixture = prepared();
+        const seeds = seededDirectories();
+        const { app, calls } = fakeApp();
+        const server = await listening();
+        const failure = await runBoundedTest({
+          body: async () => {
+            await fixture.launch(async () => { seedAll(fixture, seeds); fixture.starting(); fixture.own(app); });
+            await never();
+          },
+          diagnose: async () => {},
+          teardown: () => teardownWorkbookTest(fixture, server, fixture.workspace, deadlines),
+        }, budget).catch((error: unknown) => error);
+        expect(String(failure)).toBe("Error: Workbook test body exceeded 100 ms");
+        expect(calls.close).toBe(1);
+        expect(server.listening).toBe(false);
+        for (const path of [fixture.root, ...seeds, fixture.workspace]) expect(existsSync(path)).toBe(false);
+      });
     });
   });
 
