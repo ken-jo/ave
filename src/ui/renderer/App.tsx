@@ -1829,7 +1829,7 @@ export function App() {
         await refreshSessions();
       },
     };
-  }, [api, sessions, tileSessions, workingSessions, chatGroupSessions, refreshSessions, handleExport, handleImportAndLoad, setActiveView, statusPushToast]);
+  }, [api, sessions, tileSessions, workingSessions, chatGroupSessions, refreshSessions, handleExport, handleImportAndLoad, setActiveView, statusPushToast, t]);
   // Turns ending off screen mark their rows unread; viewing the conversation clears the mark.
   useTurnAttention({
     tiles: tileSessions,

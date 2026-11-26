@@ -303,6 +303,14 @@ function withCwdPinOutcome<T extends { output: string; isError: boolean; metadat
 
 const failedPin = (pin: WindowsHoldVerdict | undefined): boolean => pin !== undefined && pin.kind !== "ok";
 
+function heldCommandExit(child: ChildProcess, pin: WindowsHoldVerdict): ShellCompletion {
+  return pin.kind === "ok" ? { code: child.exitCode, signal: child.signalCode } : { code: null, signal: null };
+}
+
+function commandExitMetadata(code: number | null, pin: WindowsHoldVerdict | undefined): { returncode?: number | null } {
+  return failedPin(pin) ? {} : { returncode: code };
+}
+
 /** Keep a bounded UTF-8 prefix while continuing to drain both child pipes. */
 type BoundOutputCaptureFactory = () => ToolOutputCapture;
 
@@ -475,7 +483,11 @@ function onShellEnd(
   if (held !== undefined) {
     let unstarted: Error | undefined;
     child.once("error", (err) => { if (child.pid === undefined) unstarted = err; });
-    void held.verdict.then((pin) => unstarted === undefined ? finish(child.exitCode, child.signalCode, pin) : failed(unstarted, pin)).catch(fault);
+    void held.verdict.then((pin) => {
+      if (unstarted !== undefined) return failed(unstarted, pin);
+      const { code, signal } = heldCommandExit(child, pin);
+      return finish(code, signal, pin);
+    }).catch(fault);
     return;
   }
   void lifetime.stopped.then(() => finish(child.exitCode, null)).catch(fault);
@@ -614,8 +626,8 @@ interface BackgroundShellEntry {
 interface BackgroundShellReadResult {
   shellId: string;
   status: BackgroundShellStatus;
-  exitCode: number | null;
-  signal: string | null;
+  exitCode?: number | null;
+  signal?: string | null;
   /** New output since the previous read (advances the cursor). */
   output: string;
   /** True once total output hit the cap and later bytes were dropped. */
@@ -1106,8 +1118,7 @@ function createManager(): BackgroundShellManager {
     return {
       shellId: entry.shellId,
       status: entry.status,
-      exitCode: entry.exitCode,
-      signal: entry.signal,
+      ...(failedPin(entry.pin) ? {} : { exitCode: entry.exitCode, signal: entry.signal }),
       output,
       truncated: entry.outputTruncated,
       command: entry.command,
@@ -1264,7 +1275,8 @@ function createManager(): BackgroundShellManager {
             heldShells.delete(entry);
           }
           if (pin.kind === "unconfirmed") reportUnconfirmed(entry);
-          settle(child.exitCode, child.signalCode, pin);
+          const { code, signal } = heldCommandExit(child, pin);
+          settle(code, signal, pin);
         });
         return shellId;
       }
@@ -2890,21 +2902,21 @@ export async function spawnWithSandbox(
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
       // Per-command cleanup (proxy/helper state) after the wrapped command ends.
       const { output: formatted, sandboxCleanupFailed } = await annotateSandboxCommandResult(egress.token, wrapped, lifetime.output(outputCollector.format(
-        lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
+        lifetime.timedOut || lifetime.aborted || failedPin(pin) ? undefined : { code, signal },
       )), command, lifecycleCleaned);
       outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || sandboxCleanupFailed || failedPin(pin) ? "failed" : undefined);
       if (lifetime.timedOut) {
         resolveResult(withCwdPinOutcome(withReleaseFailures({
           output: formatTimeoutOutput(formatted, command, timeoutSeconds),
           isError: true,
-          metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: true, sandboxed: true,
+          metadata: { ...artifactMetadata, ...lifetime.metadata(), ...commandExitMetadata(code, pin), timedOut: true, sandboxed: true,
             ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
         }, released), pin, true));
       } else {
         const result = withCwdPinOutcome(withReleaseFailures({
           output: formatted,
           isError: lifetime.aborted || code !== 0 || sandboxCleanupFailed,
-          metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, sandboxed: true,
+          metadata: { ...artifactMetadata, ...lifetime.metadata(), ...commandExitMetadata(code, pin), sandboxed: true,
             ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
           ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
         }, released), pin, lifetime.aborted);
@@ -3063,20 +3075,20 @@ async function spawnWithTimeout(
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
       outputCollector.finishObservation(code, observed);
       const formatted = lifetime.output(outputCollector.format(
-        lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
+        lifetime.timedOut || lifetime.aborted || failedPin(pin) ? undefined : { code, signal },
       ));
       if (lifetime.timedOut) {
         resolve(withCwdPinOutcome({
           output: formatTimeoutOutput(formatted, command, timeoutSeconds),
           isError: true,
-          metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: true },
+          metadata: { ...artifactMetadata, ...lifetime.metadata(), ...commandExitMetadata(code, pin), timedOut: true },
         }, pin, true));
       } else {
         resolve(withCwdPinOutcome({
           output: rejected
             ? `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}` : formatted,
           isError: rejected || lifetime.aborted || code !== 0,
-          metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code },
+          metadata: { ...artifactMetadata, ...lifetime.metadata(), ...commandExitMetadata(code, pin) },
           ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
         }, pin, lifetime.aborted));
       }
@@ -4290,7 +4302,7 @@ async function spawnPowerShellWithSandbox(
       settled = true;
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
       const { output, sandboxCleanupFailed } = await annotateSandboxCommandResult(egress.token, wrapped, lifetime.output(outputCollector.format(
-        lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
+        lifetime.timedOut || lifetime.aborted || failedPin(pin) ? undefined : { code, signal },
       )), command, lifecycleCleaned);
       outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || sandboxCleanupFailed || failedPin(pin) ? "failed" : undefined);
       const result = withReleaseFailures({
@@ -4298,7 +4310,7 @@ async function spawnPowerShellWithSandbox(
           ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
           : output,
         isError: lifetime.aborted || lifetime.timedOut || code !== 0 || sandboxCleanupFailed,
-        metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut, sandboxed: true,
+        metadata: { ...artifactMetadata, ...lifetime.metadata(), ...commandExitMetadata(code, pin), timedOut: lifetime.timedOut, sandboxed: true,
           ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
       }, released);
       const pinned = withCwdPinOutcome(result, pin, lifetime.aborted || lifetime.timedOut);
@@ -4595,7 +4607,7 @@ async function spawnPowerShellInMxc(
       if (closed !== undefined) await closed;
       watch.dispose();
       settle(async () => {
-        const metadata = { ...watch.metadata(), returncode: code, timedOut: watch.timedOut, sandboxed: true };
+        const metadata = { ...watch.metadata(), ...commandExitMetadata(code, pin), timedOut: watch.timedOut, sandboxed: true };
         let completed: SpawnResult = { output: "", isError: true, metadata };
         const failures = await runReleaseSteps([
           async () => {
@@ -4607,7 +4619,7 @@ async function spawnPowerShellInMxc(
             }
             // The refusals recorded under this call's token outlive its release.
             const text = await annotateWithSandboxViolations(egressToken, watch.output(output.format(
-              watch.timedOut || watch.aborted ? undefined : { code, signal: exitSignal },
+              watch.timedOut || watch.aborted || failedPin(pin) ? undefined : { code, signal: exitSignal },
             )));
             completed = {
               output: watch.timedOut
@@ -4626,9 +4638,11 @@ async function spawnPowerShellInMxc(
       });
     };
     if (run !== undefined) {
-      void run.verdict.then((pin) => unstartedLauncher === undefined
-        ? finish(spawned.exitCode, spawned.signalCode, pin)
-        : finishSpawnFailure(unstartedLauncher, pin)).catch(fault);
+      void run.verdict.then((pin) => {
+        if (unstartedLauncher !== undefined) return finishSpawnFailure(unstartedLauncher, pin);
+        const { code, signal } = heldCommandExit(spawned, pin);
+        return finish(code, signal, pin);
+      }).catch(fault);
     }
     else {
       void watch.stopped.then(() => finish(spawned.exitCode)).catch(fault);
@@ -4695,7 +4709,7 @@ async function spawnPowerShell(
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
       outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || failedPin(pin) ? "failed" : undefined);
       const output = lifetime.output(outputCollector.format(
-        lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
+        lifetime.timedOut || lifetime.aborted || failedPin(pin) ? undefined : { code, signal },
       ));
       resolve(withCwdPinOutcome({
         output: lifetime.timedOut
@@ -4703,7 +4717,7 @@ async function spawnPowerShell(
           : rejected
             ? `PowerShell spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}` : output,
         isError: rejected || lifetime.aborted || lifetime.timedOut || code !== 0,
-        metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut },
+        metadata: { ...artifactMetadata, ...lifetime.metadata(), ...commandExitMetadata(code, pin), timedOut: lifetime.timedOut },
       }, pin, lifetime.aborted || lifetime.timedOut));
     };
 

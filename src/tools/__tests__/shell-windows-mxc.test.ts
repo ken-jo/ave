@@ -577,6 +577,26 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
   });
 
+  it.each(["parser", "command"] as const)("omits the launcher exit code when the held container %s has no verdict", async (phase) => {
+    bootMxcShells();
+    const hold = vi.mocked(holdHostShellSpawnDirectory);
+    const holdDirectory = hold.getMockImplementation();
+    if (holdDirectory === undefined) throw new Error("no hold implementation");
+    if (phase === "command") hold.mockImplementationOnce(holdDirectory);
+    hold.mockImplementationOnce(async (authorization) => ({
+      ...await holdDirectory(authorization),
+      bind: (child) => {
+        const verdict = deferred<WindowsHoldVerdict>();
+        child.once("exit", () => { verdict.resolve({ kind: "unconfirmed" }); });
+        return { verdict: verdict.promise, stop: () => verdict.promise };
+      },
+    }));
+    const result = await executePowerShell(context("held-container-unconfirmed"));
+    expect(result).toMatchObject({ isError: true, notice: expect.stringContaining("cwd-pin-unconfirmed") });
+    expect(result.metadata).not.toHaveProperty("returncode");
+    expect(result.output).not.toMatch(/exited with code|terminated by signal/u);
+  });
+
   it("keeps a running launcher's abort watch after an error and releases only on close", async () => {
     bootMxcShells();
     const container = captureCommandLaunch();

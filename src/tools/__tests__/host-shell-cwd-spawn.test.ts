@@ -404,6 +404,8 @@ describe.runIf(process.platform === "win32")("Windows host cwd hold at launch", 
     expect(result.isError).toBe(true);
     expect(result.output).toContain("cwd-pin-lost");
     expect(result.notice).toContain("cwd-pin-lost");
+    expect(result.metadata).not.toHaveProperty("returncode");
+    expect(result.output).not.toMatch(/exited with code|terminated by signal/u);
   });
 
   it.each([
@@ -434,6 +436,8 @@ describe.runIf(process.platform === "win32")("Windows host cwd hold at launch", 
     if (failed) {
       expect(result.notice).toContain("cwd-pin-lost");
       expect(result.metadata).toMatchObject({ cwdPinLost: true });
+      expect(result.metadata).not.toHaveProperty("returncode");
+      expect(result.output).not.toMatch(/exited with code|terminated by signal/u);
     } else expect(result.notice).toBeUndefined();
   }, 60000);
 
@@ -506,7 +510,10 @@ describe.runIf(process.platform === "win32")("Windows host cwd hold at launch", 
         entered.resolve();
         await resume.promise;
       }
-      const started = handoff({ bind, launcherArgs: [], assertHeld() {}, dispose() {}, command: undefined, stdio: undefined });
+      const started = handoff({
+        bind, launcherArgs: [], assertHeld() {}, dispose() {}, stdio: undefined,
+        command: (executable, args) => ({ executable, args: [...args] }),
+      });
       if (order === "after bind") {
         entered.resolve();
         await resume.promise;

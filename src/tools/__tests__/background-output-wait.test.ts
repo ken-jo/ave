@@ -308,8 +308,10 @@ describe("background cwd pin outcome", () => {
     f.stdout.emit("data", Buffer.from("x".repeat(MAX_OUTPUT_CHARS + 10)));
     f.report(pin);
     const { result, body } = await settled(f.shellId);
-    expect(body).toMatchObject({ status: "failed", exitCode: 0, truncated: true, completion: t(key) });
-    expect(result).toMatchObject({ isError: true, metadata });
+    expect(body).toMatchObject({ status: "failed", truncated: true, completion: t(key) });
+    expect(body).not.toHaveProperty("exitCode");
+    expect(body).not.toHaveProperty("signal");
+    expect(result).toMatchObject({ isError: true, metadata, notice: t(key) });
   });
   it("shows a lost hold's reason in the shell task preview", async () => {
     const f = pinned();
@@ -373,8 +375,12 @@ describe("background cwd pin outcome", () => {
     const pending = [kill(f.shellId), kill(f.shellId)];
     f.report({ kind: "unconfirmed" });
     for (const result of await Promise.all(pending)) {
-      expect(JSON.parse(result.output)).toMatchObject({ status: "failed", completion: t("shellExecution.cwdPinUnconfirmed") });
-      expect(result).toMatchObject({ isError: true, metadata: { cwdPinUnconfirmed: true } });
+      const body = JSON.parse(result.output);
+      const notice = t("shellExecution.cwdPinUnconfirmed");
+      expect(body).toMatchObject({ status: "failed", completion: notice });
+      expect(body).not.toHaveProperty("exitCode");
+      expect(body).not.toHaveProperty("signal");
+      expect(result).toMatchObject({ isError: true, metadata: { cwdPinUnconfirmed: true }, notice });
     }
   });
   it("answers a stop from the stopped run itself once the registry has dropped it", async () => {
