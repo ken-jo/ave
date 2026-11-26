@@ -10,7 +10,7 @@ import { _assertWindowsGrantBoundariesForTest, buildSandboxConfig } from "../../
 import { LlmRiskClassifier, RuleBasedRiskClassifier, type LlmReviewerProvider } from "../../permissions/reviewer/risk-classifier.js";
 import { derivePluginChildEnvelope } from "../../plugins/isolation/out-of-process-plugin.js";
 import { createPathCanonicalizer, createSensitivePathCheck } from "../../permissions/sensitive-paths.js";
-import { createFilePathPolicy } from "../../tools/file-access-policy.js";
+import { createFilePathPolicy, createStageWorkspacesSkip } from "../../tools/file-access-policy.js";
 import { admitLocalPath, localDriveExists, localFs, openLocalityDecision, withLocalityDecision } from "../local-path-io.js";
 import { resolveShellFilesystemPath, verifyLocalFilesystemChain } from "../shell-filesystem-path.js";
 import { modelShellPath } from "../shell-native-path.js";
@@ -20,7 +20,7 @@ import { setWindowsDriveQueryForTest } from "../windows-drive-locality.js";
 vi.unmock("../windows-drive-locality.js");
 vi.mock("../../permissions/workspace-authorized-roots.js", () => ({ listAuthorizedWorkspaceRoots: () => [] }));
 
-const probes = vi.hoisted(() => ({ calls: [] as string[], links: new Map<string, string>(), denied: new Set<string>() }));
+const probes = vi.hoisted(() => ({ calls: [] as string[], links: new Map<string, string>(), realpaths: new Map<string, string>(), denied: new Set<string>() }));
 vi.mock("node:fs", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs")>();
   const key = (path: unknown) => String(path).replaceAll("\\", "/").toLowerCase();
@@ -32,6 +32,7 @@ vi.mock("node:fs", async importOriginal => {
     }
     if (target !== undefined && operation === "readlinkSync") return target;
     if (operation === "realpathSync.native" && probes.denied.has(key(args[0]))) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+    if (operation === "realpathSync.native" && probes.realpaths.has(key(args[0]))) return probes.realpaths.get(key(args[0]));
     return original(...args);
   };
   return { ...actual,
@@ -74,6 +75,7 @@ describe.runIf(process.platform === "win32")("drive locality is proven in each d
 
   afterEach(() => {
     setWindowsDriveQueryForTest();
+    probes.realpaths.clear();
     probes.links.clear();
     vi.unstubAllEnvs();
     rmSync(root, { recursive: true, force: true });
@@ -169,6 +171,30 @@ describe.runIf(process.platform === "win32")("drive locality is proven in each d
     expect(policy.admissionDenied(remappedSecret)).toBe("ave-home:secrets");
     expect(policy.sensitive(remappedSecret)).toBe("ave-home:secrets");
     expect(queries).toContain(drive);
+  });
+
+  it("rechecks the stage workspace anchor and explicit root after a remap", async () => {
+    const drive = root.slice(0, 2).toUpperCase();
+    const home = join(root, "alias");
+    const physicalHome = join(root, "physical");
+    const oldStage = join(physicalHome, "worktrees", "example", "abcdefghijkl", "build");
+    mkdirSync(oldStage, { recursive: true });
+    const homeKey = home.replaceAll("\\", "/").toLowerCase();
+    probes.links.set(homeKey, physicalHome);
+    probes.realpaths.set(homeKey, physicalHome);
+    vi.stubEnv("AVE_HOME", home);
+    const lexicalFile = join(home, "worktrees", "example", "abcdefghijkl", "build", "notes.txt");
+    const ordinary = createStageWorkspacesSkip(root);
+    const explicit = createStageWorkspacesSkip(oldStage);
+    const judge = () => withLocalityDecision(() => [ordinary(join(oldStage, "notes.txt")), explicit(lexicalFile)]);
+
+    expect(judge()).toEqual([true, false]);
+    await Promise.resolve();
+    mappings.set(drive, SHARE);
+    queries.length = 0;
+
+    expect(judge()).toEqual([false, true]);
+    expect(queries).toEqual([drive]);
   });
 
   it("proves one drive per Windows grant boundary batch, including a fresh recheck", async () => {

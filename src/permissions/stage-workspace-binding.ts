@@ -1,6 +1,7 @@
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
+import { admitLocalRoute, decisionMemo, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { inspectPhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 
 /** Host-minted, memory only: a session id to the one real stage folder it works in. Never a path-prefix rule. */
@@ -76,11 +77,27 @@ export function isBoundStageWorkspacePath(sessionId: string | undefined, path: s
   return root !== undefined && below(root, path) !== null;
 }
 
+function tryLocalRealpath(path: string): string | undefined {
+  try { return localFs.realpathNative(admitLocalRoute(path).verdict); }
+  catch { return undefined; }
+}
+
 /** Whether an absolute path, as spelled, is `<home>/worktrees` or lies beneath it, for the home's given and physical spelling. */
 export function createStageWorkspacesMatcher(): (path: string) => boolean {
-  const homes = [resolve(aveHome())];
-  try { homes.push(realpathSync.native(aveHome())); } catch { /* A home that is not there has no second spelling. */ }
-  return path => isAbsolute(path) && homes.some(home => below(home, resolve(path))?.[0] === "worktrees");
+  const owner = {};
+  return path => withLocalityDecision(() => {
+    if (!isAbsolute(path)) return false;
+    const memo = decisionMemo<string[]>(owner);
+    let homes = memo.get("homes");
+    if (homes === undefined) {
+      const home = resolve(aveHome());
+      homes = [home];
+      const physical = tryLocalRealpath(home);
+      if (physical !== undefined) homes.push(physical);
+      memo.set("homes", homes);
+    }
+    return homes.some(home => below(home, resolve(path))?.[0] === "worktrees");
+  });
 }
 
 export function isStageWorkspacesPath(path: string): boolean {
