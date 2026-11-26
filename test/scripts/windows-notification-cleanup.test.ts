@@ -35,8 +35,11 @@ function prepareRegistryFixture(clsid = legacyClsid) {
   const programsLookup =
     /\[Environment\]::GetFolderPath\(\s*\[Environment\+SpecialFolder\]::Programs,\s*\[Environment\+SpecialFolderOption\]::DoNotVerify\s*\)/;
   const registryOpen = /\[ToastRegistryKey\]::OpenCurrentUser\(/g;
+  const shortcutDeleteBoundary =
+    /^ {4}(?:\[System\.IO\.File\]::Delete\(\$entry\.Path\)|\$deleteFile = \[ToastShortcutFile\]::Open\(\$entry\.Path, \$true\))/m;
   expect(cleanup.match(registryOpen)).toHaveLength(2);
   expect(cleanup).toMatch(programsLookup);
+  expect(cleanup).toMatch(shortcutDeleteBoundary);
   expect(cleanup).toContain("$shortcutMoved = $false");
   // The lock must land in the fixture directory, never in the real profile.
   if (cleanup.includes(lockName)) expect(cleanup).toMatch(lockLookup);
@@ -44,6 +47,7 @@ function prepareRegistryFixture(clsid = legacyClsid) {
     .replace(programsLookup, "$env:AVE_FIXTURE_DIRECTORY")
     .replace(lockLookup, "$env:AVE_FIXTURE_DIRECTORY")
     .replace(registryOpen, "[FixtureRegistryKey]::OpenCurrentUser(")
+    .replace(shortcutDeleteBoundary, (statement) => `    Update-ShortcutBeforeDelete $entry.Path\n${statement}`)
     .replace("$shortcutMoved = $false", () => `${registryFixture}\n$shortcutMoved = $false`);
   writeFileSync(script, fixtureScript);
 
@@ -315,6 +319,22 @@ describe("current-user toast cleanup", () => {
     expect(fixture.readShortcut()).toBe("fixture foreign shortcut");
   });
 
+  it.runIf(process.platform === "win32").each([
+    ["changes the contents", "change-shortcut-contents", "fixture foreign shortcut"],
+    ["replaces the file with identical contents", "replace-shortcut-file", shortcutEvidence],
+  ])("preserves the resumed shortcut when a writer %s after the final ownership read", (_label, scenario, expectedBytes) => {
+    const fixture = prepareRegistryFixture();
+    fixture.quarantineShortcut();
+
+    const result = fixture.run(scenario);
+    expect(result.error).toBeUndefined();
+    expect(result.stderr).toContain(`fixture exercised ${scenario}`);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(1);
+    expect(result.stderr).toContain("the quarantined shortcut changed before deletion");
+    expect(readFileSync(join(fixture.installDir, quarantineName("1")), "utf8")).toBe(expectedBytes);
+    expect(result.stdout).not.toContain('"status":"removed","artifact":"shortcut"');
+  });
+
   it.runIf(process.platform === "win32")("reports unattributable quarantine entries without touching them or blocking cleanup", () => {
     const fixture = prepareRegistryFixture();
     const directory = join(fixture.installDir, quarantineName("a"));
@@ -547,7 +567,7 @@ describe("current-user toast cleanup", () => {
     const hives = [...cleanup.matchAll(/\bRegistryHive\.(\w+)/g)];
     expect(new Set(hives.map((match) => match[1]))).toEqual(new Set(["CurrentUser"]));
     const registered = cleanup.indexOf("Confirm-ToastRegistrationsAbsent $installedExe $candidateClsids");
-    expect(cleanup.indexOf("[System.IO.File]::Delete($entry.Path)")).toBeGreaterThan(registered);
+    expect(cleanup.indexOf("$deleteFile.Delete()")).toBeGreaterThan(registered);
     expect(cleanup).toContain("[System.IO.File]::Move($quarantinePath, $shortcutPath)");
   });
 

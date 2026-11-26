@@ -215,3 +215,17 @@ if ($env:AVE_FIXTURE_SCENARIO -eq "unrelated-lock") {
   finally { $foreignLock.Dispose() }
   exit 0
 }
+
+function Update-ShortcutBeforeDelete {
+  param([string]$Path)
+  $scenario = $env:AVE_FIXTURE_SCENARIO
+  if ($scenario -eq "change-shortcut-contents") {
+    [System.IO.File]::WriteAllText($Path, "fixture foreign shortcut")
+  }
+  elseif ($scenario -eq "replace-shortcut-file") {
+    [System.IO.File]::Move($Path, "$Path.previous")
+    [System.IO.File]::WriteAllText($Path, "fixture shortcut evidence")
+  }
+  else { return }
+  [Console]::Error.WriteLine("fixture exercised $scenario")
+}

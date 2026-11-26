@@ -124,8 +124,11 @@ One per-user lock replaces repeated scans.
   CLSID in every registry view once, under the lock, before any quarantined
   shortcut is deleted.
 - **Quarantine.** The verified shortcut is renamed to
-  `.<name>.ave-uninstall-<id>.lnk` and deleted only after the final read. A
-  failure before any registry delete moves it back. A failure after a delete
+  `.<name>.ave-uninstall-<id>.lnk` and deleted only after the final read. The
+  final shortcut check denies writes and replacement while reading the shell
+  properties. The deletion handle checks the same file identity and contents
+  before marking that handle for deletion. A failure before any registry delete
+  moves it back. A failure after a delete
   leaves it in quarantine as the record of the started cleanup. The next
   cleanup lists such entries with `Get-QuarantinedShortcuts` and re-verifies
   each through `Get-OwnedShortcutClsid`. An exact owned entry is resumed in

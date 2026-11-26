@@ -205,13 +205,14 @@ function Assert-AveStopped {
   }
 }
 
-function Initialize-ToastRegistry {
+function Initialize-ToastCleanup {
   # Managed registry methods can collapse a native failure into a missing value or a successful delete.
   Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
@@ -341,6 +342,105 @@ public sealed class ToastRegistryKey : IDisposable
     public void Dispose()
     {
         handle.Dispose();
+    }
+}
+
+public sealed class ToastShortcutFile : IDisposable
+{
+    private const uint GenericRead = 0x80000000;
+    private const uint DeleteAccess = 0x00010000;
+    private const uint OpenReparsePoint = 0x00200000;
+    private const int FileDispositionInfo = 4;
+    private const int FileAttributeTagInfo = 9;
+    private const int FileIdInfo = 18;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct AttributeTag
+    {
+        public FileAttributes Attributes;
+        public uint ReparseTag;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileIdentity
+    {
+        public ulong Volume;
+        public ulong Low;
+        public ulong High;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(string path, uint access, FileShare share,
+        IntPtr security, FileMode mode, uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int informationClass,
+        out AttributeTag information, int size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int informationClass,
+        out FileIdentity information, int size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetFileInformationByHandle(SafeFileHandle handle, int informationClass,
+        ref byte information, int size);
+
+    private readonly FileStream stream;
+    private readonly FileIdentity identity;
+
+    private ToastShortcutFile(FileStream stream, FileIdentity identity)
+    {
+        this.stream = stream;
+        this.identity = identity;
+    }
+
+    public static ToastShortcutFile Open(string path, bool forDeletion)
+    {
+        var handle = CreateFileW(path, GenericRead | (forDeletion ? DeleteAccess : 0), FileShare.Read,
+            IntPtr.Zero, FileMode.Open, OpenReparsePoint, IntPtr.Zero);
+        try
+        {
+            if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+            AttributeTag tag;
+            if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo, out tag, Marshal.SizeOf(typeof(AttributeTag))))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            if ((tag.Attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+                throw new IOException("The quarantined shortcut is not a regular file");
+            FileIdentity identity;
+            if (!GetFileInformationByHandleEx(handle, FileIdInfo, out identity, Marshal.SizeOf(typeof(FileIdentity))))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            return new ToastShortcutFile(new FileStream(handle, FileAccess.Read), identity);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+    }
+
+    public string Digest()
+    {
+        using (var hash = SHA256.Create())
+            return Convert.ToBase64String(hash.ComputeHash(stream));
+    }
+
+    public bool Matches(ToastShortcutFile verifiedFile, string digest)
+    {
+        return identity.Volume == verifiedFile.identity.Volume &&
+            identity.Low == verifiedFile.identity.Low && identity.High == verifiedFile.identity.High &&
+            Digest() == digest;
+    }
+
+    public void Delete()
+    {
+        byte delete = 1;
+        if (!SetFileInformationByHandle(stream.SafeFileHandle, FileDispositionInfo, ref delete, sizeof(byte)))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+
+    public void Dispose()
+    {
+        stream.Dispose();
     }
 }
 '@
@@ -642,7 +742,7 @@ try {
   $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   Assert-AveStopped $installedExe $userSid
 
-  Initialize-ToastRegistry
+  Initialize-ToastCleanup
   $programs = [Environment]::GetFolderPath(
     [Environment+SpecialFolder]::Programs,
     [Environment+SpecialFolderOption]::DoNotVerify
@@ -766,10 +866,24 @@ try {
   )
 
   foreach ($entry in $quarantined) {
-    if ((Get-OwnedShortcutClsid $entry.Path $expectedShortcut) -ne $entry.Clsid) {
-      throw "the quarantined shortcut changed during cleanup"
+    # Keep the shortcut stable while its shell properties are read by path.
+    $verifiedFile = [ToastShortcutFile]::Open($entry.Path, $false)
+    try {
+      if ((Get-OwnedShortcutClsid $entry.Path $expectedShortcut) -ne $entry.Clsid) {
+        throw "the quarantined shortcut changed during cleanup"
+      }
+      $digest = $verifiedFile.Digest()
     }
-    [System.IO.File]::Delete($entry.Path)
+    finally { $verifiedFile.Dispose() }
+
+    $deleteFile = [ToastShortcutFile]::Open($entry.Path, $true)
+    try {
+      if (-not $deleteFile.Matches($verifiedFile, $digest)) {
+        throw "the quarantined shortcut changed before deletion"
+      }
+      $deleteFile.Delete()
+    }
+    finally { $deleteFile.Dispose() }
     if ($null -ne (Get-ShortcutAttributes $entry.Path)) {
       throw "the quarantined owned shortcut survived cleanup"
     }
