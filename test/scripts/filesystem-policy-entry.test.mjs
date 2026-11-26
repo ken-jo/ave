@@ -64,6 +64,11 @@ test("native ACL grants have one producer admitted before account lookup", () =>
   for (const effect of ["getWindowsSandboxUserStatus", "grantWindowsAcl"]) {
     assert.ok(calls.indexOf("admitFilesystemPolicy") >= 0 && calls.indexOf("admitFilesystemPolicy") < calls.indexOf(effect), effect);
   }
+  assert.ok(calls.includes("windowsRuntimeGrants"));
+  assert.ok(!calls.includes("pinWindowsGrantTargets"));
+  assert.ok(calls.indexOf("windowsRuntimeGrants") < calls.indexOf("assertWindowsGrantPins"));
+  assert.ok(calls.indexOf("assertWindowsGrantPins") < calls.indexOf("grantWindowsAcl"));
+  assert.ok(calls.indexOf("grantWindowsAcl") < calls.lastIndexOf("assertWindowsGrantPins"));
   const admission = callsIn(nativeModules[0], "admitFilesystemPolicy");
   assert.ok(admission.indexOf("expandWindowsGrantRequests") >= 0);
   assert.ok(admission.indexOf("expandWindowsGrantRequests") < admission.indexOf("pinWindowsGrantRequests"));

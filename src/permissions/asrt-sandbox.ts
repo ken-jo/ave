@@ -16,7 +16,7 @@ import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { normalizePathForSandbox } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { containsGlobChars, containsGlobCharsWin, expandWindowsEnvRefs, globPatternBaseDir, isUncPath, stripExtendedPathPrefix, toForwardSlashes } from "./sandbox-path-spelling.js";
 import { existingWindowsGrants, expandWindowsGrantRequests, pinWindowsFilesystemConfig, pinWindowsGrantRequests, windowsPinnedPaths, windowsRuntimeGrants, type WindowsGrantRequests } from "./windows-stamp-targets.js";
-import { assertWindowsGrantGrammar, expandWindowsGrantPath, pinWindowsGrantTargets, windowsGrantBase, type ExpandedWindowsGrant } from "./windows-grant-targets.js";
+import { assertWindowsGrantGrammar, expandWindowsGrantPath, windowsGrantBase, type ExpandedWindowsGrant } from "./windows-grant-targets.js";
 import { admittedWindowsEntry, assertWindowsAclPolicyBudget, expandWindowsAclDenyLists, expandWindowsFsPaths, isAdmittedWindowsEntry, setWindowsAclRecoveryListener, WindowsSandboxError, type WindowsAclRecoveryReport, type WindowsAdmission } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { readAsrtSignalReleaseClaim } from "./asrt-signal-ownership.js";
 import { getSrtWinArchitecture, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
@@ -3698,20 +3698,20 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     );
   }
 
-  const requestedWrite = windowsPinnedPaths(timeStep("preflightMs", () => existingWindowsGrants(pinned.allowWrite ?? [])));
-  const requestedRead = [
-    ...windowsPinnedPaths(timeStep("preflightMs", () => existingWindowsGrants(pinned.allowRead ?? []))),
-    ...requestedWrite,
-  ];
-
-  for (const path of requestedRead) assertWindowsGrantGrammar(path);
-  const pins = timeStep("pinsMs", () => pinWindowsGrantTargets(requestedRead, { validatePath: assertWindowsGrantGrammar }));
-  const identities = new Map(pins.map(pin => [windowsObjectKey(pin), pin]));
-  const requests = pins.map(pin => ({ path: stripExtendedPathPrefix(pin.canonical!), identity: windowsObjectKey(pin) }));
+  // Keep the identity that passed admission through the native grant and rollback.
+  const writeGrants = windowsRuntimeGrants(pinned.allowWrite ?? []);
+  const readGrants = [...windowsRuntimeGrants(pinned.allowRead ?? []), ...writeGrants];
+  const requests = timeStep("pinsMs", () => readGrants.map(entry => {
+    const path = entry.path;
+    assertWindowsGrantGrammar(path);
+    return { path, identity: windowsObjectKey({
+      volumeSerial: entry.admitted.volumeSerial ?? null, fileId: entry.admitted.fileId ?? null,
+    }) };
+  }));
+  const writeRequests = requests.slice(requests.length - writeGrants.length);
   const allowRead = requests.map(request => request.path);
-  const writeStart = requestedRead.length - requestedWrite.length;
-  const allowWrite = requests.slice(writeStart).map(request => request.path);
-  const writePins = pins.slice(writeStart);
+  const allowWrite = writeRequests.map(request => request.path);
+  const writeIdentities = new Set(writeRequests.map(request => request.identity));
   timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome));
   timeStep("preflightMs", () => checkWindowsSandboxStampTargets(pinned));
 
@@ -3736,7 +3736,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
         const path = typeof entry === "string" ? entry : entry.path;
         const overlaps = allowWrite.some(grant => lexicalWindowsOverlap(grant, path))
           || (admitted?.volumeSerial !== undefined && admitted.fileId !== undefined
-            && writePins.some(pin => pin.volumeSerial === admitted.volumeSerial && pin.fileId === admitted.fileId));
+            && writeIdentities.has(windowsObjectKey({ volumeSerial: admitted.volumeSerial, fileId: admitted.fileId })));
         if (!overlaps) continue;
         if (admitted === undefined && containsGlobCharsWin(path)) throw new Error("Windows filesystem write grant overlaps a deny glob");
         const key = windowsDenyOperandKey(path);
@@ -3803,9 +3803,9 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   if (stampFailure !== undefined) throw stampFailure;
   // Resolved after every refusal above, so a refused turn starts no holder.
   const holderPid = timeStep("preflightMs", () => typeof requestedHolderPid === "number" ? requestedHolderPid : requestedHolderPid());
-  if (allowRead.length > 0 || allowWrite.length > 0) {
+  if (requests.length > 0) {
+    timeStep("assertMs", () => assertWindowsGrantPins(requests));
     try {
-      timeStep("assertMs", () => assertWindowsGrantPins(requests, identities));
       // srt-win writes the DACL by name: a swap between the pre-pin and native write
       // cannot be excluded. Only the post-pin and revoke detect that remaining window.
       // A swap restored before the post-pin is undetected; a crash before it skips
@@ -3823,7 +3823,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
         write: allowWrite,
         srtWin,
       }));
-      timeStep("assertMs", () => assertWindowsGrantPins(requests, identities));
+      timeStep("assertMs", () => assertWindowsGrantPins(requests));
     } catch (err) {
       let outcome: ReturnType<typeof revokeWindowsAcl> = undefined;
       let cleanupError: unknown;
@@ -4041,16 +4041,15 @@ function hasWindowsGrantCleanup(requests: readonly WindowsGrantTarget[], outcome
   });
 }
 
-function assertWindowsGrantPins(requests: readonly WindowsGrantTarget[], identities: ReadonlyMap<string, WindowsPathFacts>): void {
+function assertWindowsGrantPins(requests: readonly WindowsGrantTarget[]): void {
   const paths = requests.map(request => request.path);
   let rows: readonly WindowsPathFacts[];
   try { rows = pinWindowsPaths(paths); }
   catch (cause) { throw new Error(`Windows filesystem grant identity check failed: ${paths.join(", ")}`, { cause }); }
   for (const [index, path] of paths.entries()) {
     const row = rows[index]!;
-    const expected = identities.get(requests[index]!.identity)!;
     if (admitWindowsReparse(row, "grant") !== true || row.exists !== true
-      || row.volumeSerial !== expected.volumeSerial || row.fileId !== expected.fileId) {
+      || row.volumeSerial === null || row.fileId === null || windowsObjectKey(row) !== requests[index]!.identity) {
       throw new Error(`Windows filesystem grant target identity changed: ${path}`);
     }
   }
