@@ -23,7 +23,8 @@ const h = vi.hoisted(() => ({
   // vanished entry is still listed but gone when looked up; a listing reports both, and every link, as a link.
   drive: new Map<string, { path: string; kind: DriveKind; target?: string }>(),
   listed: [] as string[],
-  synthetic: /^(\\\\\?\\)?c:\\/iu,
+  // Keep native scratch paths on the same volume outside the synthetic fixture tree.
+  synthetic: /^(?:\\\\\?\\)?c:\\(?:(?:work|users\\(?:alice|bob))(?:\\|$)|users\\?$|$)/iu,
   // The runtime root start-up proved, or the refusal of one that was not.
   startRoot: vi.fn((): string => "C:\\Users\\alice\\AppData\\Local\\ai.agent-connector.ave\\mxc-runtime"),
   // Stands for the issued-HOME identity check (its own suite runs it on real directories): the invocation's HOME itself.
@@ -309,7 +310,7 @@ describe("prepareMxcShellLaunch", () => {
   });
 
   describe.runIf(process.platform === "win32")("the confinement backends' own state", () => {
-    // These paths are real directories, off the synthetic drive: their lookup needs the host's resources.
+    // These paths use the host filesystem, so their lookup needs the host's resources.
     beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
     const runtimeRoot = (): string => String(mxcConfinementStatePaths()[0]);
 
