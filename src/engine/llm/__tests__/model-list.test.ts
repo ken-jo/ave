@@ -140,6 +140,9 @@ describe("LLM model list sync", () => {
     "https://proxy.example:8443/gateway//v1?key=fixture#part",
     "http://localhost:11434/v1/",
     "https://fixture.services.ai.azure.com/api/projects/project-a/openai/v1",
+    "https://api.anthropic.com",
+    "https://generativelanguage.googleapis.com/v1beta",
+    "https://openrouter.ai/api/v1",
   ])("gives pricing the same model-list address for %s, and only that address", (base) => {
     const listedAt = modelListEndpointFromBaseUrl(base);
     expect(isModelListOfBase(listedAt, base)).toBe(true);
