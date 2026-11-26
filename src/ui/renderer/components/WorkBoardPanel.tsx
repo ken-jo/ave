@@ -59,7 +59,7 @@ import { usePaneActions } from "./PaneFrame.js";
 import { ApprovalDock, ApprovalLaneCard } from "./permissions/ApprovalDock.js";
 import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
 import { LiveRunPanel, LIVE_STEP_PANEL_ID, type LiveRunEntry } from "./work-board/LiveRunPanel.js";
-import { stageApprovalLanes, useBoardApprovals, useToolApprovalSurface } from "./work-board/use-board-approvals.js";
+import { stageApprovalLanes, useBoardApprovals, useToolApprovalSurface, workBoardApprovalMatchesProject } from "./work-board/use-board-approvals.js";
 import type { ApprovalRequest } from "../types.js";
 import { useScheduleData } from "./schedule/use-schedule-data.js";
 import { boardScheduleCards, weekStart } from "./schedule/board-schedule.js";
@@ -1785,12 +1785,15 @@ export function WorkBoardPanel({
   // The board file holds a key twice: its rows are listed as they read, and no write goes over it until it is fixed by hand.
   const [writesRefused, setWritesRefused] = useState<string | null>(null);
   const listedKeyRef = useRef<string | null>(null);
+  const listRequest = useRef(0);
 
   const refresh = useCallback(async () => {
     if (typeof api.listWorkBoard !== "function") {
       setListedOnce(true);
       return;
     }
+    const request = ++listRequest.current;
+    const isCurrent = () => mountedRef.current && request === listRequest.current;
     setLoading(true);
     const filter = project?.projectRoot
       ? {
@@ -1798,7 +1801,7 @@ export function WorkBoardPanel({
           includeUnscoped: project.isDefault === true,
         }
       : undefined;
-    const key = JSON.stringify(filter ?? null);
+    const key = JSON.stringify([filter, scopeRoot]);
     const fail = (reason?: unknown) => {
       if (listedKeyRef.current !== key) {
         listedKeyRef.current = null;
@@ -1812,7 +1815,7 @@ export function WorkBoardPanel({
     };
     try {
       const result = await api.listWorkBoard(filter);
-      if (!mountedRef.current) return;
+      if (!isCurrent()) return;
       if ("status" in result && result.status === "ok") {
         listedKeyRef.current = key;
         setItems(result.items);
@@ -1825,14 +1828,14 @@ export function WorkBoardPanel({
         fail("error" in result ? result.error : undefined);
       }
     } catch {
-      if (mountedRef.current) fail();
+      if (isCurrent()) fail();
     } finally {
-      if (mountedRef.current) {
+      if (isCurrent()) {
         setLoading(false);
         setListedOnce(true);
       }
     }
-  }, [api, project]);
+  }, [api, project, scopeRoot]);
 
   // The message for the last invalid card delete, unreadable run record discard or missing run clear that did nothing; `changed` when
   // its entry changed.
@@ -1954,7 +1957,7 @@ export function WorkBoardPanel({
     if (workflowDialog?.kind !== "launch-notice" || !workflowDialog.opening || !projectRootEquals(scopeRoot, workflowDialog.target.projectRoot)) return;
     setWorkflowDialog({ kind: "run", item: workflowDialog.item, requestedVersion: workflowDialog.version });
   }, [scopeRoot, workflowDialog]);
-  const { byItem: toolApprovals, surface: approvalSurfaceValue } = useBoardApprovals(visibleRunItems, runState);
+  const { byItem: toolApprovals, surface: approvalSurfaceValue } = useBoardApprovals(visibleRunItems, runState, scopeRoot, project?.isDefault === true);
   const approvalSurface = useToolApprovalSurface(api);
 
   // The live step panel: which run it follows, whether it jumps to a newly started run, and whether a settled run stays listed.
@@ -2199,7 +2202,7 @@ export function WorkBoardPanel({
     void approvalSurfaceValue.decide(head.id, choice, pattern, extras);
   };
   // One lane per stage session of the run: each stage's head card is drawn and answered on its own.
-  const renderApproval = (item: WorkItemResolved, requests: readonly ApprovalRequest[]) => {
+  const renderApproval = (title: string, requests: readonly ApprovalRequest[]) => {
     const lanes = stageApprovalLanes(requests);
     if (lanes.length === 0) return null;
     return lanes.map((lane) => {
@@ -2213,7 +2216,7 @@ export function WorkBoardPanel({
           ) : null}
           <ApprovalLaneCard
             queue={lane.requests}
-            conversationLabel={item.title}
+            conversationLabel={title}
             proposedChoice={approvalSurfaceValue.proposal?.requestId === head.id ? approvalSurfaceValue.proposal.choice : null}
             onDecide={decideHead(head)}
             onOpenPermanentDeny={approvalSurfaceValue.openPermanentDeny}
@@ -2224,6 +2227,21 @@ export function WorkBoardPanel({
       );
     });
   };
+  const parkedByItem = new Map<number, ApprovalRequest[]>();
+  for (const request of approvalSurfaceValue.queue) {
+    const route = request.workBoardProjectApproval;
+    if (!route?.parked || !workBoardApprovalMatchesProject(route, scopeRoot, project?.isDefault === true)) continue;
+    const requests = parkedByItem.get(route.itemId) ?? [];
+    requests.push(request);
+    parkedByItem.set(route.itemId, requests);
+  }
+  const parkedTools = [...parkedByItem].map(([id, requests]) => (
+    <div key={id} className="space-y-1">
+      {renderApproval(items.find(item => item.id === id)?.title ?? t("workApprovals.stageToolApprovals"), requests)}
+    </div>
+  ));
+  const parkedToolCount = [...parkedByItem.values()].reduce((count, requests) => count + requests.length, 0);
+
   // Dialog mode: one card over the board for every run's approvals, in the window queue's order.
   const workflowApprovals = workflowItem ? toolApprovals.get(workflowItem.id) ?? [] : [];
   const dialogQueue = approvalSurface === "dialog"
@@ -2243,13 +2261,12 @@ export function WorkBoardPanel({
       onPinnedChange={setPinned}
       onClose={() => setStepsOpen(false)}
       approvalSurface={approvalSurface}
-      renderApproval={entry => renderApproval(entry.item, entry.approvals)}
+      renderApproval={entry => renderApproval(entry.item.title, entry.approvals)}
       onSteer={steer}
       onStop={stop}
       onRerun={onRun}
       onOpenRecord={onOpenRecord}
       onAppendToDetail={appendToDetail}
-      captureIntent={() => api.captureUserKeyboardIntent()}
     />
   ) : null;
 
@@ -2373,6 +2390,7 @@ export function WorkBoardPanel({
             showAllRequest={stackHidden ? undefined : approvalShowAll}
             onShowAllConsumed={onApprovalShowAllConsumed}
             onCountChange={setApprovalCount}
+            parkedToolApprovals={parkedToolCount > 0 ? { count: parkedToolCount, cards: parkedTools } : undefined}
           />
         </div>
         {(!narrow || narrowTab === "overview") && (
@@ -2449,6 +2467,7 @@ export function WorkBoardPanel({
             <DialogFooter>
               <Button type="button" disabled={workflowDialog.opening} onClick={() => {
                 const opening = onOpenProject?.(workflowDialog.target.projectRoot) === true;
+                if (opening && projectRootEquals(scopeRoot, workflowDialog.target.projectRoot)) void refresh();
                 setWorkflowDialog({ ...workflowDialog, opening, failed: !opening });
               }}>{t("workflowTemplates.openInProject", { project: workflowDialog.target.projectName })}</Button>
             </DialogFooter>
@@ -2457,7 +2476,7 @@ export function WorkBoardPanel({
       )}
       {workflowDialog?.kind === "run" && workflowItem && (
         <WorkflowRunDialog api={api} item={workflowItem} run={runState[workflowItem.id]} requestedVersion={workflowDialog.requestedVersion}
-          approvals={renderApproval(workflowItem, workflowApprovals)}
+          approvals={renderApproval(workflowItem.title, workflowApprovals)}
           onStop={stop} onRetry={(id, input) => api.retryWorkStage(id, input)} onClose={closeWorkflowDialog} restoreFocus={focusWorkflowTrigger}
           onHistory={() => {
             setWorkflowDialog(undefined);

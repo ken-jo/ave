@@ -1,3 +1,7 @@
+import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
+import { approvalSurfaceResolver } from "../../../boot/approval-surface.js";
+import { updateApprovalSurface } from "../../../permissions/approval-surface-registry.js";
+
 import { securitySettingsGestures } from "../../security-settings-gesture.js";
 import { shell } from "electron";
 import { deliverWorkBoardProgress } from "../../work-board-project-scope.js";
@@ -5,6 +9,7 @@ import type { MainWindow } from "../../../main/main-window-host.js";
 import * as permissionSettings from "../../../permissions/permission-settings-store.js";
 import { workBoardDecisionKey, type WorkBoardDecisionChannel } from "../../../shared/work-board-decision-intent.js";
 import { captureWorkBoardTestGesture, pressWorkBoardTestKey, workBoardTestSender } from "../../../__tests__/support/work-board-ipc.js";
+import { registerPermissionsHandlers } from "../permissions.js";
 import { registerWorkApprovalsHandlers } from "../work-approvals.js";
 import { AuditLogger } from "../../../audit/audit-logger.js";
 // A stage gate, a join decision, a stage retry and the start of a template run are work approvals: a sender-validated board-window main
@@ -16,7 +21,7 @@ import { configureHostResources } from "../../../main/host-resources.js";
 import * as namespace from "../../../main/storage/feature-namespace.js";
 import { autoStageOf, stageOf } from "../../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../../work-board/workflow/__tests__/stage-run-harness.js";
-import { WORK_APPROVALS, WORK_BOARD } from "../../../shared/ipc-channels.js";
+import { PERMISSIONS, WORK_APPROVALS, WORK_BOARD } from "../../../shared/ipc-channels.js";
 import { registerWorkBoardHandlers } from "../work-board.js";
 import type { IpcDeps } from "../../types.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../../gated.js";
@@ -125,11 +130,11 @@ it("refuses without a keyboard gesture or from a non-owner frame", async () => {
 it("forwards a gesture-carrying decision with the host's approval surface and audits the decision, never the note", async () => {
   const { event, engine, log } = setup();
   await expect(decide(WORK_BOARD.decideStage, event, 7, { ...gateInput, decision: "request_changes", note: "tighten the summary" })).resolves.toEqual({ ok: true, status: "approved" });
-  expect(engine.decideStageGate).toHaveBeenCalledWith(7, { ...gateInput, decision: "request_changes", note: "tighten the summary" }, { approvalSurface: event.sender });
+  expect(engine.decideStageGate).toHaveBeenCalledWith(7, { ...gateInput, decision: "request_changes", note: "tighten the summary" });
   await expect(decide(WORK_BOARD.decideJoin, event, 7, joinInput)).resolves.toEqual({ ok: true });
-  expect(engine.decideStageJoin).toHaveBeenCalledWith(7, joinInput, { approvalSurface: event.sender });
+  expect(engine.decideStageJoin).toHaveBeenCalledWith(7, joinInput);
   await expect(decide(WORK_BOARD.retryStage, event, 7, retryInput)).resolves.toEqual({ ok: true });
-  expect(engine.retryStage).toHaveBeenCalledWith(7, retryInput, { approvalSurface: event.sender });
+  expect(engine.retryStage).toHaveBeenCalledWith(7, retryInput);
   expect(log).toHaveBeenCalledTimes(3);
   const logged = log.mock.calls.map(call => (call[0] as { output: string; type: string; sessionId: string }));
   for (const entry of logged) {
@@ -184,7 +189,7 @@ it("starts a template run only from a gesture and the tuple the card showed, and
   const options = { template: TUPLE, templateSource: { kind: "schedule-attachment", attachmentId: "att-1", pin: TUPLE } };
   await expect(decide(WORK_BOARD.run, event, 7, options)).resolves.toEqual({ status: "awaiting_approval" });
   expect(engine.runItem).toHaveBeenCalledTimes(1);
-  expect(engine.runItem).toHaveBeenCalledWith(7, { approvalSurface: event.sender, templateSource: { kind: "local-create-and-run", pin: TUPLE } });
+  expect(engine.runItem).toHaveBeenCalledWith(7, { templateSource: { kind: "local-create-and-run", pin: TUPLE } });
 });
 
 it("creates and runs only the new item described by the native launch receipt", async () => {
@@ -199,7 +204,7 @@ it("creates and runs only the new item described by the native launch receipt", 
   expect(create).not.toHaveBeenCalled();
   await expect(decide(WORK_BOARD.add, event, input, launch)).resolves.toMatchObject({ status: "created", itemId: 7 });
   expect(engine.runItem).toHaveBeenCalledExactlyOnceWith(7, {
-    approvalSurface: event.sender, templateSource: { kind: "local-create-and-run", pin: TUPLE, projectRoot },
+    templateSource: { kind: "local-create-and-run", pin: TUPLE, projectRoot },
   });
 });
 
@@ -212,11 +217,11 @@ it("leaves an ordinary run as it was: no gesture, no source", async () => {
 it("steers a template run by the exact stage shape and never lets any other argument reach the engine", async () => {
   const { event, engine } = setup();
   pressWorkBoardTestKey(event);
-  await expect(handler(WORK_BOARD.steerRun)(event, 7, "go", undefined, { stageId: "b" })).resolves.toEqual({ ok: true, messageId: "m-1" });
+  await expect(handler(WORK_BOARD.steerRun)(event, 7, "go", { stageId: "b" })).resolves.toEqual({ ok: true, messageId: "m-1" });
   expect(engine.steerRun).toHaveBeenLastCalledWith(7, "go", "b");
   for (const forged of ["b", { stageId: "sub-Forged Child" }, { stageId: "b", childSessionId: "child-9" }, null, ["b"]]) {
     pressWorkBoardTestKey(event);
-    await expect(handler(WORK_BOARD.steerRun)(event, 9, "go", undefined, forged)).resolves.toEqual({ ok: true, messageId: "m-1" });
+    await expect(handler(WORK_BOARD.steerRun)(event, 9, "go", forged)).resolves.toEqual({ ok: true, messageId: "m-1" });
     expect(engine.steerRun).toHaveBeenLastCalledWith(9, "go");
   }
 });
@@ -627,4 +632,94 @@ it("opens only the current conflict's host-owned join folder with a fresh receip
     await expect(decide(WORK_BOARD.openJoin, event, id, input)).resolves.toEqual({ ok: true });
     expect(openPath).toHaveBeenCalledExactlyOnceWith(join(workspacesRoot, row.runId ?? "", "_join"));
   } finally { for (const child of h.children) child.finish(); await h.cleanup(); }
+});
+
+it("keeps a B stage and its descendant approval details out of the launching A window", async () => {
+  const ownerA = workBoardTestSender();
+  const ownerB = workBoardTestSender();
+  const eventA = { sender: ownerA, senderFrame: ownerA.mainFrame };
+  const eventB = { sender: ownerB, senderFrame: ownerB.mainFrame };
+  const windows = [ownerA, ownerB].map(webContents => ({ webContents, isDestroyed: () => false }));
+  const h = await stageRunHarness({});
+  const gate = new ApprovalGate(approvalSurfaceResolver(undefined, () => windows as unknown as MainWindow[]));
+  const settings = permissionSettings.readPermissionSettings();
+  const projectSettings = vi.spyOn(permissionSettings, "readPermissionSettings");
+  let releaseSessions: (() => void) | undefined;
+  const asks: Promise<unknown>[] = [];
+  try {
+    const rootA = join(h.dir, "project-a");
+    const rootB = join(h.dir, "project-b");
+    mkdirSync(rootA);
+    mkdirSync(rootB);
+    projectSettings.mockReturnValue({ ...settings, permissions: { ...settings.permissions, additionalDirectories: [rootA, rootB] } });
+    const deps = {
+      approvalGate: gate, workBoardStore: h.board, workBoardEngine: h.engine,
+      auditLogger: { log: vi.fn() }, getMainWindow: () => windows[0], getAppWindows: () => windows,
+    } as unknown as IpcDeps;
+    registerWorkBoardHandlers(deps);
+    registerPermissionsHandlers(deps);
+    await handler(WORK_BOARD.setProjectScope)(eventA, rootA);
+    await handler(WORK_BOARD.setProjectScope)(eventB, rootA);
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version, rootB);
+    const options = { template: { ...h.pinOf(version), projectRoot: rootB } };
+    const token = await captureWorkBoardTestGesture(handler, eventA, WORK_BOARD.run, id, options);
+    const started = handler(WORK_BOARD.run)(eventA, id, options, token);
+    const [stage] = await h.untilLive(1);
+    const descendant = `${stage.sessionId}-descendant`;
+    // The fake runner leaves delivery registration to the test.
+    updateApprovalSurface({ kind: "inherit", sessionId: stage.sessionId, parentSessionId: stage.input.originSessionId });
+    updateApprovalSurface({ kind: "inherit", sessionId: descendant, parentSessionId: stage.sessionId });
+    releaseSessions = () => {
+      updateApprovalSurface({ kind: "release", sessionId: descendant });
+      updateApprovalSurface({ kind: "release", sessionId: stage.sessionId });
+    };
+    const ask = (sessionId: string, id: string) => gate.requestAndWait({
+      id, sessionId, category: "tool", source: "builtin", toolName: "write_file", toolCategory: "write",
+      args: { path: "B-private.md", text: "B approval details" }, reason: "B stage write", createdAt: Date.now(),
+    });
+    asks.push(ask(stage.sessionId, "parked-stage"));
+    await vi.waitFor(() => expect(gate.pendingCount).toBe(1));
+    expect(ownerA.send).not.toHaveBeenCalledWith(IPC_APPROVAL_REQUEST, expect.anything());
+    expect(await handler(PERMISSIONS.approvalPending)(eventA)).toEqual([]);
+    expect(await handler(PERMISSIONS.approvalPending)(eventB)).toEqual([]);
+    expect(JSON.stringify(ownerA.send.mock.calls)).not.toContain("B approval details");
+    await handler(WORK_BOARD.setProjectScope)(eventB, rootB);
+    expect(ownerB.send).toHaveBeenCalledWith(IPC_APPROVAL_REQUEST, expect.objectContaining({
+      id: "parked-stage", workBoardProjectApproval: expect.objectContaining({ parked: true }),
+    }));
+    asks.push(ask(descendant, "live-descendant"));
+    await vi.waitFor(() => expect(gate.pendingCount).toBe(2));
+    expect(ownerB.send).toHaveBeenCalledWith(IPC_APPROVAL_REQUEST, expect.objectContaining({
+      id: "live-descendant", args: { path: "B-private.md", text: "B approval details" },
+    }));
+    expect(await handler(PERMISSIONS.approvalPending)(eventA)).toEqual([]);
+    expect(JSON.stringify(ownerA.send.mock.calls)).not.toContain("B-private.md");
+    const cards = await handler(PERMISSIONS.approvalPending)(eventB) as ReturnType<ApprovalGate["listPendingRendererRequests"]>;
+    expect(cards.map(card => card.id)).toEqual(["parked-stage", "live-descendant"]);
+    await handler(WORK_BOARD.setProjectScope)(eventB, rootA);
+    expect(await handler(PERMISSIONS.approvalPending)(eventB)).toEqual([]);
+    expect(gate.resolveFromDesktopRenderer(cards[0].id, {
+      requestId: cards[0].id, choice: "allow-once", nonce: cards[0].nonce, hmac: cards[0].hmac,
+    }, eventB.sender as never)).toBeNull();
+    await handler(WORK_BOARD.setProjectScope)(eventB, rootB);
+    ownerB.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+    expect(await handler(PERMISSIONS.approvalPending)(eventB)).toEqual([]);
+    await handler(WORK_BOARD.setProjectScope)(eventB, rootB);
+    for (const card of cards) {
+      const decision = { requestId: card.id, choice: "allow-once" as const, nonce: card.nonce, hmac: card.hmac };
+      expect(gate.resolveFromDesktopRenderer(card.id, decision, eventA.sender as never)).toBeNull();
+      expect(gate.resolveFromDesktopRenderer(card.id, decision, eventB.sender as never)).toMatchObject({ choice: "allow-once" });
+    }
+    await Promise.all(asks);
+    stage.finish();
+    await started;
+  } finally {
+    gate.disposeAll();
+    await Promise.all(asks);
+    releaseSessions?.();
+    for (const child of h.children) child.finish();
+    projectSettings.mockRestore();
+    await h.cleanup();
+  }
 });

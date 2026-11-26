@@ -318,7 +318,7 @@ export async function bootstrap(
   // Construct the audited approval gate before services bind effect permissions.
   const approvalGate = await createApprovalGate(
     // Resolve the current conversation owner on delivery, listing and response.
-    mainWindow === null ? null : approvalSurfaceResolver(),
+    mainWindow === null ? null : approvalSurfaceResolver(undefined, () => host.desktop?.getAppWindows() ?? []),
     ctx.bootAuditLogger,
     ctx.notificationService,
 

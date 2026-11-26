@@ -1083,11 +1083,9 @@ export function buildInternalApiSurface() {
       | { ok: false; error: string }
     >,
 
-  // The preload snapshot is spent locally; Main independently requires native input.
-  steerWorkBoardRun: async (itemId: number, text: string, userIntent?: UserKeyboardIntentSnapshot, stageId?: string) =>
-    (consumeUserKeyboardIntent(userIntent)
-      ? ipcRenderer.invoke(WORK_BOARD.steerRun, itemId, text, undefined, ...(stageId === undefined ? [] : [{ stageId }]))
-      : Promise.resolve({ ok: false, reason: "user-gesture-required" })) as Promise<
+  // Main consumes the native input for this steer.
+  steerWorkBoardRun: async (itemId: number, text: string, stageId?: string) =>
+    ipcRenderer.invoke(WORK_BOARD.steerRun, itemId, text, ...(stageId === undefined ? [] : [{ stageId }])) as Promise<
       | import("../shared/work-board-types.js").WorkBoardSteerIpcResult
       | { ok: false; error: string }
     >,

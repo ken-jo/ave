@@ -1,6 +1,6 @@
 /**
- * Work-level decisions ("확인 필요"): a read-only projection over the stores that own each decision. Tool-execution approvals are not here; they
- * stay in the chat ApprovalDock. Views are built field by field from each record, never by spreading one, so private record fields (a routine's
+ * Work-level decisions ("확인 필요"): a read-only projection over the stores that own each decision. Tool cards use the signed tool-approval
+ * channel even when drawn beside these views. Views are built field by field from each record, so private record fields (a routine's
  * prePrompt, a proposal's taskBrief) do not reach the renderer through this channel.
  *
  * Renderer-safe: no Node imports.

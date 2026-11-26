@@ -365,10 +365,15 @@ export function pendingAnswers(input: PendingAnswerInput): PendingAnswers {
       unattributed.push(request);
       continue;
     }
+    const claimed = input.isClaimed(request.sessionId);
+    if (request.workBoardProjectApproval && !claimed) {
+      unattributed.push(request);
+      continue;
+    }
     const held = tileWithSideChat(input.tiles, request.sessionId) !== undefined
       || tileOwningSession(input.tiles, request.sessionId) !== undefined
       || listed.has(request.sessionId)
-      || input.isClaimed(request.sessionId);
+      || claimed;
     if (held) park(request.sessionId);
     else unattributed.push(request);
   }

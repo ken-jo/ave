@@ -98,6 +98,7 @@ import type { NotificationToastMeta } from "./hooks/use-status-bar.js";
 import { useWindowNotices } from "./hooks/use-window-notices.js";
 import { NotificationHistoryContext } from "./context/NotificationHistoryContext.js";
 import { useSettings } from "./hooks/use-settings.js";
+import { workBoardApprovalMatchesProject } from "./components/work-board/use-board-approvals.js";
 import { ApprovalSurfaceProvider, useApproval, type ApprovalSurfaceContextValue } from "./hooks/use-approval.js";
 import { usePermissionSignals } from "./hooks/use-permission-signals.js";
 import { useApprovalSentence } from "./hooks/use-approval-sentence.js";
@@ -859,6 +860,7 @@ export function App() {
   // The window's project is the user's selection (plan D1), not the focused conversation's.
   const projectSelection = useProjectSelection(api, workspaceProjects);
   const activeProject = projectSelection.selectedProject;
+  const workBoardProjectRoot = projectSelection.selection?.kind === "root" ? projectSelection.selection.root : undefined;
   const projectSelectionRef = useRef(projectSelection);
   projectSelectionRef.current = projectSelection;
   /** Opening something that belongs to another project switches to it, except in the all-projects view. */
@@ -895,12 +897,15 @@ export function App() {
   // The pane-chat claim identifies card ownership for chats outside the tile registry.
   const approvalClaimsVersion = useSyncExternalStore(approvalClaims.subscribe, approvalClaims.readVersion, approvalClaims.readVersion);
   const pendingAnswers = useMemo(() => selectPendingAnswers({
-    approvals: approvalQueue,
+    approvals: approvalQueue.filter(request => {
+      const route = request.workBoardProjectApproval;
+      return !route || (!route.parked && workBoardApprovalMatchesProject(route, workBoardProjectRoot, activeProject?.isDefault === true));
+    }),
     tiles: tileSessions,
     overlayCards: overlayQueue,
     sessions,
     isClaimed: (sessionId) => approvalClaims.ownerOf(sessionId) !== null,
-  }), [approvalQueue, tileSessions, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
+  }), [approvalQueue, tileSessions, overlayQueue, sessions, approvalClaims, approvalClaimsVersion, workBoardProjectRoot, activeProject?.isDefault]);
   const sidebarAnswerPending = [...pendingAnswers.sessionIds].some((sessionId) => {
     const tile = tileSessions.find((candidate) => candidate.sessionId === sessionId || candidate.sideChat?.sessionId === sessionId);
     return tile === undefined || tile.paneHidden || (tile.sideChat?.sessionId === sessionId && !tile.sideChat.shown);
@@ -1296,7 +1301,6 @@ export function App() {
     followProject(focusedSessionRoot);
   }, [currentSessionId, focusedSessionRoot, projectSelection.selection === undefined, followProject]);
   surfaceProjectRootRef.current = (activeProject ?? defaultWorkspaceProject)?.projectRoot;
-  const workBoardProjectRoot = projectSelection.selection?.kind === "root" ? projectSelection.selection.root : undefined;
   useLayoutEffect(() => {
     void api.setWorkBoardProjectScope(workBoardProjectRoot);
   }, [api, workBoardProjectRoot]);

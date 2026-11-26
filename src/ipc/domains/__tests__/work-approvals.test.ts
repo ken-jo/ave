@@ -464,6 +464,13 @@ describe("work approvals — plan approvals", () => {
     expect(byId.get(replanned.id)).toMatchObject({ phase: "replanning", changeRequest: "cover the edge cases", revision: 0, planNumber: 2 });
     // Only the plan waiting for a decision counts.
     expect(result.total).toBe(1);
+    const all = await list({ allProjects: true });
+    expect(all).toMatchObject({
+      total: 1,
+      items: expect.arrayContaining([{ kind: "navigation", key: `plan:${replanned.id}`, targetKind: "plan",
+        title: "send back", phase: "replanning", scope: { type: "project", projectRoot: PROJECT_A, isDefault: false } }]),
+    });
+    expect(JSON.stringify(all)).not.toContain("cover the edge cases");
   });
 
   it("drops a plan once it is approved or rejected", async () => {

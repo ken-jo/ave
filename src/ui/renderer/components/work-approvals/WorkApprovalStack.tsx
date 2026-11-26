@@ -2,11 +2,10 @@ import { WorkflowDecisionCard, workflowDecisionKey } from "../work-board/Workflo
 // 확인 필요: work-level decisions for one project (plus the shared unscoped and global ones), or every authorized project grouped. The top
 // item is a real card; the rest are rows. Every action goes through its source's own channel (plan decide-plan, proposal accept/dismiss,
 // the routine panel); this component decides nothing by itself and has no approve shortcut — a decision is always a button press, and a
-// queued plan is expanded into the card before it can be decided. Tool-execution approvals are never here; they stay in their
-// conversation's ApprovalDock.
+// queued plan is expanded into the card before it can be decided. Stage tool approvals that waited for a project use its queue.
 import { EmptyState } from "../../../../components/ui/empty-state.js";
 import { Loader } from "../../../../components/ui/loader.js";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { CheckSquare } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { Badge } from "../../../../components/ui/badge.js";
@@ -16,6 +15,7 @@ import type { AveApi } from "../../types.js";
 import type { ProjectIdentity } from "../../../../shared/project-identity.js";
 import type {
   RoutineAttentionApprovalView,
+  WorkApprovalNavigationView,
   WorkApprovalProject,
   WorkApprovalView,
   WorkPlanApprovalView,
@@ -578,6 +578,7 @@ export interface WorkApprovalStackProps {
   /** The project whose home shows this stack; accepted proposals join it. Undefined means the default project. */
   project?: ProjectIdentity;
   actions: WorkApprovalActions;
+  parkedToolApprovals?: { count: number; cards: ReactNode };
   onOpenApproval?: (key: string, root: string | undefined) => void;
   /** Navigation target from the title-bar popover: the item to bring to the top and focus, once. */
   focusKey?: string | null;
@@ -612,7 +613,10 @@ function groupByProject(items: readonly WorkApprovalView[], projects: readonly W
   return groups.filter((group) => group.items.length > 0);
 }
 
-function ReplanningList({ items }: { items: readonly WorkPlanApprovalView[] }) {
+function ReplanningList({ items, onOpen }: {
+  items: readonly (WorkPlanApprovalView | WorkApprovalNavigationView)[];
+  onOpen: (item: WorkApprovalNavigationView) => void;
+}) {
   if (items.length === 0) return null;
   return (
     <section className="space-y-1.5 opacity-(--opacity-strong)" data-testid="work-approvals-replanning">
@@ -623,12 +627,17 @@ function ReplanningList({ items }: { items: readonly WorkPlanApprovalView[] }) {
             <div className="flex items-center gap-2">
               <KindChip item={item} />
               <span className="min-w-0 flex-1 truncate">{item.title}</span>
-              <span className="shrink-0 text-dense text-muted-foreground">{t("workApprovals.replanningRevision", { count: item.planNumber })}</span>
+              {item.kind === "plan" && (
+                <span className="shrink-0 text-dense text-muted-foreground">{t("workApprovals.replanningRevision", { count: item.planNumber })}</span>
+              )}
             </div>
-            {item.changeRequest !== undefined && (
+            {item.kind === "plan" && item.changeRequest !== undefined && (
               <p className="mt-1 text-muted-foreground">{t("workApprovals.replanningRequest", { note: item.changeRequest })}</p>
             )}
             <p className="mt-1 text-dense text-muted-foreground">{t("workApprovals.replanningFooter")}</p>
+            {item.kind === "navigation" && (
+              <Button type="button" size="sm" className="mt-2" onClick={() => onOpen(item)}>{t("workApprovals.openApproval")}</Button>
+            )}
           </li>
         ))}
       </ul>
@@ -639,7 +648,7 @@ function ReplanningList({ items }: { items: readonly WorkPlanApprovalView[] }) {
 /** The project-home stack: this project's items plus the shared ones, oldest first, the top one as a real card. In all-projects mode the
  * rows are grouped by project and the selected one is the card beside them. */
 export function WorkApprovalStack({
-  api, project, actions, onOpenApproval, focusKey, onFocusConsumed, showAllProjects = false, showAllRequest, onShowAllConsumed, onCountChange, now = Date.now,
+  api, project, actions, parkedToolApprovals, onOpenApproval, focusKey, onFocusConsumed, showAllProjects = false, showAllRequest, onShowAllConsumed, onCountChange, now = Date.now,
 }: WorkApprovalStackProps) {
   const projectRoot = project?.projectRoot;
   const [allProjects, setAllProjects] = useState(showAllProjects);
@@ -663,7 +672,7 @@ export function WorkApprovalStack({
   const sorted = useMemo(() => (state.status === "ready" ? sortByArrival(state.items) : []), [state]);
   const decidable = useMemo(() => sorted.filter(isCounted), [sorted]);
   const replanning = useMemo(
-    () => sorted.filter((item): item is WorkPlanApprovalView => item.kind === "plan" && item.phase === "replanning"),
+    () => sorted.filter((item): item is WorkPlanApprovalView | WorkApprovalNavigationView => "phase" in item && item.phase === "replanning"),
     [sorted],
   );
   const projects = state.status === "ready" ? state.projects : [];
@@ -682,9 +691,11 @@ export function WorkApprovalStack({
   const clock = now();
   const fresh = state.status === "ready" && state.requestKey === requestKey;
 
+  const parkedToolCount = parkedToolApprovals?.count ?? 0;
+  const totalCount = decidable.length + parkedToolCount;
   useEffect(() => {
-    onCountChange?.(state.status === "ready" ? decidable.length : null);
-  }, [decidable.length, onCountChange, state.status]);
+    onCountChange?.(state.status === "ready" || parkedToolCount > 0 ? totalCount : null);
+  }, [totalCount, parkedToolCount, onCountChange, state.status]);
 
   useEffect(() => {
     if (!showAllRequest) return;
@@ -733,20 +744,30 @@ export function WorkApprovalStack({
     onFocusConsumed?.();
   }, [allProjects, decidable, focusKey, focusNode, fresh, onFocusConsumed]);
 
+  const parkedTools = parkedToolApprovals && (
+    <section className="space-y-1.5" aria-label={t("workApprovals.stageToolApprovals")}>
+      <h3 className="text-xs font-semibold text-muted-foreground">{t("workApprovals.stageToolApprovals")}</h3>
+      {parkedToolApprovals.cards}
+    </section>
+  );
   if (state.status === "loading") {
     return (
       <section aria-busy="true" aria-label={t("workApprovals.loading")} data-testid="work-approvals-loading" className="space-y-2">
         <div className="h-28 animate-pulse rounded-lg bg-muted motion-reduce:animate-none" />
         <div className="h-10 animate-pulse rounded-md bg-muted motion-reduce:animate-none" />
         <div className="h-10 animate-pulse rounded-md bg-muted motion-reduce:animate-none" />
+        {parkedTools}
       </section>
     );
   }
   if (state.status === "error") {
     return (
-      <section data-testid="work-approvals-error" role="alert" className="rounded-md border border-destructive/(--opacity-medium) p-3 text-xs text-destructive">
-        {formatIpcError(state.error, undefined)}
-      </section>
+      <div className="space-y-2">
+        <section data-testid="work-approvals-error" role="alert" className="rounded-md border border-destructive/(--opacity-medium) p-3 text-xs text-destructive">
+          {formatIpcError(state.error, undefined)}
+        </section>
+        {parkedTools}
+      </div>
     );
   }
 
@@ -772,6 +793,11 @@ export function WorkApprovalStack({
     setExpandedKey(null);
   };
 
+  const openNavigation = (item: WorkApprovalView) => {
+    switchMode(false);
+    onOpenApproval?.(item.key, approvalProjectRoot(item, projects));
+  };
+
   const headCard = head && (
     <HeadCard
       item={head}
@@ -783,10 +809,7 @@ export function WorkApprovalStack({
       api={api}
       now={clock}
       onChanged={relist}
-      onOpen={() => {
-        switchMode(false);
-        onOpenApproval?.(head.key, approvalProjectRoot(head, projects));
-      }}
+      onOpen={() => openNavigation(head)}
       // In all-projects mode the row is the focus target; the card beside it is reached with Tab.
       focusRef={allProjects ? () => {} : roving.focusRef}
       tabIndex={allProjects ? -1 : roving.tabIndexFor(head.key)}
@@ -828,11 +851,11 @@ export function WorkApprovalStack({
       <header className="flex flex-wrap items-center gap-2">
         <CheckSquare className="h-4 w-4 text-muted-foreground" aria-hidden />
         <h2 ref={stackHeading} tabIndex={-1} className="text-sm font-semibold">{t("workApprovals.title")}</h2>
-        <Badge variant="outline" data-testid="work-approvals-count">{decidable.length}</Badge>
+        <Badge variant="outline" data-testid="work-approvals-count">{totalCount}</Badge>
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" data-testid="work-approvals-scope">
           {allProjects
-            ? t("workApprovals.headerAllProjects", { count: decidable.length })
-            : t("workApprovals.headerScope", { project: projectCount, shared: sharedCount })}
+            ? t("workApprovals.headerAllProjects", { count: totalCount })
+            : t("workApprovals.headerScope", { project: projectCount + parkedToolCount, shared: sharedCount })}
         </span>
         <div role="group" aria-label={t("workApprovals.modeLabel")} className="flex gap-1">
           <Button
@@ -875,7 +898,7 @@ export function WorkApprovalStack({
       )}
 
       {head === null ? (
-        <EmptyState align="center" className="rounded-md border border-dashed" data-testid="work-approvals-empty" title={t("workApprovals.empty")} />
+        replanning.length === 0 && parkedToolCount === 0 && <EmptyState align="center" className="rounded-md border border-dashed" data-testid="work-approvals-empty" title={t("workApprovals.empty")} />
       ) : allProjects ? (
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-64 flex-1 basis-64 space-y-2">
@@ -910,7 +933,8 @@ export function WorkApprovalStack({
       {head !== null && (
         <p className="text-dense text-muted-foreground" data-testid="work-approvals-keyboard-legend">{t("workApprovals.keyboardLegend")}</p>
       )}
-      <ReplanningList items={replanning} />
+      {parkedTools}
+      <ReplanningList items={replanning} onOpen={openNavigation} />
       <p className="text-dense text-muted-foreground" data-testid="work-approvals-tool-note">{t("workApprovals.toolApprovalsNote")}</p>
     </section>
   );

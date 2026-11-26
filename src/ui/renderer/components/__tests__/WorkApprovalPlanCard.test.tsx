@@ -1,4 +1,6 @@
-import { t } from "../../../../i18n/runtime.js";
+import { setLocale, t } from "../../../../i18n/runtime.js";
+import { loadLocaleMessages, messages } from "../../../../i18n/messages/index.js";
+
 // @vitest-environment jsdom
 /** 확인 필요 plan approvals: the stored plan as a real card (the agent's plan beside the host's facts), decided only by a button press that
  * sends the run id and stored hash; queued plans expand before they can be decided; a re-planning plan is listed but not counted; and the
@@ -460,4 +462,38 @@ it("navigates from an all-projects summary without exposing plan controls", asyn
   fireEvent.click(open);
   expect(onOpenApproval).toHaveBeenCalledExactlyOnceWith(key, CHECKOUT.projectRoot);
   expect(api.decideWorkPlan).not.toHaveBeenCalled();
+});
+
+it.each(["en", "ko"] as const)("uses the catalog for the approval navigation action in %s", async (locale) => {
+  await loadLocaleMessages(locale);
+  setLocale(locale);
+  try {
+    const { key, scope, title } = plan();
+    const { api } = stubApi(okList([{ kind: "navigation", targetKind: "plan", key, scope, title, phase: "pending" }]));
+    renderStack(api, { showAllProjects: true });
+    const open = await screen.findByRole("button", { name: t("workApprovals.openApproval") });
+    expect(open).not.toHaveTextContent("workApprovals.openApproval");
+    expect(messages[locale]).toHaveProperty(["workApprovals.openApproval"]);
+  } finally {
+    cleanup();
+    setLocale("en");
+  }
+});
+
+it("keeps a navigation-only replanning row in the replanning section and out of the count", async () => {
+  const { key, scope, title } = plan();
+  const { api } = stubApi(okList([{ kind: "navigation", targetKind: "plan", key, scope, title, phase: "replanning" }], 0));
+  const onOpenApproval = vi.fn();
+  const onCountChange = vi.fn();
+  try {
+    renderStack(api, { showAllProjects: true, onOpenApproval, onCountChange });
+    const waiting = within(await screen.findByTestId("work-approvals-replanning"));
+    expect(waiting.getByText(title)).toBeVisible();
+    expect(screen.queryByTestId("work-approvals-empty")).toBeNull();
+    expect(onCountChange).toHaveBeenLastCalledWith(0);
+    fireEvent.click(waiting.getByRole("button", { name: t("workApprovals.openApproval") }));
+    expect(onOpenApproval).toHaveBeenCalledExactlyOnceWith(key, CHECKOUT.projectRoot);
+  } finally {
+    cleanup();
+  }
 });

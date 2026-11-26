@@ -5,7 +5,8 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import { approvalRequest, approvalSurfaceStub, withApprovalSurface } from "../../../../../test/renderer/helpers.js";
-import { t } from "../../../../i18n/runtime.js";
+import { setLocale, t } from "../../../../i18n/runtime.js";
+import { loadLocaleMessages, messages } from "../../../../i18n/messages/index.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import type { RunProgressEventPayload, WorkItemResolved } from "../../../../shared/work-board-types.js";
 import type { TemplateVersion, WorkflowTemplate, WorkflowTemplateDraftInput } from "../../../../shared/workflow-template-types.js";
@@ -37,20 +38,24 @@ const item: WorkItemResolved = {
 
 const project = { projectRoot: "/workspace/report", projectName: "Report workspace" };
 
-function SwitchableBoard({ api, projects, onOpened }: {
-  api: AveApi; projects: readonly typeof project[]; onOpened: (root: string) => void;
+function SwitchableBoard({ api, projects, onOpened, initiallyAll, opened }: {
+  api: AveApi; projects: readonly typeof project[]; onOpened: (root: string) => void; initiallyAll: boolean; opened: { all: boolean };
 }) {
   const [current, setCurrent] = useState(project);
-  return <WorkBoardPanel api={api} project={current} projects={projects} onOpenProject={root => {
+  const [all, setAll] = useState(initiallyAll);
+  return <WorkBoardPanel api={api} project={current} allProjects={all} projects={projects} onOpenProject={root => {
     const next = projects.find(entry => entry.projectRoot === root);
     if (!next) return false;
     onOpened(root);
+    opened.all = false;
+    setAll(false);
     setCurrent(next);
     return true;
   }} />;
 }
 
-function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [template], queue: ApprovalRequest[] = [], projects = [project]) {
+function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [template], queue: ApprovalRequest[] = [], projects = [project], initiallyAll = false) {
+  const opened = { all: initiallyAll };
   let progress: (event: RunProgressEventPayload) => void = () => {};
   const api = {
     listWorkBoard: vi.fn(async (_filter?: { projectRoot?: string }) => ({ status: "ok", items })),
@@ -78,8 +83,8 @@ function mount(items: WorkItemResolved[] = [], templates: WorkflowTemplate[] = [
   };
   const surface = { ...approvalSurfaceStub(), queue };
   const openProject = vi.fn();
-  render(withApprovalSurface(<SwitchableBoard api={api as unknown as AveApi} projects={projects} onOpened={openProject} />, surface));
-  return { api, surface, openProject, emit: (event: RunProgressEventPayload) => act(() => progress(event)) };
+  render(withApprovalSurface(<SwitchableBoard api={api as unknown as AveApi} projects={projects} onOpened={openProject} initiallyAll={initiallyAll} opened={opened} />, surface));
+  return { api, surface, openProject, opened, emit: (event: RunProgressEventPayload) => act(() => progress(event)) };
 }
 
 async function templates() {
@@ -87,7 +92,7 @@ async function templates() {
   return within(await screen.findByRole("dialog", { name: t("workflowTemplates.library") }));
 }
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); setLocale("en"); });
 
 it("opens the empty template library by keyboard and returns focus on Escape", async () => {
   mount([], []);
@@ -343,4 +348,63 @@ it("presents enabled controls for a reissued join conflict of the same files", a
   fireEvent.click(retry);
   await vi.waitFor(() => expect(retry).not.toBeInTheDocument());
   expect(view.getByRole("button", { name: t("workflowTemplates.retryJoin") })).toBeEnabled();
+});
+
+it.each(["en", "ko"] as const)("shows translated project launch navigation in %s", async (locale) => {
+  await loadLocaleMessages(locale);
+  setLocale(locale);
+  const target = { projectRoot: "/workspace/other", projectName: "Other workspace" };
+  const { api } = mount([], [template], [], [project, target]);
+  api.addWorkBoardItem.mockResolvedValue({ status: "created", itemId: item.id, item: { ...item, ...target } });
+  const library = await templates();
+  fireEvent.click(await library.findByRole("button", { name: template.name }));
+  fireEvent.click(await library.findByRole("button", { name: t("workflowTemplates.startRun") }));
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.workTitle")), { target: { value: item.title } });
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.scope")), { target: { value: target.projectRoot } });
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.createAndRun") }));
+  expect(await screen.findByText(t("workflowTemplates.workItemCreatedInProject", { project: target.projectName }))).toHaveTextContent(target.projectName);
+  expect(screen.getByRole("button", { name: t("workflowTemplates.openInProject", { project: target.projectName }) })).toHaveTextContent(target.projectName);
+  for (const key of ["workItemCreatedInProject", "openInProject", "openProjectRunDescription", "projectUnavailable"]) {
+    const catalogKey = `workflowTemplates.${key}`;
+    expect(messages[locale]).toHaveProperty([catalogKey]);
+    expect(screen.queryByText(catalogKey)).toBeNull();
+  }
+});
+
+it("opens a parked gate when All Projects already displays the target project", async () => {
+  const { api, opened, openProject } = mount([], [template], [], [project], true);
+  const { runId: _runId, runStatus: _runStatus, templateRunState: _templateRunState, ...navigation } = item;
+  const gate = {
+    kind: "stage-gate" as const, binding: { runId: "run-a", stageId: "summarize", attempt: 1, resultHash: graphHash },
+    result: "Parked result for this project", arrivedAt: at,
+  };
+  const row = { ...item, ...project, runPin: pin, pendingWorkflowDecisions: [gate] };
+  api.addWorkBoardItem.mockResolvedValue({ status: "created", itemId: item.id, item: { ...navigation, ...project } });
+  api.listWorkBoard.mockImplementation(async () => ({ status: "ok", items: opened.all ? [navigation] : [row] }));
+  api.getWorkBoardItem.mockImplementation(async () => ({ status: "found", item: row }));
+  const library = await templates();
+  fireEvent.click(await library.findByRole("button", { name: template.name }));
+  fireEvent.click(await library.findByRole("button", { name: t("workflowTemplates.startRun") }));
+  fireEvent.change(library.getByLabelText(t("workflowTemplates.workTitle")), { target: { value: item.title } });
+  fireEvent.click(library.getByRole("button", { name: t("workflowTemplates.createAndRun") }));
+  const open = await screen.findByRole("button", { name: t("workflowTemplates.openInProject", { project: project.projectName }) });
+  expect(screen.queryByText(gate.result)).toBeNull();
+  fireEvent.click(open);
+  expect(openProject).toHaveBeenCalledExactlyOnceWith(project.projectRoot);
+  const run = within(await screen.findByRole("dialog", { name: item.title }));
+  expect(await run.findByText(gate.result)).toBeVisible();
+  expect(run.getByRole("button", { name: t("workflowTemplates.approveStage") })).toBeEnabled();
+});
+
+it("draws a parked stage tool request in the selected project's Work Approvals queue", async () => {
+  const parked = approvalRequest({
+    id: "parked-tool", sessionId: "stage-child", toolName: "read_file",
+    runStage: { stageId: "gather", stageName: "Gather reports", runAllowOffered: false },
+    workBoardProjectApproval: { projectRoot: project.projectRoot, itemId: item.id, parked: true },
+  }) as unknown as ApprovalRequest;
+  const { surface } = mount([item], [template], [parked]);
+  const queue = within(await screen.findByRole("region", { name: t("workApprovals.stageToolApprovals") }));
+  expect(queue.getAllByText(t("toolApprovalDialog.runStage", { stage: "Gather reports" })).length).toBeGreaterThan(0);
+  fireEvent.click(queue.getByTestId(TEST_IDS.approveButton));
+  expect(vi.mocked(surface.decide).mock.calls.map(call => call[0])).toEqual(["parked-tool"]);
 });

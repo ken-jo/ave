@@ -1,8 +1,4 @@
-/** Korean message cat    workItemCreatedInProject: "{project}에 작업 항목 생성 완료",
-    openProjectRunDescription: "실행을 확인하고 승인에 응답하려면 해당 프로젝트를 여세요.",
-    openInProject: "{project}에서 열기",
-    projectUnavailable: "이 프로젝트는 더 이상 사용할 수 없습니다.",
-alog, grouped by namespace. */
+/** Korean message catalog, grouped by namespace. */
 import type { MessageCatalogKey } from "./en.js";
 
 export const ko: Record<MessageCatalogKey, string> = {
@@ -6636,7 +6632,9 @@ export const ko: Record<MessageCatalogKey, string> = {
   "workApprovals.orderArrival": "도착 순",
   "workApprovals.empty": "확인할 업무가 없습니다",
   "workApprovals.loading": "확인할 항목을 불러오는 중",
-  "workApprovals.toolApprovalsNote": "도구 실행 승인은 여기에 세지 않습니다. 그 대화의 승인 독에 뜹니다.",
+  "workApprovals.openApproval": "승인 열기",
+  "workApprovals.stageToolApprovals": "단계 도구 승인",
+  "workApprovals.toolApprovalsNote": "이 프로젝트가 열리기를 기다린 단계 도구 승인이 여기에 표시됩니다. 그 밖의 도구 승인은 해당 실행이나 대화에 표시됩니다.",
   "workApprovals.queuedHeading": "다음 차례 {count}",
   "workApprovals.position": "{index} / {total}",
   "workApprovals.filterAll": "전체 {count}",
@@ -6713,6 +6711,10 @@ export const ko: Record<MessageCatalogKey, string> = {
   "workApprovals.planSource": "업무 보드 · 계획 완료",
 
   // workBoard
+  "workflowTemplates.workItemCreatedInProject": "{project}에 작업 항목 생성 완료",
+  "workflowTemplates.openProjectRunDescription": "실행을 확인하고 승인에 응답하려면 해당 프로젝트를 여세요.",
+  "workflowTemplates.openInProject": "{project}에서 열기",
+  "workflowTemplates.projectUnavailable": "이 프로젝트는 더 이상 사용할 수 없습니다.",
   "workflowTemplates.library": "워크플로 템플릿",
   "workflowTemplates.libraryDescription": "확정한 그래프를 실행하거나 초안을 편집해 새 버전을 만드세요.",
   "workflowTemplates.empty": "아직 워크플로 템플릿이 없습니다.",

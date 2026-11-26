@@ -817,6 +817,14 @@ describe("preload — plugin webview asset URLs", () => {
     }
   });
 
+  it("forwards live steer without requiring browser activation or a preload token", async () => {
+    const api = await loadAveApi();
+    const steer = api.steerWorkBoardRun as AveApi["steerWorkBoardRun"];
+    mockUserActivation.isActive = false;
+    await steer?.(8, "review the edge cases");
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.steerRun, 8, "review the edge cases");
+  });
+
   it("consumes an explicit app interrupt gesture without changing its provenance", async () => {
     const api = await loadAveApi();
     const capture = api["captureUserKeyboardIntent"] as () => unknown;

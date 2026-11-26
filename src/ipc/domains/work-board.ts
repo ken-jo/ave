@@ -245,12 +245,15 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
 
   registerWorkflowTemplateHandlers(deps, isBoardOwnerFrame, spendDecisionIntent);
 
+  const reconcileProjectApprovals = () => deps.approvalGate?.reconcileWorkBoardProjectApprovals();
   handle(WORK_BOARD.setProjectScope, (e, root: unknown) => {
     if (!validateHostRendererSender(e) || !isBoardOwnerFrame(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.setProjectScope, e);
       return false;
     }
-    return setWorkBoardProjectScope(e.sender, root);
+    const scoped = setWorkBoardProjectScope(e.sender, root, reconcileProjectApprovals);
+    reconcileProjectApprovals();
+    return scoped;
   });
 
   const broadcastItemChanged = (
@@ -340,7 +343,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     try {
       const result: WorkItemRunResult = await engine.runItem(
         id,
-        { ...(agentName ? { agentName } : {}), approvalSurface: sender, ...(templateSource ? { templateSource } : {}) },
+        { ...(agentName ? { agentName } : {}), ...(templateSource ? { templateSource } : { approvalSurface: sender }) },
       );
       broadcastToAppWindows(deps, WORK_BOARD.runFinished, {
         itemId: id,
@@ -550,7 +553,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   // Steer a running execution (permission-decision-tree.md S→T). Only a sender-validated board-window main frame carrying a consumed local
   // keyboard gesture may steer; anything else is refused, never downgraded to another principal (contrast chat guide). The engine picks the
   // child from its own record and the text enters as host-fenced non-principal guidance, so the child's permissions do not widen.
-  handle(WORK_BOARD.steerRun, async (e, id: number, text: unknown, intent?: unknown, stage?: unknown): Promise<WorkBoardSteerIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
+  handle(WORK_BOARD.steerRun, async (e, id: number, text: unknown, stage?: unknown): Promise<WorkBoardSteerIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.steerRun, e);
       return UNAUTHORIZED_FRAME;
@@ -562,7 +565,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, WORK_BOARD.steerRun, e);
       return UNAUTHORIZED_FRAME;
     }
-    if (intent !== undefined || !securitySettingsGestures.consume(e.sender, { channel: WORK_BOARD.steerRun, payload: [id, text, stage] })) {
+    if (!securitySettingsGestures.consume(e.sender, { channel: WORK_BOARD.steerRun, payload: [id, text, stage] })) {
       return { ok: false, reason: "user-gesture-required" };
     }
     const target = await loadAuthorizedItem(id);
@@ -697,7 +700,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
           if (event.kind === "privacy.redacted") redactedCount += event.count;
         }, parsed.note);
       const { note: _sent, ...bound } = parsed;
-      const result = await workBoardEngine.decideStageGate(id as number, { ...bound, ...(note !== undefined ? { note } : {}) }, { approvalSurface: e.sender });
+      const result = await workBoardEngine.decideStageGate(id as number, { ...bound, ...(note !== undefined ? { note } : {}) });
       if (!result.ok) return result;
       // The decision only; the note body stays on the item.
       auditStageDecision(id as number, { runId: parsed.runId, stageId: parsed.stageId, attempt: parsed.attempt, result: parsed.resultHash.slice(0, 8), decision: result.status, note: note !== undefined });
@@ -716,7 +719,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       const binding = parseJoinBinding(record);
       const decision = record?.decision;
       if (!binding || !workBoardEngine || (decision !== "retry_merge" && decision !== "reject")) return { ok: false, reason: "invalid-input" };
-      const result = await workBoardEngine.decideStageJoin(id as number, { ...binding, decision }, { approvalSurface: e.sender });
+      const result = await workBoardEngine.decideStageJoin(id as number, { ...binding, decision });
       if (!result.ok) return result;
       auditStageDecision(id as number, { runId: binding.runId, joinId: binding.joinId, generation: binding.generation, conflict: binding.conflictHash.slice(0, 8), decision });
       broadcastItemChanged(id as number, "updated");
@@ -744,7 +747,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       const record = exactRecord(input, ["runId", "stageId", "attempt"]);
       if (!record || !workBoardEngine || typeof record.runId !== "string" || !RUN_ID_PATTERN.test(record.runId) || !isStageId(record.stageId)
         || typeof record.attempt !== "number" || !Number.isSafeInteger(record.attempt) || record.attempt < 1) return { ok: false, reason: "invalid-input" };
-      const result = await workBoardEngine.retryStage(id as number, { runId: record.runId, stageId: record.stageId, attempt: record.attempt }, { approvalSurface: e.sender });
+      const result = await workBoardEngine.retryStage(id as number, { runId: record.runId, stageId: record.stageId, attempt: record.attempt });
       if (!result.ok) return result;
       auditStageDecision(id as number, { runId: record.runId, stageId: record.stageId, attempt: record.attempt, decision: "retry" });
       broadcastItemChanged(id as number, "updated");

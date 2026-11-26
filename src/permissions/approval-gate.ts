@@ -4,7 +4,7 @@ import { aveHome, isAveHomeConfigurationRefused } from "../shared/ave-home.js";
 import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { WebContents } from "electron";
-import { approvalSurfaceRegistry } from "./approval-surface-registry.js";
+import { approvalSurfaceRegistry, type WorkBoardApprovalProject } from "./approval-surface-registry.js";
 import { CHANNELS } from "../contract/app-contract.js";
 import { t } from "../i18n/index.js";
 import { approvalActionSummary } from "../shared/approval-action-summary.js";
@@ -190,6 +190,8 @@ export interface ApprovalRequest {
   // draws this card, and whether "Allow for this run" may be recorded for it (an attended run, and a card that may be remembered for
   // its session). Display-only: the record handler checks the membership and the request again. Never an approval capability.
   runStage?: { readonly stageId: string; readonly stageName: string; readonly runAllowOffered: boolean };
+  /** Host-derived delivery route for a workflow stage or its descendants. */
+  workBoardProjectApproval?: WorkBoardApprovalProject & { readonly parked: boolean };
   id: string;
   // Display-only: the code of the pipeline decision that asked, so the card can word its reason in the user's language instead of the host's English `reason`. A user-owned-surface card gets its surface decision's code; a card about a file target gets one of `APPROVAL_REASON_CODES`, the tree stage that raised it. Never an approval capability, and never read back from a decision.
   reasonCode?: string;
@@ -308,7 +310,7 @@ export function signApprovalRequest(
 // Input accepted by ApprovalGate.requestAndWait before the host seals nonce/HMAC and derives the renderer-facing `requireExplicit` field. `forceExplicit` is deliberately one-way: callers can only make a prompt stricter than the current policy, never relax it. It is used by execution routes whose substrate requires per-invocation, affirmative consent.
 export type ApprovalRequestInput = Omit<
   ApprovalRequest,
-  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused" | "requestingAgentTitle" | "runStage" | "readjudication"
+  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused" | "requestingAgentTitle" | "runStage" | "workBoardProjectApproval" | "readjudication"
 > & {
   // Host-only native execution proof; removed before renderer/audit payloads.
   readonly hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
@@ -602,6 +604,7 @@ export interface ApprovalPolicyMutation {
 interface PendingEntry {
   /** Unattributed cards stay with their recipient until that window leaves. */
   unattributedOwner?: WebContents;
+  projectDelivery?: { project: WorkBoardApprovalProject; recipient: WebContents | null };
   exactSaveTransition?: ApprovalPolicyTransition & { scope: string };
   browserSite?: string;
   userOwnedSurface?: UserOwnedSurface;
@@ -828,6 +831,9 @@ export type ApprovalSurfaceResolver = ((
   terminalTabId?: string,
 ) => WebContents | null) & {
   observeOwnerReleased?: (listener: (owner: WebContents) => void) => () => void;
+  projectOf?: (sessionId: string | undefined) => WorkBoardApprovalProject | undefined;
+  findProjectRecipient?: (root: string | undefined) => WebContents | null;
+  projectAllows?: (recipient: WebContents, root: string | undefined) => boolean;
 };
 
 /** Thrown when a Tailnet-controller approval reaches a synchronous answer path; such answers must use the fresh-identity methods. */
@@ -1087,6 +1093,43 @@ export class ApprovalGate {
     return surface && !surface.isDestroyed() ? surface : null;
   }
 
+  private projectRecipient(project: WorkBoardApprovalProject): WebContents | null {
+    const candidate = this.resolveSurface?.findProjectRecipient?.(project.projectRoot);
+    return candidate && this.resolveSurface?.projectAllows?.(candidate, project.projectRoot) ? candidate : null;
+  }
+
+  private ownsProjectDelivery(delivery: NonNullable<PendingEntry["projectDelivery"]>, recipient: WebContents): boolean {
+    return delivery.recipient === recipient && this.resolveSurface?.projectAllows?.(recipient, delivery.project.projectRoot) === true;
+  }
+
+  private sendProjectRequest(entry: PendingEntry, recipient: WebContents, parked: boolean): void {
+    const delivery = entry.projectDelivery;
+    if (!delivery || !entry.rendererRequest) return;
+    const card = { ...entry.rendererRequest, workBoardProjectApproval: { ...delivery.project, parked } };
+    delivery.recipient = recipient;
+    entry.rendererRequest = card;
+    try {
+      recipient.send(IPC_APPROVAL_REQUEST, card);
+    } catch {
+      // Keep the signed request parked if its renderer disappears during delivery.
+      delivery.recipient = null;
+    }
+  }
+
+  /** Reconcile after a main window changes its selected project. */
+  reconcileWorkBoardProjectApprovals(): void {
+    for (const [id, entry] of this.pending) {
+      const delivery = entry.projectDelivery;
+      if (!delivery || !entry.rendererRequest) continue;
+      const previous = delivery.recipient;
+      if (previous && this.ownsProjectDelivery(delivery, previous)) continue;
+      delivery.recipient = null;
+      if (previous) this.announceSettledToRenderer(id, [previous]);
+      const recipient = this.projectRecipient(delivery.project);
+      if (recipient) this.sendProjectRequest(entry, recipient, true);
+    }
+  }
+
   // Fan one settlement out to observers; a throwing observer is inert.
   private notifyPendingSettled(
     requestId: string,
@@ -1151,6 +1194,7 @@ export class ApprovalGate {
       childProvenance,
       requestingAgentTitle: _requestedAgentTitle,
       runStage: _requestedRunStage,
+      workBoardProjectApproval: _requestedProjectApproval,
       reviewerOutcome,
       reviewerApprovalBasis,
       approvalRuleBasis,
@@ -1159,7 +1203,7 @@ export class ApprovalGate {
       verifiedShellCommand,
       hostShellExecutionPlan,
       ...request
-    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown; requestingAgentTitle?: unknown; runStage?: unknown; readjudication?: unknown };
+    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown; requestingAgentTitle?: unknown; runStage?: unknown; workBoardProjectApproval?: unknown; readjudication?: unknown };
     if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
       return rejectBeforeAnswer("Approval execution budget was not issued by the host");
     }
@@ -1275,12 +1319,15 @@ export class ApprovalGate {
       return rejectBeforeAnswer("execution plan did not match the host shell binding", request, boundExecutionPlan);
     }
     const executionPlanAudit = boundExecutionPlan ?? suppliedExecutionPlan;
-    if (executionPlanAudit?.executionRequest === "host" &&
-      (oneShotPermitBinding === undefined ||
-        this.liveSurfaceFor(req.sessionId, req.egressHost?.terminalTabId) === null)) {
-      return rejectBeforeAnswer(this.liveSurfaceFor(req.sessionId, req.egressHost?.terminalTabId) === null
-        ? NO_APPROVER_MESSAGE
-        : "explicit host execution requires a local desktop approval", request, executionPlanAudit);
+    const deliveryProject = this.resolveSurface?.projectOf?.(req.sessionId);
+    if (executionPlanAudit?.executionRequest === "host") {
+      const hasDesktopDelivery = deliveryProject !== undefined
+        || this.liveSurfaceFor(req.sessionId, req.egressHost?.terminalTabId) !== null;
+      if (oneShotPermitBinding === undefined || !hasDesktopDelivery) {
+        return rejectBeforeAnswer(!hasDesktopDelivery
+          ? NO_APPROVER_MESSAGE
+          : "explicit host execution requires a local desktop approval", request, executionPlanAudit);
+      }
     }
 
     // Sandbox capability injection is scoped to the tool-execution approval surface. Non-execution surfaces (out-of-allowed-dir directory confirm, agent-action/mode-change config asks) have no sandbox row in their DOM and showing "isolation: none" on a config change is misleading because no tool will run. The injection guard checks BOTH `kind` AND `toolCategory`: - `kind === "out-of-allowed-dir"` → no injection - `kind === "agent-action"` → no injection - `toolCategory === "meta"` → no injection (catches mode-change asks that default `kind` to "tool") - else (tool execution) → inject Caller-supplied capability is always preserved (`??` semantics).
@@ -1398,8 +1445,8 @@ export class ApprovalGate {
       requireExplicit: userOwnedSurface !== undefined || oneShotPermitBinding !== undefined || hostTerminal !== undefined || forceExplicit || this.currentPolicy.requireExplicitApproval !== false,
     };
 
-    // Missing or destroyed registered owners have the same fail-closed semantics as headless runs.
-    if (this.liveSurfaceFor(fullReq.sessionId, fullReq.egressHost?.terminalTabId) === null) {
+    // A project ask can wait for its desktop surface to open.
+    if (deliveryProject === undefined && this.liveSurfaceFor(fullReq.sessionId, fullReq.egressHost?.terminalTabId) === null) {
       if (isAborted()) return denyForAbortedTurn(fullReq, executionPlanAudit);
       const headless = this.headlessDenied !== undefined;
       this.auditLogger?.log({
@@ -1447,7 +1494,7 @@ export class ApprovalGate {
     // The window showing this request's toast, which need not be one the request is sent to; every exit from here on, a throw included, tells it the request settled.
     let toastSurface: WebContents | null = null;
     try {
-      toastSurface = this.notificationService?.fire({
+      if (deliveryProject === undefined) toastSurface = this.notificationService?.fire({
         kind: "approval",
         title: t("be_approvalGate.notificationTitle"),
         body: this.notificationBody(fullReq),
@@ -1488,6 +1535,7 @@ export class ApprovalGate {
       let detachOwnerDestroyed: (() => void) | undefined;
       // The renderer the card was sent to; the settle announcement reaches it and whichever renderer shows the session by then.
       let sentTo: WebContents | null = null;
+      const projectDelivery: PendingEntry["projectDelivery"] = deliveryProject === undefined ? undefined : { project: deliveryProject, recipient: null };
       const settle = (decision: ApprovalDecision): void => {
         detachAbortListener?.();
         detachAbortListener = undefined;
@@ -1502,8 +1550,9 @@ export class ApprovalGate {
         // Finalization is independent of optional delivery to a new owner.
         // Ownership contract errors still propagate on reads and answers.
         resolve(decision);
-        const recipients = [sentTo, ...refetchers, toastSurface];
+        const recipients = [projectDelivery?.recipient ?? sentTo, ...refetchers, toastSurface];
         this.announceSettledToRenderer(fullReq.id, recipients);
+        if (projectDelivery) return;
         try {
           const currentOwner = this.liveSurfaceFor(fullReq.sessionId, fullReq.egressHost?.terminalTabId);
           if (currentOwner && !recipients.includes(currentOwner)) {
@@ -1562,6 +1611,7 @@ export class ApprovalGate {
       }
 
       this.pending.set(fullReq.id, {
+        ...(projectDelivery === undefined ? {} : { projectDelivery }),
         ...(fullReq.browserSite === undefined ? {} : { browserSite: fullReq.browserSite }),
         ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),
         ...(userOwnedSurface !== undefined && requestedSurfaceReviewFallback === true ? { userOwnedSurfaceReviewFallback: true as const } : {}),
@@ -1693,7 +1743,16 @@ export class ApprovalGate {
       }
       // Keep what the renderer is about to receive, so a renderer that loads after this send can be handed the same card (see listPendingRendererRequests).
       const parked = this.pending.get(fullReq.id);
-      if (parked !== undefined) parked.rendererRequest = maskedSignedReq;
+      if (parked === undefined) return;
+      parked.rendererRequest = maskedSignedReq;
+      if (projectDelivery) {
+        detachOwnerRelease = this.resolveSurface?.observeOwnerReleased?.(owner => {
+          if (projectDelivery.recipient === owner) this.reconcileWorkBoardProjectApprovals();
+        });
+        const recipient = this.projectRecipient(projectDelivery.project);
+        if (recipient) this.sendProjectRequest(parked, recipient, false);
+        return;
+      }
       // on send failure (webContents destruction race), clear pending and deny once.
       let surfaceUnavailable = false;
       try {
@@ -1819,12 +1878,13 @@ export class ApprovalGate {
   mayRecordFrom(requestId: string, contents: WebContents | undefined): boolean {
     const entry = this.pending.get(requestId);
     if (!entry) return false;
-    return entry.egressTerminalTabId === undefined || this.isRendererOwner(entry, contents);
+    return (entry.egressTerminalTabId === undefined && entry.projectDelivery === undefined) || this.isRendererOwner(entry, contents);
   }
 
   // Conversation and terminal cards follow their live registration; unattributed cards retain their bound recipient.
   private isRendererOwner(entry: PendingEntry, contents: WebContents | undefined): boolean {
     if (contents === undefined || contents.isDestroyed()) return false;
+    if (entry.projectDelivery) return this.ownsProjectDelivery(entry.projectDelivery, contents);
     return (entry.unattributedOwner ?? this.liveSurfaceFor(entry.sessionId, entry.egressTerminalTabId)) === contents;
   }
 
@@ -1855,7 +1915,9 @@ export class ApprovalGate {
     if (entry.rendererRequest === undefined) return;
     entry.rendererRequest = { ...entry.rendererRequest, extensionStartAnswered: Object.fromEntries(answered) };
     try {
-      const surface = this.liveSurfaceFor(entry.sessionId);
+      const delivery = entry.projectDelivery;
+      const surface = delivery ? delivery.recipient : this.liveSurfaceFor(entry.sessionId);
+      if (delivery && (!surface || !this.ownsProjectDelivery(delivery, surface))) return;
       if (surface && !surface.isDestroyed()) surface.send(IPC_APPROVAL_REQUEST, entry.rendererRequest);
     } catch {
       // The window went away: the host still holds the answers, and the next window is handed the card with them.

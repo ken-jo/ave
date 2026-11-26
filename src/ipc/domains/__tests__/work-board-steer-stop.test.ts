@@ -71,7 +71,7 @@ beforeEach(() => {
 describe("work-board steer and stop IPC", () => {
   it("forwards a gesture-carrying steer for the item; the engine picks the child, the renderer cannot", async () => {
     const { event, steerRun } = setup();
-    await expect(invokeWithWorkBoardTestKey(handler, WORK_BOARD.steerRun, event, 7, "also cover the edge cases", undefined, "sub-forged-child")).resolves.toStrictEqual({ ok: true, messageId: "m-7" });
+    await expect(invokeWithWorkBoardTestKey(handler, WORK_BOARD.steerRun, event, 7, "also cover the edge cases", "sub-forged-child")).resolves.toStrictEqual({ ok: true, messageId: "m-7" });
     expect(steerRun).toHaveBeenCalledWith(7, "also cover the edge cases");
   });
 

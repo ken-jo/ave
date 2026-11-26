@@ -1152,11 +1152,9 @@ export type AvePreloadApi = {
   // Steer or stop a running execution (local user only: a consumed keyboard
   // gesture, permission-decision-tree.md S→T). The host picks the execute child;
   // the steer text reaches it as host-fenced guidance at its next round boundary.
-  // `userIntent` is captured at the gesture with captureUserKeyboardIntent().
   steerWorkBoardRun?: (
     itemId: number,
     text: string,
-    userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot,
     stageId?: string,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkBoardSteerIpcResult

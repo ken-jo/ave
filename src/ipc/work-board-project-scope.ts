@@ -9,17 +9,20 @@ import { fanOutToAllWindows, type FanOutOptions } from "./window-fanout.js";
 const observed = new WeakSet<WebContents>();
 const scopes = new WeakMap<WebContents, { frame: WebFrameMain; project: ProjectIdentity }>();
 
-export function setWorkBoardProjectScope(contents: WebContents, root: unknown): boolean {
+export function setWorkBoardProjectScope(contents: WebContents, root: unknown, onInvalidated?: () => void): boolean {
   scopes.delete(contents);
   if (typeof root !== "string" || !root) return false;
   const resolved = resolveAuthorizedWorkspaceProject(root);
   if (!resolved.authorized || !resolved.project) return false;
   if (!observed.has(contents)) {
     observed.add(contents);
+    const invalidate = () => {
+      if (scopes.delete(contents)) onInvalidated?.();
+    };
     contents.on("did-start-navigation", details => {
-      if (details.isMainFrame && !details.isSameDocument) scopes.delete(contents);
+      if (details.isMainFrame && !details.isSameDocument) invalidate();
     });
-    contents.on("render-process-gone", () => scopes.delete(contents));
+    contents.on("render-process-gone", invalidate);
   }
   scopes.set(contents, { frame: contents.mainFrame, project: resolved.project });
   return true;
@@ -31,6 +34,12 @@ export function workBoardProjectAllows(contents: WebContents | undefined, root: 
   if (!scope || scope.frame !== contents.mainFrame) return false;
   const resolved = resolveAuthorizedWorkspaceProject(root);
   return resolved.authorized && projectRootEquals(resolved.project?.projectRoot, scope.project.projectRoot);
+}
+
+export function findWorkBoardProjectRecipient(
+  windows: Array<MainWindow | null | undefined>, root: string | undefined,
+): WebContents | null {
+  return projectWindows(windows, root)[0]?.webContents ?? null;
 }
 
 export function deliverWorkBoardProgress(

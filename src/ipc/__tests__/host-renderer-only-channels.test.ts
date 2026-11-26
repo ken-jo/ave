@@ -525,9 +525,45 @@ describe('memory embedding config ownership', () => {
   });
 });
 
-it("keeps sampled activation and gesture booleans out of work board and workflow handlers", () => {
-  for (const path of ["../domains/work-board.ts", "../domains/work-approvals.ts", "../workflow-template-handlers.ts"]) {
-    const source = readFileSync(new URL(path, import.meta.url), "utf8");
-    expect(source, path).not.toMatch(/\b(?:userActivation|hasUserKeyboardIntent|ipcUserKeyboardIntent|hasActiveUserGesture)\b|\b(?:intent|gesture|userGesture|userIntent)\??:\s*boolean\b/u);
+const SAMPLED_ACTIVATION = /\b(?:userActivation|hasUserKeyboardIntent|captureUserKeyboardIntent|consumeUserKeyboardIntent|ipcUserKeyboardIntent|hasActiveUserGesture)\b|["'][^"']*\/(?:user-activation|gesture-intent)\.js["']/u;
+const GESTURE_BOOLEAN = /\b[\w$]*(?:gesture|intent)[\w$]*\s*(?:\??:\s*boolean\b|=\s*(?:true|false)\b)/iu;
+
+function expectNativeWorkGesture(source: string, path: string): void {
+  expect(source.match(SAMPLED_ACTIVATION)?.[0], path).toBeUndefined();
+  expect(source.match(GESTURE_BOOLEAN)?.[0], path).toBeUndefined();
+}
+
+function checkWorkBoardPreloadBridges(source: string): void {
+  // The mixed bridge also contains unrelated APIs that intentionally sample activation.
+  const bridges = source.split(/^ {2}(?=\w+:)/mu).filter(part => /\b(?:WORK_BOARD|WORK_APPROVALS)\./u.test(part));
+  expect(bridges.some(part => part.startsWith("steerWorkBoardRun:"))).toBe(true);
+  for (const bridge of bridges) expectNativeWorkGesture(bridge, bridge.slice(0, bridge.indexOf(":")));
+}
+
+it("keeps sampled activation and gesture booleans out of work board and workflow handlers and preload bridges", () => {
+  for (const path of [
+    "../domains/work-board.ts", "../domains/work-approvals.ts", "../workflow-template-handlers.ts",
+    "../../preload/work-board-decision-intent.ts",
+  ]) {
+    expectNativeWorkGesture(readFileSync(new URL(path, import.meta.url), "utf8"), path);
   }
+  checkWorkBoardPreloadBridges(readFileSync(new URL("../../preload/internal-api-surface.ts", import.meta.url), "utf8"));
+});
+
+it.each(["hasGesture: boolean", "gesture = false"])("rejects a virtual handler with %s", signature => {
+  expect(() => expectNativeWorkGesture(`async (e, ${signature}) => e.sender`, "virtual handler")).toThrow();
+});
+
+it("rejects virtual preload token minting from a sampled activation helper", () => {
+  const path = "../../preload/work-board-decision-intent.ts";
+  const original = readFileSync(new URL(path, import.meta.url), "utf8");
+  const mutated = original.replace(
+    'import { randomUUID } from "node:crypto";',
+    'import * as activation from "./user-activation.js";\nconst randomUUID = () => activation.hasActiveUserGesture() ? "sampled-token" : "";',
+  );
+  expect(mutated).not.toBe(original);
+  expect(() => expectNativeWorkGesture(mutated, path)).toThrow(/user-activation/u);
+
+  const inline = "const api = {\n  steerWorkBoardRun: () => consumeUserKeyboardIntent(intent) && ipcRenderer.invoke(WORK_BOARD.steerRun, id, text),\n};";
+  expect(() => checkWorkBoardPreloadBridges(inline)).toThrow(/consumeUserKeyboardIntent/u);
 });

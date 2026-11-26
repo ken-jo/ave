@@ -14,7 +14,6 @@ import type {
   WorkItemRunResult,
   WorkItemRunStatus,
 } from "../../../shared/work-board-types.js";
-import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { t } from "../../../i18n/runtime.js";
 
@@ -384,7 +383,6 @@ export function useWorkBoardRun(
   steer: (
     id: number,
     text: string,
-    userIntent: UserKeyboardIntentSnapshot | undefined,
   ) => Promise<WorkBoardSteerIpcResult | { ok: false; error: string }>;
   /** Ask the host to stop the item's execution. An accepted stop holds `stopping` until the run settles. */
   stop: (id: number) => Promise<WorkBoardCancelIpcResult | { ok: false; error: string }>;
@@ -624,14 +622,14 @@ export function useWorkBoardRun(
   );
 
   const steer = useCallback(
-    async (id: number, text: string, userIntent: UserKeyboardIntentSnapshot | undefined) => {
+    async (id: number, text: string) => {
       if (typeof api.steerWorkBoardRun !== "function") throw new Error("steerWorkBoardRun is not exposed to this window");
       const sentAt = new Date().toISOString();
       const book = steerBookRef.current;
       const generation = generationRef.current.get(id) ?? 0;
       book.beginSend(id);
       try {
-        const result = await api.steerWorkBoardRun(id, text, userIntent);
+        const result = await api.steerWorkBoardRun(id, text);
         // The item's next run started while this steer was in flight: the steer belonged to the run that ended, whose steers are no longer
         // drawn and whose held acks were forgotten. Listed on the new run it would stay "sent" forever.
         if (result.ok && (generationRef.current.get(id) ?? 0) === generation) {

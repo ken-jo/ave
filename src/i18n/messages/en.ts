@@ -1,8 +1,4 @@
-/** English message ca    workItemCreatedInProject: "Work item created in {project}",
-    openProjectRunDescription: "Open the project to view the run and respond to its approvals.",
-    openInProject: "Open in {project}",
-    projectUnavailable: "This project is no longer available.",
-talog, grouped by namespace. */
+/** English message catalog, grouped by namespace. */
 export const en = {
   "memoryMap.noMemories": "No eligible memories yet. Save a memory, then rebuild the map.",
   "memoryMap.ask": "Ask your memory…",
@@ -6634,7 +6630,9 @@ export const en = {
   "workApprovals.orderArrival": "By arrival",
   "workApprovals.empty": "No work needs your review",
   "workApprovals.loading": "Loading items that need your review",
-  "workApprovals.toolApprovalsNote": "Tool-run approvals are not counted here. They stay in their conversation.",
+  "workApprovals.openApproval": "Open approval",
+  "workApprovals.stageToolApprovals": "Stage tool approvals",
+  "workApprovals.toolApprovalsNote": "Stage tool approvals waiting for this project appear here. Other tool approvals appear in their run or conversation.",
   "workApprovals.queuedHeading": "Next {count}",
   "workApprovals.position": "{index} / {total}",
   "workApprovals.filterAll": "All {count}",
@@ -6711,6 +6709,10 @@ export const en = {
   "workApprovals.planSource": "Work board · plan ready",
 
   // workBoard
+  "workflowTemplates.workItemCreatedInProject": "Work item created in {project}",
+  "workflowTemplates.openProjectRunDescription": "Open the project to view the run and respond to its approvals.",
+  "workflowTemplates.openInProject": "Open in {project}",
+  "workflowTemplates.projectUnavailable": "This project is no longer available.",
   "workflowTemplates.library": "Workflow templates",
   "workflowTemplates.libraryDescription": "Choose a confirmed graph to run or edit a draft to create a new version.",
   "workflowTemplates.empty": "No workflow templates yet.",
