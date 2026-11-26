@@ -115,6 +115,46 @@ describe("missing deny parents", () => {
     });
   });
 
+  it.runIf(process.platform === "win32")("rejects a watched outcome when the covering grant changes identity at the same spelling", () => {
+    withMxcWorkspace(scratch => {
+      const workspace = join(scratch, "workspace");
+      mkdirSync(workspace);
+      const hooks = join(workspace, ".ave", "hooks");
+      const rows = { allowWrite: [workspace], allowRead: [], denyRead: [], denyWrite: [hooks], requiredWriteDenies: [hooks], protectedFloor: [] };
+      const result = rankAdmittedMxcLists(rows);
+      const plan = consumeObligations(admitMxcLists(rows), "mxc-launch");
+      const denies = plan.filter(entry => entry.polarity.effect === "deny");
+      const reach = plan.filter(entry => entry.polarity.effect === "allow");
+      const outcome = { denies, patterns: [], outcomes: new Map(), reachable: reach, reach, exceptions: [], result };
+      expect(result.watched).toEqual([watchedUnder(workspace)(hooks)]);
+      expect(() => assertMxcDenyOutcomes(outcome)).not.toThrow();
+
+      renameSync(workspace, join(scratch, "original"));
+      mkdirSync(workspace);
+      const replacement = consumeObligations(admitMxcLists(rows), "mxc-launch").filter(entry => entry.polarity.effect === "allow");
+      expect(replacement[0]?.target).toBe(reach[0]?.target);
+      expect(replacement[0]?.identity).not.toEqual(reach[0]?.identity);
+      expect(() => assertMxcDenyOutcomes({ ...outcome, reachable: replacement, reach: replacement }))
+        .toThrow("Windows sandbox policy left a deny without an outcome: " + hooks);
+    });
+  });
+
+  it.runIf(process.platform === "win32")("refuses to rank a watched outcome when the grant pin disagrees with the deny chain", () => {
+    withMxcWorkspace(workspace => {
+      const hooks = join(workspace, ".ave", "hooks");
+      const rows = { allowWrite: [workspace], allowRead: [], denyRead: [], denyWrite: [hooks], requiredWriteDenies: [hooks], protectedFloor: [] };
+      const pin = facts.pinWindowsPaths;
+      const replaced = vi.fn((paths: readonly string[]) => pin(paths).map((entry, index) => {
+        if (paths[index] !== workspace) return entry;
+        const fileId = "0x" + "0".repeat(32);
+        return { ...entry, fileId, fileIndex: fileId };
+      }));
+      vi.spyOn(facts, "pinWindowsPaths").mockImplementation(replaced);
+      expect(() => rankAdmittedMxcLists(rows)).toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: hooks }));
+      expect(replaced).toHaveBeenCalledWith([workspace]);
+    });
+  });
+
   it("never widens a deny under a missing protected parent to the parent: a protected name is watched, any other deny refuses", () => {
     const carrier = win32.join(root, ".ave");
     const [commands, hooks, tasks] = ["commands", "hooks", "tasks"].map(name => win32.join(carrier, name)) as [string, string, string];

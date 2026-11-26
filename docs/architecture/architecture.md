@@ -3528,7 +3528,8 @@ in its directory.
   `watched`: the write grant proceeds, and the result records the name with
   its nearest existing folder and that folder's volume and file identity. The
   outcome check accepts a watched row only at the deny's own path, under the
-  deny's own anchor object. An independent deny under the same missing
+  deny's own anchor object, with every covering write grant's object in the
+  deny's pinned ancestor chain. An independent deny under the same missing
   parent refuses the launch unless the policy already denies the parent at
   its own path. The container composers state the Ave home read boundary at
   each of its roots, including the legacy profile `.ave` when the active

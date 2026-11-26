@@ -822,11 +822,23 @@ export interface MxcDenyOutcomeInput {
   readonly result: MxcFilesystemGrants;
 }
 
-// A missing write deny is watched when the result records it at the deny's own path, beneath the deny's own anchor object.
-function watchedHolds(deny: AdmittedObligation, result: MxcFilesystemGrants): boolean {
-  return deny.polarity.access === "write" && deny.kind === "missing" && (result.watched ?? []).some(row =>
+function isPinnedWatchedAncestor(grant: AdmittedObligation, deny: AdmittedObligation): boolean {
+  const identity = grant.identity;
+  return grant.kind === "dir" && identity !== null && deny.chain.some(ancestor =>
+    ancestor.volumeSerial === identity.volumeSerial && ancestor.fileId === identity.fileId);
+}
+
+function watchedHolds(deny: AdmittedObligation, input: MxcDenyOutcomeInput): boolean {
+  const { result, reach } = input;
+  if (deny.polarity.access !== "write" || deny.kind !== "missing" || !(result.watched ?? []).some(row =>
     foldPath(row.path) === foldPath(deny.target) && foldPath(row.anchor) === foldPath(deny.anchorTarget)
-    && row.volumeSerial === deny.anchor.volumeSerial && row.fileId === deny.anchor.fileId);
+    && row.volumeSerial === deny.anchor.volumeSerial && row.fileId === deny.anchor.fileId)) return false;
+  const covering = result.readwrite.filter(path => isWindowsPathAtOrUnder(deny.target, path));
+  return covering.length > 0 && covering.every(path => {
+    const grants = reach.filter(grant => grant.polarity.effect === "allow" && grant.polarity.access === "write"
+      && foldPath(grant.target) === foldPath(path));
+    return grants.length > 0 && grants.every(grant => isPinnedWatchedAncestor(grant, deny));
+  });
 }
 
 function exceptionHolds(deny: AdmittedObligation, input: MxcDenyOutcomeInput): boolean {
@@ -866,7 +878,7 @@ export function assertMxcDenyOutcomes(input: MxcDenyOutcomeInput): void {
     // A grant beneath the deny reaches it too, except a read-mask carve-out or the read grant a floor pierce admits.
     const beneath = deny.origin.source === "read-mask" ? [] : deny.origin.source === "floor" ? result.readwrite : grants;
     const reached = grants.some(grant => isWindowsPathAtOrUnder(deny.target, grant)) || beneath.some(grant => strictlyUnder(grant, deny.target));
-    if (!stamped && reached && !watchedHolds(deny, result) && !exceptionHolds(deny, input)) throw unheld(deny.origin.row);
+    if (!stamped && reached && !watchedHolds(deny, input) && !exceptionHolds(deny, input)) throw unheld(deny.origin.row);
   }
   for (const { requested, pattern, prefix } of patterns) {
     const outcome = outcomes.get(requested);
@@ -977,7 +989,10 @@ function rankAdmittedMxcFilesystem(
       if (!allows.some(grant => isWindowsPathAtOrUnder(grant.target, firstMissing)) && denied.some(parent =>
         parent.kind === "missing" && foldPath(parent.target) === foldPath(firstMissing)
         && parent.anchor.volumeSerial === deny.anchor.volumeSerial && parent.anchor.fileId === deny.anchor.fileId)) return [];
-      if (deny.polarity.access !== "write" || !required.has(deny.origin.row)) throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: deny.origin.row }));
+      if (deny.polarity.access !== "write" || !required.has(deny.origin.row)
+        || writes.some(grant => isWindowsPathAtOrUnder(deny.target, grant.target) && !isPinnedWatchedAncestor(grant, deny))) {
+        throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: deny.origin.row }));
+      }
       watched.push(deny);
       return [];
     }
