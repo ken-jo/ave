@@ -5,7 +5,7 @@ import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession
 import { errorMessage } from "../shared/error-message.js";
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { admitApprovalAnswer, type ApprovalGate, type ApprovalChoice } from "./approval-gate.js";
+import type { ApprovalGate, ApprovalChoice } from "./approval-gate.js";
 import type { PermissionCheckContext, PermissionCheckResult, PermissionManager } from "./permission-manager.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
@@ -506,6 +506,7 @@ export async function gateMutatingEffect(params: {
     ...(permission.reviewer?.verdict ? { reviewerVerdict: permission.reviewer.verdict } : {}),
   }, card));
   try {
+    const { admitApprovalAnswer } = await import("./approval-gate.js");
     admitApprovalAnswer(decision, { requestId, toolName: ctx.toolName, toolUseId: undefined });
   } catch (error) {
     approvalRefusalLatch.get(ctx)?.({ kind: "recheck-failed", reason: errorMessage(error) });
