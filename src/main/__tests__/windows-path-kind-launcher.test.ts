@@ -2,10 +2,10 @@ import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
 
-const mocks = vi.hoisted(() => ({ execFile: vi.fn(), execFileSync: vi.fn(), existsSync: vi.fn(), readFile: vi.fn(), readFileSync: vi.fn() }));
+const mocks = vi.hoisted(() => ({ execFile: vi.fn(), execFileSync: vi.fn(), existsSync: vi.fn(), access: vi.fn(), readFile: vi.fn(), readFileSync: vi.fn() }));
 vi.mock("node:child_process", () => ({ execFile: mocks.execFile, execFileSync: mocks.execFileSync }));
 vi.mock("node:fs", () => ({ existsSync: mocks.existsSync, readFileSync: mocks.readFileSync }));
-vi.mock("node:fs/promises", () => ({ readFile: mocks.readFile }));
+vi.mock("node:fs/promises", () => ({ access: mocks.access, readFile: mocks.readFile }));
 vi.mock("../../shared/tool-timeout-policy.js", async original => {
   const actual = await original<typeof import("../../shared/tool-timeout-policy.js")>();
   return { ...actual, TOOL_TIMEOUT_POLICY: { ...actual.TOOL_TIMEOUT_POLICY, windowsPathKindQueryMs: 300 } };
@@ -14,7 +14,7 @@ import { isWindowsPathKindHelperUnavailable, queryDosDevice, queryWindowsDocumen
 import { sleepingHelper } from "../../__tests__/support/sleeping-helper.js";
 import { configureHostResources } from "../host-resources.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { windowsPeImageDigest } from "../../../scripts/lib/windows-pe-image-digest.mjs";
+import { windowsPeImageDigest } from "../../../scripts/lib/windows-path-kind-image-digest.mjs";
 
 /** A minimal PE32+ image whose only content is `marker`. */
 function helperImage(marker: string): Buffer {
@@ -231,21 +231,21 @@ describe("native system directory launcher", () => {
   beforeEach(() => {
     configureHostResources({ resourcePath: "/trusted/resources", isPackaged: true });
     mocks.execFile.mockReset();
-    mocks.readFile.mockReset().mockResolvedValue(Buffer.alloc(0));
+    mocks.access.mockReset().mockResolvedValue(undefined);
     vi.stubGlobal("process", { ...process, platform: "win32", arch: "x64" });
   });
   afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
-  it.each([7, 10])("counts %i ms of helper reading against the launch deadline", async (elapsed) => {
-    const read = deferred<Buffer>();
-    mocks.readFile.mockReturnValueOnce(read.promise);
+  it.each([7, 10])("counts %i ms of helper access against the launch deadline", async (elapsed) => {
+    const access = deferred<void>();
+    mocks.access.mockReturnValueOnce(access.promise);
     mocks.execFile.mockImplementation(helperReply("D:\\OperatingSystem\\System32\n"));
     vi.useFakeTimers({ toFake: ["performance"] });
     try {
       const pending = queryWindowsSystemDirectory(10, performance.now() + 10);
-      expect(mocks.readFile).toHaveBeenCalledTimes(1);
+      expect(mocks.access).toHaveBeenCalledTimes(1);
       vi.advanceTimersByTime(elapsed);
-      read.resolve(Buffer.alloc(0));
+      access.resolve();
       if (elapsed === 10) {
         await expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
         expect(mocks.execFile).not.toHaveBeenCalled();
@@ -274,7 +274,7 @@ describe("native system directory launcher", () => {
   });
 
   it("refuses missing helpers and unsupported platforms without another lookup", async () => {
-    mocks.readFile.mockRejectedValueOnce(new Error("missing"));
+    mocks.access.mockRejectedValueOnce(new Error("missing"));
     await expect(queryWindowsSystemDirectory()).rejects.toThrow("classifier is missing");
     vi.stubGlobal("process", { ...process, platform: "linux" });
     await expect(queryWindowsSystemDirectory()).rejects.toThrow("requires Windows");

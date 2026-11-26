@@ -1,8 +1,8 @@
 import { execFile, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { dirname, join, win32 } from "node:path";
-import { windowsPeImageDigest } from "../../scripts/lib/windows-pe-image-digest.mjs";
+import { windowsPeImageDigest } from "../../scripts/lib/windows-path-kind-image-digest.mjs";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
 import { getHostResources } from "./host-resources.js";
@@ -32,8 +32,10 @@ export function resolveWindowsPathKindHelper(resourcePath = getHostResources().r
   return binary;
 }
 
+// Unbundled source modules under unit tests carry no pin.
+const pinned = (): boolean => typeof __AVE_WINDOWS_PATH_KIND_SHA256__ !== "undefined";
+
 function assertBuiltHelper(bytes: Buffer): void {
-  if (typeof __AVE_WINDOWS_PATH_KIND_SHA256__ === "undefined") return; // Unbundled source modules under unit tests.
   let digest: string | undefined;
   try {
     digest = windowsPeImageDigest(bytes);
@@ -47,6 +49,7 @@ function assertBuiltHelper(bytes: Buffer): void {
 
 /** Packaged, system-directory and checkout helpers alike must carry the image this bundle was built with. */
 export function verifyWindowsPathKindHelper(resourcePath: string): void {
+  if (!pinned()) return;
   let bytes: Buffer;
   try {
     bytes = readFileSync(windowsPathKindHelperIn(resourcePath));
@@ -163,13 +166,14 @@ export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT
   if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
   const { resourcePath } = getHostResources();
   const helper = windowsPathKindHelperIn(resourcePath);
-  let bytes: Buffer;
+  let bytes: Buffer | undefined;
   try {
-    bytes = await readFile(helper);
+    if (pinned()) bytes = await readFile(helper);
+    else await access(helper);
   } catch {
     throw missingWindowsPathKindHelper();
   }
-  assertBuiltHelper(bytes);
+  if (bytes) assertBuiltHelper(bytes);
   return new Promise((resolve, reject) => {
     const options = windowsSystemDirectorySpawnOptions(helper);
     const remaining = deadline === undefined ? timeout : Math.min(timeout, deadline - performance.now());
