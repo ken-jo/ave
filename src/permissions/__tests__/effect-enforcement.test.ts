@@ -6,7 +6,7 @@ import { AsyncResource } from "node:async_hooks";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PermissionManager, type ReviewerDispatchResult } from "../permission-manager.js";
+import { PermissionManager, type PermissionCheckResult, type ReviewerDispatchResult } from "../permission-manager.js";
 let permissionManager: PermissionManager;
 
 import type { ApprovalChoice, ApprovalDecision, ApprovalGate, ApprovalRequest, ApprovalRequestInput,
@@ -1401,7 +1401,8 @@ describe("common policy at each actual effect", () => {
         });
         expect(review).toHaveBeenCalledTimes(!headless && mode === "auto" ? 1 : 0);
         expect(requests).toHaveLength(!headless && (mode === "strict" || mode === "default") ? 1 : 0);
-        expect(decisions).toHaveBeenCalledTimes(1);
+        // The decision, then the owner's check of the answered card.
+        expect(decisions).toHaveBeenCalledTimes(1 + requests.length);
         expect(decisions.mock.results[0]!.value).toMatchObject({
           reasonCode: headless ? "no-approver" : mode === "auto" ? "review-required"
             : mode === "allow" ? "allow-mode" : "exfiltration-guardrail",
@@ -1662,4 +1663,75 @@ it.each(["allow", "strict"] as const)("refreshes controller identity at a nested
   await expect(runWithEffectGateContext({ headless: false, toolName: "outer", sessionId: "effect-session", permissionContext: { remoteControllerAuthority: authority } }, () => gateMutatingEffect({ pluginId: "p1", methodPath: "storage.write", effect: "write", target: "effect.txt", input: ["effect.txt", "body"], approvalGate: gate, permissionManager, resolveStoragePath: relativePath => join(tmpdir(), "effect-storage", relativePath) }))).rejects.toThrow("remote-controller-revoked");
   expect(refresh).toHaveBeenCalledOnce();
   if (mode === "strict") expect(requests[0]).toMatchObject({ remoteControllerAuthority: authority, remoteControllerOrigin: "tailnet-controller" });
+});
+
+// The effect card is a card of the answer owner (pending-answer-policy.ts): only its own standing answer reaches the host method
+// or leaves a grant behind.
+describe("an effect card's answer is judged by the owner", () => {
+  /** A gate that holds every card open until the test answers it. */
+  function heldGate() {
+    const cards: Array<{ request: ApprovalRequestInput; answer: (choice: ApprovalChoice, requestId?: string) => void }> = [];
+    const gate = { requestAndWait: (request: ApprovalRequestInput) => new Promise<ApprovalDecision>((resolve) => {
+      cards.push({ request, answer: (choice, requestId = request.id) => resolve({ requestId, choice }) });
+    }) } as unknown as ApprovalGate;
+    return { gate, cards };
+  }
+
+  it.each([
+    ["an ordinary card", "a.txt", "a forced question", "allow-always"],
+    ["a forced card", ".git/config", "another forced question", "allow-once"],
+    ["an ordinary card", "a.txt", "a check that throws", "allow-always"],
+    ["a forced card", ".git/config", "a check that throws", "allow-once"],
+  ] as const)("%s (%s) answered while the call meets %s reaches neither the host method nor a grant", async (_card, path, change, choice) => {
+    permissionManager.setMode("default");
+    const { gate, cards } = heldGate();
+    const log: string[] = [];
+    const api = enforceMutatingEffects(makeApi(log), deps(gate));
+    const write = () => runWithEffectGateContext({ headless: false, toolName: "outer" }, () => api.storage.write(path, "same"));
+    const pending = write();
+    void pending.catch(() => undefined);
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    const check = permissionManager.checkDetailed.bind(permissionManager);
+    const moved = vi.spyOn(permissionManager, "checkDetailed").mockImplementation((...args) => {
+      if (change === "a check that throws") throw new Error("check failed");
+      const now = check(...args);
+      return { ...now, decision: "ask", forceModal: true, reasonCode: "protected-path",
+        pipelineRequest: { ...now.pipelineRequest, floor: { code: "protected-path", reason: "Changed while the card was open." } } } as PermissionCheckResult;
+    });
+    cards[0].answer(choice);
+    await expect(pending).rejects.toThrow("Permission policy changed during effect approval");
+    expect(log).toEqual([]);
+    moved.mockRestore();
+    // No grant was left behind: the same effect asks again.
+    const again = write();
+    void again.catch(() => undefined);
+    await vi.waitFor(() => expect(cards).toHaveLength(2));
+    cards[1].answer("deny-once");
+    await expect(again).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    expect(log).toEqual([]);
+  });
+
+  it("refuses an answer crossed between two cards open under the same policy", async () => {
+    permissionManager.setMode("default");
+    const { gate, cards } = heldGate();
+    const log: string[] = [];
+    const api = enforceMutatingEffects({ storage: { write: async (path: string, _data: string) => { log.push(path); } } }, deps(gate));
+    const write = (path: string) => runWithEffectGateContext({ headless: false, toolName: "outer" }, () => api.storage.write(path, "same"));
+    const [first, second] = [write("a.txt"), write("b.txt")];
+    void first.catch(() => undefined);
+    await vi.waitFor(() => expect(cards).toHaveLength(2));
+    cards[0].answer("allow-always", cards[1].request.id);
+    await expect(first).rejects.toThrow("Permission policy changed during effect approval");
+    expect(log).toEqual([]);
+    cards[1].answer("allow-once");
+    await second;
+    expect(log).toEqual(["b.txt"]);
+    // The crossed answer left no grant for the first effect.
+    const again = write("a.txt");
+    void again.catch(() => undefined);
+    await vi.waitFor(() => expect(cards).toHaveLength(3));
+    cards[2].answer("deny-once");
+    await expect(again).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    expect(log).toEqual(["b.txt"]);
+  });
 });

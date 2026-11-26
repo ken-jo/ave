@@ -24,8 +24,8 @@ function nameOf(node: ts.Node): string | undefined {
 
 describe("authority from a person's answer", () => {
   // The epoch form judges no fresh check while the policy stands still and honors no same-card receipt. It is left to cards
-  // that grant no shell or terminal authority; a new caller fails here.
-  it("leaves the epoch form only to cards without shell or terminal authority", () => {
+  // that grant no shell, terminal or effect authority; a new caller fails here.
+  it("leaves the epoch form only to cards without shell, terminal or effect authority", () => {
     const legacy: string[] = [];
     for (const path of sourceFiles(SRC)) {
       const text = readFileSync(path, "utf8");
@@ -41,7 +41,6 @@ describe("authority from a person's answer", () => {
       visit(source, "<module>");
     }
     expect(legacy.sort()).toEqual([
-      "permissions/effect-enforcement.ts#gateMutatingEffect",
       "permissions/egress-approval.ts#createApprovalGateEgressRequester",
       // The write fence: it judges the check it has just run.
       "permissions/host-terminal-write-authority.ts#refusal",

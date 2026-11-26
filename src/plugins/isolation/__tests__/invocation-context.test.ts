@@ -141,7 +141,7 @@ async function openProbe(options: {
   watcherFailure?: boolean; subscriptionFailure?: boolean; allowMode?: boolean; standaloneScope?: (path: string) => boolean;
 } = {}): Promise<Probe> {
   const raised: Probe["raised"] = [];
-  const requestAndWait = vi.fn(async () => ({ choice: "allow-once" as const }));
+  const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "allow-once" as const }));
   let watcherFailure = options.watcherFailure === true;
   const stopWatcher = vi.fn(() => {
     if (!watcherFailure) return;

@@ -1,4 +1,4 @@
-import { answerEpochsOf, personAnswerStands } from "./pending-answer-policy.js";
+import { openPendingAnswerCard, personAnswerStands, spendStandingAnswer, type StandingAnswer } from "./pending-answer-policy.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf, type RemoteControllerAuthority } from "../shared/chat-origin.js";
 // Actual host effects enter the common permission pipeline before recording and execution.
 // Authorize before recording and execution; network audit also records denied attempts. Invalid input snapshots never reach implementation.
@@ -324,6 +324,21 @@ function ordinaryUnderReview(request: PermissionDecisionRequest): boolean {
   return decided.outcome === "allow" || decided.outcome === "sandbox-auto" || decided.outcome === "ask" && CARD_ANSWERED_ASKS.has(decided.reasonCode);
 }
 
+const EFFECT_ANSWER_REFUSED = "Permission policy changed during effect approval";
+
+// Spend the effect card's own standing answer on its effect and leave the grant the person chose. Nothing else resumes an asked effect.
+function resumeAskedEffect(answer: StandingAnswer | undefined, action: string, grant: { key: string; ctx: EffectGateContext } | undefined): void {
+  const stood = spendStandingAnswer(answer, "effect", action);
+  if (stood === undefined) throw new Error(EFFECT_ANSWER_REFUSED);
+  if (grant === undefined) return;
+  const { choice } = stood.decision;
+  if (choice === "allow-once") {
+    if (!poppedFrames.has(grant.ctx)) grant.ctx.onceGrants.add(grant.key);
+  } else if (choice === "allow-session" || choice === "allow-always") {
+    descriptorGrants.set(grant.key, { choice, sessionId: grant.ctx.sessionId });
+  }
+}
+
 // Standalone lifecycle work is outside tool policy. Tool effects are evaluated independently of their enclosing tool's approval.
 export async function gateMutatingEffect(params: {
   pluginId: string;
@@ -434,9 +449,12 @@ export async function gateMutatingEffect(params: {
     ? `${params.methodPath} → ${params.target}`
     : params.methodPath;
   const reusableGrant = snapshot.reusable && !params.capabilityBound && !permission.forceModal && params.input !== undefined;
-  const opened = answerEpochsOf(manager);
+  const requestId = randomUUID();
+  const action = `effect:${key}`;
+  // The owner judges the answer by this effect's own check. The card saves no rule, so no policy step of its own is honored.
+  const card = openPendingAnswerCard(manager, permission, checkEffect, "stale-refused", { gate: {}, requestId, action });
   const decision = await params.approvalGate.requestAndWait({
-    id: randomUUID(),
+    id: requestId,
     category: "agent-action",
     kind: "agent-action",
     toolName: ctx.toolName,
@@ -469,7 +487,9 @@ export async function gateMutatingEffect(params: {
   ctx.abortSignal?.throwIfAborted();
   if (!await refreshRemoteControllerBoundToSession(ctx.permissionContext?.remoteControllerAuthority, ctx.sessionId)) throw new Error("remote-controller-revoked");
   // Another conversation's or run's memory-only allow rule leaves the answer standing; any other change refuses it.
-  if (!personAnswerStands(manager, opened, permission.forceModal === true, checkEffect)) throw new Error("Permission policy changed during effect approval");
+  const stands = personAnswerStands(card, decision);
+  const answer = card.verdict?.kind === "stands" ? card.verdict.proof : undefined;
+  if (!stands && (decision.choice.startsWith("allow") || card.verdict?.kind === "denied")) throw new Error(EFFECT_ANSWER_REFUSED);
   assertEffectPaths(paths);
   if (decision.rememberPattern === NO_APPROVER_MESSAGE) {
     noApproverLatch.get(ctx)?.();
@@ -477,13 +497,9 @@ export async function gateMutatingEffect(params: {
   }
   switch (decision.choice) {
     case "allow-once":
-      if (reusableGrant && !poppedFrames.has(ctx)) ctx.onceGrants.add(key);
-      return;
     case "allow-session":
-      if (reusableGrant) descriptorGrants.set(key, { choice: "allow-session", sessionId: ctx.sessionId });
-      return;
     case "allow-always":
-      if (reusableGrant) descriptorGrants.set(key, { choice: "allow-always", sessionId: ctx.sessionId });
+      resumeAskedEffect(answer, action, reusableGrant ? { key, ctx } : undefined);
       return;
     case "deny-always":
       if (reusableGrant) descriptorGrants.set(key, { choice: "deny-always", sessionId: ctx.sessionId });
