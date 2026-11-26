@@ -1416,8 +1416,7 @@ describe("common policy at each actual effect", () => {
         });
         expect(review).toHaveBeenCalledTimes(!headless && mode === "auto" ? 1 : 0);
         expect(requests).toHaveLength(!headless && (mode === "strict" || mode === "default") ? 1 : 0);
-        // The decision, then the owner's check of the answered card.
-        expect(decisions).toHaveBeenCalledTimes(1 + requests.length);
+        expect(decisions).toHaveBeenCalledOnce();
         expect(decisions.mock.results[0]!.value).toMatchObject({
           reasonCode: headless ? "no-approver" : mode === "auto" ? "review-required"
             : mode === "allow" ? "allow-mode" : "exfiltration-guardrail",

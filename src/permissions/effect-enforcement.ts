@@ -5,7 +5,7 @@ import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession
 import { errorMessage } from "../shared/error-message.js";
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { ApprovalGate, ApprovalChoice, AnsweredRecord } from "./approval-gate.js";
+import type { ApprovalGate, ApprovalChoice, AnsweredRecord, AnsweredProvenance } from "./approval-gate.js";
 import type { PermissionCheckContext, PermissionCheckResult, PermissionManager } from "./permission-manager.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
@@ -52,6 +52,7 @@ export interface EffectGateContext {
   readonly approvalSurface?: ApprovalSurface;
   // The executing tool's name — surfaced in the approval dock.
   readonly toolName: string;
+  readonly toolUseId?: string;
   // The conversation whose turn is blocked on this effect, when there is one. It decides which tile draws the modal; without it the ask is drawn as a lane card in the focused pane, with no transcript waiting on it. Absent for effects raised outside a turn (a plugin's own background work).
   readonly sessionId?: string;
   /** Host-selected panel delivery; the session still scopes review and grants. */
@@ -69,7 +70,8 @@ const gateContextStorage = new AsyncLocalStorage<EffectGateContext>();
 const authorizationRequiredLatch = new WeakMap<EffectGateContext, () => void>();
 const noApproverLatch = new WeakMap<EffectGateContext, () => void>();
 export type EffectApprovalRefusal = Extract<PendingAnswerVerdict, { kind: "recheck-failed" | "denied" }>
-  | { readonly kind: "host-refused"; readonly reason: string };
+  | { readonly kind: "host-refused"; readonly reason: string }
+  | { readonly kind: "person-denied"; readonly reason: string; readonly provenance: AnsweredProvenance };
 const approvalRefusalLatch = new WeakMap<EffectGateContext, (verdict: EffectApprovalRefusal) => void>();
 // The frame a plugin child named for a request the host cannot tell apart from a sibling call's.
 const unattributedFrames = new AsyncLocalStorage<EffectGateContext>();
@@ -279,6 +281,8 @@ function assertEffectPaths(paths: readonly EffectPath[]): void {
   }
 }
 
+const PERSON_EFFECT_DENIAL_REASON = "the user denied the effect approval";
+
 // Thrown by the effect-gate when a mutating effect is denied; surfaced as a tool error.
 export class EffectBoundaryDeniedError extends Error {
   readonly pluginId: string;
@@ -293,7 +297,7 @@ export class EffectBoundaryDeniedError extends Error {
         ? NO_APPROVER_MESSAGE
         : reason === "approval-unavailable"
           ? NO_APPROVER_MESSAGE
-          : "the user denied the effect approval";
+          : PERSON_EFFECT_DENIAL_REASON;
     super(
       `[effect-gate] plugin '${pluginId}' blocked from ${where}: ${reasonText ?? detail}`,
     );
@@ -481,6 +485,7 @@ export async function gateMutatingEffect(params: {
     category: "agent-action",
     kind: "agent-action",
     toolName: ctx.toolName,
+    ...(ctx.toolUseId === undefined ? {} : { invocationToolUseId: ctx.toolUseId }),
     // Attribute the modal to the conversation that is blocked on it, the same way an invocation approval does.
     ...(ctx.sessionId === undefined || ctx.unattributedApproval ? {} : { sessionId: ctx.sessionId }),
     // `meta` keeps the sandbox-capability row out of this non-execution modal.
@@ -508,10 +513,12 @@ export async function gateMutatingEffect(params: {
   }, card));
   let admitted: AnsweredRecord | undefined;
   let failure: import("./approval-gate.js").ApprovalFailureKind | undefined;
+  let denialProvenance: AnsweredProvenance | undefined;
   try {
-    const { admitApprovalAnswer, approvalFailureKind } = await import("./approval-gate.js");
-    admitted = admitApprovalAnswer(decision, { requestId, toolName: ctx.toolName, toolUseId: undefined });
+    const { admitApprovalAnswer, approvalFailureKind, answeredApprovalProvenance } = await import("./approval-gate.js");
+    admitted = admitApprovalAnswer(decision, { requestId, toolName: ctx.toolName, toolUseId: ctx.toolUseId });
     failure = approvalFailureKind(decision);
+    if (failure === "denied") denialProvenance = answeredApprovalProvenance(decision);
   } catch (error) {
     approvalRefusalLatch.get(ctx)?.({ kind: "recheck-failed", reason: errorMessage(error) });
     throw error;
@@ -521,7 +528,12 @@ export async function gateMutatingEffect(params: {
     noApproverLatch.get(ctx)?.();
     throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "approval-unavailable", NO_APPROVER_MESSAGE);
   }
-  if (admitted === undefined || (failure !== undefined && failure !== "denied")) {
+  if (denialProvenance !== undefined) {
+    approvalRefusalLatch.get(ctx)?.({ kind: "person-denied", reason: PERSON_EFFECT_DENIAL_REASON, provenance: denialProvenance });
+    if (admitted?.choice === "deny-always" && reusableGrant) descriptorGrants.set(key, { choice: "deny-always", sessionId: ctx.sessionId });
+    throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "denied");
+  }
+  if (admitted === undefined || failure !== undefined) {
     const reason = failure === "cancelled" ? "the effect approval request was cancelled"
       : failure === "expired" ? "the effect approval request expired" : "the host refused the effect approval";
     approvalRefusalLatch.get(ctx)?.({ kind: "host-refused", reason });
@@ -531,40 +543,18 @@ export async function gateMutatingEffect(params: {
   ctx.abortSignal?.throwIfAborted();
   if (!await refreshRemoteControllerBoundToSession(ctx.permissionContext?.remoteControllerAuthority, ctx.sessionId)) throw new Error("remote-controller-revoked");
   // Another conversation's or run's memory-only allow rule leaves the answer standing; any other change refuses it.
-  const stands = personAnswerStands(card, decision);
+  personAnswerStands(card, decision);
   const verdict = card.verdict;
   if (verdict?.kind === "recheck-failed" || verdict?.kind === "denied") {
     approvalRefusalLatch.get(ctx)?.(verdict);
     throw new Error(verdict.kind === "recheck-failed" ? verdict.reason : verdict.fresh.reason);
   }
   const answer = verdict?.kind === "stands" ? verdict.proof : undefined;
-  if (!stands && admitted.decision === "allow") throw new Error(EFFECT_ANSWER_REFUSED);
+  if (answer === undefined) throw new Error(EFFECT_ANSWER_REFUSED);
   assertEffectPaths(paths);
-  switch (admitted.choice) {
-    case "allow-once":
-    case "allow-session":
-    case "allow-always": {
-      const { refusal } = await saveStandingAnswerRule(card, decision);
-      if (refusal !== undefined) throw new Error(refusal);
-      resumeAskedEffect(answer, action, reusableGrant ? { key, ctx } : undefined);
-      return;
-    }
-    case "deny-always":
-      if (reusableGrant) descriptorGrants.set(key, { choice: "deny-always", sessionId: ctx.sessionId });
-      throw new EffectBoundaryDeniedError(
-        params.pluginId,
-        params.methodPath,
-        params.target,
-        "denied",
-      );
-    default: // deny-once
-      throw new EffectBoundaryDeniedError(
-        params.pluginId,
-        params.methodPath,
-        params.target,
-        "denied",
-      );
-  }
+  const { refusal } = await saveStandingAnswerRule(card, decision);
+  if (refusal !== undefined) throw new Error(refusal);
+  resumeAskedEffect(answer, action, reusableGrant ? { key, ctx } : undefined);
 }
 
 // Marks an already-enforced object so a nested re-wrap is a no-op (idempotent).

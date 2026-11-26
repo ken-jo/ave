@@ -1329,6 +1329,7 @@ export async function executeAuthorizedToolInvocation(
               approvalSurface: invocationPermissionContext.approvalSurface,
               unattributedApproval: invocationPermissionContext.unattributedApproval,
               toolName: toolUse.name,
+              toolUseId: toolUse.id,
               ...(sessionId === undefined ? {} : { sessionId }),
             },
             () => {
@@ -1354,7 +1355,10 @@ export async function executeAuthorizedToolInvocation(
             },
             () => { effectNoApprover = true; },
             (verdict) => {
-              if (!effectApprovalRefusal || verdict.kind === "recheck-failed") effectApprovalRefusal = verdict;
+              if (effectApprovalRefusal?.kind !== "person-denied" &&
+                (!effectApprovalRefusal || verdict.kind === "person-denied" || verdict.kind === "recheck-failed")) {
+                effectApprovalRefusal = verdict;
+              }
             },
           ),
         ),
@@ -1466,8 +1470,8 @@ export async function executeAuthorizedToolInvocation(
   }
   const effectPermissionRefusal = effectApprovalRefusal === undefined ? undefined
     : effectApprovalRefusal.kind === "denied" ? refusal(effectApprovalRefusal.fresh.reason, RULE_PROVENANCE)
-    : refusal(effectApprovalRefusal.reason, HOST_PROVENANCE);
-  if (effectAuthorizationRequired || effectNoApprover) {
+    : refusal(effectApprovalRefusal.reason, effectApprovalRefusal.kind === "person-denied" ? effectApprovalRefusal.provenance : HOST_PROVENANCE);
+  if ((effectAuthorizationRequired || effectNoApprover) && effectApprovalRefusal?.kind !== "person-denied") {
     // The host effect boundary latched this before blocking the mutation. A
     // plugin may catch that thrown denial, but it cannot clear this outer
     // invocation state or turn the missing approval UI into a retryable result.
