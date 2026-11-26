@@ -195,10 +195,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
       return normalized === winPath.parse(normalized).root ? normalized : normalized.replace(/\\+$/u, "");
     }))];
   const grantIdentity = () => {
-    const facts = [];
-    for (let start = 0; start < paths.length; start += 32) {
-      facts.push(...pinWindowsPaths(paths.slice(start, start + 32)));
-    }
+    const facts = pinWindowsPaths(paths, { batch: true });
     return JSON.stringify(facts.map(row => [...row.ancestors, row].map(part => [part.exists,
       part.exists === true ? windowsObjectKey(part) : null, part.canonical, part.directory, part.reparseTag, part.reparseTarget])));
   };

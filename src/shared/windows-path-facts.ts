@@ -167,21 +167,43 @@ function helperLaunchFailureCode(error: unknown): string | undefined {
   return typeof code === "string" && /^E[A-Z0-9]{1,31}$/u.test(code) && code !== "ENOBUFS" ? code : undefined;
 }
 
-function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = []): WindowsPathFacts[] {
+function windowsPinBatches(helper: string, paths: readonly string[]): string[][] {
+  const fixed = windowsCommandLineLength(helper, ["--pin"]);
+  const batches: string[][] = [];
+  let batch: string[] = [];
+  let units = fixed;
+  for (const path of paths) {
+    const cost = windowsCommandLineLength(path, []);
+    if (batch.length && units + cost > WINDOWS_COMMAND_LINE_LIMIT) {
+      batches.push(batch);
+      batch = [];
+      units = fixed;
+    }
+    batch.push(path);
+    units += cost;
+  }
+  if (batch.length) batches.push(batch);
+  return batches;
+}
+
+function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = [], batch = false): WindowsPathFacts[] {
   if (paths.length === 0) return [];
   const framed = mode === "--dacl" && flags.includes("--parent") && !flags.includes("--content");
   if (!framed && paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
   const input = framed ? encodeParentDaclFrame(paths) : undefined;
-  let output: Buffer;
   try {
-    output = runWindowsNative(() => withWindowsPathKindHelper(helper => {
-      const args = [mode, ...flags, ...(framed ? ["--stdin"] : paths)];
-      if (windowsCommandLineLength(helper, args) > WINDOWS_COMMAND_LINE_LIMIT) {
-        throw Object.assign(new Error("Windows path facts command line exceeds the process limit"), { code: "E2BIG" });
-      }
-      return execFileSync(helper, args, {
-        windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
-        maxBuffer: MAX_PATH_FACTS_OUTPUT_BYTES, input,
+    return runWindowsNative(() => withWindowsPathKindHelper(helper => {
+      const batches = batch ? windowsPinBatches(helper, paths) : [paths];
+      return batches.flatMap(operands => {
+        const args = [mode, ...flags, ...(framed ? ["--stdin"] : operands)];
+        if (windowsCommandLineLength(helper, args) > WINDOWS_COMMAND_LINE_LIMIT) {
+          throw Object.assign(new Error("Windows path facts command line exceeds the process limit"), { code: "E2BIG" });
+        }
+        const output = execFileSync(helper, args, {
+          windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
+          maxBuffer: MAX_PATH_FACTS_OUTPUT_BYTES, input,
+        });
+        return decodeWindowsPathFacts(decodeWindowsNativeReply(output), operands.length, mode, flags, framed ? operands : undefined);
       });
     }));
   } catch (error) {
@@ -199,7 +221,6 @@ function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: read
     }
     throw failure ?? error;
   }
-  return decodeWindowsPathFacts(decodeWindowsNativeReply(output), paths.length, mode, flags, framed ? paths : undefined);
 }
 
 export function decodeWindowsPathFacts(output: string, expectedRows: number, mode: "--pin" | "--dacl", flags: readonly string[] = [], expectedPaths?: readonly string[]): WindowsPathFacts[] {
@@ -234,8 +255,8 @@ export function decodeWindowsPathFacts(output: string, expectedRows: number, mod
   return rows as WindowsPathFacts[];
 }
 
-export function pinWindowsPaths(paths: readonly string[]): readonly WindowsPathFacts[] {
-  return request(paths, "--pin");
+export function pinWindowsPaths(paths: readonly string[], options?: { batch?: boolean }): readonly WindowsPathFacts[] {
+  return request(paths, "--pin", [], options?.batch);
 }
 
 /** The job launcher's own record of a held run. "ok": its job was proven empty and the helper confirmed the held directory

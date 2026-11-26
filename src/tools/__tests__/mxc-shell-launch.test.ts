@@ -133,8 +133,9 @@ vi.mock("../../shared/windows-path-facts.js", async (importOriginal) => {
     }
     return { ...facts(path), ancestors };
   };
-  return { ...actual, pinWindowsPaths: (paths: readonly string[]) => paths.flatMap(path =>
-    h.synthetic.test(path) ? [pin(path)] : actual.pinWindowsPaths([path])) };
+  return { ...actual, pinWindowsPaths: (paths: readonly string[], options?: { batch?: boolean }) => paths.every(path => !h.synthetic.test(path))
+    ? actual.pinWindowsPaths(paths, options)
+    : paths.flatMap(path => h.synthetic.test(path) ? [pin(path)] : actual.pinWindowsPaths([path])) };
 });
 function onDrive(path: string, kind: DriveKind = "dir", target?: string): void {
   for (let parent = winPath.dirname(path); parent !== winPath.dirname(parent); parent = winPath.dirname(parent)) {
@@ -816,6 +817,28 @@ describe("prepareMxcShellLaunch", () => {
       expect(() => delivery?.assertStillValid?.()).toThrow();
       expect(release).not.toHaveBeenCalled();
     } finally { exited.resolve(); await lifecycle.dispose(); }
+  });
+
+  it.runIf(process.platform === "win32")("pins individually valid long policy paths across the native command-line limit", async () => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    const root = mkdtempSync(join(tmpdir(), "shell-long-policy-"));
+    const lifecycle = createContainedShellLifecycle();
+    relay();
+    const transport = vi.spyOn(policyPipe, "openMxcPolicyPipe").mockResolvedValue({ bindChild: () => {}, release: async () => {} });
+    try {
+      const deep = join(root, ...Array.from({ length: 5 }, () => "x".repeat(220)));
+      const paths = Array.from({ length: 32 }, (_, index) => join(deep, `grant ${index}`));
+      for (const path of paths) mkdirSync(winPath.toNamespacedPath(path), { recursive: true });
+      const launch = await prepareMxcShellLaunch({ ...INPUT, cwd: paths[0]!,
+        filesystem: { ...INPUT.filesystem, allowWrite: [], allowRead: paths } }, lifecycle);
+      expect(launch.argv[1]).toBe("--config");
+      launch.activate();
+      const bytes = transport.mock.calls[0]?.[0];
+      expect(JSON.parse(bytes?.toString() ?? "{}").filesystem.readonlyPaths).toEqual(paths);
+    } finally {
+      await lifecycle.dispose();
+      rmSync(winPath.toNamespacedPath(root), { force: true, recursive: true });
+    }
   });
 
   it.skipIf(process.platform !== "win32")("releases an unused policy pipe with the invocation listener", async () => {
