@@ -490,6 +490,8 @@ function createHolderStaging(): HolderStaging {
   try {
     // Exclusive: an existing entry under a fresh random name is not this holder's.
     for (const directory of [root, home, temp]) mkdirSync(directory);
+    // Ave owns this fresh staging directory and can prepare the carrier here.
+    mkdirSync(winPath.join(root, ".ave"));
   } catch (error) {
     liveStaging.delete(root);
     try { removeStagingTree(root); } catch { /* the marked remainder is left for a sweep */ }

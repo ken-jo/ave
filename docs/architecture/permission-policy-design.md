@@ -870,7 +870,8 @@ It denies a missing child by name when its parent exists. A project without
 `.ave` keeps its write grant and watches `.ave/commands` and `.ave/hooks`.
 If either appears, cleanup quarantines that child at shell exit or holder
 release, preserving the carrier and any siblings. The disposable process home
-supplies its own `.ave` so the two child denies can be exact there.
+and holder staging supply their own `.ave` so the two child denies can be
+exact there.
 
 The ACL-backed route requires existing entries so it can stamp write denies
 before admitting a covering grant. A missing entry refuses the grant with a
