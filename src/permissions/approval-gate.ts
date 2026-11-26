@@ -1,3 +1,5 @@
+import { approvalPresentationDenial, presentApproval, requireApprovalCardPresenters, UnattendedApprovalPresentationError } from "./approval-presentation.js";
+import { HostExitAbortError, isHostExitAbort } from "../shared/host-exit-abort.js";
 import { browserOrigin } from "../shared/browser-tools.js";
 import { extensionStartApprovalRows, isBrowserSiteChoice, isExtensionStartChoices, type BrowserSiteChoice, type ExtensionStartChoice } from "../shared/permissions-events.js";
 import { aveHome, isAveHomeConfigurationRefused } from "../shared/ave-home.js";
@@ -5,7 +7,7 @@ import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { WebContents } from "electron";
 import { approvalSurfaceRegistry } from "./approval-surface-registry.js";
-import { CHANNELS } from "../contract/app-contract.js";
+import { APPROVAL_SETTLED_CHANNEL } from "../contract/app-contract.js";
 import { t } from "../i18n/index.js";
 import { approvalActionSummary } from "../shared/approval-action-summary.js";
 import { resolveConversationTitle } from "../shared/conversation-title.js";
@@ -38,6 +40,7 @@ import { exactCanonicalStringify } from "../shared/exact-json.js";
 import type {
   RemoteControllerAuthority,
   RemoteControllerOrigin,
+  TrustOriginWithUnknown,
 } from "../shared/chat-origin.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
@@ -58,6 +61,7 @@ import { resolve as pathResolve } from "node:path";
 import { caseFoldForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { isEgressGrantScope, type EgressGrantNetwork, type EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { isTerminalTabId } from "../shared/tab-id.js";
+import { HOST_PROVENANCE, RULE_PROVENANCE, type HostProvenance, type RuleProvenance } from "./decision-provenance.js";
 
 // Args DLP masking
 
@@ -310,6 +314,8 @@ export type ApprovalRequestInput = Omit<
   ApprovalRequest,
   "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused" | "requestingAgentTitle" | "runStage" | "readjudication"
 > & {
+  // Host-only: the tool call this card asks about. Its accepted answer is bound to it and never sent to the renderer.
+  readonly invocationToolUseId?: string;
   // Host-only native execution proof; removed before renderer/audit payloads.
   readonly hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
   readonly verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
@@ -341,6 +347,8 @@ export type ApprovalRequestInput = Omit<
   readonly remoteControllerAuthority?: RemoteControllerAuthority;
   // Observe turn abort while parked so Stop releases the execution lease immediately instead of waiting for approval timeout. Keep the live signal out of renderer, pending-entry and audit payloads; absent means no turn cancellation.
   readonly abortSignal?: AbortSignal;
+  /** Host-only observation of a parked card's settlement, before the waiter resumes. */
+  readonly onSettled?: (decision: ApprovalDecision) => void;
   // Host-tracked child provenance forces one-shot human approval and stays off renderer requests.
   readonly childProvenance?: ChildAgentProvenance;
 };
@@ -366,6 +374,8 @@ export interface ApprovalDecision {
   browserSiteChoice?: BrowserSiteChoice;
   requestId: string;
   choice: ApprovalChoice;
+  /** Host refusal before delivery. Renderer responses cannot set host rejection provenance. */
+  reasonCode?: "unattended-approval-denied";
   userOwnedSurfaceChoice?: UserOwnedSurfaceChoice;
   // For an `egress-host` ask answered `allow-once`: how long the allow lasts, one of the request's `egressHost.scopes`. Required there, ignored everywhere else; a missing or unoffered scope makes the answer a deny.
   egressScope?: EgressGrantScope;
@@ -383,10 +393,9 @@ export interface ApprovalDecision {
   hmac?: string;
 }
 
-// The wire names are owned by CHANNELS.approval; these names keep the gate's send sites and its tests readable.
-export const IPC_APPROVAL_REQUEST = CHANNELS.approval.request;
+export { APPROVAL_REQUEST_CHANNEL as IPC_APPROVAL_REQUEST } from "../contract/app-contract.js";
 // main→renderer: one parked request is no longer answerable. A renderer takes its card down when the turn that asked ends, and that covers the case where the surface holding the turn is still on screen. It is not the only way a request ends: the host retires a parked ask when the tile that asked closes, when a navigation lets go of the tile, on timeout, on abort, on shutdown. In those the surface that would have dropped the card has already unmounted, and without this announcement the card outlives its request — answerable on screen, answering nothing.
-export const IPC_APPROVAL_SETTLED = CHANNELS.approval.settled;
+export const IPC_APPROVAL_SETTLED = APPROVAL_SETTLED_CHANNEL;
 
 // Host-only timeout provenance; renderer objects can never enter this set.
 const hostTimeoutDecisions = new WeakSet<ApprovalDecision>();
@@ -417,6 +426,97 @@ export function isHostApprovalRejectedDecision(
     decision !== undefined &&
     hostRejectedApprovalDecisions.has(decision)
   );
+}
+
+/** The gate's record of an accepted answer: which way it went, who gave it and the origin that answerer writes. */
+export interface AnsweredRecord {
+  readonly decision: "allow" | "deny";
+  /** The request and action the answer settled; a writer refuses the record for any other. */
+  readonly requestId: string;
+  readonly toolName: string;
+  readonly toolUseId: string | undefined;
+  readonly choice: ApprovalChoice;
+  readonly answerer: ApprovalAnswerer;
+  readonly trustOrigin: TrustOriginWithUnknown;
+}
+
+declare const answeredProvenanceBrand: unique symbol;
+/** An opaque handle the gate minted for one accepted answer. It carries no answer of its own: the record lives in the gate, keyed by
+ * this exact object, so a copy, a spread or an edit of the handle or of the decision cannot change what was answered. */
+export type AnsweredProvenance = { readonly kind: "answered"; readonly [answeredProvenanceBrand]: true };
+/** Who made a decision: an answerer, the policy for the invocation's own origin, or the host itself. */
+export type DecisionProvenance = AnsweredProvenance | RuleProvenance | HostProvenance;
+export { HOST_PROVENANCE, RULE_PROVENANCE, type HostProvenance, type RuleProvenance };
+
+// Written once, when the gate accepts an answer. Any decision without a handle is the host's own (timeout, rejection, disposal,
+// an aborted turn, a policy recheck, or an object built outside the gate).
+const answeredDecisionHandles = new WeakMap<ApprovalDecision, AnsweredProvenance>();
+const answeredRecords = new WeakMap<AnsweredProvenance, AnsweredRecord>();
+
+function mintAnsweredProvenance(decision: ApprovalDecision, answerer: ApprovalAnswerer, toolName: string, toolUseId: string | undefined): void {
+  const handle = Object.freeze({ kind: "answered" }) as AnsweredProvenance;
+  answeredRecords.set(handle, Object.freeze({ decision: decision.choice.startsWith("allow") ? "allow" : "deny",
+    requestId: decision.requestId, toolName, toolUseId, choice: decision.choice,
+    answerer, trustOrigin: APPROVAL_ANSWERER_TRUST_ORIGINS[answerer] }));
+  answeredDecisionHandles.set(decision, handle);
+}
+
+/** The record behind a handle the gate minted. A handle the gate never minted is a forged or copied answer, and throws. */
+export function answeredProvenanceRecord(provenance: AnsweredProvenance): AnsweredRecord {
+  const record = answeredRecords.get(provenance);
+  if (record === undefined) throw new Error("approval: an answered provenance the gate did not mint");
+  return record;
+}
+
+/** A deny without a record is the host's own refusal; an allow without one breaks the gate's contract, and throws. */
+export function approvalDecisionTrustOrigin(decision: ApprovalDecision): TrustOriginWithUnknown {
+  const handle = answeredDecisionHandles.get(decision);
+  if (handle !== undefined) return answeredProvenanceRecord(handle).trustOrigin;
+  if (decision.choice.startsWith("allow")) throw new Error("approval: an allow carries no record of who answered");
+  return "unknown";
+}
+
+/** An answered provenance as a writer may record it: minted by the gate for this action, this decision and this call;
+ * an answer bound to no call settles no invocation-scoped row. */
+export function answeredRecordForAction(
+  provenance: AnsweredProvenance, decision: "allow" | "deny", toolName: string, toolUseId: string | undefined,
+): AnsweredRecord {
+  const record = answeredProvenanceRecord(provenance);
+  if (record.decision !== decision || record.toolName !== toolName || record.toolUseId !== toolUseId) {
+    throw new Error(`approval: the answer to ${record.requestId} does not settle this ${decision} of ${toolName}`);
+  }
+  return record;
+}
+
+/** The gate's handle for a decision a caller is treating as answered. A missing handle breaks the gate's contract. */
+export function answeredApprovalProvenance(decision: ApprovalDecision): AnsweredProvenance {
+  const handle = answeredDecisionHandles.get(decision);
+  if (handle === undefined) throw new Error("approval: an answered decision carries no record of who answered");
+  return handle;
+}
+
+/** The trust origin a row records for `decision` made with this provenance; `invocation` is the invocation's own. An answer
+ * covers only the decision it gave: a step that turned it into the other decision decided that one by policy. */
+export function provenanceTrustOrigin<Origin extends string>(
+  provenance: DecisionProvenance, decision: string, invocation: Origin,
+): Origin | TrustOriginWithUnknown {
+  switch (provenance.kind) {
+    case "answered": {
+      const record = answeredProvenanceRecord(provenance);
+      return record.decision === decision ? record.trustOrigin : invocation;
+    }
+    case "rule": return invocation;
+    case "host": return "unknown";
+    default: return provenance satisfies never;
+  }
+}
+
+/** A deny a person answered, as the gate recorded it when it accepted the answer. */
+export function isAnsweredApprovalDenial(decision: ApprovalDecision): boolean {
+  const handle = answeredDecisionHandles.get(decision);
+  if (handle === undefined) return false;
+  const record = answeredProvenanceRecord(handle);
+  return record.decision === "deny" && record.trustOrigin !== "unknown";
 }
 
 // An `egress-host` request is fully specified or it is a bug: it carries its payload with at least one offered scope, offers exactly allow-once and deny-once, and is never recorded in the user-approval store. Any other kind carrying the payload is a bug too.
@@ -666,6 +766,7 @@ interface PendingEntry {
   floorSessionGrant?: FloorSessionGrant & { policyEpoch: string; plan: NonNullable<ApprovalRequestInput["hostShellExecutionPlan"]> };
   hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
   verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
+  invocationToolUseId?: string;
   projectCwd?: string;
   workingDirectoryIdentity?: string;
   riskCeilingAtApproval?: RiskLevel;
@@ -712,6 +813,14 @@ const APPROVAL_ANSWERER_AUDIT_TOKENS = {
   // The headless one-shot runner (`--exec`): no window, no owner, no dock. It answers every parked request with a deny so an unattended process cannot sit on the gate's timeout. Distinct from every token above for the reason the dimension exists — a reviewer must be able to tell "the owner declined this call" from "nobody was there and the host declined it on their behalf", and only this token can carry the second.
   "headless-exec": "headless-exec",
 } as const;
+
+// The trust origin of each answerer's decision, exhaustive over ApprovalAnswerer: a new answerer does not compile until it names one.
+// The headless runner's deny is the host's, not a person's.
+const APPROVAL_ANSWERER_TRUST_ORIGINS = {
+  desk: "user-keyboard",
+  "platform-bridge": "platform-bridge",
+  "headless-exec": "unknown",
+} as const satisfies Record<ApprovalAnswerer, TrustOriginWithUnknown>;
 
 // Who answered an approval. Host-derived at answer time from the code path that received the answer. It is never read out of the ApprovalDecision payload, out of the request, out of a provider's output, or inferred from the localizable free-text `reason` — a value any of those can influence is not attribution.
 export type ApprovalAnswerer = keyof typeof APPROVAL_ANSWERER_AUDIT_TOKENS;
@@ -1060,7 +1169,7 @@ export class ApprovalGate {
   private notifyPendingParked(view: PendingApprovalView): void {
     for (const observer of [...this.pendingObservers]) {
       try {
-        observer.onPending(view);
+        presentApproval(() => observer.onPending(view));
       } catch {
         // An observer failure must never alter approval flow.
       }
@@ -1101,6 +1210,21 @@ export class ApprovalGate {
     }
   }
 
+  private denyUnattendedApproval(
+    requestId: string,
+    fields: ApprovalAuditFields & { sessionId?: string | undefined },
+    reasonCode: NonNullable<ApprovalDecision["reasonCode"]>,
+    executionPlan?: HostShellExecutionPlanAuditProjection,
+  ): ApprovalDecision {
+    this.auditLogger?.log({
+      timestamp: new Date().toISOString(),
+      sessionId: fields.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+      type: "approval",
+      output: `[approval:${reasonCode}] ${requestId} ${formatApprovalAuditFields(fields, executionPlan)} → deny-once`,
+    });
+    return markHostApprovalRejectedDecision({ requestId, choice: "deny-once", reasonCode, rememberPattern: t("reasonCodes.unattended-approval-denied") });
+  }
+
   // Send an approval request to the renderer and wait for the response. ConversationLoop.executeOne awaits this and blocks the turn. The requireExplicit field controls renderer dismiss behavior.
   async requestAndWait(req: ApprovalRequestInput): Promise<ApprovalDecision> {
     const auditFieldsFor = (fields: ApprovalAuditFields, executionPlan?: HostShellExecutionPlanAuditProjection): string =>
@@ -1110,11 +1234,12 @@ export class ApprovalGate {
     const denyForAbortedTurn = (fields: ApprovalAuditFields = req, plan?: HostShellExecutionPlanAuditProjection): ApprovalDecision => {
       const reason: unknown = this.lifetime.signal.aborted ? this.lifetime.signal.reason : req.abortSignal?.reason;
       const cause = reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "unspecified";
+      const cancellation = isHostExitAbort(reason) ? "host-shutdown" : `turn-abort cause=${JSON.stringify(cause)}`;
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
         sessionId: req.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
         type: "approval",
-        output: `[approval:cancelled] ${req.id} ${auditFieldsFor(fields, plan)} reason=turn-abort cause=${JSON.stringify(cause)} → deny-once`,
+        output: `[approval:cancelled] ${req.id} ${auditFieldsFor(fields, plan)} reason=${cancellation} → deny-once`,
       });
       return hostCancellationDecision(req.id);
     };
@@ -1124,6 +1249,8 @@ export class ApprovalGate {
       });
     assertEgressHostRequestShape(req);
     assertExtensionStartRequestShape(req);
+    const unattended = approvalPresentationDenial();
+    if (unattended && !isAborted()) return this.denyUnattendedApproval(req.id, req, unattended);
     if (req.browserSite !== undefined && (browserOrigin(req.browserSite) !== req.browserSite || !req.sessionId || req.source !== "builtin" || req.forceExplicit !== true || req.durableApprovalRecordAllowed !== false || req.evaluationContext?.headless === true)) {
       return rejectBeforeAnswer();
     }
@@ -1148,6 +1275,7 @@ export class ApprovalGate {
       remoteControllerOrigin,
       remoteControllerAuthority,
       abortSignal,
+      onSettled,
       childProvenance,
       requestingAgentTitle: _requestedAgentTitle,
       runStage: _requestedRunStage,
@@ -1158,6 +1286,7 @@ export class ApprovalGate {
       readjudication: _requestedReadjudication,
       verifiedShellCommand,
       hostShellExecutionPlan,
+      invocationToolUseId,
       ...request
     } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown; requestingAgentTitle?: unknown; runStage?: unknown; readjudication?: unknown };
     if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
@@ -1447,13 +1576,13 @@ export class ApprovalGate {
     // The window showing this request's toast, which need not be one the request is sent to; every exit from here on, a throw included, tells it the request settled.
     let toastSurface: WebContents | null = null;
     try {
-      toastSurface = this.notificationService?.fire({
+      toastSurface = presentApproval(() => this.notificationService?.fire({
         kind: "approval",
         title: t("be_approvalGate.notificationTitle"),
         body: this.notificationBody(fullReq),
         contextRef: { approvalId: fullReq.id, sessionId: fullReq.sessionId },
         urgent: true,
-      }) ?? null;
+      })) ?? null;
     } catch {
       // notification failure must never block approval flow
     }
@@ -1495,6 +1624,7 @@ export class ApprovalGate {
         detachOwnerRelease = undefined;
         detachOwnerDestroyed?.();
         detachOwnerDestroyed = undefined;
+        try { onSettled?.(decision); } catch { /* An observer cannot change the settled answer. */ }
         // Every way a PARKED request ends passes through here — desk answer, remote answer, timeout, turn abort, cancel, shutdown sweep — so this is the one place an observer's card — and the renderer's — can be told the request is no longer answerable.
         this.notifyPendingSettled(fullReq.id, decision);
         const refetchers = this.refetchedBy.get(fullReq.id) ?? [];
@@ -1619,6 +1749,7 @@ export class ApprovalGate {
         ...(floorSessionGrant !== undefined && shellRule?.sessionAllowed === true ? { floorSessionGrant } : {}),
         verifiedShellCommand,
         hostShellExecutionPlan,
+        ...(invocationToolUseId === undefined ? {} : { invocationToolUseId }),
         projectCwd: workingDirectory?.path,
         workingDirectoryIdentity: workingDirectory?.identity,
         riskCeilingAtApproval,
@@ -1694,7 +1825,21 @@ export class ApprovalGate {
       // Keep what the renderer is about to receive, so a renderer that loads after this send can be handed the same card (see listPendingRendererRequests).
       const parked = this.pending.get(fullReq.id);
       if (parked !== undefined) parked.rendererRequest = maskedSignedReq;
-      // on send failure (webContents destruction race), clear pending and deny once.
+      const denySendFailure = (error: unknown, surfaceUnavailable: boolean): void => {
+        if (this.pending.get(fullReq.id) !== parked || !this.pending.delete(fullReq.id)) return;
+        clearTimeout(timer);
+        if (error instanceof UnattendedApprovalPresentationError) {
+          settle(this.denyUnattendedApproval(fullReq.id, { ...fullReq, remoteControllerOrigin }, error.reasonCode, executionPlanAudit));
+          return;
+        }
+        this.auditLogger?.log({
+          timestamp: new Date().toISOString(),
+          sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+          type: "approval",
+          output: `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} error=${errorMessage(error)} → deny-once`,
+        });
+        settle(rejectBeforeAnswer(surfaceUnavailable ? NO_APPROVER_MESSAGE : undefined, fullReq, executionPlanAudit));
+      };
       let surfaceUnavailable = false;
       try {
         // Resolve the live owner again before sending; a conversation may have moved.
@@ -1705,24 +1850,16 @@ export class ApprovalGate {
         }
         if (this.lifetime.signal.aborted || !this.pending.has(fullReq.id)) return;
         if (fullReq.sessionId === undefined && fullReq.egressHost?.terminalTabId === undefined && parked) {
-          const denyUnavailable = (): void => {
-            if (this.pending.get(fullReq.id) !== parked) return;
-            clearTimeout(parked.timer);
-            this.pending.delete(fullReq.id);
-            this.auditLogger?.log({ timestamp: new Date().toISOString(), sessionId: UNATTRIBUTED_APPROVAL_SESSION_ID,
-              type: "approval", output: `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} no successor approval surface → deny-once` });
-            settle(rejectBeforeAnswer(NO_APPROVER_MESSAGE, fullReq, executionPlanAudit));
-          };
           const handoff = (previous: WebContents): void => {
             if (this.pending.get(fullReq.id) !== parked || parked.unattributedOwner !== previous) return;
             try {
               const next = this.liveSurfaceFor(undefined);
-              if (!next || next === previous) { denyUnavailable(); return; }
+              if (!next || next === previous) throw new Error("no successor approval surface");
               bindOwner(next);
               this.announceSettledToRenderer(fullReq.id, [previous]);
               sentTo = next;
-              next.send(IPC_APPROVAL_REQUEST, maskedSignedReq);
-            } catch { denyUnavailable(); }
+              requireApprovalCardPresenters().presentApprovalCard(next, maskedSignedReq);
+            } catch (error) { denySendFailure(error, true); }
           };
           const bindOwner = (owner: WebContents): void => {
             detachOwnerDestroyed?.();
@@ -1736,18 +1873,9 @@ export class ApprovalGate {
           detachOwnerRelease = this.resolveSurface?.observeOwnerReleased?.(handoff);
         }
         sentTo = surface;
-        surface.send(IPC_APPROVAL_REQUEST, maskedSignedReq);
+        requireApprovalCardPresenters().presentApprovalCard(surface, maskedSignedReq);
       } catch (sendErr) {
-        if (!this.pending.delete(fullReq.id)) return;
-        clearTimeout(timer);
-        // phase: send-failed
-        this.auditLogger?.log({
-          timestamp: new Date().toISOString(),
-          sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} error=${errorMessage(sendErr)} → deny-once`,
-        });
-        settle(rejectBeforeAnswer(surfaceUnavailable ? NO_APPROVER_MESSAGE : undefined, fullReq, executionPlanAudit));
+        denySendFailure(sendErr, surfaceUnavailable);
       }
     });
     // The wait wrapper can throw before running the callback (a budget that cannot pause), so the catch sits outside it.
@@ -1851,13 +1979,20 @@ export class ApprovalGate {
 
   // Send the desk its extension-start card again with the rows another surface answered. Same id, same signed contents: the
   // window that holds the card replaces it in place. A window that loads later gets this copy too (`listPendingRendererRequests`).
-  private showExtensionStartRowsAnswered(entry: PendingEntry, answered: ReadonlyMap<string, ExtensionStartChoice>): void {
+  private showExtensionStartRowsAnswered(requestId: string, entry: PendingEntry, answered: ReadonlyMap<string, ExtensionStartChoice>): ApprovalDecision | undefined {
     if (entry.rendererRequest === undefined) return;
     entry.rendererRequest = { ...entry.rendererRequest, extensionStartAnswered: Object.fromEntries(answered) };
     try {
       const surface = this.liveSurfaceFor(entry.sessionId);
-      if (surface && !surface.isDestroyed()) surface.send(IPC_APPROVAL_REQUEST, entry.rendererRequest);
-    } catch {
+      if (surface && !surface.isDestroyed()) requireApprovalCardPresenters().presentApprovalCard(surface, entry.rendererRequest);
+    } catch (error) {
+      if (error instanceof UnattendedApprovalPresentationError && this.pending.get(requestId) === entry) {
+        clearTimeout(entry.timer);
+        this.pending.delete(requestId);
+        const decision = this.denyUnattendedApproval(requestId, entry, error.reasonCode, entry.executionPlan);
+        entry.resolve(decision);
+        return decision;
+      }
       // The window went away: the host still holds the answers, and the next window is handed the card with them.
     }
   }
@@ -2016,8 +2151,7 @@ export class ApprovalGate {
       });
       // Still waiting on other rows: this row is answered, the card is not. The desk card is sent again so it shows the row answered.
       if (answered.size < offered.length) {
-        this.showExtensionStartRowsAnswered(entry, answered);
-        return { requestId, choice: decision.choice };
+        return this.showExtensionStartRowsAnswered(requestId, entry, answered) ?? { requestId, choice: decision.choice };
       }
       // Every row has its answer: the card settles with them, through the same checks as an answer for the whole card.
       entry.extensionStartRowAnswers = undefined;
@@ -2083,7 +2217,8 @@ export class ApprovalGate {
       }, answeredBy, nativeRenderer, responder, identityRefreshed);
     }
     // User-owned surface choices carry only their authenticated selection, never auxiliary renderer content.
-    const resolvedDecision: ApprovalDecision =
+    // Every accepted answer is a fresh frozen object: consumers read the settled choice, never the caller's mutable response.
+    const resolvedDecision: ApprovalDecision = Object.freeze(
       entry.userOwnedSurface !== undefined
         ? {
             requestId,
@@ -2092,7 +2227,7 @@ export class ApprovalGate {
             hmac: decision.hmac,
             ...(entry.userOwnedSurface !== undefined && decision.choice === "allow-once" ? { userOwnedSurfaceChoice: decision.userOwnedSurfaceChoice } : {}),
           }
-        : decision;
+        : { ...decision, requestId });
     clearTimeout(entry.timer);
     this.pending.delete(requestId);
     if (nativeRenderer && entry.userOwnedSurface !== undefined && entry.sessionId !== undefined && resolvedDecision.choice === "allow-once" && isUserOwnedSurfaceChoice(resolvedDecision.userOwnedSurfaceChoice)) {
@@ -2137,6 +2272,7 @@ export class ApprovalGate {
       type: "approval",
       output: `[approval:decided] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${resolvedDecision.choice} rememberPattern=${resolvedDecision.rememberPattern ?? "none"}${entry.kind === "egress-host" ? ` egressScope=${resolvedDecision.egressScope ?? "none"}` : ""}`,
     });
+    if (Object.hasOwn(APPROVAL_ANSWERER_TRUST_ORIGINS, answeredBy)) mintAnsweredProvenance(resolvedDecision, answeredBy, entry.toolName, entry.invocationToolUseId);
     entry.resolve(resolvedDecision);
     return resolvedDecision;
   }
@@ -2268,12 +2404,22 @@ export class ApprovalGate {
     };
   }
 
+  get shutdownSignal(): AbortSignal {
+    return this.lifetime.signal;
+  }
+
   // Permanently close admission, cancel approval stages, and deny parked requests during app shutdown.
   disposeAll(): void {
-    this.lifetime.abort(new Error("approval gate shutdown"));
+    this.lifetime.abort(new HostExitAbortError());
     for (const [id, entry] of this.pending) {
       clearTimeout(entry.timer);
       this.pending.delete(id);
+      this.auditLogger?.log({
+        timestamp: new Date().toISOString(),
+        sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:cancelled] ${id} ${formatApprovalAuditFields(entry, entry.executionPlan)} reason=host-shutdown → deny-once`,
+      });
       entry.resolve(hostCancellationDecision(id));
     }
   }

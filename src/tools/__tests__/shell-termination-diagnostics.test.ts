@@ -2,6 +2,7 @@ import "../../__tests__/support/trusted-powershell.js";
 import type { ToolOutputCapture } from "../../shared/tool-output-artifact.js";
 import { ChildProcess, spawn } from "node:child_process";
 import { readdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +26,11 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   wrapToolCommand: vi.fn(async () => ({ argv: ["shell"], env: {} })),
   cleanupAsrtSandboxAfterCommand: vi.fn(async () => {}),
   getDefaultSensitiveReadDenyPaths: () => [], getDefaultSensitiveWriteDenyEntries: () => [],
+}));
+// Real helper image verification has native tests.
+vi.mock("../../permissions/srt-win-integrity.js", async (original) => ({
+  ...await original<typeof import("../../permissions/srt-win-integrity.js")>(),
+  assertSrtWinSpawnIntegrity: vi.fn(),
 }));
 
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
@@ -117,6 +123,26 @@ describe.each(["plain", "sandbox"] as const)("%s shell completion", (route) => {
       }
       return { child, controller, pending };
     }
+
+    it.runIf(route === "sandbox")("spawns the sandbox helper with the host's state location, not the child's", async () => {
+      vi.stubEnv("LOCALAPPDATA", "C:\\Users\\alice\\AppData\\Local");
+      vi.stubEnv("ProgramData", "C:\\ProgramData");
+      try {
+        vi.mocked(sandbox.wrapToolCommand).mockResolvedValueOnce({
+          argv: ["C:\\helper\\bin\\srt-win.exe", "exec"], env: { localappdata: "C:\\Users\\bob\\AppData\\Local", PROGRAMDATA: "C:\\bob" },
+        });
+        const f = await start();
+        const env = vi.mocked(spawn).mock.calls.at(-1)?.[2]?.env ?? {};
+        expect(Object.keys(env).filter((key) => ["LOCALAPPDATA", "PROGRAMDATA"].includes(key.toUpperCase())).sort()).toEqual(["LOCALAPPDATA", "ProgramData"]);
+        expect(env).toMatchObject({ LOCALAPPDATA: "C:\\Users\\alice\\AppData\\Local", ProgramData: "C:\\ProgramData" });
+        expect(env.HOME).toBeTypeOf("string");
+        expect(env.HOME).not.toBe(homedir());
+        close(f.child, 0, null);
+        await f.pending;
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
 
     it.runIf(route === "sandbox")("reports cleanup failure despite an exit-zero child", async () => {
       vi.mocked(sandbox.wrapToolCommand).mockResolvedValueOnce({

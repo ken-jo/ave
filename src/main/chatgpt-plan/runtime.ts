@@ -95,6 +95,9 @@ function stable<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 export class ChatGptPlanRuntime {
+  private catalogRead = 0;
+  /** The connected account's complete catalog from its latest read; undefined until one proves anything. */
+  private inferenceSlugs?: ReadonlySet<string>;
   /** The egress-limited fetch every plan request uses, inference included. */
   readonly fetch: typeof fetch;
 
@@ -127,6 +130,7 @@ export class ChatGptPlanRuntime {
   }
 
   async startLogin(): Promise<SubscriptionRuntimeStatus> {
+    this.forgetCatalog();
     return stable(async () => {
       let requestConsent = false;
       try {
@@ -146,6 +150,7 @@ export class ChatGptPlanRuntime {
   }
 
   async logout(): Promise<SubscriptionRuntimeStatus> {
+    this.forgetCatalog();
     return stable(async () => {
       await this.session.signOut();
       return this.getStatus();
@@ -153,14 +158,31 @@ export class ChatGptPlanRuntime {
   }
 
   async listModels(): Promise<{ status: SubscriptionRuntimeStatus; models: SubscriptionRuntimeModel[] }> {
+    const read = ++this.catalogRead;
     return stable(async () => {
-      const models = await this.session.listModels();
+      const { models, inferenceSlugs } = await this.session.readCatalog();
+      const status = await this.getStatus();
+      // An older read, or one for an account that has since changed, must not replace newer evidence.
+      if (read === this.catalogRead && status.capabilities.chat) this.inferenceSlugs = inferenceSlugs;
       return {
-        status: await this.getStatus(),
+        status,
         // The server's order is the account's order; there is no runtime default to mark.
         models: models.map((model) => ({ id: model.id, displayName: model.displayName, isDefault: false })),
       };
     });
+  }
+
+  /**
+   * The model id when the account's complete catalog no longer names it. The picker's rows are not evidence: a hidden
+   * model is still served, so only a full, readable list can retire one.
+   */
+  getRetiredModelId(model: string): string | undefined {
+    return this.inferenceSlugs && !this.inferenceSlugs.has(model) ? model : undefined;
+  }
+
+  private forgetCatalog(): void {
+    this.catalogRead += 1;
+    this.inferenceSlugs = undefined;
   }
 
   /** A current access token for inference; refreshed and serialized by the session. */

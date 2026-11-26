@@ -26,6 +26,7 @@ import {
 import { endTurnScript } from "./conversation-loop-test-helpers.js";
 import { makeConversationPermissionDeps, ScriptedTurnProvider as FakeProvider } from "./support/conversation-loop-fixtures.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
+import { noRetirementEvidence } from "../llm/model-wire-gate.js";
 
 // Real filesystem I/O can schedule lock retries after fake time has advanced.
 const retrySleep = vi.hoisted(() => ({ skip: false }));
@@ -321,7 +322,7 @@ describe("ConversationLoop onTurnSummary", () => {
     }));
     const auditLogger = new AuditLogger();
     const logTurn = vi.spyOn(auditLogger, "logTurn");
-    const loop = createLoopWithRegistry(new VercelUnifiedProvider(vendor, "fixture-key", "https://provider.invalid/v1", fetchResponse), toolRegistry, {
+    const loop = createLoopWithRegistry(new VercelUnifiedProvider(vendor, "fixture-key", "https://provider.invalid/v1", fetchResponse, { getRetiredModelId: noRetirementEvidence }), toolRegistry, {
       settingsService: { get: () => settings, getSecret: () => "fixture-key" }, auditLogger,
     } as never);
     let summary: TurnSummary | undefined;
@@ -449,7 +450,7 @@ describe("ConversationLoop onTurnSummary", () => {
       jsonSchema: { type: "object", properties: {} }, isReadOnly: () => true,
       execute: async () => ({ output: "contents", isError: false }),
     }));
-    const loop = createLoopWithRegistry(new VercelUnifiedProvider("openai", "fixture-key", "https://provider.invalid/v1", fetchResponse), toolRegistry, {
+    const loop = createLoopWithRegistry(new VercelUnifiedProvider("openai", "fixture-key", "https://provider.invalid/v1", fetchResponse, { getRetiredModelId: noRetirementEvidence }), toolRegistry, {
       settingsService: { get: () => settings, getSecret: () => "test-key" },
     } as never);
     let summary: TurnSummary | undefined;
@@ -510,7 +511,7 @@ describe("ConversationLoop onTurnSummary", () => {
       expect(settings.vendors[vendor].baseUrl).toBeUndefined();
       vi.stubEnv(env, "https://proxy.invalid/v1");
       const transport = vi.fn<typeof fetch>(async () => respond(model));
-      const { summary, logTurn } = await runOn(new VercelUnifiedProvider(vendor, "fixture-key", undefined, transport), settings);
+      const { summary, logTurn } = await runOn(new VercelUnifiedProvider(vendor, "fixture-key", undefined, transport, { getRetiredModelId: noRetirementEvidence }), settings);
       expect(String(transport.mock.calls[0]?.[0])).toBe(`https://proxy.invalid/v1${path}`);
       // The turn's primary-route price and the request's own price agree: neither names the catalog.
       expect(summary?.modelSettings?.pricing).toEqual(unavailable);
@@ -549,7 +550,7 @@ describe("ConversationLoop onTurnSummary", () => {
         loop.abortCurrentTurn();
         throw init?.signal?.reason ?? new DOMException("The operation was aborted", "AbortError");
       });
-      const loop = createLoopWithRegistry(new VercelUnifiedProvider("openai", "fixture-key", undefined, transport), toolRegistry, {
+      const loop = createLoopWithRegistry(new VercelUnifiedProvider("openai", "fixture-key", undefined, transport, { getRetiredModelId: noRetirementEvidence }), toolRegistry, {
         settingsService: { get: () => settings, getSecret: () => "test-key" }, auditLogger,
       } as never);
       try {
@@ -583,7 +584,7 @@ describe("ConversationLoop onTurnSummary", () => {
       };
       vi.stubEnv("OPENAI_BASE_URL", proxy);
       const transport = vi.fn<typeof fetch>(async () => responsesAnswer(model));
-      const { summary } = await runOn(new VercelUnifiedProvider("openai", "fixture-key", undefined, transport), settings);
+      const { summary } = await runOn(new VercelUnifiedProvider("openai", "fixture-key", undefined, transport, { getRetiredModelId: noRetirementEvidence }), settings);
       expect(String(transport.mock.calls[0]?.[0])).toBe(`${proxy}/responses`);
       expect(summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([unavailable]);
     });
@@ -612,7 +613,7 @@ describe("ConversationLoop onTurnSummary", () => {
         };
       }
       const transport = vi.fn<typeof fetch>(async () => chatAnswer(model));
-      const { summary } = await runOn(new VercelUnifiedProvider("openai", "fixture-key", baseUrl, transport), settings);
+      const { summary } = await runOn(new VercelUnifiedProvider("openai", "fixture-key", baseUrl, transport, { getRetiredModelId: noRetirementEvidence }), settings);
       expect(String(transport.mock.calls[0]?.[0])).toBe(sentTo);
       expect(summary?.modelSettings?.pricing).toEqual(expected);
       expect(summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([expected]);
@@ -640,7 +641,7 @@ describe("ConversationLoop onTurnSummary", () => {
       const model = "gpt-3.5-turbo";
       const baseUrl = "https://entry.invalid/v1";
       const transport = vi.fn<typeof fetch>(async () => answeredFrom(chatAnswer(model), "https://serving.invalid/inference/chat/completions"));
-      const { summary } = await runOn(new VercelUnifiedProvider("openai", "fixture-key", baseUrl, transport), configuredProxy(baseUrl, model));
+      const { summary } = await runOn(new VercelUnifiedProvider("openai", "fixture-key", baseUrl, transport, { getRetiredModelId: noRetirementEvidence }), configuredProxy(baseUrl, model));
       expect(String(transport.mock.calls[0]?.[0])).toBe(`${baseUrl}/chat/completions`);
       // The entry endpoint lists $3/$4, but it did not answer.
       expect(summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([unavailable]);
@@ -652,7 +653,7 @@ describe("ConversationLoop onTurnSummary", () => {
       const baseUrl = "https://serve.invalid/v1";
       const transport = vi.fn<typeof fetch>(async () => chatAnswer(model));
       const { summary } = await runOn(
-        new VercelUnifiedProvider("openai", "fixture-key", baseUrl, transport),
+        new VercelUnifiedProvider("openai", "fixture-key", baseUrl, transport, { getRetiredModelId: noRetirementEvidence }),
         configuredProxy(baseUrl, model, "https://listing.invalid/v1/models"),
       );
       expect(summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([unavailable]);
@@ -674,7 +675,7 @@ describe("ConversationLoop onTurnSummary", () => {
         },
       };
       const transport = vi.fn<typeof fetch>(async () => chatAnswer(model));
-      const { summary } = await runOn(new VercelUnifiedProvider("openai", "fixture-key", undefined, transport), settings);
+      const { summary } = await runOn(new VercelUnifiedProvider("openai", "fixture-key", undefined, transport, { getRetiredModelId: noRetirementEvidence }), settings);
       expect(String(transport.mock.calls[0]?.[0])).toBe("https://api.openai.com/v1/chat/completions");
       const expected = priced ? { source: "endpoint-report", rates: { inputPer1M: 3, outputPer1M: 4 } } : unavailable;
       expect(summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([expected]);
@@ -687,12 +688,12 @@ describe("ConversationLoop onTurnSummary", () => {
       const tenantA = "https://api.openai.com/v1/tenant-a";
       const reported = { source: "endpoint-report", rates: { inputPer1M: 3, outputPer1M: 4 } };
       const own = vi.fn<typeof fetch>(async () => chatAnswer(model));
-      const served = await runOn(new VercelUnifiedProvider("openai", "fixture-key", tenantA, own), configuredProxy(tenantA, model));
+      const served = await runOn(new VercelUnifiedProvider("openai", "fixture-key", tenantA, own, { getRetiredModelId: noRetirementEvidence }), configuredProxy(tenantA, model));
       expect(String(own.mock.calls[0]?.[0])).toBe(`${tenantA}/chat/completions`);
       expect(served.summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([reported]);
       // Another tenant of the same host answers: both lie under the vendor's `/v1`, and that is not enough.
       const other = vi.fn<typeof fetch>(async () => answeredFrom(chatAnswer(model), "https://api.openai.com/v1/tenant-b/chat/completions"));
-      const moved = await runOn(new VercelUnifiedProvider("openai", "fixture-key", tenantA, other), configuredProxy(tenantA, model));
+      const moved = await runOn(new VercelUnifiedProvider("openai", "fixture-key", tenantA, other, { getRetiredModelId: noRetirementEvidence }), configuredProxy(tenantA, model));
       expect(String(other.mock.calls[0]?.[0])).toBe(`${tenantA}/chat/completions`);
       expect(moved.summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([unavailable]);
       expect(moved.summary?.modelSettings?.pricing).toEqual(unavailable);
@@ -702,7 +703,7 @@ describe("ConversationLoop onTurnSummary", () => {
       const model = "gpt-3.5-turbo";
       const baseUrl = "https://entry.invalid/gateway/fixture-path-credential/v1";
       const transport = vi.fn<typeof fetch>(async () => chatAnswer(model));
-      const { summary, logTurn } = await runOn(new VercelUnifiedProvider("openai", "fixture-key", baseUrl, transport), configuredProxy(baseUrl, model));
+      const { summary, logTurn } = await runOn(new VercelUnifiedProvider("openai", "fixture-key", baseUrl, transport, { getRetiredModelId: noRetirementEvidence }), configuredProxy(baseUrl, model));
       expect(String(transport.mock.calls[0]?.[0])).toContain("fixture-path-credential");
       expect(summary?.usageByModel?.map((segment) => segment.pricing)).toEqual([
         { source: "endpoint-report", rates: { inputPer1M: 3, outputPer1M: 4 } },
@@ -722,7 +723,7 @@ describe("ConversationLoop onTurnSummary", () => {
         JSON.stringify({ error: { message: "fixture rejected", type: "invalid_request_error" } }),
         { status: 400, headers: { "content-type": "application/json" } },
       ));
-      const loop = createLoopWithRegistry(new VercelUnifiedProvider("openai", "fixture-key", undefined, transport), new ToolRegistry(), {
+      const loop = createLoopWithRegistry(new VercelUnifiedProvider("openai", "fixture-key", undefined, transport, { getRetiredModelId: noRetirementEvidence }), new ToolRegistry(), {
         settingsService: { get: () => settings, getSecret: () => "test-key" }, auditLogger,
       } as never);
       try {
@@ -767,7 +768,7 @@ describe("ConversationLoop onTurnSummary", () => {
       const transport = vi.fn<typeof fetch>(async () => chatAnswer(model));
       const provider = new FallbackProvider(
         primary, [{ provider: "openai", model, baseUrl: fallbackUrl }], () => "fixture-key",
-        (config) => new VercelUnifiedProvider(config.vendor, config.apiKey, config.baseUrl, transport),
+        (config) => new VercelUnifiedProvider(config.vendor, config.apiKey, config.baseUrl, transport, { getRetiredModelId: config.getRetiredModelId }),
       );
       const loop = createLoopWithRegistry(provider, new ToolRegistry(), {
         settingsService: { get: () => settings, getSecret: () => "test-key" },
@@ -1086,7 +1087,7 @@ describe("ConversationLoop onTurnSummary", () => {
     );
   });
 
-  async function sameIdentityFallbackRecords(resumePrimary = false) {
+  async function sameIdentityFallbackRecords(resumePrimary = false, log = vi.fn<AuditLogger["log"]>()) {
     const model = "gpt-5.4-mini";
     const llm = fakeLlmSettings({ model });
     const primarySent: StreamTurnParams[] = [];
@@ -1113,7 +1114,7 @@ describe("ConversationLoop onTurnSummary", () => {
         yield { type: "message_complete", stopReason: resumePrimary ? "tool_use" : "end_turn", usage: { inputTokens: 10, outputTokens: 1 } };
       },
     }));
-    const auditLogger = { logTurn: vi.fn(), logToolCall: vi.fn(), isPermissionAuditChainReady: () => false };
+    const auditLogger = { logTurn: vi.fn(), log, isPermissionAuditChainReady: () => false };
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
       name: "read_item", description: "Read an item", source: "builtin", category: "read", version: "1",
@@ -1184,6 +1185,13 @@ describe("ConversationLoop onTurnSummary", () => {
     }
   });
 
+  it("settles a tool turn when terminal audit telemetry rejects", async () => {
+    const failure = new Error("terminal audit write failed");
+    const log = vi.fn<AuditLogger["log"]>().mockRejectedValueOnce(failure);
+    await expect(sameIdentityFallbackRecords(true, log)).rejects.toBe(failure);
+    expect(log).toHaveBeenCalledOnce();
+  });
+
   it("keeps mixed-provider fallback rounds out of single-model turn badge pricing", async () => {
     vi.useFakeTimers();
     const toolRegistry = new ToolRegistry();
@@ -1235,7 +1243,7 @@ describe("ConversationLoop onTurnSummary", () => {
     const saveSession = vi.fn(async () => {});
     const auditLogger = {
       logTurn: vi.fn(),
-      logToolCall: vi.fn(),
+      log: vi.fn<AuditLogger["log"]>(),
       isPermissionAuditChainReady: () => false,
     };
     const loop = createLoopWithRegistry(provider, toolRegistry, {
@@ -1255,8 +1263,8 @@ describe("ConversationLoop onTurnSummary", () => {
       },
     }, undefined, { ...userKeyboardTurn() },
     );
-    // Wait for round-two I/O before advancing each retry timer independently.
-    await retryRoundStarted;
+    // Surface an early turn failure before waiting on a round that may never start.
+    await Promise.race([retryRoundStarted, pending]);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await vi.advanceTimersByTimeAsync(1_000);
     }

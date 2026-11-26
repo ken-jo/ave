@@ -1,6 +1,7 @@
 // FIFO questions appear in the composer dock; this broker does not enforce permission policy.
+import { approvalPresentationDenial, requireApprovalCardPresenters, UnattendedApprovalPresentationError } from "../permissions/approval-presentation.js";
 import { randomUUID } from "node:crypto";
-import { CHANNELS } from "../contract/app-contract.js";
+import { ASK_USER_QUESTION_RESPOND_CHANNEL, ASK_USER_QUESTION_TIMEOUT_CHANNEL } from "../contract/app-contract.js";
 import type { WebContents } from "electron";
 import type { NotificationService } from "./notification-service.js";
 import { createLogger } from "../lib/logger.js";
@@ -57,13 +58,13 @@ export interface AskUserQuestionResponse {
   answers?: AskUserQuestionAnswer[];
   // Card-level dismissal — every question abandoned at once.
   dismissed?: boolean;
+  reasonCode?: "unattended-approval-denied";
 }
 
 // 1–4 questions per card. Cap is shared between tool input validation and gate.
 export const MAX_QUESTIONS_PER_CARD = 4;
 
-export const IPC_ASK_USER_QUESTION_REQUEST = CHANNELS.askUserQuestion.request;
-export const IPC_ASK_USER_QUESTION_RESPOND = CHANNELS.askUserQuestion.respond;
+export const IPC_ASK_USER_QUESTION_RESPOND = ASK_USER_QUESTION_RESPOND_CHANNEL;
 
 interface PendingEntry {
   request: AskUserQuestionRequest;
@@ -192,7 +193,7 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 // the renderer in cards. 5 is generous for legitimate workflows (decision tree branches) and tight enough that abuse is obvious.
 const MAX_CONCURRENT_PENDING = 5;
 // Notify every renderer when a question ends so copies in other windows cannot remain answerable.
-export const IPC_ASK_USER_QUESTION_TIMEOUT = CHANNELS.askUserQuestion.timeout;
+export const IPC_ASK_USER_QUESTION_TIMEOUT = ASK_USER_QUESTION_TIMEOUT_CHANNEL;
 
 // Resolve live webContents for each send, preferring the asking session’s window, then primary or last-focused main window.
 export type WebContentsResolver = (sessionId: string) => WebContents | null;
@@ -224,6 +225,8 @@ export class AskUserQuestionGate {
     sessionId: string;
     abortSignal?: AbortSignal;
   }): Promise<AskUserQuestionResponse> {
+    const unattended = approvalPresentationDenial();
+    if (unattended) return Promise.resolve({ requestId: "", dismissed: true, reasonCode: unattended });
     if (!Array.isArray(input.questions) || input.questions.length === 0 || input.questions.length > MAX_QUESTIONS_PER_CARD) {
       return Promise.resolve({
         requestId: "",
@@ -317,14 +320,18 @@ export class AskUserQuestionGate {
       }
       this.pending.set(req.id, { request: req, deliveredTo, resolve, cleanup });
       try {
-        wc.send(IPC_ASK_USER_QUESTION_REQUEST, req);
+        requireApprovalCardPresenters().presentQuestionCard(wc, req);
       } catch (err) {
         cleanup();
         log.warn(
           "ask-user-question send failed: %s",
           (err as Error).message,
         );
-        resolve({ requestId: req.id, dismissed: true });
+        resolve({
+          requestId: req.id,
+          dismissed: true,
+          ...(err instanceof UnattendedApprovalPresentationError ? { reasonCode: err.reasonCode } : {}),
+        });
       }
     });
   }

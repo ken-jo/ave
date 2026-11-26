@@ -1,5 +1,6 @@
 /** Child host calls must restore the originating invocation context through the real session and effect gate. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../../__tests__/support/answering-approval-gate.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { randomUUID } from "node:crypto";
 import { AsyncResource } from "node:async_hooks";
@@ -141,7 +142,7 @@ async function openProbe(options: {
   watcherFailure?: boolean; subscriptionFailure?: boolean; allowMode?: boolean; standaloneScope?: (path: string) => boolean;
 } = {}): Promise<Probe> {
   const raised: Probe["raised"] = [];
-  const requestAndWait = vi.fn(async () => ({ choice: "allow-once" as const }));
+  const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" }));
   let watcherFailure = options.watcherFailure === true;
   const stopWatcher = vi.fn(() => {
     if (!watcherFailure) return;

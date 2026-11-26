@@ -18,7 +18,10 @@ import { decideModelCatalogRefresh, readModelCatalogRefreshPolicy } from "../ref
 import { pruneModelsDevDocument } from "../../../shared/model-catalog/normalize.js";
 import { catalogProviderIds } from "../../../shared/model-catalog/provider-map.js";
 import type { ModelCatalogDocument } from "../../../shared/model-catalog/types.js";
-import { activeModelCatalog } from "../../../shared/model-catalog/active.js";
+import { activeModelCatalog, installModelCatalog } from "../../../shared/model-catalog/active.js";
+import { resolveRouteModelRetirement } from "../../../shared/context-budget.js";
+import { activeLlmRouteModel, LLM_VENDOR_DEFAULTS, OPENAI_COMPATIBLE_VENDOR_PRESETS } from "../../../shared/llm-vendor-defaults.js";
+import { catalogChatModelIds } from "../../../shared/model-catalog/vendor-models.js";
 import { withFileLock } from "../../../lib/with-file-lock.js";
 
 vi.mock("../../../lib/admin-policy-file.js", async (importOriginal) => ({
@@ -129,6 +132,37 @@ describe("refreshModelCatalogCache", () => {
     expect((await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => NOW })).status).toBe("updated");
     expect(activeModelCatalog()).toBe(installed);
     expect(await selectBootModelCatalog({ env: {}, dir, loadBundled })).toMatchObject({ origin: "cache" });
+  });
+
+  it("applies a shipped default's catalog deprecation on the next boot without replacing the saved model", async () => {
+    const installed = activeModelCatalog();
+    const model = OPENAI_COMPATIBLE_VENDOR_PRESETS.deepseek.defaultModel;
+    const llm = {
+      provider: "deepseek" as const,
+      vendors: { deepseek: { ...LLM_VENDOR_DEFAULTS.deepseek, model } },
+    };
+    const raw = (deprecated: boolean) => ({ deepseek: { id: "deepseek", models: {
+      [model]: {
+        id: model, tool_call: true, modalities: { input: ["text"], output: ["text"] },
+        ...(deprecated ? { status: "deprecated" } : {}),
+      },
+    } } });
+    const reference = documentFrom(raw(false), "2026-01-01T00:00:00Z");
+    const { fetchImpl } = respondWith(() => json(raw(true)));
+    installModelCatalog(reference);
+    try {
+      expect(catalogChatModelIds("deepseek")).toContain(model);
+      expect((await refreshModelCatalogCache({ fetchImpl, dir, reference, now: () => NOW })).status).toBe("updated");
+      expect(resolveRouteModelRetirement(llm)).toBeUndefined();
+      const next = await selectBootModelCatalog({ env: {}, dir, loadBundled: async () => reference });
+      expect(next.origin).toBe("cache");
+      installModelCatalog(next.document);
+      expect(activeLlmRouteModel(llm)).toBe(model);
+      expect(resolveRouteModelRetirement(llm)).toBe("catalog-deprecated");
+      expect(catalogChatModelIds("deepseek")).not.toContain(model);
+    } finally {
+      installModelCatalog(installed);
+    }
   });
 
   it("downloads one public document with nothing about the user, and stores it for the next boot", async () => {

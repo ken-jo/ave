@@ -288,8 +288,8 @@ describe.runIf(process.platform === "win32")("no decision path looks up a spelli
   });
 
   it("captures a local plugin grant and refuses a mapped grant before lookup", () => {
-    expect(capturePluginSandboxGrant(cwd)).toMatchObject({ path: cwd, identity: expect.any(Object) });
-    expect(() => capturePluginSandboxGrant(`${MAPPED}work`)).toThrow(/cannot be admitted/i);
+    expect(capturePluginSandboxGrant({ path: cwd, access: "read" })).toMatchObject({ path: cwd, identity: expect.any(Object) });
+    expect(() => capturePluginSandboxGrant({ path: `${MAPPED}work`, access: "read" })).toThrow(/cannot be admitted/i);
     expect(fsOnUnproven()).toEqual([]);
     expect(nativeOnUnproven()).toEqual([]);
   });

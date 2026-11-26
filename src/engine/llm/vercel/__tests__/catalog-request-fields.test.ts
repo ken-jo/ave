@@ -13,6 +13,7 @@ import { resolveContextWindowForRoute, resolveOutputTokenLimit } from "../../../
 import { llmModelListCacheKey } from "../../../../shared/llm-model-list.js";
 import { collectRoundStream } from "../../../turn/stream-collector.js";
 import { apiRoundLlmSettings } from "../../../turn/round-llm-settings.js";
+import { noRetirementEvidence } from "../../model-wire-gate.js";
 
 // Capture the request before synthetic refusal terminates the stream.
 async function sentBody(
@@ -25,7 +26,7 @@ async function sentBody(
   },
 ): Promise<Record<string, unknown>> {
   const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
-  const provider = new VercelUnifiedProvider(vendor, "fixture-key", params.baseUrl, fetchResponse);
+  const provider = new VercelUnifiedProvider(vendor, "fixture-key", params.baseUrl, fetchResponse, { getRetiredModelId: noRetirementEvidence });
   for await (const _event of provider.streamTurn({
     model,
     catalogModel: params.catalogModel,
@@ -92,7 +93,7 @@ describe("request fields the catalog decides", () => {
     expect(round.reasoningEffort).toBe("max");
     const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
     await collectRoundStream({
-      provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse),
+      provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse, { getRetiredModelId: noRetirementEvidence }),
       model: block.model, systemPrompt: "Report the result.", messages: [{ role: "user", content: "Continue." }],
       toolSchemas: [], llmSettings: round,
     });
@@ -137,7 +138,7 @@ describe("request fields the catalog decides", () => {
     expect(route.output.effective).toBe(32_000);
     const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
     await collectRoundStream({
-      provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse),
+      provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse, { getRetiredModelId: noRetirementEvidence }),
       model: route.model, systemPrompt: "Report the result.",
       messages: [{ role: "user", content: "Continue." }], toolSchemas: [],
       llmSettings: apiRoundLlmSettings(vendors.openai, route.output, "none", route),
@@ -179,7 +180,7 @@ describe("request fields the catalog decides", () => {
     const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
     const onRequestControls = vi.fn<NonNullable<StreamTurnParams["onRequestControls"]>>();
     await collectRoundStream({
-      provider: new VercelUnifiedProvider("claude", "fixture-key", undefined, fetchResponse),
+      provider: new VercelUnifiedProvider("claude", "fixture-key", undefined, fetchResponse, { getRetiredModelId: noRetirementEvidence }),
       model: route.model, systemPrompt: "Report the result.",
       messages: [{ role: "user", content: "Continue." }], toolSchemas: [],
       llmSettings: apiRoundLlmSettings(vendors.claude, route.output, "none", route),
@@ -457,7 +458,7 @@ describe("the output limit a chat round records is the one it sends", () => {
     const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
     await collectRoundStream({
       provider: new VercelUnifiedProvider(vendor, "fixture-key", baseUrl, fetchResponse,
-        vendor === "vertex-ai" ? { vertexProject: "synthetic-project", vertexLocation: "us-central1" } : {}),
+        { ...vendor === "vertex-ai" ? { vertexProject: "synthetic-project", vertexLocation: "us-central1" } : {}, getRetiredModelId: noRetirementEvidence }),
       model, systemPrompt: "Return the result.", messages: [{ role: "user", content: "Report the value." }],
       toolSchemas: [], llmSettings: apiRoundLlmSettings(block, output, "none"),
     });
@@ -487,7 +488,7 @@ describe("the output limit a chat round records is the one it sends", () => {
     const plan = planReasoning({ vendor: "openai", model: block.model, baseUrl, catalogModel, enableThinking: true,
       budgetTokens: round.thinkingBudgetTokens, request: { hasTools: false } });
     const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
-    await collectRoundStream({ provider: new VercelUnifiedProvider("openai", "fixture-key", baseUrl, fetchResponse),
+    await collectRoundStream({ provider: new VercelUnifiedProvider("openai", "fixture-key", baseUrl, fetchResponse, { getRetiredModelId: noRetirementEvidence }),
       model: block.model, systemPrompt: "Return the result.", messages: [{ role: "user", content: "Report the value." }],
       toolSchemas: [], llmSettings: round });
     expect(fetchResponse).toHaveBeenCalledOnce();
@@ -509,7 +510,7 @@ describe("the output limit a chat round records is the one it sends", () => {
     const plan = planReasoning({ vendor: "openai", model, baseUrl, catalogModel, enableThinking: true,
       budgetTokens: round.thinkingBudgetTokens, request: { hasTools: true } });
     const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
-    await collectRoundStream({ provider: new VercelUnifiedProvider("openai", "fixture-key", baseUrl, fetchResponse),
+    await collectRoundStream({ provider: new VercelUnifiedProvider("openai", "fixture-key", baseUrl, fetchResponse, { getRetiredModelId: noRetirementEvidence }),
       model, systemPrompt: "Return the result.", messages: [{ role: "user", content: "Report the value." }],
       toolSchemas: [{ name: "read_file", description: "Read a file", inputSchema: { type: "object", properties: {} } }],
       llmSettings: round });
@@ -534,7 +535,7 @@ describe("the output limit a chat round records is the one it sends", () => {
     });
     const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
     await collectRoundStream({
-      provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse),
+      provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse, { getRetiredModelId: noRetirementEvidence }),
       model: "gpt-5.4",
       systemPrompt: "Return the result.",
       messages: [{ role: "user", content: "Report the value." }],
@@ -571,7 +572,7 @@ describe("the output limit a chat round records is the one it sends", () => {
       expect(output).toMatchObject({ effective: 150_000, effectiveSource: "user" });
       expect(output.ceiling).toBeUndefined();
       const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
-      await collectRoundStream({ provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse),
+      await collectRoundStream({ provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse, { getRetiredModelId: noRetirementEvidence }),
         model: block.model, systemPrompt: "Return the result.", messages: [{ role: "user", content: "Report the value." }],
         toolSchemas: [], llmSettings: apiRoundLlmSettings(block, output, "none") });
       expect(fetchResponse).toHaveBeenCalledOnce();
@@ -601,7 +602,7 @@ describe("a fallback model's output ceiling", () => {
       primary,
       [{ provider: "openai", model: "gpt-4o" }],
       () => "fixture-key",
-      () => new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse),
+      () => new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse, { getRetiredModelId: noRetirementEvidence }),
     );
     const drained = (async () => {
       for await (const _event of wrapped.streamTurn({
@@ -678,7 +679,7 @@ describe("a fallback model's output ceiling", () => {
     } };
     const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
     const wrapped = new FallbackProvider(primary, [{ provider: vendor, model }], () => "fixture-key",
-      () => new VercelUnifiedProvider(vendor, "fixture-key", undefined, fetchResponse));
+      () => new VercelUnifiedProvider(vendor, "fixture-key", undefined, fetchResponse, { getRetiredModelId: noRetirementEvidence }));
     const drained = collectRoundStream({ provider: wrapped, model: block.model, systemPrompt: "Return the result.",
       messages: [{ role: "user", content: "Report the value." }], toolSchemas: [],
       llmSettings: apiRoundLlmSettings(block, output, "none") });

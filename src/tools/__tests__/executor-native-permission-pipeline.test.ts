@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuditLogger } from "../../audit/audit-logger.js";
+import { terminalDenyKindOf } from "../../audit/audit-schema.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
@@ -33,12 +34,14 @@ import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { approvalCacheKeyIdentity, captureApprovalWorkingDirectory, recordApproval, __resetSessionStoreForTest } from "../../permissions/user-approval-store.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { modelShellPath } from "../../shared/shell-native-path.js";
+import { HostExitAbortError } from "../../shared/host-exit-abort.js";
 import { ToolExecutor } from "../executor.js";
 import { ApplyPatchTool, CopyPathTool, ExtractArchiveTool, GlobFilesTool, GrepFilesTool, ListFilesTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { BashTool } from "../shell-tools.js";
 import { preparedShellFacts } from "../prepared-shell-invocation.js";
 import { approvalIdentityFor } from "../pipeline/display-mask.js";
 import { ToolRegistry } from "../registry.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 // win32 yields separator-folded canonicals ("c:/users/..."); compare against the same fold, never the raw backslash spelling.
 const directoryIdentity = (path: string | undefined): string | undefined =>
@@ -89,10 +92,10 @@ afterEach(async () => {
 });
 
 function executor(hooks?: ScriptHookManager, choice: "allow-once" | "deny-once" = "deny-once") {
-  const gate = { requestAndWait: async (request: ApprovalRequestInput) => {
+  const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => {
     requests.push(request);
     return { requestId: request.id, choice };
-  } };
+  }) };
   return new ToolExecutor(registry, undefined, manager, undefined, gate as never, hooks, audit);
 }
 function run(executor: ToolExecutor, name: string, input: Record<string, unknown>, options: { onDirectoryGrant?: (directory: string) => void; additionalDirectories?: string[]; headless?: boolean; executionCwd?: string } = {}) {
@@ -130,13 +133,13 @@ describe("native invocation permission evidence", () => {
     const siblingPath = join(outside, "sibling.txt");
     let directories: string[] = [];
     const allowDirectory = vi.fn(async (directory: string) => [directory]);
-    const gate = { requestAndWait: async (request: ApprovalRequestInput) => {
+    const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => {
       requests.push(request);
       if (!request.outOfAllowedDir) return { requestId: request.id, choice: "allow-once" };
       const scopes = buildApprovalScopeOptions(request.outOfAllowedDir!);
       expect(scopes.map(scope => scope.choice)).toContain("allow-session");
       return { requestId: request.id, choice: "allow-session" };
-    } };
+    }) };
     const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined,
       () => ({ allowDirectory, denyDirectory: async () => [] }));
     const permissionContext = { trustOrigin: "llm-tool-arg" as const, additionalDirectories: [],
@@ -167,7 +170,7 @@ describe("native invocation permission evidence", () => {
       return append(entry);
     });
     const allowDirectory = vi.fn(async (directory: string) => [directory]);
-    const gate = { requestAndWait: async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-always" }) };
+    const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-always" })) };
     const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined,
       () => ({ allowDirectory, denyDirectory: async () => [] }));
     const execute = vi.spyOn(writeTool, "execute");
@@ -176,15 +179,41 @@ describe("native invocation permission evidence", () => {
     expect(allowDirectory).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
   });
+  it("persists no folder rule when quit aborts the invocation during its grant audit", async () => {
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    const turn = new AbortController();
+    const append = audit.appendPermissionAuditEntry.bind(audit);
+    vi.spyOn(audit, "appendPermissionAuditEntry").mockImplementation(async entry => {
+      const row = await append(entry);
+      if ("grantLifetime" in entry && entry.grantLifetime === "always") turn.abort(new HostExitAbortError());
+      return row;
+    });
+    const allowDirectory = vi.fn(async (directory: string) => [directory]);
+    const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-always" })) };
+    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined,
+      () => ({ allowDirectory, denyDirectory: async () => [] }));
+    const execute = vi.spyOn(writeTool, "execute");
+    const [result] = await subject.executeAll([{ id: randomUUID(), name: "write_file", input: { path: join(outside, "result.txt"), content: "must not write" } }], {
+      sessionId, executionCwd: project, abortSignal: turn.signal,
+      permissionContext: { trustOrigin: "user-keyboard", additionalDirectories: [] },
+    });
+    expect(result.is_error).toBe(true);
+    expect(allowDirectory).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    const rows = (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(rows.at(-1)).toMatchObject({ tool: "write_file", decision: "deny", denyReasons: [{ reason: "host-shutdown" }] });
+  });
   it.each(["allow-once", "allow-session", "allow-always"] as const)("persists the directory grant audit before executing an outside write with %s", async (choice) => {
     await audit.setupPermissionAuditChain("aa".repeat(32));
     const outside = join(root, "outside");
     await mkdir(outside);
     const path = join(outside, "result.txt");
-    const gate = { requestAndWait: async (request: ApprovalRequestInput) => {
+    const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => {
       requests.push(request);
       return { requestId: request.id, choice };
-    } };
+    }) };
     const lifecycle = {
       allowDirectory: async (directory: string) => [directory],
       denyDirectory: async () => { throw new Error("No directory removal was requested"); },
@@ -907,6 +936,151 @@ describe("native invocation permission evidence", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ id: "outside-folder-card", kind: "out-of-allowed-dir", args: { path }, outOfAllowedDir: { candidatePath: path } });
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("ends a rationale card the Stop ends with the host's cancelled row and no PermissionDenied", async () => {
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    manager.setMode("auto");
+    const classify = vi.fn(() => ({ level: "high" as const, reason: "The outside change needs explicit grounds" }));
+    setReviewerForTest(manager, { classifier: { classify }, cache: resources.makeVerdictCache(join(root, "outside-stop-cache.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(root, "outside-stop-denied.jsonl")) });
+    const { runtime } = createRationaleHostRuntime(createTestRequestAnchor({ sessionId }));
+    const hooks = new ScriptHookManager();
+    const lifecycle = vi.spyOn(hooks, "runLifecycleEvent");
+    const turn = new AbortController();
+    const outcome = await executor(hooks).executeConversationBatch([
+      { id: "outside-stop", name: "write_file", input: { path: join(root, "outside-stop.txt"), content: "stopped before authority" } },
+    ], { executionCwd: project, sessionId, rationaleRuntime: runtime, abortSignal: turn.signal,
+      permissionContext: { trustOrigin: "llm-tool-arg", additionalDirectories: [] } });
+    expect(outcome.outcome).toBe("rationale-required");
+    turn.abort();
+    const rows = async () => (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((row) => row.toolUseId === "outside-stop" && row.decision !== "ask");
+    await vi.waitFor(async () => expect(await rows()).toHaveLength(1));
+    await new Promise<void>((done) => setImmediate(done));
+    expect(await rows()).toEqual([expect.objectContaining({ decision: "deny", terminalKind: "cancelled", denyReasons: [expect.objectContaining({ reason: "user aborted turn" })] })]);
+    expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
+  });
+
+  it("cancels a rationale folder hook when only the coordinator signal stops", async () => {
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    manager.setMode("auto");
+    const classify = vi.fn(() => ({ level: "high" as const, reason: "The outside change needs explicit grounds" }));
+    setReviewerForTest(manager, { classifier: { classify }, cache: resources.makeVerdictCache(join(root, "coordinator-cache.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(root, "coordinator-denied.jsonl")) });
+    const { runtime, materialize } = createRationaleHostRuntime(createTestRequestAnchor({ sessionId }));
+    const hooks = new ScriptHookManager();
+    const lifecycle = vi.spyOn(hooks, "runLifecycleEvent");
+    const turn = new AbortController();
+    const coordinator = new AbortController();
+    vi.spyOn(hooks, "runPermissionRequest").mockImplementation(async () => {
+      coordinator.abort();
+      return new Promise(() => {});
+    });
+    const outcome = await executor(hooks).executeConversationBatch([
+      { id: "coordinator-stop", name: "write_file", input: { path: join(root, "outside-stop.txt"), content: "stopped before authority" } },
+    ], { executionCwd: project, sessionId, rationaleRuntime: runtime, abortSignal: turn.signal,
+      permissionContext: { trustOrigin: "llm-tool-arg", additionalDirectories: [] } });
+    expect(outcome.outcome).toBe("rationale-required");
+    const callback = materialize.mock.calls[0]?.[0].requestHumanApproval;
+    if (!callback) throw new Error("Expected the original folder approval callback");
+    await expect(callback({ requestId: "coordinator-stop-card", abortSignal: coordinator.signal })).rejects.toMatchObject({ reason: "Hook execution cancelled" });
+    expect(turn.signal.aborted).toBe(false);
+    expect(coordinator.signal.aborted).toBe(true);
+    const rows = (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((row) => row.toolUseId === "coordinator-stop" && row.decision !== "ask");
+    expect(rows).toEqual([expect.objectContaining({ decision: "deny", terminalKind: "cancelled", denyReasons: [
+      expect.objectContaining({ reason: "user aborted turn" }), expect.objectContaining({ reason: "Hook execution cancelled" }),
+    ] })]);
+    expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
+  });
+
+  it.each([
+    ["retired", "cancelled"],
+    ["headless", "denied"],
+    ["stop-while-open", "cancelled"],
+    ["deny-then-coordinator-stop", "denied"],
+    ["deny-then-turn-stop", "denied"],
+  ] as const)("records one %s rationale decision as %s", async (source, kind) => {
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    manager.setMode("auto");
+    setReviewerForTest(manager, {
+      classifier: { classify: () => ({ level: "high", reason: "The outside change needs explicit grounds" }) },
+      cache: resources.makeVerdictCache(join(root, "rationale-history-cache.jsonl")),
+      recentlyDenied: makeRecentlyDeniedStore(join(root, "rationale-history-denied.jsonl")),
+    });
+    const cards: ApprovalRequest[] = [];
+    const contents = { isDestroyed: () => false, send: (channel: string, card: ApprovalRequest) => {
+      if (channel === IPC_APPROVAL_REQUEST) cards.push(card);
+    } };
+    const gate = new ApprovalGate(contents as never);
+    const coordinator = new RationaleHostCoordinator({
+      requestAnchor: createTestRequestAnchor({ sessionId }), userRoleTexts: ["Perform the requested operation."],
+      rationaleProvenance: { startedFromUserKeyboard: true, taint: "none" },
+      ticketStore: new InProcessRationaleTicketStore({ onAudit: () => {} }),
+      rationaleScopeReviewer: new LlmRationaleScopeReviewer({ complete: vi.fn() }, "fixture-reviewer"),
+      approvalGate: gate, getRationalePolicyEpoch: () => manager.getPolicyEpoch(),
+      getRegistryGeneration: () => registry.getGeneration(), getSandboxGeneration: () => "fixture-sandbox",
+      anchorRoundCas: new InMemoryHostAnchorRoundCasStore(), hostInvocationStartCas: new InMemoryHostInvocationStartCasStore(),
+      onInvocationAudit: () => {}, onProjectionAudit: () => {},
+    });
+    const hooks = new ScriptHookManager();
+    const lifecycle = vi.spyOn(hooks, "runLifecycleEvent");
+    const turn = new AbortController();
+    const coordinatorStop = new AbortController();
+    const realExecutor = new ToolExecutor(registry, undefined, manager, undefined, gate, hooks, audit);
+    const outcome = await realExecutor.executeConversationBatch([
+      { id: "rationale-history", name: "write_file", input: { path: join(root, "outside.txt"), content: "await authority" } },
+    ], { executionCwd: project, sessionId, rationaleRuntime: coordinator, abortSignal: turn.signal,
+      permissionContext: { trustOrigin: "llm-tool-arg", additionalDirectories: [], headless: source === "headless" } });
+    if (outcome.outcome !== "rationale-required") throw new Error("Expected an outside-write rationale card");
+    const { ticketId, anchor, action } = outcome.control.control;
+    let settledDenialReason: string | undefined;
+    if (source === "retired") {
+      expect(coordinator.abort(ticketId)).toMatchObject({ state: "cancelled" });
+    } else {
+      await coordinator.handleRationaleRoundResult({ ticketId, result: { kind: "calls", calls: [{
+        id: "rationale-choice", name: "permission_rationale",
+        input: { contractVersion: 1, anchorId: anchor.anchorId, ticketId, actionDigest: action.actionDigest, round: 1, choice: "ask_user" },
+      }] } });
+      if (source === "headless") {
+        await expect(coordinator.promptForApproval(ticketId)).resolves.toMatchObject({ outcome: "denied" });
+      } else {
+        const stop = source === "deny-then-turn-stop" ? turn : coordinatorStop;
+        const pending = coordinator.promptForApproval(ticketId, { abortSignal: stop.signal });
+        await vi.waitFor(() => expect(cards).toHaveLength(1));
+        const [card] = cards;
+        if (card === undefined) throw new Error("Expected the rationale approval card");
+        if (kind === "denied") {
+          expect(gate.resolveFromDesktopRenderer(card.id, {
+            requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac,
+          }, contents as never)).toMatchObject({ choice: "deny-once" });
+          settledDenialReason = card.reason;
+        }
+        stop.abort();
+        expect(turn.signal.aborted).toBe(source === "deny-then-turn-stop");
+        await expect(pending).resolves.toBeNull();
+      }
+    }
+    const readRows = async () => (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n")
+      .map((line) => JSON.parse(line) as { toolUseId: string; decision: string; terminalKind: string; denyReasons: Array<{ reason: string; source: string }> })
+      .filter((row) => row.toolUseId === "rationale-history" && row.decision !== "ask");
+    await vi.waitFor(async () => expect(await readRows()).toHaveLength(1));
+    await audit.close();
+    const rows = await readRows();
+    expect(rows).toEqual([expect.objectContaining({
+      decision: "deny",
+      terminalKind: kind,
+      ...(settledDenialReason !== undefined ? { trustOrigin: "user-keyboard" } : {}),
+      denyReasons: [expect.objectContaining({ reason: settledDenialReason ?? (source === "headless"
+        ? "Nobody can approve this request; do not retry."
+        : "The permission request was stopped; the action was not executed.") })],
+    })]);
+    const [row] = rows;
+    if (row === undefined) throw new Error("Expected a terminal audit row");
+    if (source === "headless" || source === "retired") {
+      expect(terminalDenyKindOf({ denyReasons: row.denyReasons })).toBe(kind);
+    } else {
+      expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toHaveLength(settledDenialReason === undefined ? 0 : 1);
+    }
   });
 
   it.each([

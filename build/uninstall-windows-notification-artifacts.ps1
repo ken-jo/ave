@@ -36,10 +36,11 @@ function Get-NormalizedPath {
 
 function Test-SamePath {
   param(
-    [Parameter(Mandatory = $true)][string]$Left,
+    [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Left,
     [Parameter(Mandatory = $true)][string]$Right
   )
 
+  if ([string]::IsNullOrWhiteSpace($Left)) { return $false }
   try {
     return [string]::Equals(
       (Get-NormalizedPath $Left),
@@ -49,6 +50,17 @@ function Test-SamePath {
   }
   catch {
     return $false
+  }
+}
+
+function Get-ShortcutAttributes {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  try {
+    return [System.IO.File]::GetAttributes($Path)
+  }
+  catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] {
+    return $null
   }
 }
 
@@ -159,7 +171,10 @@ function Get-ShortcutOwnershipMismatches {
     $mismatches += "appUserModelId"
   }
   $parsedClsid = [System.Guid]::Empty
-  if (-not [System.Guid]::TryParse($Record.ToastClsid, [ref]$parsedClsid)) {
+  if (
+    -not [System.Guid]::TryParse($Record.ToastClsid, [ref]$parsedClsid) -or
+    $parsedClsid -eq [System.Guid]::Empty
+  ) {
     $mismatches += "toastClsid"
   }
   return @($mismatches)
@@ -175,186 +190,524 @@ function Get-RegistryViews {
   return @([Microsoft.Win32.RegistryView]::Registry32)
 }
 
-function Test-ExactToastRegistrationHandles {
-  param(
-    [Parameter(Mandatory = $true)]$RootKey,
-    [Parameter(Mandatory = $true)]$ServerKey,
-    [Parameter(Mandatory = $true)][string]$ExpectedExecutable
-  )
+function Assert-AveStopped {
+  param([string]$Executable, [string]$UserSid)
 
-  try {
-    if ($RootKey.GetValueKind("") -ne [Microsoft.Win32.RegistryValueKind]::String) {
-      return $false
+  $name = [System.IO.Path]::GetFileName($Executable).Replace("\", "\\").Replace("'", "\'")
+  foreach ($process in (Get-CimInstance -ClassName Win32_Process -Filter "Name = '$name'")) {
+    $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid
+    if ($owner.ReturnValue -ne 0 -or [string]::IsNullOrWhiteSpace($owner.Sid)) {
+      throw "could not verify the owner of Ave process $($process.ProcessId)"
     }
-    $rootDefault = $RootKey.GetValue(
-      "",
-      $null,
-      [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
-    )
-    if (
-      -not [string]::Equals(
-        [string]$rootDefault,
-        "Electron Notification Activator",
-        [System.StringComparison]::Ordinal
-      )
-    ) {
-      return $false
+    if ($owner.Sid -eq $UserSid) {
+      throw "Ave is still running for this user (process $($process.ProcessId))"
     }
-    if (
-      $RootKey.GetValueKind("CustomActivator") -ne
-      [Microsoft.Win32.RegistryValueKind]::DWord
-    ) {
-      return $false
-    }
-    if ([int64]$RootKey.GetValue("CustomActivator", 0) -ne 1) {
-      return $false
-    }
-    if ($ServerKey.GetValueKind("") -ne [Microsoft.Win32.RegistryValueKind]::String) {
-      return $false
-    }
-    $serverDefault = $ServerKey.GetValue(
-      "",
-      $null,
-      [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
-    )
-    return (
-      $null -ne $serverDefault -and
-      (Test-SamePath ([string]$serverDefault) $ExpectedExecutable)
-    )
-  }
-  catch {
-    return $false
   }
 }
 
-function Test-ExactToastRegistration {
+function Initialize-ToastCleanup {
+  # Managed registry methods can collapse a native failure into a missing value or a successful delete.
+  Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.Win32;
+using Microsoft.Win32.SafeHandles;
+
+public sealed class ToastRegistrySlot
+{
+    public RegistryValueKind Kind { get; private set; }
+    public string Bytes { get; private set; }
+    public object Value { get; private set; }
+
+    public ToastRegistrySlot(RegistryValueKind kind, string bytes, object value)
+    {
+        Kind = kind;
+        Bytes = bytes;
+        Value = value;
+    }
+}
+
+public sealed class ToastRegistryKey : IDisposable
+{
+    private const int FileNotFound = 2;
+    private const int PathNotFound = 3;
+    private const int QueryValueAccess = 0x0001;
+    private const int SetValueAccess = 0x0002;
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int RegOpenKeyExW(SafeRegistryHandle parent, string path, int options,
+        int access, out SafeRegistryHandle key);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int RegQueryValueExW(SafeRegistryHandle key, string name, IntPtr reserved,
+        out RegistryValueKind kind, [Out] byte[] data, ref int size);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int RegDeleteValueW(SafeRegistryHandle key, string name);
+
+    private readonly SafeRegistryHandle handle;
+    private readonly RegistryView view;
+
+    private ToastRegistryKey(SafeRegistryHandle handle, RegistryView view)
+    {
+        this.handle = handle;
+        this.view = view;
+    }
+
+    public static ToastRegistryKey OpenCurrentUser(string path, RegistryView view, bool writable)
+    {
+        using (var currentUser = new SafeRegistryHandle(new IntPtr((int)RegistryHive.CurrentUser), false))
+            return Open(currentUser, path, view, writable);
+    }
+
+    public ToastRegistryKey OpenSubKey(string path, bool writable)
+    {
+        return Open(handle, path, view, writable);
+    }
+
+    private static ToastRegistryKey Open(SafeRegistryHandle parent, string path, RegistryView view, bool writable)
+    {
+        int access = (int)view | QueryValueAccess | (writable ? SetValueAccess : 0);
+        SafeRegistryHandle key;
+        int status = RegOpenKeyExW(parent, path, 0, access, out key);
+        if (status == FileNotFound || status == PathNotFound) return null;
+        CheckStatus(status, "opening registry key", path);
+        return new ToastRegistryKey(key, view);
+    }
+
+    private static void CheckStatus(int status, string operation, string name)
+    {
+        if (status == 0) return;
+        string label = name.Length == 0 ? "(default)" : name;
+        throw new Win32Exception(status, String.Format("Error {0} {1} {2}: {3}",
+            status, operation, label, new Win32Exception(status).Message));
+    }
+
+    private bool TryQueryValue(string name, byte[] data, out RegistryValueKind kind, ref int size)
+    {
+        int status = RegQueryValueExW(handle, name, IntPtr.Zero, out kind, data, ref size);
+        if (status == FileNotFound) return false;
+        CheckStatus(status, "reading registry value", name);
+        return true;
+    }
+
+    public bool HasValue(string name)
+    {
+        RegistryValueKind kind;
+        int size = 0;
+        return TryQueryValue(name, null, out kind, ref size);
+    }
+
+    public ToastRegistrySlot ReadSlot(string name, RegistryValueKind expectedKind)
+    {
+        RegistryValueKind kind;
+        int size = 0;
+        if (!TryQueryValue(name, null, out kind, ref size)) return null;
+
+        // Leave room for a data read even if the value reported a size of zero.
+        byte[] data = new byte[Math.Max(size, 1)];
+        RegistryValueKind dataKind;
+        int dataSize = data.Length;
+        if (!TryQueryValue(name, data, out dataKind, ref dataSize) || kind != dataKind || size != dataSize)
+            throw new InvalidDataException("Registry value changed during read: " + name);
+
+        string bytes = Convert.ToBase64String(data, 0, size);
+        object value = kind == expectedKind ? DecodeValue(name, kind, data, size) : null;
+        return new ToastRegistrySlot(kind, bytes, value);
+    }
+
+    private static object DecodeValue(string name, RegistryValueKind kind, byte[] data, int size)
+    {
+        if (kind == RegistryValueKind.DWord && size == sizeof(int))
+            return BitConverter.ToInt32(data, 0);
+        if (kind == RegistryValueKind.String && size % sizeof(char) == 0)
+        {
+            if (size >= sizeof(char) && data[size - 1] == 0 && data[size - 2] == 0)
+                size -= sizeof(char);
+            return Encoding.Unicode.GetString(data, 0, size);
+        }
+        throw new InvalidDataException("Invalid data size for registry value: " + name);
+    }
+
+    public void DeleteValue(string name)
+    {
+        int status = RegDeleteValueW(handle, name);
+        if (status != FileNotFound) CheckStatus(status, "deleting registry value", name);
+    }
+
+    public void Dispose()
+    {
+        handle.Dispose();
+    }
+}
+
+public sealed class ToastShortcutFile : IDisposable
+{
+    private const uint GenericRead = 0x80000000;
+    private const uint DeleteAccess = 0x00010000;
+    private const uint OpenReparsePoint = 0x00200000;
+    private const int FileRenameInfo = 3;
+    private const int FileDispositionInfo = 4;
+    private const int FileAttributeTagInfo = 9;
+    private const int FileIdInfo = 18;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct AttributeTag
+    {
+        public FileAttributes Attributes;
+        public uint ReparseTag;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileIdentity
+    {
+        public ulong Volume;
+        public ulong Low;
+        public ulong High;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RenameInfo
+    {
+        public uint Flags;
+        public IntPtr RootDirectory;
+        public int FileNameLength;
+        public ushort FileName;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(string path, uint access, FileShare share,
+        IntPtr security, FileMode mode, uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int informationClass,
+        out AttributeTag information, int size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int informationClass,
+        out FileIdentity information, int size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetFileInformationByHandle(SafeFileHandle handle, int informationClass,
+        ref byte information, int size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetFileInformationByHandle(SafeFileHandle handle, int informationClass,
+        byte[] information, int size);
+
+    private readonly FileStream stream;
+    private readonly FileIdentity identity;
+
+    private ToastShortcutFile(FileStream stream, FileIdentity identity)
+    {
+        this.stream = stream;
+        this.identity = identity;
+    }
+
+    public static ToastShortcutFile Open(string path, bool forMutation)
+    {
+        var handle = CreateFileW(path, GenericRead | (forMutation ? DeleteAccess : 0), FileShare.Read,
+            IntPtr.Zero, FileMode.Open, OpenReparsePoint, IntPtr.Zero);
+        try
+        {
+            if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+            AttributeTag tag;
+            if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo, out tag, Marshal.SizeOf(typeof(AttributeTag))))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            if ((tag.Attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+                throw new IOException("The quarantined shortcut is not a regular file");
+            FileIdentity identity;
+            if (!GetFileInformationByHandleEx(handle, FileIdInfo, out identity, Marshal.SizeOf(typeof(FileIdentity))))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            return new ToastShortcutFile(new FileStream(handle, FileAccess.Read), identity);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+    }
+
+    public string Digest()
+    {
+        using (var hash = SHA256.Create())
+            return Convert.ToBase64String(hash.ComputeHash(stream));
+    }
+
+    public bool Matches(ToastShortcutFile verifiedFile, string digest)
+    {
+        return identity.Volume == verifiedFile.identity.Volume &&
+            identity.Low == verifiedFile.identity.Low && identity.High == verifiedFile.identity.High &&
+            Digest() == digest;
+    }
+
+    public void RenameTo(string path)
+    {
+        byte[] name = Encoding.Unicode.GetBytes(path + "\0");
+        int lengthOffset = Marshal.OffsetOf(typeof(RenameInfo), "FileNameLength").ToInt32();
+        int nameOffset = Marshal.OffsetOf(typeof(RenameInfo), "FileName").ToInt32();
+        // Zero flags preserve an occupied destination. The name is an absolute path.
+        byte[] information = new byte[Math.Max(Marshal.SizeOf(typeof(RenameInfo)), nameOffset + name.Length)];
+        BitConverter.GetBytes(name.Length - sizeof(ushort)).CopyTo(information, lengthOffset);
+        name.CopyTo(information, nameOffset);
+        if (!SetFileInformationByHandle(stream.SafeFileHandle, FileRenameInfo, information, information.Length))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+
+    public void Delete()
+    {
+        byte delete = 1;
+        if (!SetFileInformationByHandle(stream.SafeFileHandle, FileDispositionInfo, ref delete, sizeof(byte)))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+
+    public void Dispose()
+    {
+        stream.Dispose();
+    }
+}
+'@
+}
+
+[Flags()]
+enum OwnedToastSlot {
+  None = 0
+  RootDefault = 1
+  CustomActivator = 2
+  ServerDefault = 4
+  All = 7
+}
+
+function Test-OwnedToastSlotValue {
+  param(
+    [Parameter(Mandatory = $true)][OwnedToastSlot]$Slot,
+    [AllowNull()]$Value,
+    [Parameter(Mandatory = $true)][string]$ExpectedExecutable
+  )
+
+  if ($null -eq $Value) { return $false }
+  if ($Slot -eq [OwnedToastSlot]::RootDefault) {
+    return [string]::Equals(
+      [string]$Value.Value,
+      "Electron Notification Activator",
+      [System.StringComparison]::Ordinal
+    )
+  }
+  if ($Slot -eq [OwnedToastSlot]::CustomActivator) { return $Value.Value -eq 1 }
+  return Test-SamePath $Value.Value $ExpectedExecutable
+}
+
+function Read-ToastRegistrationSlots {
+  param(
+    [AllowNull()]$RootKey,
+    [AllowNull()]$ServerKey,
+    [Parameter(Mandatory = $true)][string]$ExpectedExecutable
+  )
+
+  $rootDefault = $null
+  $customActivator = $null
+  $serverDefault = $null
+  if ($null -ne $RootKey) {
+    $rootDefault = $RootKey.ReadSlot("", [Microsoft.Win32.RegistryValueKind]::String)
+    $customActivator = $RootKey.ReadSlot("CustomActivator", [Microsoft.Win32.RegistryValueKind]::DWord)
+  }
+  if ($null -ne $ServerKey) {
+    $serverDefault = $ServerKey.ReadSlot("", [Microsoft.Win32.RegistryValueKind]::String)
+  }
+
+  $slots = [OwnedToastSlot]::None
+  if (Test-OwnedToastSlotValue RootDefault $rootDefault $ExpectedExecutable) {
+    $slots = $slots -bor [OwnedToastSlot]::RootDefault
+  }
+  if (Test-OwnedToastSlotValue CustomActivator $customActivator $ExpectedExecutable) {
+    $slots = $slots -bor [OwnedToastSlot]::CustomActivator
+  }
+  if (Test-OwnedToastSlotValue ServerDefault $serverDefault $ExpectedExecutable) {
+    $slots = $slots -bor [OwnedToastSlot]::ServerDefault
+  }
+  return [PSCustomObject]@{
+    RootDefault = $rootDefault
+    CustomActivator = $customActivator
+    ServerDefault = $serverDefault
+    Owned = $slots
+  }
+}
+
+function Read-ToastRegistration {
   param(
     [Parameter(Mandatory = $true)]$View,
     [Parameter(Mandatory = $true)][string]$Clsid,
     [Parameter(Mandatory = $true)][string]$ExpectedExecutable
   )
 
-  $base = $null
   $root = $null
   $server = $null
   try {
-    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
-      [Microsoft.Win32.RegistryHive]::CurrentUser,
-      $View
-    )
-    $root = $base.OpenSubKey("Software\Classes\CLSID\$Clsid", $false)
-    if ($null -eq $root) { return $false }
-    $server = $root.OpenSubKey("LocalServer32", $false)
-    if ($null -eq $server) { return $false }
-    return Test-ExactToastRegistrationHandles $root $server $ExpectedExecutable
+    $root = [ToastRegistryKey]::OpenCurrentUser("Software\Classes\CLSID\$Clsid", $View, $false)
+    if ($null -ne $root) { $server = $root.OpenSubKey("LocalServer32", $false) }
+    return [PSCustomObject]@{
+      View = $View
+      Clsid = $Clsid
+      Slots = Read-ToastRegistrationSlots $root $server $ExpectedExecutable
+    }
   }
   finally {
     if ($null -ne $server) { $server.Dispose() }
     if ($null -ne $root) { $root.Dispose() }
-    if ($null -ne $base) { $base.Dispose() }
   }
 }
 
-function Remove-ExactToastRegistration {
+# Deletion boundary: reread one slot and report whether it still holds the
+# owned typed value. A value that stopped matching is never deleted.
+function Test-ToastSlotStillOwned {
   param(
-    [Parameter(Mandatory = $true)]$View,
-    [Parameter(Mandatory = $true)][string]$Clsid,
+    [Parameter(Mandatory = $true)]$Key,
+    [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Name,
+    [Parameter(Mandatory = $true)][Microsoft.Win32.RegistryValueKind]$Kind,
+    [Parameter(Mandatory = $true)][OwnedToastSlot]$Slot,
     [Parameter(Mandatory = $true)][string]$ExpectedExecutable
   )
 
-  $base = $null
+  $current = $Key.ReadSlot($Name, $Kind)
+  if ($null -eq $current) { return $false }
+  if (-not (Test-OwnedToastSlotValue $Slot $current $ExpectedExecutable)) {
+    throw "the $Slot registration slot changed to a foreign value before deletion"
+  }
+  $script:toastRegistryMutated = $true
+  return $true
+}
+
+function Remove-OwnedToastRegistration {
+  param(
+    [Parameter(Mandatory = $true)]$View,
+    [Parameter(Mandatory = $true)][string]$Clsid,
+    [Parameter(Mandatory = $true)][string]$ExpectedExecutable,
+    [switch]$AllowPartial
+  )
+
+  $string = [Microsoft.Win32.RegistryValueKind]::String
+  $dword = [Microsoft.Win32.RegistryValueKind]::DWord
   $root = $null
   $server = $null
   try {
-    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
-      [Microsoft.Win32.RegistryHive]::CurrentUser,
-      $View
-    )
-    $root = $base.OpenSubKey("Software\Classes\CLSID\$Clsid", $true)
+    $root = [ToastRegistryKey]::OpenCurrentUser("Software\Classes\CLSID\$Clsid", $View, $true)
+    # Both registry views can expose the same key.
     if ($null -eq $root) { return $false }
     $server = $root.OpenSubKey("LocalServer32", $true)
-    if ($null -eq $server) { return $false }
 
-    # Recheck exact types and data on writable handles immediately before
-    # deleting only Electron's known values.
-    if (-not (Test-ExactToastRegistrationHandles $root $server $ExpectedExecutable)) {
-      return $false
+    # Keep the keys so a concurrent writer's values cannot be removed by key deletion.
+    $state = Read-ToastRegistrationSlots $root $server $ExpectedExecutable
+    $slots = $state.Owned
+    if (
+      ((-not ($slots -band [OwnedToastSlot]::ServerDefault)) -and $null -ne $state.ServerDefault) -or
+      ((-not ($slots -band [OwnedToastSlot]::CustomActivator)) -and $null -ne $state.CustomActivator) -or
+      ((-not ($slots -band [OwnedToastSlot]::RootDefault)) -and $null -ne $state.RootDefault)
+    ) {
+      throw "Ave toast registration $Clsid ($View) contains a foreign value in a registration slot"
+    }
+    if ($slots -eq [OwnedToastSlot]::None) { return $false }
+    if (-not $AllowPartial -and $slots -ne [OwnedToastSlot]::All) {
+      throw "incomplete Ave toast registration $Clsid ($View) for the owned shortcut"
     }
 
-    $server.DeleteValue("", $false)
-    $server.Dispose()
-    $server = $null
-    $serverCheck = $root.OpenSubKey("LocalServer32", $false)
-    if ($null -ne $serverCheck) {
-      try {
-        if ($serverCheck.ValueCount -eq 0 -and $serverCheck.SubKeyCount -eq 0) {
-          $serverCheck.Dispose()
-          $serverCheck = $null
-          $root.DeleteSubKey("LocalServer32", $false)
-        }
-      }
-      finally {
-        if ($null -ne $serverCheck) { $serverCheck.Dispose() }
-      }
+    if ($null -ne $server -and (Test-ToastSlotStillOwned $server "" $string ServerDefault $ExpectedExecutable)) {
+      $server.DeleteValue("")
     }
-
-    $root.DeleteValue("CustomActivator", $false)
-    $root.DeleteValue("", $false)
-    $root.Dispose()
-    $root = $null
-
-    $rootCheck = $base.OpenSubKey("Software\Classes\CLSID\$Clsid", $false)
-    if ($null -ne $rootCheck) {
-      try {
-        if ($rootCheck.ValueCount -eq 0 -and $rootCheck.SubKeyCount -eq 0) {
-          $rootCheck.Dispose()
-          $rootCheck = $null
-          $base.DeleteSubKey("Software\Classes\CLSID\$Clsid", $false)
-        }
-      }
-      finally {
-        if ($null -ne $rootCheck) { $rootCheck.Dispose() }
-      }
+    if (Test-ToastSlotStillOwned $root "CustomActivator" $dword CustomActivator $ExpectedExecutable) {
+      $root.DeleteValue("CustomActivator")
+    }
+    if (Test-ToastSlotStillOwned $root "" $string RootDefault $ExpectedExecutable) {
+      $root.DeleteValue("")
+    }
+    $remainingValues = @(
+      if ($null -ne $server -and $server.HasValue("")) { "LocalServer32 (default)" }
+      if ($root.HasValue("CustomActivator")) { "CustomActivator" }
+      if ($root.HasValue("")) { "CLSID (default)" }
+    )
+    if ($remainingValues.Count -ne 0) {
+      throw "Ave toast registration $Clsid ($View) retained values: $($remainingValues -join ', ')"
     }
     return $true
   }
   finally {
     if ($null -ne $server) { $server.Dispose() }
     if ($null -ne $root) { $root.Dispose() }
-    if ($null -ne $base) { $base.Dispose() }
   }
 }
 
-function Find-ExactToastRegistrations {
-  param([Parameter(Mandatory = $true)][string]$ExpectedExecutable)
+function Read-ToastRegistrations {
+  param(
+    [Parameter(Mandatory = $true)][string]$ExpectedExecutable,
+    [Parameter(Mandatory = $true)][string[]]$CandidateClsids
+  )
 
-  $matches = @()
   foreach ($view in (Get-RegistryViews)) {
-    $base = $null
-    $clsidRoot = $null
-    try {
-      $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
-        [Microsoft.Win32.RegistryHive]::CurrentUser,
-        $view
-      )
-      $clsidRoot = $base.OpenSubKey("Software\Classes\CLSID", $false)
-      if ($null -eq $clsidRoot) { continue }
-      foreach ($name in $clsidRoot.GetSubKeyNames()) {
-        $parsed = [System.Guid]::Empty
-        if (-not [System.Guid]::TryParse($name, [ref]$parsed)) { continue }
-        if (Test-ExactToastRegistration $view $name $ExpectedExecutable) {
-          $matches += [PSCustomObject]@{ View = $view; Clsid = $name }
-        }
-      }
-    }
-    finally {
-      if ($null -ne $clsidRoot) { $clsidRoot.Dispose() }
-      if ($null -ne $base) { $base.Dispose() }
+    foreach ($clsid in $CandidateClsids) {
+      Read-ToastRegistration $view $clsid $ExpectedExecutable
     }
   }
-  return @($matches)
 }
 
+function Confirm-ToastRegistrationsAbsent {
+  param([string]$ExpectedExecutable, [string[]]$CandidateClsids)
+
+  foreach ($registration in @(Read-ToastRegistrations $ExpectedExecutable $CandidateClsids)) {
+    if ($registration.Slots.Owned -ne [OwnedToastSlot]::None) {
+      throw "owned Ave toast registration values for $($registration.Clsid) ($($registration.View)) survived cleanup"
+    }
+  }
+}
+
+function Get-OwnedShortcutClsid {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)]$Expected
+  )
+
+  $attributes = Get-ShortcutAttributes $Path
+  if ($null -eq $attributes -or ($attributes -band $Expected.NonRegular) -ne 0) {
+    throw "the quarantined shortcut is missing or is no longer a regular file"
+  }
+  $record = Get-ShortcutRecord $Path
+  $ownershipMismatches = @(
+    Get-ShortcutOwnershipMismatches $record $Expected.Executable $Expected.Directory $Expected.Name $Expected.AppUserModelId
+  )
+  if ($ownershipMismatches.Count -ne 0) {
+    throw ("the quarantined shortcut is not the exact owned shortcut; mismatched fields: {0}" -f ($ownershipMismatches -join ","))
+  }
+  return ([guid]$record.ToastClsid).ToString("B")
+}
+
+# Entries a previous cleanup left in quarantine. Clsid is set only for an
+# exact owned shortcut; any other entry is unattributable and has Clsid $null.
+function Get-QuarantinedShortcuts {
+  param(
+    [Parameter(Mandatory = $true)][string]$Programs,
+    [Parameter(Mandatory = $true)]$Expected
+  )
+
+  $pattern = '^\.' + [regex]::Escape($Expected.Name) + '\.ave-uninstall-[0-9a-f]{32}\.lnk$'
+  $entries = @()
+  try {
+    $entries = @([System.IO.Directory]::EnumerateFileSystemEntries($Programs))
+  }
+  catch [System.IO.DirectoryNotFoundException] {}
+  foreach ($entry in $entries) {
+    if ([System.IO.Path]::GetFileName($entry) -notmatch $pattern) { continue }
+    $clsid = $null
+    try { $clsid = Get-OwnedShortcutClsid $entry $Expected }
+    catch {}
+    [PSCustomObject]@{ Path = $entry; Clsid = $clsid }
+  }
+}
+
+$cleanupLock = $null
+$shortcutMoved = $false
+$script:toastRegistryMutated = $false
 try {
   if (-not [System.IO.Path]::IsPathRooted($InstalledExecutable)) {
     throw "InstalledExecutable must be an absolute path"
@@ -385,127 +738,150 @@ try {
   ) {
     throw "the exact zero-byte regular NSIS marker contract is unavailable: $expectedMarker"
   }
-  $programs = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)
+
+  # Take the per-user lock before the process check. A later Ave start exits if
+  # its probe confirms the held lock. An inconclusive probe allows startup.
+  $lockDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
+  if ([string]::IsNullOrWhiteSpace($lockDirectory)) {
+    throw "the current user's roaming application data folder is unavailable"
+  }
+  try {
+    $cleanupLock = [System.IO.FileStream]::new(
+      (Join-Path $lockDirectory ".ave-notification-cleanup.lock"),
+      [System.IO.FileMode]::CreateNew,
+      [System.IO.FileAccess]::ReadWrite,
+      ([System.IO.FileShare]::Read -bor [System.IO.FileShare]::Delete),
+      1,
+      [System.IO.FileOptions]::DeleteOnClose
+    )
+  }
+  catch [System.IO.IOException] {
+    # ERROR_FILE_EXISTS, ERROR_ALREADY_EXISTS, ERROR_SHARING_VIOLATION
+    if ($_.Exception.GetBaseException().HResult -notin @(-2147024816, -2147024713, -2147024864)) { throw }
+    throw "the current user's Ave notification cleanup lock path is occupied"
+  }
+  $cleanupLock.Lock(0, 1)
+  $cleanupLock.WriteByte(0)
+  $lockMarker = [System.Text.Encoding]::ASCII.GetBytes("Ave notification cleanup v1")
+  $cleanupLock.Write($lockMarker, 0, $lockMarker.Length)
+  $cleanupLock.Flush()
+  $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  Assert-AveStopped $installedExe $userSid
+
+  Initialize-ToastCleanup
+  $programs = [Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::Programs,
+    [Environment+SpecialFolderOption]::DoNotVerify
+  )
   if ([string]::IsNullOrWhiteSpace($programs)) {
     throw "the current user's Programs known folder is unavailable"
   }
   $shortcutPath = Join-Path $programs ($ShortcutName + ".lnk")
-
-  $shortcutItem = Get-Item -LiteralPath $shortcutPath -Force -ErrorAction SilentlyContinue
-  if ($null -ne $shortcutItem) {
-    if (
-      $shortcutItem.PSIsContainer -or
-      (($shortcutItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
-    ) {
-      Write-CleanupEvent "foreign-preserved" "shortcut" (
-        "preserved non-regular or reparse-point candidate: $shortcutPath"
-      )
-    }
-    else {
-      $record = Get-ShortcutRecord $shortcutPath
-      if (-not (Test-SamePath $record.Target $installedExe)) {
-        Write-CleanupEvent "foreign-preserved" "shortcut" (
-          "preserved different-target shortcut: $shortcutPath"
-        )
-      }
-      else {
-        $mismatches = @(
-          Get-ShortcutOwnershipMismatches $record $installedExe $installDir $ShortcutName $AppUserModelId
-        )
-        if ($mismatches.Count -ne 0) {
-          Write-CleanupEvent "foreign-preserved" "shortcut" (
-            "preserved same-target partial-owned shortcut; mismatched fields: {0}" -f
-            ($mismatches -join ",")
-          )
-        }
-        else {
-
-          # Move within the same directory first, then recheck the moved identity.
-          # A path swap before Move is quarantined and preserved after mismatch;
-          # a path created after Move is never the object we delete.
-          $quarantinePath = Join-Path $programs (
-            ".{0}.ave-uninstall-{1}.lnk" -f
-            $ShortcutName,
-            [System.Guid]::NewGuid().ToString("N")
-          )
-          [System.IO.File]::Move($shortcutPath, $quarantinePath)
-          try {
-            $quarantinedItem = Get-Item -LiteralPath $quarantinePath -Force
-            if (
-              $quarantinedItem.PSIsContainer -or
-              (($quarantinedItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
-            ) {
-              throw "the shortcut changed to a non-regular or reparse-point object before quarantine"
-            }
-            $quarantinedRecord = Get-ShortcutRecord $quarantinePath
-            $quarantinedMismatches = @(
-              Get-ShortcutOwnershipMismatches $quarantinedRecord $installedExe $installDir $ShortcutName $AppUserModelId
-            )
-            if ($quarantinedMismatches.Count -ne 0) {
-              throw (
-                "the shortcut changed before atomic quarantine; mismatched fields: {0}" -f
-                ($quarantinedMismatches -join ",")
-              )
-            }
-
-            [System.IO.File]::Delete($quarantinePath)
-            if (Test-Path -LiteralPath $quarantinePath) {
-              throw "the quarantined owned shortcut survived cleanup"
-            }
-          }
-          catch {
-            $quarantineFailure = $_
-            if (Test-Path -LiteralPath $quarantinePath) {
-              if (-not (Test-Path -LiteralPath $shortcutPath)) {
-                [System.IO.File]::Move($quarantinePath, $shortcutPath)
-                Write-CleanupEvent "foreign-preserved" "shortcut" (
-                  "restored the quarantined shortcut after ownership changed"
-                )
-              }
-              else {
-                Write-CleanupEvent "contract-failed" "shortcut-quarantine" (
-                  "preserved the changed candidate at $quarantinePath because the original path was reoccupied"
-                )
-              }
-            }
-            throw $quarantineFailure
-          }
-          Write-CleanupEvent "removed" "shortcut" (
-            "removed exact current-user Ave notification shortcut: $shortcutPath"
-          )
-        }
-      }
-    }
+  $nonRegularAttributes = [System.IO.FileAttributes]::Directory -bor [System.IO.FileAttributes]::ReparsePoint
+  $expectedShortcut = [PSCustomObject]@{
+    Executable = $installedExe
+    Directory = $installDir
+    Name = $ShortcutName
+    AppUserModelId = $AppUserModelId
+    NonRegular = $nonRegularAttributes
   }
-  else {
+  $productClsid = "{62FD3EFB-B3D2-4235-9402-6979F52C0286}"
+  $candidateClsids = @($productClsid)
+  $quarantined = @()
+  $unattributedQuarantine = $false
+
+  foreach ($entry in @(Get-QuarantinedShortcuts $programs $expectedShortcut)) {
+    if ($null -eq $entry.Clsid) {
+      $unattributedQuarantine = $true
+      Write-CleanupEvent "foreign-preserved" "shortcut-quarantine" (
+        "left an unattributable quarantine entry untouched: $($entry.Path)"
+      )
+      continue
+    }
+    $quarantined += $entry
+    if ($candidateClsids -notcontains $entry.Clsid) { $candidateClsids += $entry.Clsid }
+  }
+
+  $shortcutAttributes = Get-ShortcutAttributes $shortcutPath
+  if ($null -eq $shortcutAttributes) {
     Write-CleanupEvent "verified-absent" "shortcut" (
       "current-user Ave notification shortcut was already absent: $shortcutPath"
     )
   }
+  elseif (($shortcutAttributes -band $nonRegularAttributes) -ne 0) {
+    Write-CleanupEvent "foreign-preserved" "shortcut" (
+      "preserved non-regular or reparse-point candidate: $shortcutPath"
+    )
+  }
+  else {
+    $record = Get-ShortcutRecord $shortcutPath
+    if (-not (Test-SamePath $record.Target $installedExe)) {
+      Write-CleanupEvent "foreign-preserved" "shortcut" (
+        "preserved different-target shortcut: $shortcutPath"
+      )
+    }
+    else {
+      $mismatches = @(
+        Get-ShortcutOwnershipMismatches $record $installedExe $installDir $ShortcutName $AppUserModelId
+      )
+      if ($mismatches.Count -ne 0) {
+        Write-CleanupEvent "foreign-preserved" "shortcut" (
+          "preserved same-target partial-owned shortcut; mismatched fields: {0}" -f
+          ($mismatches -join ",")
+        )
+      }
+      else {
+        # Quarantine the verified shortcut until registry cleanup finishes.
+        # It names the legacy CLSID, and a later cleanup resumes from it.
+        $quarantinePath = Join-Path $programs (
+          ".{0}.ave-uninstall-{1}.lnk" -f
+          $ShortcutName,
+          [System.Guid]::NewGuid().ToString("N")
+        )
+        $parkedFile = [ToastShortcutFile]::Open($shortcutPath, $false)
+        try {
+          if ((Get-OwnedShortcutClsid $shortcutPath $expectedShortcut) -ne ([guid]$record.ToastClsid).ToString("B")) {
+            throw "the shortcut toast activator CLSID changed before atomic quarantine"
+          }
+          $parkedDigest = $parkedFile.Digest()
+        }
+        finally { $parkedFile.Dispose() }
 
-  foreach ($registration in @(Find-ExactToastRegistrations $installedExe)) {
-    if (Remove-ExactToastRegistration $registration.View $registration.Clsid $installedExe) {
+        $parkFile = [ToastShortcutFile]::Open($shortcutPath, $true)
+        try {
+          if (-not $parkFile.Matches($parkedFile, $parkedDigest)) {
+            throw "the shortcut changed before quarantine"
+          }
+          $parkFile.RenameTo($quarantinePath)
+          $shortcutMoved = $true
+        }
+        finally { $parkFile.Dispose() }
+        $verifiedClsid = Get-OwnedShortcutClsid $quarantinePath $expectedShortcut
+        if ($verifiedClsid -ne ([guid]$record.ToastClsid).ToString("B")) {
+          throw "the shortcut toast activator CLSID changed before atomic quarantine"
+        }
+        $quarantined += [PSCustomObject]@{ Path = $quarantinePath; Clsid = $verifiedClsid }
+        if ($candidateClsids -notcontains $verifiedClsid) { $candidateClsids += $verifiedClsid }
+      }
+    }
+  }
+
+  foreach ($registration in @(Read-ToastRegistrations $installedExe $candidateClsids)) {
+    if ($registration.Slots.Owned -eq [OwnedToastSlot]::None) { continue }
+    if (Remove-OwnedToastRegistration $registration.View $registration.Clsid $installedExe `
+        -AllowPartial:($registration.Clsid -eq $productClsid)) {
       Write-CleanupEvent "removed" "toast-registration" (
-        "Removed exact current-user Ave toast registration {0} ({1})." -f
+        "Removed owned current-user Ave toast registration values for {0} ({1})." -f
         $registration.Clsid,
         $registration.View
       )
     }
   }
 
-  $remaining = @(Find-ExactToastRegistrations $installedExe)
-  if ($remaining.Count -ne 0) {
-    throw "one or more exact Ave toast registrations survived cleanup"
-  }
-  Write-CleanupEvent "verified-absent" "toast-registration" (
-    "no exact current-user Ave toast registrations remain"
-  )
-
-  $shortcutResidue = Get-Item -LiteralPath $shortcutPath -Force -ErrorAction SilentlyContinue
+  $shortcutResidue = Get-ShortcutAttributes $shortcutPath
   if (
     $null -ne $shortcutResidue -and
-    -not $shortcutResidue.PSIsContainer -and
-    (($shortcutResidue.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)
+    ($shortcutResidue -band $nonRegularAttributes) -eq 0
   ) {
     $residueRecord = Get-ShortcutRecord $shortcutPath
     if (Test-SamePath $residueRecord.Target $installedExe) {
@@ -521,14 +897,79 @@ try {
       )
     }
   }
+
+  Confirm-ToastRegistrationsAbsent $installedExe $candidateClsids
+  Write-CleanupEvent "verified-absent" "toast-registration" (
+    "no owned current-user Ave toast registration values remained at the final read under the cleanup lock"
+  )
+
+  foreach ($entry in $quarantined) {
+    # Keep the shortcut stable while its shell properties are read by path.
+    $verifiedFile = [ToastShortcutFile]::Open($entry.Path, $false)
+    try {
+      if ((Get-OwnedShortcutClsid $entry.Path $expectedShortcut) -ne $entry.Clsid) {
+        throw "the quarantined shortcut changed during cleanup"
+      }
+      $digest = $verifiedFile.Digest()
+    }
+    finally { $verifiedFile.Dispose() }
+
+    $deleteFile = [ToastShortcutFile]::Open($entry.Path, $true)
+    try {
+      if (-not $deleteFile.Matches($verifiedFile, $digest)) {
+        throw "the quarantined shortcut changed before deletion"
+      }
+      $deleteFile.Delete()
+    }
+    finally { $deleteFile.Dispose() }
+    if ($null -ne (Get-ShortcutAttributes $entry.Path)) {
+      throw "the quarantined owned shortcut survived cleanup"
+    }
+    Write-CleanupEvent "removed" "shortcut" (
+      "removed exact current-user Ave notification shortcut: $($entry.Path)"
+    )
+  }
+  if ($unattributedQuarantine) {
+    # Everything attributable is verified removed; only the reported entry remains.
+    exit 2
+  }
   exit 0
 }
 catch {
   $failureMessage = $_.Exception.Message
+  if ($shortcutMoved) {
+    if ($script:toastRegistryMutated) {
+      Write-CleanupEvent "contract-failed" "shortcut-quarantine" (
+        "kept the owned shortcut in quarantine for the next cleanup to resume: $quarantinePath"
+      )
+    }
+    else {
+      try {
+        $restoreFile = [ToastShortcutFile]::Open($quarantinePath, $true)
+        try {
+          if (-not $restoreFile.Matches($parkedFile, $parkedDigest)) {
+            throw "the quarantined shortcut changed before restoration"
+          }
+          $restoreFile.RenameTo($shortcutPath)
+        }
+        finally { $restoreFile.Dispose() }
+        Write-CleanupEvent "foreign-preserved" "shortcut" "restored the quarantined shortcut after cleanup failed"
+      }
+      catch {
+        Write-CleanupEvent "contract-failed" "shortcut-quarantine" (
+          "could not restore the shortcut from quarantine at {0}: {1}" -f
+          $quarantinePath, $_.Exception.Message
+        )
+      }
+    }
+  }
   Write-CleanupEvent "contract-failed" "notification-artifacts" $failureMessage
   [Console]::Error.WriteLine(
     "Ave current-user notification artifact cleanup failed: {0}",
     $failureMessage
   )
   exit 1
+}
+finally {
+  if ($null -ne $cleanupLock) { $cleanupLock.Dispose() }
 }

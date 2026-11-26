@@ -6,6 +6,7 @@ import type { LLMProvider, StreamTurnParams } from "../../types.js";
 import { VercelUnifiedProvider } from "../adapter.js";
 import { FallbackProvider } from "../fallback-chain.js";
 import { collectStreamEvents } from "./test-helpers.js";
+import { noRetirementEvidence } from "../../model-wire-gate.js";
 
 const IMAGE_MESSAGES: StreamTurnParams["messages"] = [{
   role: "user",
@@ -27,7 +28,7 @@ function wireFixture(vendor: LLMProvider["vendor"] = "openai") {
   const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
   return {
     fetchResponse,
-    provider: new VercelUnifiedProvider(vendor, "fixture-key", vendor === "openrouter" || vendor === "openai-compatible" ? "https://provider.invalid/v1" : undefined, fetchResponse),
+    provider: new VercelUnifiedProvider(vendor, "fixture-key", vendor === "openrouter" || vendor === "openai-compatible" ? "https://provider.invalid/v1" : undefined, fetchResponse, { getRetiredModelId: noRetirementEvidence }),
     body: () => JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>,
   };
 }
@@ -196,7 +197,7 @@ describe("tool capability at the wire boundary", () => {
   it("keeps tools on direct calls to a same-name alias at another host", async () => {
     // A gateway alias does not establish the catalog model tool capability.
     const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
-    const provider = new VercelUnifiedProvider("openai", "fixture-key", "https://gateway.invalid/v1", fetchResponse);
+    const provider = new VercelUnifiedProvider("openai", "fixture-key", "https://gateway.invalid/v1", fetchResponse, { getRetiredModelId: noRetirementEvidence });
     await collectStreamEvents(provider.streamTurn(request("gpt-3.5-turbo", { tools: TOOLS })));
     expect(fetchResponse).toHaveBeenCalledOnce();
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;

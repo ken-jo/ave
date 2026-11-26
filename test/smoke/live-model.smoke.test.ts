@@ -4,6 +4,7 @@ import { VercelUnifiedProvider } from "../../src/engine/llm/vercel/adapter.js";
 import { LLM_VENDOR_DEFAULTS } from "../../src/shared/llm-vendor-defaults.js";
 import type { StreamEvent } from "../../src/engine/llm/types.js";
 import { collectAsyncIterable } from "../../src/__tests__/test-helpers.js";
+import { noRetirementEvidence } from "../../src/engine/llm/model-wire-gate.js";
 
 // Live calls incur charges and require AVE_SMOKE_OPENROUTER_KEY.
 // The launcher decrypts the configured key in the app runtime and passes it through the environment.
@@ -16,7 +17,7 @@ function provider(): VercelUnifiedProvider {
   return new VercelUnifiedProvider(
     "openrouter",
     apiKey as string,
-    LLM_VENDOR_DEFAULTS.openrouter.baseUrl,
+    LLM_VENDOR_DEFAULTS.openrouter.baseUrl, undefined, { getRetiredModelId: noRetirementEvidence },
   );
 }
 

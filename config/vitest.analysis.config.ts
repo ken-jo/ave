@@ -44,6 +44,13 @@ function isAveHomeGuardSeam(id: string): boolean {
 
 const DEFAULT_MAX_WORKERS = 4;
 
+const hostSetupFiles = [
+  rootPath("src/i18n/testing/vitest-ambient-intl.ts"),
+  rootPath("src/__tests__/vitest-ave-home.ts"),
+  rootPath("src/__tests__/vitest-model-catalog.ts"),
+  rootPath("src/__tests__/vitest-approval-presentation.ts"),
+];
+
 function vitestMaxWorkers(value: string | undefined): number {
   if (value === undefined) return DEFAULT_MAX_WORKERS;
   if (!/^[1-9][0-9]*$/.test(value)) {
@@ -118,7 +125,7 @@ export default defineConfig({
             name: "node",
             environment: "node",
             // Pin the locale for tests asserting Korean strings; default-locale tests set their own.
-            setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts")],
+            setupFiles: hostSetupFiles,
             include: suiteInclude,
             exclude: [
               ...baseExclude,
@@ -147,7 +154,7 @@ export default defineConfig({
           test: {
             name: "permission-timing",
             environment: "node",
-            setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts")],
+            setupFiles: hostSetupFiles,
             include: permissionTimingTests,
             exclude: baseExclude,
             // Complete other projects before measuring a single file at a time.
@@ -162,7 +169,7 @@ export default defineConfig({
         test: {
           name: "native",
           environment: "node",
-          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts")],
+          setupFiles: hostSetupFiles,
           include: [...NATIVE_TIER_TESTS],
           exclude: baseExclude,
         },

@@ -1,5 +1,6 @@
 import { dispatchPermissionReviewerCommandWithRewire } from "../permission-slash.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,10 +42,7 @@ function makeDeps() {
     }),
   };
   const approvalGate = {
-    requestAndWait: vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "allow-once" as const,
-    })),
+    requestAndWait: answeringRequestAndWait(() => ({ choice: "allow-once" })),
   };
   const auditLogger = {
     isPermissionAuditChainReady: vi.fn(() => true),
@@ -439,5 +437,42 @@ describe("durable mode change across a restart", () => {
     const restarted = new PermissionManager(paths.permissionsFilePath);
     await restarted.loadRulesFromFile();
     expect(restarted.getMode()).toBe("auto");
+  });
+});
+
+describe("mode change at quit", () => {
+  it("refuses a mode change that arrives after the audit closed without failing the shutdown", async () => {
+    vi.resetModules();
+    const { applyPermissionModeCommand: apply } = await import("../permission-mode-apply.js");
+    const ledger = await import("../../tools/invocation-ledger.js");
+    const deps = makeDeps();
+    ledger.sealToolInvocations();
+    let result: unknown;
+    await expect(ledger.closeToolInvocationAudit(async () => {
+      result = await apply(durableAuto, { ...deps, approvalBypass: { source: "settings-ui", trustOrigin: "user-keyboard", explicitUserAction: true } } as never);
+    })).resolves.toBe(0);
+    expect(result).toMatchObject({ ok: false, error: "host-shutdown" });
+    expect(deps.permissionManager.setModePersist).not.toHaveBeenCalled();
+    expect(deps.permissionManager.setMode).not.toHaveBeenCalled();
+    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("applies no mode when quit seals admission during the mode audit (durable=%s)", async (durable) => {
+    // A sealed ledger is process-wide; load a fresh one.
+    vi.resetModules();
+    const { applyPermissionModeCommand: apply } = await import("../permission-mode-apply.js");
+    const ledger = await import("../../tools/invocation-ledger.js");
+    const deps = makeDeps();
+    deps.auditLogger.appendPermissionAuditEntry.mockImplementation(async (...args: unknown[]) => {
+      if ((args[0] as { decision?: string }).decision === "mode_change") ledger.sealToolInvocations();
+      return undefined;
+    });
+    const result = await apply({ ...durableAuto, durable }, { ...deps, approvalBypass: { source: "settings-ui", trustOrigin: "user-keyboard", explicitUserAction: true } } as never);
+    expect(result).toMatchObject({ ok: false, error: "host-shutdown" });
+    expect(deps.permissionManager.setModePersist).not.toHaveBeenCalled();
+    expect(deps.permissionManager.setMode).not.toHaveBeenCalled();
+    expect(deps.auditLogger.appendPermissionAuditEntry).toHaveBeenLastCalledWith(expect.objectContaining({
+      decision: "deny", tool: "/permission mode", denyReasons: [{ reason: "host-shutdown", source: "permission-mode" }], trustOrigin: "unknown",
+    }));
   });
 });

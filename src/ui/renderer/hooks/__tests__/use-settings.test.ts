@@ -1,14 +1,15 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { useSettings } from "../use-settings.js";
+import { modelCardChoices, useSettings } from "../use-settings.js";
 import type { AppSettings, AveApi } from "../../types.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.js";
-import { LLM_VENDOR_DEFAULTS } from "../../../../shared/llm-vendor-defaults.js";
+import { LLM_VENDOR_DEFAULTS, OPENAI_COMPATIBLE_VENDOR_PRESETS } from "../../../../shared/llm-vendor-defaults.js";
 import { FALLBACK_CONTEXT_WINDOW } from "../../../../shared/model-host-policy.js";
 import { llmModelListCacheKey } from "../../../../shared/llm-model-list.js";
 import { useCostEstimate } from "../use-cost-estimate.js";
 import { activeModelCatalog, installModelCatalog } from "../../../../shared/model-catalog/active.js";
+import { requiredFixture } from "../../../../__tests__/support/required-fixture.js";
 
 function makeSettings(): AppSettings {
   return fakeAppSettings({
@@ -32,6 +33,74 @@ function makeSettings(): AppSettings {
 }
 
 describe("useSettings", () => {
+  it("warns for a newly deprecated shipped default and removes it from the composer choices", async () => {
+    const catalog = activeModelCatalog();
+    const model = OPENAI_COMPATIBLE_VENDOR_PRESETS.deepseek.defaultModel;
+    const provider = requiredFixture(catalog.providers.deepseek);
+    const initial = makeSettings();
+    initial.llm.provider = "deepseek";
+    initial.llm.vendors.deepseek = { ...LLM_VENDOR_DEFAULTS.deepseek, model };
+    initial.llm.pinnedModels = [model];
+    // An earlier custom endpoint on this vendor can still advertise the same id.
+    const customUrl = "https://gateway.invalid/v1";
+    initial.llm.modelListCache = {
+      [llmModelListCacheKey("deepseek", customUrl)]: {
+        vendor: "deepseek", baseUrl: customUrl, endpoint: `${customUrl}/models`,
+        models: [model], fetchedAt: "2026-11-01T00:00:00Z",
+      },
+    };
+    const { api } = makeMockAveApi({ settings: initial, hasApiKey: false });
+    expect(modelCardChoices(initial.llm)).toContainEqual(expect.objectContaining({ modelId: model, current: true }));
+
+    installModelCatalog({ ...catalog, providers: {
+      ...catalog.providers,
+      deepseek: { models: { ...provider.models, [model]: { ...requiredFixture(provider.models[model]), status: "deprecated" } } },
+    } });
+    try {
+      const { result } = renderHook(() => useSettings(api as unknown as AveApi));
+      await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+      expect(result.current.llmModel).toBe(model);
+      expect(result.current.retiredLlmProvider).toBeNull();
+      expect(modelCardChoices(initial.llm)).not.toContainEqual(expect.objectContaining({ modelId: model }));
+      expect(result.current.deprecatedLlmModel).toMatchObject({ model });
+    } finally {
+      installModelCatalog(catalog);
+    }
+  });
+
+  it("keeps dismissals after remount and reopens the same id for a changed deprecation identity", async () => {
+    const catalog = activeModelCatalog();
+    const model = "o4-mini";
+    const provider = requiredFixture(catalog.providers.openai);
+    const settings = makeSettings();
+    requiredFixture(settings.llm.vendors.openai).model = model;
+    const { api } = makeMockAveApi({ settings, hasApiKey: false });
+    const mount = () => renderHook(() => useSettings(api as unknown as AveApi));
+    try {
+      const first = mount();
+      await waitFor(() => expect(first.result.current.deprecatedLlmModel).toBeTruthy());
+      await act(async () => {
+        await first.result.current.dismissDeprecatedLlmModel();
+      });
+      expect(first.result.current.deprecatedLlmModel).toBeNull();
+      first.unmount();
+
+      const reopened = mount();
+      await waitFor(() => expect(reopened.result.current.settingsLoaded).toBe(true));
+      expect(reopened.result.current.deprecatedLlmModel).toBeNull();
+      reopened.unmount();
+
+      installModelCatalog({ ...catalog, providers: {
+        ...catalog.providers,
+        openai: { models: { ...provider.models, [model]: { ...requiredFixture(provider.models[model]), releaseDate: "2026-11-01" } } },
+      } });
+      const changed = mount();
+      await waitFor(() => expect(changed.result.current.deprecatedLlmModel).toMatchObject({ model }));
+    } finally {
+      installModelCatalog(catalog);
+    }
+  });
+
   it.each(["unlisted", "without-output"].flatMap((entry) => [
     { entry, vendor: "openai" as const, model: "gpt-4", catalogProvider: "openai" },
     { entry, vendor: "claude" as const, model: "claude-3-haiku-20240307", catalogProvider: "anthropic" },

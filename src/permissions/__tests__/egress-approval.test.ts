@@ -1,6 +1,7 @@
 // The egress ask on the approval dock: the `egress-host` request shape the gate accepts, the answers it honours (desktop window, allow-once, a scope the card offered) and how the requester maps them back (egress-approval.ts).
 import { registerRunSession, __resetRunGrantsForTest } from "../run-grants.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -457,7 +458,7 @@ describe("shell egress human fallback termination", () => {
   it("keeps an allow answered while a sibling stage saved a run rule, and refuses it when the destination is denied meanwhile", async () => {
     try {
       registerRunSession("work-board:7#run-a", "sibling-stage-session", { stageId: "build", stageName: "Build", lane: "attended" });
-      const answered = (during: () => void) => createRequester({ requestAndWait: vi.fn(async (request: ApprovalRequestInput) => {
+      const answered = (during: () => void) => createRequester({ requestAndWait: answeringRequestAndWait((request: ApprovalRequestInput) => {
         during();
         return { requestId: request.id, choice: "allow-once" as const, egressScope: "session" as const };
       }) }, permissionManager)(egressRequest());
@@ -475,7 +476,7 @@ describe("shell egress human fallback termination", () => {
   });
 
   it("still refuses an allow answered after the policy changed under the card", async () => {
-    const gate = { requestAndWait: vi.fn(async (request: ApprovalRequestInput) => {
+    const gate = { requestAndWait: answeringRequestAndWait((request: ApprovalRequestInput) => {
       permissionManager.setMode("default");
       return { requestId: request.id, choice: "allow-once" as const, egressScope: "session" as const };
     }) };

@@ -3,6 +3,7 @@ import { TOOL_TIMEOUT_POLICY } from "../../../../shared/tool-timeout-policy.js";
 import type { StreamEvent, StreamTurnParams } from "../../types.js";
 import { fullStreamToStreamEvent, VercelUnifiedProvider, type VercelVendor } from "../adapter.js";
 import { collectStreamEvents as collect, streamFromArray } from "./test-helpers.js";
+import { noRetirementEvidence } from "../../model-wire-gate.js";
 
 const TURN_PARAMS: StreamTurnParams = {
   model: "fixture-model",
@@ -107,7 +108,7 @@ function createResponseFixture(vendor: VercelVendor = "openai-compatible") {
   return {
     fetchResponse,
     provider: new VercelUnifiedProvider(
-      vendor, "fixture-key", "https://provider.invalid/v1", fetchResponse,
+      vendor, "fixture-key", "https://provider.invalid/v1", fetchResponse, { getRetiredModelId: noRetirementEvidence },
     ),
     sendData,
     send(delta: Record<string, unknown>, finishReason: string | null = null) {

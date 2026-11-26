@@ -1,4 +1,10 @@
 // The staging parent start-up establishes under the runtime root, as a synthetic path.
+// Faked win32 on a POSIX host: no backend state to check here; a Windows host keeps its own.
+const { hostPlatform } = vi.hoisted(() => ({ hostPlatform: process.platform }));
+vi.mock("../../../permissions/confinement-state-paths.js", async (original) => {
+  const actual = await original<typeof import("../../../permissions/confinement-state-paths.js")>();
+  return hostPlatform === "win32" ? actual : { ...actual, declaredConfinementStatePaths: () => [] };
+});
 vi.mock("../../../permissions/mxc-runtime-root.js", async (original) => {
   const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../../__tests__/support/mxc-staging-parent.js");
   return {
@@ -1065,7 +1071,7 @@ function spawnableRoots(): { context: Partial<PluginRuntimeContext>; remove: () 
 
 /** The runtime's own envelope registration, so its checks see the factory deadline. */
 class EnvelopeRuntime extends PluginRuntime {
-  register(paths: readonly string[], pluginRoot: string, pluginDataDir: string) {
+  register(paths: Parameters<PluginRuntime["registerSandboxEnvelope"]>[1], pluginRoot: string, pluginDataDir: string) {
     return this.registerSandboxEnvelope(PLUGIN_ID, paths, pluginRoot, pluginDataDir);
   }
 }

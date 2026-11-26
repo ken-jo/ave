@@ -241,6 +241,9 @@ export function createAskUserQuestionTool(deps: AskUserQuestionToolDeps): Tool {
         // Turn cancellation must release the gate rather than wait for its timeout.
         abortSignal: ctx.abortSignal,
       });
+      if (response.reasonCode) {
+        return { output: JSON.stringify({ reasonCode: response.reasonCode, error: t("reasonCodes.unattended-approval-denied") }), isError: true };
+      }
       return {
         output: JSON.stringify({
           answers: response.answers ?? [],

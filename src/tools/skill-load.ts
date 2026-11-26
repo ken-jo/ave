@@ -11,7 +11,7 @@ import type { SkillApprovalsStore } from "../main/skill-approvals-store.js";
 import { isHostApprovalRejectedDecision, type ApprovalGate } from "../permissions/approval-gate.js";
 import { ApprovalPersistenceError } from "../permissions/approval-persistence-guard.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
-import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
+import { turnExtensionPolicyContext, unattendedApprovalDenial } from "../shared/turn-extension-policy.js";
 import { mcpSkillSelector, parseMcpSkillSelector } from "../shared/mcp-skill-selector.js";
 import { errorMessage } from "../shared/error-message.js";
 import { createLogger } from "../lib/logger.js";
@@ -107,6 +107,8 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       }
       const skillName = typeof a.serverId === "string" && typeof a.uri === "string" ? mcpSkillSelector(a.serverId, a.uri)
         : typeof a.skillName === "string" ? a.skillName.trim() : "";
+      const unattended = unattendedApprovalDenial();
+      if (unattended) return { output: JSON.stringify({ reasonCode: unattended, error: t("reasonCodes.unattended-approval-denied") }), isError: true };
       if (parseMcpSkillSelector(skillName) && (ctx.headless === true || turnExtensionPolicyContext.getStore()?.headless === true)) {
         return { output: JSON.stringify({ error: "MCP skills require an interactive conversation" }), isError: true };
       }
