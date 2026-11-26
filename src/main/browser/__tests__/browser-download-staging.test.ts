@@ -1,10 +1,12 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { chmodSync, closeSync, linkSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { afterQueuedCallbacks } from "../../../__tests__/support/deferred.js";
 
@@ -95,6 +97,7 @@ const { prepareBrowserDownloadStaging, stageBrowserDownload, sweepBrowserDownloa
   await import("../browser-download-staging.js");
 const { setLocale } = await import("../../../i18n/index.js");
 const { _descriptorFileOperationsForTest, _helperFileOperationsForTest, HeldDirectoryRefusedError, HeldFileHelperStalledError } = await import("../browser-download-files.js");
+const managedChildren = await import("../../managed-child-processes.js");
 type Root = import("../browser-download-staging.js").BrowserDownloadStagingRoot;
 type Observed = import("../browser-download-staging.js").ObservedDownload;
 type Files = import("../browser-download-files.js").HeldFileOperations;
@@ -2216,12 +2219,38 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
   });
 });
 
+const runCommand = promisify(execFile);
+
+async function detachTestVolume(mountPoint: string): Promise<void> {
+  const attempts = 5;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await runCommand("hdiutil", ["detach", mountPoint], { timeout: 5_000 });
+      return;
+    } catch (error) {
+      const stderr = (error as { stderr?: string }).stderr;
+      if (!/^hdiutil: (?:couldn't eject "[^"]+"|detach failed) - Resource busy\s*$/m.test(stderr ?? "")) throw error;
+      if (attempt === attempts) {
+        // Query the mounted filesystem as a whole, including process working directories.
+        const holders = await runCommand("/usr/sbin/lsof", ["-nP", "+f", "--", mountPoint], { timeout: 5_000 })
+          .then(({ stdout, stderr }) => [stdout, stderr].filter(Boolean).join("\n"))
+          .catch((error: Error & { code?: number; stdout?: string; stderr?: string }) =>
+            error.stdout || error.stderr || (error.code === 1 ? "No visible holders" : error.message));
+        throw new Error(`Test volume is busy after ${attempts} detach attempts. Volume holders:\n${holders}`, { cause: error });
+      }
+      await delay(200 * attempt);
+    }
+  }
+}
+
 // A volume without exclusive rename or persistent file ids (exFAT, FAT) cannot commit a copy, so the macOS helper refuses it by name
 // before it opens anything there or writes a byte. The fixtures create and attach a disk image for these cases.
 describe.runIf(process.platform === "darwin")("a chosen folder on an exFAT volume", () => {
   let image = "";
   let mounted: string | null = null;
   let unavailable = "";
+  const pendingHelpers = new Set<Promise<void>>();
+  let restoreSpawn: (() => void) | undefined;
   beforeAll(() => {
     image = realpathSync(mkdtempSync(join(tmpdir(), "ave-download-exfat-")));
     const mountPoint = join(image, "volume");
@@ -2233,9 +2262,27 @@ describe.runIf(process.platform === "darwin")("a chosen folder on an exFAT volum
     } catch (error) {
       unavailable = `hdiutil cannot create or attach an exFAT image here: ${(error as Error).message.split("\n")[0]}`;
     }
+    const spawnHelper = managedChildren.spawnManaged;
+    const spawn = vi.spyOn(managedChildren, "spawnManaged").mockImplementation((...args) => {
+      const child = spawnHelper(...args);
+      if (args[3]?.label === "browser-download-files") {
+        const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+        pendingHelpers.add(closed);
+        void closed.then(() => pendingHelpers.delete(closed));
+      }
+      return child;
+    });
+    restoreSpawn = () => spawn.mockRestore();
   }, 60_000);
-  afterAll(() => {
-    if (mounted !== null) execFileSync("hdiutil", ["detach", "-force", mounted], { stdio: "pipe" });
+  afterAll(async () => {
+    try {
+      // Fixture file and directory reads use scoped filesystem calls. The native helper
+      // owns the remaining descriptors, so await its close before ejecting.
+      while (pendingHelpers.size > 0) await Promise.all(pendingHelpers);
+    } finally {
+      restoreSpawn?.();
+    }
+    if (mounted !== null) await detachTestVolume(mounted);
     rmSync(image, { recursive: true, force: true });
   }, 60_000);
   let cases = 0;
