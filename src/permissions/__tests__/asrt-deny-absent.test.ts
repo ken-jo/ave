@@ -23,7 +23,8 @@ import {
   initializeAsrtSandbox, isAsrtSandboxActive, registerWorkerUnixSocketDir,
   resetAsrtSandbox, unregisterWorkerUnixSocketDir, wrapTerminalCommand, wrapToolCommand, wrapWorkerCommand,
 } from "../asrt-sandbox.js";
-import { resetWatchedRows, watchedProtectedRows } from "../windows-watched-rows.js";
+import { openEgressInvocation } from "../egress-invocations.js";
+import { isWatchedWorkspaceConsumable, listWatchedQuarantine, resetWatchedRows, watchedProtectedRows } from "../windows-watched-rows.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -304,6 +305,110 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     expect(windowsHelpers.stampWindowsAclAsync).toHaveBeenCalledOnce();
     expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
     expect(watchedProtectedRows()).not.toContain(missing);
+  });
+
+  it("refuses startup when a watched required name appears while the runtime initializes", async () => {
+    captureRuntime();
+    const workspace = join(root, "workspace");
+    const missing = join(workspace, ".ave", "hooks");
+    createWindowsProtectedWriteTargets(workspace, ".ave/hooks");
+    vi.mocked(manager.initialize).mockImplementationOnce(async next => { config = next; mkdirSync(missing); });
+    await expect(initializeAsrtSandbox({ allowWrite: [workspace] })).rejects.toThrow(missing);
+    expect(isAsrtSandboxActive()).toBe(false);
+  });
+
+  it("watches the folder present when startup publishes, not the one measured before the runtime initialized", async () => {
+    captureRuntime();
+    const workspace = join(root, "workspace");
+    const carrier = join(workspace, ".ave");
+    const missing = join(carrier, "hooks");
+    createWindowsProtectedWriteTargets(workspace, ".ave/hooks");
+    vi.mocked(manager.initialize).mockImplementationOnce(async next => {
+      config = next;
+      renameSync(carrier, join(root, "measured-carrier"));
+      mkdirSync(carrier);
+      renameSync(join(root, "measured-carrier", "commands"), join(carrier, "commands"));
+    });
+    await initializeAsrtSandbox({ allowWrite: [workspace] });
+    expect(watchedProtectedRows()).toContain(missing);
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(true);
+  });
+
+  it("refuses startup when a stamped required name is replaced while the runtime initializes", async () => {
+    captureRuntime();
+    const workspace = join(root, "workspace");
+    const agents = join(workspace, ".agents");
+    createWindowsProtectedWriteTargets(workspace);
+    vi.mocked(manager.initialize).mockImplementationOnce(async next => { config = next; rmdirSync(agents); writeFileSync(agents, ""); });
+    await expect(initializeAsrtSandbox({ allowWrite: [workspace] })).rejects.toThrow(agents);
+    expect(isAsrtSandboxActive()).toBe(false);
+  });
+
+  it.each(["appears", "folder-replaced"] as const)("fails background ACL readiness when a watched name's check %s during isolation", async change => {
+    captureRuntime();
+    const workspace = join(root, "workspace");
+    const carrier = join(workspace, ".ave");
+    const missing = join(carrier, "hooks");
+    createWindowsProtectedWriteTargets(workspace, ".ave/hooks");
+    vi.spyOn(manager, "initializeWindowsIsolation").mockImplementationOnce(async () => {
+      if (change === "appears") { mkdirSync(missing); return; }
+      renameSync(carrier, join(root, "measured-carrier"));
+      mkdirSync(carrier);
+      renameSync(join(root, "measured-carrier", "commands"), join(carrier, "commands"));
+    });
+    const initialization = await initializeAsrtSandbox({ allowWrite: [workspace], windows: { backgroundInitialization: true } });
+    await expect(initialization.windowsIsolation).resolves.toMatchObject({ status: "failed" });
+    expect(watchedProtectedRows()).toContain(missing);
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
+  });
+
+  it("refuses a worker grant whose stamped required name was replaced during the stamp", async () => {
+    captureRuntime();
+    const workspace = join(root, "workspace");
+    const agents = join(workspace, ".agents");
+    createWindowsProtectedWriteTargets(workspace);
+    await initializeAsrtSandbox({});
+    // What a helper that recreated a vanished deny target would leave: a new empty object at the name.
+    vi.mocked(windowsHelpers.stampWindowsAclAsync).mockImplementationOnce(async () => { rmdirSync(agents); writeFileSync(agents, ""); });
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [workspace] }))
+      .rejects.toThrow(agents);
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+  });
+
+  it("quarantines a name a command prepared before any watch created under a later grant when the command ends", async () => {
+    captureRuntime();
+    const workspace = join(root, "workspace");
+    const missing = join(workspace, ".agents");
+    createWindowsProtectedWriteTargets(workspace, ".agents");
+    await initializeAsrtSandbox({});
+    expect(watchedProtectedRows()).toEqual([]);
+    const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
+      context: { sessionId: undefined, workspaceRoot: workspace, approvalSurface: "unavailable" } });
+    await wrapToolCommand("echo fixture", { commandId: invocation.token });
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [workspace] });
+    try {
+      expect(watchedProtectedRows()).toContain(missing);
+      vi.stubEnv("AVE_HOME", join(root, "quarantine-home"));
+      mkdirSync(missing);
+      invocation.release();
+      await vi.waitFor(() => expect(lstatSync(missing, { throwIfNoEntry: false })).toBeUndefined(), { timeout: 2_000 });
+      expect(listWatchedQuarantine()).toEqual([expect.objectContaining({ original: missing, commandId: invocation.token })]);
+    } finally { grant.release(); }
+  });
+
+  it("quarantines a watched name before the runtime reset drops its watches", async () => {
+    captureRuntime();
+    const workspace = join(root, "workspace");
+    const missing = join(workspace, ".agents");
+    createWindowsProtectedWriteTargets(workspace, ".agents");
+    await initializeAsrtSandbox({});
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [workspace] });
+    vi.stubEnv("AVE_HOME", join(root, "quarantine-home"));
+    mkdirSync(missing);
+    await resetAsrtSandbox();
+    grant.release();
+    expect(lstatSync(missing, { throwIfNoEntry: false })).toBeUndefined();
+    expect(listWatchedQuarantine()).toEqual([expect.objectContaining({ original: missing, commandId: "sandbox-reset" })]);
   });
 
   it("admits a Windows file write grant without requiring child entries", async () => {

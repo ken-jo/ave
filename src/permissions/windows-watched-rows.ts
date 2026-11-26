@@ -27,14 +27,19 @@ interface FileIdentity {
   readonly ino: bigint;
 }
 
-// An absent protected row: Ave never creates it; the nearest existing ancestor's identity is recorded when a write root first reaches it.
-interface WatchedRow {
-  readonly path: string;
+interface AnchorPin {
   readonly anchor: string;
   readonly anchorIdentity: FileIdentity;
+}
+
+// An absent protected row: Ave never creates it; the nearest existing ancestor's identity is recorded when a write root first reaches it.
+interface WatchedRow extends AnchorPin {
+  readonly path: string;
   readonly recordedAt: string;
   readonly roots: Set<string>;
   readonly holders: Set<symbol>;
+  // The folder each grant measured when it armed this name; every one must still be that object.
+  readonly pins: Map<symbol, AnchorPin>;
   exact: boolean;
   // The user restored the entry while a launch still claimed the name: only that launch's release moves it again.
   restored?: boolean;
@@ -100,24 +105,38 @@ function entryAt(path: string, bigint = false): Stats | BigIntStats | undefined 
   }
 }
 
-/** Record an absent protected row reachable from `roots`; nothing is created. */
-export function watchAbsentProtectedRow(path: string, roots: readonly string[], exact = false): void {
+/**
+ * Record an absent protected row reachable from `roots`; nothing is created. An exact watch pins the nearest existing folder through
+ * the path helper and refuses when the name exists or a pinned folder changed. A `claim` keeps the folder it first measured: arming
+ * it again checks that folder and the name instead of pinning afresh.
+ */
+export function watchAbsentProtectedRow(path: string, roots: readonly string[], exact = false, claim?: symbol): void {
   const target = plain(path);
   const id = key(target);
   if (excepted.has(id) && !exact) return;
-  const pinned = exact ? pinAbsentWatchAnchor(target) : undefined;
   const known = watched.get(id);
-  if (known) {
-    if (exact && !sameIdentity(known.anchor, known.anchorIdentity)) throw refusal(target);
-    known.exact ||= exact;
+  if (exact) {
+    const own = claim === undefined ? undefined : known?.pins.get(claim);
+    if (known !== undefined && own !== undefined) {
+      if (!anchorsIntact(known) || entryAt(target) !== undefined) throw refusal(target);
+    } else {
+      const pinned = pinAbsentWatchAnchor(target);
+      if (known === undefined) {
+        excepted.delete(id);
+        watched.set(id, { path: target, ...pinned, recordedAt: new Date().toISOString(), roots: new Set(roots), holders: new Set(),
+          pins: new Map(claim === undefined ? [] : [[claim, pinned]]), exact });
+        return;
+      }
+      if (!anchorsIntact(known)) throw refusal(target);
+      if (claim !== undefined) known.pins.set(claim, pinned);
+    }
+    known.exact = true;
     for (const root of roots) known.roots.add(root);
-    if (exact) delete known.restored;
+    delete known.restored;
     return;
   }
-  if (pinned !== undefined) {
-    excepted.delete(id);
-    watched.set(id, { path: target, ...pinned, recordedAt: new Date().toISOString(),
-      roots: new Set(roots), holders: new Set(), exact });
+  if (known) {
+    for (const root of roots) known.roots.add(root);
     return;
   }
   let anchor = dirname(target);
@@ -125,7 +144,7 @@ export function watchAbsentProtectedRow(path: string, roots: readonly string[], 
     const entry = entryAt(anchor, true);
     if (entry?.isDirectory()) {
       watched.set(id, { path: target, anchor, anchorIdentity: { dev: entry.dev, ino: entry.ino }, recordedAt: new Date().toISOString(),
-        roots: new Set(roots), holders: new Set(), exact });
+        roots: new Set(roots), holders: new Set(), pins: new Map(), exact });
       return;
     }
     const parent = dirname(anchor);
@@ -135,7 +154,7 @@ export function watchAbsentProtectedRow(path: string, roots: readonly string[], 
   }
 }
 
-function pinAbsentWatchAnchor(path: string): Pick<WatchedRow, "anchor" | "anchorIdentity"> {
+function pinAbsentWatchAnchor(path: string): AnchorPin {
   try {
     const [facts] = pinWindowsPaths([path]);
     const parent = facts?.ancestors.findLast(component => component.exists === true);
@@ -205,7 +224,7 @@ export function claimMxcWatchedRows(rows: readonly MxcWatchedRow[], context: Wat
           known.exact = true;
           known.holders.add(holder);
         } else {
-          watched.set(id, { path: target, anchor, anchorIdentity: identity, recordedAt: new Date().toISOString(), roots: new Set(), holders: new Set([holder]), exact: true });
+          watched.set(id, { path: target, anchor, anchorIdentity: identity, recordedAt: new Date().toISOString(), roots: new Set(), holders: new Set([holder]), pins: new Map(), exact: true });
         }
       }
       holderReceipts.set(holder, []);
@@ -248,7 +267,7 @@ export function watchedProtectedRows(): readonly string[] {
 function rowState(row: WatchedRow): "absent" | "present" | "unverifiable" {
   try {
     const present = entryAt(row.path) !== undefined;
-    if (sameIdentity(row.anchor, row.anchorIdentity)) return present ? "present" : "absent";
+    if (anchorsIntact(row)) return present ? "present" : "absent";
     // A replaced folder with nothing at the name leaves nothing to read once no contained process can still write there.
     return present || row.holders.size > 0 || (row.exact && row.roots.size > 0) ? "unverifiable" : "absent";
   } catch {
@@ -313,6 +332,19 @@ function sameIdentity(path: string, identity: FileIdentity): boolean {
   return current?.isDirectory() === true && !current.isSymbolicLink() && current.dev === identity.dev && current.ino === identity.ino;
 }
 
+function changedAnchor(row: WatchedRow): string | undefined {
+  return [row, ...row.pins.values()].find(pin => !sameIdentity(pin.anchor, pin.anchorIdentity))?.anchor;
+}
+
+function anchorsIntact(row: WatchedRow): boolean {
+  return changedAnchor(row) === undefined;
+}
+
+/** A grant's end: the folders it pinned are no longer checked once its own sweep ran. */
+export function releaseWatchClaim(claim: symbol): void {
+  for (const row of watched.values()) row.pins.delete(claim);
+}
+
 /** Command end: quarantine created watched entries and take the receipts no result carried yet. Throws the user-facing failure when a move fails. */
 export async function sweepWatchedRows(context: WatchedSweepContext): Promise<string | undefined> {
   const pending = (): string[] => undelivered.splice(0);
@@ -357,7 +389,7 @@ async function quarantineCreatedRowsNow(context: WatchedSweepContext, holder: sy
   for (const [id, { original, row }] of entries) {
     let found = false;
     try {
-      if (!sameIdentity(row.anchor, row.anchorIdentity)) throw new Error(`the folder ${JSON.stringify(row.anchor)} changed identity`);
+      if (!anchorsIntact(row)) throw new Error(`the folder ${JSON.stringify(changedAnchor(row))} changed identity`);
       if (entryAt(original) === undefined) continue;
       found = true;
       if (quarantine === undefined) throw new Error(failures[0]);

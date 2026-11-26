@@ -35,8 +35,8 @@ vi.mock("../../shared/windows-path-facts.js", async (importOriginal) => {
 
 import type { MxcWatchedRow } from "../mxc-windows.js";
 import {
-  claimMxcWatchedRows, deferWatchedReceipt, hasWatchedWork, isWatchedWorkspaceConsumable, listWatchedQuarantine, placeholderLeftovers, resetWatchedRows,
-  restoreWatchedQuarantine, pruneWatchedRows, sweepWatchedRows, WATCHED_ROW_VIOLATION, watchAbsentProtectedRow, watchedProtectedRows,
+  claimMxcWatchedRows, deferWatchedReceipt, hasWatchedWork, isWatchedWorkspaceConsumable, listWatchedQuarantine, placeholderLeftovers, releaseWatchClaim,
+  resetWatchedRows, restoreWatchedQuarantine, pruneWatchedRows, sweepWatchedRows, WATCHED_ROW_VIOLATION, watchAbsentProtectedRow, watchedProtectedRows,
 } from "../windows-watched-rows.js";
 
 // What the ranker records for an absent name beneath an existing folder.
@@ -357,6 +357,61 @@ describe("watched protected rows", () => {
     await expect(sweepWatchedRows({ commandId: "fixture-command" })).rejects.toThrow(/changed identity/);
     expect(readFileSync(tasks, "utf8")).toBe("planted");
     expect(listWatchedQuarantine()).toEqual([]);
+  });
+
+  it("checks the folder each grant pinned, so a later grant's carrier cannot be swapped under an older watch", async () => {
+    const carrier = join(workspace, ".ave");
+    const hooks = join(carrier, "hooks");
+    watchAbsentProtectedRow(hooks, [workspace], true, Symbol("earlier"));
+    mkdirSync(carrier);
+    watchAbsentProtectedRow(hooks, [workspace], true, Symbol("later"));
+    renameSync(carrier, join(container, "measured-carrier"));
+    mkdirSync(hooks, { recursive: true });
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
+    await expect(sweepWatchedRows({ commandId: "fixture-command" })).rejects.toThrow(/changed identity/);
+    expect(lstatSync(hooks).isDirectory()).toBe(true);
+    expect(listWatchedQuarantine()).toEqual([]);
+  });
+
+  it("refuses to re-arm a grant's watch after its pinned folder changed", () => {
+    const carrier = join(workspace, ".ave");
+    const hooks = join(carrier, "hooks");
+    const grant = Symbol("grant");
+    mkdirSync(carrier);
+    watchAbsentProtectedRow(hooks, [workspace], true, grant);
+    renameSync(carrier, join(container, "measured-carrier"));
+    mkdirSync(carrier);
+    expect(() => watchAbsentProtectedRow(hooks, [workspace], true, grant)).toThrow(hooks);
+  });
+
+  it("keeps a failed check fail-closed after the grant that pinned the folder ends", async () => {
+    const carrier = join(workspace, ".ave");
+    const hooks = join(carrier, "hooks");
+    const later = Symbol("later");
+    watchAbsentProtectedRow(hooks, [workspace], true, Symbol("earlier"));
+    mkdirSync(carrier);
+    watchAbsentProtectedRow(hooks, [workspace], true, later);
+    renameSync(carrier, join(container, "measured-carrier"));
+    mkdirSync(hooks, { recursive: true });
+    await expect(sweepWatchedRows({ commandId: "fixture-command" })).rejects.toThrow(/changed identity/);
+    releaseWatchClaim(later);
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
+    expect(lstatSync(hooks).isDirectory()).toBe(true);
+  });
+
+  it("keeps watching a restored name an ACL grant still reaches and refuses host consumers until the next sweep", async () => {
+    const hooks = join(workspace, ".ave", "hooks");
+    watchAbsentProtectedRow(hooks, [workspace], true);
+    mkdirSync(hooks, { recursive: true });
+    await expect(sweepWatchedRows({ commandId: "first" })).resolves.toContain(WATCHED_ROW_VIOLATION);
+    const [entry] = listWatchedQuarantine();
+    if (entry === undefined) throw new Error("No quarantine entry");
+    await expect(restoreWatchedQuarantine(entry.slot, entry.index)).resolves.toEqual({ restored: hooks });
+    expect(watchedProtectedRows()).toContain(hooks);
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(false);
+    await expect(sweepWatchedRows({ commandId: "next" })).resolves.toContain(WATCHED_ROW_VIOLATION);
+    expect(lstatSync(hooks, { throwIfNoEntry: false })).toBeUndefined();
+    expect(isWatchedWorkspaceConsumable(workspace)).toBe(true);
   });
 
   it("lists only zero-byte files as placeholder leftovers", () => {
