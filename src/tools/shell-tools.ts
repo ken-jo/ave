@@ -2004,7 +2004,9 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
         executionMode: input.executionMode ?? "default",
         justification: input.justification,
         runInBackground: input.run_in_background ?? false,
-        allowedDirectories: canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
+        allowedDirectories: process.platform === "win32"
+          ? () => canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories)
+          : canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
       });
       if (spawnAuthorization === undefined) {
         return {
@@ -3728,7 +3730,9 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
           executionMode: input.executionMode ?? "default",
           justification: input.justification,
           runInBackground: input.run_in_background ?? false,
-          allowedDirectories: canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
+          allowedDirectories: process.platform === "win32"
+            ? () => canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories)
+            : canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
         });
         if (spawnAuthorization === undefined) {
           throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);

@@ -6,6 +6,7 @@ import { withSourceHostResources } from "../../__tests__/support/source-host-res
 import { mkdirSync, mkdtempSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
 import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { judgedAnswer } from "../../__tests__/support/standing-answer.js";
@@ -22,6 +23,7 @@ import { updatePermissionsFile } from "../permissions-store.js";
 import { __resetWindowsSandboxSubstrateForTest } from "../sandbox-capability.js";
 import {
   buildHostShellExecutionPermitBinding,
+  canonicalizeHostShellAllowedDirectories,
   createShellApprovalDirectory,
   resolveHostShellWorkingDirectory,
   consumeHostShellExecutionPermit,
@@ -38,6 +40,8 @@ import {
   isIssuedShellAllowRuleDecision,
   type PermissionCheckResult,
 } from "../permission-manager.js";
+
+vi.unmock("../../shared/windows-drive-locality.js");
 
 withSourceHostResources();
 
@@ -433,6 +437,69 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     expect(mintHostShellExecutionPermit({
       plan: binding.plan, answer: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
     })).toBeUndefined();
+  });
+
+  it.skipIf(process.platform !== "win32")("shares the drive query between the saved rule and permit cwd at mint", () => {
+    const binding = hostBinding();
+    const decision = ruleDecision();
+    const query = vi.fn((_drive: string) => "\\Device\\HarddiskVolume1");
+    setWindowsDriveQueryForTest(query);
+    try {
+      expect(mintHostShellExecutionPermit({
+        plan: binding.plan, answer: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
+      })).toBeDefined();
+      expect(query.mock.calls.filter(([drive]) => drive === binding.resolvedCwd.slice(0, 2).toUpperCase())).toHaveLength(1);
+    } finally {
+      setWindowsDriveQueryForTest();
+    }
+  });
+
+  it.skipIf(process.platform !== "win32")("shares the drive query between allowed directories and permit cwd at consume", () => {
+    const extraAllowedDirectories = [join(directory, "subdir")];
+    const binding = hostBinding(explicitHostPlan(), { allowedDirectories: canonicalizeHostShellAllowedDirectories(extraAllowedDirectories) });
+    const permit = mintHostShellExecutionPermit({
+      plan: binding.plan, answer: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+    });
+    expect(permit).toBeDefined();
+    const query = vi.fn((_drive: string) => "\\Device\\HarddiskVolume1");
+    setWindowsDriveQueryForTest(query);
+    try {
+      expect(consumeHostShellExecutionPermitForSpawn({
+        ...permitInput(binding, permit),
+        allowedDirectories: () => canonicalizeHostShellAllowedDirectories(extraAllowedDirectories),
+      })).toBeDefined();
+      expect(query.mock.calls.filter(([drive]) => drive === binding.resolvedCwd.slice(0, 2).toUpperCase())).toHaveLength(1);
+    } finally {
+      setWindowsDriveQueryForTest();
+    }
+  });
+
+  it.skipIf(process.platform !== "win32")("stops permit consumption at a failed allowed-directory drive query and burns the permit", () => {
+    const binding = hostBinding();
+    const permit = mintHostShellExecutionPermit({
+      plan: binding.plan, answer: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+    });
+    expect(permit).toBeDefined();
+    const failure = new Error("drive query failed");
+    const failedDrive = binding.resolvedCwd.startsWith("Z:") ? "Y:" : "Z:";
+    const query = vi.fn((drive: string) => {
+      if (drive === failedDrive) throw failure;
+      return "\\Device\\HarddiskVolume1";
+    });
+    const lookup = vi.spyOn(windowsPathFacts, "pinWindowsPaths");
+    setWindowsDriveQueryForTest(query);
+    try {
+      expect(() => consumeHostShellExecutionPermitForSpawn({
+        ...permitInput(binding, permit),
+        allowedDirectories: () => canonicalizeHostShellAllowedDirectories([`${failedDrive}\\extra`, binding.resolvedCwd]),
+      })).toThrow(failure);
+      expect(query.mock.calls).toEqual([[failedDrive]]);
+      expect(lookup).not.toHaveBeenCalled();
+    } finally {
+      lookup.mockRestore();
+      setWindowsDriveQueryForTest();
+    }
+    expect(consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))).toBeUndefined();
   });
 
   it("rejects a structural allow lookalike, another command or cwd, and a non-host plan", () => {
