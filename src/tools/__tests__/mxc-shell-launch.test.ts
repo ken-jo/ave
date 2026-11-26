@@ -265,6 +265,32 @@ describe("prepareMxcShellLaunch", () => {
     }
   });
 
+  it.runIf(process.platform === "win32")("releases an activated claim when the launch ends without a shell job", async () => {
+    relay();
+    configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-shell-watch-")));
+    const cwd = join(root, "project");
+    const home = join(root, "home");
+    mkdirSync(cwd);
+    mkdirSync(home);
+    vi.stubEnv("AVE_HOME", home);
+    const children = [join(cwd, ".ave", "commands"), join(cwd, ".ave", "hooks")];
+    const lifecycle = createContainedShellLifecycle();
+    try {
+      const launch = await prepareMxcShellLaunch({ ...INPUT, cwd,
+        filesystem: { ...INPUT.filesystem, allowWrite: [cwd], denyWrite: children, requiredWriteDenies: children },
+        exists: (path) => existsSync(path) || path.endsWith("wxc-exec.exe"),
+      }, lifecycle);
+      launch.activate();
+      expect(watchedProtectedRows()).toEqual(expect.arrayContaining(children));
+      expect(await lifecycle.dispose()).toEqual([]);
+      expect(watchedProtectedRows().some((path) => children.includes(path))).toBe(false);
+    } finally {
+      await lifecycle.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.runIf(process.platform === "win32")("refuses at activation, naming the protected path, when a watched name's parent appeared after ranking, and sweeps nothing it never started", async () => {
     relay();
     configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });

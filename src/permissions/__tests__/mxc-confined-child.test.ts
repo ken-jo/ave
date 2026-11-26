@@ -728,6 +728,14 @@ describe("co-holder nesting and executable identity", () => {
     spawnAfter(() => { state.missing.delete("D:\\work\\.ave"); });
     await expect(spawnMxcConfinedChild(spec())).rejects.toThrow(t("sandboxPolicy.windowsProtectedWriteRefused", { path: children[0] }));
     expect(claimed()).toEqual([]);
+    // A start that fails after the claim releases it.
+    admitWatched();
+    state.spawn.mockImplementationOnce(async (_request, options) => {
+      options.beforeSpawn();
+      throw new Error("[fixture] native creation failed");
+    });
+    await expect(spawnMxcConfinedChild(spec())).rejects.toThrow("[fixture] native creation failed");
+    expect(claimed()).toEqual([]);
   });
 
   it.runIf(process.platform === "win32").each(["receipt", "failure"] as const)("hands a holder's quarantine %s to the next sandboxed command result", async (kind) => {
