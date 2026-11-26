@@ -541,3 +541,95 @@ describe("Windows job launcher preparation wiring", () => {
     expect(runner).toContain('runPackageScripts(dir, ["test", "build"]');
   });
 });
+
+describe("Windows path helper packaging", () => {
+  // Hooks run in one packager process; a child keeps the hooks and their recorded build in one module graph.
+  const PACKAGING = [
+    "const [lib, digest, hooks, appOutDir, buildFile, pinFile, step] = process.argv.slice(1);",
+    "const { readFileSync } = await import('node:fs');",
+    "const { createHash } = await import('node:crypto');",
+    "const { createRequire } = await import('node:module');",
+    "const packaging = await import(lib);",
+    "const { windowsPeImageDigest } = await import(digest);",
+    "const bytes = readFileSync(buildFile);",
+    "const build = { binarySha256: createHash('sha256').update(bytes).digest('hex'), imageSha256: windowsPeImageDigest(bytes) };",
+    "const manifest = { windowsPathKind: { arch: 'x64', imageSha256: windowsPeImageDigest(readFileSync(pinFile)) } };",
+    "packaging.recordWindowsPathKindPackageBuild({ appOutDir, arch: 'x64', manifest, build });",
+    "const context = { electronPlatformName: 'win32', arch: 1, appOutDir, packager: { appInfo: { productFilename: 'Ave' } } };",
+    "if (step === 'pack') packaging.assertPackagedWindowsPathKind(appOutDir, 'x64');",
+    "else if (step === 'sign') packaging.assertSignedWindowsPathKind(appOutDir, 'x64');",
+    "else await createRequire(hooks)(`./electron-${step}.cjs`)(context);",
+  ].join("\n");
+
+  function signed(image: Buffer): Buffer {
+    const result = Buffer.concat([image, Buffer.alloc(16, 0x5a)]);
+    result.writeUInt32LE(0x1234, 88 + 64);
+    result.writeUInt32LE(image.length, 88 + 112 + 32);
+    result.writeUInt32LE(16, 88 + 112 + 36);
+    return result;
+  }
+
+  function packaging(step: string, { packaged, built = pathKindPe(), pin = built }: { packaged: Buffer; built?: Buffer; pin?: Buffer }) {
+    const root = mkdtempSync(join(tmpdir(), "ave-path-kind-package-"));
+    roots.push(root);
+    const appOutDir = join(root, "win-unpacked");
+    const helper = join(appOutDir, "resources", "windows-path-kind", "x64", "ave-path-kind.exe");
+    mkdirSync(dirname(helper), { recursive: true });
+    writeFileSync(helper, packaged);
+    writeFileSync(join(root, "build.exe"), built);
+    writeFileSync(join(root, "pin.exe"), pin);
+    return spawnSync(process.execPath, [
+      "--input-type=module", "--eval", PACKAGING,
+      pathToFileURL(resolve("scripts/lib/windows-path-kind-package.mjs")).href,
+      pathToFileURL(resolve("scripts/lib/windows-pe-image-digest.mjs")).href,
+      pathToFileURL(resolve("scripts/package.json")).href,
+      appOutDir, join(root, "build.exe"), join(root, "pin.exe"), step,
+    ], { encoding: "utf8", windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+  }
+
+  const substituted = () => {
+    const image = pathKindPe();
+    image.write("substituted", 0x300, "ascii");
+    return image;
+  };
+
+  it("fails the package when a different staged helper reaches the copy after the build", () => {
+    const result = packaging("after-pack", { packaged: substituted() });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("The packaged Windows path helper is not the before-pack build");
+    const original = packaging("pack", { packaged: pathKindPe() });
+    expect(original.status, original.stderr).toBe(0);
+  });
+
+  it("accepts the signed build and refuses a signed substitute", () => {
+    const accepted = packaging("sign", { packaged: signed(pathKindPe()) });
+    expect(accepted.status, accepted.stderr).toBe(0);
+    const unsignedChange = packaging("sign", { packaged: substituted() });
+    expect(unsignedChange.stderr).toContain("The signed Windows path helper is not the before-pack build");
+    const result = packaging("after-sign", { packaged: signed(substituted()) });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("The signed Windows path helper is not the before-pack build");
+  });
+
+  it("refuses a fresh build the main bundle does not pin, and a package without a recorded build", () => {
+    const unpinned = packaging("pack", { packaged: pathKindPe(), pin: substituted() });
+    expect(unpinned.status).not.toBe(0);
+    expect(unpinned.stderr).toContain("The main bundle does not pin this x64 Windows path helper build");
+    const script = [
+      "const { assertPackagedWindowsPathKind } = await import(process.argv[1]);",
+      "assertPackagedWindowsPathKind(process.argv[2], 'x64');",
+    ].join("\n");
+    const unrecorded = spawnSync(process.execPath, ["--input-type=module", "--eval", script,
+      pathToFileURL(resolve("scripts/lib/windows-path-kind-package.mjs")).href, join(tmpdir(), "missing-package")],
+    { encoding: "utf8", windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+    expect(unrecorded.stderr).toContain("No Windows path helper build was recorded for this x64 package");
+  });
+
+  it("wires the packaging hooks to the before-pack build and the bundle pin", () => {
+    const beforePack = readFileSync(resolve("scripts/electron-before-pack.cjs"), "utf8");
+    expect(beforePack).toContain("const pathKind = buildWindowsPathKind({ root: context.packager.projectDir, arch });");
+    expect(beforePack).toContain("recordWindowsPathKindPackageBuild({ appOutDir: context.appOutDir, arch, manifest, build: pathKind });");
+    expect(readFileSync(resolve("scripts/build-main-esbuild.mjs"), "utf8"))
+      .toContain("bundleManifest.windowsPathKind = pathKindSha256 === null ? null : { arch: process.arch, imageSha256: pathKindSha256 };");
+  });
+});

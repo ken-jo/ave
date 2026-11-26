@@ -30,7 +30,10 @@ module.exports = async function beforePack(context) {
   execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
     join(context.packager.projectDir, "scripts", "build-windows-job.ps1"), "-Arch", arch], { stdio: "inherit", env: windowsPowerShellEnv() });
   const { buildWindowsPathKind } = await import("./build-windows-path-kind.mjs");
-  buildWindowsPathKind({ root: context.packager.projectDir, arch });
+  const pathKind = buildWindowsPathKind({ root: context.packager.projectDir, arch });
+  // The later hooks check the packaged and signed copies against this build.
+  const { recordWindowsPathKindPackageBuild } = await import("./lib/windows-path-kind-package.mjs");
+  recordWindowsPathKindPackageBuild({ appOutDir: context.appOutDir, arch, manifest, build: pathKind });
   const { stageMxcSdkAddon, stageMxcLauncher } = await import(pathToFileURL(join(context.packager.projectDir, "scripts", "fetch-mxc.mjs")).href);
   await stageMxcSdkAddon({ arch, projectRoot: context.packager.projectDir });
   const { verifyMxcSdkSource } = await import("./lib/mxc-sdk-integrity.mjs");

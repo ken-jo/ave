@@ -300,6 +300,10 @@ function assertBetterSqlite3Binary(context) {
 }
 
 module.exports = async function afterPack(context) {
+  if (context.electronPlatformName === "win32") {
+    const { assertPackagedWindowsPathKind } = await import("./lib/windows-path-kind-package.mjs");
+    assertPackagedWindowsPathKind(context.appOutDir, ARCH_DIR_BY_ENUM[context.arch]);
+  }
   assertBundledRendererNotices(electronResourcesDir(context));
   const { assertMemoryRuntimeFiles, assertMemoryNotices } = require('./lib/memory-runtime-files.cjs');
   assertMemoryRuntimeFiles(join(electronResourcesDir(context), 'app.asar.unpacked', 'node_modules'), context.electronPlatformName, ARCH_DIR_BY_ENUM[context.arch]);

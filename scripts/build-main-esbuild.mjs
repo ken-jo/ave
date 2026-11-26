@@ -161,6 +161,8 @@ if (watchMode) {
   });
   bundleManifest.mxcVerificationBuild = mxcVerificationBuild();
   bundleManifest.srtWinReceiptsSha256 = require("./lib/srt-win-integrity.cjs").assertSrtWinReceiptModule();
+  // Packaging requires its fresh helper build to be the image this bundle pins.
+  bundleManifest.windowsPathKind = pathKindSha256 === null ? null : { arch: process.arch, imageSha256: pathKindSha256 };
   writeFileSync(manifestPath, `${JSON.stringify(bundleManifest, null, 2)}\n`, "utf8");
   process.stdout.write(`${formatMainBundleBudget(bundleMeasurement)}\n`);
 
