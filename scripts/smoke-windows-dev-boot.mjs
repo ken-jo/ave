@@ -42,6 +42,7 @@ export async function checkDevBoot(child, requestQuit, {
   let interfaceLoaded = false;
   let inspectorUrl;
   let quitting = false;
+  let mxcRuntimeRoot = "unknown (no boot status reported)";
   const outputs = [child.stdout, child.stderr].map((input) => {
     const output = createInterface({ input, crlfDelay: Infinity });
     output.on("line", (line) => {
@@ -51,6 +52,13 @@ export async function checkDevBoot(child, requestQuit, {
       } else {
         onLine(line);
         const record = parseLog(line);
+        if (record?.mxcState === "available") {
+          mxcRuntimeRoot = "available";
+        } else if (record?.mxcState === "unavailable" && typeof record.mxcReason === "string"
+          && /^[a-z][a-z0-9-]*$/u.test(record.mxcReason) && typeof record.mxcDetail === "string") {
+          const detail = record.mxcDetail.replace(/[\r\n\u2028\u2029]+/gu, " ").trim();
+          mxcRuntimeRoot = `unavailable (${record.mxcReason}: ${detail})`;
+        }
         if (record?.msg === "main interface loaded" && record.reason === "bootstrap-complete") {
           interfaceLoaded = true;
         }
@@ -87,6 +95,7 @@ export async function checkDevBoot(child, requestQuit, {
   } finally {
     shutdown.abort();
     for (const output of outputs) output.close();
+    onLine(`mxc-runtime-root: ${mxcRuntimeRoot}`);
   }
 }
 

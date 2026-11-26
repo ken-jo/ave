@@ -184,6 +184,7 @@ describe("initSandboxGate — Windows sandbox HOME parent", () => {
     expect(h.homesCalls[0]).toBe("establish");
     expect(h.homesCalls.indexOf("establish")).toBeLessThan(h.homesCalls.indexOf("parent"));
     expect(h.homesCalls.indexOf("establish")).toBeLessThan(h.homesCalls.indexOf("backend"));
+    expect(h.logger.info).toHaveBeenCalledWith({ mxcState: "available" }, "boot: MXC runtime root proved");
   });
 
   it("logs a HOME parent that cannot be established and still finishes boot", async () => {
@@ -193,6 +194,10 @@ describe("initSandboxGate — Windows sandbox HOME parent", () => {
     await expect(initSandboxGate(harness.context(true, false))).resolves.toBeUndefined();
     expect(h.homesCalls[0]).toBe("establish");
     expect(h.logger.warn).toHaveBeenCalledWith("boot: Windows sandbox HOME root unavailable: %s", "root not private");
+    expect(h.logger.warn).toHaveBeenCalledWith(
+      { mxcState: "unavailable", mxcReason: "runtime-root-unproved", mxcDetail: "root not private" },
+      expect.any(String), "runtime-root-unproved", expect.any(String), "root not private",
+    );
     expect(h.checkDeps).toHaveBeenCalled();
     expect(getSandboxBootOutcome()).not.toBeNull();
   });
@@ -405,6 +410,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     });
     expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", substrate: "none", requiresExplicitUserApproval: true });
     expect(h.logger.warn).toHaveBeenCalledWith(
+      { mxcState: "unavailable", mxcReason: "container-unavailable", mxcDetail: "no container API" },
       expect.stringContaining("Microsoft Execution Containers cannot confine agent shells"),
       "container-unavailable",
       "10.0.22631.4317",
@@ -738,6 +744,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     });
     expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", requiresExplicitUserApproval: true });
     expect(h.logger.warn).toHaveBeenCalledWith(
+      { mxcState: "unavailable", mxcReason: "unverified-session", mxcDetail: "0xC0000142" },
       expect.stringContaining("Microsoft Execution Containers cannot confine agent shells"),
       "unverified-session",
       "10.0.26300.9711",
