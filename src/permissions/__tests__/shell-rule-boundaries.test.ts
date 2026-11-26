@@ -12,6 +12,10 @@ import { evaluateShellRules } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";
+import { requestBoundShellCard } from "../../__tests__/support/host-shell-approval.js";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
+
+withSourceHostResources();
 
 // A drive-less "/" is an unresolved-namespace protected path on win32, so the
 // protected-path floor fires before the critical-delete heuristic. Same gate
@@ -160,4 +164,3 @@ describe("missing shell route", () => {
     await pending;
   });
 });
-import { requestBoundShellCard } from "../../__tests__/support/host-shell-approval.js";

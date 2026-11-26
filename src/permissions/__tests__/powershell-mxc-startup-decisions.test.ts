@@ -1,4 +1,5 @@
 import { requestBoundShellCard } from "../../__tests__/support/host-shell-approval.js";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { saveApprovalCardRule } from "../approval-rule-save.js";
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";
@@ -18,6 +19,8 @@ import { buildIssuedHostShellExecutionPlan as buildHostShellExecutionPlan } from
 import { __issueHostShellExecutionPlanForTest, getSandboxGeneration } from "../sandbox-capability.js";
 import { inspectPowerShellCommand, inspectPowerShellPermissionPaths } from "../rules/powershell-exfiltration.js";
 import { powerShellMxcCommandLine } from "../mxc-windows.js";
+
+withSourceHostResources();
 
 const CAPABILITY = { kind: "asrt", confidence: "verified", platform: "win32", reason: "fixture",
   confines: { filesystem: true, process: true, network: true } } as const;

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { requestBoundShellCard } from "../../__tests__/support/host-shell-approval.js";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import * as homeTrust from "../../shared/ave-home-trust.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
@@ -15,6 +16,8 @@ import { readPermissionsFile, updatePermissionsFile } from "../permissions-store
 import { readProjectRulesFile, updateProjectRulesFile } from "../rules/project-rule-files.js";
 import { withShellPolicyMutation } from "../shell-policy-handoff.js";
 import { listApprovals, recordApproval, userApprovalFilePath } from "../user-approval-store.js";
+
+withSourceHostResources();
 
 let home: string;
 
