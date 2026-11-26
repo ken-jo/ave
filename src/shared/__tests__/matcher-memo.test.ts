@@ -1,6 +1,6 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
-import { matcherMemo, withLocalityDecision } from "../local-path-io.js";
+import { matcherMemo, openLocalityDecision, withLocalityDecision } from "../local-path-io.js";
 
 it("matcherMemo lives with its owner off Windows and with the decision on Windows", () => {
   const platform = process.platform;
@@ -23,4 +23,20 @@ it("matcherMemo lives with its owner off Windows and with the decision on Window
   } finally {
     setProcessPlatform(platform);
   }
+});
+
+it.skipIf(process.platform === "win32")("reuses an explicit POSIX locality decision after a top-level return", () => {
+  const decision = openLocalityDecision();
+  expect(withLocalityDecision(() => 1, decision)).toBe(1);
+  expect(withLocalityDecision(() => 2, decision)).toBe(2);
+});
+
+it.skipIf(process.platform === "win32")("does not inspect a nested POSIX locality result for a then getter", () => {
+  const then = vi.fn(() => undefined);
+  const value = { get then() { return then(); } };
+  expect(withLocalityDecision(() => {
+    expect(withLocalityDecision(() => value)).toBe(value);
+    return 1;
+  })).toBe(1);
+  expect(then).not.toHaveBeenCalled();
 });

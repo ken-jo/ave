@@ -83,6 +83,19 @@ export function assertLocalityDecisionUsable(): void {
 /** Reuse an enclosing synchronous judgment or open a fresh one. */
 export function withLocalityDecision<T>(fn: () => T, decision?: LocalityDecision): T {
   const chosen = decision ?? active ?? new Decision();
+  if (process.platform !== "win32") {
+    if (!(chosen instanceof Decision)) throw new TypeError("Unknown locality decision");
+    if (chosen === active) return fn();
+    const previous = active;
+    active = chosen;
+    try {
+      const result = fn();
+      if (typeof (result as { then?: unknown } | null)?.then === "function") throw new Error("A locality decision cannot span an await");
+      return result;
+    } finally {
+      active = previous;
+    }
+  }
   if (!(chosen instanceof Decision) || chosen.detached || !chosen.open || (active !== undefined && chosen !== active)) {
     throw new TypeError("Invalid locality decision");
   }
