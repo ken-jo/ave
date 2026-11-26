@@ -157,11 +157,11 @@ export class HostTerminalControl {
     this.endLease(record, "taken-over");
   }
 
-  /** Release a lease whose typing failed before Enter: nothing ran, so the user simply keeps control and the terminal stays available. */
-  abandon(lease: HostAgentLease): void {
+  /** Release an unused lease and return the generation of that release. */
+  abandon(lease: HostAgentLease): number | undefined {
     const record = this.liveRecord(lease);
-    if (!record || record.disclosure) return;
-    this.endLease(record, "available");
+    if (!record || record.disclosure) return undefined;
+    return this.endLease(record, "available");
   }
 
   /** Revoke the live lease, if any. Synchronous: callers forward user bytes only after this returns. Returns the revoked lease.
@@ -228,13 +228,15 @@ export class HostTerminalControl {
     }
   }
 
-  private endLease(record: LeaseRecord, mode: HostTerminalControlMode): void {
+  private endLease(record: LeaseRecord, mode: HostTerminalControlMode): number {
     record.detach = undefined;
     this.lease = undefined;
     this.mode = mode;
     this.generation += 1;
+    const generation = this.generation;
     record.abort.abort(new Error("host terminal agent lease ended"));
     this.changed();
+    return generation;
   }
 
   private retain(disclosure: MutableDisclosure): void {

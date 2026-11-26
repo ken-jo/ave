@@ -11,6 +11,7 @@ import { HOME_FOLDER_REFUSED } from "../shared/permissions-events.js";
 
 import { assertApprovalPersistenceCurrent, refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 import { runGrantKeyOfSession } from "./run-grants.js";
+import { isCurrentIssuedHostShellExecutionPlan } from "./host-shell-execution-plan-issuance.js";
 
 type RequestSnapshot = NonNullable<ReturnType<ApprovalGate["getRequestSnapshot"]>>;
 
@@ -132,12 +133,19 @@ export async function saveApprovalCardRule(
     if (!permissionManager) return fail("no-permission-manager");
     const sessionId = snapshot.sessionId;
     if (sessionId === undefined) return fail("missing-session", "This request has no conversation session");
+    const assertFloorGrantCurrent = (): void => {
+      if (permissionManager.getPolicyEpoch() !== floorGrant.policyEpoch || !isCurrentIssuedHostShellExecutionPlan(floorGrant.plan)) {
+        throw new Error("The floor approval changed before the session grant could be saved");
+      }
+    };
     const saved = { ok: true, action: "allow", scope: "session", pattern: floorGrant.code, edited: false } as const;
     try {
       await refreshApprovalPersistence(authority);
+      assertFloorGrantCurrent();
       await beforePersist?.(saved);
       await refreshApprovalPersistence(authority);
       assertApprovalPersistenceCurrent(authority);
+      assertFloorGrantCurrent();
       permissionManager.addFloorSessionGrant(sessionId, floorGrant);
     } catch (error) {
       return fail("rule-save-failed", errorMessage(error));

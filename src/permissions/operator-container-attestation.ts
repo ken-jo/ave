@@ -1434,6 +1434,10 @@ function publishOperatorContainerCapability(
   publishedCapability = capability;
 }
 
+export function isOperatorContainerPublished(): boolean {
+  return publishedCapability !== undefined;
+}
+
 // The only authority-returning registry read; it always revalidates first.
 export async function acquirePublishedOperatorContainerCapability(): Promise<
   OperatorContainerCapability | null

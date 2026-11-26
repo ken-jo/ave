@@ -1,4 +1,7 @@
-export function buildRuntimeImportGraph(rootInput: string): Map<string, Set<string>>;
+export function buildRuntimeImportGraph(
+  rootInput: string,
+  options?: { includeBuiltins?: boolean },
+): Map<string, Set<string>>;
 export function findRuntimeImportCycles(
   rootInput: string,
 ): Array<{ members: string[]; edges: string[] }>;

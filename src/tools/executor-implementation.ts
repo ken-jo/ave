@@ -624,6 +624,12 @@ export class ToolExecutor {
     rationaleBatchContext?: RationaleBatchExecutionContext,
     rationaleResumeContext?: RationaleResumeExecutionContext,
   ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> {
+    let resultSink = opts.onToolResult;
+    const publishToolResult = async (result: ToolResult): Promise<void> => {
+      const publish = resultSink;
+      resultSink = undefined;
+      await publish?.(result);
+    };
     const result = await runToolInvocation(
       {
         toolRegistry: this.toolRegistry,
@@ -647,11 +653,11 @@ export class ToolExecutor {
       toolUse,
       groupId,
       displayOrder,
-      opts,
+      opts.onToolResult ? { ...opts, onToolResult: publishToolResult } : opts,
       rationaleBatchContext,
       rationaleResumeContext,
     );
-    if (!isRationaleRequiredExecuteOneOutcome(result)) await opts.onToolResult?.(result);
+    if (opts.onToolResult && !isRationaleRequiredExecuteOneOutcome(result)) await publishToolResult(result);
     return result;
   }
 

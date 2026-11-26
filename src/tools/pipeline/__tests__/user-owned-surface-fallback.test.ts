@@ -3,10 +3,26 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../../permissions/approval-gate.js";
 import type { PermissionCheckResult, PermissionManager } from "../../../permissions/permission-manager.js";
-import { resolveUserOwnedSurfaceApproval } from "../user-owned-surface.js";
+import { resolveUserOwnedSurfaceApproval, userOwnedSurfaceCardFacts } from "../user-owned-surface.js";
 
 type Change = "none" | "memory rule" | "other";
 const ask: PermissionCheckResult = { decision: "ask", reason: "review could not decide", reviewer: { route: "foreground-auto" } };
+
+it("includes review fallback facts only for the ordinary surface card when the request carries a floor", () => {
+  const permission: PermissionCheckResult = {
+    ...ask, reasonCode: "user-owned-surface-human-required",
+    pipelineRequest: {
+      tool: { name: "terminal_run", source: "builtin", kind: "shell" }, mode: "default", headless: false,
+      floor: { code: "sandbox-unavailable", reason: "No sandbox." },
+      userOwnedSurface: { kind: "host-terminal", choice: "auto" },
+      reviewer: { status: "error" },
+    },
+  };
+  expect(userOwnedSurfaceCardFacts(permission)).toEqual({
+    userOwnedSurface: "host-terminal", userOwnedSurfaceReviewFallback: true,
+  });
+  expect(userOwnedSurfaceCardFacts({ ...permission, forceModal: true })).toEqual({});
+});
 
 /** Resolves a surface card answered "auto" whose review asks again, so the fallback card is raised; `change` happens while it is open. */
 async function answerFallback(change: Change, rechecked: Partial<PermissionCheckResult> = {}, fallbackChoice: ApprovalDecision["choice"] = "allow-once") {
