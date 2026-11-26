@@ -567,14 +567,14 @@ describe("ConversationLoop queryLoop", () => {
     }),
     );
     toolRegistry.register(createDynamicTool({
-      name: "bash",
+      name: "shell_probe",
       description: "Run shell",
       source: "builtin",
       category: "shell",
       jsonSchema: { type: "object", properties: { command: { type: "string" } }, required: ["command"],
         },
       execute: async (_input, ctx) => {
-        origins.push({ tool: "bash", origin: ctx.metadata.trustOrigin });
+        origins.push({ tool: "shell_probe", origin: ctx.metadata.trustOrigin });
         return { output: "ok", isError: false };
       },
     }),
@@ -586,7 +586,7 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "tool_use" },
       ],
       [
-        { type: "tool_call", id: "bash-1", name: "bash", input: { command: "echo ok" },
+        { type: "tool_call", id: "bash-1", name: "shell_probe", input: { command: "echo ok" },
         },
         { type: "message_complete", stopReason: "tool_use" },
       ],
@@ -605,7 +605,7 @@ describe("ConversationLoop queryLoop", () => {
 
     expect(origins).toEqual([
       { tool: "read_file", origin: "llm-tool-arg" },
-      { tool: "bash", origin: "file-content" },
+      { tool: "shell_probe", origin: "file-content" },
     ]);
   });
 
@@ -651,7 +651,7 @@ describe("ConversationLoop queryLoop", () => {
     const toolRegistry = new ToolRegistry();
     const origins: unknown[] = [];
     toolRegistry.register(createDynamicTool({
-      name: "bash",
+      name: "shell_probe",
       description: "Run shell",
       source: "builtin",
       category: "shell",
@@ -665,7 +665,7 @@ describe("ConversationLoop queryLoop", () => {
     );
     const provider = new FakeProvider([
       [
-        { type: "tool_call", id: "paste-tool", name: "bash", input: { command: "echo from paste" },
+        { type: "tool_call", id: "paste-tool", name: "shell_probe", input: { command: "echo from paste" },
         },
         { type: "message_complete", stopReason: "tool_use" },
       ],
