@@ -21,6 +21,13 @@ class Decision {
   open = true;
   constructor(readonly detached = false) {}
 
+  close(): void {
+    this.open = false;
+    this.drives.clear();
+    for (const memo of this.memos.values()) memo.clear();
+    this.memos.clear();
+  }
+
   assertUsable(): void {
     if (this.failure !== undefined) throw this.failure.error;
   }
@@ -28,20 +35,9 @@ class Decision {
 
 let active: Decision | undefined;
 
-/** One permission, sandbox or listing decision; drive mappings are read again for the next one. */
-export type LocalityDecision = object;
-
-export function openLocalityDecision(): LocalityDecision {
-  return new Decision();
-}
-
-/**
- * Runs `fn` in `decision`, else in the decision already running, else in a new one. Two top-level calls never share a
- * decision, so no drive answer serves a judgment that did not read it.
- */
-export function withLocalityDecision<T>(fn: () => T, decision?: LocalityDecision): T {
-  const chosen = decision ?? active ?? new Decision();
-  if (!(chosen instanceof Decision)) throw new TypeError("Unknown locality decision");
+/** Reuse an enclosing synchronous judgment or open a fresh one. */
+export function withLocalityDecision<T>(fn: () => T): T {
+  const chosen = active ?? new Decision();
   chosen.assertUsable();
   const previous = active;
   active = chosen;
@@ -52,24 +48,8 @@ export function withLocalityDecision<T>(fn: () => T, decision?: LocalityDecision
     return result;
   } finally {
     active = previous;
+    if (previous === undefined) chosen.close();
   }
-}
-
-/**
- * A decision for each synchronous run of a caller that is entered repeatedly, such as the rows of one listing: rows in
- * one run share drive answers, and the first row after an await proves them again. Inside a running decision, that one.
- */
-export function createRunLocality(): () => LocalityDecision {
-  let current: Decision | undefined;
-  return () => {
-    if (active !== undefined) return active;
-    if (current?.open !== true) {
-      const decision = new Decision();
-      current = decision;
-      queueMicrotask(() => { decision.open = false; });
-    }
-    return current;
-  };
 }
 
 function currentDecision(): Decision {
@@ -78,7 +58,7 @@ function currentDecision(): Decision {
     return active;
   }
   const decision = new Decision(true);
-  queueMicrotask(() => { decision.open = false; });
+  queueMicrotask(() => { decision.close(); });
   return decision;
 }
 
@@ -147,6 +127,7 @@ function driveIdentity(drive: string, decision: Decision): DriveIdentity {
   if (identity === undefined) {
     try {
       identity = queryDriveIdentity(drive);
+      if (!identity.local && identity.unavailable !== undefined) throw identity.unavailable;
     } catch (error) {
       decision.failure = { error };
       throw error;
@@ -168,8 +149,7 @@ function proveSpelling(path: string, decision: Decision, rest: readonly string[]
   const identity = driveIdentity(drive, decision);
   if (identity.local) return;
   const components = path.replace(/^[\\/]{2}\?[\\/]/u, "").slice(3).split(/[\\/]+/u).filter(Boolean);
-  const refusal = refused(identity.root, [identity.root.replace(/[\\/]+$/u, ""), ...components, ...rest].join("\\"));
-  throw identity.unavailable === undefined ? refusal : Object.assign(refusal, { cause: identity.unavailable });
+  throw refused(identity.root, [identity.root.replace(/[\\/]+$/u, ""), ...components, ...rest].join("\\"));
 }
 
 /** Whether drive `drive` (`X:`) exists in this decision: a local volume, or a mapping nothing has proved local. */

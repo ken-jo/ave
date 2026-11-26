@@ -391,13 +391,6 @@ onEgressInvocationReleased((token, { processGroup }) => {
 
 // The trusted settings last applied via initializeAsrtSandbox. Remembered so worker-UDS register/unregister can rebuild the SHARED config additively (the manifest egress union, denyRead floor, weakening flags, etc. are preserved). Undefined before the first init.
 let _baseTrustedSettings: TrustedSandboxSettings | undefined;
-// Shared config already trusts init-time evidence; reuse adds no TOCTOU window. ACL widening during a session is picked up at the next init.
-let _baseReadDenyEvidence: WindowsReadDenySnapshot | undefined;
-
-export function _getWindowsReadDenySnapshotForTest(): WindowsReadDenySnapshot | undefined {
-  return _baseReadDenyEvidence;
-}
-
 // The shared loopback range that confined extension processes can reach.
 export function getWindowsProxyPortRange(): readonly [number, number] {
   return _baseTrustedSettings?.windows?.proxyPortRange ?? DEFAULT_WINDOWS_PROXY_PORT_RANGE;
@@ -964,7 +957,7 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
     launchGrants: [],
   });
   assertSandboxWritePolicySize(writeFloor, undefined, admitted.denyWrite);
-  const assertStillValid = (): void => {
+  const assertStillValid = (): void => withLocalityDecision(() => {
     for (const entry of [...(pinned.allowRead ?? []), ...(pinned.allowWrite ?? []),
       ...(ownershipPins?.allowRead ?? []), ...(ownershipPins?.allowWrite ?? []), ...(namespacePins.allowRead ?? [])]) {
       if (typeof entry !== "string") void entry.path;
@@ -973,7 +966,7 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
       pluginNamespaceRoots: namespaceRoots, ownership: pinnedOwnership });
     // The callers checked their spellings; these are the identities the container is granted.
     assertWriteGrantsOutsideConfinementState(windowsPinnedPaths(pinned.allowWrite ?? []), declaredConfinementStatePaths(), stagingRoot);
-  };
+  });
   assertStillValid();
   return { model, assertStillValid };
 }
@@ -994,7 +987,7 @@ export function buildPerCommandSandboxCustomConfig(
     if (process.platform === "win32") {
       if (filesystem !== undefined) assertWindowsPolicyBudget(filesystem, true);
       filesystem = { ...filesystem, denyRead: filesystem?.denyRead ?? getDefaultSensitiveReadDenyPaths(_baseTrustedSettings?.userDataDir) };
-      readDenyEvidence ??= _baseReadDenyEvidence;
+      readDenyEvidence ??= gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, filesystem.denyRead);
     }
     // Shared initialization is not a command snapshot: newly appeared Git metadata must be discovered again even without an explicit override.
     filesystem ??= {};
@@ -1474,19 +1467,22 @@ function isWindowsProfileChild(root: string): boolean {
 // Per profile-child home (keyed by its folded path), the top-level directories that are not wholly re-allowed, admitted through one
 // native pin by the shared reparse rule. Any link, reparse point or unpinnable entry refuses; see the decision tree's Windows limit note.
 function aveHomeProfileChildren(): ReadonlyMap<string, readonly string[]> {
-  const roots = aveHomeReadBoundaryRoots().filter(isWindowsProfileChild);
-  const snapshot = currentAveHomeBoundarySnapshot();
-  if (snapshot === undefined) return projectAveHomeProfileChildren(roots);
-  const key = roots.map((root) => caseFoldForMatch(resolve(root))).join("|");
-  if (snapshot.taken?.key !== key) {
-    try {
-      snapshot.taken = { key, children: projectAveHomeProfileChildren(roots) };
-    } catch (error) {
-      snapshot.taken = { key, error };
+  return withLocalityDecision(() => {
+    const roots = aveHomeReadBoundaryRoots().filter(isWindowsProfileChild);
+    const snapshot = currentAveHomeBoundarySnapshot();
+    if (snapshot === undefined) return projectAveHomeProfileChildren(roots);
+    const key = roots.map((root) => caseFoldForMatch(resolve(root))).join("|");
+    type HomeProjection = { children: ReadonlyMap<string, readonly string[]> } | { error: unknown };
+    const observations = decisionMemo<HomeProjection>(snapshot);
+    let result = observations.get(key);
+    if (result === undefined) {
+      try { result = { children: projectAveHomeProfileChildren(roots) }; }
+      catch (error) { result = { error }; }
+      observations.set(key, result);
     }
-  }
-  if ("error" in snapshot.taken) throw snapshot.taken.error;
-  return snapshot.taken.children;
+    if ("error" in result) throw result.error;
+    return result.children;
+  });
 }
 
 function projectAveHomeProfileChildren(roots: readonly string[]): ReadonlyMap<string, readonly string[]> {
@@ -2000,25 +1996,22 @@ function assertWindowsMachineRootWriteGrants(grants: readonly string[]): void {
   }
 }
 
-async function gatherWindowsReadDenyEvidence(
+function gatherWindowsReadDenyEvidence(
   settings: TrustedSandboxSettings,
   paths: readonly string[] = [],
-  snapshot?: WindowsReadDenySnapshot,
-): Promise<WindowsReadDenySnapshot | undefined> {
+): WindowsReadDenySnapshot | undefined {
   if (process.platform !== "win32") return undefined;
-  const profile = windowsProfileHome();
-  if (profile === undefined) return undefined;
-  const targets = [...getDefaultSensitiveReadDenyPaths(settings.userDataDir), ...(settings.denyRead ?? []), ...paths];
-  const candidates = targets.filter(path => {
-    if (containsGlobCharsWin(path)) return false;
-    try { return isGrantPathWithin(profile, path); }
-    catch { return true; }
+  return withLocalityDecision(() => {
+    const profile = windowsProfileHome();
+    if (profile === undefined) return undefined;
+    const targets = [...getDefaultSensitiveReadDenyPaths(settings.userDataDir), ...(settings.denyRead ?? []), ...paths];
+    const candidates = targets.filter(path => {
+      if (containsGlobCharsWin(path)) return false;
+      try { return isGrantPathWithin(profile, path); }
+      catch { return true; }
+    });
+    return readWindowsReadDenyEvidence(candidates);
   });
-  const uncovered = [...new Map(candidates.filter(path => !snapshot?.has(windowsReadDenyKey(path)))
-    .map(path => [windowsReadDenyKey(path), path])).values()];
-  if (uncovered.length === 0) return snapshot ?? new Map();
-  const evidence = await readWindowsReadDenyEvidence(uncovered);
-  return snapshot === undefined ? evidence : new Map([...snapshot, ...evidence]);
 }
 
 const windowsReadDenyWarnings = new Set<string>();
@@ -2541,6 +2534,10 @@ export function buildSandboxConfig(...args: Parameters<typeof buildSandboxConfig
   return withLocalityDecision(() => buildSandboxConfigInDecision(...args));
 }
 
+function buildSharedSandboxConfig(settings: TrustedSandboxSettings, liveGrants: WindowsLiveGrantSnapshot): SandboxRuntimeConfig {
+  return withLocalityDecision(() => buildSandboxConfigInDecision(settings, gatherWindowsReadDenyEvidence(settings), liveGrants));
+}
+
 function buildSandboxConfigInDecision(
   trustedSettings: TrustedSandboxSettings,
   readDenyEvidence?: WindowsReadDenySnapshot,
@@ -2966,7 +2963,6 @@ async function discardFailedAsrtInitialization(
     log.error("discarding a failed initialization: egress relay stop failed: %s", errorMessage(error));
   });
   _baseTrustedSettings = undefined;
-  _baseReadDenyEvidence = undefined;
   sandboxSession?.windowsLiveGrants.clear();
   sandboxSession = undefined;
   resetWatchedRows();
@@ -3099,9 +3095,8 @@ async function initializeSandboxRuntime(
   _workerUnixSocketDirs.clear();
   try {
     useAppOwnedSandboxTempRoot();
-    _baseReadDenyEvidence = await gatherWindowsReadDenyEvidence(trustedSettings);
     startupSignal?.throwIfAborted();
-    const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(sandboxSession));
+    const config = buildSharedSandboxConfig(withWorkerUnixSockets(trustedSettings), snapshotWindowsLiveGrants(sandboxSession));
     fullConfig = config;
     assertNoLocalBinding(config);
     noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
@@ -3234,11 +3229,9 @@ export async function wrapToolCommand(
     const notices: string[] = [];
     let gitControlSnapshot: SandboxGitControlSnapshot | undefined;
     let grantRevision: number | undefined;
-    const customConfig = await inAveHomeBoundarySnapshot(options.boundarySnapshot, async () => {
-      const readDenyEvidence = filesystem?.denyRead === undefined ? undefined
-        : await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, filesystem.denyRead, _baseReadDenyEvidence);
+    const customConfig = inAveHomeBoundarySnapshot(options.boundarySnapshot, () => {
       grantRevision = session?.windowsLiveGrantRevision;
-      return buildPerCommandSandboxCustomConfig(filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence, snapshotWindowsLiveGrants(session));
+      return buildPerCommandSandboxCustomConfig(filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, undefined, snapshotWindowsLiveGrants(session));
     });
     const cleanupBare = process.platform === "linux"
       ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
@@ -3432,11 +3425,9 @@ async function wrapLongLivedCommand(
     const notices: string[] = [];
     let gitControlSnapshot: SandboxGitControlSnapshot | undefined;
     let grantRevision: number | undefined;
-    const customConfig = await inAveHomeBoundarySnapshot(options.boundarySnapshot, async () => {
-      const readDenyEvidence = filesystem?.denyRead === undefined ? undefined
-        : await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, filesystem.denyRead, _baseReadDenyEvidence);
+    const customConfig = inAveHomeBoundarySnapshot(options.boundarySnapshot, () => {
       grantRevision = session?.windowsLiveGrantRevision;
-      return buildPerCommandSandboxCustomConfig(filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence, snapshotWindowsLiveGrants(session));
+      return buildPerCommandSandboxCustomConfig(filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, undefined, snapshotWindowsLiveGrants(session));
     });
     const cleanupBare = process.platform === "linux"
       ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
@@ -3565,7 +3556,7 @@ export async function registerWorkerUnixSocketDir(socketDir: string, holder: obj
       throw new Error("Socket directory registration was released before acquisition completed");
     }
     // Other pending dirs belong to their own push. Including them here could retain an allowance after that dir's push fails and its holders reject.
-    const config = buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings, socketDir), _baseReadDenyEvidence, snapshotWindowsLiveGrants(sandboxSession));
+    const config = buildSharedSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings, socketDir), snapshotWindowsLiveGrants(sandboxSession));
     checkWindowsSandboxStampTargets(config.filesystem);
     SandboxManager.updateConfig(config);
     entry.registered = true;
@@ -3591,7 +3582,7 @@ export async function unregisterWorkerUnixSocketDir(socketDir: string, holder: o
   if (!active || _baseTrustedSettings === undefined) return;
   const SandboxManager = await loadSandboxManager();
   if (!active || _baseTrustedSettings === undefined) return;
-  const config = buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(sandboxSession));
+  const config = buildSharedSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), snapshotWindowsLiveGrants(sandboxSession));
   checkWindowsSandboxStampTargets(config.filesystem);
   SandboxManager.updateConfig(config);
 }
@@ -3678,14 +3669,17 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     throw new Error("grantWindowsWorkerFilesystemAccess is only valid on win32");
   }
   const baseTrustedSettings = _baseTrustedSettings;
-  const admitted = timeStep("preflightMs", () => admitFilesystemPolicy({ allowRead: [...(opts.allowRead ?? [])], allowWrite: [...(opts.allowWrite ?? [])] }));
-  if (AVE_HOME_ISOLATION_GUARD_ACTIVE) timeStep("preflightMs", () => checkSandboxStampTargets([...admitted.allowRead, ...admitted.allowWrite]));
-  const pinned = admittedWindowsPolicies.get(admitted)!;
-  if ([pinned.allowRead, pinned.allowWrite].some(entries =>
-    entries !== undefined && timeStep("preflightMs", () => existingWindowsGrants(entries)).length !== entries.length)) {
-    throw new Error("Windows filesystem grant identity is unproven: requested target is missing");
-  }
-  timeStep("preflightMs", () => checkWindowsSandboxStampTargets(pinned));
+  const pinned = withLocalityDecision(() => {
+    const admitted = timeStep("preflightMs", () => admitFilesystemPolicy({ allowRead: [...(opts.allowRead ?? [])], allowWrite: [...(opts.allowWrite ?? [])] }));
+    if (AVE_HOME_ISOLATION_GUARD_ACTIVE) timeStep("preflightMs", () => checkSandboxStampTargets([...admitted.allowRead, ...admitted.allowWrite]));
+    const policy = admittedWindowsPolicies.get(admitted)!;
+    if ([policy.allowRead, policy.allowWrite].some(entries =>
+      entries !== undefined && timeStep("preflightMs", () => existingWindowsGrants(entries)).length !== entries.length)) {
+      throw new Error("Windows filesystem grant identity is unproven: requested target is missing");
+    }
+    timeStep("preflightMs", () => checkWindowsSandboxStampTargets(policy));
+    return policy;
+  });
   const [
     { getWindowsSandboxUserStatus, grantWindowsAcl, revokeWindowsAcl, resolveSrtWin },
     { stampWindowsAclAsync },
@@ -3708,22 +3702,25 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     );
   }
 
-  const requestedWrite = windowsPinnedPaths(timeStep("preflightMs", () => existingWindowsGrants(pinned.allowWrite ?? [])));
-  const requestedRead = [
-    ...windowsPinnedPaths(timeStep("preflightMs", () => existingWindowsGrants(pinned.allowRead ?? []))),
-    ...requestedWrite,
-  ];
+  const { identities, requests, allowRead, allowWrite, writePins } = withLocalityDecision(() => {
+    const requestedWrite = windowsPinnedPaths(timeStep("preflightMs", () => existingWindowsGrants(pinned.allowWrite ?? [])));
+    const requestedRead = [
+      ...windowsPinnedPaths(timeStep("preflightMs", () => existingWindowsGrants(pinned.allowRead ?? []))),
+      ...requestedWrite,
+    ];
 
-  for (const path of requestedRead) assertWindowsGrantGrammar(path);
-  const pins = timeStep("pinsMs", () => pinWindowsGrantTargets(requestedRead, { validatePath: assertWindowsGrantGrammar }));
-  const identities = new Map(pins.map(pin => [windowsObjectKey(pin), pin]));
-  const requests = pins.map(pin => ({ path: stripExtendedPathPrefix(pin.canonical!), identity: windowsObjectKey(pin) }));
-  const allowRead = requests.map(request => request.path);
-  const writeStart = requestedRead.length - requestedWrite.length;
-  const allowWrite = requests.slice(writeStart).map(request => request.path);
-  const writePins = pins.slice(writeStart);
-  timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome, issuedHome));
-  timeStep("preflightMs", () => checkWindowsSandboxStampTargets(pinned));
+    for (const path of requestedRead) assertWindowsGrantGrammar(path);
+    const pins = timeStep("pinsMs", () => pinWindowsGrantTargets(requestedRead, { validatePath: assertWindowsGrantGrammar }));
+    const identities = new Map(pins.map(pin => [windowsObjectKey(pin), pin]));
+    const requests = pins.map(pin => ({ path: stripExtendedPathPrefix(pin.canonical!), identity: windowsObjectKey(pin) }));
+    const allowRead = requests.map(request => request.path);
+    const writeStart = requestedRead.length - requestedWrite.length;
+    const allowWrite = requests.slice(writeStart).map(request => request.path);
+    const writePins = pins.slice(writeStart);
+    timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome, issuedHome));
+    timeStep("preflightMs", () => checkWindowsSandboxStampTargets(pinned));
+    return { identities, requests, allowRead, allowWrite, writePins };
+  });
 
   const resolveDocumentsPath = scopedWindowsDocumentsPath();
   const settings = timeStep("configMs", () => withWorkerUnixSockets(baseTrustedSettings, undefined, resolveDocumentsPath));
@@ -3731,7 +3728,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   const grantRevision = session.windowsLiveGrantRevision;
   const pending = timeStep("configMs", () => {
     const liveGrants = snapshotWindowsLiveGrants(session);
-    return buildSandboxConfig(settings, _baseReadDenyEvidence, {
+    return buildSharedSandboxConfig(settings, {
       allowRead: [...(liveGrants.allowRead ?? []), ...allowRead.map(path => ({ path, literal: true as const }))],
       allowWrite: [...(liveGrants.allowWrite ?? []), ...allowWrite.map(path => ({ path, literal: true as const }))],
     });
@@ -3911,7 +3908,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
         try {
           let releaseConfig: ReturnType<typeof buildSandboxConfig>;
           try {
-            releaseConfig = buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(session));
+            releaseConfig = buildSharedSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), snapshotWindowsLiveGrants(session));
           } catch (error) {
             if (!(error instanceof ObligationRefusedError)) throw error;
             log.warn(error, "Windows deny admission refused during grant release");
@@ -3929,7 +3926,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   };
   try {
     timeStep("configMs", () => SandboxManager.updateConfig(
-      buildSandboxConfig(withWorkerUnixSockets(baseTrustedSettings, undefined, resolveDocumentsPath), _baseReadDenyEvidence, snapshotWindowsLiveGrants(session)),
+      buildSharedSandboxConfig(withWorkerUnixSockets(baseTrustedSettings, undefined, resolveDocumentsPath), snapshotWindowsLiveGrants(session)),
     ));
     if (resolveDocumentsPath !== undefined) session.sharedWindowsDocumentsPath = resolveDocumentsPath;
   } catch (error) {
@@ -4109,7 +4106,6 @@ async function resetSandboxRuntime(): Promise<void> {
   containerOnlyConfig = undefined;
   // Reset base settings and live socket holders so reinitialization cannot inherit stale allowances.
   _baseTrustedSettings = undefined;
-  _baseReadDenyEvidence = undefined;
   sandboxSession?.windowsLiveGrants.clear();
   sandboxSession = undefined;
   resetWatchedRows();

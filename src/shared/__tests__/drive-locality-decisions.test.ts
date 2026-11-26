@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import type { ConversationLoop } from "../../engine/conversation-loop.js";
 import { revokeWorkspaceRoot } from "../../engine/turn/session.js";
@@ -11,7 +12,7 @@ import { LlmRiskClassifier, RuleBasedRiskClassifier, type LlmReviewerProvider } 
 import { derivePluginChildEnvelope } from "../../plugins/isolation/out-of-process-plugin.js";
 import { createPathCanonicalizer, createSensitivePathCheck } from "../../permissions/sensitive-paths.js";
 import { createFilePathPolicy, createStageWorkspacesSkip } from "../../tools/file-access-policy.js";
-import { admitLocalPath, localDriveExists, localFs, openLocalityDecision, withLocalityDecision } from "../local-path-io.js";
+import { admitLocalPath, localDriveExists, localFs, withLocalityDecision } from "../local-path-io.js";
 import { resolveShellFilesystemPath, verifyLocalFilesystemChain } from "../shell-filesystem-path.js";
 import { modelShellPath } from "../shell-native-path.js";
 import { setWindowsDriveQueryForTest } from "../windows-drive-locality.js";
@@ -103,7 +104,7 @@ describe.runIf(process.platform === "win32")("drive locality is proven in each d
     withLocalityDecision(() => {
       verifyLocalFilesystemChain(join(root, "a", "b"));
       resolveShellFilesystemPath(join(root, "a"), root);
-    }, openLocalityDecision());
+    });
     expect(queries.filter(query => query === drive)).toHaveLength(1);
     verifyLocalFilesystemChain(join(root, "a", "b"));
     expect(queries.filter(query => query === drive)).toHaveLength(2);
@@ -152,6 +153,25 @@ describe.runIf(process.platform === "win32")("drive locality is proven in each d
       expect(localDriveExists(otherDrive)).toBe(true);
     });
     expect(query.mock.calls).toEqual([[drive], [otherDrive], [drive], [otherDrive]]);
+  });
+
+  it("refuses every operand when the drive classifier is unavailable", () => {
+    const drive = root.slice(0, 2).toUpperCase();
+    const other = drive === "K:" ? "R:" : "K:";
+    const failure = windowsPathKindHelperUnavailable("The drive classifier did not answer");
+    const query = vi.fn((letter: string) => {
+      if (letter === other) throw failure;
+      return "\\Device\\HarddiskVolume1";
+    });
+    setWindowsDriveQueryForTest(query);
+
+    expect(() => withLocalityDecision(() => {
+      expect(localDriveExists(drive)).toBe(true);
+      expect(() => localDriveExists(other)).toThrow(failure);
+      expect(() => localDriveExists(drive)).toThrow(failure);
+    })).toThrow(failure);
+    expect(query.mock.calls).toEqual([[drive], [other]]);
+    expect(localDriveExists(drive)).toBe(true);
   });
 
   it("rechecks relocated sensitivity anchors when reusing file policy after an await", async () => {
@@ -270,8 +290,10 @@ describe.runIf(process.platform === "win32")("drive locality is proven in each d
     const drive = root.slice(0, 2).toUpperCase();
     mkdirSync(join(root, "project"));
     const check = createSensitivePathCheck("read");
-    check(join(root, "project", "a.txt"));
-    check(join(root, "project", "b.txt"));
+    withLocalityDecision(() => {
+      check(join(root, "project", "a.txt"));
+      check(join(root, "project", "b.txt"));
+    });
     expect(queries.filter(query => query === drive)).toHaveLength(1);
     mappings.set(drive, SHARE);
     await Promise.resolve();

@@ -27,6 +27,7 @@ const listingCache = new Map<string, CachedListing>();
 const listingsInFlight = new Map<string, Promise<CachedListing>>();
 
 async function listRoot(nativeRoot: string, now: number): Promise<CachedListing> {
+  if (process.platform === "win32") return walkRoot(nativeRoot, now);
   // Cache resolved native roots: policy folding can merge separate stored names.
   const cached = listingCache.get(nativeRoot);
   if (cached && now - cached.at < LISTING_TTL_MS) return cached;

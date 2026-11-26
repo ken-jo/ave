@@ -1,4 +1,4 @@
-// Cold-cache keystrokes share one root walk.
+// Windows search listings observe locality independently.
 import { describe, expect, it, vi } from "vitest";
 
 const { collectFiles } = vi.hoisted(() => ({
@@ -13,7 +13,7 @@ vi.mock("../../../tools/file-tools.js", () => ({ collectFiles }));
 import { clearWorkspaceFileSearchCache, searchWorkspaceFiles } from "../workspace-file-search.js";
 
 describe("searchWorkspaceFiles in-flight listing", () => {
-  it("walks a root once for concurrent searches", async () => {
+  it("refreshes concurrent Windows listings and coalesces other listings", async () => {
     clearWorkspaceFileSearchCache();
     const args = (query: string) => ({ query, roots: ["/ws"], cwd: "/ws", extraAllowed: [] });
     await Promise.all([
@@ -21,6 +21,6 @@ describe("searchWorkspaceFiles in-flight listing", () => {
       searchWorkspaceFiles(args("ap")),
       searchWorkspaceFiles(args("app")),
     ]);
-    expect(collectFiles).toHaveBeenCalledTimes(1);
+    expect(collectFiles).toHaveBeenCalledTimes(process.platform === "win32" ? 3 : 1);
   });
 });

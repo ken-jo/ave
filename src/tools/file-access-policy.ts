@@ -63,17 +63,19 @@ export function ensureFileAccess(
   context: ToolExecutionContext,
   effect: PathEffect,
 ): ToolExecutionResult | null {
-  const sensitive = admissionDeniedFilePattern(path, effect);
-  if (sensitive) {
-    return { output: `Sensitive path: ${path} matches ${sensitive}`, isError: true };
-  }
-  if (effect === "read" && isConfiguredSessionReadPath(canonicalizePathForMatch(path))) return null;
-  if (!pathEffectIsConfined(effect, context.blockReadsOutsideWorkingDirectories === true)) {
+  return withLocalityDecision(() => {
+    const sensitive = admissionDeniedFilePattern(path, effect);
+    if (sensitive) {
+      return { output: `Sensitive path: ${path} matches ${sensitive}`, isError: true };
+    }
+    if (effect === "read" && isConfiguredSessionReadPath(canonicalizePathForMatch(path))) return null;
+    if (!pathEffectIsConfined(effect, context.blockReadsOutsideWorkingDirectories === true)) {
+      return null;
+    }
+    const check = validateSandboxPath(path, context.cwd, [...context.extraAllowedDirectories]);
+    if (!check.allowed) {
+      return { output: `Sandbox: ${check.reason}`, isError: true };
+    }
     return null;
-  }
-  const check = validateSandboxPath(path, context.cwd, [...context.extraAllowedDirectories]);
-  if (!check.allowed) {
-    return { output: `Sandbox: ${check.reason}`, isError: true };
-  }
-  return null;
+  });
 }

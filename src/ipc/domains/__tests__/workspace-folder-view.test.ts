@@ -46,6 +46,7 @@ vi.mock("../../../main/windows-path-kind-launcher.js", async (original) => {
 
 import { registerWorkspaceHandlers } from "../workspace.js";
 import * as fileAccessPolicy from "../../../tools/file-access-policy.js";
+import { localFs } from "../../../shared/local-path-io.js";
 import { linkChainVerdict } from "../../../main/external-open-target.js";
 import { configureHostResources } from "../../../main/host-resources.js";
 import {
@@ -848,13 +849,21 @@ describe("workspace.openPath", () => {
     additionalDirectories.value = [root, outside];
     const swapped = join(root, "swap.txt");
     writeFileSync(swapped, "inside\n");
-    const realStat = fsModule.promises.stat;
-    const spy = vi.spyOn(fsModule.promises, "stat").mockImplementationOnce(async (...args: Parameters<typeof realStat>) => {
-      const result = await realStat(...args);
+    const swap = () => {
       unlinkSync(swapped);
       symlinkSync(join(outside, "secret.txt"), swapped, "file");
-      return result;
-    });
+    };
+    const spy = process.platform === "win32"
+      ? vi.spyOn(localFs, "stat").mockImplementationOnce(((stat) => (verdict) => {
+        const result = stat(verdict);
+        swap();
+        return result;
+      })(localFs.stat))
+      : vi.spyOn(fsModule.promises, "stat").mockImplementationOnce(((stat) => async (...args) => {
+        const result = await stat(...args);
+        swap();
+        return result;
+      })(fsModule.promises.stat));
     try {
       const res = await openPath({ projectRoot: root, path: swapped, intent: GESTURE });
       expect(res.ok).toBe(false);

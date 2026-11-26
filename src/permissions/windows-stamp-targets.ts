@@ -3,6 +3,7 @@ import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbo
 import { containsGlobCharsWin, expandTilde, expandWindowsEnvRefs, globPatternBaseDir, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { admittedWindowsEntry, expandWindowsFsPaths, type AdmittedWindowsEntry } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { win32 } from "node:path";
+import { routeLocality, withLocalityDecision } from "../shared/local-path-io.js";
 import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { assertWindowsGrantGrammar, pinWindowsGrantTargets } from "./windows-grant-targets.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets } from "../shared/ave-home-test-guard.js";
@@ -53,11 +54,13 @@ function guardedStampLiterals(paths: string[], pins: readonly WindowsPathFacts[]
     }
   };
   paths.forEach((path, index) => inspect(path, pins[index]!, true));
-  const verify = (): void => {
+  const verify = (): void => withLocalityDecision(() => {
     if (paths.length === 0) return;
+    const refused = paths.find(path => routeLocality(path) !== "local");
+    if (refused !== undefined) throw new Error(`Sandbox stamp target names no proven local path: ${refused}`);
     const current = pinWindowsPaths(paths);
     paths.forEach((path, index) => inspect(path, current[index]!, false));
-  };
+  });
   verify();
   // The runtime reads marked paths after its async lookups; keep this check on that consumption boundary.
   return paths.map((path, index) => {
@@ -127,6 +130,10 @@ function checkWindowsCanonicalIntermediates(path: string): void {
 
 export function pinWindowsFilesystemConfig<T extends Partial<FilesystemConfig> | undefined>(filesystem: T): T {
   if (process.platform !== "win32" || filesystem === undefined) return filesystem;
+  return withLocalityDecision(() => pinWindowsFilesystemConfigInDecision(filesystem));
+}
+
+function pinWindowsFilesystemConfigInDecision<T extends Partial<FilesystemConfig>>(filesystem: T): T {
   const prefixes: string[] = [];
   // Deny rows are conservative match expressions, not targets receiving allow ACEs.
   for (const entries of [filesystem.allowRead, filesystem.allowWrite]) {

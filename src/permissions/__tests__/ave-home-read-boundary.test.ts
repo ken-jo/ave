@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 const factsOverride = vi.hoisted(() => new Map<string, { reparseTag: number; attributes: number }>());
 // The first path of every native pin, so a test can count the helper calls one composition makes.
 const pinnedFirstPaths = vi.hoisted(() => [] as string[]);
@@ -463,9 +464,7 @@ describe("a profile-child Ave home on Windows", () => {
     for (const entry of absent) expect(floor).toContain(join(original, ...entry.segments));
   });
 
-  // One native pin per profile-child home per composition: a shell command's read policy and its wrap, or an extension child's
-  // floor and its wrap, share one snapshot; the next command or spawn takes its own.
-  it("pins the profile-child home once per composition, and afresh for the next one", () => {
+  it("pins the profile-child home once per locality decision", () => {
     const pins = (): number => pinnedFirstPaths.filter((path) => trim(path).toLowerCase() === trim(original).toLowerCase()).length;
     const grant = [join(original, "workspace", "alice-project")];
     pinnedFirstPaths.length = 0;
@@ -474,28 +473,33 @@ describe("a profile-child Ave home on Windows", () => {
     buildPerCommandSandboxCustomConfig({ allowRead: grant });
     expect(pins()).toBe(2);
     const shell = createAveHomeBoundarySnapshot();
-    const policy = getBuiltinShellReadPolicy(grant, profile, undefined, shell);
-    shell.run(() => buildPerCommandSandboxCustomConfig({ allowRead: [...policy.allowRead], denyRead: [...policy.denyRead] }));
+    shell.run(() => withLocalityDecision(() => {
+      const policy = getBuiltinShellReadPolicy(grant, profile, undefined, shell);
+      buildPerCommandSandboxCustomConfig({ allowRead: [...policy.allowRead], denyRead: [...policy.denyRead] });
+    }));
     expect(pins()).toBe(3);
     const child = createAveHomeBoundarySnapshot();
-    const floor = child.run(() => getDefaultSensitiveReadDenyPaths());
-    child.run(() => buildPerCommandSandboxCustomConfig({ allowRead: grant, denyRead: floor }));
+    child.run(() => withLocalityDecision(() => {
+      const floor = getDefaultSensitiveReadDenyPaths();
+      buildPerCommandSandboxCustomConfig({ allowRead: grant, denyRead: floor });
+    }));
     expect(pins()).toBe(4);
     mkdirSync(join(original, "future-child"));
     expect(createAveHomeBoundarySnapshot().run(() => getDefaultSensitiveReadDenyPaths())).toContain(join(original, "future-child") + sep);
     expect(pins()).toBe(5);
-    // A finished composition's snapshot is never consulted again; reusing one would miss the new child.
-    expect(spelled(shell.run(() => getDefaultSensitiveReadDenyPaths()))).not.toContain(join(original, "future-child"));
-    expect(pins()).toBe(5);
+    expect(spelled(shell.run(() => getDefaultSensitiveReadDenyPaths()))).toContain(join(original, "future-child"));
+    expect(pins()).toBe(6);
   });
 
-  it("keeps a refusal for the rest of its composition and re-pins the next one", () => {
-    readdirFault.path = original;
+  it("refuses the rest of its decision and re-pins the next one", () => {
     const snapshot = createAveHomeBoundarySnapshot();
-    expect(() => snapshot.run(() => getDefaultSensitiveReadDenyPaths())).toThrow(refused);
-    readdirFault.path = undefined;
-    expect(() => snapshot.run(() => buildPerCommandSandboxCustomConfig({ allowRead: [join(original, "workspace", "alice-project")] }))).toThrow(refused);
-    expect(() => createAveHomeBoundarySnapshot().run(() => getDefaultSensitiveReadDenyPaths())).not.toThrow();
+    snapshot.run(() => withLocalityDecision(() => {
+      readdirFault.path = original;
+      expect(() => getDefaultSensitiveReadDenyPaths()).toThrow(refused);
+      readdirFault.path = undefined;
+      expect(() => buildPerCommandSandboxCustomConfig({ allowRead: [join(original, "workspace", "alice-project")] })).toThrow(refused);
+    }));
+    expect(() => snapshot.run(() => getDefaultSensitiveReadDenyPaths())).not.toThrow();
   });
 
   it("denies a top-level child created after one projection in the next", () => {

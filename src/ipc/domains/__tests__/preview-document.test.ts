@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { localFs } from "../../../shared/local-path-io.js";
 import { configureHostResources } from "../../../main/host-resources.js";
 import { mkdtempSync, mkdirSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -538,15 +539,27 @@ describe("read-only observation sender boundary", () => {
     const event = documentEvent(OK_FRAME);
     await registerSessionOwner(event);
     const result = await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"), { sessionId: "session-one" }) as PreviewReadFileResult;
-    const realpath = fs.realpath;
     let resolves = 0;
-    // The second resolve is the pre-open re-check; the window disappears right after it.
-    vi.spyOn(fs, "realpath").mockImplementation(async (...args) => {
-      const target = await realpath(...args);
+    // The second resolution is the final authority pass.
+    const closeOnFinalResolution = () => {
       resolves += 1;
       if (resolves === 2) appWindows.length = 0;
-      return target;
-    });
+    };
+    if (process.platform === "win32") {
+      const realpath = localFs.realpath;
+      vi.spyOn(localFs, "realpath").mockImplementation(verdict => {
+        const target = realpath(verdict);
+        closeOnFinalResolution();
+        return target;
+      });
+    } else {
+      const realpath = fs.realpath;
+      vi.spyOn(fs, "realpath").mockImplementation(async (...args) => {
+        const target = await realpath(...args);
+        closeOnFinalResolution();
+        return target;
+      });
+    }
     expect(await handlers.get(CHANNELS.attach.openExternal)!(event, result.path)).toEqual({ ok: false, error: "unauthorized" });
     expect(openPath).not.toHaveBeenCalled();
     event.sender.emit("destroyed");

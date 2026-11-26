@@ -828,8 +828,11 @@ export function assertMxcDenyOutcomes(input: MxcDenyOutcomeInput): void {
 // The Windows container adapter: policy rows in, the three container lists out. Every row is admitted to the object it names
 // first, and the ranking compares those objects, never spellings.
 export function rankMxcFilesystem(model: PolicyModel): MxcFilesystemGrants {
-  const { patterns, userPatterns } = obligationRowsOf(model);
-  return rankAdmittedMxcFilesystem(admitMxcFilesystem(model), patterns, userPatterns);
+  return withLocalityDecision(() => {
+    const { rows, patterns, userPatterns } = obligationRowsOf(model);
+    const set = admitObligations({ purpose: "mxc-launch", principal: "mxc", rows });
+    return rankAdmittedMxcFilesystem(set, patterns, userPatterns);
+  });
 }
 
 /** The model's literal rows admitted for one container launch; pattern denies are admitted when the launch is ranked. */

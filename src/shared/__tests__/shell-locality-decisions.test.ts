@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inspectShellCommand } from "../../permissions/rules/literal-shell-inspection.js";
 import { inspectPowerShellCommand, parsePowerShellCommand } from "../../permissions/rules/powershell-exfiltration.js";
+import { buildShellRuleApproval } from "../../permissions/rules/shell-rule-approval.js";
 import { parseShellCommand } from "../../permissions/rules/shell-prefix-policy.js";
 import { setWindowsDriveQueryForTest } from "../windows-drive-locality.js";
 
@@ -50,12 +51,12 @@ describe.runIf(process.platform === "win32")("shell locality decisions", () => {
 
   it.each(["bash", "powershell"] as const)("rechecks a reused %s parse after a drive remap", async dialect => {
     const aliasDrive = drive === "K:" ? "R:" : "K:";
-    const aliasHome = aliasDrive + "\\ave-data";
+    const aliasHome = `${aliasDrive}\\ave-data`;
     vi.stubEnv("AVE_HOME", aliasHome);
-    realpaths.set((aliasDrive + "\\").toLowerCase(), root);
+    realpaths.set((`${aliasDrive}\\`).toLowerCase(), root);
     realpaths.set(aliasHome.toLowerCase(), join(root, "ave-data"));
     const path = "./ave-data/secrets/notes.txt";
-    const command = dialect === "bash" ? "cat " + path : "Get-Content " + path;
+    const command = dialect === "bash" ? `cat ${path}` : `Get-Content ${path}`;
     const bash = parseShellCommand(command);
     const powershell = parsePowerShellCommand(command);
     const inspect = () => dialect === "bash" ? inspectShellCommand(bash, root) : inspectPowerShellCommand(powershell, root);
@@ -67,5 +68,14 @@ describe.runIf(process.platform === "win32")("shell locality decisions", () => {
 
     expect(inspect().sensitive).toBeNull();
     expect(queries).toContain(aliasDrive);
+  });
+  it.each(["bash", "powershell"] as const)("queries each drive once in a cold %s approval", dialect => {
+    const command = dialect === "bash" ? "cat ./first.txt ./second.txt ./third.txt"
+      : "Get-Content -LiteralPath './first.txt','./second.txt','./third.txt'";
+    const approval = buildShellRuleApproval(dialect, command, root, { allow: true, deny: true });
+
+    expect(approval.dialect).toBe(dialect);
+    expect(queries).toContain(drive);
+    expect(queries).toEqual([...new Set(queries)]);
   });
 });

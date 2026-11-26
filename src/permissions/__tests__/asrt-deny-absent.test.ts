@@ -134,7 +134,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     const expand = sandboxUtils.expandWindowsEnvRefs;
     const runtimeHome = expand("%USERPROFILE%");
     vi.spyOn(sandboxUtils, "expandWindowsEnvRefs").mockImplementation(path => expand(path).replace(runtimeHome, profile));
-    vi.spyOn(evidence, "readWindowsReadDenyEvidence").mockImplementation(async paths =>
+    vi.spyOn(evidence, "readWindowsReadDenyEvidence").mockImplementation(paths =>
       new Map(paths.map(path => [evidence.windowsReadDenyKey(path), { status: "error" as const, reason: "probe failed" }])));
     config = undefined;
     vi.spyOn(runtime, "getWindowsSandboxUserStatus").mockReturnValue({
@@ -624,15 +624,16 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     mkdirSync(workspace);
     const target = join(workspace, "secret");
     writeFileSync(target, "secret");
-    await initializeAsrtSandbox({ denyRead: [target] });
+    const queryWindowsDocumentsPath = vi.fn(async () => join(profile, "Documents"));
+    await initializeAsrtSandbox({ denyRead: [target], queryWindowsDocumentsPath });
     let release!: () => void;
     const wait = new Promise<void>(resolve => { release = resolve; });
     let entered!: () => void;
     const reading = new Promise<void>(resolve => { entered = resolve; });
-    vi.mocked(evidence.readWindowsReadDenyEvidence).mockImplementationOnce(async () => {
+    queryWindowsDocumentsPath.mockImplementationOnce(async () => {
       entered();
       await wait;
-      return new Map();
+      return join(profile, "Documents");
     });
     const pending = wrap("echo waiting", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [join(profile, "late-evidence")] } });
     await reading;

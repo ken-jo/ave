@@ -127,7 +127,6 @@ import {
   getVendoredApplySeccompPath,
   getVendoredJavaProxyAgentJarPath,
   checkAsrtDependencies,
-  _getWindowsReadDenySnapshotForTest,
   getWindowsProfileReadDenyWarnings,
 } from "../asrt-sandbox.js";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
@@ -690,21 +689,26 @@ describe.runIf(process.platform === "win32")("asrt-sandbox — read evidence ide
     expect(reader).not.toHaveBeenCalled();
   });
 
-  it("clears read evidence when initialization fails to build its config", async () => {
+  it("rejects initialization after reading current evidence", async () => {
     await expect(initializeAsrtSandbox({ allowWrite: [process.env.ProgramData!] })).rejects.toThrow(/machine root/);
     expect(reader).toHaveBeenCalledTimes(1);
-    expect(_getWindowsReadDenySnapshotForTest()).toBeUndefined();
     expect(isAsrtSandboxActive()).toBe(false);
   });
 });
 
 describe.runIf(process.platform === "win32")("asrt-sandbox — session read evidence", () => {
+  let profile: string;
+  let home: MockInstance<typeof os.homedir>;
+  let user: MockInstance<typeof os.userInfo>;
   let reader: MockInstance<typeof readDenyEvidenceModule.readWindowsReadDenyEvidence>;
   let wrap: MockInstance<(typeof SandboxManagerType)["wrapWithSandboxArgv"]>;
   let runtime: MockInstance[] = [];
 
   // A fake runtime: the evidence path is Ave-side, so these cases run without the sandbox account and stamp nothing.
   beforeEach(async () => {
+    profile = mkdtempSync(join(tmpdir(), "ave-deny-session-"));
+    home = vi.spyOn(os, "homedir").mockReturnValue(profile);
+    user = vi.spyOn(os, "userInfo").mockReturnValue({ ...os.userInfo(), homedir: profile });
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     let config: SandboxRuntimeConfig | undefined;
     wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockResolvedValue({ argv: ["echo"], env: {} });
@@ -715,7 +719,7 @@ describe.runIf(process.platform === "win32")("asrt-sandbox — session read evid
       vi.spyOn(SandboxManager, "updateConfig").mockImplementation(next => { config = next; }),
       vi.spyOn(SandboxManager, "reset").mockImplementation(async () => { config = undefined; return { windowsAclUnreleased: [] }; }),
     ];
-    reader = vi.spyOn(readDenyEvidenceModule, "readWindowsReadDenyEvidence").mockImplementation(async paths =>
+    reader = vi.spyOn(readDenyEvidenceModule, "readWindowsReadDenyEvidence").mockImplementation(paths =>
       new Map(paths.map(path => [windowsReadDenyKey(path), { status: "missing" as const }])));
     await initializeAsrtSandbox({ allowedDomains: [] });
     expect(reader).toHaveBeenCalledTimes(1);
@@ -726,62 +730,65 @@ describe.runIf(process.platform === "win32")("asrt-sandbox — session read evid
     if (isAsrtSandboxActive()) await resetAsrtSandbox();
     reader.mockRestore();
     for (const spy of runtime) spy.mockRestore();
+    home.mockRestore();
+    user.mockRestore();
+    await cleanupTmpDir(profile);
   });
 
-  it("tool wraps reuse base read evidence without a native query", async () => {
+  it("tool wraps read evidence within each judgment", async () => {
     await wrapToolCommand("echo covered", { commandId: TEST_COMMAND_ID,
       filesystem: { denyRead: getDefaultSensitiveReadDenyPaths() } });
-    expect(reader).not.toHaveBeenCalled();
+    expect(reader).toHaveBeenCalledTimes(1);
   });
 
-  it("builtin shell read floors reuse base read evidence without a native query", async () => {
+  it("builtin shell read floors read evidence within each judgment", async () => {
     const { denyRead } = getBuiltinShellReadPolicy([], homedir());
     await wrapToolCommand("echo covered", { commandId: TEST_COMMAND_ID, filesystem: { denyRead } });
-    expect(reader).not.toHaveBeenCalled();
+    expect(reader).toHaveBeenCalledTimes(1);
   });
 
-  it("equivalent path spellings reuse base read evidence without a native query", async () => {
+  it("equivalent path spellings use one evidence batch", async () => {
     const target = join(homedir(), ".ssh").toUpperCase().replace(/\\/g, "/") + "/";
     await wrapToolCommand("echo covered", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [target] } });
-    expect(reader).not.toHaveBeenCalled();
+    expect(reader).toHaveBeenCalledTimes(1);
   });
 
-  it("worker wraps reuse base read evidence without a native query", async () => {
+  it("worker wraps read evidence within each judgment", async () => {
     await wrapWorkerCommand("echo covered", { commandId: TEST_COMMAND_ID,
       filesystem: { denyRead: getDefaultSensitiveReadDenyPaths() } });
-    expect(reader).not.toHaveBeenCalled();
+    expect(reader).toHaveBeenCalledTimes(1);
   });
 
-  it("terminal wraps reuse base read evidence without a native query", async () => {
+  it("terminal wraps read evidence within each judgment", async () => {
     await wrapTerminalCommand("echo covered", { commandId: TEST_COMMAND_ID, ownTty: "/dev/ttys000",
       filesystem: { denyRead: getDefaultSensitiveReadDenyPaths() } });
-    expect(reader).not.toHaveBeenCalled();
+    expect(reader).toHaveBeenCalledTimes(1);
   });
 
-  it("an uncovered profile deny queries only that path", async () => {
+  it("an added profile deny is included in the current batch", async () => {
     const extra = join(homedir(), ".extra-profile-secret");
     await wrapToolCommand("echo extra", { commandId: TEST_COMMAND_ID,
       filesystem: { denyRead: [...getDefaultSensitiveReadDenyPaths(), extra] } });
-    expect(reader.mock.calls).toEqual([[[extra]]]);
+    expect(reader).toHaveBeenCalledExactlyOnceWith(expect.arrayContaining([extra]));
   });
 
-  it("worker socket registration reuses base read evidence without a native query", async () => {
+  it("worker socket registration reads evidence within its judgment", async () => {
     const socketDir = join(homedir(), "worker-sockets");
     const holder = {};
     await registerWorkerUnixSocketDir(socketDir, holder);
-    expect(reader).not.toHaveBeenCalled();
+    expect(reader).toHaveBeenCalledTimes(1);
   });
 
-  it("worker socket unregistration reuses base read evidence without a native query", async () => {
+  it("worker socket unregistration reads evidence within its judgment", async () => {
     const socketDir = join(homedir(), "worker-sockets");
     const holder = {};
     await registerWorkerUnixSocketDir(socketDir, holder);
     reader.mockClear();
     await unregisterWorkerUnixSocketDir(socketDir, holder);
-    expect(reader).not.toHaveBeenCalled();
+    expect(reader).toHaveBeenCalledTimes(1);
   });
 
-  it("all command wraps keep a base target created after initialization without a native query", async () => {
+  it("all command wraps keep a base target created after initialization", async () => {
     const target = join(homedir(), ".docker", "config.json");
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, "fixture");
@@ -794,13 +801,13 @@ describe.runIf(process.platform === "win32")("asrt-sandbox — session read evid
       expect(bare(wrap.mock.calls[0]?.[2]?.filesystem?.denyRead ?? [])).toContain(realpathSync.native(target));
       expect(bare(wrap.mock.calls[1]?.[2]?.filesystem?.denyRead ?? [])).toContain(realpathSync.native(target));
       expect(bare(wrap.mock.calls[2]?.[2]?.filesystem?.denyRead ?? [])).toContain(realpathSync.native(target));
-      expect(reader).not.toHaveBeenCalled();
+      expect(reader).toHaveBeenCalledTimes(3);
     } finally {
       rmSync(target);
     }
   });
 
-  it("worker socket updates keep a base target created after initialization without a native query", async () => {
+  it("worker socket updates keep a base target created after initialization", async () => {
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const target = join(homedir(), ".docker", "config.json");
     expect(bare(SandboxManager.getConfig()!.filesystem.denyRead)).not.toContain(target);
@@ -812,20 +819,16 @@ describe.runIf(process.platform === "win32")("asrt-sandbox — session read evid
       expect(bare(SandboxManager.getConfig()!.filesystem.denyRead)).toContain(target);
       await unregisterWorkerUnixSocketDir(join(homedir(), "identity-worker-sockets"), holder);
       expect(bare(SandboxManager.getConfig()!.filesystem.denyRead)).toContain(target);
-      expect(reader).not.toHaveBeenCalled();
+      expect(reader).toHaveBeenCalledTimes(2);
     } finally {
       rmSync(target);
     }
   });
 
   it("reset clears read evidence and reinitialization takes a fresh snapshot", async () => {
-    const initial = _getWindowsReadDenySnapshotForTest();
-    expect(initial?.size).toBeGreaterThan(0);
     await resetAsrtSandbox();
-    expect(_getWindowsReadDenySnapshotForTest()).toBeUndefined();
     await initializeAsrtSandbox({ allowedDomains: [] });
     expect(reader).toHaveBeenCalledTimes(1);
-    expect(_getWindowsReadDenySnapshotForTest()).not.toBe(initial);
   });
 });
 

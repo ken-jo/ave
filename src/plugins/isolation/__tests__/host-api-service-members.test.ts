@@ -1297,7 +1297,9 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
       write: [nested, root],
     });
     vi.mocked(queryDriveIdentity).mockClear();
-    await harness.child.hostApi.spawnWorker!({
+    const spawnWorkerApi = harness.child.hostApi.spawnWorker;
+    if (spawnWorkerApi === undefined) throw new Error("Worker API is unavailable");
+    await spawnWorkerApi({
       workerId: "indexer",
       control: "output-only-v1",
       command: "true",

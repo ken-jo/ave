@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { dirname, isAbsolute, sep } from "node:path";
 import { statSync } from "node:fs";
 import { globMatch, containsGlobMetacharacter } from "../../lib/glob-matcher.js";
@@ -86,62 +87,64 @@ export function evaluateScopedRules(
   root: string,
   ...scopes: ReadonlyArray<readonly PermissionRule[]>
 ): ScopedRuleEvaluation {
-  root = foldCanonicalPathSeparators(root);
-  let paths: ReturnType<typeof editPaths> = [];
-  let destination: URL | undefined;
-  let floor: string | undefined;
-  let grantable = true;
-  let floorCode: PermissionFloorCode | undefined;
-  let exfiltration: ScopedRuleEvaluation["exfiltration"];
-  if (subject.kind === "edit") {
-    // Broken sealed-target contracts must fail before a human can approve them.
-    paths = editPaths(subject, root);
-    const protectedTarget = paths.find((path) => path.floor);
-    floor = protectedTarget?.floor;
-    floorCode = protectedTarget?.floorCode;
-  } else if (subject.kind === "webfetch") {
-    grantable = subject.requiresSiteApproval !== true;
-    destination = new URL(subject.url);
-    if (!["http:", "https:"].includes(destination.protocol)) {
-      return { admissionDenial: "Network target must use HTTP or HTTPS" };
+  return withLocalityDecision(() => {
+    root = foldCanonicalPathSeparators(root);
+    let paths: ReturnType<typeof editPaths> = [];
+    let destination: URL | undefined;
+    let floor: string | undefined;
+    let grantable = true;
+    let floorCode: PermissionFloorCode | undefined;
+    let exfiltration: ScopedRuleEvaluation["exfiltration"];
+    if (subject.kind === "edit") {
+      // Broken sealed-target contracts must fail before a human can approve them.
+      paths = editPaths(subject, root);
+      const protectedTarget = paths.find((path) => path.floor);
+      floor = protectedTarget?.floor;
+      floorCode = protectedTarget?.floorCode;
+    } else if (subject.kind === "webfetch") {
+      grantable = subject.requiresSiteApproval !== true;
+      destination = new URL(subject.url);
+      if (!["http:", "https:"].includes(destination.protocol)) {
+        return { admissionDenial: "Network target must use HTTP or HTTPS" };
+      }
+      if (destination.username || destination.password) {
+        exfiltration = { reason: "Network target contains credentials" };
+      }
+    } else {
+      // Unannotated tools follow server rules and mode without scoped grants.
+      grantable = subject.nonDestructive;
     }
-    if (destination.username || destination.password) {
-      exfiltration = { reason: "Network target contains credentials" };
+    const rules = scopes.flat().filter((rule) => !rule.source && storedRuleInvalidReason(rule) === null && isRuleSpecifier(rule.pattern));
+    const matches = (rule: PermissionRule, index = 0): boolean => {
+      const spec = parseRuleSpecifier(rule.pattern);
+      if (subject.kind === "edit" && spec.kind === "edit") {
+        const target = paths[index];
+        if (!target) return false;
+        try {
+          // Restrictions see both spellings; grants must cover the resolved target.
+          return matchesEdit(spec, target.canonical, root, rule.action)
+            || (rule.action !== "allow" && matchesEditPattern(spec, editPattern(spec, root), target.lexical));
+        } catch { return rule.action !== "allow"; }
+      }
+      if (subject.kind === "webfetch" && spec.kind === "webfetch" && destination) {
+        return matchesWebFetchHost(spec, destination.hostname, Number(destination.port || (destination.protocol === "https:" ? 443 : 80)));
+      }
+      return subject.kind === "mcp" && spec.kind === "mcp" && matchesMcpTool(spec, subject.server, subject.tool);
+    };
+    for (const action of ["deny", "ask"] as const) {
+      const hit = rules.find((rule) => rule.action === action && (subject.kind === "edit" ? paths.some((_, i) => matches(rule, i)) : matches(rule)));
+      if (hit) return { decision: action, pattern: hit.pattern, floor, floorCode, exfiltration };
     }
-  } else {
-    // Unannotated tools follow server rules and mode without scoped grants.
-    grantable = subject.nonDestructive;
-  }
-  const rules = scopes.flat().filter((rule) => !rule.source && storedRuleInvalidReason(rule) === null && isRuleSpecifier(rule.pattern));
-  const matches = (rule: PermissionRule, index = 0): boolean => {
-    const spec = parseRuleSpecifier(rule.pattern);
-    if (subject.kind === "edit" && spec.kind === "edit") {
-      const target = paths[index];
-      if (!target) return false;
-      try {
-        // Restrictions see both spellings; grants must cover the resolved target.
-        return matchesEdit(spec, target.canonical, root, rule.action)
-          || (rule.action !== "allow" && matchesEditPattern(spec, editPattern(spec, root), target.lexical));
-      } catch { return rule.action !== "allow"; }
-    }
-    if (subject.kind === "webfetch" && spec.kind === "webfetch" && destination) {
-      return matchesWebFetchHost(spec, destination.hostname, Number(destination.port || (destination.protocol === "https:" ? 443 : 80)));
-    }
-    return subject.kind === "mcp" && spec.kind === "mcp" && matchesMcpTool(spec, subject.server, subject.tool);
-  };
-  for (const action of ["deny", "ask"] as const) {
-    const hit = rules.find((rule) => rule.action === action && (subject.kind === "edit" ? paths.some((_, i) => matches(rule, i)) : matches(rule)));
-    if (hit) return { decision: action, pattern: hit.pattern, floor, floorCode, exfiltration };
-  }
-  if (floor) return { floor, floorCode };
-  if (!grantable) return exfiltration ? { exfiltration } : {};
-  // A public host grant does not answer the separate private-network opt-in.
-  if (subject.kind === "webfetch" && subject.privateNetwork) return exfiltration ? { exfiltration } : {};
-  const allowed = rules.filter((rule) => rule.action === "allow" && rule.tier !== "read");
-  if (subject.kind === "edit") {
-    if (paths.length === 0 || !paths.every((_, i) => allowed.some((rule) => matches(rule, i)))) return {};
-  } else if (!allowed.some((rule) => matches(rule))) return exfiltration ? { exfiltration } : {};
-  return { decision: "allow", ...(exfiltration ? { exfiltration } : {}), pattern: allowed.filter((rule) => subject.kind === "edit" ? paths.some((_, i) => matches(rule, i)) : matches(rule)).map((rule) => rule.pattern).join(", ") };
+    if (floor) return { floor, floorCode };
+    if (!grantable) return exfiltration ? { exfiltration } : {};
+    // A public host grant does not answer the separate private-network opt-in.
+    if (subject.kind === "webfetch" && subject.privateNetwork) return exfiltration ? { exfiltration } : {};
+    const allowed = rules.filter((rule) => rule.action === "allow" && rule.tier !== "read");
+    if (subject.kind === "edit") {
+      if (paths.length === 0 || !paths.every((_, i) => allowed.some((rule) => matches(rule, i)))) return {};
+    } else if (!allowed.some((rule) => matches(rule))) return exfiltration ? { exfiltration } : {};
+    return { decision: "allow", ...(exfiltration ? { exfiltration } : {}), pattern: allowed.filter((rule) => subject.kind === "edit" ? paths.some((_, i) => matches(rule, i)) : matches(rule)).map((rule) => rule.pattern).join(", ") };
+  });
 }
 
 export interface EditDepthCandidate {

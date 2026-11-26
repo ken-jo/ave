@@ -91,9 +91,11 @@ function resolvedInput(path: string, context: ToolExecutionContext): string {
 }
 
 function assertAccess(path: string, context: ToolExecutionContext, assertPath?: (path: string) => void): void {
-  assertPath?.(path);
-  const denied = ensureFileAccess(path, context, "write");
-  if (denied) throw new FileTransferError("path-denied", denied.output);
+  withLocalityDecision(() => {
+    assertPath?.(path);
+    const denied = ensureFileAccess(path, context, "write");
+    if (denied) throw new FileTransferError("path-denied", denied.output);
+  });
 }
 
 function assertSupported(stats: BigIntStats, path: string): void {

@@ -2159,6 +2159,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
     const layout = aveLayout();
     await asWindows(layout, async () => {
       const root = layout.context.pluginDataDir;
+      if (root === undefined) throw new Error("Plugin data directory is unavailable");
       const nested = join(root, "nested");
       const paths = [root, nested, join(nested, "child")];
       const drive = root.slice(0, 2).toUpperCase();

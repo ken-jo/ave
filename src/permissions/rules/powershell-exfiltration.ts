@@ -1474,7 +1474,9 @@ function inspectPowerShellPermissionPathsInDecision(input: PowerShellCommandInpu
   return { paths, unproven, credentialStore, ...(unknownProtectedWrite ? { unknownProtectedWrite } : {}), ...(evidenceLimitExceeded ? { evidenceLimitExceeded: true as const } : {}) };
 }
 
-export function inspectPowerShellCommand(input: PowerShellCommandInput, cwd?: string, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }, executionPlan?: HostShellExecutionPlan, context?: ShellFloorContext): ShellFloorSignals { return applyStartupPolicy(inspectParsed(asPowerShellCommand(input), cwd, budget, context), executionPlan); }
+export function inspectPowerShellCommand(input: PowerShellCommandInput, cwd?: string, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }, executionPlan?: HostShellExecutionPlan, context?: ShellFloorContext): ShellFloorSignals {
+  return withLocalityDecision(() => applyStartupPolicy(inspectParsed(asPowerShellCommand(input), cwd, budget, context), executionPlan));
+}
 export function inspectPowerShellVisibleText(command: string, cwd?: string): ShellFloorSignals { return inspectPowerShellCommand(command, cwd); }
 export function powerShellSensitivePathSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectPowerShellCommand(input, cwd).sensitive; }
 export function powerShellExfiltrationSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectPowerShellCommand(input, cwd).exfiltration; }

@@ -1578,19 +1578,21 @@ export function matchesStaticMissingWritePathVerdict(verdict: RiskVerdict, subje
 
 export class RuleBasedRiskClassifier implements RiskClassifier {
   classify(input: ToolInvocationContext): RiskVerdict {
-    for (const rule of RULES) {
-      const v = rule(input);
-      if (v) {
-        const verdict = input.permissionReason === undefined ? v : { ...v, reason: input.permissionReason };
-        if (v.level === "high" && v.reason === "write path not declared") {
-          const identity = staticRiskSubjectIdentity(input);
-          if (identity !== undefined) missingWritePathVerdicts.set(verdict, identity);
+    return withLocalityDecision(() => {
+      for (const rule of RULES) {
+        const v = rule(input);
+        if (v) {
+          const verdict = input.permissionReason === undefined ? v : { ...v, reason: input.permissionReason };
+          if (v.level === "high" && v.reason === "write path not declared") {
+            const identity = staticRiskSubjectIdentity(input);
+            if (identity !== undefined) missingWritePathVerdicts.set(verdict, identity);
+          }
+          return verdict;
         }
-        return verdict;
       }
-    }
-    // Default fail-safe: MEDIUM (never silently LOW for an unknown shape).
-    return { level: "medium", reason: "no rule matched (fail-safe medium)" };
+      // Default fail-safe: MEDIUM (never silently LOW for an unknown shape).
+      return { level: "medium", reason: "no rule matched (fail-safe medium)" };
+    });
   }
 }
 

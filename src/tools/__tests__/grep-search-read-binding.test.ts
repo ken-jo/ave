@@ -144,15 +144,25 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     }
     return handle;
   }) as typeof actual.open;
-  const realpath = (async (path: string, ...rest: unknown[]) => {
-    const before = path === hooks.openTarget ? hooks.beforeRealpath : undefined;
-    if (before) {
-      hooks.beforeRealpath = undefined;
-      before();
-    }
-    return (actual.realpath as (path: string, ...rest: unknown[]) => Promise<string>)(path, ...rest);
-  }) as typeof actual.realpath;
-  return { ...actual, default: { ...actual, open, realpath }, open, realpath };
+  return { ...actual, default: { ...actual, open }, open };
+});
+
+vi.mock("../../shared/local-path-io.js", async original => {
+  const actual = await original<typeof import("../../shared/local-path-io.js")>();
+  return {
+    ...actual,
+    localFs: {
+      ...actual.localFs,
+      realpath(verdict: Parameters<typeof actual.localFs.realpath>[0]) {
+        if (verdict.path === hooks.openTarget && hooks.beforeRealpath !== undefined) {
+          const before = hooks.beforeRealpath;
+          hooks.beforeRealpath = undefined;
+          before();
+        }
+        return actual.localFs.realpath(verdict);
+      },
+    },
+  };
 });
 
 const { GrepFilesTool } = await import("../file-tools.js");

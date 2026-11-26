@@ -1,8 +1,8 @@
-import { withLocalityDecision } from "../../shared/local-path-io.js";
+import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "../../shared/local-path-io.js";
 import { dialog, ipcMain, shell } from "electron";
 import { t } from "../../i18n/index.js";
 import { promises as fs, type Dirent } from "node:fs";
-import { isAbsolute as isAbsolutePath, join, resolve as resolvePath } from "node:path";
+import { isAbsolute as isAbsolutePath, dirname, join, resolve as resolvePath } from "node:path";
 import { randomBytes } from "node:crypto";
 import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
 import { createLogger } from "../../lib/logger.js";
@@ -333,14 +333,15 @@ async function linkPointsOutside(realDir: string, linkName: string, realRoot: st
 /** Map a filesystem failure to the folder view's stable codes. */
 /** A listing row's kind from its directory entry; a filesystem that does not report the kind there costs one lstat. Sockets,
  * pipes and devices are not listed. */
-async function listedEntryType(ent: Dirent, full: string): Promise<WorkspaceDirEntry["type"] | null> {
+function listedEntryType(ent: Dirent, full: string): WorkspaceDirEntry["type"] | null {
   if (ent.isSymbolicLink()) return "link";
   if (ent.isFile()) return "file";
   if (ent.isDirectory()) return "directory";
   if (ent.isFIFO() || ent.isSocket() || ent.isCharacterDevice() || ent.isBlockDevice()) return null;
   try {
-    const info = await fs.lstat(full);
-    return info.isSymbolicLink() ? "link" : info.isFile() ? "file" : info.isDirectory() ? "directory" : null;
+    admitLocalRoute(dirname(full));
+    const info = localFs.lstat(admitLocalPath(full));
+    return info?.isSymbolicLink() ? "link" : info?.isFile() ? "file" : info?.isDirectory() ? "directory" : null;
   } catch {
     // Removed between readdir and lstat; it is no longer there to show.
     return null;
@@ -1020,22 +1021,22 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         // Classify from the directory entries alone, sort, then cap: the cap keeps the first rows of the sorted listing
         // (folders first), and only the kept rows cost an lstat.
         const isSensitiveEntry = createSensitivePathCheck("write", "person");
-        const candidates: Array<{ name: string; type: WorkspaceDirEntry["type"] }> = [];
-        let hidden = 0;
-        for (const ent of dirents) {
-          const full = join(dir, ent.name);
-          // A link's own entry is judged by its spelling in the folder: canonicalizing it would resolve through the link.
-          const link = ent.isSymbolicLink();
-          const sensitivePath = link ? join(realDir ?? dir, ent.name) : full;
-          // Filter sensitive entries using the file tools' policy. A key-extension file is hidden only when it holds a key:
-          // one whose content was not shown harmless stays listed for the person, and an agent read of it still asks.
-          if (isSensitiveEntry(sensitivePath)) {
-            hidden += 1;
-            continue;
+        const { candidates, hidden } = withLocalityDecision(() => {
+          const candidates: Array<{ name: string; type: WorkspaceDirEntry["type"] }> = [];
+          let hidden = 0;
+          for (const ent of dirents) {
+            const full = join(dir, ent.name);
+            // A link is judged at the name in the listed directory, before its target can affect the view.
+            const sensitivePath = ent.isSymbolicLink() ? join(realDir ?? dir, ent.name) : full;
+            if (isSensitiveEntry(sensitivePath)) {
+              hidden += 1;
+              continue;
+            }
+            const type = listedEntryType(ent, full);
+            if (type !== null) candidates.push({ name: ent.name, type });
           }
-          const type = await listedEntryType(ent, full);
-          if (type !== null) candidates.push({ name: ent.name, type });
-        }
+          return { candidates, hidden };
+        });
         candidates.sort((a, b) => {
           if ((a.type === "directory") !== (b.type === "directory")) return a.type === "directory" ? -1 : 1;
           return a.name.localeCompare(b.name);

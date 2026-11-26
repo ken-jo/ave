@@ -5,6 +5,7 @@ import { closeSync, fstatSync, openSync, readFileSync, realpathSync, statSync } 
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getIsPackaged, isConfigured, isPackagedElectronProcess } from "../boot/dev-flags.js";
 import { isSensitivePath } from "../permissions/sensitive-paths.js";
+import { admitLocalRoute, localFs, withLocalityDecision } from "../shared/local-path-io.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { buildHostGitArgs, isHostGitWorkspaceAvailable, spawnHostGitIfWorkspaceFree } from "../shared/host-git.js";
 import { withHostGitLaunch } from "../shared/host-git-executable.js";
@@ -41,7 +42,7 @@ const INSTRUCTION_FILE_NAMES = ["AGENTS.md", "CLAUDE.md"] as const;
 
 function canonical(path: string): string | null {
   try {
-    return realpathSync(path);
+    return process.platform === "win32" ? withLocalityDecision(() => localFs.realpath(admitLocalRoute(path).verdict)) : realpathSync(path);
   } catch {
     return null;
   }
@@ -193,34 +194,36 @@ export function discoverProjectAgentsMd(
   projectRoot: string,
   opts: { maxTotalBytes?: number; homeDir?: string } = {},
 ): ProjectAgentsMd {
-  const maxTotalBytes = opts.maxTotalBytes ?? PROJECT_AGENTS_MD_MAX_TOTAL_BYTES;
-  const root = resolve(projectRoot);
-  const canonicalProject = canonical(root);
-  // A root that does not exist yet is watched itself, so its creation is noticed.
-  if (!canonicalProject) return { projectRoot: root, layers: [], totalBytes: 0, watchedPaths: [root] };
-  const top = repositoryRoot(canonicalProject, opts.homeDir !== undefined ? canonical(opts.homeDir) : canonicalHome());
-  const seen = new Set<string>();
-  const watched = new Set<string>();
-  const found = chainDirectories(top, canonicalProject)
-    .map((dir) => directoryLayer(top, dir, seen, watched))
-    .filter((layer): layer is { relativePath: string; content: string } => layer !== null);
+  return withLocalityDecision(() => {
+    const maxTotalBytes = opts.maxTotalBytes ?? PROJECT_AGENTS_MD_MAX_TOTAL_BYTES;
+    const root = resolve(projectRoot);
+    const canonicalProject = canonical(root);
+    // A root that does not exist yet is watched itself, so its creation is noticed.
+    if (!canonicalProject) return { projectRoot: root, layers: [], totalBytes: 0, watchedPaths: [root] };
+    const top = repositoryRoot(canonicalProject, opts.homeDir !== undefined ? canonical(opts.homeDir) : canonicalHome());
+    const seen = new Set<string>();
+    const watched = new Set<string>();
+    const found = chainDirectories(top, canonicalProject)
+      .map((dir) => directoryLayer(top, dir, seen, watched))
+      .filter((layer): layer is { relativePath: string; content: string } => layer !== null);
 
-  const layers: ProjectAgentsMdLayer[] = [];
-  let totalBytes = 0;
-  for (const layer of found) {
-    // Several layers are joined into one block; a source line keeps each one's origin, and with it which one is closest, readable.
-    const text = found.length > 1
-      ? `<!-- instructions: ${layer.relativePath} -->\n${layer.content}`
-      : layer.content;
-    const remaining = maxTotalBytes - totalBytes;
-    if (remaining <= 0) break;
-    const truncated = Buffer.byteLength(text, "utf-8") > remaining;
-    const content = truncated ? utf8HeadSlice(text, remaining) : text;
-    layers.push({ relativePath: layer.relativePath, content, truncated });
-    totalBytes += Buffer.byteLength(content, "utf-8");
-    if (truncated) break;
-  }
-  return { projectRoot: root, layers, totalBytes, watchedPaths: [...watched] };
+    const layers: ProjectAgentsMdLayer[] = [];
+    let totalBytes = 0;
+    for (const layer of found) {
+      // Several layers are joined into one block; a source line keeps each one's origin, and with it which one is closest, readable.
+      const text = found.length > 1
+        ? `<!-- instructions: ${layer.relativePath} -->\n${layer.content}`
+        : layer.content;
+      const remaining = maxTotalBytes - totalBytes;
+      if (remaining <= 0) break;
+      const truncated = Buffer.byteLength(text, "utf-8") > remaining;
+      const content = truncated ? utf8HeadSlice(text, remaining) : text;
+      layers.push({ relativePath: layer.relativePath, content, truncated });
+      totalBytes += Buffer.byteLength(content, "utf-8");
+      if (truncated) break;
+    }
+    return { projectRoot: root, layers, totalBytes, watchedPaths: [...watched] };
+  });
 }
 
 /** Session-scoped memo of git's ignore verdicts, keyed by repository root and path. The owner (the conversation loop) clears it on a session switch. */
@@ -230,10 +233,11 @@ export type GitIgnoreVerdicts = Map<string, boolean>;
 async function gitIgnores(repoRoot: string, path: string, verdicts: GitIgnoreVerdicts | undefined): Promise<boolean> {
   if (!isHostGitWorkspaceAvailable(repoRoot)) return false;
   const key = `${repoRoot}\0${path}`;
-  const known = verdicts?.get(key);
+  const memo = process.platform === "win32" ? undefined : verdicts;
+  const known = memo?.get(key);
   if (known !== undefined) return known;
   const verdict = await askGitIgnores(repoRoot, path);
-  if (verdict !== undefined) verdicts?.set(key, verdict);
+  if (verdict !== undefined) memo?.set(key, verdict);
   return verdict ?? false;
 }
 
@@ -276,24 +280,32 @@ export async function discoverDirectoryInstructions(
   attached: { has(relativePath: string): boolean },
   opts: { homeDir?: string; gitIgnoreVerdicts?: GitIgnoreVerdicts } = {},
 ): Promise<ProjectAgentsMdLayer[]> {
-  const canonicalProject = canonical(resolve(projectRoot));
-  if (!canonicalProject) return [];
-  const absolute = resolve(canonicalProject, targetPath);
-  let targetDir = dirname(absolute);
-  try {
-    if (statSync(absolute).isDirectory()) targetDir = absolute;
-  } catch {
-    // A path that does not exist yet (a file being written) still names its directory.
-  }
-  const canonicalTarget = canonical(targetDir);
-  if (!canonicalTarget || canonicalTarget === canonicalProject || !isWithin(canonicalProject, canonicalTarget)) {
-    return [];
-  }
-  const top = repositoryRoot(canonicalProject, opts.homeDir !== undefined ? canonical(opts.homeDir) : canonicalHome());
+  const scope = withLocalityDecision(() => {
+    const canonicalProject = canonical(resolve(projectRoot));
+    if (!canonicalProject) return undefined;
+    const absolute = resolve(canonicalProject, targetPath);
+    let targetDir = dirname(absolute);
+    try {
+      if ((process.platform === "win32" ? localFs.stat(admitLocalRoute(absolute).verdict) : statSync(absolute)).isDirectory()) targetDir = absolute;
+    } catch {
+      // A path that does not exist yet (a file being written) still names its directory.
+    }
+    const canonicalTarget = canonical(targetDir);
+    if (!canonicalTarget || canonicalTarget === canonicalProject || !isWithin(canonicalProject, canonicalTarget)) {
+      return undefined;
+    }
+    const top = repositoryRoot(canonicalProject, opts.homeDir !== undefined ? canonical(opts.homeDir) : canonicalHome());
+    return { canonicalProject, canonicalTarget, top };
+  });
+  if (scope === undefined) return [];
+  const { canonicalProject, canonicalTarget, top } = scope;
   const layers: ProjectAgentsMdLayer[] = [];
   for (const dir of chainDirectories(canonicalProject, canonicalTarget).slice(1)) {
     if (basename(dir) === "node_modules" || hasGitEntry(dir)) break;
-    const layer = directoryLayer(top, dir, new Set(), new Set());
+    const layer = withLocalityDecision(() => {
+      if (process.platform === "win32" && (canonical(resolve(projectRoot)) !== canonicalProject || canonical(dir) !== dir)) return null;
+      return directoryLayer(top, dir, new Set(), new Set());
+    });
     if (!layer || attached.has(layer.relativePath)) continue;
     if (await gitIgnores(top, join(top, layer.relativePath), opts.gitIgnoreVerdicts)) continue;
     const truncated = Buffer.byteLength(layer.content, "utf-8") > PROJECT_AGENTS_MD_MAX_TOTAL_BYTES;

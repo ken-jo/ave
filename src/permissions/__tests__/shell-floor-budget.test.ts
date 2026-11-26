@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 import { canonicalizePathForMatch, createPathCanonicalizer } from "../sensitive-paths.js";
 import { PermissionManager } from "../permission-manager.js";
 import { prepareShellFloorInput } from "../rules/shell-literal-data.js";
@@ -146,11 +147,13 @@ describe("bounded visible floor inspection", () => {
       const expected = [canonicalizePathForMatch(first), canonicalizePathForMatch(second)];
       const native = vi.spyOn(realpathSync, "native");
       try {
-        const canonicalize = createPathCanonicalizer();
-        expect(canonicalize(first)).toBe(expected[0]);
-        const observed = native.mock.calls.length;
-        expect(canonicalize(second)).toBe(expected[1]);
-        expect(native).toHaveBeenCalledTimes(observed);
+        withLocalityDecision(() => {
+          const canonicalize = createPathCanonicalizer();
+          expect(canonicalize(first)).toBe(expected[0]);
+          const observed = native.mock.calls.length;
+          expect(canonicalize(second)).toBe(expected[1]);
+          expect(native).toHaveBeenCalledTimes(observed);
+        });
       } finally { native.mockRestore(); }
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });

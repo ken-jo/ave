@@ -1,3 +1,4 @@
+import { withLocalityDecision } from "../shared/local-path-io.js";
 import { noteOwnedWrite, terminalFileEvidence, writtenFileIdentity, type WrittenFileIdentity } from "../main/terminal/changed-file-evidence.js";
 import { checkpointFileMutation, markCodeCheckpointUnavailable } from "../memory/code-checkpoints.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -1924,7 +1925,7 @@ async function listEntries(
     }
     const entries: ListedEntry[] = [];
     const state = newWalkState();
-    await walk(root, root, depth, limit, entries, { filesOnly: false, secretRoot: sensitiveFilePattern(root) !== null, skip: createStageWorkspacesSkip(root) }, state);
+    await walk(root, root, depth, limit, entries, { filesOnly: false, skip: createStageWorkspacesSkip(root) }, state);
     const truncated = entries.length >= limit || state.truncated;
     return { ok: true, value: { entries, truncated, skippedUnreadable: state.skipped } };
   } catch (err) {
@@ -1952,7 +1953,7 @@ export async function collectFiles(
         mtimeMs: rootStat.mtimeMs,
       });
     } else if (rootStat.isDirectory()) {
-      await walk(root, root, MAX_LIST_DEPTH, limit, files, { filesOnly: true, secretRoot: sensitiveFilePattern(root) !== null, skip: createStageWorkspacesSkip(root) }, state);
+      await walk(root, root, MAX_LIST_DEPTH, limit, files, { filesOnly: true, skip: createStageWorkspacesSkip(root) }, state);
     } else {
       return { ok: false, error: toolError(`file search requires a file or directory: ${root}`) };
     }
@@ -2003,7 +2004,7 @@ async function walk(
   remainingDepth: number,
   limit: number,
   output: ListedEntry[],
-  opts: { filesOnly: boolean; secretRoot: boolean; skip: (path: string) => boolean },
+  opts: { filesOnly: boolean; skip: (path: string) => boolean },
   state: WalkState,
 ): Promise<void> {
   if (output.length >= limit || remainingDepth < 1 || state.truncated) return;
@@ -2023,7 +2024,7 @@ async function walk(
       return;
     }
     const full = join(current, dirent.name);
-    if (admissionDeniedFilePattern(full) || (!opts.secretRoot && sensitiveFilePattern(full)) || opts.skip(full)) {
+    if (withLocalityDecision(() => admissionDeniedFilePattern(full) || (!sensitiveFilePattern(root) && sensitiveFilePattern(full)) || opts.skip(full))) {
       continue;
     }
     const rel = normalizeRelativePath(relative(root, full));
