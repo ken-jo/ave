@@ -17,6 +17,7 @@ import {
 } from "../sensitive-paths.js";
 import { PermissionTestResources } from "./test-resources.js";
 import { AVE_HOME_PROTECTED_DIRECTORIES } from "../../shared/ave-home.js";
+import { withLocalityDecision } from "../../shared/local-path-io.js";
 
 const resources = new PermissionTestResources();
 
@@ -33,15 +34,17 @@ it("keeps protected boundaries aligned with credential directories", () => {
 });
 
 describe("per-decision sensitive matcher", () => {
-  it("reuses configured filesystem roots after the first match", () => {
-    const match = createSensitivePathMatcher("read");
-    expect(match("/work/project/ordinary")).toBeNull();
-    const canonical = vi.spyOn(realpathSync, "native");
-    try {
-      for (let index = 0; index < 1024; index += 1) expect(match(`/work/project/x${index}`)).toBeNull();
-      expect(canonical).not.toHaveBeenCalled();
-      expect(match("/work/project/.env")).not.toBeNull();
-    } finally { canonical.mockRestore(); }
+  it("reuses configured filesystem roots within one decision", () => {
+    withLocalityDecision(() => {
+      const match = createSensitivePathMatcher("read");
+      expect(match("/work/project/ordinary")).toBeNull();
+      const canonical = vi.spyOn(realpathSync, "native");
+      try {
+        for (let index = 0; index < 1024; index += 1) expect(match(`/work/project/x${index}`)).toBeNull();
+        expect(canonical).not.toHaveBeenCalled();
+        expect(match("/work/project/.env")).not.toBeNull();
+      } finally { canonical.mockRestore(); }
+    });
   });
 });
 
