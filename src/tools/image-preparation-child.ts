@@ -57,7 +57,7 @@ if (!adoptParentHostResources()) {
       const request = ImagePreparationRequestSchema.parse(raw);
       if (!isAbsolute(request.path) || !isAbsolute(request.scope.cwd)) throw new Error("invalid-image-path: Image source and read scope must be absolute.");
       const judged = withLocalityDecision(() => {
-        const real = localFs.realpath(admitLocalRoute(request.path).verdict);
+        const real = localFs.realpathNative(admitLocalRoute(request.path).verdict);
         if (real !== request.expectedPath) throw new TargetIdentityChangedError();
         // Check policy on both names before opening the authorized file.
         const context = { ...request.scope, metadata: {} };

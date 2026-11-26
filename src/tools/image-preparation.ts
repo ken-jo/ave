@@ -157,7 +157,7 @@ export async function prepareImageFile(
   const request = ImagePreparationRequestSchema.omit({ expectedPath: true }).parse({ path, options: requested, scope: readScope });
   return prepareImageRequest(() => withLocalityDecision(() => {
     seal?.verify();
-    const expectedPath = localFs.realpath(admitLocalRoute(request.path).verdict);
+    const expectedPath = localFs.realpathNative(admitLocalRoute(request.path).verdict);
     return { ...request, expectedPath };
   }), undefined, callerSignal);
 }

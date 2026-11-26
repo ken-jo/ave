@@ -142,6 +142,27 @@ describe("bounded image preparation", () => {
     expect((await admitted).width).toBe(8);
   });
 
+  it.skipIf(process.platform === "win32")("decodes the sealed image through a symlink target containing dot-dot", async () => {
+    const root = join(directory, "posix-image-links");
+    const actual = join(root, "actual");
+    await mkdir(join(actual, "nested"), { recursive: true });
+    await writeFile(join(actual, "image.png"), await readFile(imageFixturePath("grid.png")));
+    await writeFile(join(root, "image.png"), await sharp({
+      create: { width: 3, height: 3, channels: 3, background: "red" },
+    }).png().toBuffer());
+    await symlink("actual/nested", join(root, "hop"));
+    const path = join(root, "alias.png");
+    await symlink("hop/../image.png", path);
+    const approved = realpathSync.native(join(actual, "image.png"));
+    expect(realpathSync.native(path)).toBe(approved);
+    const seal = sealTargets(() => realpathSync.native(path));
+
+    const result = await prepareImageFile(path, {
+      cwd: root, extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true,
+    }, {}, undefined, seal);
+    expect(result).toMatchObject({ originalWidth: 8, originalHeight: 4 });
+  });
+
   it("does not open an in-scope replacement selected during decoder spawn", async () => {
     const original = join(directory, "original");
     const replacement = join(directory, "replacement");
