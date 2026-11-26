@@ -31,7 +31,7 @@ function setup(event: string, errored = false, denied = false, targetAsks = fals
   const permissions = new PermissionManager(join(root, "permissions.json"));
   permissions.setRules([...(targetAsks ? [] : [{ pattern: "contract_probe", action: denied ? "deny" as const : "allow" as const }]), { pattern: "Bash(node *)", action: "allow" }]);
   const manager = new ScriptHookManager();
-  const requestAndWait = vi.fn(async () => ({ requestId: "hook", choice: "allow-once" as const }));
+  const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "allow-once" as const }));
   const authorizeCommand = vi.fn(createHookCommandAuthorizer({ permissionManager: permissions,
     approvalGate: { requestAndWait } }));
   manager.setCommandAuthorizer(authorizeCommand);

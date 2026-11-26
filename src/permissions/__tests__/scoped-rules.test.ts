@@ -602,7 +602,7 @@ describe("scoped permission rules", () => {
     }) as unknown as typeof fetch;
     const registry = new ToolRegistry();
     registry.register(createWebFetchTool(transport));
-    const requestAndWait = vi.fn(async (_request: import("../approval-gate.js").ApprovalRequestInput) => ({ choice: "allow-once" }));
+    const requestAndWait = vi.fn(async (request: import("../approval-gate.js").ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-once" }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "credential-request", name: "web_fetch", input: { url: `https://93.184.216.34/start?token=${"sk-" + "a".repeat(50)}` } },
@@ -631,7 +631,7 @@ describe("scoped permission rules", () => {
     }) as unknown as typeof fetch;
     const registry = new ToolRegistry();
     registry.register(createWebFetchTool(transport));
-    const requestAndWait = vi.fn(async (_request: import("../approval-gate.js").ApprovalRequestInput) => ({ choice: "allow-once" }));
+    const requestAndWait = vi.fn(async (request: import("../approval-gate.js").ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-once" }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "ask-host", name: "web_fetch", input: { url: "https://93.184.216.34/start" } },
@@ -649,7 +649,7 @@ describe("scoped permission rules", () => {
     } })) as unknown as typeof fetch;
     const registry = new ToolRegistry();
     registry.register(createWebFetchTool(transport));
-    const requestAndWait = vi.fn(async (_request: import("../approval-gate.js").ApprovalRequestInput) => ({ choice: "allow-once" as const }));
+    const requestAndWait = vi.fn(async (request: import("../approval-gate.js").ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-once" as const }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "redirect-credential-denial", name: "web_fetch", input: { url: "https://93.184.216.34/start" } },

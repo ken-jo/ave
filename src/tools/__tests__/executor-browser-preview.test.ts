@@ -25,7 +25,7 @@ async function previewOf(source: ToolSource, extra: Record<string, unknown> = {}
     execute: async () => ({ output: "captured", isError: false, browserPreview: PREVIEW }),
   }));
   // Outside tools ask first; the user allows this one call so the result itself reaches the executor.
-  const approvals = { requestAndWait: async () => ({ choice: "allow-once" as const }) };
+  const approvals = { requestAndWait: async (request: { id: string }) => ({ requestId: request.id, choice: "allow-once" as const }) };
   const executor = new ToolExecutor(registry, undefined, new PermissionManager("/tmp/nonexistent-browser-preview.json"), undefined, approvals as never);
   let browserPreview: unknown = "not-called";
   const [result] = await executor.executeConversationTools(

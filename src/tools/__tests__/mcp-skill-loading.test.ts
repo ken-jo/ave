@@ -50,7 +50,7 @@ async function harness(bundle = skillBundle(), declaredResources = false, resour
   const executor = new ToolExecutor(registry, undefined, manager, undefined, gate);
   executor.setSkillAdmissionCheck((sessionId, name, input) => overlay.checkAdmission(sessionId, name, input));
   const selector = mcpSkillSelector("docs-server", bundle.skill.uri);
-  const optIn = () => requestAndWait.mockImplementation(async () => ({ choice: "allow-once", requestId: "decision" }));
+  const optIn = () => requestAndWait.mockImplementation(async (request: unknown) => ({ choice: "allow-once", requestId: (request as { id: string }).id }));
   return { server, client, registry, store, overlay, approvals, requestAndWait, emit, load, read, selector, optIn, executor, manager };
 }
 
@@ -289,7 +289,7 @@ describe("MCP skills use the existing skill and permission paths", () => {
     const h = await harness(); h.optIn(); await h.load.execute({ skillName: h.selector }, context());
     const code = vi.fn(async () => ({ output: "executed", isError: false }));
     h.registry.register(createDynamicTool({ name: "execute_code", description: "Execute code", category: "shell", source: "builtin", jsonSchema: { type: "object" }, execute: code }));
-    h.requestAndWait.mockImplementation(async () => { await h.client.disconnect(); return { choice: "allow-once", requestId: "decision" }; });
+    h.requestAndWait.mockImplementation(async (request: unknown) => { await h.client.disconnect(); return { choice: "allow-once", requestId: (request as { id: string }).id }; });
     const [result] = await h.executor.executeAll([{ id: "late-code", name: "execute_code", input: {} }], { sessionId: "skill-chat", permissionContext: { trustOrigin: "user-keyboard" } });
     expect(result).toMatchObject({ is_error: true }); expect(code).not.toHaveBeenCalled();
   });

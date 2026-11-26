@@ -401,7 +401,7 @@ describe("mandatory broker shell floors", () => {
     const manager = new PermissionManager(join(root, "permissions.json"));
     manager.setMode("default");
     const registry = new ToolRegistry(); registry.register(new BashTool());
-    const requestAndWait = vi.fn(async (_request: unknown) => { broker.active = false; return { choice: "allow-once" }; });
+    const requestAndWait = vi.fn(async (request: { id: string }) => { broker.active = false; return { requestId: request.id, choice: "allow-once" }; });
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never);
     const [result] = await executor.executeAll([{ id: "guest-inactive", name: "bash", input: { command: "rm -rf ./build" } }], {
       sessionId: "guest-inactive", executionCwd: root,

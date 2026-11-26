@@ -1418,7 +1418,7 @@ describe("HostApi incarnation authority", () => {
     };
     let approve: ((decision: { choice: "allow-once" }) => void) | undefined;
     const approvalGate = {
-      requestAndWait: vi.fn(() => new Promise((resolve) => { approve = resolve as typeof approve; })),
+      requestAndWait: vi.fn((request: { id: string }) => new Promise((resolve) => { approve = (decision) => resolve({ requestId: request.id, ...decision }); })),
     };
     const transport = vi.fn(async () => new Response("sent")) as unknown as typeof fetch;
     const managerRoot = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-effect-policy-")));
@@ -1808,7 +1808,7 @@ describe("host fetch binds approved request bodies to transport", () => {
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
     permissionManager.setMode("strict");
     let approve!: (decision: { choice: "allow-once" }) => void;
-    const approvalGate = { requestAndWait: vi.fn(() => new Promise((resolve) => { approve = resolve as typeof approve; })) };
+    const approvalGate = { requestAndWait: vi.fn((request: { id: string }) => new Promise((resolve) => { approve = (decision) => resolve({ requestId: request.id, ...decision }); })) };
     const sent: unknown[] = [];
     const transport = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const body = init?.body as FormData;
