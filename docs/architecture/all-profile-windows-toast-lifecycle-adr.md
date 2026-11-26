@@ -192,7 +192,8 @@ registration for both users and that foreign artifacts survive unchanged.
 - `build/installer.nsh` (`customUnInstall`, `un.aveCleanupCurrentUserNotificationArtifacts`, updater guards)
 - `build/uninstall-windows-notification-artifacts.ps1` (exact-ownership cleanup contract)
 - `src/main/early-boot-env.ts` (AUMID and pinned toast CLSID in `runEarlyBootEnv`)
-- `test/scripts/smoke-windows-nsis-installer.test.ts` (single-user smoke; two-user test to be added)
+- `scripts/smoke-windows-nsis-installer.mjs` (single-user smoke)
+- `test/scripts/smoke-windows-nsis-installer.test.ts` (smoke contract coverage)
 - [MSIX/AppX packaging decision](../references/production-release-checklist.md#msixappx-packaging-decision)
 
 ## Related Entry Points
