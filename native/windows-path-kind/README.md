@@ -317,26 +317,35 @@ directory and every ancestor (traverse access, read and write sharing, no
 delete sharing), writes the `--pin` row in binary mode (at most 8 MiB on the
 wire, LF included), and keeps the handles until stdin closes. It also owns the
 only handle to a kill-on-close job. The handle is not inheritable, and the
-helper starts no processes. The pipe admits only the current user. After the
-row, the host writes the job launcher's process id (4 bytes) to stdin; the
-helper serves one client, and only that live launcher (waiting at most 30
-seconds for its id). The client sends exactly `AVH1` and a process id; extra
-bytes, a short frame, or a process that is not the launcher's own newer child
-get `F`. Otherwise the helper assigns that process to the job (nested in any
-job it already has) and answers `A`. When that process exits, the helper notes
+helper starts no processes. The pipe admits only the current user and is a
+message pipe, so a frame is one write. After the row, the host writes the job
+launcher's process id (4 bytes) to stdin; the helper waits at most 30 seconds
+for it and accepts it only for a process with the helper's own parent, created
+after the helper. It serves one client, and only that live launcher. The
+connection and the frame each have a 10-second deadline, and every pipe
+operation also ends when the launcher exits; an operation the system does not
+cancel ends the helper. The client sends one 8-byte message, `AVH1` and a
+process id; a longer or shorter message, or a process that is not the
+launcher's own newer child, is refused (`F`, then the pipe closes). Otherwise
+the helper assigns that process to the job (nested in any job it already has)
+and answers `A`. When that process or the launcher exits, the helper notes
 whether anything besides console hosts is still running, terminates the job,
 waits up to 5 seconds for it to be empty, rechecks every held handle and
 reopens the leaf by name without following links (same file id, not a reparse
-point), and answers `R`, or `X` when any of that fails. The launcher answers
-`K` once its own job is proven empty. The helper then writes one stdout line:
-`{"outcome":"reaped","stopped":<bool>}` after `R` and `K`, else
-`{"outcome":"lost"}`. The helper's exit closes the job, which stops everything
-in it.
+point), and answers `R`, or `X` when any of that fails. The launcher has 5
+seconds to answer `K` once its own job is proven empty. The helper then writes
+one stdout line: `{"outcome":"reaped","stopped":<bool>}` after `R` and `K`, or
+after `R` to a launcher that has already exited; `{"outcome":"unconfirmed"}`
+when the job was not proven empty or the launcher answered anything but `K`;
+else `{"outcome":"lost"}`. The helper's exit closes the job, which stops
+everything in it.
 
 Build `-Helper path-kind -HoldFixture` for `ave-path-kind-hold-fixture.exe`,
 which is never packaged. It reads the reply limit from
 `AVE_TEST_HOLD_REPLY_LIMIT` and, with `AVE_TEST_HOLD_EXIT_BEFORE_REAP` set,
-exits after the command instead of answering `R`. After the launcher id, an
+exits after the command instead of answering `R`. With
+`AVE_TEST_HOLD_UNCONFIRMED` set it skips the reap and reports the job
+unconfirmed. After the launcher id, an
 `L` on stdin prints the job's member process ids as one JSON line on stderr.
 `--breakaway <executable>` tries to start that executable outside every job and
 prints `breakaway refused <error>` (exit 0) or `breakaway allowed` (exit 1).

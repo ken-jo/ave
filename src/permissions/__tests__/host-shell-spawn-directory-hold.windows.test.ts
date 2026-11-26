@@ -1,7 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { EventEmitter } from "node:events";
-import { connect, createServer, type Socket } from "node:net";
+import { createServer, type Socket } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,14 +11,16 @@ import { holdHostShellSpawnDirectory, HostShellDirectoryHoldError, type HostShel
 import { captureShellWorkingDirectoryIdentity } from "../shell-working-directory-identity.js";
 import { resolveWindowsJobLauncher } from "../../main/windows-job-launcher.js";
 
-const helpers = vi.hoisted(() => ({ spawned: [] as import("node:child_process").ChildProcess[] }));
+const helpers = vi.hoisted(() => ({ spawned: [] as import("node:child_process").ChildProcess[], binary: undefined as string | undefined }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
     spawn: (...args: Parameters<typeof actual.spawn>) => {
+      const helper = String(args[0]).endsWith("ave-path-kind.exe");
+      if (helper && helpers.binary !== undefined) args[0] = helpers.binary;
       const child = actual.spawn(...args);
-      if (String(args[0]).endsWith("ave-path-kind.exe")) helpers.spawned.push(child);
+      if (helper) helpers.spawned.push(child);
       return child;
     },
   };
@@ -251,46 +252,109 @@ describe.runIf(process.platform === "win32")("host shell spawn directory hold", 
     await expect(held.outcome()).resolves.toEqual({ kind: "lost" });
   });
 
-  const fakeChild = (pid: number) => Object.assign(new EventEmitter(), { pid }) as unknown as ChildProcess;
-  const pipeOf = (held: HostShellSpawnDirectoryHold) => held.launcherArgs[1] ?? "";
-  const reply = (pipe: string, frame: Buffer) => new Promise<string>((settle) => {
-    const socket = connect(pipe);
-    let received = "";
-    socket.on("connect", () => socket.write(frame));
-    // A short frame gets no answer; the helper gives up once the client goes.
-    setTimeout(() => socket.destroy(), 3000).unref();
-    socket.on("data", (chunk: Buffer) => { received += chunk.toString("latin1"); socket.end(); });
-    socket.on("error", () => settle(received));
-    socket.on("close", () => settle(received));
-  });
-  const frameOf = (pid: number, extra = 0) => {
-    const frame = Buffer.alloc(8 + extra);
-    frame.write("AVH1", 0, "latin1");
-    frame.writeUInt32LE(pid, 4);
-    return frame;
+  // A launcher stand-in: reads {pipe, mode} from stdin, starts its own child, sends the frame the mode names, prints every
+  // reply and then "|closed". "reap" answers the helper's 'R' with 'K'; "stall" never answers it.
+  const standInScript = [
+    "const net = require('net'), cp = require('child_process');",
+    "let config = '';",
+    "process.stdin.on('data', (data) => { config += data; if (!config.includes('#')) return; process.stdin.pause();",
+    "  const { pipe, mode } = JSON.parse(config.slice(0, config.indexOf('#')));",
+    "  const life = mode === 'reap' || mode === 'stall' ? 1500 : 20000;",
+    "  const child = mode === 'stranger' ? undefined : cp.spawn(process.execPath, ['-e', 'setTimeout(() => {}, ' + life + ')'], { stdio: 'ignore', detached: true });",
+    "  if (child) child.unref();",
+    "  const frame = Buffer.alloc(mode === 'trailing' ? 9 : 8); frame.write('AVH1', 0, 'latin1'); frame.writeUInt32LE(child ? child.pid : process.ppid, 4);",
+    "  let log = '';",
+    "  const socket = net.connect(pipe);",
+    "  socket.on('connect', () => { if (mode !== 'silent') socket.write(mode === 'short' ? frame.subarray(0, 4) : frame); });",
+    "  socket.on('data', (chunk) => { const text = chunk.toString('latin1'); log += text; if (mode === 'reap' && text.includes('R')) socket.write('K'); });",
+    "  socket.on('error', () => {});",
+    "  socket.on('close', () => { if (child) { try { process.kill(child.pid); } catch {} } process.stdout.write(log + '|closed', () => process.exit(0)); });",
+    "});",
+  ].join("\n");
+  const standIn = () => {
+    const child = spawn(process.execPath, ["-e", standInScript], { stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+    let log = "";
+    child.stdout.on("data", (chunk: Buffer) => { log += chunk.toString("latin1"); });
+    const finished = closed(child).then(() => log);
+    const start = async (held: HostShellSpawnDirectoryHold, mode: string) => {
+      const started = Date.now();
+      child.stdin.write(`${JSON.stringify({ pipe: held.launcherArgs[1], mode })}#`);
+      return { log: await finished, elapsed: Date.now() - started };
+    };
+    return { child, start };
+  };
+  const exchange = async (mode: string) => {
+    const held = await holdLeaf();
+    const launcher = standIn();
+    held.bind(launcher.child);
+    return { ...(await launcher.start(held, mode)), outcome: await held.outcome() };
   };
 
-  it("admits a frame only from the named launcher, exactly framed, naming that launcher's own child", async () => {
-    const decoy = longChild();
-    try {
-      const cases: [string, number, Buffer][] = [
-        ["a client the host did not name", decoy.pid ?? 0, frameOf(decoy.pid ?? 0)],
-        ["trailing bytes", process.pid, frameOf(decoy.pid ?? 0, 1)],
-        ["a process the client did not start", process.pid, frameOf(process.ppid)],
-        ["a short frame", process.pid, frameOf(decoy.pid ?? 0).subarray(0, 4)],
-      ];
-      for (const [name, named, frame] of cases) {
-        const held = await holdLeaf();
-        const launcher = fakeChild(named);
-        held.bind(launcher);
-        const answer = await reply(pipeOf(held), frame);
-        expect(answer, name).not.toContain("A");
-        expect(alive(decoy.pid ?? 0), name).toBe(true);
-        launcher.emit("close", 0, null);
-        await expect(held.outcome(), name).resolves.toEqual({ kind: "lost" });
-        hold = undefined;
-      }
-    } finally { decoy.kill(); }
+  it("completes the exchange with the named launcher once it confirms its own teardown", async () => {
+    const { log, outcome } = await exchange("reap");
+    expect(log).toBe("AR|closed");
+    expect(outcome).toEqual({ kind: "reaped", stopped: false });
+  }, 20000);
+  it("closes the pipe and fails the run when a live launcher never answers the reap", async () => {
+    const { log, elapsed, outcome } = await exchange("stall");
+    expect(log).toBe("AR|closed");
+    expect(elapsed).toBeLessThan(10000);
+    expect(outcome).toEqual({ kind: "lost" });
+  }, 30000);
+  it.each([
+    ["a short frame", "short", 3000],
+    ["trailing bytes", "trailing", 3000],
+    ["a process the launcher did not start", "stranger", 3000],
+    ["a launcher that connects and never sends", "silent", 13000],
+  ])("refuses %s promptly and closes the pipe", async (_name, mode, within) => {
+    const { log, elapsed, outcome } = await exchange(mode);
+    expect(["F|closed", "|closed"]).toContain(log);
+    expect(elapsed).toBeLessThan(within);
+    expect(outcome).toEqual({ kind: "lost" });
+  }, 30000);
+  it("refuses a client the host did not name", async () => {
+    const held = await holdLeaf();
+    const named = longChild();
+    held.bind(named);
+    const { log } = await standIn().start(held, "reap");
+    named.kill();
+    expect(["F|closed", "|closed"]).toContain(log);
+    await expect(held.outcome()).resolves.toEqual({ kind: "lost" });
+  }, 20000);
+  it("refuses a named launcher that was started before the helper", async () => {
+    const early = standIn();
+    const held = await holdLeaf();
+    held.bind(early.child);
+    const { log } = await early.start(held, "reap");
+    expect(log).not.toContain("A");
+    await expect(held.outcome()).resolves.toEqual({ kind: "lost" });
+  }, 20000);
+
+  it("proves the tree gone before reporting when the launcher itself is killed mid-run", async () => {
+    const held = await holdLeaf();
+    const { child, output } = launchTree(held);
+    await vi.waitFor(() => expect(output()).toMatch(/^\d+/u), { timeout: 5000 });
+    const descendant = Number.parseInt(output(), 10);
+    child.kill();
+    const outcome = await held.outcome();
+    expect(alive(descendant)).toBe(false);
+    expect(outcome).toMatchObject({ kind: "reaped" });
+  });
+
+  it("fails a run whose helper cannot prove its job empty, and the launcher still stops the tree", async () => {
+    const fixture = resolve("resources", "windows-path-kind", process.arch, "ave-path-kind-hold-fixture.exe");
+    if (!existsSync(fixture)) throw new Error("Build the hold fixture: bun run build:windows-job -- -Helper path-kind -HoldFixture");
+    helpers.binary = fixture;
+    process.env.AVE_TEST_HOLD_UNCONFIRMED = "1";
+    const held = await holdLeaf().finally(() => { helpers.binary = undefined; delete process.env.AVE_TEST_HOLD_UNCONFIRMED; });
+    const { child, output } = run(held, descendantThenExit(0));
+    await closed(child);
+    const descendant = Number.parseInt(output(), 10);
+    expect(Number.isInteger(descendant)).toBe(true);
+    expect(child.exitCode).toBe(125);
+    expect(output()).toContain("cwd-pin-lost");
+    await expect(held.outcome()).resolves.toEqual({ kind: "unconfirmed" });
+    expect(alive(descendant)).toBe(false);
   });
 
   it("refuses a launcher the host did not name", async () => {

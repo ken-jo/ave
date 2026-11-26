@@ -241,7 +241,8 @@ export interface HeldWindowsDirectory {
   /** Names the started job launcher; the helper admits a command from that process only. */
   admit(launcherPid: number): void;
   /** The helper's report on the admitted command: "reaped" once every process in the job has stopped and the directory
-   * still matches the hold; "lost" when the helper exits, reports anything else, or the hold is released first. */
+   * still matches the hold; "unconfirmed" when the job was not proven empty; "lost" when the pin or the exchange failed, the helper
+   * exits or reports anything else, or the hold is released first. */
   outcome(): Promise<WindowsHoldOutcome>;
   /** False once the helper that owns the handles has exited or failed, or after `release`. */
   isHeld(): boolean;
@@ -249,7 +250,7 @@ export interface HeldWindowsDirectory {
   release(): void;
 }
 
-export type WindowsHoldOutcome = { readonly kind: "reaped"; readonly stopped: boolean } | { readonly kind: "lost" };
+export type WindowsHoldOutcome = { readonly kind: "reaped"; readonly stopped: boolean } | { readonly kind: "lost" | "unconfirmed" };
 const HOLD_OUTCOME_LIMIT = 256;
 
 /** Hold a directory and every ancestor against rename and delete until `release`; undefined when the helper did not hold it.
@@ -279,7 +280,8 @@ export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory
     }
     const line = report.slice(0, newline);
     reportOutcome(line === '{"outcome":"reaped","stopped":true}' ? { kind: "reaped", stopped: true }
-      : line === '{"outcome":"reaped","stopped":false}' ? { kind: "reaped", stopped: false } : { kind: "lost" });
+      : line === '{"outcome":"reaped","stopped":false}' ? { kind: "reaped", stopped: false }
+      : line === '{"outcome":"unconfirmed"}' ? { kind: "unconfirmed" } : { kind: "lost" });
   };
   const release = (): void => {
     if (released) return;

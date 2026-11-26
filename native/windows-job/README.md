@@ -29,7 +29,8 @@ only after the helper has placed it in the helper's kill-on-close job. After
 the root exits, it waits for the helper to report that job empty and the
 directory unchanged. Every started command then ends with the launcher's own
 job terminated and proven empty (the hold job is nested in it), and the launcher
-answers the helper `K` only when both held. Each pipe step has a deadline. Any
+answers the helper `K` only when both held. Each pipe step has a deadline, and
+a step the system does not cancel ends the launcher, closing its job. Any
 failure stops the command, prints a `cwd-pin-lost` diagnostic and exits 125.
 Exit 125 alone is not the signal: the host reads the helper's own report. In
 this mode a NUL stdin is not watched as an owner. Neither job allows breakaway.

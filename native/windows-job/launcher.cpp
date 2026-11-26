@@ -83,8 +83,14 @@ static bool holdIo(HANDLE pipe, bool write, void* buffer, DWORD size, DWORD time
     CloseHandle(overlapped.hEvent);
     return false;
   }
-  if (!done && WaitForSingleObject(overlapped.hEvent, timeout) != WAIT_OBJECT_0) CancelIoEx(pipe, &overlapped);
-  done = GetOverlappedResult(pipe, &overlapped, &count, TRUE);
+  if (!done && WaitForSingleObject(overlapped.hEvent, timeout) != WAIT_OBJECT_0) {
+    CancelIoEx(pipe, &overlapped);
+    // An operation the system does not cancel ends the launcher; closing its job stops the command.
+    if (WaitForSingleObject(overlapped.hEvent, 1000) != WAIT_OBJECT_0) ExitProcess(125);
+    CloseHandle(overlapped.hEvent);
+    return false;
+  }
+  done = GetOverlappedResult(pipe, &overlapped, &count, FALSE);
   CloseHandle(overlapped.hEvent);
   return done && count == size;
 }

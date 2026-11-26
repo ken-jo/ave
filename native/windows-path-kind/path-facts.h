@@ -284,11 +284,11 @@ struct HoldJob {
 
 constexpr DWORD kHoldMagic = 0x31485641;  // "AVH1"
 constexpr DWORD kHoldAdmitMs = 30000;
+constexpr DWORD kHoldStepMs = 10000;
+constexpr DWORD kHoldReapMs = 5000;
 
-bool send_hold_byte(HANDLE pipe, char byte) {
-  DWORD written = 0;
-  return WriteFile(pipe, &byte, 1, &written, nullptr) && written == 1;
-}
+// lost: the pin or the exchange failed. unconfirmed: the job was not proven empty.
+enum class HoldOutcome { lost, unconfirmed, reaped };
 
 bool read_hold_exact(HANDLE input, void* target, DWORD size) {
   auto* cursor = static_cast<char*>(target);
@@ -301,11 +301,61 @@ bool read_hold_exact(HANDLE input, void* target, DWORD size) {
   return true;
 }
 
-void write_hold_outcome(HoldJob* hold, bool reaped, bool stopped) {
+void write_hold_outcome(HoldJob* hold, HoldOutcome outcome, bool stopped = false) {
   if (InterlockedExchange(&hold->reported, 1) != 0) return;
-  const char* line = !reaped ? "{\"outcome\":\"lost\"}\n" : stopped ? "{\"outcome\":\"reaped\",\"stopped\":true}\n" : "{\"outcome\":\"reaped\",\"stopped\":false}\n";
+  const char* line = outcome == HoldOutcome::lost ? "{\"outcome\":\"lost\"}\n"
+    : outcome == HoldOutcome::unconfirmed ? "{\"outcome\":\"unconfirmed\"}\n"
+    : stopped ? "{\"outcome\":\"reaped\",\"stopped\":true}\n" : "{\"outcome\":\"reaped\",\"stopped\":false}\n";
   std::fwrite(line, 1, std::strlen(line), stdout);
   std::fflush(stdout);
+}
+
+enum class HoldIo { connect, read, write };
+
+// One pipe operation, ended at `deadline` or when the launcher exits. An operation the system does not
+// cancel ends the helper; closing the job then stops every member.
+bool hold_pipe_io(HoldJob* hold, HoldIo kind, void* buffer, DWORD size, DWORD* done, ULONGLONG deadline) {
+  OVERLAPPED overlapped{};
+  overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (overlapped.hEvent == nullptr) return false;
+  const BOOL started = kind == HoldIo::connect ? ConnectNamedPipe(hold->pipe, &overlapped)
+    : kind == HoldIo::read ? ReadFile(hold->pipe, buffer, size, nullptr, &overlapped)
+    : WriteFile(hold->pipe, buffer, size, nullptr, &overlapped);
+  const DWORD error = started ? ERROR_SUCCESS : GetLastError();
+  bool ok = false;
+  DWORD count = 0;
+  if (kind == HoldIo::connect && error == ERROR_PIPE_CONNECTED) {
+    ok = true;
+  } else if (started || error == ERROR_IO_PENDING) {
+    const ULONGLONG now = GetTickCount64();
+    HANDLE waits[]{overlapped.hEvent, hold->launcher_process};
+    const DWORD wait = WaitForMultipleObjects(hold->launcher_process != nullptr ? 2 : 1, waits, FALSE,
+                                              now >= deadline ? 0 : static_cast<DWORD>(deadline - now));
+    if (wait == WAIT_OBJECT_0) {
+      ok = GetOverlappedResult(hold->pipe, &overlapped, &count, FALSE) != FALSE;
+    } else {
+      CancelIoEx(hold->pipe, &overlapped);
+      if (WaitForSingleObject(overlapped.hEvent, 1000) != WAIT_OBJECT_0) {
+        write_hold_outcome(hold, HoldOutcome::lost);
+        ExitProcess(3);
+      }
+    }
+  }
+  CloseHandle(overlapped.hEvent);
+  if (done != nullptr) *done = count;
+  return ok;
+}
+
+bool send_hold_byte(HoldJob* hold, char byte, ULONGLONG deadline) {
+  DWORD written = 0;
+  return hold_pipe_io(hold, HoldIo::write, &byte, 1, &written, deadline) && written == 1;
+}
+
+// Ends a refused or finished exchange; a later client finds no pipe.
+void close_hold_pipe(HoldJob* hold) {
+  DisconnectNamedPipe(hold->pipe);
+  CloseHandle(hold->pipe);
+  hold->pipe = INVALID_HANDLE_VALUE;
 }
 
 DWORD parent_process_id(HANDLE process) {
@@ -361,66 +411,77 @@ bool job_has_descendants(HANDLE job) {
   return false;
 }
 
-// The host names the launcher it started; only that process may connect. It sends one frame naming its
-// suspended child, which joins this job before 'A'. After the root exits, every member is stopped, the
-// held chain is rechecked, and 'R' confirms both. The launcher then reports its own teardown ('K' clean),
-// and the outcome line on stdout is the host's record of the run.
-// A launcher that exits without a full exchange (or never connects) leaves the run lost.
-DWORD WINAPI watch_hold_launcher(void* context) {
-  auto* hold = static_cast<HoldJob*>(context);
-  WaitForSingleObject(hold->launcher_process, INFINITE);
-  Sleep(500);
-  write_hold_outcome(hold, false, false);
-  return 0;
+// Stops every member and proves the job empty; the held chain must still be the one issued.
+HoldOutcome reap_hold_job(HoldJob* hold) {
+#ifdef AVE_TEST_HOLD_FIXTURE
+  if (GetEnvironmentVariableW(L"AVE_TEST_HOLD_UNCONFIRMED", nullptr, 0) != 0) return HoldOutcome::unconfirmed;
+#endif
+  if (!TerminateJobObject(hold->job, 1)) return HoldOutcome::unconfirmed;
+  for (const ULONGLONG deadline = GetTickCount64() + kHoldReapMs;;) {
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
+    if (!QueryInformationJobObject(hold->job, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr))
+      return HoldOutcome::unconfirmed;
+    if (accounting.ActiveProcesses == 0) break;
+    if (GetTickCount64() >= deadline) return HoldOutcome::unconfirmed;
+    Sleep(10);
+  }
+  // A leaf replaced in place (for example made into a junction) no longer matches the facts reported at hold time.
+  return leaf_still_pinned(*hold->pinned) ? HoldOutcome::reaped : HoldOutcome::lost;
 }
 
+// The host names the launcher it started; only that process may connect, within a deadline for each
+// step. It sends one 8-byte message naming its suspended child, which joins this job before 'A'. When
+// the root or the launcher ends, this helper stops the job and proves it empty, whatever the launcher
+// does; 'R' reports that proof and the launcher answers with its own teardown ('K' clean).
+// The outcome line on stdout is the host's record of the run.
 DWORD WINAPI serve_hold_job(void* context) {
   auto* hold = static_cast<HoldJob*>(context);
-  if (!ConnectNamedPipe(hold->pipe, nullptr) && GetLastError() != ERROR_PIPE_CONNECTED) return 0;
   ULONG client = 0;
   struct Frame { DWORD magic; DWORD pid; } frame{};
+  unsigned char message[sizeof(Frame) + 1]{};
+  DWORD received = 0;
   DWORD available = 1;
   HANDLE command = nullptr;
-  const bool admitted = WaitForSingleObject(hold->admitted, kHoldAdmitMs) == WAIT_OBJECT_0
+  const bool named = WaitForSingleObject(hold->admitted, kHoldAdmitMs) == WAIT_OBJECT_0 && hold->launcher != 0;
+  const ULONGLONG deadline = GetTickCount64() + kHoldStepMs;
+  const bool admitted = named && hold_pipe_io(hold, HoldIo::connect, nullptr, 0, nullptr, deadline)
     && GetNamedPipeClientProcessId(hold->pipe, &client) && client == hold->launcher
     && WaitForSingleObject(hold->launcher_process, 0) == WAIT_TIMEOUT
-    && read_hold_exact(hold->pipe, &frame, sizeof(frame)) && frame.magic == kHoldMagic
+    && hold_pipe_io(hold, HoldIo::read, message, sizeof(message), &received, deadline) && received == sizeof(Frame)
+    && (std::memcpy(&frame, message, sizeof(frame)), frame.magic == kHoldMagic)
     && PeekNamedPipe(hold->pipe, nullptr, 0, nullptr, &available, nullptr) && available == 0
     && (command = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE | SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, frame.pid)) != nullptr
     && parent_process_id(command) == hold->launcher && created_after(command, hold->launcher_process)
     && AssignProcessToJobObject(hold->job, command);
   if (!admitted) {
     if (command != nullptr) CloseHandle(command);
-    send_hold_byte(hold->pipe, 'F');
-    write_hold_outcome(hold, false, false);
-    // Disconnecting discards anything unread, so a refused client is never left waiting.
-    DisconnectNamedPipe(hold->pipe);
+    if (named) send_hold_byte(hold, 'F', GetTickCount64() + kHoldStepMs);
+    write_hold_outcome(hold, HoldOutcome::lost);
+    close_hold_pipe(hold);
     return 0;
   }
-  if (!send_hold_byte(hold->pipe, 'A')) TerminateJobObject(hold->job, 125);
-  WaitForSingleObject(command, INFINITE);
+  if (!send_hold_byte(hold, 'A', deadline)) TerminateJobObject(hold->job, 125);
+  // Legitimate runtime is bounded by the host's own deadline, which ends the launcher.
+  HANDLE ends[]{command, hold->launcher_process};
+  WaitForMultipleObjects(2, ends, FALSE, INFINITE);
   CloseHandle(command);
 #ifdef AVE_TEST_HOLD_FIXTURE
   if (GetEnvironmentVariableW(L"AVE_TEST_HOLD_EXIT_BEFORE_REAP", nullptr, 0) != 0) ExitProcess(0);
 #endif
   const bool stopped = job_has_descendants(hold->job);
-  bool reaped = false;
-  if (TerminateJobObject(hold->job, 1)) {
-    for (const ULONGLONG deadline = GetTickCount64() + 5000;;) {
-      JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
-      if (!QueryInformationJobObject(hold->job, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr)) break;
-      if (accounting.ActiveProcesses == 0) { reaped = true; break; }
-      if (GetTickCount64() >= deadline) break;
-      Sleep(10);
-    }
-  }
-  // A leaf replaced in place (for example made into a junction) no longer matches the facts reported at hold time.
-  reaped = reaped && leaf_still_pinned(*hold->pinned);
+  const HoldOutcome reaped = reap_hold_job(hold);
+  const ULONGLONG closing = GetTickCount64() + kHoldReapMs;
   char verdict = 0;
   DWORD count = 0;
-  const bool clean = send_hold_byte(hold->pipe, reaped ? 'R' : 'X') && reaped
-    && ReadFile(hold->pipe, &verdict, 1, &count, nullptr) && count == 1 && verdict == 'K';
-  write_hold_outcome(hold, clean, stopped);
+  const bool answered = send_hold_byte(hold, reaped == HoldOutcome::reaped ? 'R' : 'X', closing) && reaped == HoldOutcome::reaped
+    && hold_pipe_io(hold, HoldIo::read, &verdict, 1, &count, closing) && count == 1;
+  const bool launcher_gone = WaitForSingleObject(hold->launcher_process, 0) == WAIT_OBJECT_0;
+  // An ended launcher has no teardown left to report; the empty job is the proof. A live one that stalls fails the run.
+  write_hold_outcome(hold, reaped != HoldOutcome::reaped ? reaped
+    : answered && verdict == 'K' ? HoldOutcome::reaped
+    : answered ? HoldOutcome::unconfirmed
+    : launcher_gone ? HoldOutcome::reaped : HoldOutcome::lost, stopped);
+  close_hold_pipe(hold);
   return 0;
 }
 
@@ -440,8 +501,9 @@ HANDLE create_hold_pipe(const wchar_t* name) {
   PSECURITY_DESCRIPTOR descriptor = nullptr;
   if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr)) return INVALID_HANDLE_VALUE;
   SECURITY_ATTRIBUTES security{sizeof(security), descriptor, FALSE};
-  HANDLE pipe = CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
-                                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 16, 16, 0, &security);
+  // Message mode keeps the frame atomic: a short, split or longer write is never read as a frame.
+  HANDLE pipe = CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
+                                 PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 16, 16, 0, &security);
   LocalFree(descriptor);
   return pipe;
 }
@@ -521,12 +583,13 @@ int hold_path(int argc, wchar_t** argv) {
   HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
   DWORD launcher = 0;
   if (read_hold_exact(input, &launcher, sizeof(launcher)) && launcher != 0) {
+    // The named launcher must be a process the host started after this helper; a reused id is not.
     hold.launcher_process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, launcher);
-    if (hold.launcher_process != nullptr) {
+    if (hold.launcher_process != nullptr && parent_process_id(hold.launcher_process) == parent_process_id(GetCurrentProcess())
+        && created_after(hold.launcher_process, GetCurrentProcess())) {
       hold.launcher = launcher;
-      SetEvent(hold.admitted);
-      if (CreateThread(nullptr, 0, watch_hold_launcher, &hold, 0, nullptr) == nullptr) ExitProcess(3);
     }
+    SetEvent(hold.admitted);
     char byte;
     DWORD count;
     while (ReadFile(input, &byte, 1, &count, nullptr) && count) {
