@@ -1,8 +1,9 @@
 import { expect, it, vi } from "vitest";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
+import { withoutTestApprovalCardPresenters } from "../../__tests__/vitest-approval-presentation.js";
 import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import { desktopApprovalCardPresenters, pickNativeFiles, pickNativeSavePath, showNativeError, showNativeMessage } from "../../main/desktop-approval-presentation.js";
-import { presentRequiredApproval, UnattendedApprovalPresentationError } from "../approval-presentation.js";
+import { presentRequiredApproval, requireApprovalCardPresenters, UnattendedApprovalPresentationError } from "../approval-presentation.js";
 
 const native = vi.hoisted(() => ({
   showOpenDialog: vi.fn(async () => ({ canceled: false, filePaths: ["/fixture/input"] })),
@@ -19,6 +20,12 @@ it("throws a typed refusal before invoking required presentation in the shared c
   )).toThrow(new UnattendedApprovalPresentationError("unattended-approval-denied"));
   expect(present).not.toHaveBeenCalled();
   expect(presentRequiredApproval(present)).toBe("presented");
+});
+
+it("requires a desktop host for attended approval cards", async () => {
+  await withoutTestApprovalCardPresenters(async () => {
+    expect(requireApprovalCardPresenters).toThrow("Approval cards require a desktop host");
+  });
 });
 
 it("throws before sending a required question card in an unattended turn", () => {

@@ -40,8 +40,10 @@ export function installApprovalCardPresenters(presenters: ApprovalCardPresenters
 }
 
 export function requireApprovalCardPresenters(): ApprovalCardPresenters {
-  if (!cardPresentation) throw new Error("Approval cards require a desktop host");
-  return cardPresentation.presenters;
+  return presentRequiredApproval(() => {
+    if (!cardPresentation) throw new Error("Approval cards require a desktop host");
+    return cardPresentation.presenters;
+  });
 }
 
 export function presentRemoteApprovalCard(
