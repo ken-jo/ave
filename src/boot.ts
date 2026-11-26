@@ -66,8 +66,8 @@ import { registerBootMcpDisconnect, registerShutdownHook, configureAppShutdownHo
 
 import { type AppServices, emitEvent as emitHostEvent, onEvent } from "./boot/types.js";
 import { startWatcherTelemetryCollector } from "./boot/steps/watcher-telemetry-collector.js";
-import { bootstrapCoreServices } from "./boot/services.js";
-import { isSessionIndexingEnabled } from "./permissions/windows-background-features.js";
+import { bootstrapCoreServices, verifySessionSearchIndex } from "./boot/services.js";
+import { isWindowsBackgroundFeatureReleaseEnabled, sessionSearchIndexPolicy } from "./permissions/windows-background-features.js";
 import { RoutinesStore } from "./main/routines-store.js";
 import { RoutinesScheduler } from "./main/routines-scheduler.js";
 import {
@@ -593,7 +593,7 @@ export async function bootstrap(
   // instances are wired into the live loops below, preserving root tombstones
   // against late writes in this process.
   const isolatedConversationMemoryManagers =
-    createIsolatedConversationMemoryManagers(() => isSessionIndexingEnabled(
+    createIsolatedConversationMemoryManagers(() => sessionSearchIndexPolicy(
       settingsService.get("features")?.sessionIndexingWithoutContainment,
     ));
   const workspaceSessionStores = [
@@ -605,7 +605,8 @@ export async function bootstrap(
   // plugin receives a HostApi. Confirmed missing/non-directory roots are
   // removed and their path grants pruned; transient filesystem failures retain
   // the user's setting. Conversation JSONL is preserved while stale project
-  // metadata is detached and reindexed before the interactive loop is created.
+  // metadata is detached before the interactive loop is created. The search
+  // projection can wait for the sandbox gate.
   const rootReconciliation = await reconcileWorkspaceRoots({
     source: "boot",
     auditLogger: ctx.bootAuditLogger,
@@ -856,6 +857,9 @@ export async function bootstrap(
   recordBootPhase("conversation-wiring");
   await initSandboxGate(ctx, startupSignal);
   recordBootPhase("sandbox-gate");
+  if (isWindowsBackgroundFeatureReleaseEnabled()) {
+    for (const manager of workspaceSessionStores) await verifySessionSearchIndex(manager);
+  }
 
   // §9.5: MCP servers + signed marketplace artifact stores.
   await setupMcp(ctx);

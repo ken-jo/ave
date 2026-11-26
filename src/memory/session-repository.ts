@@ -36,7 +36,7 @@ import {
   isToolResultStubContent,
   type ToolResultTruncatedInfo,
 } from "../shared/tool-result-stub.js";
-import { SessionSearchIndex, type IndexedSessionInput } from "./session-search-index.js";
+import { SessionSearchIndex, type IndexedSessionInput, type SessionSearchIndexPolicy } from "./session-search-index.js";
 import { isRecord } from "../shared/is-record.js";
 import { dlpSafeCandidate, isSafeStructuralId } from "../shared/dlp-safe-id.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
@@ -770,7 +770,7 @@ export class SessionRepository {
   private readonly unpublishedOutputCaptures: Map<string, Set<string>>;
   // Keep one search index per manager namespace, never a global singleton.
   private readonly searchIndex: SessionSearchIndex;
-  private readonly isSearchIndexEnabled: () => boolean;
+  private readonly getSearchIndexPolicy: () => SessionSearchIndexPolicy;
   private searchIndexState: "current" | "stale" | "discarded" = "current";
   // Root guards block stale writers until re-add; only newly created sessions may bind again.
   private readonly detachedProjectRoots = new Set<string>();
@@ -788,12 +788,12 @@ export class SessionRepository {
 
   private readonly aveDir: string;
 
-  constructor(options?: { aveDir?: string; isSearchIndexEnabled?: () => boolean }) {
+  constructor(options?: { aveDir?: string; getSearchIndexPolicy?: () => SessionSearchIndexPolicy }) {
     this.aveDir = resolve(options?.aveDir ?? aveHome());
     this.sessionsDir = sessionStorePath(this.aveDir);
     this.toolOutputArtifacts = new ToolOutputArtifactStore(this.sessionsDir);
     this.searchIndex = new SessionSearchIndex(this.aveDir);
-    this.isSearchIndexEnabled = options?.isSearchIndexEnabled ?? (() => true);
+    this.getSearchIndexPolicy = options?.getSearchIndexPolicy ?? (() => "enabled");
     mkdirSync(this.sessionsDir, { recursive: true });
     this.restrictSessionsDirWrites();
     const captureOwnerKey = realpathSync(this.sessionsDir);
@@ -1060,7 +1060,7 @@ export class SessionRepository {
 
   // Open and close the index per operation so persistence leaves no database handle blocking directory cleanup.
   private indexSessionForSearch(sessionId: string, messages: unknown[]): void {
-    if (!this.canUseSearchIndex() || !this.searchIndex.open()) return;
+    if (!this.canUseSearchIndex("write") || !this.searchIndex.open()) return;
     try {
       const input = this.buildIndexInput(sessionId, messages);
       if (input) this.searchIndex.upsertSession(input);
@@ -1070,7 +1070,7 @@ export class SessionRepository {
     }
   }
   private deleteSessionFromSearchIndex(sessionId: string): void {
-    if (!this.canUseSearchIndex() || !this.searchIndex.open()) return;
+    if (!this.canUseSearchIndex("write") || !this.searchIndex.open()) return;
     try {
       this.searchIndex.deleteSession(sessionId);
     } finally {
@@ -1097,9 +1097,14 @@ export class SessionRepository {
     this.searchIndexState = "discarded";
   }
 
-  private canUseSearchIndex(): boolean {
+  private canUseSearchIndex(operation: "read" | "write" = "read"): boolean {
     try {
-      if (!this.isSearchIndexEnabled()) {
+      const policy = this.getSearchIndexPolicy();
+      if (policy === "pending") {
+        if (operation === "write") this.searchIndexState = "stale";
+        return false;
+      }
+      if (policy === "paused") {
         this.pauseSearchIndex();
         return false;
       }
@@ -1148,8 +1153,10 @@ export class SessionRepository {
   // Rebuild the complete search projection after detach so retries repair partial metadata/index updates.
   private repairAllSessionSearchRowsForProjectDetach(): void {
     try {
-      if (this.isSearchIndexEnabled()) this.rebuildSessionSearchRows();
-      else this.pauseSearchIndex();
+      const policy = this.getSearchIndexPolicy();
+      if (policy === "pending") this.searchIndexState = "stale";
+      else if (policy === "paused") this.pauseSearchIndex();
+      else this.rebuildSessionSearchRows();
     } catch (cause) {
       throw Object.assign(
         new Error("workspace session search index repair failed"),
@@ -1519,7 +1526,7 @@ export class SessionRepository {
       this.notePaneSession(sessionId, safe);
     });
     // Reindex metadata-only updates too because project, kind, routine, and title fields are denormalized.
-    if (!this.canUseSearchIndex()) return;
+    if (!this.canUseSearchIndex("write")) return;
     const messages = this.loadSession(sessionId);
     if (Array.isArray(messages)) {
       this.indexSessionForSearch(sessionId, messages);

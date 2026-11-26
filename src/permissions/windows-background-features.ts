@@ -1,14 +1,15 @@
+import type { SessionSearchIndexPolicy } from "../memory/session-search-index.js";
 import { isAveHomePrivacyVerifiedAtBoot } from "../shared/ave-home.js";
 import { isOfflineProcessConfinementActive } from "./asrt-sandbox.js";
 import { hasMxcReleaseGateEvidence } from "./mxc-extension-admission.js";
-import { getWindowsExtensionBackendPlan, getWindowsSandboxSubstrate } from "./sandbox-capability.js";
+import { getWindowsExtensionBackendPlan, getWindowsSandboxSubstrate, isSandboxGateUndecidedAtBoot } from "./sandbox-capability.js";
 
 export function isWindowsBackgroundFeatureReleaseEnabled(): boolean {
   return process.platform === "win32" && hasMxcReleaseGateEvidence();
 }
 
 export function areWindowsBackgroundSwitchesAvailable(): boolean {
-  if (!isWindowsBackgroundFeatureReleaseEnabled() || !isAveHomePrivacyVerifiedAtBoot()
+  if (!isWindowsBackgroundFeatureReleaseEnabled() || isSandboxGateUndecidedAtBoot() || !isAveHomePrivacyVerifiedAtBoot()
     || isOfflineProcessConfinementActive()) return false;
   const substrate = getWindowsSandboxSubstrate();
   const plan = getWindowsExtensionBackendPlan();
@@ -19,8 +20,7 @@ export function areWindowsBackgroundSwitchesAvailable(): boolean {
     && (plan.reason === substrate.mxc.reason || plan.reason === "native-validation-required"));
 }
 
-export function isSessionIndexingEnabled(preference: boolean | undefined): boolean {
-  if (!isWindowsBackgroundFeatureReleaseEnabled() || preference !== false) return true;
-  const mxc = getWindowsSandboxSubstrate()?.mxc;
-  return (mxc !== undefined && mxc.state !== "unavailable") || isOfflineProcessConfinementActive();
+export function sessionSearchIndexPolicy(preference: boolean | undefined): SessionSearchIndexPolicy {
+  if (isWindowsBackgroundFeatureReleaseEnabled() && isSandboxGateUndecidedAtBoot()) return "pending";
+  return preference === false && areWindowsBackgroundSwitchesAvailable() ? "paused" : "enabled";
 }

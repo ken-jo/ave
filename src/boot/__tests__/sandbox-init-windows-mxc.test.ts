@@ -4,7 +4,7 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 
 /** Check each Windows substrate combination and the boot outcome reported to Settings. */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -88,8 +88,10 @@ import { createMemoryMapRuntime } from "../../ipc/domains/memory-map-runtime.js"
 import { rendererSettingsSnapshot } from "../../ipc/domains/settings.js";
 import type { IpcDeps } from "../../ipc/types.js";
 import { assertLocalEmbeddingRuntime } from "../../main/memory-map/local-runtime.js";
+import { SessionRepository } from "../../memory/session-repository.js";
+import { SessionSearchIndex } from "../../memory/session-search-index.js";
 import { registerMxcReleaseGateEvidence } from "../../permissions/mxc-extension-admission.js";
-import { areWindowsBackgroundSwitchesAvailable } from "../../permissions/windows-background-features.js";
+import { areWindowsBackgroundSwitchesAvailable, sessionSearchIndexPolicy } from "../../permissions/windows-background-features.js";
 import { decidePermission } from "../../permissions/decision-pipeline.js";
 import { requiresUnsandboxedShellAsk } from "../../permissions/host-shell-execution-plan.js";
 import { ObligationRefusedError, setWindowsDenyUnenforceableAtBoot, windowsDenyUnenforceableAtBoot } from "../../permissions/admitted-obligation.js";
@@ -108,6 +110,7 @@ import {
   getHostShellExecutionPlan,
   getSandboxBootOutcome,
   getWindowsSandboxSubstrate,
+  markSandboxGatePendingAtBoot,
   setSandboxStatusChangeListener,
 } from "../../permissions/sandbox-capability.js";
 
@@ -184,6 +187,63 @@ it.each([
   expect(() => assertAveHomePrivacyForConfinement()).toThrow(refusal);
   expect(logRefusal).toHaveBeenCalledWith(expect.objectContaining({ type: "error", output: expect.stringContaining("ave_home_privacy_refused") }));
   await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ extensions: "none" }));
+});
+
+it.each([
+  { label: "available", mxc: MXC_OK, deps: NO_ACCOUNT_BACKEND },
+  { label: "inconclusive", mxc: MXC_OLD, deps: SRT_WIN_MISSING },
+  { label: "confirmed absent", mxc: NO_CONTAINER, deps: NO_ACCOUNT_BACKEND, absent: true },
+])("defers boot and reconciliation indexing with stored false until the backend is $label", async ({ mxc, deps, absent }) => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  const dir = mkdtempSync(join(tmpdir(), "ave-boot-session-index-"));
+  const mainDir = join(dir, "main");
+  const isolatedDir = join(dir, "isolated");
+  const mainIndex = join(mainDir, "search", "index.db");
+  const isolatedIndex = join(isolatedDir, "search", "index.db");
+  const getSearchIndexPolicy = () => sessionSearchIndexPolicy(false);
+  const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+  const root = "C:/example/workspace";
+  try {
+    await new SessionRepository({ aveDir: mainDir }).saveSession(sessionId, [{ role: "user", content: "boot evidence" }]);
+    const isolatedSeed = new SessionRepository({ aveDir: isolatedDir });
+    await isolatedSeed.saveSession(sessionId, [{ role: "user", content: "detachment evidence" }]);
+    await isolatedSeed.saveSessionMetadata(sessionId, { sessionKind: "main", projectRoot: root, title: "Session" });
+    const main = new SessionRepository({ aveDir: mainDir, getSearchIndexPolicy });
+    const isolated = new SessionRepository({ aveDir: isolatedDir, getSearchIndexPolicy });
+    const openIndex = vi.spyOn(SessionSearchIndex.prototype, "open");
+    try {
+      markSandboxGatePendingAtBoot();
+      await main.verifyOrRebuildSearchIndex();
+      await expect(isolated.detachSessionsFromProject(root)).resolves.toBe(1);
+      expect.soft(existsSync(mainIndex)).toBe(true);
+      expect.soft(existsSync(isolatedIndex)).toBe(true);
+      expect.soft(openIndex).not.toHaveBeenCalled();
+
+      setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+      h.checkDeps.mockResolvedValue(deps);
+      h.detectMxc.mockResolvedValue(mxc);
+      await initSandboxGate(harness.context(false, false));
+      await main.verifyOrRebuildSearchIndex();
+      await isolated.verifyOrRebuildSearchIndex();
+      expect(existsSync(mainIndex)).toBe(!absent);
+      expect(existsSync(isolatedIndex)).toBe(!absent);
+      if (absent) {
+        expect(openIndex).not.toHaveBeenCalled();
+      } else {
+        expect(main.searchSessions("boot evidence")).toHaveLength(1);
+        expect(isolated.searchSessions("detachment evidence", { projectRoot: root })).toHaveLength(0);
+        expect(isolated.searchSessions("detachment evidence")).toHaveLength(1);
+      }
+      expect(isolated.loadSessionMetadata(sessionId)?.projectRoot).toBeUndefined();
+    } finally {
+      openIndex.mockRestore();
+      main.closeSearchIndex();
+      isolated.closeSearchIndex();
+    }
+  } finally {
+    unregister();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 describe("initSandboxGate — Windows sandbox HOME parent", () => {

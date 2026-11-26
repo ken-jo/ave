@@ -100,6 +100,8 @@ function ensureDirSync(dir: string): void {
 }
 
 // Keep each database instance bound to its owning manager's namespace.
+export type SessionSearchIndexPolicy = "enabled" | "pending" | "paused";
+
 export class SessionSearchIndex {
   private readonly dbPath: string;
   private readonly dir: string;

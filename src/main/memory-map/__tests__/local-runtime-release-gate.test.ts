@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setProcessPlatform } from '../../../__tests__/support/process-platform.js';
 import { registerMxcReleaseGateEvidence } from '../../../permissions/mxc-extension-admission.js';
-import { isSessionIndexingEnabled } from '../../../permissions/windows-background-features.js';
+import { sessionSearchIndexPolicy } from '../../../permissions/windows-background-features.js';
 import type { SandboxWindowsExtensionPlan, SandboxWindowsSubstrateInfo } from '../../../shared/sandbox-capability-info.js';
 import { assertLocalEmbeddingRuntime, isLocalInferenceSwitchAvailable } from '../local-runtime.js';
 
@@ -14,6 +14,7 @@ vi.mock('../../../permissions/asrt-sandbox.js', () => ({ isOfflineProcessConfine
 vi.mock('../../../permissions/sandbox-capability.js', () => ({
   getWindowsExtensionBackendPlan: () => state.plan,
   getWindowsSandboxSubstrate: () => state.substrate,
+  isSandboxGateUndecidedAtBoot: () => false,
 }));
 vi.mock('../../../shared/ave-home.js', async importOriginal => ({
   ...await importOriginal<typeof import('../../../shared/ave-home.js')>(),
@@ -72,21 +73,21 @@ describe('Windows local inference release gate', () => {
   });
 
   it('keeps session indexing unchanged until complete packaged evidence is registered', () => {
-    expect(isSessionIndexingEnabled(false)).toBe(true);
+    expect(sessionSearchIndexPolicy(false)).toBe('enabled');
     unregister = registerMxcReleaseGateEvidence({ ...EVIDENCE, noWorkerPort: false });
-    expect(isSessionIndexingEnabled(false)).toBe(true);
+    expect(sessionSearchIndexPolicy(false)).toBe('enabled');
   });
 
   it('defaults session indexing on and stops it independently of inference on a released PC without a backend', () => {
     unregister = registerMxcReleaseGateEvidence(EVIDENCE);
-    expect(isSessionIndexingEnabled(undefined)).toBe(true);
-    expect(isSessionIndexingEnabled(true)).toBe(true);
-    expect(isSessionIndexingEnabled(false)).toBe(false);
+    expect(sessionSearchIndexPolicy(undefined)).toBe('enabled');
+    expect(sessionSearchIndexPolicy(true)).toBe('enabled');
+    expect(sessionSearchIndexPolicy(false)).toBe('paused');
     expect(assertLocalEmbeddingRuntime()).toBe('unconfined');
     state.substrate = { mxc: { state: 'available' }, srtWinReady: false };
-    expect(isSessionIndexingEnabled(false)).toBe(true);
+    expect(sessionSearchIndexPolicy(false)).toBe('enabled');
     setProcessPlatform('linux');
-    expect(isSessionIndexingEnabled(false)).toBe(true);
+    expect(sessionSearchIndexPolicy(false)).toBe('enabled');
   });
 
   it('accepts definitive boot absence even while the extension release pin is in place', () => {

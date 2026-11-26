@@ -49,7 +49,7 @@ describe("SessionRepository", () => {
 
   it("pauses session indexing, keeps transcripts, and rebuilds the projection on re-enable", async () => {
     let enabled = true;
-    repository = new SessionRepository({ aveDir: dir, isSearchIndexEnabled: () => enabled });
+    repository = new SessionRepository({ aveDir: dir, getSearchIndexPolicy: () => enabled ? "enabled" : "paused" });
     const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
     const laterId = "bbbbbbbb-1111-2222-3333-444444444444";
     await repository.saveSession(sessionId, [{ role: "user", content: "before pause" }]);

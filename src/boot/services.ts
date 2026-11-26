@@ -10,7 +10,7 @@ import { installBootModelCatalog } from "../core/model-catalog/bundled.js";
 import { DEFAULT_LOCALE, normalizeLocale, setLocale, tryLoadLocaleMessages,
 } from "../i18n/index.js";
 import { MemoryManager } from "../memory/memory-manager.js";
-import { isSessionIndexingEnabled } from "../permissions/windows-background-features.js";
+import { isWindowsBackgroundFeatureReleaseEnabled, sessionSearchIndexPolicy } from "../permissions/windows-background-features.js";
 import { registerShutdownHook } from "../main/app-shutdown.js";
 import { MemoryCaptureService } from "../memory/memory-capture-service.js";
 import { execTurnRequested } from "../main/exec-mode.js";
@@ -142,7 +142,7 @@ export async function bootstrapCoreServices(mainWindow: MainWindow | null, host:
   }
 
   const memoryManager = new MemoryManager({
-    isSearchIndexEnabled: () => isSessionIndexingEnabled(settingsService.get("features")?.sessionIndexingWithoutContainment),
+    getSearchIndexPolicy: () => sessionSearchIndexPolicy(settingsService.get("features")?.sessionIndexingWithoutContainment),
   });
   memoryManager.load();
   memoryManager.startPersistentContextWatcher();
@@ -151,11 +151,7 @@ export async function bootstrapCoreServices(mainWindow: MainWindow | null, host:
     memoryManager.sessions.closeSearchIndex();
   });
   log.info("boot: memory loaded from %s", memoryManager.getDir());
-  // Recover corrupt or missing search indexes from JSONL; never scan linearly as a fallback.
-  await memoryManager.sessions.verifyOrRebuildSearchIndex().catch((err: unknown) => {
-    log.warn("boot: search index verify/rebuild failed: %s", (err as Error).message,
-    );
-  });
+  if (!isWindowsBackgroundFeatureReleaseEnabled()) await verifySessionSearchIndex(memoryManager);
   // Same aveDir as the main store: usage rows sit beside the memories they name.
   const memoryUsageLog = new MemoryUsageLog({ aveDir: memoryManager.getDir() });
   const memorySaveNotices = new MemorySaveNotices(memoryManager);
@@ -202,4 +198,12 @@ export async function bootstrapCoreServices(mainWindow: MainWindow | null, host:
     memorySaveNotices,
     toolRegistry,
   };
+}
+
+export async function verifySessionSearchIndex(memoryManager: MemoryManager): Promise<void> {
+  try {
+    await memoryManager.sessions.verifyOrRebuildSearchIndex();
+  } catch (error) {
+    log.warn("boot: search index verify/rebuild failed: %s", (error as Error).message);
+  }
 }
