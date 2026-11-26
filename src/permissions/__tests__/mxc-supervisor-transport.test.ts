@@ -483,9 +483,9 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     f.fixture.native.kill.mockImplementation(() => {});
     const owned = await f.launch();
     const send = MxcExtensionChannel.prototype.send;
-    const sending = vi.spyOn(MxcExtensionChannel.prototype, "send").mockImplementation(function (this: MxcExtensionChannel, frame) {
+    const sending = vi.spyOn(MxcExtensionChannel.prototype, "send").mockImplementation(function (this: MxcExtensionChannel, frame, admit) {
       if (frame.type === "stop") return Promise.reject(new Error("Control pipe closed"));
-      return send.call(this, frame);
+      return send.call(this, frame, admit);
     });
     try {
       const disposed = owned.dispose();
@@ -579,13 +579,13 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     f.fixture.native.wait.mockImplementation(() => wait().then((result) => { nativeTerminated = true; return result; }));
     let release: (() => Promise<void>) | undefined;
     const send = MxcExtensionChannel.prototype.send;
-    const sending = vi.spyOn(MxcExtensionChannel.prototype, "send").mockImplementation(function (this: MxcExtensionChannel, frame) {
+    const sending = vi.spyOn(MxcExtensionChannel.prototype, "send").mockImplementation(function (this: MxcExtensionChannel, frame, admit) {
       if (frame.type === heldType) {
-        release = () => { order.push(`${heldType}-delivered`); return send.call(this, frame); };
+        release = () => { order.push(`${heldType}-delivered`); return send.call(this, frame, admit); };
         // Model a pipe write completing before the peer reads its bytes.
         return Promise.resolve();
       }
-      return send.call(this, frame);
+      return send.call(this, frame, admit);
     });
     const launched = f.launch(controller.signal, (event) => {
       order.push(event.type);
@@ -637,9 +637,9 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     let arrive!: (native: MxcProcess) => void;
     f.spawn.mockImplementation(() => new Promise((resolve) => { arrive = resolve; }));
     const send = MxcExtensionChannel.prototype.send;
-    const sending = vi.spyOn(MxcExtensionChannel.prototype, "send").mockImplementation(function (this: MxcExtensionChannel, frame) {
+    const sending = vi.spyOn(MxcExtensionChannel.prototype, "send").mockImplementation(function (this: MxcExtensionChannel, frame, admit) {
       if (frame.type === "spawning") return Promise.reject(new Error("Spawning notification failed"));
-      return send.call(this, frame);
+      return send.call(this, frame, admit);
     });
     try {
       const launched = f.launch().catch((error: unknown) => error);
