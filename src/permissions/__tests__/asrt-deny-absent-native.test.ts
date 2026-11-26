@@ -16,7 +16,7 @@ import { holdWindowsFilesystemGrant } from "../windows-acl-grant-holder.js";
 import { win32SystemBinary } from "../../shared/ave-home.js";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { configureHostResources } from "../../main/host-resources.js";
-import { prepareSrtWinExecutable, srtWinPrivateDirectories, sweepStaleSrtWinDirectories } from "../srt-win-integrity.js";
+import { prepareSrtWinExecutable, srtWinConfinementStatePaths, srtWinPrivateDirectories, sweepStaleSrtWinDirectories } from "../srt-win-integrity.js";
 import { recoverWindowsAcl, restoreWindowsAcl, stampWindowsAcl } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { readWindowsDenyAcls } from "../windows-deny-acl.js";
 import { openEgressInvocation } from "../egress-invocations.js";
@@ -211,7 +211,7 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     }
   }, 60_000);
 
-  it("creates nothing for a fresh git workspace grant or a home-root grant, and git status stays clean", async () => {
+  it("creates nothing for a fresh git workspace grant or a refused home-root grant, and git status stays clean", async () => {
     const workspace = join(root, "workspace");
     mkdirSync(workspace);
     const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=alice", "-c", "user.email=alice@example.com", ...args],
@@ -222,13 +222,16 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     git("commit", "-q", "-m", "fixture");
     const before = entriesBelow(root);
     await initializeRequiredSandbox({ allowRead: [root] });
-    for (const allowWrite of [[workspace], [root]]) {
-      const held = await holdWindowsFilesystemGrant({ label: "watched-fresh-native", allowRead: [], allowWrite });
-      try {
-        expect(entriesBelow(root)).toEqual(before);
-        expect(watchedProtectedRows()).toContain(join(allowWrite[0] ?? "", ".vscode"));
-      } finally { held.release(); }
-    }
+    const held = await holdWindowsFilesystemGrant({ label: "watched-fresh-native", allowRead: [], allowWrite: [workspace] });
+    try {
+      expect(entriesBelow(root)).toEqual(before);
+      expect(watchedProtectedRows()).toContain(join(workspace, ".vscode"));
+    } finally { held.release(); }
+    // The profile root holds the helper's default ledger, so a write grant on it is refused before anything is stamped.
+    expect(srtWinConfinementStatePaths()).toContain(join(root, "AppData", "Local", "sandbox-runtime"));
+    await expect(holdWindowsFilesystemGrant({ label: "watched-fresh-native", allowRead: [], allowWrite: [root] }))
+      .rejects.toMatchObject({ code: "confinement-state-write-grant", reason: "helper-ledger", path: root });
+    expect(entriesBelow(root)).toEqual(before);
     await resetAsrtSandbox();
     expect(entriesBelow(root)).toEqual(before);
     expect(git("status", "--porcelain")).toBe("");

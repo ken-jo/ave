@@ -11,7 +11,9 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { hasNativeSrtWinBuildReceipt, readSrtWinTestInput, selectSrtWinTestReceipts } from "../../__tests__/support/srt-win-build-receipts.js";
 import BUILD_RECEIPTS from "../generated/srt-win-build-receipts.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { assertSrtWinDigest, assertSrtWinSpawnIntegrity, getSrtWinArchitecture, prepareSrtWinExecutable, sweepStaleSrtWinDirectories } from "../srt-win-integrity.js";
+import { assertSrtWinDigest, assertSrtWinSpawnIntegrity, getSrtWinArchitecture, prepareSrtWinExecutable, srtWinConfinementStatePaths, srtWinSpawnEnvironment, sweepStaleSrtWinDirectories } from "../srt-win-integrity.js";
+import { sandboxProcessProfileEnvironment } from "../sandbox-process-home.js";
+import { getLocale, setLocale } from "../../i18n/runtime.js";
 
 const require = createRequire(import.meta.url);
 const { assertSrtWinVendor: assertVendor, readUpstreamSrtWinInput } = require("../../../scripts/lib/srt-win-integrity.cjs") as {
@@ -880,5 +882,43 @@ describe("Windows helper integrity", () => {
     it("removes the private copy at exit when no runtime was initialized", () => {
       expect(existsSync(dirname(dirname(runChild("no-runtime").executable)))).toBe(false);
     });
+  });
+});
+
+describe("the helper's spawn environment", () => {
+  const host = { LOCALAPPDATA: "C:\\Users\\alice\\AppData\\Local", ProgramData: "C:\\ProgramData" };
+  const helper = "C:\\helper\\bin\\SRT-WIN.EXE";
+
+  it("replaces every spelling of the child's state variables with the host's and keeps the rest", () => {
+    const childHome = sandboxProcessProfileEnvironment("C:\\Users\\alice\\AppData\\Local\\Temp\\ave-sandbox-home-x", "win32");
+    const env = srtWinSpawnEnvironment(helper, { ...childHome, localappdata: "C:\\Users\\bob", PROGRAMDATA: "C:\\bob" }, host);
+    expect(Object.keys(env).filter((key) => ["LOCALAPPDATA", "PROGRAMDATA"].includes(key.toUpperCase())).sort()).toEqual(["LOCALAPPDATA", "ProgramData"]);
+    expect(env).toMatchObject({ ...host, HOME: childHome.HOME, USERPROFILE: childHome.USERPROFILE });
+    expect(srtWinConfinementStatePaths(host, "C:\\Users\\alice")).toContain(win32.join(String(env.LOCALAPPDATA), "sandbox-runtime"));
+  });
+
+  it.each([
+    ["LOCALAPPDATA is missing", { ProgramData: host.ProgramData }],
+    ["ProgramData is missing", { LOCALAPPDATA: host.LOCALAPPDATA }],
+    ["LOCALAPPDATA is not a drive path", { ...host, LOCALAPPDATA: "relative\\Local" }],
+  ])("refuses a helper spawn when %s", (_name, hostEnv) => {
+    expect(() => srtWinSpawnEnvironment(helper, {}, hostEnv)).toThrow(expect.objectContaining({ code: "srt-win-state-location-unresolved" }));
+  });
+
+  it.each([
+    ["en", "The sandbox could not start: the location of its helper's own state could not be determined. LOCALAPPDATA and ProgramData must be drive paths (srt-win-state-location-unresolved)"],
+    ["ko", "샌드박스를 시작할 수 없습니다. 도우미 자체 상태의 위치를 확인할 수 없습니다. LOCALAPPDATA와 ProgramData는 드라이브 경로여야 합니다(srt-win-state-location-unresolved)"],
+  ] as const)("names the refusal in the %s locale", (locale, message) => {
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      expect(() => srtWinSpawnEnvironment(helper, {}, {})).toThrow(message);
+    } finally {
+      setLocale(previous);
+    }
+  });
+
+  it("leaves any other executable's environment as given", () => {
+    expect(srtWinSpawnEnvironment("/bin/bash", { LOCALAPPDATA: "C:\\Users\\bob" }, {})).toEqual({ LOCALAPPDATA: "C:\\Users\\bob" });
   });
 });

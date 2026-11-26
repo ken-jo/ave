@@ -1,3 +1,9 @@
+// Faked win32 on a POSIX host: no backend state to check here; a Windows host keeps its own.
+const { hostPlatform } = vi.hoisted(() => ({ hostPlatform: process.platform }));
+vi.mock("../../permissions/confinement-state-paths.js", async (original) => {
+  const actual = await original<typeof import("../../permissions/confinement-state-paths.js")>();
+  return hostPlatform === "win32" ? actual : { ...actual, declaredConfinementStatePaths: () => [] };
+});
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
@@ -532,6 +538,24 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
     expect(result.output).toBe("PowerShell spawn failed: the sandbox proxy is not running");
     expect(childProcessMock.spawn.mock.calls.some((call) => call[0] === WXC_EXEC)).toBe(false);
+  });
+
+  it.each(["en", "ko"] as const)("keeps the refusal code and a bounded grant in the %s result for a long refused write", async (locale) => {
+    const { getLocale, setLocale } = await import("../../i18n/index.js");
+    const { ConfinementStateWriteGrantError } = await import("../../permissions/confinement-state-paths.js");
+    const grant = `D:\\${"프로젝트-작업폴더\\".repeat(16)}leaf-grant`;
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      bootMxcShells();
+      mxcLaunchMock.prepare.mockRejectedValueOnce(new ConfinementStateWriteGrantError(grant, "container-runtime"));
+      const result = await executePowerShell(context(`ps-mxc-state-${locale}`));
+      expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+      expect(result.output).toMatch(/^PowerShell spawn failed: .*D:\\프로젝트.*….*\\leaf-grant.*\(confinement-state-write-grant\)$/su);
+      expect(Buffer.byteLength(result.output.slice("PowerShell spawn failed: ".length))).toBeLessThanOrEqual(500);
+    } finally {
+      setLocale(previous);
+    }
   });
 
   it("reports an isolated HOME that cannot be created as an unavailable spawn and prepares nothing", async () => {

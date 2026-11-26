@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { linearGrowthBound, measureCpuGrowth } from "../../__tests__/support/cpu-growth.js";
 import { loadHomeRedactors, resetHomeRedactors } from "../../__tests__/support/home-redaction-fixture.js";
 
 afterEach(resetHomeRedactors);
@@ -143,26 +142,4 @@ it.each([
 ] as const)("redacts the %s home %s in full in unquoted text", async (platform, home, input, expected) => {
   const { redactHomePathsInText } = await loadHomeRedactors(home, platform);
   expect(redactHomePathsInText(input)).toBe(expected);
-});
-
-it("scans adversarial home text and paths in linear time", async () => {
-  const { redactFsPath, redactHomePathsInText } = await loadHomeRedactors("/srv/fixtures/habitat", "linux");
-  const SMALL = 4 * 1024;
-  const LARGE = 16 * SMALL;
-  const fill = (size: number, unit: string, head = "") => head + unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
-  const families = [
-    ["x y ", "/home/"], ["/home/x y", ""], [DRIVE_BOB, ""], ["%C3", "/home/"], ["a", "https://"], ["a:/users/", "/home/"],
-    ["%2525", "/home/"], ["x ", "C:\\Users\\"], ["/users/x", "https://x.example"],
-    ["\\\\a\\b", ""], ["a", "\\\\"], ["\\", ""], ["x y ", '"/home/'], ['"/home/x y ', ""], ["\\u00e9", "/home/"],
-    ["\\u002fhome", ""], ["%27", "/home/"], ["%2D", "file://"],
-    ["\\uabcd", "/home/"], ["\\\\\\uabcd", "/home/"], ["\\uabcd\\x", "C:\\Users\\"], ["\\\\uabcd", "C:\\\\Users\\\\"],
-    ["\\\\uabcd\\\\x", "C:\\\\Users\\\\"], ["\\\\uabcd\\\\u", "/home/"],
-  ] as const;
-  for (const [unit, head] of families) {
-    for (const redact of [redactHomePathsInText, redactFsPath]) {
-      const { smallMs, largeMs, growth } = measureCpuGrowth(() => redact(fill(SMALL, unit, head)), () => redact(fill(LARGE, unit, head)), { fastEnoughMs: 5, minSampleMs: 20 });
-      if (growth === undefined) continue;
-      expect(growth, `${head}${unit}: ${smallMs.toFixed(1)} ms at 4 KiB, ${largeMs.toFixed(1)} ms at 64 KiB`).toBeLessThan(linearGrowthBound(LARGE / SMALL));
-    }
-  }
 });

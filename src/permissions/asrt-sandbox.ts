@@ -3,7 +3,8 @@
 import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { mxcRuntimeRootFloorPath } from "./mxc-runtime-root.js";
-import { liveSandboxProcessHomes } from "./sandbox-home-registry.js";
+import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "./confinement-state-paths.js";
+import { heldIssuedContainerHome, issuedContainerHome, liveSandboxProcessHomes, type IssuedContainerHome } from "./sandbox-home-registry.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, userDenyCoversPierce, userDenyMayCoverPierce, type PolicyFloorRow, type PolicyGrantRow, type PolicyModel } from "./policy-model.js";
 import { srtWriteFloorRow, toSrtConfig } from "./srt-policy-adapter.js";
 import { isMxcReadPattern } from "./mxc-windows.js";
@@ -869,7 +870,8 @@ export function admitMxcExtensionFilesystem(
   return inAveHomeBoundarySnapshot(undefined, () => admitMxcExtensionFilesystemInSnapshot(...args));
 }
 
-function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem, ownership?: MxcExtensionFilesystemOwnership): {
+function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem, ownership?: MxcExtensionFilesystemOwnership,
+  stagingRoot?: string): {
   /** The holder's admitted policy as rows, every path literal. */
   readonly model: PolicyModel;
   readonly assertStillValid: () => void;
@@ -967,6 +969,8 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
     }
     assertMxcExtensionFilesystemOwnership({ allowRead: admitted.allowRead, allowWrite: admitted.allowWrite,
       pluginNamespaceRoots: namespaceRoots, ownership: pinnedOwnership });
+    // The callers checked their spellings; these are the identities the container is granted.
+    assertWriteGrantsOutsideConfinementState(windowsPinnedPaths(pinned.allowWrite ?? []), declaredConfinementStatePaths(), stagingRoot);
   };
   assertStillValid();
   return { model, assertStillValid };
@@ -3641,6 +3645,8 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
 ): Promise<WindowsWorkerFilesystemGrant> {
   const { timeStep } = timing;
   const { assertStillValid, holderPid: requestedHolderPid, sandboxHome, ...opts } = request;
+  // The HOME issuance this grant holds through its waits.
+  const issuedHome = issuedContainerHome(sandboxHome);
   timeStep("preflightMs", () => assertStillValid?.());
   if (process.platform === "win32") {
     for (const path of [...(opts.allowRead ?? []), ...(opts.allowWrite ?? [])]) {
@@ -3704,7 +3710,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   const writeStart = requestedRead.length - requestedWrite.length;
   const allowWrite = requests.slice(writeStart).map(request => request.path);
   const writePins = pins.slice(writeStart);
-  timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome));
+  timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome, issuedHome));
   timeStep("preflightMs", () => checkWindowsSandboxStampTargets(pinned));
 
   const resolveDocumentsPath = scopedWindowsDocumentsPath();
@@ -3790,7 +3796,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   if (_baseTrustedSettings !== baseTrustedSettings || session.windowsLiveGrantRevision !== grantRevision) {
     throw new Error("Windows sandbox policy changed while stamping the worker grant");
   }
-  timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome));
+  timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome, issuedHome));
   timeStep("preflightMs", () => assertStillValid?.());
   if (stampFailure !== undefined) throw stampFailure;
   // Resolved after every refusal above, so a refused turn starts no holder.
@@ -3932,7 +3938,7 @@ export function insideOwnWindowsSandboxHome(path: string, sandboxHome: string | 
   return resolved === home || resolved.startsWith(home + win32.sep);
 }
 
-function assertWindowsGrantBoundaries(read: readonly string[], write: readonly string[], sandboxHome?: string): void {
+function assertWindowsGrantBoundaries(read: readonly string[], write: readonly string[], sandboxHome?: string, issuedHome?: IssuedContainerHome): void {
   assertPrivateHelperGrants(read, write);
   assertWindowsMachineRootWriteGrants(write);
   for (const path of read) {
@@ -3958,6 +3964,10 @@ function assertWindowsGrantBoundaries(read: readonly string[], write: readonly s
       throw new Error(`Windows filesystem write grant is inside a protected sensitive target: ${path}`);
     }
   }
+  // The caller's own HOME lies in the runtime root's state; it is passed only while live and still the issuance held.
+  const held = heldIssuedContainerHome(issuedHome);
+  const ownHome = held !== undefined && sandboxHome !== undefined && insideOwnWindowsSandboxHome(sandboxHome, sandboxHome) ? held : undefined;
+  assertWriteGrantsOutsideConfinementState(write, declaredConfinementStatePaths(), undefined, ownHome);
 }
 
 function assertWindowsGrantDenySnapshot(session: AsrtSandboxSession, revision: number, allowWrite: readonly string[]): void {

@@ -419,6 +419,22 @@ describe("pty-manager happy path (fs-contained)", () => {
     expect(opts.env.HOME).toBe(sandboxHome);
   });
 
+  it("spawns the sandbox helper with the host's state location, not the child's", async () => {
+    vi.stubEnv("LOCALAPPDATA", "C:\\Users\\alice\\AppData\\Local");
+    vi.stubEnv("ProgramData", "C:\\ProgramData");
+    try {
+      wrapWorkerCommandMock.mockResolvedValueOnce({
+        argv: ["C:\\helper\\bin\\srt-win.exe", "exec"], env: { localappdata: "C:\\Users\\bob\\AppData\\Local", PROGRAMDATA: "C:\\bob" },
+      });
+      expect((await spawnTerminal({ tabId: "terminal:0000000a-1" })).ok).toBe(true);
+      const [, , opts] = ptySpawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
+      expect(Object.keys(opts.env).filter((key) => ["LOCALAPPDATA", "PROGRAMDATA"].includes(key.toUpperCase())).sort()).toEqual(["LOCALAPPDATA", "ProgramData"]);
+      expect(opts.env).toMatchObject({ LOCALAPPDATA: "C:\\Users\\alice\\AppData\\Local", ProgramData: "C:\\ProgramData", HOME: createdHomes[0] });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("sets the shell's temp directory inside the wrap, to one under its own HOME", async () => {
     vi.stubEnv("SHELL", "/bin/sh");
     let res: Awaited<ReturnType<typeof spawnTerminal>>;

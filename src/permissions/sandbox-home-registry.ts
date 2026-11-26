@@ -1,4 +1,4 @@
-import { lstatSync, statSync } from "node:fs";
+import { lstatSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative } from "node:path";
 import { t } from "../i18n/index.js";
 import { markSandboxHomesUnavailable } from "./sandbox-capability.js";
@@ -21,7 +21,9 @@ export function isSandboxHomeUnavailable(error: unknown): error is SandboxHomeUn
 }
 
 type DirectoryIdentity = { readonly dev: bigint; readonly ino: bigint };
-type IssuedHome = { readonly identity: DirectoryIdentity; readonly ancestors: readonly (readonly [string, DirectoryIdentity])[] };
+/** One issuance of a container HOME, which a launch holds through its preparation. */
+export interface IssuedContainerHome { readonly home: string }
+type IssuedHome = IssuedContainerHome & { readonly identity: DirectoryIdentity; readonly ancestors: readonly (readonly [string, DirectoryIdentity])[] };
 
 // Each container HOME this process issued to a launch (a sandbox HOME or a holder's staging HOME): its identity when
 // created, and that of every directory from its parent up to the runtime root.
@@ -54,7 +56,7 @@ export function recordIssuedContainerHome(home: string, root: string): void {
     ancestors.push([path, ancestor]);
     if (relative(root, path) === "") break;
   }
-  issuedContainerHomes.set(home, { identity, ancestors });
+  issuedContainerHomes.set(home, { home, identity, ancestors });
 }
 
 export function forgetIssuedContainerHome(home: string): void {
@@ -85,4 +87,31 @@ export function assertIssuedContainerHomeInPlace(home: string | undefined): void
   if (issued === undefined || inPlace(issued, home)) return;
   markSandboxHomesUnavailable();
   throw new SandboxHomeUnavailableError(new Error(`Container HOME or a parent of it was replaced: ${home}`));
+}
+
+/** The issuance of `home` a launch holds from its start; undefined for a HOME this registry never issued. */
+export function issuedContainerHome(home: string | undefined): IssuedContainerHome | undefined {
+  return home === undefined ? undefined : issuedContainerHomes.get(home);
+}
+
+/** One observation of `issued` at a launch boundary: the HOME's resolved path while the registry still holds this same
+ * issuance and the HOME and every parent up to the root are the directories issued. Undefined once it was forgotten or
+ * issued again; a replacement refuses the launch with the named reason. */
+export function liveIssuedContainerHome(issued: IssuedContainerHome | undefined): string | undefined {
+  if (issued === undefined) return undefined;
+  const held = issuedContainerHomes.get(issued.home);
+  if (held !== issued) return undefined;
+  let resolved: string | undefined;
+  try { resolved = realpathSync.native(held.home); } catch { resolved = undefined; }
+  if (resolved !== undefined && inPlace(held, held.home) && sameIdentity(directoryIdentity(resolved, false), held.identity)) return resolved;
+  markSandboxHomesUnavailable();
+  throw new SandboxHomeUnavailableError(new Error(`Container HOME or a parent of it was replaced: ${held.home}`));
+}
+
+/** `liveIssuedContainerHome` for a launch that took `issued` at its start: one forgotten or issued again since refuses it. */
+export function heldIssuedContainerHome(issued: IssuedContainerHome | undefined): string | undefined {
+  if (issued === undefined) return undefined;
+  const live = liveIssuedContainerHome(issued);
+  if (live === undefined) throw new Error("Container HOME is no longer the one issued to this launch");
+  return live;
 }
