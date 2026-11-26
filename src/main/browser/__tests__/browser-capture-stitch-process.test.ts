@@ -23,7 +23,7 @@ vi.mock("../../managed-child-processes.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../managed-child-processes.js")>();
   return {
     ...actual,
-    launchManagedNodeChild: (...args: Parameters<typeof actual.launchManagedNodeChild>) => runtime.child ?? actual.launchManagedNodeChild(...args),
+    spawnManaged: (...args: Parameters<typeof actual.spawnManaged>) => runtime.child ?? actual.spawnManaged(...args),
     forceKillManagedChildProcess: (...args: Parameters<typeof actual.forceKillManagedChildProcess>) => {
       const held = termination.hold?.(args[0]);
       if (args[0] === runtime.child) return held;

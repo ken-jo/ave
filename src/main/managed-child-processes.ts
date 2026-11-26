@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { Writable } from "node:stream";
 import { readFile, rm } from "node:fs/promises";
-import { isAbsolute, parse, resolve, sep } from "node:path";
+import { parse, resolve, sep } from "node:path";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { findHostProgram } from "../shared/host-program-path.js";
 import { createLogger } from "../lib/logger.js";
@@ -9,7 +9,6 @@ import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
 import { raceWithAbort, sleep } from "../shared/abortable-deadline.js";
 import { runWithCeiling } from "../tools/executor-ceiling.js";
-import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { createProcessGroupReaper, type ProcessGroupReaper } from "./process-group-reaper.js";
 
 const log = createLogger("ave");
@@ -174,15 +173,6 @@ export function spawnManaged(
     killProcessGroup: trackOptions.killProcessGroup ?? inferredGroupKill,
   }, undefined, onSpawn !== undefined);
   return child;
-}
-
-export function launchManagedNodeChild(entryPath: string, args: readonly string[], label: string): ChildProcess {
-  if (!isAbsolute(entryPath)) throw new TypeError("Managed child entry must be absolute.");
-  return spawnManaged(process.execPath, ["--disallow-code-generation-from-strings", entryPath, ...args], {
-    env: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
-    stdio: ["pipe", "pipe", "ignore"],
-    windowsHide: true,
-  }, { label });
 }
 
 export function trackManagedChildProcess(

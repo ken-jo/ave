@@ -6,7 +6,8 @@ import { crc32, inflateSync } from "node:zlib";
 import { BROWSER_CAPTURE_LIMITS } from "../../shared/browser-capture.js";
 import { hasOnlyKeys, isRecord } from "../../shared/is-record.js";
 import { mainDir } from "../main-paths.js";
-import { forceKillManagedChildProcess, launchManagedNodeChild } from "../managed-child-processes.js";
+import { forceKillManagedChildProcess, spawnManaged } from "../managed-child-processes.js";
+import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { BrowserActionError } from "./browser-action-guard.js";
 import {
   CAPTURE_STITCH_CHILD_FILE, captureStitchFrame, captureStitchFrames,
@@ -113,7 +114,13 @@ export function startCaptureStitcher(
     // Resolve from the runtime asset root: this module may live in a split chunk.
     const entryPath = join(mainDir, CAPTURE_STITCH_CHILD_FILE);
     if (!statSync(entryPath).isFile()) throw new Error("the capture decoder entry is missing");
-    const spawned = launchManagedNodeChild(entryPath, [String(width), String(height)], "browser-capture-stitch");
+    const spawned = spawnManaged(process.execPath, [
+      "--disallow-code-generation-from-strings", entryPath, String(width), String(height),
+    ], {
+      env: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
+      stdio: ["pipe", "pipe", "ignore"],
+      windowsHide: true,
+    }, { label: "browser-capture-stitch" });
     child = spawned;
     spawned.once("close", async () => {
       // Settle only once a pending tree kill has finished with the child.
