@@ -1,5 +1,6 @@
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +16,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   return {
     ...actual,
     spawn: vi.fn((...args: Parameters<typeof actual.spawn>) => {
-      if (spawnBoundary.mutate !== undefined) {
+      if (spawnBoundary.mutate !== undefined && !String(args[0]).endsWith("ave-path-kind.exe")) {
         const mutate = spawnBoundary.mutate;
         spawnBoundary.mutate = undefined;
         spawnBoundary.cwd = String(args[2]?.cwd);
@@ -33,6 +34,8 @@ import { BashTool } from "../shell-tools.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { HOST_SHELL_CWD_REVOKED_EXIT_CODE } from "../host-shell-cwd-guard.js";
+
+withSourceHostResources();
 
 let directory: string;
 beforeEach(() => {
@@ -250,18 +253,26 @@ describe("host cwd races after permit consumption", () => {
     const original = join(directory, "original");
     mkdirSync(current);
     const { input, context } = await authorizedContext("current");
+    let renameError: string | undefined;
     spawnBoundary.mutate = () => {
-      renameSync(current, original);
-      mkdirSync(current);
+      try {
+        renameSync(current, original);
+        mkdirSync(current);
+      } catch (error) {
+        renameError = (error as NodeJS.ErrnoException).code;
+      }
     };
     const result = await new BashTool().execute(input, context);
     expect(spawnBoundary.cwd).toBe(current);
     if (process.platform === "win32") {
-      // Physical spawn protects junction retargeting, but native child-side directory identity verification is not implemented on this platform.
+      // No child-side check: the host hold refuses the rename, so the command runs in the approved directory.
+      expect(renameError).toMatch(/^(EBUSY|EPERM|EACCES)$/u);
       expect(result.isError).toBe(false);
       expect(existsSync(join(current, "marker"))).toBe(true);
+      expect(existsSync(original)).toBe(false);
       return;
     }
+    expect(renameError).toBeUndefined();
     expect(result.isError).toBe(true);
     expect(result.metadata?.returncode).toBe(HOST_SHELL_CWD_REVOKED_EXIT_CODE);
     expect(result.output).toMatch(/working directory.*changed/i);

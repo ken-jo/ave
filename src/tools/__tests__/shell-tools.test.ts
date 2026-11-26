@@ -13,6 +13,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 
 import { mintOneShotHostShellPermit } from "../../__tests__/support/host-shell-approval.js";
 import { getHostShellExecutionPlan } from "../../permissions/sandbox-capability.js";
@@ -44,6 +45,8 @@ import {
   findPowerShellAstPathViolation,
   _spawnPowerShellForTest,
 } from "../shell-tools.js";
+
+withSourceHostResources();
 
 describe("bash tool", () => {
   const ctx = (cwd: string = process.cwd()): ToolExecutionContext => ({

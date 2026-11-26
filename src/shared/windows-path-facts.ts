@@ -1,6 +1,7 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcessByStdio } from "node:child_process";
 import { isAbsolute, win32 } from "node:path";
 import { toUSVString } from "node:util";
+import type { Readable, Writable } from "node:stream";
 import { isWindowsPathKindHelperTimeout, resolveWindowsPathKindHelper, windowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, windowsCommandLineLength } from "./windows-command-line.js";
 import { decodeWindowsNativeReply, runWindowsNative } from "./windows-native-host.js";
@@ -226,6 +227,58 @@ export function decodeWindowsPathFacts(output: string, expectedRows: number, mod
 
 export function pinWindowsPaths(paths: readonly string[]): readonly WindowsPathFacts[] {
   return request(paths, "--pin");
+}
+
+export interface HeldWindowsDirectory {
+  readonly facts: WindowsPathFacts;
+  /** Idempotent. */
+  release(): void;
+}
+
+/** Hold a directory and every ancestor against rename and delete until `release`; undefined when the helper did not hold it. */
+export function holdWindowsDirectory(path: string): Promise<HeldWindowsDirectory | undefined> {
+  if (!isAbsolute(path)) return Promise.resolve(undefined);
+  let child: ChildProcessByStdio<Writable, Readable, null>;
+  try {
+    child = runWindowsNative(() => spawn(resolveWindowsPathKindHelper(), ["--hold", path], { windowsHide: true, stdio: ["pipe", "pipe", "ignore"] }));
+  } catch {
+    return Promise.resolve(undefined);
+  }
+  child.stdin.on("error", () => {});
+  const release = (): void => {
+    child.stdin.destroy();
+    child.kill();
+  };
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let settled = false;
+    const settle = (held: HeldWindowsDirectory | undefined): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.stdout.destroy();
+      if (held === undefined) release();
+      resolve(held);
+    };
+    const timer = setTimeout(() => settle(undefined), TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs);
+    child.once("error", () => settle(undefined));
+    child.once("exit", () => settle(undefined));
+    child.stdout.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+      const reply = Buffer.concat(chunks);
+      const end = reply.indexOf(0x0a);
+      if (end < 0) {
+        if (reply.length > MAX_PATH_FACTS_OUTPUT_BYTES) settle(undefined);
+        return;
+      }
+      try {
+        const [facts] = decodeWindowsPathFacts(decodeWindowsNativeReply(reply.subarray(0, end + 1)), 1, "--pin");
+        settle(facts === undefined ? undefined : { facts, release });
+      } catch {
+        settle(undefined);
+      }
+    });
+  });
 }
 
 /** Content is read on the descriptor's pinned handle, bounded to one MiB. */

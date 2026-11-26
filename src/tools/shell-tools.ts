@@ -121,8 +121,10 @@ import {
   HOST_SHELL_AUTHORIZATION_REVOKED_ERROR,
   resolveHostShellWorkingDirectory,
   withHostShellExecutionHandoff,
+  holdHostShellSpawnDirectory,
   assertHostShellSpawnDirectory,
   type HostShellSpawnAuthorization,
+  type HostShellSpawnDirectoryHold,
 } from "../permissions/host-shell-execution-permit.js";
 import { hostShellWorkingDirectoryPrelude } from "./host-shell-cwd-guard.js";
 import { attachHostShellControlChannel } from "./host-shell-control-channel.js";
@@ -2204,9 +2206,11 @@ async function spawnBackground(command: string, cwd: string, sessionId: string, 
       });
     signal?.throwIfAborted();
     const launched = authorization === undefined || prelude !== undefined ? launch()
-      : await withHostShellExecutionHandoff(authorization, () => {
+      : await withHostShellExecutionHandoff(authorization, (hold) => {
           assertShellRemoteAuthority();
-          return launch();
+          const started = launch();
+          hold.bind(started);
+          return started;
         }, refreshShellRemoteAuthority);
     if (launched === undefined) throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
     child = launched;
@@ -2573,8 +2577,11 @@ export async function spawnWithSandbox(
   spawnAuthorization?: HostShellSpawnAuthorization,
 ): Promise<SpawnResult> {
   const releaseClaim = claimPreparedShellInvocation(prepared);
+  let cwdHold: HostShellSpawnDirectoryHold | undefined;
   try {
   signal?.throwIfAborted();
+  cwdHold = await holdHostShellSpawnDirectory(spawnAuthorization);
+  if (cwdHold === undefined) throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
   const { shell, homePath, hostHome: home } = preparedShellCommand(prepared);
   if (!homePath) throw new Error("Sandbox shell preparation has no owned HOME");
   // Compose broad reads while retaining protected paths and private sessions.
@@ -2668,6 +2675,7 @@ export async function spawnWithSandbox(
         shell: false,
         env: childEnv,
       });
+      cwdHold?.bind(child);
     } catch (err) {
       observation?.finish(null, "failed");
       void (async () => {
@@ -2768,7 +2776,7 @@ export async function spawnWithSandbox(
       })().catch(fault);
     });
   });
-  } finally { releaseClaim(); }
+  } finally { releaseClaim(); cwdHold?.dispose(); }
 }
 
 async function spawnWithTimeout(
@@ -2791,6 +2799,7 @@ async function spawnWithTimeout(
   const { shell, environment } = preparedShellCommand(prepared);
   const prelude = spawnAuthorization === undefined ? undefined : hostShellWorkingDirectoryPrelude(spawnAuthorization.cwdIdentity, "bash", process.platform);
   const { argv, probe } = preparedShellCwdProbe(prepared, prelude);
+  let launchHold: HostShellSpawnDirectoryHold | undefined;
   const launch = (): Promise<SpawnResult> => new Promise((resolve) => {
     signal?.throwIfAborted();
     assertShellRemoteAuthority();
@@ -2810,6 +2819,7 @@ async function spawnWithTimeout(
       }) as PipedChild;
     }
     catch (error) { observation?.finish(null, "failed"); throw error; }
+    launchHold?.bind(child);
     const closed = checkedShellClose(child, waitForClose);
     const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
@@ -2930,7 +2940,7 @@ async function spawnWithTimeout(
   if (spawnAuthorization !== undefined && prelude === undefined) {
     // Keep listener registration in the synchronous handoff, without holding
     // the policy queue for the lifetime of the command's result promise.
-    const handoff = await withHostShellExecutionHandoff(spawnAuthorization, () => ({ result: launch() }), refreshShellRemoteAuthority);
+    const handoff = await withHostShellExecutionHandoff(spawnAuthorization, (hold) => { launchHold = hold; return { result: launch() }; }, refreshShellRemoteAuthority);
     return handoff === undefined
       ? { output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true, metadata: {} } : await handoff.result;
   }
@@ -3938,6 +3948,9 @@ async function spawnPowerShellWithSandbox(
 ): Promise<ToolExecutionResult> {
   const waitForClose = verified !== undefined && verifiedShellRequiresResultCheck(verified.handle, verified.identity);
   signal?.throwIfAborted();
+  const cwdHold = await holdHostShellSpawnDirectory(spawnAuthorization);
+  if (cwdHold === undefined) return { output: `PowerShell spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true };
+  try {
   // Resolve before allocating the temporary profile so a missing PowerShell
   // executable cannot leave an orphaned sandbox HOME behind.
   const executable = resolvePowerShellExecutable();
@@ -4051,6 +4064,7 @@ async function spawnPowerShellWithSandbox(
         shell: false,
         env: childEnv,
       });
+      cwdHold.bind(child);
     } catch (err) {
       observation?.finish(null, "failed");
       void (async () => {
@@ -4139,6 +4153,7 @@ async function spawnPowerShellWithSandbox(
       })().catch(fault);
     });
   });
+  } finally { cwdHold.dispose(); }
 }
 
 /**
@@ -4205,6 +4220,9 @@ async function spawnPowerShellInMxc(
     const sandboxHome = createSandboxProcessHome();
     failurePrefix = "";
     lifecycle.defer(() => sandboxHome.cleanup());
+    const cwdHold = await holdHostShellSpawnDirectory(spawnAuthorization);
+    if (cwdHold === undefined) throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
+    lifecycle.defer(() => cwdHold.dispose());
     const powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome);
     const sandboxWritePaths = [...writePaths, sandboxHome.path];
     const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
@@ -4266,6 +4284,7 @@ async function spawnPowerShellInMxc(
         // The launcher's own environment: the container's is in the request.
         env: buildSafeChildEnv({}),
       });
+      cwdHold.bind(child);
     } catch (error) {
       throw launcherError(error);
     }
@@ -4426,6 +4445,7 @@ async function spawnPowerShell(
   signal?.throwIfAborted();
   const executable = resolvePowerShellExecutable();
   const prelude = spawnAuthorization === undefined ? undefined : hostShellWorkingDirectoryPrelude(spawnAuthorization.cwdIdentity, "powershell", process.platform);
+  let launchHold: HostShellSpawnDirectoryHold | undefined;
   const launch = (): Promise<ToolExecutionResult> => new Promise((resolve) => {
     signal?.throwIfAborted();
     assertShellRemoteAuthority();
@@ -4444,6 +4464,7 @@ async function spawnPowerShell(
       }, verified,
     ) as PipedChild; }
     catch (error) { observation?.finish(null, "failed"); throw error; }
+    launchHold?.bind(child);
     const closed = checkedShellClose(child, waitForClose);
     const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell" });
@@ -4501,7 +4522,7 @@ async function spawnPowerShell(
     });
   });
   if (spawnAuthorization !== undefined && prelude === undefined) {
-    const handoff = await withHostShellExecutionHandoff(spawnAuthorization, () => ({ result: launch() }), refreshShellRemoteAuthority);
+    const handoff = await withHostShellExecutionHandoff(spawnAuthorization, (hold) => { launchHold = hold; return { result: launch() }; }, refreshShellRemoteAuthority);
     return handoff === undefined
       ? { output: `PowerShell spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true } : handoff.result;
   }

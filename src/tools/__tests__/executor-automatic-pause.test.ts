@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { verifyChain } from "../../audit/hmac-chain.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
@@ -33,6 +34,8 @@ import { tryUserApprovalMemorySkip } from "../pipeline/approval-memory-skip.js";
 import { ToolRegistry } from "../registry.js";
 import { makeWriteProbeTool } from "./approval-memory-test-fixtures.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+
+withSourceHostResources();
 
 const SESSION_ID = "automatic-pause-session";
 const resources = new PermissionTestResources();

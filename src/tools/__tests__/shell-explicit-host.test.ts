@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,8 @@ import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootFor
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { BashTool, BashToolInputSchema, PowerShellTool, PowerShellToolInputSchema } from "../shell-tools.js";
 import { approvalFailureOutcome } from "../pipeline/approval-outcome.js";
+
+withSourceHostResources();
 
 const HOST_INPUT = { command: "printf approved > host-marker.txt", executionMode: "host" as const, justification: "Verify the explicitly requested host route", timeoutSeconds: 5 };
 const temporaryDirectories: string[] = [];

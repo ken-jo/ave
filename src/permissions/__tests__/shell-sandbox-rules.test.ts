@@ -3,6 +3,7 @@ import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shar
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { analysisLimitAnswer } from "../../__tests__/support/permission-lane.js";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +26,8 @@ import { mxcShellCapability, windowsProxyOnlyCapability } from "../../boot/steps
 import { definitelyTraversesPowerShellRecursively, mayTraversePowerShellRecursively } from "../rules/powershell-exfiltration.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
+
+withSourceHostResources();
 
 
 let root: string;

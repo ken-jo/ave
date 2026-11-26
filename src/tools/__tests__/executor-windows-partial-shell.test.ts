@@ -7,6 +7,7 @@ import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,6 +62,8 @@ import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host
 import { userPermissionContext as permissionContext } from "./tool-context-fixture.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { makeSubAgentApprovalAdapter } from "../../engine/subagent-runner.js";
+
+withSourceHostResources();
 
 const ORIGINAL_PLATFORM = process.platform;
 let testRoot: string;

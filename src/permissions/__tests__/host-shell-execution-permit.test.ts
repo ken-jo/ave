@@ -1,6 +1,7 @@
 import { withShellPolicyMutation } from "../shell-policy-handoff.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { mkdirSync, mkdtempSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,6 +34,8 @@ import {
   isIssuedShellAllowRuleDecision,
   type PermissionCheckResult,
 } from "../permission-manager.js";
+
+withSourceHostResources();
 
 // An explicit host retry on a host whose sandbox is available: the route invocation authorization passes, so a wildcard allow may match.
 const HOST_ROUTE_ON_SANDBOX_HOST = { runsSandboxed: false } as const;

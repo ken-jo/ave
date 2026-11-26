@@ -10,6 +10,7 @@ import { captureRationalePolicySnapshot } from "../pipeline/rationale-policy-epo
 import { LlmRationaleScopeReviewer } from "../../permissions/reviewer/rationale-scope-reviewer.js";
 import { createRationaleHostRuntime } from "../../__tests__/support/rationale-host-runtime.js";
 import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
+import { withSourceHostResources } from "../../__tests__/support/source-host-resources.js";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
@@ -34,6 +35,8 @@ import type { PermissionAuditEntryInput } from "../../audit/audit-schema.js";
 import { emitSandboxAudit, flushSandboxAudit } from "../../audit/sandbox-audit-sink.js";
 import { buildSandboxAuditEntry } from "../../audit/sandbox-audit.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+
+withSourceHostResources();
 
 const processProbe = vi.hoisted(() => ({ execFileSync: vi.fn() }));
 vi.mock("node:child_process", async (original) => ({
