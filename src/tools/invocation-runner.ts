@@ -1808,14 +1808,22 @@ async function runToolInvocationAttempt(
             }
             if (resolution.approvalDecision === undefined) throw new Error("Directory approval did not produce an authenticated decision");
             if (resolution.allowed && resolution.scope !== "turn") {
+              let preparedDirectory: string | undefined;
+              const prepare = isWindows ? () => {
+                const publish = prepareApprovedDirectories([resolution.approvedDirectory]);
+                const approvedIdentity = caseFoldForMatch(canonicalizePathForMatch(resolution.approvedDirectory));
+                preparedDirectory = beforeDirectories.find(directory =>
+                  caseFoldForMatch(canonicalizePathForMatch(directory)) === approvedIdentity) ?? resolution.approvedDirectory;
+                return publish;
+              } : undefined;
               const denied = await propagateGrantScope(
                 resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.provenance ?? RULE_PROVENANCE,
-                resolution.directorySeal, directoryApprovalSignal(approvalAbortSignal),
+                resolution.directorySeal, directoryApprovalSignal(approvalAbortSignal), prepare,
               );
               if (denied) throw new RationaleHumanApprovalDeniedError(denied.content);
               const afterDirectories = [...(invocationPermissionContext.getAdditionalDirectories?.() ?? invocationPermissionContext.additionalDirectories ?? [])];
               if (canonicalStringify([...new Set(beforeDirectories)].sort()) !== canonicalStringify([...new Set(afterDirectories)].sort())) {
-                const storedDirectory = withLocalityDecision(() => {
+                const storedDirectory = isWindows ? afterDirectories.find(directory => directory === preparedDirectory) : withLocalityDecision(() => {
                   const approvedIdentity = caseFoldForMatch(canonicalizePathForMatch(resolution.approvedDirectory));
                   return afterDirectories.find(directory =>
                     caseFoldForMatch(canonicalizePathForMatch(directory)) === approvedIdentity);
@@ -2161,6 +2169,26 @@ async function runToolInvocationAttempt(
     };
 
     const invocationDirectoryGrants = new Set<string>();
+    let approvedShellDirectories: readonly string[] | undefined;
+    const prepareApprovedDirectories = (additions: readonly string[]): (() => void) => {
+      const fresh = invocationPermissionContext.getAdditionalDirectories?.() ?? baseAdditionalDirectories;
+      const roots = [...fresh, ...invocationDirectoryGrants, ...additions];
+      const allowed = buildAllowedScope(roots, executionCwd);
+      const runtime = buildRuntimeAllowedDirectories(roots, executionCwd);
+      const shell = hostShellExecutionPermitBinding ? canonicalizeHostShellAllowedDirectories(runtime) : undefined;
+      return () => {
+        for (const path of additions) invocationDirectoryGrants.add(path);
+        invocationAllowedScope = allowed;
+        invocationRuntimeAllowedDirectories = runtime;
+        approvedShellDirectories = shell;
+      };
+    };
+    const prepareWindowsDirectoryGrant = (directorySeal: TargetSeal | undefined, prepare?: () => () => void) =>
+      withLocalityDecision(() => {
+        assertFileTargetsUnchanged();
+        directorySeal?.verify();
+        return prepare?.();
+      });
     const applyApprovedDirectory = (approvedDirectory: string): void => {
       invocationDirectoryGrants.add(approvedDirectory);
       // Re-read fresh: an earlier tool in the same ordered executeAll run may
@@ -2193,8 +2221,20 @@ async function runToolInvocationAttempt(
       provenance: DecisionProvenance,
       directorySeal: TargetSeal | undefined,
       signal = abortSignal,
+      prepare?: () => () => void,
     ): Promise<ToolResult | undefined> => {
-      if (scope === "always") return; // The workspace lifecycle already audited and committed the grant.
+      const prepareAndPublish = (commit?: (directory: string) => void): Promise<ToolResult> | undefined => {
+        let publish: (() => void) | undefined;
+        try { publish = prepareWindowsDirectoryGrant(directorySeal, prepare); }
+        catch { return denyFileTargets(changedTargetReason); }
+        publish?.();
+        commit?.call(invocationPermissionContext, approvedDirectory);
+      };
+      if (scope === "always") {
+        // The workspace lifecycle already audited and committed the persistent grant.
+        if (isWindows) return prepareAndPublish();
+        return;
+      }
       const { onSessionDirectoryGrant, onTurnDirectoryGrant } = invocationPermissionContext;
       const commit = scope === "session" ? onSessionDirectoryGrant ?? onTurnDirectoryGrant : onTurnDirectoryGrant;
       if (!commit) {
@@ -2225,6 +2265,7 @@ async function runToolInvocationAttempt(
         if (!(error instanceof ApprovalPersistenceError)) throw error;
         return denyDirectoryGrant(signal);
       }
+      if (isWindows) return prepareAndPublish(commit);
       if (!grantStillSealed(directorySeal)) return denyFileTargets(changedTargetReason);
       commit?.call(invocationPermissionContext, approvedDirectory);
     };
@@ -2365,13 +2406,25 @@ async function runToolInvocationAttempt(
             directoryAuthorization = { permission: resolution.permissionResult, humanApproved: resolution.humanApproved,
               ...(resolution.pendingRationale ? { pendingRationale: true, requestHumanApproval: resolution.requestHumanApproval } : {}) };
           }
-          if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) {
-             const denied = await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.provenance ?? RULE_PROVENANCE, resolution.directorySeal);
-            if (denied) return denied;
-          }
-          if (!grantStillSealed(resolution.directorySeal)) return await denyFileTargets(changedTargetReason);
-          applyApprovedDirectory(resolution.approvedDirectory);
-          for (const path of resolution.permissionResult?.pipelineRequest?.paths ?? []) applyApprovedDirectory(path.canonical);
+           if (isWindows) {
+             const prepare = () => prepareApprovedDirectories([resolution.approvedDirectory, ...(resolution.permissionResult?.pipelineRequest?.paths ?? []).map(path => path.canonical)]);
+             if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) {
+               const denied = await propagateGrantScope(resolution.approvedDirectory, resolution.scope,
+                 resolution.permissionResult?.provenance ?? RULE_PROVENANCE, resolution.directorySeal, abortSignal, prepare);
+               if (denied) return denied;
+             } else {
+               try { prepareWindowsDirectoryGrant(resolution.directorySeal, prepare)?.(); }
+               catch { return await denyFileTargets(changedTargetReason); }
+             }
+           } else {
+            if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) {
+               const denied = await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.provenance ?? RULE_PROVENANCE, resolution.directorySeal);
+              if (denied) return denied;
+            }
+            if (!grantStillSealed(resolution.directorySeal)) return await denyFileTargets(changedTargetReason);
+            applyApprovedDirectory(resolution.approvedDirectory);
+            for (const path of resolution.permissionResult?.pipelineRequest?.paths ?? []) applyApprovedDirectory(path.canonical);
+           }
           continue;
         }
 
@@ -2766,21 +2819,33 @@ async function runToolInvocationAttempt(
           directoryAuthorization = { permission: resolution.permissionResult, humanApproved: resolution.humanApproved,
             ...(resolution.pendingRationale ? { pendingRationale: true, requestHumanApproval: resolution.requestHumanApproval } : {}) };
         }
-        if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) {
-          const denied = await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.provenance ?? RULE_PROVENANCE, resolution.directorySeal);
-          if (denied) return denied;
-          if (!grantStillSealed(resolution.directorySeal)) return await denyFileTargets(changedTargetReason);
-        }
-        applyApprovedDirectory(resolution.approvedDirectory);
-        // The one card authorizes the complete sealed invocation; saved folders retain only the chosen scope.
-        for (const target of [...canonicalTargets, ...scopeTargets]) applyApprovedDirectory(target.runtimePath);
+         if (isWindows) {
+           const prepare = () => prepareApprovedDirectories([resolution.approvedDirectory, ...[...canonicalTargets, ...scopeTargets].map(target => target.runtimePath)]);
+           if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) {
+             const denied = await propagateGrantScope(resolution.approvedDirectory, resolution.scope,
+               resolution.permissionResult?.provenance ?? RULE_PROVENANCE, resolution.directorySeal, abortSignal, prepare);
+             if (denied) return denied;
+           } else {
+             try { prepareWindowsDirectoryGrant(resolution.directorySeal, prepare)?.(); }
+             catch { return await denyFileTargets(changedTargetReason); }
+           }
+         } else {
+          if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) {
+            const denied = await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.provenance ?? RULE_PROVENANCE, resolution.directorySeal);
+            if (denied) return denied;
+            if (!grantStillSealed(resolution.directorySeal)) return await denyFileTargets(changedTargetReason);
+          }
+          applyApprovedDirectory(resolution.approvedDirectory);
+          // The one card authorizes the complete sealed invocation; saved folders retain only the chosen scope.
+          for (const target of [...canonicalTargets, ...scopeTargets]) applyApprovedDirectory(target.runtimePath);
+         }
         if (fileWritePolicy && !resolution.pendingRationale && invocationPermissionContext.headless !== true) fileWritePolicy.directoryApproved = true;
       }
     }
     if (hostShellExecutionPermitBinding !== undefined) {
       hostShellExecutionPermitBinding = Object.freeze({
         ...hostShellExecutionPermitBinding,
-        allowedDirectories: canonicalizeHostShellAllowedDirectories(invocationRuntimeAllowedDirectories),
+        allowedDirectories: approvedShellDirectories ?? canonicalizeHostShellAllowedDirectories(invocationRuntimeAllowedDirectories),
       });
     }
     const evaluationContext = makeEvaluationContext({

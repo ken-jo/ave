@@ -352,7 +352,7 @@ describe("native Windows file permission targets", () => {
 describe("sealed file targets up to their effects", () => {
   const INSIDE = `${PROJECT}\\inside.txt`;
 
-  async function runAnswered(choice: "allow-once" | "allow-session" | "allow-always", drift: () => void, lifecycle?: { allowDirectory: (root: string, source: "permission-slash", authority?: { isCurrent(): boolean }) => Promise<string[]>; denyDirectory: () => Promise<string[]> }) {
+  async function runAnswered(choice: "allow-once" | "allow-session" | "allow-always", drift: () => void, lifecycle?: { allowDirectory: (root: string, source: "permission-slash", authority?: { isCurrent(): boolean }) => Promise<string[]>; denyDirectory: () => Promise<string[]> }, getAdditionalDirectories?: () => readonly string[]) {
     const tool = new WriteFileTool();
     const execute = vi.spyOn(tool, "execute");
     const registry = new ToolRegistry();
@@ -372,7 +372,7 @@ describe("sealed file targets up to their effects", () => {
     const onTurnDirectoryGrant = vi.fn();
     const onSessionDirectoryGrant = vi.fn();
     const [result] = await executor.executeAll([{ id: "sealed-grant", name: tool.name, input: { path: OUTSIDE, content: "changed" } }], {
-      executionCwd: PROJECT, sessionId: "sealed-grant", permissionContext: { trustOrigin: "user-keyboard", onTurnDirectoryGrant, onSessionDirectoryGrant },
+      executionCwd: PROJECT, sessionId: "sealed-grant", permissionContext: { trustOrigin: "user-keyboard", onTurnDirectoryGrant, onSessionDirectoryGrant, getAdditionalDirectories },
     });
     return { result, execute, grants: [...onTurnDirectoryGrant.mock.calls, ...onSessionDirectoryGrant.mock.calls] };
   }
@@ -388,6 +388,22 @@ describe("sealed file targets up to their effects", () => {
   it("refuses a same-name replacement before granting or entering the file effect", async () => {
     const { result, execute, grants } = await runAnswered("allow-once", () => entry(OUTSIDE, false));
     expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(t("be_executor.fileTargetChanged")) });
+    expect(grants).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each(["allow-once", "allow-session"] as const)("keeps both scopes unpublished when preparing a %s grant fails", async (choice) => {
+    let auditReached = false;
+    const query = vi.fn((drive: string) => {
+      if (drive === "Z:") throw new Error("Additional directory drive query failed");
+      return LOCAL_DRIVE;
+    });
+    const { result, execute, grants } = await runAnswered(choice, () => {
+      auditReached = true;
+      setWindowsDriveQueryForTest(query);
+    }, undefined, () => auditReached ? [String.raw`Z:\example`] : []);
+    expect(query.mock.calls.filter(([drive]) => drive === "Z:")).toHaveLength(1);
+    expect(result.is_error).toBe(true);
     expect(grants).toEqual([]);
     expect(execute).not.toHaveBeenCalled();
   });
