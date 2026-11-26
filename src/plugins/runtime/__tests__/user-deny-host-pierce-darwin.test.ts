@@ -81,4 +81,26 @@ describe.runIf(process.platform === "darwin")("a user's read deny over a plugin'
     expect(card(OTHER_PLUGIN)?.confinement).toBe("macos-sandbox");
     await expect(started.call("plain_reader_ping")).resolves.toBe("pong");
   });
+
+  it("starts the certs plugin under the wrap beside a deny inside its pierce", async () => {
+    if (!(await asrtCanInitialize())) {
+      if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT sandbox cannot initialize");
+      return;
+    }
+    const corp = join(certs(), "corp");
+    mkdirSync(corp, { recursive: true });
+    const registryPath = join(testDir, "plugins", "registry.json");
+    const rows = [await installPlugin(CERTS_PLUGIN, "certs_reader_ping", { read: [{ kind: "hostDirectory", segments: ["certs"], why: "Read trust anchors" }] })];
+    await writeFile(registryPath, JSON.stringify({ version: 1, plugins: rows }), "utf-8");
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true, denyRead: [corp] });
+    const started = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: join(testDir, "plugins") });
+    runtime = started;
+    await started.startAll();
+    const card = started.listPluginCards().find((entry) => entry.id === CERTS_PLUGIN);
+    // The pierce stays and only what the deny matches is withheld, so the launch is not refused.
+    expect(card?.installFailureMessage).toBeUndefined();
+    expect(card?.confinement).toBe("macos-sandbox");
+    expect(started.listPluginIds()).toContain(CERTS_PLUGIN);
+    await expect(started.call("certs_reader_ping")).resolves.toBe("pong");
+  });
 });
