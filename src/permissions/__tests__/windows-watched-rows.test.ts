@@ -1,9 +1,11 @@
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { t } from "../../i18n/index.js";
+import { configureHostResources } from "../../main/host-resources.js";
+import { rankAdmittedMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 
 // Every directory watch the module arms, with an injectable arm failure.
 const fsHook = vi.hoisted(() => ({
@@ -125,6 +127,25 @@ describe("watched protected rows", () => {
     mkdirSync(hooks, { recursive: true });
     await vi.waitFor(() => expect(live()).toEqual([workspace, carrier]));
     await expect(sweep()).resolves.toContain(WATCHED_ROW_VIOLATION);
+    expect(live()).toEqual([]);
+  });
+
+  it.runIf(process.platform === "win32")("gives the next launch exact denies once the carrier exists, while the running launch keeps its watch until it ends", async () => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    const root = realpathSync.native(workspace);
+    const carrier = join(root, ".ave");
+    const children = [join(carrier, "commands"), join(carrier, "hooks")];
+    const lists = { allowWrite: [root], allowRead: [], denyRead: [], denyWrite: children, requiredWriteDenies: children, protectedFloor: [] };
+    const running = rankAdmittedMxcLists(lists);
+    expect(running.watched).toEqual(children);
+    const sweep = watchMxcProtectedRows(running.watched ?? [], { commandId: "running" });
+    mkdirSync(carrier);
+    await vi.waitFor(() => expect(live()).toEqual([root, carrier]));
+    expect(rankAdmittedMxcLists(lists)).toEqual({ readwrite: [root], readonly: [], denied: children });
+    expect(live()).toEqual([root, carrier]);
+    mkdirSync(children[1]!);
+    await expect(sweep()).resolves.toContain(WATCHED_ROW_VIOLATION);
+    expect(listWatchedQuarantine().map(entry => entry.original)).toEqual([children[1]]);
     expect(live()).toEqual([]);
   });
 

@@ -3530,6 +3530,8 @@ in its directory.
   The watch is a live directory watch on the write root, and on the carrier
   once it appears, armed before the container starts and closed with the run;
   a watch that cannot be armed refuses the launch, naming the protected path.
+  Once the carrier exists, the next launch denies both children exactly; a
+  running launch keeps its watch until it ends, since its grants are fixed.
   Literal denies apply throughout the command.
   Pattern denies are enumerated at launch; a file another process creates during a command's lifetime that first matches the pattern is not covered until the next command.
   In the six installed x64 runs observed on 2026-11-11, node opens of the Ave
