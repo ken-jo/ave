@@ -751,15 +751,19 @@ over-limit input before expensive result serialization. The cap is global;
 there is no separate per-command word allowance. Separators and operators are
 bounded by the character cap. General structural parsing retains its existing
 safety limits. The independent path-evidence pass uses the same complete-input
-400-record budget, including executed nested literal code. Exhausting a parser
-or evidence safety limit proves nothing about the command. The contained route
-asks in every mode. No rule, mode or grant passes the ask. The host route =
-ask-human (forced floor `shell-analysis-limit`: allow once, no session grant,
-denied headless; the card states that the rest of the command past the limit
-was not checked). The contained route also offers one-time approval, with no
-session grant, and denies when nobody can approve. The shared card displays the
-full command and the unchecked-part notice on both routes. One approval covers
-the whole command. The shell tool's own re-check accepts that verdict. The
+400-record budget, including executed nested literal code. With a saved
+PowerShell deny rule, an over-limit or unreadable PowerShell command is refused
+at admission with `shell-analysis-limit` in every mode. It produces no ask-rule
+evidence and offers no review or approval. Without a saved PowerShell deny,
+an over-limit command reaches the analysis-limit floor when other admission
+and deny checks pass. Unreadable syntax within the limit continues through the
+ordinary decision pipeline.
+
+When a shell command reaches the analysis-limit floor, both contained and host
+routes require one-time human approval in every mode. The floor offers no
+session grant, and headless requests are denied. The card displays the full
+command and states that the portion past the limit was unchecked. One approval
+covers the whole command. The shell tool's own re-check accepts that verdict. The
 2,000-character reusable-rule limit alone does not stop path evidence
 collection or create a forced floor. Ordinary runtime opacity within the safety
 budget continues through the mode stage.
