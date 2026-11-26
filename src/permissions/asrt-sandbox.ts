@@ -19,7 +19,7 @@ import { existingWindowsGrants, pinWindowsFilesystemConfig, windowsPinnedPaths, 
 import { assertWindowsGrantGrammar, pinWindowsGrantTargets } from "./windows-grant-targets.js";
 import { admittedWindowsEntry, assertWindowsAclPolicyBudget, expandWindowsAclDenyLists, expandWindowsFsPaths, isAdmittedWindowsEntry, setWindowsAclRecoveryListener, WindowsSandboxError, type WindowsAclRecoveryReport, type WindowsAdmission } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { readAsrtSignalReleaseClaim } from "./asrt-signal-ownership.js";
-import { getSrtWinArchitecture, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
+import { getSrtWinArchitecture, getSrtWinIntegrityEpoch, invalidateSrtWinIntegrity, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { listAuthorizedWorkspaceRoots } from "./workspace-authorized-roots.js";
@@ -120,7 +120,12 @@ export function getVendoredSrtWinExePath(): string {
 
 // The verified private execution image; the package path is never executed.
 export function getVerifiedSrtWinExePath(): string {
-  return prepareSrtWinExecutable(getVendoredSrtWinExePath());
+  try {
+    return prepareSrtWinExecutable(getVendoredSrtWinExePath());
+  } catch (error) {
+    invalidateSrtWinIntegrity();
+    throw error;
+  }
 }
 
 // ASRT's vendored seccomp arch directories (`getVendorArchitecture`); ia32 and others have none.
@@ -1379,6 +1384,15 @@ export function isWindowsBackgroundConfinementRuntimeActive(): boolean {
 /** Identities that every piece of Windows confinement evidence is bound to: the session, its liveness and its deny protection. */
 export function getWindowsConfinementRoute(): readonly unknown[] {
   return [sandboxSession, active, sandboxSession?.windowsDenyFailure];
+}
+
+/** Binds evidence to the verified private executable and any intervening integrity refusal. */
+export function getWindowsAccountConfinementHelperIdentity(): string | undefined {
+  if (process.platform !== "win32" || sandboxSession?.windowsAccountRuntime === undefined || !isOfflineProcessConfinementActive()) return undefined;
+  const helper = getVerifiedSrtWinExePath();
+  const stamp = lstatSync(helper, { bigint: true });
+  if (!stamp.isFile()) throw new Error("Windows sandbox helper identity is unavailable");
+  return JSON.stringify([helper, ...[stamp.dev, stamp.ino, stamp.size, stamp.ctimeNs, stamp.mtimeNs].map(String), getSrtWinIntegrityEpoch()]);
 }
 
 /** Asks the helper, off the event loop, whether the live session still has its account, credential, identity and egress enforcement. */

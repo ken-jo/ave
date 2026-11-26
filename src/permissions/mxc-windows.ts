@@ -141,6 +141,14 @@ export function parseMxcDryRunOutput(exitCode: number | null, stdout: string, st
   return { ok: false, detail: diagnostic.slice(0, 500) };
 }
 
+/** A failed contained shell can report launcher startup failure after its own process was created. */
+export function reportsMxcShellBackendLoss(code: number | null, diagnostics: string): boolean {
+  if (code === null || code === 0) return false;
+  if ((code >>> 0) === 0xc0000142) return true;
+  return outputLines("", diagnostics).some((line) =>
+    /^(?:Error: )?(?:BaseContainer job-object setup failed|failed to (?:create|attach) the process security environment)\b/i.test(line));
+}
+
 export interface MxcRunResult {
   readonly code: number | null;
   readonly stdout: string;

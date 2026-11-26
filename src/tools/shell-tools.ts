@@ -92,7 +92,7 @@ import {
 } from "../permissions/asrt-sandbox.js";
 import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
 import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
-import { isWindowsPathAtOrUnder, MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
+import { isWindowsPathAtOrUnder, MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine, reportsMxcShellBackendLoss } from "../permissions/mxc-windows.js";
 import { invalidateWindowsBackendEvidence } from "../permissions/windows-confinement-evidence.js";
 import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";
 import { createContainedShellLifecycle } from "./contained-shell-lifecycle.js";
@@ -4319,6 +4319,7 @@ async function spawnPowerShellInMxc(
       void produce().then(resolveResult, fault);
     };
     let lifetime: ReturnType<typeof watchShellLifetime> | undefined;
+    let launcherDiagnostics = "";
     let closed: Promise<void> | undefined;
     spawned.on("error", (err) => {
       if (spawned.pid === undefined) invalidateWindowsBackendEvidence("container");
@@ -4352,8 +4353,10 @@ async function spawnPowerShellInMxc(
       launch.bindChild(spawned);
       collector = createOutputCollector(spawned, { captureFactory: outputCaptureFactory, progress, observation });
       spawned.stdout.on("data", parserResponse === undefined ? collector.collect : parserResponse.collect);
-      // The parser's stderr is drained, never kept.
-      spawned.stderr.on("data", parserResponse === undefined ? collector.collectStderr : () => {});
+      spawned.stderr.on("data", (chunk: Buffer) => {
+        if (launcherDiagnostics.length < 4096) launcherDiagnostics += chunk.toString().slice(0, 4096 - launcherDiagnostics.length);
+        if (parserResponse === undefined) collector.collectStderr(chunk);
+      });
       // Timeout and cancellation revoke the invocation before the kill starts.
       lifetime = watchShellLifetime(spawned, timeoutSeconds, signal, () => lifecycle.revoke());
     } catch (error) {
@@ -4373,6 +4376,9 @@ async function spawnPowerShellInMxc(
     const finish = async (code: number | null, exitSignal: NodeJS.Signals | null = null): Promise<void> => {
       if (closed !== undefined) await closed;
       watch.dispose();
+      if (!watch.aborted && !watch.timedOut && exitSignal === null && reportsMxcShellBackendLoss(code, launcherDiagnostics)) {
+        invalidateWindowsBackendEvidence("container");
+      }
       settle(async () => {
         const metadata = { ...watch.metadata(), returncode: code, timedOut: watch.timedOut, sandboxed: true };
         let completed: SpawnResult = { output: "", isError: true, metadata };

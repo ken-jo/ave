@@ -3,6 +3,7 @@ import { PassThrough, Writable } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 import type { ContainerRequest, MxcProcess, ProbeOutput } from "@microsoft/mxc-sdk/v1";
 import { describe, expect, it, vi } from "vitest";
+import * as backendEvidence from "../windows-confinement-evidence.js";
 import { createMxcExtensionRequest, createMxcNativeProcess } from "../../__tests__/support/mxc-supervisor.js";
 import { _spawnMxcExtensionProcessForTest, spawnMxcExtensionProcess, spawnMxcExtensionProcessForDiagnostics, type OwnedMxcExtensionProcess, type MxcProcessLifecycleEvent } from "../mxc-extension-process.js";
 import { MxcExtensionChannel } from "../mxc-extension-channel.js";
@@ -58,6 +59,31 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
   it("refuses a production native spawn that carries no row-2 admission at the spawn boundary", async () => {
     const unadmitted = { signal: new AbortController().signal } as unknown as Parameters<typeof spawnMxcExtensionProcess>[1];
     await expect(spawnMxcExtensionProcess(createMxcExtensionRequest(), unadmitted)).rejects.toThrow(/requires row-2 admission/);
+  });
+
+  it.each([
+    ["base containment", "none", true, true],
+    ["denied base containment fallback", "base-container", true, true],
+    ["extension-only path queries", "base-container", false, false],
+  ] as const)("reports shared backend loss for %s only when base containment is unavailable", async (_name, tier, enumerate, needsDaclAugmentation) => {
+    const reportLoss = vi.spyOn(backendEvidence, "invalidateWindowsBackendEvidence");
+    try {
+      const f = transportFixture();
+      f.probe.mockReturnValue({ tier, needsDaclAugmentation, probes: { baseContainerSupportsEnumeratePaths: enumerate } } as ProbeOutput);
+      await expect(f.launch()).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+      expect(f.spawn).not.toHaveBeenCalled();
+      expect(reportLoss).toHaveBeenCalledTimes(tier !== "base-container" || needsDaclAugmentation ? 1 : 0);
+    } finally { reportLoss.mockRestore(); }
+  });
+
+  it("revokes receipts when native creation reports backend loss", async () => {
+    const reportLoss = vi.spyOn(backendEvidence, "invalidateWindowsBackendEvidence");
+    try {
+      const f = transportFixture();
+      f.spawn.mockRejectedValue(Object.assign(new Error("Base containment was withdrawn"), { code: "backend_unavailable" }));
+      await expect(f.launch()).rejects.toBeInstanceOf(MxcProcessCleanupError);
+      expect(reportLoss).toHaveBeenCalledExactlyOnceWith("container");
+    } finally { reportLoss.mockRestore(); }
   });
 
   it("forwards binary stdin, stdout, stderr and terminal status, omitting telemetry", async () => {

@@ -3,6 +3,7 @@ import { canonicalStringify } from "../shared/canonical-json.js";
 import { assertSandboxWindowsExtensionPlan, type SandboxWindowsExtensionPlan } from "../shared/sandbox-capability-info.js";
 import { MxcCapabilityUnavailableError, MxcProcessContractError } from "./mxc-extension-errors.js";
 import { mxcRequestDigest, type MxcExtensionStartRecord } from "./mxc-extension-protocol.js";
+import { getWindowsContainerBackendLossEpoch } from "./windows-confinement-evidence.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
 import { classifyMxcExtensionReadiness, classifyMxcReleaseGate, settleWindowsExtensionReadiness,
   type MxcExtensionReleaseGateEvidence, type WindowsExtensionMxcState } from "./mxc-extension-readiness.js";
@@ -18,7 +19,13 @@ interface AdmissionIdentity {
   readonly executableIdentity: string;
   readonly bootPlan: SandboxWindowsExtensionPlan;
 }
-interface AdmissionRecord extends Omit<AdmissionIdentity, "request"> { readonly requestDigest: string; readonly bootPlanDigest: string; spent: boolean }
+interface AdmissionRecord extends Omit<AdmissionIdentity, "request"> {
+  readonly requestDigest: string;
+  readonly bootPlanDigest: string;
+  readonly releaseEvidence: MxcExtensionReleaseGateEvidence | undefined;
+  readonly backendLossEpoch: number;
+  spent: boolean;
+}
 const admissions = new WeakMap<MxcExtensionAdmission, AdmissionRecord>();
 
 let releaseGateEvidence: MxcExtensionReleaseGateEvidence | undefined;
@@ -59,14 +66,19 @@ export function createMxcExtensionAdmission(input: AdmissionIdentity): MxcExtens
   assertMxcReleaseGateEvidence();
   const admission = Object.freeze({}) as MxcExtensionAdmission;
   admissions.set(admission, { holder: input.holder, executableIdentity: input.executableIdentity, bootPlan: input.bootPlan,
-    bootPlanDigest: canonicalStringify(input.bootPlan), requestDigest: mxcRequestDigest(input.request), spent: false });
+    bootPlanDigest: canonicalStringify(input.bootPlan), requestDigest: mxcRequestDigest(input.request),
+    releaseEvidence: releaseGateEvidence, backendLossEpoch: getWindowsContainerBackendLossEpoch(), spent: false });
   return admission;
+}
+
+function hasCurrentBackendEvidence(record: AdmissionRecord): boolean {
+  return record.releaseEvidence === releaseGateEvidence && record.backendLossEpoch === getWindowsContainerBackendLossEpoch();
 }
 
 /** Spend immediately at the native spawn boundary; a mismatch or a second use burns the receipt rather than enabling retries. */
 export function consumeMxcExtensionAdmission(admission: MxcExtensionAdmission, identity: AdmissionIdentity): void {
   const record = admissions.get(admission);
-  if (!record || record.spent || record.holder !== identity.holder || record.executableIdentity !== identity.executableIdentity
+  if (!record || record.spent || !hasCurrentBackendEvidence(record) || record.holder !== identity.holder || record.executableIdentity !== identity.executableIdentity
       || record.bootPlan !== identity.bootPlan || record.bootPlanDigest !== canonicalStringify(identity.bootPlan)
       || identity.bootPlan.selectedBackend !== "mxc" || identity.bootPlan.readiness !== "ready"
       || record.requestDigest !== mxcRequestDigest(identity.request)) {
@@ -87,7 +99,7 @@ export async function admitMxcExtensionStart(admission: MxcExtensionAdmission, i
 }): Promise<void> {
   const record = admissions.get(admission);
   try {
-    if (!record || record.spent || record.holder !== input.holder || record.bootPlan !== input.bootPlan
+    if (!record || record.spent || !hasCurrentBackendEvidence(record) || record.holder !== input.holder || record.bootPlan !== input.bootPlan
         || record.requestDigest !== mxcRequestDigest(input.request)) {
       throw new MxcProcessContractError("Native admission evidence does not match this holder request");
     }
@@ -118,6 +130,7 @@ export async function admitMxcExtensionStart(admission: MxcExtensionAdmission, i
     }
     // The start's own capability refusal keeps its message; the settled plan would only name the ancestor.
     if (startFailure) throw startFailure;
+    if (!hasCurrentBackendEvidence(record)) throw new MxcCapabilityUnavailableError("Native containment evidence changed during startup");
     if (result.selectedBackend !== "mxc" || result.readiness !== "ready") {
       // Only the deadline aborts a start whose caller did not cancel; the plan reason names the ancestor, not the cause.
       const cause = observed?.state === "unavailable" ? observed.reason

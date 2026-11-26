@@ -28,6 +28,13 @@ export class MxcCapabilityUnavailableError extends Error {
   }
 }
 
+export class MxcBaseContainmentUnavailableError extends MxcCapabilityUnavailableError {
+  constructor(options?: ErrorOptions) {
+    super("Required base containment is unavailable", options);
+    this.name = "MxcBaseContainmentUnavailableError";
+  }
+}
+
 export class WorkerTransportUnsupportedError extends Error {
   readonly code = "worker-transport-unsupported";
   constructor() {

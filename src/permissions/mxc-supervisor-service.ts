@@ -4,9 +4,15 @@ import { MxcExtensionChannel } from "./mxc-extension-channel.js";
 import { MXC_STREAM_CHUNK_BYTES, mxcModuleDiagnostics, mxcRequestDigest } from "./mxc-extension-protocol.js";
 import { MxcNativeProcess } from "./mxc-native-process.js";
 import { MxcIntegrityError } from "../../scripts/lib/mxc-sdk-integrity.mjs";
-import { MxcCapabilityUnavailableError, MxcProcessContractError, MxcProcessCleanupError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
+import { MxcBaseContainmentUnavailableError, MxcCapabilityUnavailableError, MxcProcessContractError, MxcProcessCleanupError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
 import type { MxcSupervisorRuntime } from "./mxc-supervisor-bootstrap.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
+
+function classifyBackendFailure(error: unknown): unknown {
+  return error instanceof Error && "code" in error && error.code === "backend_unavailable"
+    ? new MxcBaseContainmentUnavailableError({ cause: error })
+    : error;
+}
 
 /** One container incarnation per supervisor. All dependencies are host-owned. */
 export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness: Readable,
@@ -70,11 +76,15 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
           starting = (async () => {
             const runtime = await bootstrap();
             if (stopping) return null;
-            const probe = runtime.sdk.probe(frame.request);
+            const probe = (() => {
+              try { return runtime.sdk.probe(frame.request); }
+              catch (error) { throw classifyBackendFailure(error); }
+            })();
             // Start evidence (contract fields 1-5): each value is what this start observed, reported on its ready frame.
             const baseContainerReady = probe.tier === "base-container" && probe.needsDaclAugmentation === false;
             const ancestorQueriesSupported = probe.probes.baseContainerSupportsEnumeratePaths === true;
-            if (!baseContainerReady || !ancestorQueriesSupported) {
+            if (!baseContainerReady) throw new MxcBaseContainmentUnavailableError();
+            if (!ancestorQueriesSupported) {
               throw new MxcCapabilityUnavailableError("Required native containment is unavailable");
             }
             runtime.auditModules();
@@ -91,7 +101,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
             // A single argument is deliberate: telemetry options are never passed.
             spawnPending = true;
             const requestDigest = mxcRequestDigest(frame.request);
-            const nativePending = runtime.sdk.spawn(frame.request).finally(() => { spawnPending = false; });
+            const nativePending = runtime.sdk.spawn(frame.request).catch((error: unknown) => { throw classifyBackendFailure(error); }).finally(() => { spawnPending = false; });
             // Keep adopting a late handle even if the notification channel fails.
             // The failure requests teardown while the native promise remains owned.
             const spawning = Promise.resolve().then(() => channel.send({ type: "spawning" }));
@@ -184,6 +194,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
     await channel.end();
   } catch (cause) {
     stop();
+    const backendUnavailable = cause instanceof MxcBaseContainmentUnavailableError;
     let failure = cause;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -210,7 +221,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
     try {
       // Every other error receipt certifies that creation never began or native
       // termination and disposal completed; cleanup failure has its own code.
-      await channel.send({ type: "error", code,
+      await channel.send({ type: "error", code, ...(backendUnavailable ? { backendUnavailable: true } : {}),
         message: failure instanceof Error ? failure.message.slice(0, 1024) : "Supervisor failed" });
       await channel.end();
     } catch { /* The parent may already be gone; process exit closes the native job. */ }

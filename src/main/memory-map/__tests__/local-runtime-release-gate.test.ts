@@ -12,7 +12,7 @@ import { assertLocalEmbeddingRuntime } from '../local-runtime.js';
 const NO_ACCOUNT = { errors: [] as string[], warnings: [] as string[], accountBackendAbsent: true as const };
 const NO_CONTAINER = { state: 'unavailable', reason: 'container-unavailable', windowsBuild: null, detail: '', baseContainerApiPresent: false, containerBackendAbsent: true };
 const state = vi.hoisted(() => ({
-  confined: false, homeVerified: true, verifiedShell: { confidence: 'verified' },
+  accountHelperIdentity: 'account-helper-1', confined: false, homeVerified: true, verifiedShell: { confidence: 'verified' },
   accountOperational: vi.fn(async () => true), accountInventory: vi.fn(async (): Promise<object> => ({})),
   containerInventory: vi.fn(async (): Promise<object> => ({})), containerStart: vi.fn(async (): Promise<object> => ({})),
   plan: undefined as Pick<SandboxWindowsExtensionPlan, 'selectedBackend' | 'readiness' | 'reason'> | undefined,
@@ -24,6 +24,7 @@ vi.mock('../../../permissions/asrt-sandbox.js', () => ({
   isWindowsAccountConfinementOperational: async () => state.confined && await state.accountOperational(),
   checkAsrtDependencies: state.accountInventory,
   getWindowsConfinementRoute: () => [state.confined],
+  getWindowsAccountConfinementHelperIdentity: () => state.accountHelperIdentity,
 }));
 vi.mock('../../../permissions/mxc-windows.js', async importOriginal => ({
   ...await importOriginal<typeof import('../../../permissions/mxc-windows.js')>(),
@@ -60,6 +61,7 @@ const CONTAINER_ROUTE = { mxc: { state: 'available' }, srtWinReady: false, shell
 
 beforeEach(() => {
   setProcessPlatform('win32');
+  state.accountHelperIdentity = 'account-helper-1';
   state.confined = false;
   state.homeVerified = true;
   state.accountOperational.mockReset().mockResolvedValue(true);
@@ -295,4 +297,17 @@ it('a late search cannot reuse an earlier batch account receipt', async () => {
     await bootCheck;
     repository.closeSearchIndex();
   }
+});
+
+it('revokes an account receipt when its verified helper identity changes', async () => {
+  unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+  state.confined = true;
+  state.substrate = ACCOUNT_ROUTE;
+  const admission = await refreshWindowsBackgroundAdmission();
+  expect(admission.searchIndexPolicy(true)).toBe('enabled-with-recovery');
+
+  state.accountHelperIdentity = 'account-helper-2';
+  expect.soft(admission.searchIndexPolicy(true)).toBe('inactive');
+  state.accountHelperIdentity = 'account-helper-1';
+  expect(admission.searchIndexPolicy(true)).toBe('inactive');
 });

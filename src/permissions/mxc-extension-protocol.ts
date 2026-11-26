@@ -30,7 +30,7 @@ type StartFrame = { type: "start"; request: ContainerRequest };
 type ReadyFrame = { type: "ready"; id: number; nodeVersion: string; nativeModules: string[]; nativeModuleCount: number; nativeModulesTruncated: boolean; ownerHandle: string;
   requestDigest: string; startEvidence: MxcExtensionStartEvidence };
 type ExitFrame = { type: "exit"; exitCode: number; timedOut: boolean };
-type FailureFrame = { type: "error"; code: "contract" | "integrity" | "capability-unavailable" | "cleanup-unverified" | "supervisor-lost"; message: string };
+type FailureFrame = { type: "error"; code: "contract" | "integrity" | "capability-unavailable" | "cleanup-unverified" | "supervisor-lost"; message: string; backendUnavailable?: true };
 export type MxcStreamFrame = (StreamFrame | ControlFrame | StoppedFrame | NativeCreatedFrame | NativeObservedFrame | StartFrame | ReadyFrame | ExitFrame | FailureFrame) & {
   version: 1;
   generation: string;
@@ -89,7 +89,8 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
     case "error":
       if (!["contract", "integrity", "capability-unavailable", "cleanup-unverified", "supervisor-lost"].includes(String(frame.code))
         || typeof frame.message !== "string" || frame.message.length > 1024) fail();
-      fields = ["code", "message"];
+      if (frame.backendUnavailable !== undefined && frame.backendUnavailable !== true) fail();
+      fields = ["code", "message", "backendUnavailable"];
       break;
     default: return fail();
   }

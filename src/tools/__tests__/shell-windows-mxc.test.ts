@@ -123,14 +123,14 @@ function isParserLaunch(input: { commandLine: string }): boolean {
     .includes("[System.Management.Automation.Language.Parser]::ParseInput");
 }
 
-function fakeChild(output: string, code: number): EventEmitter & Record<string, unknown> {
+function fakeChild(output: string, code: number, diagnostics = ""): EventEmitter & Record<string, unknown> {
   const child = new EventEmitter() as EventEmitter & Record<string, unknown>;
   const stdout = new PassThrough();
   const stderr = new PassThrough();
   Object.assign(child, { stdout, stderr, stdin: new PassThrough(), exitCode: null, signalCode: null, pid: 4242, killed: false, kill: vi.fn(() => true) });
   queueMicrotask(() => {
     stdout.end(output);
-    stderr.end();
+    stderr.end(diagnostics);
     child["exitCode"] = code;
     child.emit("exit", code, null);
     child.emit("close", code, null);
@@ -620,6 +620,18 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(result.output).toBe("PowerShell spawn failed: container launcher error ENOENT");
     expect(reportLoss).toHaveBeenCalledExactlyOnceWith("container");
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["base containment failure", "Error: BaseContainer job-object setup failed (5)", true],
+    ["ordinary command failure", "Command failed", false],
+  ] as const)("classifies %s after the launcher starts", async (_name, diagnostics, revokes) => {
+    bootMxcShells();
+    const reportLoss = vi.spyOn(backendEvidence, "invalidateWindowsBackendEvidence");
+    childProcessMock.spawn.mockImplementation((command: string) =>
+      command === WXC_EXEC ? fakeChild("", 1, diagnostics) : fakeChild(PARSED, 0));
+    expect((await executePowerShell(context("ps-mxc-exit"))).isError).toBe(true);
+    expect(reportLoss).toHaveBeenCalledTimes(revokes ? 1 : 0);
   });
 
   it("keeps a running launcher's abort watch after an error and releases only on close", async () => {

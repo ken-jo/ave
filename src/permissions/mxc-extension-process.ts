@@ -9,6 +9,7 @@ import { spawnManaged } from "../main/managed-child-processes.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { mxcStagingParent } from "./mxc-runtime-root.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { invalidateWindowsBackendEvidence } from "./windows-confinement-evidence.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
 import { MxcExtensionChannel } from "./mxc-extension-channel.js";
 import { MXC_STREAM_CHUNK_BYTES, type MxcExtensionStartRecord } from "./mxc-extension-protocol.js";
@@ -175,6 +176,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
         this.observe({ type: "stopped", spawnPendingAtCancellation: frame.spawnPendingAtCancellation });
       } else if (frame.type === "error") {
         this.failureReceipt = true;
+        if (frame.backendUnavailable === true) invalidateWindowsBackendEvidence("container");
         if (frame.code === "cleanup-unverified") throw new MxcProcessCleanupError(frame.message);
         if (frame.code === "integrity") throw new MxcIntegrityError(frame.message);
         if (frame.code === "capability-unavailable") throw new MxcCapabilityUnavailableError(frame.message);

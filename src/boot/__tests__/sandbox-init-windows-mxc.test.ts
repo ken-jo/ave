@@ -80,6 +80,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     isOfflineProcessConfinementActive: h.offlineConfinement,
     isWindowsAccountConfinementOperational: async () => h.accountOperational(),
     getWindowsConfinementRoute: () => [h.runtimeActive(), h.offlineConfinement()],
+    getWindowsAccountConfinementHelperIdentity: () => undefined,
     appOwnedSandboxHomeRoot: () => join(roots, "home"),
     sandboxTempPrincipalDirsInUse: () => new Set<string>(),
     ensureSandboxPrivateRoot: (root: string) => {

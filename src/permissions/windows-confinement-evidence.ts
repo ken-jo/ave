@@ -1,6 +1,7 @@
 import type { SandboxWindowsSubstrateInfo } from "../shared/sandbox-capability-info.js";
 import {
   checkAsrtDependencies,
+  getWindowsAccountConfinementHelperIdentity,
   getWindowsConfinementRoute,
   isWindowsAccountConfinementOperational,
 } from "./asrt-sandbox.js";
@@ -111,7 +112,7 @@ export function isWindowsAccountBackendAbsent(dependencies: Awaited<ReturnType<t
 }
 
 const accountBackend = new WindowsBackendEvidenceOwner({
-  route: () => [getSandboxGeneration(), ...getWindowsConfinementRoute(), getWindowsSandboxSubstrate()],
+  route: () => [getSandboxGeneration(), ...getWindowsConfinementRoute(), getWindowsSandboxSubstrate(), getWindowsAccountConfinementHelperIdentity()],
   probeRoute: () => isWindowsAccountConfinementOperational(),
   probeAbsence: async () => isWindowsAccountBackendAbsent(await checkAsrtDependencies()),
   isRoutePublished: (substrate) => substrate.srtWinReady && substrate.accountBackendAbsent !== true,
@@ -144,8 +145,15 @@ const containerBackend = new WindowsBackendEvidenceOwner({
 export const WINDOWS_BACKEND_EVIDENCE: readonly WindowsBackendEvidenceOwner[] = [accountBackend, containerBackend];
 
 /** A failed launch or a withdrawn route: nothing gathered before it may admit work. */
+let containerBackendLossEpoch = 0;
+
+export function getWindowsContainerBackendLossEpoch(): number { return containerBackendLossEpoch; }
+
 export function invalidateWindowsBackendEvidence(backend?: "account" | "container"): void {
-  if (backend !== "account") containerBackend.invalidate();
+  if (backend !== "account") {
+    containerBackendLossEpoch += 1;
+    containerBackend.invalidate();
+  }
   if (backend !== "container") accountBackend.invalidate();
 }
 
