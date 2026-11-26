@@ -472,7 +472,7 @@ export function rankMxcFilesystem(
   model: PolicyModel,
   exists: (path: string) => boolean,
   list?: (directory: string) => readonly MxcDirectoryEntry[],
-): MxcFilesystemGrants {
+): MxcFilesystemGrants & { readonly watched?: readonly string[] } {
   const rows = mxcPolicyRows(model);
   // POSIX-rooted floor rows must not turn into current-drive paths.
   const windowsPaths = (paths: readonly string[]): readonly string[] => paths.filter((path) => !/^\/(?!\/)/.test(path));
@@ -526,13 +526,21 @@ export function rankMxcFilesystem(
   }
   // A match removed since the walk needs no deny: checked once more as the policy is handed over.
   const presentMatches = patternMatches.filter((match) => allGrants.some((grant) => strictlyUnder(match, grant) || foldPath(match) === foldPath(grant)) && exists(match));
-  const raised = [...denied.map((deny) => {
+  const watched: string[] = [];
+  const raised = [...dedupe(denied).flatMap((deny) => {
     if (exists(deny)) return deny;
     let firstMissing = winPath.normalize(deny);
     for (;;) {
       const parent = winPath.dirname(firstMissing);
       if (exists(parent)) break;
       if (requiredWriteDenies.has(foldPath(deny))) {
+        const root = winPath.dirname(parent);
+        // A missing project carrier cannot carry an exact deny in the launcher.
+        if (winPath.basename(parent).toLowerCase() === ".ave" &&
+            readwrite.some((grant) => foldPath(grant) === foldPath(root)) && exists(root)) {
+          watched.push(deny);
+          return [];
+        }
         throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: deny }));
       }
       if (parent === firstMissing) throw new Error(`Windows sandbox policy cannot resolve missing deny: ${deny}`);
@@ -551,6 +559,7 @@ export function rankMxcFilesystem(
     readonly: dedupe(readonlyOut).filter((path) => !readwrite.some((grant) => foldPath(grant) === foldPath(path))).map(withoutTrailingSeparator),
     denied: dedupe(raised).filter((path, index, paths) =>
       !paths.some((parent, parentIndex) => parentIndex !== index && isWindowsPathAtOrUnder(path, parent))).map(withoutTrailingSeparator),
+    ...(watched.length > 0 ? { watched } : {}),
   };
 }
 

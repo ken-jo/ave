@@ -28,6 +28,7 @@ interface WatchedRow {
   readonly anchorIdentity: FileIdentity;
   readonly recordedAt: string;
   readonly roots: Set<string>;
+  readonly holders: Set<symbol>;
   exact: boolean;
 }
 
@@ -90,20 +91,26 @@ function entryAt(path: string, bigint = false): Stats | BigIntStats | undefined 
 
 /** Record an absent protected row reachable from `roots`; nothing is created. */
 export function watchAbsentProtectedRow(path: string, roots: readonly string[], exact = false): void {
+  watchProtectedRow(path, roots, exact);
+}
+
+function watchProtectedRow(path: string, roots: readonly string[], exact: boolean, holder?: symbol): void {
   const target = plain(path);
   const id = key(target);
-  if (excepted.has(id)) return;
+  if (holder === undefined && excepted.has(id)) return;
   const known = watched.get(id);
   if (known) {
     known.exact ||= exact;
     for (const root of roots) known.roots.add(root);
+    if (holder !== undefined) known.holders.add(holder);
     return;
   }
   let anchor = dirname(target);
   for (;;) {
     const entry = entryAt(anchor, true);
     if (entry?.isDirectory()) {
-      watched.set(id, { path: target, anchor, anchorIdentity: { dev: entry.dev, ino: entry.ino }, recordedAt: new Date().toISOString(), roots: new Set(roots), exact });
+      watched.set(id, { path: target, anchor, anchorIdentity: { dev: entry.dev, ino: entry.ino }, recordedAt: new Date().toISOString(),
+        roots: new Set(roots), holders: new Set(holder === undefined ? [] : [holder]), exact });
       return;
     }
     const parent = dirname(anchor);
@@ -113,12 +120,34 @@ export function watchAbsentProtectedRow(path: string, roots: readonly string[], 
   }
 }
 
+/** Keep exact watches for one container until its process tree has exited. */
+export function watchMxcProtectedRows(paths: readonly string[], context: WatchedSweepContext): () => Promise<string | undefined> {
+  const holder = Symbol();
+  const forget = (): void => {
+    for (const path of paths) {
+      const id = key(path);
+      const row = watched.get(id);
+      if (row?.holders.delete(holder) && row.holders.size === 0 && row.roots.size === 0 && entryAt(path) === undefined) watched.delete(id);
+    }
+  };
+  try {
+    for (const path of paths) watchProtectedRow(path, [], true, holder);
+  } catch (error) {
+    forget();
+    throw error;
+  }
+  return async () => {
+    try { return await sweepWatchedRows(context, holder); }
+    finally { forget(); }
+  };
+}
+
 export function watchedProtectedRows(): readonly string[] {
   return [...watched.values()].map(row => row.path);
 }
 
-function createdRows(): WatchedRow[] {
-  return [...watched.values()].filter(row => entryAt(row.path) !== undefined);
+function createdRows(holder?: symbol): WatchedRow[] {
+  return [...watched.values()].filter(row => (holder === undefined || row.holders.has(holder)) && entryAt(row.path) !== undefined);
 }
 
 /** Forget rows no live write root reaches, except a created row still awaiting its sweep. */
@@ -126,7 +155,7 @@ export function pruneWatchedRows(liveWriteRoots: readonly string[]): void {
   const live = new Set(liveWriteRoots.map(key));
   for (const [id, row] of watched) {
     for (const root of row.roots) if (!live.has(key(root))) row.roots.delete(root);
-    if (row.roots.size === 0 && entryAt(row.path) === undefined) watched.delete(id);
+    if (row.roots.size === 0 && row.holders.size === 0 && entryAt(row.path) === undefined) watched.delete(id);
   }
 }
 
@@ -145,8 +174,8 @@ function sameIdentity(path: string, identity: FileIdentity): boolean {
 }
 
 /** Quarantine created watched entries. Throws the user-facing failure when a move fails. */
-export async function sweepWatchedRows(context: WatchedSweepContext): Promise<string | undefined> {
-  const created = createdRows();
+export async function sweepWatchedRows(context: WatchedSweepContext, holder?: symbol): Promise<string | undefined> {
+  const created = createdRows(holder);
   if (created.length === 0) return undefined;
   const entries = new Map<string, { readonly original: string; readonly row: WatchedRow }>();
   for (const row of created) {
@@ -160,6 +189,7 @@ export async function sweepWatchedRows(context: WatchedSweepContext): Promise<st
   catch (error) { failures.push(errorMessage(error)); }
   for (const [id, { original, row }] of entries) {
     try {
+      if (entryAt(original) === undefined) continue;
       if (quarantine === undefined) throw new Error(failures[0]);
       if (!sameIdentity(row.anchor, row.anchorIdentity)) throw new Error(`the folder ${JSON.stringify(row.anchor)} changed identity`);
       const parent = lstatSync(dirname(original));

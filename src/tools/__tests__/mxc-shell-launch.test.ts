@@ -1,8 +1,12 @@
 import net from "node:net";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { closed, echoParentProxy, openTunnel, probePort, within } from "../../__tests__/support/proxy-tunnel-probe.js";
+import { isWatchedWorkspaceConsumable, pruneWatchedRows, WATCHED_ROW_VIOLATION, watchedProtectedRows } from "../../permissions/windows-watched-rows.js";
 
 const h = vi.hoisted(() => ({
   openRelay: vi.fn(),
@@ -103,6 +107,51 @@ afterEach(() => {
 });
 
 describe("prepareMxcShellLaunch", () => {
+  it.runIf(process.platform === "win32")("sweeps only the watched project children after the shell job exits", async () => {
+    relay();
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-shell-watch-")));
+    const cwd = join(root, "project");
+    const home = join(root, "home");
+    mkdirSync(cwd);
+    mkdirSync(home);
+    vi.stubEnv("AVE_HOME", home);
+    const carrier = join(cwd, ".ave");
+    const agents = join(cwd, ".agents");
+    const children = [join(carrier, "commands"), join(carrier, "hooks")];
+    const denied = [agents, ...children];
+    const lifecycle = createContainedShellLifecycle();
+    const job = deferred<void>();
+    try {
+      const launch = await prepareMxcShellLaunch({ ...INPUT, cwd,
+        filesystem: { ...INPUT.filesystem, allowWrite: [cwd], denyWrite: denied, requiredWriteDenies: denied },
+        exists: (path) => existsSync(path) || path.endsWith("wxc-exec.exe"),
+      }, lifecycle);
+      expect(decodeRequest(launch.argv).filesystem.deniedPaths).toEqual([agents]);
+      expect(existsSync(carrier)).toBe(false);
+      expect(watchedProtectedRows()).toEqual(expect.arrayContaining(children));
+      pruneWatchedRows([]);
+      lifecycle.jobStarted(job.promise);
+      mkdirSync(carrier);
+      for (const child of children) mkdirSync(child);
+      const sibling = join(carrier, "ordinary.txt");
+      writeFileSync(sibling, "keep");
+      expect(isWatchedWorkspaceConsumable(cwd)).toBe(false);
+      const disposal = lifecycle.dispose();
+      expect(children.every(existsSync)).toBe(true);
+      job.resolve(undefined);
+      expect(await disposal).toEqual([]);
+      expect(launch.watchedNotice).toContain(WATCHED_ROW_VIOLATION);
+      expect(children.some(existsSync)).toBe(false);
+      expect(watchedProtectedRows().some((path) => children.includes(path))).toBe(false);
+      expect(isWatchedWorkspaceConsumable(cwd)).toBe(true);
+      expect(readFileSync(sibling, "utf8")).toBe("keep");
+    } finally {
+      job.resolve(undefined);
+      await lifecycle.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("leaves what it allocated to its owner when the system root is missing", async () => {
     const roots = ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"];
     const previous = roots.map(key => process.env[key]);

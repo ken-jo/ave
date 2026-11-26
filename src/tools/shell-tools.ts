@@ -4271,9 +4271,15 @@ async function spawnPowerShellInMxc(
     const release = async (result: () => ToolExecutionResult, failures: readonly unknown[]): Promise<ToolExecutionResult> => {
       if (!jobLive()) {
         const released = await lifecycle.dispose();
-        return withContainedReleaseFailures(result(), [...failures, ...released]);
+        const completed = result();
+        const notice = launch.watchedNotice;
+        if (notice !== undefined) completed.output = `${completed.output}\n${notice}`;
+        return withContainedReleaseFailures(completed, [...failures, ...released]);
       }
-      void lifecycle.dispose().then((released) => logReleaseFailures(MXC_SHELL_LABEL, released));
+      void lifecycle.dispose().then((released) => {
+        logReleaseFailures(MXC_SHELL_LABEL, released);
+        if (launch.watchedNotice !== undefined) shellTaskLog.warn(launch.watchedNotice);
+      });
       return withContainedReleaseFailures(result(), failures);
     };
     // A failure's redacted full text is logged; the result withholds it while the job is live and shows system errors by code after.

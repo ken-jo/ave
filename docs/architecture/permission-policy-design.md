@@ -866,10 +866,11 @@ On Windows, both routes receive the three exact rows for each writable directory
 from the shared policy builder, including the physical targets of supported links. A link to the
 `.ave` directory, a write root, or an ancestor of either refuses the launch.
 The container makes a present entry read-only unless a read deny also applies.
-It denies a missing child by name when its parent exists. If the parent is
-missing, including an absent project `.ave`, the container refuses the covering
-write grant for the launch. Its disposable process home supplies its own `.ave`
-parent so the two child denies can be exact there.
+It denies a missing child by name when its parent exists. A project without
+`.ave` keeps its write grant and watches `.ave/commands` and `.ave/hooks`.
+If either appears, cleanup quarantines that child at shell exit or holder
+release, preserving the carrier and any siblings. The disposable process home
+supplies its own `.ave` so the two child denies can be exact there.
 
 The ACL-backed route requires existing entries so it can stamp write denies
 before admitting a covering grant. A missing entry refuses the grant with a
@@ -899,9 +900,10 @@ Git-metadata quarantine exception.
 
 The existing sensitive-write floor owns real-home startup-file protection; the
 root-relative policy does not maintain a second real-home filename list.
-Denies cover creation when a protected path does not yet exist, as well as
-modification of existing content, except for the Linux Git metadata policy
-below. Linux mounts only existing Git controls and quarantines newly created
+Denies cover creation when a protected path does not yet exist and modification
+of existing content wherever the backend can represent the path. The Windows
+missing-carrier case above and the Linux Git metadata policy below use quarantine
+after creation. Linux mounts only existing Git controls and quarantines newly created
 controls after the invocation. Startup-file and application-store denies retain
 their existing creation protection. The
 [write policy](../../src/permissions/sandbox-write-policy.ts) retains both a

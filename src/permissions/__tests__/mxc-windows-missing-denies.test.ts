@@ -12,6 +12,7 @@ import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 import { buildMxcShellRequest, isWindowsPathAtOrUnder, mxcRequestArgs, powerShellMxcCommandLine, resolveHostWxcExecPath, type MxcDirectoryEntry } from "../mxc-windows.js";
 import { SENSITIVE_PATH_PATTERNS } from "../sensitive-paths.js";
 import { rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
+import { listWatchedQuarantine, WATCHED_ROW_VIOLATION, watchMxcProtectedRows } from "../windows-watched-rows.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -29,11 +30,19 @@ describe("missing deny parents", () => {
     }
   });
 
-  it("refuses the covering write grant when a protected child would require denying its carrier", () => {
-    const deny = win32.join(root, ".ave", "commands");
-    const rows = { ...policy([deny]), requiredWriteDenies: [deny] };
-    expect(() => rankMxcLists(rows, exists)).toThrow(deny);
-    expect(rankMxcLists(rows, (path) => exists(path) || path === win32.dirname(deny)).denied).toEqual([deny]);
+  it("watches the protected children of a missing carrier and denies the missing root-level name", () => {
+    const carrier = win32.join(root, ".ave");
+    const agents = win32.join(root, ".agents");
+    const children = [win32.join(carrier, "commands"), win32.join(carrier, "hooks")];
+    const required = [agents, ...children];
+    const rows = { ...policy([]), denyWrite: required, requiredWriteDenies: required };
+    expect(rankMxcLists(rows, exists)).toEqual({ readwrite: [root], readonly: [], denied: [agents], watched: children });
+    expect(rankMxcLists(rows, (path) => exists(path) || path === carrier)).toEqual({
+      readwrite: [root], readonly: [], denied: required,
+    });
+    expect(rankMxcLists(rows, (path) => exists(path) || path === carrier || path === agents)).toEqual({
+      readwrite: [root], readonly: [agents], denied: children,
+    });
   });
 
   it("keeps a missing leaf unchanged", () => {
@@ -256,30 +265,47 @@ describe.skipIf(process.platform !== "win32")("native missing deny parents", () 
       expect(existsSync(join(directory, ".claude"))).toBe(false);
       expect(existsSync(join(directory, ".idea"))).toBe(false);
       writeFileSync(join(directory, "routine"), "");
-      mkdirSync(join(directory, ".ave"));
       const exactPaths = [join(directory, ".agents"), join(directory, ".ave", "commands"), join(directory, ".ave", "hooks")];
+      vi.stubEnv("AVE_HOME", home);
       for (const [label, denies] of [["none", []], ["leaf", [join(directory, ".vscode")]], ["file in directory form", [`${join(directory, "routine")}\\`]],
-        ["nested", [join(directory, "a", "b", ".ssh")]], ["workspace", workspaceDenies],
+        ["nested", [join(directory, "a", "b", ".ssh")]], ["clean project", workspaceDenies], ["workspace", workspaceDenies],
         ["exact children", exactPaths]] as const) {
         // A floor row in directory form over a placeholder file, as `~/.ave/routine` can be.
         const floorRow = label === "file in directory form";
         const grants = rankMxcLists({ allowWrite: [directory], allowRead: [], denyRead: floorRow ? denies : [],
-          denyWrite: floorRow ? [] : denies, protectedFloor: label === "workspace" ? floor : [],
-          requiredWriteDenies: label === "workspace" ? mandatory.windowsRequiredWriteDenies : label === "exact children" ? exactPaths : [],
+          denyWrite: floorRow ? [] : denies, protectedFloor: label === "workspace" || label === "clean project" ? floor : [],
+          requiredWriteDenies: label === "workspace" || label === "clean project" ? mandatory.windowsRequiredWriteDenies : label === "exact children" ? exactPaths : [],
         }, existsSync);
-        const command = label === "exact children"
+        const sweep = grants.watched === undefined ? undefined : watchMxcProtectedRows(grants.watched, { commandId: "clean-project" });
+        if (label === "clean project") {
+          expect(grants.denied).toContain(exactPaths[0]);
+          expect(grants.watched).toEqual(exactPaths.slice(1));
+          expect(existsSync(join(directory, ".ave"))).toBe(false);
+          for (const path of exactPaths) expect(existsSync(path)).toBe(false);
+        }
+        const command = label === "clean project"
+          ? '$ErrorActionPreference="Stop"; Set-Content project.txt kept; New-Item -ItemType Directory .ave | Out-Null; Set-Content .ave/ordinary.txt kept; New-Item -ItemType Directory .ave/commands, .ave/hooks | Out-Null; try { New-Item -ItemType Directory .agents | Out-Null } catch { exit 0 }; exit 2'
+          : label === "exact children"
           ? '$ErrorActionPreference="Stop"; Set-Content .ave/ordinary.txt kept; foreach ($child in @(".agents", ".ave/commands", ".ave/hooks")) { try { New-Item -ItemType Directory $child | Out-Null } catch { continue }; exit 2 }; exit 0'
           : "exit 0";
         const request = buildMxcShellRequest({ commandLine: powerShellMxcCommandLine(process.env.SystemRoot!, command), cwd: directory, grants,
           env: { SYSTEMROOT: process.env.SystemRoot!, LOCALAPPDATA: directory }, proxyUrl: "http://127.0.0.1:9", timeoutMs: TOOL_TIMEOUT_POLICY.shellDefaultMs });
+        let notice: string | undefined;
         const result = await new Promise<{ code: number; stdout: string; stderr: string }>((resolveResult, reject) => {
           execFile(launcher, mxcRequestArgs(request, launcher), { cwd: win32.dirname(launcher), windowsHide: true,
             timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs }, (error, stdout, stderr) => {
             if (error && typeof error.code !== "number") { reject(error); return; }
             resolveResult({ code: error?.code as number | undefined ?? 0, stdout, stderr });
           });
-        });
+        }).finally(async () => { notice = await sweep?.(); });
         expect(result.code, `${label}: ${JSON.stringify(result)}`).toBe(0);
+        if (label === "clean project") {
+          expect(notice).toContain(WATCHED_ROW_VIOLATION);
+          expect(existsSync(join(directory, "project.txt"))).toBe(true);
+          expect(existsSync(join(directory, ".ave", "ordinary.txt"))).toBe(true);
+          expect(listWatchedQuarantine().map(entry => entry.original).sort()).toEqual(exactPaths.slice(1).sort());
+          for (const path of exactPaths) expect(existsSync(path)).toBe(false);
+        }
         if (label === "exact children") {
           expect(grants.denied).toEqual(exactPaths);
           expect(existsSync(join(directory, ".ave", "ordinary.txt"))).toBe(true);
@@ -289,6 +315,9 @@ describe.skipIf(process.platform !== "win32")("native missing deny parents", () 
           .map((path) => win32.relative(directory, path));
         console.info(`MXC deny evidence ${JSON.stringify({ label, before: relative([...denies, ...(label === "workspace" ? floor : [])]), after: relative(grants.denied) })}`);
       }
-    } finally { rmSync(directory, { recursive: true, force: true }); }
-  }, TOOL_TIMEOUT_POLICY.shellDefaultMs * 6 + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, TOOL_TIMEOUT_POLICY.shellDefaultMs * 7 + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);
 });

@@ -20,12 +20,14 @@ import {
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../permissions/policy-model.js";
 import { requireMxcContainerStartRoot } from "../permissions/mxc-runtime-root.js";
 import { assertIssuedContainerHomeInPlace, isIssuedContainerHome } from "../permissions/sandbox-home-registry.js";
+import { watchMxcProtectedRows } from "../permissions/windows-watched-rows.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 
 export interface MxcShellLaunch {
   /** `wxc-exec.exe` followed by its arguments; spawn with `shell: false`. */
   readonly argv: readonly string[];
   readonly proxyPort: number;
+  readonly watchedNotice?: string | undefined;
   /** Admit connections after the final shell admission checks, immediately before spawn. */
   activate(): void;
   /** Bind policy delivery immediately after spawning the launcher. */
@@ -202,9 +204,15 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   const transport = await openMxcRequestTransport(request, wxcExec);
   lifecycle.defer(() => transport.release());
   assertAdmission();
+  let watchedNotice: string | undefined;
+  if (grants.watched !== undefined) {
+    const sweep = watchMxcProtectedRows(grants.watched, { commandId: token });
+    lifecycle.defer(async () => { watchedNotice = await sweep(); });
+  }
   return {
     argv: [wxcExec, ...transport.args],
     proxyPort: listener.port,
+    get watchedNotice() { return watchedNotice; },
     activate: () => {
       assertAdmission();
       active = true;

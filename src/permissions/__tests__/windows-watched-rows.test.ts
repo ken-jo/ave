@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
   isWatchedWorkspaceConsumable, listWatchedQuarantine, placeholderLeftovers, resetWatchedRows, restoreWatchedQuarantine,
-  sweepWatchedRows, WATCHED_ROW_VIOLATION, watchAbsentProtectedRow, watchedProtectedRows,
+  pruneWatchedRows, sweepWatchedRows, WATCHED_ROW_VIOLATION, watchAbsentProtectedRow, watchedProtectedRows, watchMxcProtectedRows,
 } from "../windows-watched-rows.js";
 
 describe("watched protected rows", () => {
@@ -74,6 +74,21 @@ describe("watched protected rows", () => {
     expect(readFileSync(unrelated, "utf8")).toBe("keep");
     expect(listWatchedQuarantine().map(entry => entry.original)).toEqual(protectedPaths);
     for (const path of protectedPaths) expect(lstatSync(path, { throwIfNoEntry: false })).toBeUndefined();
+  });
+
+  it("keeps a shared carrier watch until the last container releases it", async () => {
+    const hooks = join(workspace, ".ave", "hooks");
+    const first = watchMxcProtectedRows([hooks], { commandId: "first" });
+    const second = watchMxcProtectedRows([hooks], { commandId: "second" });
+
+    await expect(first()).resolves.toBeUndefined();
+    pruneWatchedRows([]);
+    expect(watchedProtectedRows()).toContain(hooks);
+    mkdirSync(hooks, { recursive: true });
+
+    await expect(second()).resolves.toContain(WATCHED_ROW_VIOLATION);
+    expect(listWatchedQuarantine()).toEqual([expect.objectContaining({ original: hooks, commandId: "second" })]);
+    expect(watchedProtectedRows()).not.toContain(hooks);
   });
 
   it("refuses to move a protected child through a replacement carrier link", async () => {
