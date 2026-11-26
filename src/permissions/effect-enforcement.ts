@@ -451,8 +451,11 @@ export async function gateMutatingEffect(params: {
   const reusableGrant = snapshot.reusable && !params.capabilityBound && !permission.forceModal && params.input !== undefined;
   const requestId = randomUUID();
   const action = `effect:${key}`;
-  // The owner judges the answer by this effect's own check. The card saves no rule, so no policy step of its own is honored.
-  const card = openPendingAnswerCard(manager, permission, checkEffect, "stale-refused", { gate: {}, requestId, action });
+  // The owner judges the answer by this effect's own check. The card saves no rule, so the gate lends only its stale-answer audit
+  // and no policy step of the card's own is honored.
+  const staleAudit: Partial<Pick<ApprovalGate, "recordStaleAnswer">> = params.approvalGate;
+  const card = openPendingAnswerCard(manager, permission, checkEffect, "stale-refused",
+    { gate: { recordStaleAnswer: (...stale) => staleAudit.recordStaleAnswer?.(...stale) }, requestId, action });
   const decision = await params.approvalGate.requestAndWait({
     id: requestId,
     category: "agent-action",

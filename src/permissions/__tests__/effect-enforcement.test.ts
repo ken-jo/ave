@@ -1671,10 +1671,11 @@ describe("an effect card's answer is judged by the owner", () => {
   /** A gate that holds every card open until the test answers it. */
   function heldGate() {
     const cards: Array<{ request: ApprovalRequestInput; answer: (choice: ApprovalChoice, requestId?: string) => void }> = [];
-    const gate = { requestAndWait: (request: ApprovalRequestInput) => new Promise<ApprovalDecision>((resolve) => {
+    const recordStaleAnswer = vi.fn();
+    const gate = { recordStaleAnswer, requestAndWait: (request: ApprovalRequestInput) => new Promise<ApprovalDecision>((resolve) => {
       cards.push({ request, answer: (choice, requestId = request.id) => resolve({ requestId, choice }) });
     }) } as unknown as ApprovalGate;
-    return { gate, cards };
+    return { gate, cards, recordStaleAnswer };
   }
 
   it.each([
@@ -1684,7 +1685,7 @@ describe("an effect card's answer is judged by the owner", () => {
     ["a forced card", ".git/config", "a check that throws", "allow-once"],
   ] as const)("%s (%s) answered while the call meets %s reaches neither the host method nor a grant", async (_card, path, change, choice) => {
     permissionManager.setMode("default");
-    const { gate, cards } = heldGate();
+    const { gate, cards, recordStaleAnswer } = heldGate();
     const log: string[] = [];
     const api = enforceMutatingEffects(makeApi(log), deps(gate));
     const write = () => runWithEffectGateContext({ headless: false, toolName: "outer" }, () => api.storage.write(path, "same"));
@@ -1701,6 +1702,9 @@ describe("an effect card's answer is judged by the owner", () => {
     cards[0].answer(choice);
     await expect(pending).rejects.toThrow("Permission policy changed during effect approval");
     expect(log).toEqual([]);
+    // A stale Allow is kept for the audit with no authority; a check with no result has no question to record.
+    if (change === "a check that throws") expect(recordStaleAnswer).not.toHaveBeenCalled();
+    else expect(recordStaleAnswer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ requestId: cards[0].request.id, choice }), "stale-refused", expect.anything(), expect.objectContaining({ floorReason: "Changed while the card was open." }));
     moved.mockRestore();
     // No grant was left behind: the same effect asks again.
     const again = write();
