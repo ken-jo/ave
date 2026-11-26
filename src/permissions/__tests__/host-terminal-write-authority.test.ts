@@ -132,3 +132,21 @@ it.each(["ordinary card", "reviewed exact rule"] as const)("keeps only the perso
     if (source === "ordinary card") expect(refusal()).toBeUndefined();
     else expect(refusal()).toEqual(expect.any(String));
   }));
+
+it.each([
+  ["the floor lost its session eligibility", { floorSessionEligible: undefined }],
+  ["another floor now stands behind it", { floorSessionEligible: undefined, competingFloor: { code: "protected-path" as const, reason: "Protected." } }],
+])("refuses a forced card's authority when %s", (_label, change) => {
+  const epochs = { getPolicyEpoch: () => "1:0:0", getPolicyContextEpoch: () => "1" } as unknown as PermissionManager;
+  const request = { tool: { name: "terminal_run", source: "builtin" as const, kind: "shell" as const }, mode: "default" as const, headless: false,
+    floor: { code: "sandbox-unavailable" as const, reason: "No sandbox." } };
+  let now: ReturnType<PermissionManager["checkDetailed"]> = { decision: "ask", reason: "No sandbox.", reasonCode: "sandbox-unavailable", forceModal: true,
+    pipelineRequest: { ...request, floorSessionEligible: true } };
+  const authority = issueHostTerminalWriteAuthority({
+    manager: epochs, human: true, cardForced: true, reviewed: false, decidedBackend: "host", backendIdentity: () => "host", check: () => now,
+    settled: { ...now, decision: "allow", reason: "user approved approval request (allow-once)" },
+  });
+  expect(authority.refusal()).toBeUndefined();
+  now = { ...now, pipelineRequest: { ...request, ...change } };
+  expect(authority.refusal()).toEqual(expect.any(String));
+});

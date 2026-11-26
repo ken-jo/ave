@@ -1195,13 +1195,14 @@ export async function executeAuthorizedToolInvocation(
           return current;
         },
       });
-    if (answerOutdated && sameCardTransition.fresh !== undefined && sameCardTransition.denial === undefined) {
-      // The card's own save moved the call to another forced question: that answer is stale, and the retry asks the fresh one on a new card.
+    // The card's own save moved the call to another forced question: that answer is stale. An Allow is asked again on a new card; a Deny stands.
+    const staleAnswer = answerOutdated && sameCardTransition.fresh !== undefined && sameCardTransition.denial === undefined;
+    if (staleAnswer && decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision)) {
       humanApproved = false;
       terminalWriteAuthority = undefined;
       return;
     }
-    const invalidationReason = answerOutdated ? policyChanged : sameCardTransition.denial;
+    const invalidationReason = answerOutdated && !staleAnswer ? policyChanged : sameCardTransition.denial;
     if (invalidationReason !== undefined) {
       permissionResult = { ...permissionResult, decision: "deny", reason: invalidationReason };
       throw new Error(invalidationReason);

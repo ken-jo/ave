@@ -7,6 +7,12 @@ export interface HostTerminalWriteAuthority {
   refusal(): string | undefined;
 }
 
+/** Whether the floor stands alone ("This session" may answer it) and which floor it stands in front of. */
+function floorShapeOf(result: PermissionCheckResult): string {
+  const request = result.pipelineRequest;
+  return JSON.stringify([request?.floorSessionEligible === true, request?.competingFloor?.code, request?.competingFloor?.reason]);
+}
+
 export function issueHostTerminalWriteAuthority(input: {
   manager: PermissionManager;
   human: boolean;
@@ -21,7 +27,7 @@ export function issueHostTerminalWriteAuthority(input: {
   const sealed = {
     backend: input.decidedBackend,
     forcedReason: input.settled.pipelineRequest?.floor?.code,
-    floorSessionEligible: input.settled.pipelineRequest?.floorSessionEligible === true,
+    floorShape: floorShapeOf(input.settled),
     source: input.human ? "person" : input.reviewed ? "ask:user-owned-surface-review" : `allow:${input.settled.reasonCode}`,
   };
   const authority: HostTerminalWriteAuthority = {
@@ -30,9 +36,8 @@ export function issueHostTerminalWriteAuthority(input: {
       if (now.decision === "deny") return now.reason;
       const backend = input.backendIdentity();
       const forcedReason = now.pipelineRequest?.floor?.code;
-      const floorSessionEligible = now.pipelineRequest?.floorSessionEligible === true;
       const source = input.human ? "person" : `${now.decision}:${now.reasonCode}`;
-      if (backend !== sealed.backend || forcedReason !== sealed.forcedReason || floorSessionEligible !== sealed.floorSessionEligible || source !== sealed.source) {
+      if (backend !== sealed.backend || forcedReason !== sealed.forcedReason || floorShapeOf(now) !== sealed.floorShape || source !== sealed.source) {
         return HOST_TERMINAL_PERMISSION_CHANGED;
       }
       return personAnswerStands(input.manager, opened, input.cardForced, () => now)

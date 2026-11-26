@@ -18,6 +18,8 @@ export interface PermissionDecisionRequest {
   shellAnalysisLimited?: true;
   // The floor is sandbox-unavailable with no other floor behind it, so its card may offer "This session".
   floorSessionEligible?: true;
+  // The floor the sandbox-unavailable floor stands in front of; it keeps the card from offering "This session".
+  competingFloor?: { code: PermissionFloorCode; reason: string };
   exfiltration?: { reason: string };
   // `floorSession`: a "This session" allow approved on this floor's own card in this conversation; ordinary rules never pass a floor.
   // `exactHostRule`: the saved exact rule (its pattern) that matches this whole command when shell containment is unavailable and boot home privacy is verified.

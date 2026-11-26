@@ -268,7 +268,7 @@ describe("live native approval ownership", () => {
     return { ...f, cwd, write, runTerminal, recordTerminalWaiver };
   }
 
-  it.each(["deny", "allow", "changed forced question"] as const)("rechecks the original terminal command after saving its late floor waiver: %s", async current => {
+  it.each(["deny", "allow", "changed forced question", "changed forced question, denied"] as const)("rechecks the original terminal command after saving its late floor waiver: %s", async current => {
     const f = await terminalFloorSubject();
     const frame = frameEvent(f.windowA);
     const warmup = runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "initial-waiver" }, () =>
@@ -279,10 +279,11 @@ describe("live native approval ownership", () => {
     expect((await warmup)[0]?.is_error).toBeFalsy();
     expect(f.write.mock.calls).toEqual([["printf initial"]]);
     f.write.mockClear();
-    const command = current === "changed forced question" ? "printf ready > output/result.txt" : "printf ready";
+    const changed = current.startsWith("changed");
+    const command = changed ? "printf ready > output/result.txt" : "printf ready";
     const outputDir = join(f.cwd, "output");
     const protectedDir = join(f.cwd, ".vscode");
-    if (current === "changed forced question") {
+    if (changed) {
       mkdirSync(outputDir);
       mkdirSync(protectedDir);
     }
@@ -330,9 +331,19 @@ describe("live native approval ownership", () => {
       expect(await f.recordTerminalWaiver(card)).toEqual({ ok: true });
       expect(f.manager.getPolicyEpoch()).not.toBe(openedEpoch);
       if (current === "deny") noteOtherPrincipalGuidance();
-      if (current === "changed forced question") {
+      if (changed) {
         renameSync(outputDir, join(f.cwd, "former-output"));
         symlinkSync(protectedDir, outputDir, "junction");
+      }
+      if (current === "changed forced question, denied") {
+        await invoke(PERMISSIONS.approvalRespond, frame, { ...allowOnceCardAnswer(card), choice: "deny-once" });
+        const [result] = await pending;
+        expect(transition).toHaveReturnedWith(true);
+        expect(result?.is_error).toBe(true);
+        expect(f.cards(f.windowA)).toEqual([first, card]);
+        expect(issueWriteAuthority).not.toHaveBeenCalled();
+        expect(f.write).not.toHaveBeenCalled();
+        return;
       }
       await invoke(PERMISSIONS.approvalRespond, frame, allowOnceCardAnswer(card));
 

@@ -13,7 +13,7 @@ export interface AnswerEpochs { readonly epoch: string; readonly contextEpoch: s
 type EpochSource = Pick<PermissionManager, "getPolicyEpoch" | "getPolicyContextEpoch">;
 type Rechecked = Pick<PermissionCheckResult, "decision" | "forceModal">;
 /** The forced question a card asked: its floor and reason, and whether "This session" could answer it (no competing floor). */
-export interface ForcedQuestion { readonly floor?: string; readonly reason?: string; readonly sessionEligible: boolean }
+export interface ForcedQuestion { readonly floor?: string; readonly reason?: string; readonly sessionEligible: boolean; readonly competing?: string }
 export interface SameCardPolicyTransition {
   readonly gate: Partial<Pick<ApprovalGate, "allowsPolicyTransition">>;
   readonly decision: ApprovalDecision;
@@ -26,13 +26,16 @@ export interface SameCardPolicyTransition {
 export function forcedQuestionOf(result: Pick<PermissionCheckResult, "forceModal" | "pipelineRequest">): ForcedQuestion | undefined {
   if (result.forceModal !== true) return undefined;
   const request = result.pipelineRequest;
-  return { floor: request?.floor?.code, reason: request?.floor?.reason, sessionEligible: request?.floorSessionEligible === true };
+  const competing = request?.competingFloor;
+  return { floor: request?.floor?.code, reason: request?.floor?.reason, sessionEligible: request?.floorSessionEligible === true,
+    ...(competing === undefined ? {} : { competing: `${competing.code}:${competing.reason}` }) };
 }
 
 function sameForcedQuestion(opened: ForcedQuestion, now: Pick<PermissionCheckResult, "decision" | "forceModal" | "pipelineRequest">): boolean {
   if (now.decision !== "ask") return true;
   const asked = forcedQuestionOf(now);
-  return asked === undefined || asked.floor === opened.floor && asked.reason === opened.reason && asked.sessionEligible === opened.sessionEligible;
+  return asked === undefined || asked.floor === opened.floor && asked.reason === opened.reason && asked.sessionEligible === opened.sessionEligible &&
+    asked.competing === opened.competing;
 }
 
 export function answerEpochsOf(manager: EpochSource): AnswerEpochs {
@@ -60,7 +63,10 @@ export function personAnswerStands(manager: EpochSource, opened: AnswerEpochs, c
   if (current === opened.epoch) return true;
   if (sameCard?.gate.allowsPolicyTransition?.(sameCard.decision, opened.epoch, current)) {
     const now = sameCard.onTransition?.();
-    return sameCard.question === undefined || !now || sameForcedQuestion(sameCard.question, now);
+    if (now === undefined) return true;
+    // A denial is the caller's to report; a forced ask the card did not put stands only on the same forced question.
+    if (now.decision === "ask" && now.forceModal === true && !cardForced) return false;
+    return sameCard.question === undefined || sameForcedQuestion(sameCard.question, now);
   }
   if (!onlyMemoryRulesChangedSince(manager, opened)) return false;
   const now = recheck();

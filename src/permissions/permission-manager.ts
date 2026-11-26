@@ -1869,11 +1869,13 @@ export class PermissionManager {
       notePathFacts(evidence);
     }
     if (shellAnalysisLimited) floor ??= { code: "shell-analysis-limit", reason: SHELL_ANALYSIS_LIMIT_REASON };
+    const otherFloor = floor;
     const competingFloor = floor !== undefined;
     if (sandboxUnavailableAsk && !shellAnalysisLimited) {
       floor = context.floor ?? { code: "sandbox-unavailable", reason: "The OS sandbox is unavailable, so this shell command would run without isolation and needs your approval." };
     }
     const floorSessionEligible = sandboxUnavailableAsk && !competingFloor;
+    const shadowedFloor = otherFloor !== undefined && otherFloor !== floor ? otherFloor : undefined;
     const terminalFloorSubject = source === "builtin" && toolName === "terminal_run" && context.hostTerminalTurn !== undefined;
     const floorSessionGranted = floorSessionEligible && context.hostShellExecutionPlan !== undefined && requestedRuleSubject !== undefined &&
       (requestedRuleSubject.dialect === toolName || terminalFloorSubject) &&
@@ -1953,6 +1955,7 @@ export class PermissionManager {
       ...(shellAnalysisLimited ? { shellAnalysisLimited: true as const } : {}),
       ...(pathFacts.protectedEntry !== undefined || pathFacts.secretPattern !== undefined ? { pathFacts } : {}),
       ...(floorSessionEligible ? { floorSessionEligible: true as const } : {}),
+      ...(shadowedFloor === undefined ? {} : { competingFloor: shadowedFloor }),
       ...(context.fileWritePolicy ? { fileWrite: { ...context.fileWritePolicy, checkpointAvailable: context.fileWritePolicy.checkpointAvailable === true } } : {}),
       ...(category === "shell" ? { shell: { sandboxed: shellExecution.runsSandboxed, readOnlyProven, unproven: shellAnalysisLimited || ruleProofLimited || shellPaths?.unproven != null || powerShellPaths?.unproven === true || !hostBoundWriteTargets && !readOnlyProven && (shellSignals?.outcome === "unproven" || Boolean(shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason)), destructive: shellDestructive, escalated: context.shellEscalated } } : {}),
     };

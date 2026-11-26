@@ -80,6 +80,7 @@ describe("a person's answer across a policy change", () => {
     ["the floor lost its session eligibility", floorAsk(false), false],
     ["another floor", floorAsk(true, { code: "protected-path", reason: "Protected." }), false],
     ["the same floor with another reason", floorAsk(true, { ...sandboxFloor, reason: "Other." }), false],
+    ["another floor now behind it", { ...floorAsk(false), pipelineRequest: { ...floorAsk(false).pipelineRequest, competingFloor: { code: "protected-path" as const, reason: "Protected." } } }, false],
   ] as const)("across the card's own policy step the fresh check decides: %s", (_name, now, stands) => {
     const manager = policy();
     const opened = answerEpochsOf(manager);
@@ -91,4 +92,35 @@ describe("a person's answer across a policy change", () => {
     })).toBe(stands);
     expect(recheck).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["an ordinary ask", ask, true],
+    ["an allow", allow, true],
+    ["a forced ask the card did not put", forcedAsk, false],
+  ] as const)("across an unforced card's own policy step the fresh check decides: %s", (_name, now, stands) => {
+    const manager = policy();
+    const opened = answerEpochsOf(manager);
+    manager.otherStep();
+    expect(personAnswerStands(manager, opened, false, () => allow, {
+      gate: { allowsPolicyTransition: () => true }, decision: { requestId: "card", choice: "allow-once" }, onTransition: () => now,
+    })).toBe(stands);
+  });
+});
+
+it.each([
+  ["the same floor behind it", "protected-path", true],
+  ["another floor behind it", "critical-delete", false],
+] as const)("a card's own policy step keeps a shadowed floor's answer only for %s", (_name, code, stands) => {
+  const manager = policy();
+  const opened = answerEpochsOf(manager);
+  manager.otherStep();
+  const behind = (floor: "protected-path" | "critical-delete") => ({
+    decision: "ask" as const, forceModal: true,
+    pipelineRequest: { tool: { name: "terminal_run", source: "builtin" as const, kind: "shell" as const }, mode: "default" as const, headless: false,
+      floor: { code: "sandbox-unavailable" as const, reason: "No sandbox." }, competingFloor: { code: floor, reason: "Shadowed." } },
+  });
+  expect(personAnswerStands(manager, opened, true, () => allow, {
+    gate: { allowsPolicyTransition: () => true }, decision: { requestId: "card", choice: "allow-once" },
+    question: forcedQuestionOf(behind("protected-path")), onTransition: () => behind(code),
+  })).toBe(stands);
 });
