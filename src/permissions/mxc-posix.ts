@@ -24,7 +24,7 @@ export interface PosixPolicyLookups {
 
 export type PosixPolicyRefusal =
   | "backend-unmeasured" | "pattern-row" | "relative-row" | "nested-grant-under-deny" | "deny-without-outcome"
-  | "chain-unreadable";
+  | "chain-unreadable" | "grant-limit-exceeded";
 
 interface PosixFilesystemGrants extends MxcFilesystemGrants {
   readonly carvedReadLimitedAt?: readonly string[];
@@ -135,6 +135,7 @@ const MAX_CARVE_GRANTS = 400;
 function carveGrants(
   readwrite: readonly string[], readonly: readonly string[], readDenies: readonly string[],
   writeFloor: readonly string[], lookups: PosixPolicyLookups,
+  finalize: (grants: MxcFilesystemGrants) => MxcFilesystemGrants,
 ): PosixFilesystemGrants {
   const key = (path: string) => pathKey(path, lookups.foldsCase);
   const covers = (root: string, path: string) => atOrUnder(path, root, lookups.foldsCase);
@@ -153,12 +154,16 @@ function carveGrants(
     }
   }
 
-  const rw = readwrite.filter(path => !chain.has(key(path)));
-  const ro = readonly.filter(path => !chain.has(key(path)));
+  let rw = readwrite.filter(path => !chain.has(key(path)));
+  let ro = readonly.filter(path => !chain.has(key(path)));
+  const denied = readDenies.filter(deny => !carvedDenies.has(deny));
+  let final = finalize({ readwrite: rw, readonly: ro, denied });
+  const firstExcess = [...final.readwrite, ...final.readonly][MAX_CARVE_GRANTS];
+  if (firstExcess !== undefined) {
+    throw new PosixContainerPolicyError("grant-limit-exceeded", `Container grant limit (${MAX_CARVE_GRANTS}) exceeded at: ${firstExcess}`);
+  }
   const grantKeys = new Set(grants.map(key));
   const emitted = new Set([...rw, ...ro].map(key));
-  // Write-floor stamps also occupy read-only rows in the request.
-  const reserved = new Set(writeFloor.filter(path => readwrite.some(root => covers(root, path))).map(key));
   const limited: string[] = [];
   let remainingEntries = MAX_CARVE_ENTRIES;
   const chainFolders = [...chain.values()].sort((left, right) => left.length - right.length);
@@ -200,19 +205,30 @@ function carveGrants(
       throw new PosixContainerPolicyError("chain-unreadable", `Container cannot read chain folder: ${folder}`);
     }
 
-    if (new Set([...emitted, ...reserved, ...candidates.keys()]).size > MAX_CARVE_GRANTS) {
+    if (candidates.size === 0) continue;
+    if (emitted.size + candidates.size > MAX_CARVE_GRANTS) {
       limited.push(folder);
       continue;
     }
     const canWrite = readwrite.some(root => key(root) === key(enclosing));
-    for (const [id, path] of candidates) {
-      const output = canWrite && !writeFloor.some(floor => covers(floor, path)) ? rw : ro;
+    const nextRw = [...rw];
+    const nextRo = [...ro];
+    for (const path of candidates.values()) {
+      const output = canWrite && !writeFloor.some(floor => covers(floor, path)) ? nextRw : nextRo;
       output.push(path);
-      emitted.add(id);
     }
+    const next = finalize({ readwrite: nextRw, readonly: nextRo, denied });
+    if (next.readwrite.length + next.readonly.length > MAX_CARVE_GRANTS) {
+      limited.push(folder);
+      continue;
+    }
+    rw = nextRw;
+    ro = nextRo;
+    final = next;
+    for (const id of candidates.keys()) emitted.add(id);
   }
   return {
-    readwrite: rw, readonly: ro, denied: readDenies.filter(deny => !carvedDenies.has(deny)),
+    ...final,
     ...(limited.length > 0 ? { carvedReadLimitedAt: limited } : {}),
   };
 }
@@ -254,40 +270,42 @@ function rankRows(model: PolicyModel, nestedRule: NestedGrantRule, lookups: Posi
   const readonlyGrants = [
     ...dedupe(rows.readGrants).filter(readSurvives), ...writable.filter((path) => !writeSurvives(path)),
   ];
-  const carved = nestedRule === "deny-wins" ? carveGrants(
-    writableGrants, readonlyGrants, readDenies, writeFloorRows, lookups,
-  ) : { readwrite: writableGrants, readonly: readonlyGrants, denied: readDenies };
-  const { readwrite, readonly: requestedReadonly } = carved;
-  const requestedGrants = [...readwrite, ...requestedReadonly];
-  const reachedDenies = carved.denied.filter((deny) => requestedGrants.some((grant) => strictlyCovers(grant, deny)));
-  const retainedDenies: string[] = [];
-  for (const deny of reachedDenies.toSorted((a, b) => a.length - b.length)) {
-    const parent = nearestEnclosing(deny, retainedDenies, lookups.foldsCase);
-    if (parent === undefined || (nestedRule === "most-specific" && requestedGrants.some(
-      (grant) => strictlyCovers(parent, grant) && strictlyCovers(grant, deny),
-    ))) {
-      retainedDenies.push(deny);
-    }
-  }
-  const retained = new Set(retainedDenies);
-  const denied = reachedDenies.filter((deny) => retained.has(deny));
-
-  if (nestedRule === "deny-wins") {
-    for (const grant of requestedGrants) {
-      const deny = denied.find((path) => strictlyCovers(path, grant));
-      if (deny !== undefined) {
-        throw new PosixContainerPolicyError("nested-grant-under-deny", `Container grant ${grant} is nested under deny ${deny}`);
+  const finalize = (carved: MxcFilesystemGrants): MxcFilesystemGrants => {
+    const { readwrite, readonly: requestedReadonly } = carved;
+    const requestedGrants = [...readwrite, ...requestedReadonly];
+    const reachedDenies = carved.denied.filter((deny) => requestedGrants.some((grant) => strictlyCovers(grant, deny)));
+    const retainedDenies: string[] = [];
+    for (const deny of reachedDenies.toSorted((a, b) => a.length - b.length)) {
+      const parent = nearestEnclosing(deny, retainedDenies, lookups.foldsCase);
+      if (parent === undefined || (nestedRule === "most-specific" && requestedGrants.some(
+        (grant) => strictlyCovers(parent, grant) && strictlyCovers(grant, deny),
+      ))) {
+        retainedDenies.push(deny);
       }
     }
-  }
+    const retained = new Set(retainedDenies);
+    const denied = reachedDenies.filter((deny) => retained.has(deny));
 
-  const writeFloor = writeFloorRows.filter((path) => readwrite.some((grant) => strictlyCovers(grant, path)));
-  const writableKeys = new Set(readwrite.map(key));
-  const readonly = dedupe([
-    ...requestedReadonly, ...writeFloor.filter((path) => !coveredBy(path, denied)),
-  ]).filter((path) => !writableKeys.has(key(path)));
+    if (nestedRule === "deny-wins") {
+      for (const grant of requestedGrants) {
+        const deny = denied.find((path) => strictlyCovers(path, grant));
+        if (deny !== undefined) {
+          throw new PosixContainerPolicyError("nested-grant-under-deny", `Container grant ${grant} is nested under deny ${deny}`);
+        }
+      }
+    }
 
-  const result = { ...carved, readonly, denied };
+    const writeFloor = writeFloorRows.filter((path) => readwrite.some((grant) => strictlyCovers(grant, path)));
+    const writableKeys = new Set(readwrite.map(key));
+    const readonly = dedupe([
+      ...requestedReadonly, ...writeFloor.filter((path) => !coveredBy(path, denied)),
+    ]).filter((path) => !writableKeys.has(key(path)));
+
+    return { readwrite, readonly, denied };
+  };
+  const result = nestedRule === "deny-wins"
+    ? carveGrants(writableGrants, readonlyGrants, readDenies, writeFloorRows, lookups, finalize)
+    : finalize({ readwrite: writableGrants, readonly: readonlyGrants, denied: readDenies });
   assertDenyOutcomes(readDenies, writeFloorRows, result, lookups.foldsCase, nestedRule);
   return result;
 }

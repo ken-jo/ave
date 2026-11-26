@@ -167,6 +167,34 @@ describe("POSIX container filesystem ranking", () => {
     expect(result).toEqual({ readwrite: ["/work"], readonly: [], denied: [], carvedReadLimitedAt: ["/"] });
   });
 
+  it("refuses 401 distinct admitted leaves and names the first grant over the cap", () => {
+    const leaves = Array.from({ length: 401 }, (_, index) => read(`/admitted/leaf-${index}`));
+    expect(() => rankPosixContainerRows(model([], ...leaves), "seatbelt", lookups))
+      .toThrow(expect.objectContaining({ code: "grant-limit-exceeded", message: expect.stringContaining("/admitted/leaf-400") }));
+  });
+
+  it("counts required read-only floor rows and deduplicates them against admitted grants", () => {
+    const floor = "/work/control";
+    const leaves = Array.from({ length: 399 }, (_, index) => read(`/admitted/leaf-${index}`));
+    const full = rankPosixContainerRows(model([protect(floor)], write("/work"), ...leaves.slice(1), read(floor)), "seatbelt", lookups);
+    expect(full.readonly).toHaveLength(399);
+    expect(full.readwrite).toEqual(["/work"]);
+    expect(() => rankPosixContainerRows(model([protect(floor)], write("/work"), ...leaves), "seatbelt", lookups))
+      .toThrow(expect.objectContaining({ code: "grant-limit-exceeded", message: expect.stringContaining(floor) }));
+  });
+
+  it("uses the last grant slot when a retained deny already enforces a write floor", () => {
+    const leaves = Array.from({ length: 398 }, (_, index) => read(`/admitted/leaf-${index}`));
+    const policy = model([protect("/work/blocked/control"), deny("/work/blocked")], read("/"), write("/work"), ...leaves);
+    const result = rankPosixContainerRows(policy, "seatbelt", {
+      ...lookups, children: () => ["public"],
+    });
+    expect(result.readonly).toHaveLength(399);
+    expect(result.readonly).toContain("/public");
+    expect(result.denied).toEqual(["/work/blocked"]);
+    expect(result.carvedReadLimitedAt).toBeUndefined();
+  });
+
   it("refuses an unreadable chain by name", () => {
     const policy = model([deny("/work/private", "ave-home")], read("/work"), read("/work/private/open"));
     expect(() => rankPosixContainerRows(policy, "seatbelt", {
