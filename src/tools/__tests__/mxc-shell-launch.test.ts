@@ -266,6 +266,8 @@ describe("prepareMxcShellLaunch", () => {
   });
   it.runIf(process.platform === "win32")("refuses activation when a granted directory is replaced at the same path", async () => {
     relay();
+    const release = vi.fn(async () => {});
+    vi.spyOn(policyPipe, "openMxcPolicyPipe").mockResolvedValue({ bindChild: () => {}, release });
     const read = String.raw`C:\work\reading`;
     onDrive(read);
     h.afterTransport = () => { h.replaced.add(read); };
@@ -273,10 +275,16 @@ describe("prepareMxcShellLaunch", () => {
     try {
       const launch = await prepareMxcShellLaunch({
         ...INPUT,
+        commandLine: "x".repeat(25_000),
         filesystem: { ...INPUT.filesystem, allowRead: [read] },
       }, lifecycle);
+      expect(launch.argv[1]).toBe("--config");
       expect(() => launch.activate()).toThrow("Target identity changed");
       expect(h.openRelay.mock.calls[0]?.[1].acceptsConnections()).toBe(false);
+      expect(await lifecycle.dispose()).toEqual([]);
+      expect(h.closeRelay).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+      expect(await probePort(launch.proxyPort)).toBe("refused");
     } finally {
       h.afterTransport = undefined;
       h.replaced.clear();
