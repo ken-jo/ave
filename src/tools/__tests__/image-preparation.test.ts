@@ -387,7 +387,9 @@ describe("bounded image preparation", () => {
     let closed = false;
     let diagnostics = "";
     vi.spyOn(managed, "spawnManaged").mockImplementationOnce((program, args, ...options) => {
-      request = JSON.parse(args[1]!);
+      const requestArgument = args[1];
+      if (requestArgument === undefined) throw new Error("Missing image decoder request argument");
+      request = JSON.parse(requestArgument);
       lookupCountAtSpawn = hostLookup.mock.calls.filter(([operand]) => operand === path).length;
       const child = spawn(program, ["--import", pathToFileURL(preload).href, ...args], ...options);
       child.stderr?.on("data", (chunk: Buffer) => {
