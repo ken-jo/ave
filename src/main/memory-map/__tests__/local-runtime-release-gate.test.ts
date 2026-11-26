@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useTempDirs } from '../../../__tests__/test-helpers.js';
+import { SessionRepository } from '../../../memory/session-repository.js';
 import { deferred } from '../../../__tests__/support/deferred.js';
 import { setProcessPlatform } from '../../../__tests__/support/process-platform.js';
 import { registerMxcReleaseGateEvidence } from '../../../permissions/mxc-extension-admission.js';
-import { refreshWindowsBackgroundAdmission, settledWindowsBackgroundAdmission } from '../../../permissions/windows-background-features.js';
+import { refreshWindowsBackgroundAdmission, sessionSearchIndexPolicySource, settledWindowsBackgroundAdmission } from '../../../permissions/windows-background-features.js';
 import { invalidateWindowsBackendEvidence } from '../../../permissions/windows-confinement-evidence.js';
 import type { SandboxWindowsExtensionPlan, SandboxWindowsSubstrateInfo } from '../../../shared/sandbox-capability-info.js';
 import { assertLocalEmbeddingRuntime } from '../local-runtime.js';
@@ -264,4 +266,33 @@ describe('Windows local inference release gate', () => {
     expect((await second).searchIndexPolicy(undefined)).toBe('inactive');
     expect(await policy(undefined)).toBe('enabled-with-recovery');
   });
+});
+
+const makeIndexDir = useTempDirs('ave-index-batch-');
+it('a late search cannot reuse an earlier batch account receipt', async () => {
+  unregister = registerMxcReleaseGateEvidence(EVIDENCE);
+  const container = deferred<object>();
+  state.containerInventory.mockReturnValue(container.promise);
+  const aveDir = makeIndexDir();
+  const initial = new SessionRepository({ aveDir });
+  const sessionId = 'aaaaaaaa-1111-2222-3333-444444444444';
+  await initial.saveSession(sessionId, [{ role: 'user', content: 'indexed result' }]);
+  initial.closeSearchIndex();
+  const repository = new SessionRepository({ aveDir, ...sessionSearchIndexPolicySource(() => true) });
+  const bootCheck = repository.verifyOrRebuildSearchIndex();
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(state.accountInventory).toHaveBeenCalledTimes(1);
+    state.accountInventory.mockResolvedValue({ ...NO_ACCOUNT, warnings: ['late inventory failure'] });
+    const search = repository.searchSessionsWithCurrentPolicy('indexed result');
+    container.resolve(NO_CONTAINER);
+    await bootCheck;
+    expect.soft(await search).toEqual([]);
+    expect.soft(state.accountInventory).toHaveBeenCalledTimes(2);
+    expect((await refreshWindowsBackgroundAdmission()).areSwitchesAvailable()).toBe(false);
+  } finally {
+    container.resolve(NO_CONTAINER);
+    await bootCheck;
+    repository.closeSearchIndex();
+  }
 });

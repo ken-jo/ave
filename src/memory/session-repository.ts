@@ -791,6 +791,7 @@ export class SessionRepository {
   private readonly getSearchIndexPolicy: () => SessionSearchIndexPolicy;
   private readonly refreshSearchIndexPolicy: (() => Promise<() => SessionSearchIndexPolicy>) | undefined;
   private readonly searchIndexQueue: Array<(admit: () => SessionSearchIndexPolicy) => void> = [];
+  private searchIndexBatch: typeof this.searchIndexQueue = [];
   private searchIndexDrain: Promise<void> | undefined;
   private readonly pendingSearchWrites = new Set<string>();
   private readonly sessionNamespace: ReturnType<typeof openFeatureNamespace>;
@@ -874,7 +875,7 @@ export class SessionRepository {
 
   closeSearchIndex(): void {
     // Work still waiting for its policy runs as refused: writes leave a repair intent, reads answer nothing.
-    for (const work of this.searchIndexQueue.splice(0)) {
+    for (const work of [...this.searchIndexBatch.splice(0), ...this.searchIndexQueue.splice(0)]) {
       try {
         work(() => "inactive");
       } catch (error) {
@@ -886,8 +887,8 @@ export class SessionRepository {
 
   /**
    * Runs database work under a policy that is current when the work runs. A refreshing source is awaited off the
-   * caller's path: saves return once their files are written, work queued during one refresh shares it, and each
-   * batch then runs in order with no await between the policy and the database.
+   * caller's path: saves return once their files are written. Each batch is claimed before its refresh and
+   * runs in order with no await between the policy and the database.
    */
   private withSearchIndexPolicy(work: (admit: () => SessionSearchIndexPolicy) => void): void {
     if (this.refreshSearchIndexPolicy === undefined) {
@@ -901,8 +902,9 @@ export class SessionRepository {
   private async drainSearchIndexQueue(refresh: () => Promise<() => SessionSearchIndexPolicy>): Promise<void> {
     try {
       while (this.searchIndexQueue.length > 0) {
+        this.searchIndexBatch = this.searchIndexQueue.splice(0);
         const admit = await refresh().catch((): (() => SessionSearchIndexPolicy) => () => "inactive");
-        for (const work of this.searchIndexQueue.splice(0)) {
+        for (const work of this.searchIndexBatch.splice(0)) {
           try {
             work(admit);
           } catch (error) {
