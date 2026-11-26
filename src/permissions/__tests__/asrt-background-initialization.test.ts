@@ -49,7 +49,7 @@ import {
 } from "../extension-start-consent.js";
 import { resolve, win32 } from "node:path";
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
-import { WindowsSandboxError } from "@anthropic-ai/sandbox-runtime";
+import { WindowsSandboxError, type WindowsAclGrantOptions } from "@anthropic-ai/sandbox-runtime";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { withProvidedContext } from "../../__tests__/support/provided-context.js";
@@ -75,12 +75,24 @@ const manager = vi.hoisted(() => ({
   updateConfig: vi.fn(),
   wrapWithSandboxArgv: vi.fn(async () => ({ argv: ["confined"], env: {} })),
 }));
-const nativeWorker = vi.hoisted(() => ({
-  grantWindowsAcl: vi.fn(),
-  revokeWindowsAcl: vi.fn(() => []),
-  resolveSrtWin: vi.fn(({ path }: { path: string }) => ({ exe: path, prependArgs: [] })),
-  getWindowsSandboxUserStatus: vi.fn(() => ({ provisioned: true, credPresent: true, sid: "S-1-5-21-123" })),
-}));
+const nativeWorker = vi.hoisted(() => {
+  const grantWindowsAcl = vi.fn<(options: WindowsAclGrantOptions) => void>();
+  return {
+    grantWindowsAcl,
+    revokeWindowsAcl: vi.fn(({ holderPid }: { holderPid: number }) => {
+      const paths = [...new Set(grantWindowsAcl.mock.calls.filter(([call]) => call.holderPid === holderPid)
+        .flatMap(([call]) => call.read ?? []))];
+      const rows = paths.length === 0 ? [] : facts.pinWindowsPaths(paths);
+      return paths.map((path, index) => {
+        const row = rows[index];
+        if (row === undefined) throw new Error("Missing release fixture identity");
+        return { path, status: "revoked", objectIdentity: facts.windowsObjectKey(row) };
+      });
+    }),
+    resolveSrtWin: vi.fn(({ path }: { path: string }) => ({ exe: path, prependArgs: [] })),
+    getWindowsSandboxUserStatus: vi.fn(() => ({ provisioned: true, credPresent: true, sid: "S-1-5-21-123" })),
+  };
+});
 const stampWindowsAclAsync = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("@anthropic-ai/sandbox-runtime", async original => ({
   ...(await original<typeof import("@anthropic-ai/sandbox-runtime")>()),

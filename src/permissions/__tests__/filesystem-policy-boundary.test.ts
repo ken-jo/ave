@@ -106,7 +106,9 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
     const pinned = pinWindowsFilesystemConfig({ [list]: [join(alias, "leaf")] });
     expect(pinned[list]).toEqual([{ path: identity.canonical, literal: true }]);
     const { sandbox, runtime } = await setup();
-    vi.mocked(runtime.revokeWindowsAcl).mockReturnValue([{ path: identity.canonical, status: "revoked" }]);
+    vi.mocked(runtime.revokeWindowsAcl).mockReturnValue([{
+      path: identity.canonical, status: "revoked", objectIdentity: identity.objectIdentity,
+    }]);
     const grant = await sandbox.grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, [list]: [join(alias, "leaf")] });
     try {
       expect(runtime.grantWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({

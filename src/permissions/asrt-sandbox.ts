@@ -27,7 +27,7 @@ import { createRequire } from "node:module";
 import { type AveHomeBoundarySnapshot, currentAveHomeBoundarySnapshot, inAveHomeBoundarySnapshot } from "./ave-home-boundary-snapshot.js";
 import { EOL, homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
-import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, windowsPathKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
+import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, isAveHomePrivacyApprovable, AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE } from "../shared/ave-home.js";
 import {
@@ -4007,38 +4007,21 @@ interface WindowsGrantTarget {
   readonly identity: string;
 }
 
-// Match the runtime's "ACL release outcome" patch; its status sets are not exported.
-const WINDOWS_GRANT_RELEASED_STATUSES = new Set(["revoked", "stillHeld", "downgraded", "relocated", "noRow", "restored", "alreadyOriginal"]);
-const WINDOWS_GRANT_STALE_STATUSES = new Set(["mismatch", "missing"]);
+const WINDOWS_GRANT_RELEASED_STATUSES = new Set(["revoked", "stillHeld", "downgraded", "relocated"]);
 
 function hasWindowsGrantCleanup(requests: readonly WindowsGrantTarget[], outcome: unknown, exitedOk: boolean): boolean {
-  if (!exitedOk || !Array.isArray(outcome) || outcome.some(row => row === null || typeof row !== "object"
-    || typeof row.path !== "string" || (!WINDOWS_GRANT_RELEASED_STATUSES.has(row.status) && !WINDOWS_GRANT_STALE_STATUSES.has(row.status)))) return false;
-  const staleCounts = new Map<string, number>();
+  if (!exitedOk || !Array.isArray(outcome)) return false;
+  const expected = new Set(requests.map(request => request.identity));
+  const verified = new Set<string>();
+  const ledgerPaths = new Set<string>();
   for (const row of outcome) {
-    if (WINDOWS_GRANT_STALE_STATUSES.has(row.status)) staleCounts.set(row.status, (staleCounts.get(row.status) ?? 0) + 1);
+    if (row === null || typeof row !== "object" || typeof row.path !== "string" || row.path.length === 0
+      || ledgerPaths.has(row.path) || !WINDOWS_GRANT_RELEASED_STATUSES.has(row.status)
+      || !expected.has(row.objectIdentity)) return false;
+    ledgerPaths.add(row.path);
+    verified.add(row.objectIdentity);
   }
-  if (staleCounts.size > 0) log.warn("Windows grant release dropped stale rows (%s); recovery cannot revisit dropped rows",
-    [...staleCounts].map(([status, count]) => `${status} x${count}`).join(", "));
-  // A clean empty ledger means the holder was already removed or pruned. Dropped release paths require a non-zero exit.
-  if (outcome.length === 0) return true;
-  const objects = new Map<string, string[]>();
-  for (const request of requests) objects.set(request.identity, [...(objects.get(request.identity) ?? []), request.path]);
-  const spellings = [...objects.values()];
-  const spelling = (path: string): string => win32.normalize(stripExtendedPathPrefix(path)).replace(/[\\/]+$/, "");
-  const used = new Set<number>();
-  return spellings.every(paths => {
-    let index = outcome.findIndex((row, offset) => !used.has(offset) && paths.some(path => spelling(row.path) === spelling(path)));
-    if (index < 0) {
-      index = outcome.findIndex((row, offset) => !used.has(offset)
-        && paths.some(path => windowsPathKey(row.path) === windowsPathKey(path))
-        // Fold only unambiguous ledger spellings, never distinct case-only objects.
-        && spellings.filter(other => other.some(path => windowsPathKey(row.path) === windowsPathKey(path))).length === 1);
-    }
-    if (index < 0) return false;
-    used.add(index);
-    return true;
-  });
+  return verified.size === expected.size;
 }
 
 function assertWindowsGrantPins(requests: readonly WindowsGrantTarget[]): void {

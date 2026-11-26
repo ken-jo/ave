@@ -3934,8 +3934,12 @@ with its own owner rule:
   their counts per step, without paths. A mismatched object's ACE is left as
   it was, so a deny there stays fail-closed, and the next boot's ACL recovery
   handles leftovers.
-  A plugin or worker grant release is judged by the same status sets and exit
-  code. An unconfirmed one seals the session against further confinement until
+  Plugin and worker grant release and rollback require a successful native exit
+  and a cleanup result for every admitted volume serial and file ID. The
+  revoker uses the holder's ledger and locates moved grants by file ID. It
+  reports the identity only after verifying it on the ACL handle, including
+  after relocation. Missing, contradictory, or unverified results seal
+  the session against further confinement until
   the quit reset (in practice, until restart); confined children already
   running are not stopped.
   At the first helper preparation, the Windows sweep also reclaims partial copies
