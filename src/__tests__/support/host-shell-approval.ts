@@ -4,6 +4,7 @@ import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, min
 import type { HostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
 import { getHostShellExecutionPlan } from "../../permissions/sandbox-capability.js";
 import type { ToolExecutionContext } from "../../tools/base.js";
+import { toolUseAnswer } from "./standing-answer.js";
 
 let approvalSequence = 0;
 
@@ -45,7 +46,7 @@ export async function mintOneShotHostShellPermit(input: {
   const request = webContents.send.mock.calls[0]?.[1] as ApprovalRequest | undefined;
   if (request?.nonce === undefined || request.hmac === undefined) throw new Error("Shell fixture did not receive a sealed request");
   gate.resolveFromDesktopRenderer(id, { requestId: id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, webContents as never);
-  const permit = mintHostShellExecutionPermit({ plan: input.plan, binding, approvalDecision: await pending });
+  const permit = mintHostShellExecutionPermit({ plan: input.plan, binding, answer: toolUseAnswer(input.toolUseId, await pending) });
   if (permit === undefined) throw new Error("Desktop consent did not issue a shell permit");
   return permit;
 }

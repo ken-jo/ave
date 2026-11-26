@@ -1,4 +1,4 @@
-import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, openPendingAnswerCard, personAnswerStands } from "../permissions/pending-answer-policy.js";
+import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, openPendingAnswerCard, personAnswerStands, standingAnswerFor, toolUseAction, type StandingAnswer } from "../permissions/pending-answer-policy.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
@@ -13,7 +13,7 @@ import { approvalFailureOutcome } from "./pipeline/approval-outcome.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import { disposableContainerCapability, resolveReviewerSandboxCapability } from "../permissions/sandbox-capability.js";
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
-import type { ApprovalDecision, ApprovalRequestInput, LinkedApprovalTarget } from "../permissions/approval-gate.js";
+import type { ApprovalRequestInput, LinkedApprovalTarget } from "../permissions/approval-gate.js";
 import { randomUUID } from "node:crypto";
 import type { PermissionCheckResult } from "../permissions/permission-manager.js";
 import { HOST_TERMINAL_PERMISSION_CHANGED, issueHostTerminalWriteAuthority, type HostTerminalWriteAuthority } from "../permissions/host-terminal-write-authority.js";
@@ -193,14 +193,15 @@ export interface ExecutionStageContext {
   ) => ToolExecutionAuditMetadata;
   withHostShellExecutionPlan: (result: ToolResult) => ToolResult;
   permissionResult: PermissionCheckResult | undefined;
-  humanApproved: boolean;
+  /** The person's standing answer this action rests on; undefined when the policy decided it. */
+  humanApproved: StandingAnswer | undefined;
   approvedPolicyEpoch?: string;
   permissionRecheckResult?: PermissionCheckResult;
   replayRootBinding?: ReplayRootBinding;
   abortSignal: AbortSignal | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
   processCwd?: import("../permissions/approval-gate.js").ApprovalRequestInput["processCwd"];
-  hostShellApprovalDecision: ApprovalDecision | undefined;
+  hostShellAnswer: StandingAnswer | undefined;
   hostShellAllowRuleDecision: PermissionCheckResult | undefined;
   hostShellExecutionPlan: HostShellExecutionPlan | undefined;
   executionRouteGrant?: ExecutionGrant;
@@ -268,7 +269,7 @@ export async function executeAuthorizedToolInvocation(
     abortSignal,
     hostShellExecutionPermitBinding,
     processCwd,
-    hostShellApprovalDecision,
+    hostShellAnswer,
     hostShellAllowRuleDecision,
     hostShellExecutionPlan,
     executionRouteGrant,
@@ -305,22 +306,31 @@ export async function executeAuthorizedToolInvocation(
   } = context;
   let sandboxBlock: SandboxBlock | undefined;
   let permissionResult = context.permissionResult;
-  if (typeof initialHumanApproved !== "boolean") {
+  const cardAction = toolUseAction(toolUse.id);
+  let humanApproved = standingAnswerFor(initialHumanApproved, cardAction);
+  if (!("humanApproved" in context) || initialHumanApproved !== undefined && humanApproved === undefined) {
     throw new Error("Handler admission is missing human approval provenance");
   }
-  let humanApproved = initialHumanApproved;
   let approvedPolicyEpoch = context.approvedPolicyEpoch;
   const approvalMemory = invocationPermissionContext.approvalMemory;
   let terminalWriteAuthority: HostTerminalWriteAuthority | undefined;
   let terminalWriteRefused = false;
   let terminalReapproval: { generation: number; policyEpoch: string } | undefined;
+  let terminalWriteAnswer: StandingAnswer | undefined;
   const issueTerminalWriteAuthority = (): void => {
     const manager = services.permissionManager;
     const check = context.checkCurrentHostTerminalPermission;
     if (!hostTerminalRoute || !manager || !check || permissionResult?.decision !== "allow") return;
+    // One standing answer is spent on one authority; a later admission under the same answer checks that authority again.
+    if (humanApproved !== undefined && humanApproved === terminalWriteAnswer && terminalWriteAuthority !== undefined) {
+      const refusal = terminalWriteAuthority.refusal();
+      if (refusal !== undefined) throw new Error(refusal);
+      return;
+    }
+    terminalWriteAnswer = humanApproved;
     terminalWriteAuthority = issueHostTerminalWriteAuthority({
       manager, check, settled: permissionResult,
-      human: humanApproved, cardForced: humanApproved && permissionResult.forceModal === true,
+      answer: humanApproved, action: cardAction,
       reviewed: permissionResult.pipelineRequest?.userOwnedSurface?.choice === "auto" && permissionResult.reviewer?.verdict !== undefined &&
         (permissionResult.reasonCode === "user-owned-surface-reviewed" || permissionResult.reasonCode === EXACT_HOST_RULE_REASON_CODE),
       decidedBackend: hostTerminalRoute.decidedBackend, backendIdentity: hostTerminalRoute.backendIdentity,
@@ -694,7 +704,7 @@ export async function executeAuthorizedToolInvocation(
     hostShellExecutionPermitBinding !== undefined
       ? mintHostShellExecutionPermit({
           plan: hostShellExecutionPlan,
-          approvalDecision: hostShellApprovalDecision,
+          answer: hostShellAnswer,
           allowRuleDecision: hostShellAllowRuleDecision,
           floorSessionDecision: permissionResult,
           permissionManager: services.permissionManager,
@@ -1175,21 +1185,24 @@ export async function executeAuthorizedToolInvocation(
     const policyChanged = "Permission policy changed before execution.";
     const manager = services.permissionManager;
     const card = manager ? openPendingAnswerCard(manager, permissionResult,
-      () => context.checkCurrentPermission?.() ?? { decision: "deny", reason: policyChanged }, "stale-reasked") : undefined;
+      () => context.checkCurrentPermission?.() ?? { decision: "deny", reason: policyChanged }, "stale-reasked",
+      { gate: services.approvalGate!, requestId: liveRequest.id, action: cardAction }) : undefined;
     let decision = await services.approvalGate!.requestAndWait(liveRequest);
     abortSignal?.throwIfAborted();
     const currentEpoch = manager?.getPolicyEpoch();
+    let cardAnswer: StandingAnswer | undefined;
     if (manager && card) {
       const policyMoved = currentEpoch !== card.epochs.epoch;
-      personAnswerStands(manager, card, { gate: services.approvalGate!, decision });
+      personAnswerStands(card, decision);
       const verdict = card.verdict ?? { kind: "policy-changed" as const };
       if ("fresh" in verdict && (policyMoved || verdict.kind === "stale")) permissionResult = verdict.fresh;
       // A stale Allow is asked again on a new card; a Deny stands as the person's Deny.
       if (verdict.kind === "stale" && !isHostApprovalRejectedDecision(decision)) {
-        humanApproved = false;
+        humanApproved = undefined;
         terminalWriteAuthority = undefined;
         return;
       }
+      if (verdict.kind === "stands") cardAnswer = verdict.proof;
       const invalidationReason = verdict.kind === "policy-changed" ? policyChanged : verdict.kind === "denied" ? verdict.fresh.reason : undefined;
       if (invalidationReason !== undefined) {
         permissionResult = { ...permissionResult, decision: "deny", reason: invalidationReason };
@@ -1197,9 +1210,10 @@ export async function executeAuthorizedToolInvocation(
       }
     }
     const surfaceResolution = services.permissionManager ? await resolveUserOwnedSurfaceApproval({
-      manager: services.permissionManager, gate: services.approvalGate!, permission: permissionResult, decision, request: liveRequest, sessionId,
+      manager: services.permissionManager, gate: services.approvalGate!, permission: permissionResult, decision,
+      answer: cardAnswer, action: cardAction, request: liveRequest, sessionId,
       review: async permission => await dispatchReviewerForInteractiveAuto(services.permissionManager, toolUse.name, source, invocationCategory, tool.pathFields ?? [], finalInput, invocationAllowedScope.directories, sensitivePathPattern ? [sensitivePathPattern] : [], invocationPermissionContext, evaluationContext, { ...(ownerPluginSandboxRoot ? { ownerPluginSandboxRoot } : {}) }, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, undefined, sessionId, permission) ?? permission,
-    }) : { permission: permissionResult, decision, humanApproved: undefined };
+    }) : { permission: permissionResult, decision, answer: undefined };
     permissionResult = surfaceResolution.permission;
     decision = surfaceResolution.decision;
     const failure = approvalFailureOutcome(decision, toolUse.name, permissionResult);
@@ -1207,18 +1221,21 @@ export async function executeAuthorizedToolInvocation(
       permissionResult = failure.permission;
       throw new Error(failure.content);
     }
-    humanApproved = surfaceResolution.humanApproved ?? (decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision));
+    humanApproved = surfaceResolution.answer;
+    // Without a permission manager no card is judged, so the allow carries no standing answer and reaches no permit.
+    const approved = manager ? humanApproved !== undefined : decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision);
     // The person's Deny stands whatever the policy now says of the call: an allow the re-check found never overrides it.
-    if (!humanApproved && (permissionResult.decision !== "allow" || decision.choice.startsWith("deny"))) {
+    if (!approved && (permissionResult.decision !== "allow" || decision.choice.startsWith("deny"))) {
       permissionResult = { ...permissionResult, decision: "deny", reason: request.reason };
       throw new Error(request.reason);
     }
-    if (humanApproved) permissionResult = { ...permissionResult, decision: "allow", reason: `user approved approval request (${decision.choice})` };
+    if (approved) permissionResult = { ...permissionResult, decision: "allow", reason: `user approved approval request (${decision.choice})` };
     approvedPolicyEpoch = currentEpoch;
     issueTerminalWriteAuthority();
     if (hostShellExecutionPlan && hostShellExecutionPermitBinding && requiresShellPermit()) {
-      if (!hostShellRequiresExplicitApproval) recordHostShellPolicyAuthorization(hostShellExecutionPermitBinding);
-      const permit = mintHostShellExecutionPermit({ plan: hostShellExecutionPlan, approvalDecision: hostShellRequiresExplicitApproval ? decision : undefined,
+      if (!hostShellRequiresExplicitApproval) recordHostShellPolicyAuthorization(hostShellExecutionPermitBinding, humanApproved);
+      // The answer to the card that got `decision`: the fallback card's when one was asked, else this card's.
+      const permit = mintHostShellExecutionPermit({ plan: hostShellExecutionPlan, answer: hostShellRequiresExplicitApproval ? humanApproved ?? cardAnswer : undefined,
         permissionManager: services.permissionManager, binding: hostShellExecutionPermitBinding });
       if (!permit) throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
       executionContext.hostShellExecutionPermit = permit;

@@ -1,4 +1,4 @@
-import { openPendingAnswerCard, personAnswerStands } from "../permissions/pending-answer-policy.js";
+import { openPendingAnswerCard, personAnswerStands, spendStandingAnswer, toolUseAction, type StandingAnswer } from "../permissions/pending-answer-policy.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { issueReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
@@ -1502,7 +1502,7 @@ async function runToolInvocationAttempt(
     }
     const processCwd = shellApprovalDirectory !== undefined ? { directory: shellApprovalDirectory }
       : isBrokerGuestRoutePlan(executionRoutePlan) ? { guestRoute: executionRoutePlan } : undefined;
-    let hostShellApprovalDecision: ApprovalDecision | undefined;
+    let hostShellAnswer: StandingAnswer | undefined;
     let hostShellAllowRuleDecision: PermissionCheckResult | undefined;
     const makeEvaluationContext = (input: {
       pathFields: readonly string[];
@@ -1548,7 +1548,7 @@ async function runToolInvocationAttempt(
       reviewerPathFields: readonly string[],
       behavior?: { reviewedPermission: PermissionCheckResult; requestId: string; allowedDirectories: readonly string[]; abortSignal?: AbortSignal },
     ): Promise<
-      | { allowed: true; approvedDirectory: string; scope: "turn" | "session" | "always"; permissionResult?: PermissionCheckResult; humanApproved?: boolean; pendingRationale?: true; requestHumanApproval?: NonNullable<AuthorizationStageContext["directoryAuthorization"]>["requestHumanApproval"]; approvalDecision?: ApprovalDecision }
+      | { allowed: true; approvedDirectory: string; scope: "turn" | "session" | "always"; permissionResult?: PermissionCheckResult; humanApproved?: StandingAnswer; pendingRationale?: true; requestHumanApproval?: NonNullable<AuthorizationStageContext["directoryAuthorization"]>["requestHumanApproval"]; approvalDecision?: ApprovalDecision }
       | { allowed: false; result: ToolResult; approvalDecision?: ApprovalDecision }
     > => {
       const directoryScope = [...(behavior?.allowedDirectories ?? invocationAllowedScope.directories)];
@@ -1602,7 +1602,7 @@ async function runToolInvocationAttempt(
         else directoryPermission = await dispatchReviewerForInteractiveAuto(...reviewerArgs) ?? directoryPermission;
       }
       if (directoryPermission.decision === "allow") return { allowed: true, approvedDirectory: outOfAllowedTarget.realPath, scope: "turn", permissionResult: directoryPermission,
-        ...(rationaleResumeContext === undefined ? {} : { pendingRationale: true as const, humanApproved: false }) };
+        ...(rationaleResumeContext === undefined ? {} : { pendingRationale: true as const }) };
       if (directoryPermission.decision === "deny") {
         const msg = directoryPermission.reason;
         await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, directoryPermission, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
@@ -1612,7 +1612,10 @@ async function runToolInvocationAttempt(
         }) };
       }
       dirLayerResult = directoryPermission;
-      const directoryCard = openPendingAnswerCard(manager, dirLayerResult, checkDirectoryPermission, "stale-refused");
+      const directoryRequestId = behavior?.requestId ?? randomUUID();
+      const directoryAction = toolUseAction(toolUse.id);
+      const directoryCard = openPendingAnswerCard(manager, dirLayerResult, checkDirectoryPermission, "stale-refused",
+        { gate: services.approvalGate ?? {}, requestId: directoryRequestId, action: directoryAction });
 
       const trustOrigin = invocationPermissionContext.trustOrigin;
       // A directory-confirm modal is an approval like any other, so it carries
@@ -1678,7 +1681,7 @@ async function runToolInvocationAttempt(
       if (eligibleDirectoryChoice) {
         // These exact targets are provisional validator inputs only. Execution still requires the sealed receipt.
         return { allowed: true, approvedDirectory: outOfAllowedTarget.realPath, scope: "turn",
-          permissionResult: directoryPermission, humanApproved: false, pendingRationale: true,
+          permissionResult: directoryPermission, pendingRationale: true,
           requestHumanApproval: async ({ requestId, abortSignal: approvalAbortSignal }) => {
             const beforeDirectories = [...(invocationPermissionContext.getAdditionalDirectories?.() ?? invocationPermissionContext.additionalDirectories ?? [])];
             const resolution = await requestOutOfAllowedDirectoryAccess(outOfAllowedTarget, dirLayerResult,
@@ -1720,7 +1723,7 @@ async function runToolInvocationAttempt(
         const denyCardGrant = () => denyDirectoryGrant(directorySignal, !cwdCurrent()
           ? "The shell working directory changed or could not be verified. Request authorization again." : undefined);
         const approvalRequest = {
-          id: behavior?.requestId ?? randomUUID(),
+          id: directoryRequestId,
           ...((dirLayerResult.forceModal === true)
             ? {
                 allowedChoices: ["allow-once", "deny-once"] as const,
@@ -1868,7 +1871,9 @@ async function runToolInvocationAttempt(
           return { allowed: false, result: await denyCardGrant() };
         }
         // The one rule for answered cards (pending-answer-policy.ts): a sibling stage's "Allow for this run" leaves the answer standing.
-        if (!personAnswerStands(manager, directoryCard, { gate: services.approvalGate, decision })) {
+        const directoryStands = personAnswerStands(directoryCard, decision);
+        const directoryAnswer = directoryCard.verdict?.kind === "stands" ? directoryCard.verdict.proof : undefined;
+        if (!directoryStands || directoryAnswer === undefined) {
           const verdict = directoryCard.verdict;
           const reason = verdict?.kind === "denied" ? verdict.fresh.reason
             : verdict?.kind === "stale" ? t("be_executor.answerQuestionChanged") : "Permission policy changed during approval.";
@@ -1876,7 +1881,8 @@ async function runToolInvocationAttempt(
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, denied.reason, true, startTime, denied, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: denied.reason, is_error: true, durationMs: Date.now() - startTime }) };
         }
-        const surfaceResolution = await resolveUserOwnedSurfaceApproval({ manager, gate: services.approvalGate, permission: dirLayerResult, decision, request: { ...approvalRequest, abortSignal: directorySignal }, sessionId,
+        const surfaceResolution = await resolveUserOwnedSurfaceApproval({ manager, gate: services.approvalGate, permission: dirLayerResult, decision,
+          answer: directoryAnswer, action: directoryAction, request: { ...approvalRequest, abortSignal: directorySignal }, sessionId,
           review: async permission => await dispatchReviewerForInteractiveAuto(manager, toolUse.name, source, invocationCategory, reviewerPathFields, finalInput, directoryScope, [], invocationPermissionContext, makeDirectoryEvaluationContext({ pathFields: reviewerPathFields, targetFilePaths: [outOfAllowedTarget.filePath] }), {}, callbacks, meta, approvalPurpose, hostShellExecutionPlan, directorySignal, auditInput, sessionId, permission) ?? permission,
         }).catch(async (error: unknown) => {
           if (!grantGuard || grantGuard.isCurrent()) throw error;
@@ -1889,7 +1895,11 @@ async function runToolInvocationAttempt(
         if (grantGuard && !grantGuard.isCurrent()) {
           return { allowed: false, result: await denyCardGrant() };
         }
-        const approvedPermissionResult: PermissionCheckResult = surfaceResolution.humanApproved === false ? dirLayerResult : { ...dirLayerResult, decision: "allow", reason: "The user approved this exact invocation." };
+        // Every folder grant below is made on the card's standing answer, spent once.
+        if (spendStandingAnswer(directoryAnswer, "directory-grant", directoryAction) === undefined) {
+          return { allowed: false, result: await denyCardGrant() };
+        }
+        const approvedPermissionResult: PermissionCheckResult = surfaceResolution.answer === undefined ? dirLayerResult : { ...dirLayerResult, decision: "allow", reason: "The user approved this exact invocation." };
         // No remembered grant is kept while boot refuses the home folder (the card already answers once with a notice); an
         // allow-always that still arrives applies once, to the exact target.
         const persistRefused = decision.choice === "allow-always" && isAveHomeConfigurationRefused(aveHome());
@@ -1941,7 +1951,7 @@ async function runToolInvocationAttempt(
             await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { ...dirLayerResult, decision: "deny" }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
             return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
           }
-          return { allowed: true, approvalDecision: decision, approvedDirectory, scope: "always", permissionResult: approvedPermissionResult, humanApproved: surfaceResolution.humanApproved ?? true };
+          return { allowed: true, approvalDecision: decision, approvedDirectory, scope: "always", permissionResult: approvedPermissionResult, humanApproved: surfaceResolution.answer };
         }
         if (decision.choice === "allow-session") {
           // Mirror allow-always' persist convention so the permission
@@ -1971,10 +1981,10 @@ async function runToolInvocationAttempt(
             await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { ...dirLayerResult, decision: "deny" }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
             return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
           }
-          return { allowed: true, approvalDecision: decision, approvedDirectory: sessionScopePath, scope: "session", permissionResult: approvedPermissionResult, humanApproved: true };
+          return { allowed: true, approvalDecision: decision, approvedDirectory: sessionScopePath, scope: "session", permissionResult: approvedPermissionResult, humanApproved: surfaceResolution.answer ?? directoryAnswer };
         }
         // allow-once: turn-scope, no persistence, narrowest path.
-        return { allowed: true, approvalDecision: decision, approvedDirectory, scope: "turn", permissionResult: approvedPermissionResult, humanApproved: true };
+        return { allowed: true, approvalDecision: decision, approvedDirectory, scope: "turn", permissionResult: approvedPermissionResult, humanApproved: surfaceResolution.answer ?? directoryAnswer };
       }
 
       throw new Error("Human approval requires an available approval surface");
@@ -2168,7 +2178,7 @@ async function runToolInvocationAttempt(
           if (!resolution.allowed) return resolution.result;
           if (resolution.permissionResult) {
             permissionResult = resolution.permissionResult;
-            directoryAuthorization = { permission: resolution.permissionResult, humanApproved: resolution.humanApproved === true,
+            directoryAuthorization = { permission: resolution.permissionResult, humanApproved: resolution.humanApproved,
               ...(resolution.pendingRationale ? { pendingRationale: true, requestHumanApproval: resolution.requestHumanApproval } : {}) };
           }
           if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) {
@@ -2504,7 +2514,7 @@ async function runToolInvocationAttempt(
         if (!resolution.allowed) return resolution.result;
         if (resolution.permissionResult) {
           permissionResult = resolution.permissionResult;
-          directoryAuthorization = { permission: resolution.permissionResult, humanApproved: resolution.humanApproved === true,
+          directoryAuthorization = { permission: resolution.permissionResult, humanApproved: resolution.humanApproved,
             ...(resolution.pendingRationale ? { pendingRationale: true, requestHumanApproval: resolution.requestHumanApproval } : {}) };
         }
         if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) {
@@ -2559,7 +2569,7 @@ async function runToolInvocationAttempt(
       hostShellPathPolicyRelaxations: executionRoutePathPolicyRelaxations,
       hostShellExecutionPermitBinding,
       processCwd,
-      hostShellApprovalDecision,
+      hostShellAnswer,
       verifiedShellCommand,
       ...(!brokeredHostShellRouteSelected() && hostShellExecutionPlan?.substrate !== "mxc"
         && invocationPermissionContext.disposableSubstrate === undefined ? { preparedShellInvocation } : {}),
@@ -2599,7 +2609,7 @@ async function runToolInvocationAttempt(
       return await returnExecutionRouteFailure(new Error("Terminal reapproval requires an explicit human answer."));
     }
     permissionResult = authorization.permissionResult;
-    hostShellApprovalDecision = authorization.hostShellApprovalDecision;
+    hostShellAnswer = authorization.hostShellAnswer;
     hostShellAllowRuleDecision = authorization.hostShellAllowRuleDecision;
     const decidedPathPolicyRelaxations = executionRoutePathPolicyRelaxations ?? [];
 
@@ -2710,7 +2720,7 @@ async function runToolInvocationAttempt(
       abortSignal,
       hostShellExecutionPermitBinding,
       processCwd,
-      hostShellApprovalDecision,
+      hostShellAnswer,
       hostShellAllowRuleDecision,
       hostShellExecutionPlan,
       hostShellRequiresExplicitApproval,

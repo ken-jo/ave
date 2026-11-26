@@ -8,6 +8,9 @@
 // A card that can lead to shell or terminal authority is opened as a `PendingAnswerCard`. Its answer is always judged against a fresh
 // check bound at card open, and it stands only while that check asks the card's own question. The card's own rule save (a native
 // same-card receipt) is honored only for such a card.
+//
+// A standing Allow is handed on as a `StandingAnswer`, which only `personAnswerStands` makes. Whatever acts on a person's answer (a
+// folder grant, a shell permit, terminal typing, a remembered effect grant) takes that object and spends it, once per kind of use.
 import { decidePermission } from "./decision-pipeline.js";
 import type { PermissionCheckResult, PermissionManager } from "./permission-manager.js";
 import type { ApprovalDecision, ApprovalGate } from "./approval-gate.js";
@@ -80,11 +83,12 @@ export function answerSurvivesRecheck(now: Rechecked, cardForced: boolean): bool
 export type StaleAnswerOutcome = "stale-reasked" | "stale-refused";
 
 /** The owner's verdict on an answered card. `fresh` is the check it judged by; a caller acts on it, never on a check of its own.
- * A moved policy refuses an Allow before any check runs, and so does a check with no result. A Deny stays the person's
- * (`declined`) unless the policy now denies the call itself. */
+ * A moved policy refuses an Allow before any check runs, and so does a check with no result, an answer to another card and a
+ * second answer to this one. A Deny stays the person's (`declined`) unless the policy now denies the call itself. */
 export type PendingAnswerVerdict =
   | { readonly kind: "declined" | "policy-changed" }
-  | { readonly kind: "stands" | "denied"; readonly fresh: PermissionCheckResult }
+  | { readonly kind: "denied"; readonly fresh: PermissionCheckResult }
+  | { readonly kind: "stands"; readonly fresh: PermissionCheckResult; readonly proof: StandingAnswer }
   | { readonly kind: "stale"; readonly fresh: PermissionCheckResult; readonly from: PermissionQuestion; readonly to: PermissionQuestion };
 
 export interface PendingAnswerCard {
@@ -95,36 +99,98 @@ export interface PendingAnswerCard {
   readonly verdict?: PendingAnswerVerdict;
 }
 
-const cardChecks = new WeakMap<PendingAnswerCard, { readonly check: () => PermissionCheckResult; readonly onStale: StaleAnswerOutcome }>();
+/** What a standing answer may be spent on. Each use is taken once per answer. */
+export type StandingAnswerUse = "directory-grant" | "shell-permit" | "shell-policy" | "terminal-write" | "effect";
+
+/** What a standing answer is bound to: the card's request, the answer it got, the action it was asked for and the question it put. */
+export interface StandingAnswerFacts {
+  readonly requestId: string;
+  readonly decision: ApprovalDecision;
+  readonly action: string;
+  readonly question: PermissionQuestion;
+  readonly forced: boolean;
+  readonly fresh: PermissionCheckResult;
+}
+
+const standingAnswers = new WeakMap<StandingAnswer, { readonly facts: StandingAnswerFacts; readonly spent: Set<StandingAnswerUse> }>();
+let issueStandingAnswer: (facts: StandingAnswerFacts) => StandingAnswer;
+
+/** Proof that a person's Allow stood. Only this module makes one, and only its entry in the registry above makes one valid. */
+class StandingAnswer {
+  declare private readonly standing: true;
+  private constructor() { Object.freeze(this); }
+  static {
+    issueStandingAnswer = (facts) => {
+      const proof = new StandingAnswer();
+      standingAnswers.set(proof, { facts: Object.freeze(facts), spent: new Set() });
+      return proof;
+    };
+  }
+}
+export type { StandingAnswer };
+
+/** The action a tool call's cards are asked for. */
+export function toolUseAction(toolUseId: string): string {
+  return `tool-use:${toolUseId}`;
+}
+
+/** The answer when it is a standing answer to `action`; nothing is spent. */
+export function standingAnswerFor(answer: unknown, action: string): StandingAnswer | undefined {
+  const proof = answer as StandingAnswer;
+  return typeof answer === "object" && answer !== null && standingAnswers.get(proof)?.facts.action === action ? proof : undefined;
+}
+
+/** Spend the answer on one use for `action`. Undefined when it is no standing answer to that action or was already spent on that use. */
+export function spendStandingAnswer(answer: StandingAnswer | undefined, use: StandingAnswerUse, action: string): StandingAnswerFacts | undefined {
+  const proof = standingAnswerFor(answer, action);
+  const entry = proof && standingAnswers.get(proof);
+  if (!entry || entry.spent.has(use)) return undefined;
+  entry.spent.add(use);
+  return entry.facts;
+}
+
+/** What a card is bound to at open: the gate that asks it, the request it is asked under and the action it is asked for. */
+export interface PendingAnswerBinding {
+  readonly gate: Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer">>;
+  readonly requestId: string;
+  readonly action: string;
+}
+
+interface BoundCard extends PendingAnswerBinding {
+  readonly manager: EpochSource;
+  readonly check: () => PermissionCheckResult;
+  readonly onStale: StaleAnswerOutcome;
+  judged: boolean;
+}
+
+const boundCards = new WeakMap<PendingAnswerCard, BoundCard>();
 
 /** Open a card on `opened`, the decision it shows. `check` is the call's current permission check; the owner alone runs it. */
-export function openPendingAnswerCard(manager: EpochSource, opened: Questioned, check: () => PermissionCheckResult, onStale: StaleAnswerOutcome): PendingAnswerCard {
+export function openPendingAnswerCard(manager: EpochSource, opened: Questioned, check: () => PermissionCheckResult, onStale: StaleAnswerOutcome,
+  binding: PendingAnswerBinding): PendingAnswerCard {
   const card: PendingAnswerCard = { epochs: answerEpochsOf(manager), question: permissionQuestionOf(opened), forced: opened.forceModal === true };
-  cardChecks.set(card, Object.freeze({ check, onStale }));
+  boundCards.set(card, { manager, check, onStale, gate: binding.gate, requestId: binding.requestId, action: binding.action, judged: false });
   return card;
 }
 
-/** The answer to a card. The gate is consulted for the card's own policy step and told of a stale Allow. */
-export interface CardAnswer {
-  readonly gate: Partial<Pick<ApprovalGate, "allowsPolicyTransition" | "recordStaleAnswer">>;
-  readonly decision: ApprovalDecision;
-}
-
-function judgeCard(manager: EpochSource, card: PendingAnswerCard, answer: CardAnswer): PendingAnswerVerdict {
-  const bound = cardChecks.get(card);
-  if (!bound) throw new Error("Pending answer card was not opened by openPendingAnswerCard");
-  const allows = answer.decision.choice.startsWith("allow");
+function judgeCard(card: PendingAnswerCard, bound: BoundCard, decision: ApprovalDecision): PendingAnswerVerdict {
+  const allows = decision.choice.startsWith("allow");
+  const refused: PendingAnswerVerdict = { kind: allows ? "policy-changed" : "declined" };
+  // One answer per card, and only the answer to this card's own request.
+  if (bound.judged || decision.requestId !== bound.requestId) return refused;
+  bound.judged = true;
+  const { manager } = bound;
   const current = manager.getPolicyEpoch();
   const opened = card.epochs;
   const policyStands = current === opened.epoch ||
-    answer.gate.allowsPolicyTransition?.(answer.decision, opened.epoch, current) === true ||
+    bound.gate.allowsPolicyTransition?.(decision, opened.epoch, current) === true ||
     onlyMemoryRulesChangedSince(manager, opened);
-  if (!policyStands) return { kind: allows ? "policy-changed" : "declined" };
+  if (!policyStands) return refused;
   let fresh: PermissionCheckResult;
   try {
     fresh = bound.check();
   } catch {
-    return { kind: allows ? "policy-changed" : "declined" };
+    return refused;
   }
   if (fresh.decision === "deny") return { kind: "denied", fresh };
   if (!allows) return { kind: "declined" };
@@ -133,32 +199,35 @@ function judgeCard(manager: EpochSource, card: PendingAnswerCard, answer: CardAn
   if (fresh.decision === "ask" && fresh.forceModal === true && (!card.forced || !samePermissionQuestion(card.question, asked))) {
     return { kind: "stale", fresh, from: card.question, to: asked };
   }
-  return { kind: "stands", fresh };
+  return { kind: "stands", fresh,
+    proof: issueStandingAnswer({ requestId: bound.requestId, decision, action: bound.action, question: card.question, forced: card.forced, fresh }) };
 }
 
-/** The whole rule. `recheck` judges the pending call by the policy as it is now; it runs only across memory-only rule steps.
- * With a `PendingAnswerCard`, the card's bound check judges the answer on every path and the verdict is left on the card. */
-export function personAnswerStands(manager: EpochSource, card: PendingAnswerCard, answer: CardAnswer): boolean;
+/** The whole rule. With a `PendingAnswerCard`, the card's bound check judges the answer on every path, the verdict is left on the
+ * card and a standing Allow carries the one `StandingAnswer`. The epoch form judges a card that leads to no shell, terminal, folder
+ * or effect authority; `recheck` judges the pending call by the policy as it is now and runs only across memory-only rule steps. */
+export function personAnswerStands(card: PendingAnswerCard, decision: ApprovalDecision): boolean;
 export function personAnswerStands(manager: EpochSource, opened: AnswerEpochs, cardForced: boolean, recheck: () => Rechecked): boolean;
 export function personAnswerStands(manager: EpochSource, opened: AnswerEpochs, cardForced: boolean, recheck: () => Promise<Rechecked>): boolean | Promise<boolean>;
-export function personAnswerStands(manager: EpochSource, opened: AnswerEpochs | PendingAnswerCard, cardForcedOrAnswer: boolean | CardAnswer,
+export function personAnswerStands(cardOrManager: PendingAnswerCard | EpochSource, decisionOrOpened: ApprovalDecision | AnswerEpochs, cardForced?: boolean,
   recheck?: () => Rechecked | Promise<Rechecked>): boolean | Promise<boolean> {
-  if ("question" in opened) {
-    const answer = cardForcedOrAnswer as CardAnswer;
-    const verdict = judgeCard(manager, opened, answer);
-    (opened as { verdict?: PendingAnswerVerdict }).verdict = verdict;
-    if (verdict.kind === "stale") {
-      answer.gate.recordStaleAnswer?.(answer.decision, cardChecks.get(opened)?.onStale ?? "stale-refused", verdict.from, verdict.to);
-    }
+  if ("question" in cardOrManager) {
+    const bound = boundCards.get(cardOrManager);
+    if (!bound) throw new Error("Pending answer card was not opened by openPendingAnswerCard");
+    const decision = decisionOrOpened as ApprovalDecision;
+    const verdict = judgeCard(cardOrManager, bound, decision);
+    (cardOrManager as { verdict?: PendingAnswerVerdict }).verdict = verdict;
+    if (verdict.kind === "stale") bound.gate.recordStaleAnswer?.(decision, bound.onStale, verdict.from, verdict.to);
     return verdict.kind === "stands";
   }
-  const cardForced = cardForcedOrAnswer as boolean;
+  const manager = cardOrManager;
+  const opened = decisionOrOpened as AnswerEpochs;
   if (manager.getPolicyEpoch() === opened.epoch) return true;
   if (!onlyMemoryRulesChangedSince(manager, opened)) return false;
   if (!recheck) return false;
   const now = recheck();
   if (now instanceof Promise) {
-    return now.then(result => onlyMemoryRulesChangedSince(manager, opened) && answerSurvivesRecheck(result, cardForced));
+    return now.then(result => onlyMemoryRulesChangedSince(manager, opened) && answerSurvivesRecheck(result, cardForced === true));
   }
-  return answerSurvivesRecheck(now, cardForced);
+  return answerSurvivesRecheck(now, cardForced === true);
 }

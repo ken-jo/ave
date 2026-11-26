@@ -52,18 +52,22 @@ describe("the policy of a pending tool answer", () => {
     { epoch: "changed", context: "other", signed: true, rechecked: { decision: "deny" }, verdict: "denied" },
     { epoch: "changed", context: "other", signed: true, rechecked: { decision: "allow" }, verdict: "stands" },
   ] as const)("judges an unforced card by its bound check for $epoch/$context/$signed/$rechecked.decision", (test) => {
-    const manager = { getPolicyEpoch: () => test.epoch, getPolicyContextEpoch: () => test.context };
-    const at = { getPolicyEpoch: () => "opened", getPolicyContextEpoch: () => "same" };
+    const now = { epoch: "opened", context: "same" };
+    const manager = { getPolicyEpoch: () => now.epoch, getPolicyContextEpoch: () => now.context };
     const check = vi.fn(() => test.rechecked as unknown as PermissionCheckResult);
-    const card = openPendingAnswerCard(at, { decision: "ask" }, check, "stale-refused");
     const allowsPolicyTransition = vi.fn(() => false).mockReturnValueOnce(test.signed);
-    expect(personAnswerStands(manager, card, { gate: { allowsPolicyTransition }, decision })).toBe(test.verdict === "stands");
+    const bound = { gate: { allowsPolicyTransition }, requestId: decision.requestId, action: "tool-use:call" };
+    const card = openPendingAnswerCard(manager, { decision: "ask" }, check, "stale-refused", bound);
+    Object.assign(now, { epoch: test.epoch, context: test.context });
+    expect(personAnswerStands(card, decision)).toBe(test.verdict === "stands");
     expect(card.verdict?.kind).toBe(test.verdict);
     expect(check).toHaveBeenCalledTimes(test.verdict === "policy-changed" ? 0 : 1);
     if (test.signed) {
       expect(allowsPolicyTransition).toHaveBeenCalledWith(decision, "opened", "changed");
-      const again = openPendingAnswerCard(at, { decision: "ask" }, check, "stale-refused");
-      expect(personAnswerStands(manager, again, { gate: { allowsPolicyTransition }, decision })).toBe(false);
+      Object.assign(now, { epoch: "opened", context: "same" });
+      const again = openPendingAnswerCard(manager, { decision: "ask" }, check, "stale-refused", bound);
+      Object.assign(now, { epoch: test.epoch, context: test.context });
+      expect(personAnswerStands(again, decision)).toBe(false);
       expect(again.verdict).toEqual({ kind: "policy-changed" });
     }
   });

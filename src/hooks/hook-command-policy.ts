@@ -8,7 +8,7 @@ import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, min
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { buildPermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
-import { openPendingAnswerCard, personAnswerStands } from "../permissions/pending-answer-policy.js";
+import { openPendingAnswerCard, personAnswerStands, toolUseAction, type StandingAnswer } from "../permissions/pending-answer-policy.js";
 import { t } from "../i18n/index.js";
 import { shellQuote } from "../lib/shell-resolver.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
@@ -97,10 +97,12 @@ export function createHookCommandAuthorizer(deps: {
     let transferred = false;
     try {
     let approval: ApprovalDecision | undefined;
-    const humanApproved = result.decision === "ask";
-    const card = humanApproved ? openPendingAnswerCard(deps.permissionManager, result, check, "stale-refused") : undefined;
+    const asksPerson = result.decision === "ask";
+    const card = asksPerson ? openPendingAnswerCard(deps.permissionManager, result, check, "stale-refused",
+      { gate: deps.approvalGate, requestId: id, action: toolUseAction(id) }) : undefined;
     const opened = card?.epochs;
-    if (humanApproved) {
+    let answer: StandingAnswer | undefined;
+    if (asksPerson) {
       approval = await deps.approvalGate.requestAndWait({
         id, category: "tool", toolName: "bash", toolCategory: "shell",
         args: { ...args, hook: hook.id, event: payload.hookType }, reason: result.reason,
@@ -126,7 +128,7 @@ export function createHookCommandAuthorizer(deps: {
     if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId) || !controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
     let current: PermissionCheckResult;
     if (card && approval) {
-      personAnswerStands(deps.permissionManager, card, { gate: deps.approvalGate, decision: approval });
+      personAnswerStands(card, approval);
       const verdict = card.verdict ?? { kind: "policy-changed" as const };
       if (!("fresh" in verdict)) {
         return { decision: "deny", reason: verdict.kind === "declined" ? "user denied hook command" : "Permission policy changed while approval was pending" };
@@ -134,6 +136,7 @@ export function createHookCommandAuthorizer(deps: {
       current = verdict.fresh;
       if (verdict.kind === "denied") return { decision: "deny", reason: current.reason };
       if (verdict.kind === "stale") return { decision: "deny", reason: t("be_executor.answerQuestionChanged") };
+      answer = verdict.proof;
     } else {
       current = check();
       if (current.decision === "deny") return { decision: "deny", reason: current.reason };
@@ -143,7 +146,7 @@ export function createHookCommandAuthorizer(deps: {
     if (!matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity)) return { decision: "deny", reason: "Hook working directory changed during approval" };
     if (plan.requiresExplicitUserApproval) {
       // `current` carries the proof of a non-human pass of the sandbox-unavailable ask: the session grant or an exact saved rule.
-      const permit = mintHostShellExecutionPermit({ plan, approvalDecision: approval, allowRuleDecision: current, floorSessionDecision: current, permissionManager: deps.permissionManager, binding });
+      const permit = mintHostShellExecutionPermit({ plan, answer, allowRuleDecision: current, floorSessionDecision: current, permissionManager: deps.permissionManager, binding });
       if (!consumeHostShellExecutionPermit({ ...binding, permit })) {
         return { decision: "deny", reason: "Hook host execution approval receipt is invalid" };
       }
@@ -163,7 +166,7 @@ export function createHookCommandAuthorizer(deps: {
       attachWorkingDirectory(cwdIdentity.realpath, () => directory.dispose());
       transferred = true;
     }
-    return { decision: "allow", reason: humanApproved ? "user approved hook command" : result.reason, plan, assertAllowed, refreshAllowed };
+    return { decision: "allow", reason: asksPerson ? "user approved hook command" : result.reason, plan, assertAllowed, refreshAllowed };
     } finally {
       if (!transferred) directory.dispose();
     }

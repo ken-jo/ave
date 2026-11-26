@@ -10,10 +10,8 @@ import {
   type HostShellExecutionPlan,
   type HostShellExecutionRequest,
 } from "./host-shell-execution-plan.js";
-import {
-  consumeHostApprovedOneShotExecutionBinding,
-  type ApprovalDecision,
-} from "./approval-gate.js";
+import { consumeHostApprovedOneShotExecutionBinding } from "./approval-gate.js";
+import { spendStandingAnswer, toolUseAction, type StandingAnswer } from "./pending-answer-policy.js";
 import {
   consumeIssuedFloorSessionDecision,
   isIssuedFloorSessionDecision,
@@ -152,16 +150,19 @@ export function buildHostShellExecutionPermitBinding(input: {
 // Only the host authorization pipeline records these after its policy/reviewer gates pass. Bind to the exact in-process action, never renderer-supplied data.
 const policyAuthorizations = new WeakSet<HostShellExecutionPermitBinding>();
 
-// Record one host-policy authorization; it does not change any sandbox plan.
-export function recordHostShellPolicyAuthorization(binding: HostShellExecutionPermitBinding): void {
+// Record one host-policy authorization; it does not change any sandbox plan. Under the sandbox-unavailable ask only a person's
+// standing answer to this action records one, and the record spends it.
+export function recordHostShellPolicyAuthorization(binding: HostShellExecutionPermitBinding, answer: StandingAnswer | undefined): void {
+  if (requiresUnsandboxedShellAsk(binding.plan) &&
+      spendStandingAnswer(answer, "shell-policy", toolUseAction(binding.toolUseId)) === undefined) return;
   policyAuthorizations.add(binding);
 }
 
-// Consume only action-bound host proof: a one-shot approval, a rule decision for an explicit host request or the no-confinement floor,
-// a floor session decision, or a policy authorization for this action.
+// Consume only action-bound host proof: a person's standing answer with its one-shot approval, a rule decision for an explicit host
+// request or the no-confinement floor, a floor session decision, or a policy authorization for this action.
 export function mintHostShellExecutionPermit(input: {
   plan: HostShellExecutionPlan;
-  approvalDecision: ApprovalDecision | undefined;
+  answer: StandingAnswer | undefined;
   allowRuleDecision?: PermissionCheckResult | undefined;
   // A floor session allow `checkDetailed` issued for this action: the person's own "This session" answer on the sandbox-unavailable floor card.
   floorSessionDecision?: PermissionCheckResult | undefined;
@@ -173,10 +174,13 @@ export function mintHostShellExecutionPermit(input: {
   let allowRuleAuthorization: ShellAllowRuleAuthorization | undefined;
   // Consumed on every mint attempt, so a recorded authorization never outlives it.
   const policyApproved = policyAuthorizations.delete(input.binding);
+  // The answer is spent here whatever follows, and only its own receipt is looked up.
+  const approvalDecision = spendStandingAnswer(input.answer, "shell-permit", toolUseAction(input.binding.toolUseId))?.decision;
+  if (input.answer !== undefined && approvalDecision === undefined) return undefined;
   let floorSessionAuthorized = false;
-  if (input.approvalDecision === undefined && policyApproved) {
+  if (approvalDecision === undefined && policyApproved) {
     // The policy lane already decided this exact action.
-  } else if (input.approvalDecision === undefined && isIssuedFloorSessionDecision(input.floorSessionDecision, input.permissionManager)) {
+  } else if (approvalDecision === undefined && isIssuedFloorSessionDecision(input.floorSessionDecision, input.permissionManager)) {
     // Burn the floor session proof before any plan check, so a mismatch cannot be probed or replayed.
     floorSessionAuthorized = consumeIssuedFloorSessionDecision(input.floorSessionDecision, {
       toolName: input.binding.toolName,
@@ -186,7 +190,7 @@ export function mintHostShellExecutionPermit(input: {
       planIdentity: input.binding.planIdentity,
     }, input.permissionManager) !== undefined;
     if (!floorSessionAuthorized) return undefined;
-  } else if (input.approvalDecision === undefined) {
+  } else if (approvalDecision === undefined) {
     if (input.allowRuleDecision === undefined) return undefined;
     // Burn the rule proof before any plan check, so a mismatch cannot be probed or replayed.
     allowRuleAuthorization = consumeIssuedShellAllowRuleDecision(input.allowRuleDecision, {
@@ -199,7 +203,7 @@ export function mintHostShellExecutionPermit(input: {
     if (input.plan.executionRequest !== "host" && allowRuleAuthorization.floorPlanIdentity === undefined) return undefined;
   } else if (
     !consumeHostApprovedOneShotExecutionBinding(
-      input.approvalDecision,
+      approvalDecision,
       input.binding,
     )
   ) return undefined;

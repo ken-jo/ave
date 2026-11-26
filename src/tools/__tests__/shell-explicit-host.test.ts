@@ -7,6 +7,8 @@ import { buildHostShellExecutionPermitBinding, createShellApprovalDirectory, min
 import { buildHostShellExecutionPlan, getHostShellExecutionPlanAuditProjection, getHostShellExecutionPlanCacheIdentity, parseHostShellExecutionInput } from "../../permissions/host-shell-execution-plan.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { judgedAnswer, toolUseAnswer } from "../../__tests__/support/standing-answer.js";
+import { toolUseAction } from "../../permissions/pending-answer-policy.js";
 import { BashTool, BashToolInputSchema, PowerShellTool, PowerShellToolInputSchema } from "../shell-tools.js";
 import { approvalFailureOutcome } from "../pipeline/approval-outcome.js";
 
@@ -50,7 +52,10 @@ describe("explicit host shell authorization", () => {
       expect(isHostApprovalRejectedDecision(decision)).toBe(true);
       expect(webContents.send.mock.calls.some(([channel]) => channel === IPC_APPROVAL_REQUEST)).toBe(false);
       expect(gate.pendingCount).toBe(0);
-      expect(mintHostShellExecutionPermit({ plan, binding, approvalDecision: decision })).toBeUndefined();
+      // A host rejection is no standing answer, so nothing reaches the permit.
+      const answer = judgedAnswer(toolUseAction(binding.toolUseId), decision);
+      expect(answer).toBeUndefined();
+      expect(mintHostShellExecutionPermit({ plan, binding, answer })).toBeUndefined();
       const outcome = approvalFailureOutcome(decision, "bash", { decision: "ask", reason: "host consent" });
       expect(outcome?.content).toContain("sensitive-data masking");
       expect(outcome?.content).not.toContain("live-abcdefgh");
@@ -90,7 +95,7 @@ describe("explicit host shell authorization", () => {
     expect(gate.resolve(request.id, decision, "platform-bridge")).toBeNull();
     expect(gate.pendingCount).toBe(1);
     expect(gate.resolveFromDesktopRenderer(request.id, decision, webContents as never)?.choice).toBe("allow-once");
-    const permit = mintHostShellExecutionPermit({ plan, binding, approvalDecision: await pending });
+    const permit = mintHostShellExecutionPermit({ plan, binding, answer: toolUseAnswer(binding.toolUseId, await pending) });
     expect(permit).toBeDefined();
     const ctx = { cwd, extraAllowedDirectories: [], metadata: { toolUseId: "host-once" }, hostShellExecutionPlan: plan, hostShellExecutionPermit: permit };
     const result = await new BashTool().execute(HOST_INPUT, ctx);
@@ -105,7 +110,7 @@ describe("explicit host shell authorization", () => {
     const pending = gate.requestAndWait(request);
     const displayed = webContents.send.mock.calls[0][1] as ApprovalRequest;
     gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: displayed.nonce, hmac: displayed.hmac }, webContents as never);
-    const permit = mintHostShellExecutionPermit({ plan, binding, approvalDecision: await pending });
+    const permit = mintHostShellExecutionPermit({ plan, binding, answer: toolUseAnswer(binding.toolUseId, await pending) });
     const changed = { ...HOST_INPUT, [field]: field === "executionMode" ? "default" : field === "command" ? "printf changed" : field === "cwd" ? "." : "Changed justification" };
     const result = await new BashTool().execute(changed, { cwd, extraAllowedDirectories: [], metadata: { toolUseId: "host-once" }, hostShellExecutionPlan: plan, hostShellExecutionPermit: permit });
     expect(result.isError).toBe(true);

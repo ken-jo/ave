@@ -111,7 +111,7 @@ function policy(choice: "allow-once" | "deny-once" = "deny-once") {
   const root = mkdtempSync(join(tmpdir(), "ave-hook-policy-"));
   roots.push(root);
   const permissionManager = new PermissionManager(join(root, "permissions.json"));
-  const requestAndWait = vi.fn(async (_request: ApprovalRequestInput) => ({ requestId: "hook", choice }));
+  const requestAndWait = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice }));
   return { root, permissionManager, requestAndWait,
     authorizeCommand: createHookCommandAuthorizer({ permissionManager, approvalGate: { requestAndWait } }) };
 }
@@ -171,9 +171,9 @@ describe("hook command permission admission", () => {
   it("respects a deny rule added while approval was pending", async () => {
     const p = policy("allow-once");
     p.permissionManager.setMode("strict");
-    p.requestAndWait.mockImplementationOnce(async () => {
+    p.requestAndWait.mockImplementationOnce(async (request) => {
       p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "deny" }]);
-      return { requestId: "hook", choice: "allow-once" };
+      return { requestId: request.id, choice: "allow-once" };
     });
     expect(await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand }))
       .toMatchObject({ decision: "deny", rawStdout: "", reason: expect.stringContaining("hook command denied") });

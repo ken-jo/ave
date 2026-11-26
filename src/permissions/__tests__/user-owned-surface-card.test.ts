@@ -9,6 +9,8 @@ import type { UserOwnedSurface, UserOwnedSurfaceChoice } from "../../shared/perm
 import { PermissionManager, type PermissionCheckResult } from "../permission-manager.js";
 import { PermissionTestResources } from "./test-resources.js";
 import { resolveUserOwnedSurfaceApproval } from "../../tools/pipeline/user-owned-surface.js";
+import { standingAnswer } from "../../__tests__/support/standing-answer.js";
+import { standingAnswerFor } from "../pending-answer-policy.js";
 
 const gates: ApprovalGate[] = [];
 const resources = new PermissionTestResources();
@@ -175,7 +177,7 @@ describe("authenticated user-owned surface choices", () => {
       const permission: PermissionCheckResult = { decision: "ask", reason: "Approval required" };
       const recheck = vi.spyOn(manager, "recheckPermission").mockReturnValue(permission);
       const resolved = resolveUserOwnedSurfaceApproval({
-        manager, gate: f.gate, permission, decision, request: f.request,
+        manager, gate: f.gate, permission, decision, answer: standingAnswer("tool-use:surface", decision), action: "tool-use:surface", request: f.request,
         sessionId: f.request.sessionId, review: async (checked) => checked,
       });
 
@@ -191,7 +193,7 @@ describe("authenticated user-owned surface choices", () => {
       }, f.contents as never);
 
       if (change === "memory rule") {
-        await expect(resolved).resolves.toMatchObject({ humanApproved: true });
+        expect(standingAnswerFor((await resolved).answer, "tool-use:surface")).toBeDefined();
         expect(recheck).toHaveBeenLastCalledWith(permission, { acrossMemoryRuleChanges: true });
       } else {
         await expect(resolved).rejects.toThrow(change === "fresh deny" ? "Current deny" : change === "forced ask" ? t("be_executor.answerQuestionChanged") : "Permission policy changed");

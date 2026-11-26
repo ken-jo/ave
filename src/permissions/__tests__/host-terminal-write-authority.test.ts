@@ -5,11 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { partialWindowsAsrt } from "../../__tests__/support/host-shell-sandbox-fixtures.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
+import { standingAnswer } from "../../__tests__/support/standing-answer.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { noteToolResultsReturnedToModel, runWithHostTerminalTurn } from "../../tools/host-terminal-turn.js";
 import type { HostTerminalCommandScope } from "../../tools/terminal-run.js";
-import { issueHostTerminalWriteAuthority } from "../host-terminal-write-authority.js";
+import { HOST_TERMINAL_PERMISSION_CHANGED, issueHostTerminalWriteAuthority } from "../host-terminal-write-authority.js";
 import { PermissionManager } from "../permission-manager.js";
 import { __resetRunGrantsForTest, registerRunSession } from "../run-grants.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan } from "../sandbox-capability.js";
@@ -18,6 +19,7 @@ const ORIGINAL_PLATFORM = process.platform;
 const COMMAND = "printf ready";
 const EXACT_RULE = { pattern: `Bash(${COMMAND})`, action: "allow" as const };
 const OTHER_RULE = "Bash(printf example)";
+const ACTION = "tool-use:terminal";
 const SOURCES = ["ordinary card", "forced card", "floor waiver", "exact rule", "reviewed exact rule"] as const;
 type Source = typeof SOURCES[number];
 
@@ -76,7 +78,7 @@ async function withAuthority(source: Source, test: (refusal: () => string | unde
     }[source]);
     let backend = plan.identity;
     const authority = issueHostTerminalWriteAuthority({
-      manager, settled, human: settled.decision === "ask", cardForced: "forceModal" in settled && settled.forceModal === true, reviewed,
+      manager, settled, answer: settled.decision === "ask" ? standingAnswer(ACTION, undefined, settled) : undefined, action: ACTION, reviewed,
       decidedBackend: backend, check, backendIdentity: () => backend,
     });
     await test(authority.refusal, () => { backend = "different host plan"; });
@@ -135,6 +137,22 @@ it.each(["ordinary card", "reviewed exact rule"] as const)("keeps only the perso
 
 const eligible = { floorSessionEligible: true as const };
 const behind = (reason: string) => ({ competingFloor: { code: "protected-path" as const, reason } });
+it("issues a person's terminal write authority only for an unspent standing answer to the same action", () => {
+  const manager = { getPolicyEpoch: () => "1:0:0", getPolicyContextEpoch: () => "1" } as unknown as PermissionManager;
+  const asked: ReturnType<PermissionManager["checkDetailed"]> = { decision: "ask", reason: "Write to the terminal." };
+  const issue = (answer: unknown, action = ACTION) => issueHostTerminalWriteAuthority({
+    manager, answer: answer as never, action, reviewed: false, decidedBackend: "host", backendIdentity: () => "host", check: () => asked,
+    settled: { decision: "allow", reason: "user approved approval request (allow-once)" },
+  });
+  const answer = standingAnswer(ACTION, undefined, asked);
+  expect(() => issue(answer, "tool-use:other")).toThrow(HOST_TERMINAL_PERMISSION_CHANGED);
+  expect(issue(answer).refusal()).toBeUndefined();
+  expect(() => issue(answer)).toThrow(HOST_TERMINAL_PERMISSION_CHANGED);
+  for (const forged of [true, { requestId: "card", choice: "allow-once" }, Object.create(Object.getPrototypeOf(answer))]) {
+    expect(() => issue(forged)).toThrow(HOST_TERMINAL_PERMISSION_CHANGED);
+  }
+});
+
 it.each([
   ["the floor lost its session eligibility", eligible, { floorSessionEligible: undefined }],
   ["another floor now stands behind it", eligible, { floorSessionEligible: undefined, ...behind("Protected.") }],
@@ -147,7 +165,7 @@ it.each([
   let now: ReturnType<PermissionManager["checkDetailed"]> = { decision: "ask", reason: "No sandbox.", reasonCode: "sandbox-unavailable", forceModal: true,
     pipelineRequest: { ...request, ...opened } };
   const authority = issueHostTerminalWriteAuthority({
-    manager: epochs, human: true, cardForced: true, reviewed: false, decidedBackend: "host", backendIdentity: () => "host", check: () => now,
+    manager: epochs, answer: standingAnswer(ACTION, undefined, now), action: ACTION, reviewed: false, decidedBackend: "host", backendIdentity: () => "host", check: () => now,
     settled: { ...now, decision: "allow", reason: "user approved approval request (allow-once)" },
   });
   expect(authority.refusal()).toBeUndefined();

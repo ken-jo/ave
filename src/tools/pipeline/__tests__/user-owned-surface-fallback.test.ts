@@ -5,6 +5,10 @@ import { t } from "../../../i18n/runtime.js";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../../permissions/approval-gate.js";
 import type { PermissionCheckResult, PermissionManager } from "../../../permissions/permission-manager.js";
 import { resolveUserOwnedSurfaceApproval, userOwnedSurfaceCardFacts } from "../user-owned-surface.js";
+import { standingAnswer } from "../../../__tests__/support/standing-answer.js";
+import { standingAnswerFor } from "../../../permissions/pending-answer-policy.js";
+
+const ACTION = "tool-use:surface";
 
 type Change = "none" | "memory rule" | "other";
 const ask: PermissionCheckResult = { decision: "ask", reason: "review could not decide", reviewer: { route: "foreground-auto" } };
@@ -53,17 +57,23 @@ async function answerFallback(change: Change, rechecked: Partial<PermissionCheck
     id: "surface-card", sessionId: "stage-session", category: "tool", kind: "tool", toolName: "browser_click", toolCategory: "write",
     args: {}, reason: "surface", createdAt: 0, userOwnedSurface: "browser",
   } as ApprovalRequestInput;
+  const decision = { requestId: request.id, choice: "allow-once" as const };
+  const answer = standingAnswer(ACTION, decision);
   const resolving = resolveUserOwnedSurfaceApproval({
-    manager, gate, permission: ask, decision: { requestId: request.id, choice: "allow-once" }, request, sessionId: "stage-session",
+    manager, gate, permission: ask, decision, answer, action: ACTION, request, sessionId: "stage-session",
     review: async permission => permission,
   });
-  return { resolving, cards, rechecks };
+  return { resolving, cards, rechecks, answer };
 }
 
 describe("a user-owned surface's review fallback card", () => {
   it("is answered as before when nothing changed", async () => {
-    const { resolving, cards, rechecks } = await answerFallback("none");
-    expect(await resolving).toMatchObject({ humanApproved: true, permission: { decision: "ask" } });
+    const { resolving, cards, rechecks, answer } = await answerFallback("none");
+    const resolved = await resolving;
+    expect(resolved).toMatchObject({ permission: { decision: "ask" } });
+    // The fallback card's own standing answer, not the first card's.
+    expect(standingAnswerFor(resolved.answer, ACTION)).toBeDefined();
+    expect(resolved.answer).not.toBe(answer);
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({ userOwnedSurfaceReviewFallback: true });
     expect(rechecks.at(-1)).toBeUndefined();
@@ -71,7 +81,9 @@ describe("a user-owned surface's review fallback card", () => {
 
   it("a sibling's run rule leaves the answer standing, judged again across the memory-only step", async () => {
     const { resolving, rechecks } = await answerFallback("memory rule");
-    expect(await resolving).toMatchObject({ humanApproved: true, permission: { decision: "ask" } });
+    const resolved = await resolving;
+    expect(resolved).toMatchObject({ permission: { decision: "ask" } });
+    expect(standingAnswerFor(resolved.answer, ACTION)).toBeDefined();
     expect(rechecks.at(-1)).toEqual({ acrossMemoryRuleChanges: true });
   });
 
@@ -91,7 +103,7 @@ describe("a user-owned surface's review fallback card", () => {
 
   it("the person's Deny on the fallback card stands across a sibling's run rule", async () => {
     const { resolving } = await answerFallback("memory rule", {}, "deny-once");
-    expect(await resolving).toMatchObject({ humanApproved: false, decision: { choice: "deny-once" }, permission: { decision: "deny" } });
+    expect(await resolving).toMatchObject({ answer: undefined, decision: { choice: "deny-once" }, permission: { decision: "deny" } });
   });
 
   it("a person's Deny is a deny permission whatever the caller's re-check said, on a card of any kind", async () => {
@@ -99,10 +111,10 @@ describe("a user-owned surface's review fallback card", () => {
     const manager = { recheckPermission: vi.fn() } as unknown as PermissionManager;
     const request = { id: "plain-card", sessionId: "stage-session", category: "tool", kind: "tool", toolName: "write_probe", toolCategory: "write", args: {}, reason: "paused", createdAt: 0 } as ApprovalRequestInput;
     const resolved = await resolveUserOwnedSurfaceApproval({
-      manager, gate: {} as ApprovalGate, permission: allowed, decision: { requestId: request.id, choice: "deny-once" }, request, sessionId: "stage-session",
+      manager, gate: {} as ApprovalGate, permission: allowed, decision: { requestId: request.id, choice: "deny-once" }, answer: undefined, action: ACTION, request, sessionId: "stage-session",
       review: async permission => permission,
     });
-    expect(resolved).toMatchObject({ humanApproved: false, permission: { decision: "deny" }, decision: { choice: "deny-once" } });
+    expect(resolved).toMatchObject({ answer: undefined, permission: { decision: "deny" }, decision: { choice: "deny-once" } });
     expect(manager.recheckPermission).not.toHaveBeenCalled();
   });
 });

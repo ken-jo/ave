@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionCheckResult } from "../permission-manager.js";
-import { answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince, openPendingAnswerCard, permissionQuestionOf, personAnswerStands, samePermissionQuestion } from "../pending-answer-policy.js";
+import { answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince, openPendingAnswerCard, permissionQuestionOf, personAnswerStands, samePermissionQuestion, spendStandingAnswer, standingAnswerFor, type PendingAnswerBinding, type StandingAnswer } from "../pending-answer-policy.js";
 
 /** A manager's two epochs, moved by hand. */
 function policy() {
@@ -17,6 +17,9 @@ const ask = { decision: "ask" as const };
 const forcedAsk = { decision: "ask" as const, forceModal: true };
 const allow = { decision: "allow" as const };
 const deny = { decision: "deny" as const };
+const action = "tool-use:call";
+/** What the owner binds a card to at open. */
+const bound = (gate: PendingAnswerBinding["gate"] = {}, requestId = "card"): PendingAnswerBinding => ({ gate, requestId, action });
 
 describe("a person's answer across a policy change", () => {
   it("stands without a re-check when nothing changed", () => {
@@ -94,10 +97,10 @@ describe("a person's answer across a policy change", () => {
   ] as const)("across the card's own policy step the card's bound check decides: %s", (_name, now, kind) => {
     const manager = policy();
     const check = vi.fn(() => now);
-    const card = openPendingAnswerCard(manager, floorAsk(true), check, "stale-reasked");
-    manager.otherStep();
     const { value, recordStaleAnswer } = answer();
-    expect(personAnswerStands(manager, card, value)).toBe(kind === "stands");
+    const card = openPendingAnswerCard(manager, floorAsk(true), check, "stale-reasked", bound(value.gate));
+    manager.otherStep();
+    expect(personAnswerStands(card, value.decision)).toBe(kind === "stands");
     expect(card.verdict?.kind).toBe(kind);
     expect(check).toHaveBeenCalledOnce();
     if (kind === "stale") {
@@ -107,17 +110,19 @@ describe("a person's answer across a policy change", () => {
 
   it("runs the bound check when nothing changed, so a change the policy epoch does not see still refuses", () => {
     const manager = policy();
-    const card = openPendingAnswerCard(manager, floorAsk(true), () => floorAsk(true, { code: "protected-path", reason: "Protected." }), "stale-refused");
-    expect(personAnswerStands(manager, card, answer().value)).toBe(false);
+    const { value } = answer();
+    const card = openPendingAnswerCard(manager, floorAsk(true), () => floorAsk(true, { code: "protected-path", reason: "Protected." }), "stale-refused", bound(value.gate));
+    expect(personAnswerStands(card, value.decision)).toBe(false);
     expect(card.verdict?.kind).toBe("stale");
   });
 
   it("refuses a moved policy without running the check when no receipt covers the step", () => {
     const manager = policy();
     const check = vi.fn(() => floorAsk(true));
-    const card = openPendingAnswerCard(manager, floorAsk(true), check, "stale-refused");
+    const { value } = answer("allow-once", false);
+    const card = openPendingAnswerCard(manager, floorAsk(true), check, "stale-refused", bound(value.gate));
     manager.otherStep();
-    expect(personAnswerStands(manager, card, answer("allow-once", false).value)).toBe(false);
+    expect(personAnswerStands(card, value.decision)).toBe(false);
     expect(card.verdict).toEqual({ kind: "policy-changed" });
     expect(check).not.toHaveBeenCalled();
   });
@@ -125,10 +130,10 @@ describe("a person's answer across a policy change", () => {
   it("keeps a Deny as the person's, judging nothing and recording no stale answer", () => {
     const manager = policy();
     const check = vi.fn(() => floorAsk(false));
-    const card = openPendingAnswerCard(manager, floorAsk(true), check, "stale-refused");
-    manager.otherStep();
     const { value, recordStaleAnswer } = answer("deny-once", false);
-    expect(personAnswerStands(manager, card, value)).toBe(false);
+    const card = openPendingAnswerCard(manager, floorAsk(true), check, "stale-refused", bound(value.gate));
+    manager.otherStep();
+    expect(personAnswerStands(card, value.decision)).toBe(false);
     expect(card.verdict).toEqual({ kind: "declined" });
     expect(check).not.toHaveBeenCalled();
     expect(recordStaleAnswer).not.toHaveBeenCalled();
@@ -136,22 +141,89 @@ describe("a person's answer across a policy change", () => {
 
   it.each(["allow-once", "deny-once"] as const)("refuses a %s when the bound check has no result, without its error text", (choice) => {
     const manager = policy();
-    const card = openPendingAnswerCard(manager, floorAsk(true), () => { throw new Error("Project rules were not loaded"); }, "stale-refused");
-    expect(personAnswerStands(manager, card, answer(choice).value)).toBe(false);
+    const { value } = answer(choice);
+    const card = openPendingAnswerCard(manager, floorAsk(true), () => { throw new Error("Project rules were not loaded"); }, "stale-refused", bound(value.gate));
+    expect(personAnswerStands(card, value.decision)).toBe(false);
     expect(card.verdict).toEqual({ kind: choice === "allow-once" ? "policy-changed" : "declined" });
   });
 
   it("reports a Deny as the policy's own denial when the call is now denied", () => {
     const manager = policy();
-    const card = openPendingAnswerCard(manager, floorAsk(true), () => result({ decision: "deny", reason: "Saved deny rule" }), "stale-refused");
-    expect(personAnswerStands(manager, card, answer("deny-once").value)).toBe(false);
+    const { value } = answer("deny-once");
+    const card = openPendingAnswerCard(manager, floorAsk(true), () => result({ decision: "deny", reason: "Saved deny rule" }), "stale-refused", bound(value.gate));
+    expect(personAnswerStands(card, value.decision)).toBe(false);
     expect(card.verdict).toMatchObject({ kind: "denied", fresh: { reason: "Saved deny rule" } });
+  });
+
+  const allowOnce = (requestId = "card") => ({ requestId, choice: "allow-once" as const });
+  const proofOf = (card: ReturnType<typeof openPendingAnswerCard>): StandingAnswer | undefined =>
+    card.verdict?.kind === "stands" ? card.verdict.proof : undefined;
+
+  it("refuses an answer crossed between two cards open at the same epoch, and still takes each card's own", () => {
+    const manager = policy();
+    const check = vi.fn(() => floorAsk(true));
+    const first = openPendingAnswerCard(manager, floorAsk(true), check, "stale-refused", bound({}, "first"));
+    const second = openPendingAnswerCard(manager, floorAsk(true), check, "stale-refused", bound({}, "second"));
+    expect(personAnswerStands(first, allowOnce("second"))).toBe(false);
+    expect(first.verdict).toEqual({ kind: "policy-changed" });
+    expect(check).not.toHaveBeenCalled();
+    expect(personAnswerStands(first, allowOnce("first"))).toBe(true);
+    expect(personAnswerStands(second, allowOnce("second"))).toBe(true);
+    expect(proofOf(first)).not.toBe(proofOf(second));
+  });
+
+  it("binds the standing answer to its request, answer, action and question, and spends it once per use", () => {
+    const manager = policy();
+    const card = openPendingAnswerCard(manager, floorAsk(true), () => floorAsk(true), "stale-refused", bound());
+    const decision = allowOnce();
+    expect(personAnswerStands(card, decision)).toBe(true);
+    const proof = proofOf(card);
+    expect(standingAnswerFor(proof, action)).toBe(proof);
+    expect(standingAnswerFor(proof, "tool-use:other")).toBeUndefined();
+    expect(spendStandingAnswer(proof, "shell-permit", "tool-use:other")).toBeUndefined();
+    const facts = spendStandingAnswer(proof, "shell-permit", action);
+    expect(facts).toMatchObject({ requestId: "card", action, forced: true, question: permissionQuestionOf(floorAsk(true)) });
+    expect(facts?.decision).toBe(decision);
+    expect(spendStandingAnswer(proof, "shell-permit", action)).toBeUndefined();
+    expect(spendStandingAnswer(proof, "terminal-write", action)).toBeDefined();
+    expect(spendStandingAnswer(proof, "terminal-write", action)).toBeUndefined();
+  });
+
+  it("gives a card one judgement: a second answer mints nothing", () => {
+    const manager = policy();
+    const card = openPendingAnswerCard(manager, floorAsk(true), () => floorAsk(true), "stale-refused", bound());
+    expect(personAnswerStands(card, allowOnce())).toBe(true);
+    expect(personAnswerStands(card, allowOnce())).toBe(false);
+    expect(card.verdict).toEqual({ kind: "policy-changed" });
+  });
+
+  it.each([
+    ["a throwing check", () => { throw new Error("Project rules were not loaded"); }],
+    ["a denying check", () => result({ decision: "deny", reason: "Saved deny rule" })],
+    ["another forced question", () => floorAsk(false)],
+  ] as const)("mints no standing answer on %s", (_name, check) => {
+    const card = openPendingAnswerCard(policy(), floorAsk(true), check, "stale-refused", bound());
+    expect(personAnswerStands(card, allowOnce())).toBe(false);
+    expect(card.verdict).not.toHaveProperty("proof");
+  });
+
+  it("takes no look-alike for a standing answer", () => {
+    const card = openPendingAnswerCard(policy(), floorAsk(true), () => floorAsk(true), "stale-refused", bound());
+    personAnswerStands(card, allowOnce());
+    const proof = proofOf(card);
+    if (!proof) throw new Error("the answer did not stand");
+    const Made = (proof as unknown as { constructor: new () => StandingAnswer }).constructor;
+    for (const forged of [{}, true, Object.create(Object.getPrototypeOf(proof)), new Made(), structuredClone(proof)]) {
+      expect(standingAnswerFor(forged, action)).toBeUndefined();
+      expect(spendStandingAnswer(forged as StandingAnswer, "shell-permit", action)).toBeUndefined();
+    }
+    expect(Object.isFrozen(proof)).toBe(true);
   });
 
   it("refuses a card the owner did not open", () => {
     const manager = policy();
     const forged = { epochs: answerEpochsOf(manager), question: permissionQuestionOf(floorAsk(true)), forced: true };
-    expect(() => personAnswerStands(manager, forged, answer().value)).toThrow(/openPendingAnswerCard/);
+    expect(() => personAnswerStands(forged, answer().value.decision)).toThrow(/openPendingAnswerCard/);
   });
 
   it.each([
@@ -160,9 +232,10 @@ describe("a person's answer across a policy change", () => {
     ["a forced ask the card did not put", floorAsk(true), "stale"],
   ] as const)("across an unforced card's own policy step the bound check decides: %s", (_name, now, kind) => {
     const manager = policy();
-    const card = openPendingAnswerCard(manager, result(ask), () => now, "stale-reasked");
+    const { value } = answer();
+    const card = openPendingAnswerCard(manager, result(ask), () => now, "stale-reasked", bound(value.gate));
     manager.otherStep();
-    expect(personAnswerStands(manager, card, answer().value)).toBe(kind === "stands");
+    expect(personAnswerStands(card, value.decision)).toBe(kind === "stands");
     expect(card.verdict?.kind).toBe(kind);
   });
 });
@@ -189,8 +262,8 @@ describe("the question a card puts", () => {
     const opened = surfaceAsk("Sends the page to another site.");
     expect(samePermissionQuestion(permissionQuestionOf(opened), permissionQuestionOf(changed))).toBe(false);
     const manager = policy();
-    const card = openPendingAnswerCard(manager, opened, () => changed, "stale-refused");
-    expect(personAnswerStands(manager, card, { gate: {}, decision: { requestId: "card", choice: "allow-once" } })).toBe(false);
+    const card = openPendingAnswerCard(manager, opened, () => changed, "stale-refused", bound());
+    expect(personAnswerStands(card, { requestId: "card", choice: "allow-once" })).toBe(false);
     expect(card.verdict?.kind).toBe("stale");
   });
 
@@ -211,8 +284,8 @@ describe("the question a card puts", () => {
     expect(samePermissionQuestion(permissionQuestionOf(opened), permissionQuestionOf(changed))).toBe(false);
     expect(samePermissionQuestion(permissionQuestionOf(opened), permissionQuestionOf(pathAsk({ protectedEntry: ".git", secretPattern: ".env" })))).toBe(true);
     const manager = policy();
-    const card = openPendingAnswerCard(manager, opened, () => changed, "stale-refused");
-    expect(personAnswerStands(manager, card, { gate: {}, decision: { requestId: "card", choice: "allow-once" } })).toBe(false);
+    const card = openPendingAnswerCard(manager, opened, () => changed, "stale-refused", bound());
+    expect(personAnswerStands(card, { requestId: "card", choice: "allow-once" })).toBe(false);
     expect(card.verdict?.kind).toBe("stale");
   });
 });
@@ -227,9 +300,7 @@ it.each([
     pipelineRequest: { tool: { name: "terminal_run", source: "builtin" as const, kind: "shell" as const }, mode: "default" as const, headless: false,
       floor: { code: "sandbox-unavailable" as const, reason: "No sandbox." }, competingFloor: { code: floor, reason: "Shadowed." } },
   }) as unknown as PermissionCheckResult;
-  const card = openPendingAnswerCard(manager, behind("protected-path"), () => behind(code), "stale-reasked");
+  const card = openPendingAnswerCard(manager, behind("protected-path"), () => behind(code), "stale-reasked", bound({ allowsPolicyTransition: () => true }));
   manager.otherStep();
-  expect(personAnswerStands(manager, card, {
-    gate: { allowsPolicyTransition: () => true }, decision: { requestId: "card", choice: "allow-once" },
-  })).toBe(stands);
+  expect(personAnswerStands(card, { requestId: "card", choice: "allow-once" })).toBe(stands);
 });

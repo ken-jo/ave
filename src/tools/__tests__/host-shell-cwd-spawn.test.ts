@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { toolUseAnswer } from "../../__tests__/support/standing-answer.js";
 import { ApprovalGate, type ApprovalDecision, type ApprovalRequest } from "../../permissions/approval-gate.js";
 
 const spawnBoundary = vi.hoisted(() => ({
@@ -81,7 +82,7 @@ async function authorizedContext(cwd: string, command = "touch marker", rulePatt
     }
   }
   const permit = mintHostShellExecutionPermit({
-    plan, binding, approvalDecision,
+    plan, binding, answer: approvalDecision && toolUseAnswer("cwd-spawn", approvalDecision),
     ...(approvalDecision === undefined ? { allowRuleDecision: decision, permissionManager: manager } : {}),
   });
   expect(permit).toBeDefined();
