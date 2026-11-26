@@ -524,6 +524,49 @@ describe("ConversationLoop onTurnSummary", () => {
       }));
     });
 
+    it("keeps the recorded price on the turn record when a later request never answers", async () => {
+      const model = "gpt-4.1";
+      const settings = fakeLlmSettings({ provider: "openai", model });
+      settings.vendors.openai.enableThinking = false;
+      vi.stubEnv("OPENAI_BASE_URL", "https://proxy.invalid/v1");
+      const auditLogger = new AuditLogger();
+      const logTurn = vi.spyOn(auditLogger, "logTurn");
+      const toolRegistry = new ToolRegistry();
+      toolRegistry.register(createDynamicTool({
+        name: "read_value", description: "Read the value.", source: "builtin", category: "read",
+        jsonSchema: { type: "object", properties: {} }, isReadOnly: () => true,
+        execute: async () => ({ output: "value", isError: false }),
+      }));
+      const transport = vi.fn<typeof fetch>(async (_input, init) => {
+        if (transport.mock.calls.length === 1) {
+          return sse([{
+            id: "fixture-response", object: "chat.completion.chunk", created: 0, model,
+            choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "read-1", type: "function", function: { name: "read_value", arguments: "{}" } }] }, finish_reason: "tool_calls" }],
+            usage: { prompt_tokens: 60, completion_tokens: 10, total_tokens: 70 },
+          }], true);
+        }
+        // The second request is cancelled before the endpoint answers, so it reports no usage.
+        loop.abortCurrentTurn();
+        throw init?.signal?.reason ?? new DOMException("The operation was aborted", "AbortError");
+      });
+      const loop = createLoopWithRegistry(new VercelUnifiedProvider("openai", "fixture-key", undefined, transport), toolRegistry, {
+        settingsService: { get: () => settings, getSecret: () => "test-key" }, auditLogger,
+      } as never);
+      try {
+        const result = await loop.runTurn("Report the result.", {}, undefined, { ...userKeyboardTurn() });
+        expect(result.stopReason).toBe("interrupted");
+      } finally {
+        await auditLogger.close();
+      }
+      expect(transport).toHaveBeenCalledTimes(2);
+      // The second request started after the first was priced: the audit row keeps the
+      // recorded price, not the catalog price projected from settings.
+      expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({
+        usageByModel: [expect.objectContaining({ pricing: unavailable })],
+        modelSettings: expect.objectContaining({ pricing: unavailable }),
+      }));
+    });
+
     it("keeps the Responses wire under an environment proxy, even with that proxy's report in the model-list cache", async () => {
       const model = "gpt-5.4";
       const proxy = "https://proxy.invalid/v1";

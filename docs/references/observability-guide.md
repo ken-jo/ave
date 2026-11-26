@@ -77,20 +77,25 @@ Tests: `src/plugins/__tests__/plugin-perf-stats.test.ts`.
 Aggregation: `src/engine/usage-stats.ts`, reading `type: "turn"` audit rows
 and their token usage.
 
-- Pricing: rates resolve through `src/shared/model-pricing.ts` (user
-  correction, then the model catalog, else unknown). Corrections come from the
-  `llm.pricingOverrides` setting or the `AVE_PRICING_OVERRIDE` environment
-  variable, merged by `src/shared/pricing-overrides.ts`. Turns without a known
-  price are counted as unknown-cost, not priced at zero.
+- Pricing: each request records its price when it is served
+  (`src/shared/model-pricing.ts`: a user correction, the endpoint's own report
+  or the model catalog, decided by the address the request was sent to; else
+  unknown with a reason). Corrections come from the `llm.pricingOverrides`
+  setting or the `AVE_PRICING_OVERRIDE` environment variable, merged by
+  `src/shared/pricing-overrides.ts`, and apply to new requests. Requests
+  without a recorded price are counted as unknown-cost, not priced at zero.
 - Summary (`computeUsageSummary`): today, this week, this month, per vendor,
-  per model, a daily trend, and the top 5 conversations by cost.
+  per model, a daily trend, the top 5 conversations by priced spend and the
+  top 5 by tokens. `auditIncomplete` marks a range whose audit files could not
+  all be read; its costs are shown as unknown.
 - Monthly projection (`computeMonthlyProjection(trend)`): mean daily cost over
   the days present in the trend, multiplied by 30. Returns 0 for an empty
-  trend.
+  trend and `undefined` when any day has an unknown-cost request.
 - CSV export: `ave:usage:export-csv` opens a save dialog and writes the rows
   with headers `date, vendor, model, inputTokens, outputTokens,
-  cacheReadTokens, cacheWriteTokens, totalTokens, cost, unknownCostTurns`
-  (`src/ipc/domains/usage.ts`).
+  cacheReadTokens, cacheWriteTokens, totalTokens, cost, unknownCostTurns,
+  endpointPriceUnavailableTurns, legacyRouteUnrecordedTurns, auditIncomplete`
+  (`src/ipc/domains/usage.ts`). `cost` is blank on an incomplete row.
 
 IPC: `ave:usage:summary`, `ave:usage:range`, `ave:usage:daily-summary`,
 `ave:usage:export-csv`, `ave:usage:pricing-overrides`. Renderer:

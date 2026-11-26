@@ -3,6 +3,7 @@ import { formatCost } from "../../lib/cost-format.js";
 import { describe, expect, it } from "vitest";
 import { knownModelPricing, parseResolvedModelPricing, resolveModelPricing } from "../model-pricing.js";
 import { computeCost, promptTokensForTier, ratesForPrompt, type TokenRates } from "../pricing-data.js";
+import { OPENAI_COMPATIBLE_VENDOR_PRESETS } from "../llm-vendor-defaults.js";
 import { activeModelCatalog } from "../model-catalog/active.js";
 import { CATALOG_PROVIDERS_BY_VENDOR } from "../model-catalog/provider-map.js";
 
@@ -386,6 +387,27 @@ describe("resolveModelPricing — the request's recorded address decides the rou
     const projected = resolveModelPricing(vendor, model);
     expect(projected.source).toBe("model-catalog");
     expect(resolveModelPricing(vendor, model, [], { servedRequestUrl })).toEqual(projected);
+  });
+
+  it("prices a request on every preset's default address exactly as its unconfigured route is priced", () => {
+    const catalog = activeModelCatalog();
+    const vendors = Object.keys(OPENAI_COMPATIBLE_VENDOR_PRESETS) as (keyof typeof OPENAI_COMPATIBLE_VENDOR_PRESETS)[];
+    expect(vendors.length).toBeGreaterThan(30);
+    let catalogPriced = 0;
+    for (const vendor of vendors) {
+      // A priced catalog model where the vendor has one, so a lost identity would show.
+      const model = CATALOG_PROVIDERS_BY_VENDOR[vendor]
+        .flatMap((provider) => Object.entries(catalog.providers[provider]?.models ?? {}))
+        .find(([id, entry]) => (entry.cost?.input ?? 0) > 0 && (entry.cost?.output ?? 0) > 0
+          && resolveModelPricing(vendor, id).source === "model-catalog")?.[0] ?? "fixture-model";
+      const servedRequestUrl = `${OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].baseUrl.replace(/\/+$/u, "")}/chat/completions`;
+      for (const route of [{}, { reported: report }]) {
+        const projected = resolveModelPricing(vendor, model, [], route);
+        expect(resolveModelPricing(vendor, model, [], { ...route, servedRequestUrl }), `${vendor} ${model}`).toEqual(projected);
+        if (projected.source === "model-catalog") catalogPriced += 1;
+      }
+    }
+    expect(catalogPriced).toBeGreaterThan(10);
   });
 
   it("does not let one product path of a shared host stand for another", () => {

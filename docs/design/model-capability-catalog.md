@@ -516,8 +516,9 @@ SDK's own normalization — so the host predicts none of them. `resolveModelPric
 then decides from the recorded address:
 
 - **Catalog identity** is `allowsImplicitModelLimits` applied to the served address. A
-  request under a preset's base address is judged as that base, because the rule
-  compares base addresses and some presets select a product by path.
+  request under a preset's base address is on the vendor's default route and is judged
+  as a route with no configured endpoint is; the rule compares base addresses and some
+  presets select a product by path.
 - **A report applies** when the served origin equals the origin of the configured
   endpoint its model list was read from; with no configured endpoint the list came from
   the vendor's default, so the request must be on the vendor's own route. Origins are
@@ -529,7 +530,8 @@ then decides from the recorded address:
 
 The address prices the request and is not stored: the audit row and the turn summary
 keep the resolved price and its reason. The turn's `modelSettings.pricing` is the price
-of its last primary request, so it agrees with the request snapshots.
+its last answered primary request was recorded at, so it agrees with the request
+snapshots; a turn none of whose requests answered keeps the pre-send projection.
 
 Nothing else reads this evidence. Discovery, the model-list cache keys, protocol
 selection, retirement, the context window and Settings identify a route by its

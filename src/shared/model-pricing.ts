@@ -33,19 +33,19 @@ function parsedUrl(value: string): URL | undefined {
 
 /**
  * Whether a recorded request URL is on the vendor's own route. The identity rule stays
- * `allowsImplicitModelLimits`; a request under a preset's base is judged as that base,
- * because the rule compares base addresses and some presets select a product by path.
+ * `allowsImplicitModelLimits`. A request under a preset's base address is the vendor's
+ * default route, judged as a route with no configured endpoint is; the rule compares
+ * base addresses, and some presets select a product by path.
  */
 function servedOnCatalogRoute(vendor: string, servedRequestUrl: string): boolean {
   const served = parsedUrl(servedRequestUrl);
   if (served === undefined) return false;
   if (isLLMVendor(vendor) && isOpenAICompatiblePresetVendor(vendor)) {
-    const presetBaseUrl = OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].baseUrl;
-    const preset = parsedUrl(presetBaseUrl);
+    const preset = parsedUrl(OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].baseUrl);
     const prefix = preset?.pathname.replace(/\/+$/u, "");
     if (preset !== undefined && prefix !== undefined && served.origin === preset.origin
       && (served.pathname === prefix || served.pathname.startsWith(`${prefix}/`))) {
-      return allowsImplicitModelLimits(vendor, presetBaseUrl);
+      return allowsImplicitModelLimits(vendor);
     }
   }
   return allowsImplicitModelLimits(vendor, served.href);

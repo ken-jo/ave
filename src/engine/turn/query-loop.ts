@@ -240,6 +240,9 @@ export async function queryLoop(
           pricing: resolveModelPricing(llmSettings.provider, model, turnPricingOverrides, primaryPricingRoute),
         };
     let turnModelSettings: RunModelSettings | undefined;
+    // The price the turn's last answered primary request was recorded at. Until a request
+    // answers, the turn record carries the price projected from the configured route.
+    let primaryRequestPricing: ResolvedModelPricing | undefined;
     const withServingIdentity = (
       result: {
         text: string;
@@ -338,8 +341,8 @@ export async function queryLoop(
           ...(usage.servedRequestUrl !== undefined ? { servedRequestUrl: usage.servedRequestUrl } : {}),
         },
       );
-      // The turn's primary-route price is what its last primary request was priced at.
       if (requestPricing !== undefined && servedByPrimaryLabel && turnModelSettings !== undefined) {
+        primaryRequestPricing = requestPricing;
         turnModelSettings = { ...turnModelSettings, pricing: requestPricing };
       }
       self.cumulativeUsage.inputTokens += adjustedInput;
@@ -874,7 +877,12 @@ export async function queryLoop(
                 callbacks?.onTextDelta?.(text);
               }
             : callbacks?.onTextDelta,
-          onRequestStarted: () => { turnModelSettings = requestModelSettings; },
+          // A later request that ends without usage must not put the projection back.
+          onRequestStarted: () => {
+            turnModelSettings = requestModelSettings !== undefined && primaryRequestPricing !== undefined
+              ? { ...requestModelSettings, pricing: primaryRequestPricing }
+              : requestModelSettings;
+          },
           ...(apiRound === undefined ? {} : {
             onRequestControls: (controls: NonNullable<RunModelSettings["requestControls"]>) => {
               if (turnModelSettings === undefined) return;
