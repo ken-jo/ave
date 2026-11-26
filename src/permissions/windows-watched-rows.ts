@@ -163,8 +163,15 @@ export function prepareAbsentProtectedWatch(path: string, roots: readonly string
   for (;;) {
     const entry = entryAt(anchor, true);
     if (entry?.isDirectory()) {
-      return () => watched.set(id, { path: target, anchor, anchorIdentity: { dev: entry.dev, ino: entry.ino }, recordedAt: new Date().toISOString(),
-        roots: new Set(roots), holders: new Set(), pins: new Map(), exact });
+      const pin = { anchor, anchorIdentity: { dev: entry.dev, ino: entry.ino } };
+      return () => {
+        const published = watched.get(id);
+        if (published !== undefined) {
+          for (const root of roots) published.roots.add(root);
+        } else {
+          watched.set(id, { path: target, ...pin, recordedAt: new Date().toISOString(), roots: new Set(roots), holders: new Set(), pins: new Map(), exact });
+        }
+      };
     }
     const parent = dirname(anchor);
     // No existing ancestor (an absent drive): nothing below it can be created.

@@ -81,7 +81,7 @@ import { defaultHooksDir } from "../hooks/hook-discovery.js";
 import { readWindowsReadDenyEvidence, recheckWindowsReadDenyEvidence, windowsReadDenyEvidence, windowsReadDenyKey, type WindowsReadDenyEvidence, type WindowsReadDenySnapshot } from "../shared/windows-read-deny-evidence.js";
 import type { SandboxWindowsStatusInfo } from "../shared/sandbox-capability-info.js";
 import { readWindowsDenyAcls, WINDOWS_READ_DENY_MASK, WINDOWS_WRITE_DENY_MASK } from "./windows-deny-acl.js";
-import { deferWatchedReceipt, hasWatchedWork, WatchedQuarantineError, placeholderLeftovers, prepareAbsentProtectedWatch, pruneWatchedRows, releaseWatchClaim, resetWatchedRows, sweepWatchedRows, watchAbsentProtectedRow } from "./windows-watched-rows.js";
+import { deferWatchedReceipt, hasWatchedWork, WatchedQuarantineError, placeholderLeftovers, prepareAbsentProtectedWatch, pruneWatchedRows, releaseWatchClaim, resetWatchedRows, sweepWatchedRows } from "./windows-watched-rows.js";
 
 import type {
   SandboxRuntimeConfig,
@@ -1006,7 +1006,7 @@ export function buildPerCommandSandboxCustomConfig(
   liveGrants: WindowsLiveGrantSnapshot = {},
 ): Partial<SandboxRuntimeConfig> | undefined {
   // One boundary snapshot for the whole per-command composition: the enclosing one, else a new one.
-  return inAveHomeBoundarySnapshot(undefined, () => withLocalityDecision(() => {
+  return inAveHomeBoundarySnapshot(undefined, () => withSandboxWatchPublications(watches => {
     const hasOverrides = hasConfiguredDenies(filesystem) || hasConfiguredDenies(_baseTrustedSettings);
     const requestedReadDenies = filesystem?.denyRead;
     const composedUserDenies = requestedReadDenies === undefined ? undefined : composedShellReadDenies.get(requestedReadDenies)?.user;
@@ -1095,6 +1095,7 @@ export function buildPerCommandSandboxCustomConfig(
           : protectedRows.has(spelling) ? "secrets" : boundaryRows.has(spelling) ? "ave-home" : "read-boundary", false);
       }));
       fs.denyRead = windowsDenyTargets(
+        watches,
         asrtReadDenyPaths(
           lists().denyRead,
           // The plugin roots are spelled exactly for the reason the private roots are: a wrap whose reads include an ancestor of one (a worker's or a bundled process's host temp directory, above a test `AVE_HOME`) would otherwise lose its own plugin directories to the re-emitted deny.
@@ -1147,6 +1148,7 @@ export function buildPerCommandSandboxCustomConfig(
       ])];
       floors.push(...writeFloor.map(srtWriteFloorRow));
       fs.denyWrite = windowsDenyTargets(
+        watches,
         lists().denyWrite,
         _baseTrustedSettings?.userDataDir,
         windowsGrants,
@@ -2127,6 +2129,7 @@ function admittedLiveWriteRoots(roots: readonly FilesystemPathEntry[]): Filesyst
 
 // Stamping changes parent DACLs; never stamp the profile root for a disjoint read deny.
 function windowsDenyTargets<T extends FilesystemPathEntry>(
+  watches: Array<() => void>,
   entries: readonly T[],
   userDataDir: string | undefined,
   grants: readonly FilesystemPathEntry[],
@@ -2236,7 +2239,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
   const expandedWriteGrants = expandedWindowsDenyGrants(writeGrants, profile, kind === "write");
   const keepTarget = (entry: T, path: string): boolean => {
     const admission = admissions?.get(admissionKey(path));
-    return keepWindowsDenyTarget(entry, path, expandedWriteGrants, grantWithin,
+    return keepWindowsDenyTarget(watches, entry, path, expandedWriteGrants, grantWithin,
       admission === undefined ? undefined : admission.kind !== "missing",
       requiredWriteDenies?.has(windowsReadDenyKey(path)) ?? false);
   };
@@ -2320,6 +2323,7 @@ function admissionKey(path: string): string {
 }
 
 function keepWindowsDenyTarget(
+  watches: Array<() => void>,
   entry: FilesystemPathEntry,
   expanded: string,
   expandedGrants: readonly string[],
@@ -2333,7 +2337,8 @@ function keepWindowsDenyTarget(
   let reachingGrants: readonly string[];
   try {
     reachingGrants = expandedGrants.filter(grant => grantWithin(grant, target) || grantWithin(target, grant));
-  } catch {
+  } catch (error) {
+    rethrowLocalityFailure(error);
     // An unproven grant identity cannot justify leaving a target unprotected.
     reachingGrants = expandedGrants;
   }
@@ -2342,6 +2347,7 @@ function keepWindowsDenyTarget(
     // Only a walked local route is looked up; a walk that cannot finish keeps the row as a failed lookup does.
     present = presentAtAdmission ?? withLocalityDecision(() => localFs.lstat(admitLocalRoute(target).verdict) !== undefined);
   } catch (error) {
+    rethrowLocalityFailure(error);
     // An incomplete walk reports the lookup that stopped it.
     const { code } = ((error as { cause?: NodeJS.ErrnoException }).cause ?? error) as NodeJS.ErrnoException;
     if (code !== "ENOENT" && code !== "ENOTDIR") {
@@ -2358,7 +2364,8 @@ function keepWindowsDenyTarget(
     // Never hand an absent row to the native stamp: it would create it. A reachable row is watched instead.
     if (reachingGrants.length > 0) {
       // Required watches are checked and armed at the grant boundary.
-      if (!required) watchAbsentProtectedRow(target, reachingGrants);
+      const publish = required ? undefined : prepareAbsentProtectedWatch(target, reachingGrants, false);
+      if (publish !== undefined) watches.push(publish);
       return false;
     }
     const key = windowsReadDenyKey(target);
@@ -2576,15 +2583,27 @@ function configuredLinuxWrapperPrograms(): LinuxWrapperPrograms | undefined {
 }
 
 // Build a fully-resolved SandboxRuntimeConfig from TRUSTED settings. Deny-by-default: when no `allowedDomains` are supplied the network section has an empty allow-list, which ASRT treats as "no egress". Weakening flags default to `false`/absent and are only set when explicitly present in the trusted `weakening` object. @internal Exported for unit tests only (the Windows-logic tests assert the win32 `windows.proxyPortRange` emission with `process.platform` forced). Not part of the module's runtime API — boot uses initializeAsrtSandbox.
-export function buildSandboxConfig(...args: Parameters<typeof buildSandboxConfigInDecision>): SandboxRuntimeConfig {
-  return withLocalityDecision(() => buildSandboxConfigInDecision(...args));
+export function buildSandboxConfig(
+  trustedSettings: TrustedSandboxSettings,
+  readDenyEvidence?: WindowsReadDenySnapshot,
+  liveGrants: WindowsLiveGrantSnapshot = {},
+): SandboxRuntimeConfig {
+  return withSandboxWatchPublications(watches => buildSandboxConfigInDecision(watches, trustedSettings, readDenyEvidence, liveGrants));
 }
 
 function buildSharedSandboxConfig(settings: TrustedSandboxSettings, liveGrants: WindowsLiveGrantSnapshot): SandboxRuntimeConfig {
-  return withLocalityDecision(() => buildSandboxConfigInDecision(settings, gatherWindowsReadDenyEvidence(settings), liveGrants));
+  return withSandboxWatchPublications(watches => buildSandboxConfigInDecision(watches, settings, gatherWindowsReadDenyEvidence(settings), liveGrants));
+}
+
+function withSandboxWatchPublications<T>(build: (watches: Array<() => void>) => T): T {
+  const watches: Array<() => void> = [];
+  const result = withLocalityDecision(() => build(watches));
+  for (const publish of watches) publish();
+  return result;
 }
 
 function buildSandboxConfigInDecision(
+  watches: Array<() => void>,
   trustedSettings: TrustedSandboxSettings,
   readDenyEvidence?: WindowsReadDenySnapshot,
   liveGrants: WindowsLiveGrantSnapshot = {},
@@ -2691,6 +2710,7 @@ function buildSandboxConfigInDecision(
   }));
   const filesystem: FilesystemConfig = {
     denyRead: windowsDenyTargets(
+      watches,
       asrtReadDenyPaths(lists.denyRead, [...appOwnedSandboxReallowableRoots(), ...aveHomeReadBoundaryRoots()]),
       trustedSettings.userDataDir,
       windowsGrants,
@@ -2701,7 +2721,7 @@ function buildSandboxConfigInDecision(
       requiredWriteKeys,
     ),
     allowWrite: lists.allowWrite,
-    denyWrite: windowsDenyTargets(lists.denyWrite, trustedSettings.userDataDir, windowsGrants, windowsWriteGrants, "write",
+    denyWrite: windowsDenyTargets(watches, lists.denyWrite, trustedSettings.userDataDir, windowsGrants, windowsWriteGrants, "write",
       undefined, { user: trustedSettings.denyWrite }, requiredWriteKeys),
     // An absent read list keeps the package's own default; an empty one grants nothing.
     ...(allowRead !== undefined ? { allowRead: lists.allowRead } : {}),
@@ -3122,8 +3142,12 @@ async function discardFailedAsrtInitialization(
 
 // Initialize once from trusted settings and publish activity only after native execution succeeds. Empty global allow lists plus non-strict mode route each connection to the ask callback; on macOS/Linux accept only listener-vouched identities and literal true allows. Log monitoring defaults off.
 function windowsDenyTargetPresent(path: string): boolean {
-  try { return lstatSync(path, { throwIfNoEntry: false }) !== undefined; }
-  catch (error) {
+  try {
+    const entry = admitLocalPath(path);
+    admitLocalRoute(dirname(path));
+    return localFs.lstat(entry) !== undefined;
+  } catch (error) {
+    rethrowLocalityFailure(error);
     const code = (error as NodeJS.ErrnoException).code;
     // An unreadable target is not proven absent; it keeps its stamp.
     return code !== "ENOENT" && code !== "ENOTDIR";
@@ -3138,11 +3162,13 @@ function denyStampSpellings(entries: readonly FilesystemPathEntry[]): string[] {
 // The only gate between Ave and the native stamp: an absent literal row there would be created as a placeholder. Never reached by a shipping caller; a hit is a policy bug or a race and fails closed.
 function assertWindowsDenyTargetsPresent(paths: readonly string[]): void {
   if (process.platform !== "win32") return;
-  for (const path of paths) {
-    const spelling = stripExtendedPathPrefix(path);
-    if (isUncPath(spelling) || containsGlobCharsWin(spelling) || !isAbsolute(spelling)) continue;
-    if (!windowsDenyTargetPresent(spelling)) throw new Error(`Windows deny target is absent and would be created: ${spelling}`);
-  }
+  withLocalityDecision(() => {
+    for (const path of paths) {
+      const spelling = stripExtendedPathPrefix(path);
+      if (isUncPath(spelling) || containsGlobCharsWin(spelling) || !isAbsolute(spelling)) continue;
+      if (!windowsDenyTargetPresent(spelling)) throw new Error(`Windows deny target is absent and would be created: ${spelling}`);
+    }
+  });
 }
 
 function checkWindowsSandboxStampTargets(filesystem: Partial<FilesystemConfig> | undefined): void {
@@ -3880,7 +3906,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   const protectedRows = allowWrite.length === 0 ? undefined
     : timeStep("preflightMs", () => measureRequiredWindowsWriteDenies(pending, additionalWriteRoots));
   const requiredRows = new Set(protectedRows?.rows.keys());
-  const rows = timeStep("preflightMs", () => {
+  const rows = timeStep("preflightMs", () => withSandboxWatchPublications(watches => {
     const distinct = new Map<string, { path: string; read: boolean }>();
     for (const kind of ["denyRead", "denyWrite"] as const) {
       for (const entry of pending.filesystem[kind]) {
@@ -3903,10 +3929,11 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
       if (requiredRows.has(windowsReadDenyKey(row.path))) {
         throw new Error(t("sandboxPolicy.windowsProtectedWriteRefused", { path: row.path }));
       }
-      watchAbsentProtectedRow(row.path, allowWrite.filter(root => lexicalWindowsOverlap(root, row.path)));
+      const publish = prepareAbsentProtectedWatch(row.path, allowWrite.filter(root => lexicalWindowsOverlap(root, row.path)), false);
+      if (publish !== undefined) watches.push(publish);
       return false;
     });
-  });
+  }));
   const targets = rows.map(row => row.path);
   timing.rows = rows.length;
   assertWindowsDenyTargetsPresent(targets);

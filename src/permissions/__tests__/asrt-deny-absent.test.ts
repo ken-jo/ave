@@ -15,6 +15,7 @@ import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-priv
 import { createWindowsProtectedWriteTargets } from "../../__tests__/support/windows-protected-write-fixture.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { pinWindowsPaths, windowsObjectKey } from "../../shared/windows-path-facts.js";
+import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
 import * as evidence from "../../shared/windows-read-deny-evidence.js";
 import * as srtWinIntegrity from "../srt-win-integrity.js";
 import * as denyAcl from "../windows-deny-acl.js";
@@ -47,6 +48,8 @@ vi.mock("node:os", async (importOriginal) => ({
 vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js")>()),
 }));
+
+vi.unmock("../../shared/windows-drive-locality.js");
 
 useVerifiedAveHomePrivacy();
 
@@ -1388,6 +1391,35 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     await wrapToolCommand("echo readonly", { commandId: TEST_COMMAND_ID });
     expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyRead)).not.toContain(target);
     expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyWrite)).not.toContain(target);
+  });
+
+  it("leaves watch rows unchanged and skips later probes when a write-deny drive query fails", () => {
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    const prior = join(workspace, "already-watched");
+    const absent = join(workspace, "new-watch");
+    const later = join(workspace, "later-deny");
+    const failedDrive = root.startsWith("Z:") ? "Y:" : "Z:";
+    const failure = new Error("Deny drive query failed");
+    const liveGrants = { allowWrite: [{ path: workspace, literal: true as const }] };
+    buildSandboxConfig({ denyRead: [prior] }, undefined, liveGrants);
+    const before = watchedProtectedRows();
+    expect(before).toContain(prior);
+    vi.mocked(lstatSync).mockClear();
+    setWindowsDriveQueryForTest(drive => {
+      if (drive === failedDrive) throw failure;
+      return "\\Device\\HarddiskVolume1";
+    });
+    try {
+      expect(() => buildSandboxConfig({
+        denyRead: [absent],
+        denyWrite: [failedDrive + "\\denied", later],
+      }, undefined, liveGrants)).toThrow(failure);
+      expect(watchedProtectedRows()).toEqual(before);
+      expect(vi.mocked(lstatSync).mock.calls.some(([path]) => String(path).includes("later-deny"))).toBe(false);
+    } finally {
+      setWindowsDriveQueryForTest();
+    }
   });
 
   it("watches absent denies reached by uncertain write grant spellings within their static directory", () => {
