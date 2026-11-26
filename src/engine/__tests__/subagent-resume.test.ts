@@ -2448,9 +2448,19 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     };
     restore = patchProvider(blockingProvider);
     const events: AgentSpawnEvent[] = [];
+    const firstTerminal = deferred<void>();
+    const secondTerminal = deferred<void>();
+    let terminalCount = 0;
     const tool = createAgentSpawnTool({
       getRunner: () => runner,
-      emit: (event) => events.push(event),
+      emit: (event) => {
+        events.push(event);
+        if (event.type === "done" || event.type === "error") {
+          terminalCount++;
+          if (terminalCount === 1) firstTerminal.resolve();
+          if (terminalCount === 2) secondTerminal.resolve();
+        }
+      },
     });
     const toolContext = {
       cwd: process.cwd(),
@@ -2476,21 +2486,29 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         return originalLoadSession.apply(this, args);
       });
 
+    const resume = vi.spyOn(runner, "resume");
+    const deliveryStarted = deferred<void>();
+    const deliver = runner.deliverToParent.bind(runner);
+    const delivery = vi.spyOn(runner, "deliverToParent").mockImplementation((...args) => {
+      const result = deliver(...args);
+      deliveryStarted.resolve();
+      return result;
+    });
+    let handleReturned = false;
+    const winnerRequest = tool.execute(
+      {
+        title: "background-resume",
+        instructions: "continue",
+        resumeId: spawn.childSessionId,
+        background: true,
+      },
+      toolContext,
+    ).then((result) => {
+      handleReturned = true;
+      return result;
+    });
     try {
-      let handleReturned = false;
-      const winnerRequest = tool.execute(
-        {
-          title: "background-resume",
-          instructions: "continue",
-          resumeId: spawn.childSessionId,
-          background: true,
-        },
-        toolContext,
-      ).then((result) => {
-        handleReturned = true;
-        return result;
-      });
-      await loadStarted;
+      await Promise.race([loadStarted, winnerRequest]);
       expect(handleReturned).toBe(false);
       releaseLoad();
       const winnerResult = await winnerRequest;
@@ -2534,26 +2552,19 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         status: "running",
         taskState: "TASK_STATE_WORKING",
       });
-      await vi.waitFor(() =>
-        expect(
-          events.some(
-            (event) =>
-              event.spawnId === loser.spawnId && event.type === "error",
-          ),
-        ).toBe(true),
+      await firstTerminal.promise;
+      expect(events).toContainEqual(
+        expect.objectContaining({ spawnId: loser.spawnId, type: "error" }),
       );
       expect(deliverToParent).not.toHaveBeenCalled();
 
       releaseWinner();
-      await vi.waitFor(() => expect(deliverToParent).toHaveBeenCalledTimes(1));
-      await vi.waitFor(() =>
-        expect(
-          events.some(
-            (event) =>
-              event.spawnId === winner.spawnId && event.type === "done",
-          ),
-        ).toBe(true),
-      );
+      await secondTerminal.promise;
+      // The terminal frame can be emitted before the runner returns to the delivery path.
+      await deliveryStarted.promise;
+      expect(delivery).toHaveBeenCalledTimes(1);
+      await delivery.mock.results[0].value;
+      expect(deliverToParent).toHaveBeenCalledTimes(1);
 
       const winnerTerminal = events.filter(
         (event) =>
@@ -2584,7 +2595,12 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         childSessionId: spawn.childSessionId,
       });
     } finally {
+      releaseLoad();
       releaseWinner();
+      await Promise.allSettled([winnerRequest, ...resume.mock.results.map(({ value }) => value)]);
+      await Promise.allSettled(delivery.mock.results.map(({ value }) => value));
+      resume.mockRestore();
+      delivery.mockRestore();
       loadSession.mockRestore();
       restore();
     }
