@@ -29,7 +29,7 @@ vi.mock("node:fs/promises", async (original) => {
 
 const LOCAL_DRIVE = String.raw`\Device\HarddiskVolume1`;
 
-describe.runIf(process.platform === "win32")("checkpoint mutation locality", () => {
+describe("checkpoint mutation locality", () => {
   let root: string;
   let first: string;
   let second: string;
@@ -57,7 +57,7 @@ describe.runIf(process.platform === "win32")("checkpoint mutation locality", () 
     return withCodeCheckpoint({ sessionId: randomUUID(), messageId: "mutation" }, run);
   }
 
-  it("does not dispatch sibling baseline reads after a drive query fails", async () => {
+  it.runIf(process.platform === "win32")("does not dispatch sibling baseline reads after a drive query fails", async () => {
     const unavailable = new Error("Drive query failed");
     const query = vi.fn(() => LOCAL_DRIVE).mockImplementationOnce(() => { throw unavailable; });
     const mutate = vi.fn(async () => {});
@@ -72,7 +72,7 @@ describe.runIf(process.platform === "win32")("checkpoint mutation locality", () 
     expect(mutate).not.toHaveBeenCalled();
   });
 
-  it("does not probe the mutation path for line counts after the write seal fails", async () => {
+  it.runIf(process.platform === "win32")("does not probe the mutation path for line counts after the write seal fails", async () => {
     const unavailable = new Error("Drive query failed");
     const seal = sealTargets(() => resolvePhysicalFilesystemPath(first, root, 64));
     const failure = await turn(() => checkpointFileMutation([{ path: first, content: "new" }], async () => {
@@ -84,7 +84,7 @@ describe.runIf(process.platform === "win32")("checkpoint mutation locality", () 
     expect(probe.mock.calls.filter(([path]) => path === first)).toEqual([]);
   });
 
-  it("rewinds prior edits after a drive query refuses a write-ahead entry", async () => {
+  it.runIf(process.platform === "win32")("rewinds prior edits after a drive query refuses a write-ahead entry", async () => {
     const unavailable = new Error("Drive query failed");
     const sessionId = randomUUID();
     const ledger = join(root, "state", "code-checkpoints", "turns.json");
@@ -114,21 +114,24 @@ describe.runIf(process.platform === "win32")("checkpoint mutation locality", () 
     expect(await readFile(second, "utf8")).toBe("second");
   });
 
-  it("retains applied effects and drops untouched files after a separate seal operand changes", async () => {
+  it.each(["tracked", "untracked"])("retains applied effects after a separate seal operand changes for a %s writer", async (kind) => {
     const sessionId = randomUUID();
     let anchor = "original";
     const seal = sealTargets(() => anchor);
     await withCodeCheckpoint({ sessionId, messageId: "mutation" }, async () => {
       await checkpointFileMutation([{ path: first, content: "prior edit" }], () => writeFile(first, "prior edit"));
-      await expect(checkpointFileMutation([
-        { path: first, content: "applied edit" },
-        { path: second, content: "refused edit" },
-      ], async () => {
+      const run = async (recordEffect?: (path: string) => void) => {
         await writeFile(first, "applied edit");
+        recordEffect?.(first);
         anchor = "replacement";
         seal.verify();
         await writeFile(second, "refused edit");
-      }, seal)).rejects.toBeInstanceOf(TargetIdentityChangedError);
+        recordEffect?.(second);
+      };
+      await expect(checkpointFileMutation([
+        { path: first, content: "applied edit" },
+        { path: second, content: "refused edit" },
+      ], kind === "tracked" ? { run } : () => run(), seal)).rejects.toBeInstanceOf(TargetIdentityChangedError);
     });
 
     expect(await readFile(first, "utf8")).toBe("applied edit");
@@ -137,7 +140,7 @@ describe.runIf(process.platform === "win32")("checkpoint mutation locality", () 
     expect(await readFile(second, "utf8")).toBe("second");
   });
 
-  it("rewinds prior edits when a staged file never reaches publication", async () => {
+  it.runIf(process.platform === "win32")("rewinds prior edits when a staged file never reaches publication", async () => {
     const sessionId = randomUUID();
     const path = join(root, "new.txt");
     const context = { cwd: root, extraAllowedDirectories: [], metadata: {} };
@@ -167,7 +170,7 @@ describe.runIf(process.platform === "win32")("checkpoint mutation locality", () 
     await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("keeps only the copied destination when a move loses locality before unlink", async () => {
+  it.runIf(process.platform === "win32")("keeps only the copied destination when a move loses locality before unlink", async () => {
     const sessionId = randomUUID();
     const destination = join(root, "moved.txt");
     const context = { cwd: root, extraAllowedDirectories: [], metadata: {} };

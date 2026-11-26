@@ -553,7 +553,7 @@ export async function checkpointFileMutation<T>(
   seal?: TargetSeal,
 ): Promise<T> {
   const run: MutationRunner<T> = typeof mutation === "function" ? mutation : mutation.run;
-  const tracksEffects = process.platform === "win32" && typeof mutation !== "function";
+  const tracksEffects = typeof mutation !== "function";
   const sessionId = turnContext.getStore()?.sessionId ?? currentAgentObservationIdentity()?.sessionId;
   if (!sessionId) return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, run, tracksEffects, seal));
   const baselinePaths = withLocalityDecision(() => {
@@ -636,7 +636,7 @@ async function checkpointMutation<T>(
         let change = changes.find((entry) => entry.path === path);
         if (change) change.afterHash = hash(after);
         else {
-          if (process.platform === "win32" && seal) {
+          if (seal) {
             const targetSeal = withLocalityDecision(() => {
               seal.verify();
               return sealTargets(() => resolvePhysicalFilesystemPath(path, process.cwd(), 64));
@@ -702,7 +702,7 @@ async function checkpointMutation<T>(
       await discardChanges(new Set(changes));
       throw error;
     }
-    const snapshotForBookkeeping = (path: string, targetSeal = seal) => snapshot(path, targetSeal).catch((error: unknown) => {
+    const snapshotForBookkeeping = (path: string, targetSeal?: TargetSeal) => snapshot(path, targetSeal).catch((error: unknown) => {
       rethrowLocalityFailure(error);
       return undefined;
     });
@@ -717,7 +717,7 @@ async function checkpointMutation<T>(
         if (inspectTargets) {
           for (const change of changes) {
             if (discarded.has(change)) continue;
-            const current = await snapshotForBookkeeping(change.path, targetSeals.get(change.path) ?? seal);
+            const current = await snapshotForBookkeeping(change.path, targetSeals.get(change.path));
             if (current && hash(current.bytes) === change.beforeHash) discarded.add(change);
           }
         }
@@ -732,7 +732,7 @@ async function checkpointMutation<T>(
         const captures = turn.changes.filter((entry) => entry.path === change.path);
         if (captures.at(-1) !== change
           || captures.some((entry, index) => index > 0 && captures[index - 1].afterHash !== entry.beforeHash)) continue;
-        const current = await snapshotForBookkeeping(change.path);
+        const current = await snapshotForBookkeeping(change.path, seal);
         if (!current || hash(current.bytes) !== change.afterHash) continue;
         const first = captures[0];
         const before = (await hydrate(first)).before;
@@ -759,9 +759,8 @@ async function checkpointMutation<T>(
     let recordCounts = false;
     try {
       const result = await run(recordEffect);
-      if (result && typeof result === "object" && "isError" in result && result.isError === true) {
-        await removeUnchanged(true);
-      }
+      const failed = Boolean(result && typeof result === "object" && "isError" in result && result.isError === true);
+      if (failed || (tracksEffects && affected.size < changes.length)) await removeUnchanged(failed);
       recordCounts = true;
       return result;
     } catch (error) {
