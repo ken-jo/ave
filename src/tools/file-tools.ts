@@ -1529,7 +1529,7 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
     for (const change of planned) {
       if (change.kind === "delete") {
         if (sessionId !== undefined) forgetFileRead(sessionId, await fileReadKey(change.path));
-        await checkpointFileMutation([{ path: change.path, content: null }], () => unlinkProjectFile(change.path, ctx.fileTargetSeal), ctx.fileTargetSeal);
+        await unlinkProjectFile(change.path, ctx.fileTargetSeal);
         summary.push(`${PATCH_CHANGE_LETTER.delete} ${change.path}`);
         continue;
       }
@@ -1540,7 +1540,7 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
       const identity = await atomicTextWrite(written, change.content, ctx.fileTargetSeal);
       if (change.kind === "update" && change.destination !== change.path) {
         if (sessionId !== undefined) forgetFileRead(sessionId, await fileReadKey(change.path));
-        await checkpointFileMutation([{ path: change.path, content: null }], () => unlinkProjectFile(change.path, ctx.fileTargetSeal), ctx.fileTargetSeal);
+        await unlinkProjectFile(change.path, ctx.fileTargetSeal);
       }
       if (sessionId !== undefined) await recordOwnWrite(sessionId, written, change.content, undefined, identity);
       summary.push(
@@ -1623,7 +1623,7 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
     const result = await checkpointFileMutation([
       { path: source, content: null },
       { path: destination, copyFrom: source },
-    ], async () => {
+    ], { run: async (recordEffect) => {
       ctx.fileTargetSeal?.verify();
       assertProjectWritePath(source);
       assertProjectWritePath(destination);
@@ -1644,10 +1644,12 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
           noteOwnedWrite(destination, moved);
           ctx.fileTargetSeal?.verify();
           await rename(source, destination);
+          recordEffect(source);
+          recordEffect(destination);
         } finally { await held.close(); }
       } else {
         // copyFile creates the destination without a descriptor Ave holds, so the evidence records no identity.
-        const copied = await noClobberMoveFile(source, destination, ctx.fileTargetSeal);
+        const copied = await noClobberMoveFile(source, destination, recordEffect, ctx.fileTargetSeal);
         if (!copied.ok) return copied.error;
         noteOwnedWrite(destination, undefined);
       }
@@ -1656,7 +1658,7 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
         isError: false,
         metadata: { sourcePath: source, destinationPath: destination },
       };
-    });
+    } }, process.platform === "win32" ? ctx.fileTargetSeal : undefined);
     const sessionId = sessionIdOf(ctx);
     if (sessionId !== undefined && !result.isError) await terminalFileEvidence.recordWrite(sessionId, destination, undefined, moved);
     return result;
@@ -1715,18 +1717,20 @@ export class CopyPathTool extends FileTool<typeof CopyPathInputSchema> {
     const checkpointSupported = await isFileCopyCheckpointSupported(sourcePath, ctx.cwd);
     ctx.fileTargetSeal?.verify();
     const expectedSource = checkpointSupported ? await lstat(sourcePath, { bigint: true }) : undefined;
-    const transfer = async () => {
+    const transfer = async (recordEffect?: (path: string) => void) => {
       ctx.fileTargetSeal?.verify();
       assertProjectWritePath(sourcePath);
       assertProjectWritePath(destinationPath);
-      return fileTransferExecutionResult(await copyPath({ sourcePath, destinationPath }, ctx, {
+      const result = await copyPath({ sourcePath, destinationPath }, ctx, {
         requireRegularSource: checkpointSupported,
         expectedSource,
         assertPath: assertProjectWritePath,
-      }));
+      });
+      if (result.ok || result.cleanup === "incomplete") recordEffect?.(destinationPath);
+      return fileTransferExecutionResult(result);
     };
     if (checkpointSupported) {
-      return checkpointFileMutation([{ path: destinationPath, copyFrom: sourcePath }], transfer, ctx.fileTargetSeal);
+      return checkpointFileMutation([{ path: destinationPath, copyFrom: sourcePath }], { run: transfer }, ctx.fileTargetSeal);
     }
     await markCodeCheckpointUnavailable();
     return transfer();
@@ -1860,7 +1864,7 @@ export class DeleteFileTool extends FileTool<typeof DeleteFileInputSchema> {
       return toolError(`delete_file requires a regular file: ${target}`);
     }
     ctx.fileTargetSeal?.verify();
-    await checkpointFileMutation([{ path: target, content: null }], () => unlinkProjectFile(target, ctx.fileTargetSeal), ctx.fileTargetSeal);
+    await unlinkProjectFile(target, ctx.fileTargetSeal);
     return {
       output: JSON.stringify({ path: target, deleted: true }),
       isError: false,
@@ -2121,14 +2125,22 @@ async function walk(
   }
 }
 
-async function noClobberMoveFile(source: string, destination: string, seal?: TargetSeal): Promise<Result<null>> {
+async function noClobberMoveFile(
+  source: string,
+  destination: string,
+  recordEffect: (path: string) => void,
+  seal?: TargetSeal,
+): Promise<Result<null>> {
   try {
     seal?.verify();
+    recordEffect(destination);
     await copyFile(source, destination, constants.COPYFILE_EXCL);
     seal?.verify();
     await unlink(source);
+    recordEffect(source);
     return { ok: true, value: null };
   } catch (err) {
+    rethrowLocalityFailure(err);
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "EEXIST") {
       return { ok: false, error: toolError(`move_file destination exists; set overwrite=true to replace: ${destination}`) };
@@ -2159,17 +2171,26 @@ function temporaryWritePath(target: string): string {
 /** Writes `content` to `target` through a temporary file, returning the identity its own descriptor saw. */
 async function atomicTextWrite(target: string, content: string, seal?: TargetSeal): Promise<WrittenFileIdentity | undefined> {
   seal?.verify();
-  return checkpointFileMutation([{ path: target, content }], () => {
-    seal?.verify();
-    assertProjectWritePath(target);
-    return writeTextAtomically(target, content, seal);
+  return checkpointFileMutation([{ path: target, content }], {
+    async run(recordEffect) {
+      seal?.verify();
+      assertProjectWritePath(target);
+      const identity = await writeTextAtomically(target, content, seal);
+      recordEffect(target);
+      return identity;
+    },
   }, seal);
 }
 
 function unlinkProjectFile(target: string, seal?: TargetSeal): Promise<void> {
-  seal?.verify();
-  assertProjectWritePath(target);
-  return unlink(target);
+  return checkpointFileMutation([{ path: target, content: null }], {
+    async run(recordEffect) {
+      seal?.verify();
+      assertProjectWritePath(target);
+      await unlink(target);
+      recordEffect(target);
+    },
+  }, seal);
 }
 
 async function writeTextAtomically(target: string, content: string, seal?: TargetSeal): Promise<WrittenFileIdentity | undefined> {

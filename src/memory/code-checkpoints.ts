@@ -12,8 +12,8 @@ import { FILE_MENTION_REFERENCE_POLICY } from "../shared/file-mention-reference.
 import { countFileChangeLines } from "../shared/file-change-counts.js";
 import type { TurnChangeReview, TurnReviewDecision, TurnReviewError, TurnReviewResult } from "../shared/turn-change-review.js";
 import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directories.js";
-import { TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
-import { rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
+import { sealTargets, TargetIdentityChangedError, type TargetSeal } from "../permissions/target-seal.js";
+import { isLocalityFailure, rethrowLocalityFailure, withLocalityDecision } from "../shared/local-path-io.js";
 import { assertReadableFilePath } from "../tools/file-read-core.js";
 import { ensureFileAccess } from "../tools/file-access-policy.js";
 import { isTerminalReviewUnavailable, readTerminalReviewText, terminalFileEvidence, withOwnedWrites } from "../main/terminal/changed-file-evidence.js";
@@ -541,14 +541,21 @@ export async function deleteCodeCheckpoints(sessionId: string): Promise<void> {
   });
 }
 
+type MutationRunner<T> = (recordEffect: (path: string) => void) => Promise<T>;
+
+/** A tracked writer reports a file as soon as its mutation has happened or may have partially happened. */
+type FileMutation<T> = (() => Promise<T>) | { run: MutationRunner<T> };
+
 /** Called only after native file-tool authorization and immediately before mutation. */
 export async function checkpointFileMutation<T>(
   effects: Array<{ path: string } & ({ content: Buffer | string | null } | { copyFrom: string })>,
-  run: () => Promise<T>,
+  mutation: FileMutation<T>,
   seal?: TargetSeal,
 ): Promise<T> {
+  const run: MutationRunner<T> = typeof mutation === "function" ? mutation : mutation.run;
+  const tracksEffects = process.platform === "win32" && typeof mutation !== "function";
   const sessionId = turnContext.getStore()?.sessionId ?? currentAgentObservationIdentity()?.sessionId;
-  if (!sessionId) return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, run, seal));
+  if (!sessionId) return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, run, tracksEffects, seal));
   const baselinePaths = withLocalityDecision(() => {
     seal?.verify();
     return effects.map((effect) => {
@@ -573,36 +580,38 @@ export async function checkpointFileMutation<T>(
       return { path: effect.path, requestedPath: effect.path, before: undefined };
     }
   }));
-  return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, async () => {
+  return observeAgentDocumentMutation(effects, () => checkpointMutation(effects, async (recordEffect) => {
     // Each file's identity is what its writer's own descriptor reported; a write without one records none.
-    const { result, owned } = await withOwnedWrites(run);
+    const { result, owned } = await withOwnedWrites(() => run(recordEffect));
     if (!(result && typeof result === "object" && "isError" in result && result.isError === true)) {
       for (const original of originals) await terminalFileEvidence.recordWrite(sessionId, original.requestedPath, original.before, owned.get(original.path));
     }
     return result;
-  }, seal));
+  }, tracksEffects, seal));
 }
 
 async function checkpointMutation<T>(
   effects: Array<{ path: string } & ({ content: Buffer | string | null } | { copyFrom: string })>,
-  run: () => Promise<T>,
+  run: MutationRunner<T>,
+  tracksEffects: boolean,
   seal?: TargetSeal,
 ): Promise<T> {
+  const runUntracked = () => run(() => {});
   seal?.verify();
   const identity = turnContext.getStore();
   requireAvailableCheckpoint(identity);
-  if (!identity || identity.deleted) return run();
+  if (!identity || identity.deleted) return runUntracked();
   return exclusive(async () => {
     requireAvailableCheckpoint(identity);
     let turns: Turn[];
     try { turns = await load(); }
-    catch (error) { deferUnavailable(identity, error); requireAvailableCheckpoint(identity); return run(); }
+    catch (error) { deferUnavailable(identity, error); requireAvailableCheckpoint(identity); return runUntracked(); }
     const turn = turns.find((item) => item.sessionId === identity.sessionId && item.messageId === identity.messageId);
     if (requiredCheckpointContext.getStore() === true && turn?.consumed) throw new CodeCheckpointRequiredError();
     if (!turn || turn.unavailable || identity.unavailable) {
       await makeUnavailable(turns, identity, "unsupported edits");
       requireAvailableCheckpoint(identity);
-      return run();
+      return runUntracked();
     }
     if (requiredCheckpointContext.getStore() === true) {
       // Preserve every earlier before-image and refuse new effects if rewind evidence is damaged.
@@ -610,6 +619,8 @@ async function checkpointMutation<T>(
       catch (error) { blockAutomaticWrites(identity, error); }
     }
     const changes: StoredChange[] = [];
+    const effectPaths = new Map<string, StoredChange>();
+    const targetSeals = new Map<string, TargetSeal>();
     try {
       for (const effect of effects) {
         seal?.verify();
@@ -622,9 +633,20 @@ async function checkpointMutation<T>(
         seal?.verify();
         const after = typeof content === "string" ? Buffer.from(content) : content;
         if (after && after.length > CODE_CHECKPOINT_POLICY.maxFileBytes) throw new Error("Code checkpoint file limit exceeded");
-        const previous = changes.find((change) => change.path === path);
-        if (previous) previous.afterHash = hash(after);
-        else changes.push({ path, ...await storeImage(before.bytes), mode: before.mode, afterHash: hash(after) });
+        let change = changes.find((entry) => entry.path === path);
+        if (change) change.afterHash = hash(after);
+        else {
+          if (process.platform === "win32" && seal) {
+            const targetSeal = withLocalityDecision(() => {
+              seal.verify();
+              return sealTargets(() => resolvePhysicalFilesystemPath(path, process.cwd(), 64));
+            });
+            targetSeals.set(path, targetSeal);
+          }
+          change = { path, ...await storeImage(before.bytes), mode: before.mode, afterHash: hash(after) };
+          changes.push(change);
+        }
+        if (tracksEffects) effectPaths.set(effect.path, change);
       }
     } catch (error) {
       rethrowLocalityFailure(error);
@@ -633,7 +655,7 @@ async function checkpointMutation<T>(
       if (requiredCheckpointContext.getStore() === true) blockAutomaticWrites(identity);
       await makeUnavailable(turns, identity, "uncapturable original");
       requireAvailableCheckpoint(identity);
-      return run();
+      return runUntracked();
     }
     seal?.verify();
     turn.changes.push(...changes);
@@ -657,8 +679,14 @@ async function checkpointMutation<T>(
     if (turn.unavailable) {
       identity.unavailable = true;
       requireAvailableCheckpoint(identity);
-      return run();
+      return runUntracked();
     }
+    const discardChanges = async (discarded: ReadonlySet<StoredChange>) => {
+      const retained = turn.changes.filter((change) => !discarded.has(change));
+      if (retained.length === turn.changes.length) return;
+      turn.changes = retained;
+      await save(turns, turn);
+    };
     try {
       for (const change of changes) {
         const current = await snapshot(change.path, seal).catch((error: unknown) => {
@@ -668,27 +696,34 @@ async function checkpointMutation<T>(
         });
         if (!current || hash(current.bytes) !== change.beforeHash) throw new Error("File changed before checkpointed mutation");
       }
+      requireAvailableCheckpoint(identity);
     } catch (error) {
-      rethrowLocalityFailure(error);
-      turn.changes = turn.changes.filter((entry) => !changes.includes(entry));
-      await save(turns, turn);
+      // The callback has not run, so cleanup needs only the managed ledger.
+      await discardChanges(new Set(changes));
       throw error;
     }
-    requireAvailableCheckpoint(identity);
-    const snapshotForBookkeeping = (path: string) => snapshot(path, seal).catch((error: unknown) => {
+    const snapshotForBookkeeping = (path: string, targetSeal = seal) => snapshot(path, targetSeal).catch((error: unknown) => {
       rethrowLocalityFailure(error);
       return undefined;
     });
-    const removeUnchanged = async () => {
-      // No-op failures claim no edit; partial effects remain guarded by the intended after-hash.
-      for (const change of changes) {
-        const current = await snapshotForBookkeeping(change.path);
-        if (current && hash(current.bytes) === change.beforeHash) {
-          const index = turn.changes.indexOf(change);
-          if (index >= 0) turn.changes.splice(index, 1);
+    const affected = new Set<StoredChange>();
+    const recordEffect = (path: string) => {
+      const change = effectPaths.get(path);
+      if (change) affected.add(change);
+    };
+    const removeUnchanged = async (inspectTargets: boolean) => {
+      const discarded = new Set(tracksEffects ? changes.filter((change) => !affected.has(change)) : []);
+      try {
+        if (inspectTargets) {
+          for (const change of changes) {
+            if (discarded.has(change)) continue;
+            const current = await snapshotForBookkeeping(change.path, targetSeals.get(change.path) ?? seal);
+            if (current && hash(current.bytes) === change.beforeHash) discarded.add(change);
+          }
         }
+      } finally {
+        await discardChanges(discarded);
       }
-      await save(turns, turn);
     };
     const recordVerifiedCounts = async () => {
       let recorded = false;
@@ -723,16 +758,16 @@ async function checkpointMutation<T>(
     };
     let recordCounts = false;
     try {
-      const result = await run();
+      const result = await run(recordEffect);
       if (result && typeof result === "object" && "isError" in result && result.isError === true) {
-        await removeUnchanged();
+        await removeUnchanged(true);
       }
       recordCounts = true;
       return result;
     } catch (error) {
-      rethrowLocalityFailure(error);
-      await removeUnchanged();
-      recordCounts = true;
+      const failedLocality = isLocalityFailure(error);
+      await removeUnchanged(!failedLocality);
+      recordCounts = !failedLocality;
       throw error;
     } finally {
       // Informational totals never replace the effect outcome or weaken restore hashes.
