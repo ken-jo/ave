@@ -189,11 +189,12 @@ const MXC_UNAVAILABLE_REASON_KEY = {
   "unsupported-arch": "permissionsTab.osSandboxWindowsMxcReasonUnsupportedArch",
   "binary-missing": "permissionsTab.osSandboxWindowsMxcReasonBinaryMissing",
   "probe-failed": "permissionsTab.osSandboxWindowsMxcReasonProbeFailed",
-  "tier-unsupported": "permissionsTab.osSandboxWindowsMxcReasonTierUnsupported",
+  "container-unavailable": "permissionsTab.osSandboxWindowsMxcReasonContainerUnavailable",
   "request-rejected": "permissionsTab.osSandboxWindowsMxcReasonRequestRejected",
   "launcher-mismatch": "permissionsTab.osSandboxWindowsMxcReasonLauncherMismatch",
   "powershell-start-failed": "permissionsTab.osSandboxWindowsMxcReasonPowershellStartFailed",
   "unverified-session": "permissionsTab.osSandboxWindowsMxcReasonUnverifiedSession",
+  "runtime-root-unproved": "permissionsTab.osSandboxWindowsMxcReasonRuntimeRootUnproved",
 } as const satisfies Record<SandboxMxcUnavailableReason, string>;
 
 /** Every reason the shared extension plan can carry, so no reason renders as a raw key. */
@@ -241,6 +242,7 @@ function homePrivacyReasonText(error: NonNullable<SandboxWindowsStatusInfo["home
     case "identity-failed": return t("permissionsTab.homePrivacyIdentityFailed");
     case "icacls-failed": return t("permissionsTab.homePrivacyIcaclsFailed");
     case "read-back-failed": return t("permissionsTab.homePrivacyReadBackFailed");
+    case "helper-unavailable": return t("permissionsTab.homePrivacyHelperUnavailable");
     case "not-protected": return t("permissionsTab.homePrivacyNotProtected");
     case "invalid-owner-grant": return t("permissionsTab.homePrivacyInvalidOwnerGrant");
     case "owner-claim-failed": return t("permissionsTab.homePrivacyOwnerClaimFailed");
@@ -264,6 +266,7 @@ const HOME_PRIVACY_FIX_KEY = {
   "identity-failed": "permissionsTab.homePrivacyFixIdentity",
   "icacls-failed": "permissionsTab.homePrivacyFixPermissions",
   "read-back-failed": "permissionsTab.homePrivacyFixPermissions",
+  "helper-unavailable": "permissionsTab.homePrivacyFixHelperUnavailable",
   "not-protected": "permissionsTab.homePrivacyFixPermissions",
   "invalid-owner-grant": "permissionsTab.homePrivacyFixPermissions",
   "owner-claim-failed": null,
@@ -275,10 +278,13 @@ const HOME_PRIVACY_FIX_KEY = {
   "workspace-extra-principals": null,
 } as const satisfies Record<NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>["category"], string | null>;
 
-/** `sentence` followed by the category's own fix, when the cause text does not already carry one. */
+/** `sentence` followed by the category's own fix, when the cause text does not already carry one, and what shells do: every boot
+ * privacy failure forces the shell floor (sandbox-capability.ts getHostShellExecutionPlan), approved for the session or not, except
+ * helper-unavailable, which denies shells and hooks until a restart. */
 function withHomePrivacyFix(sentence: string, error: NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>): string {
   const fix = HOME_PRIVACY_FIX_KEY[error.category];
-  return fix === null ? sentence : `${sentence} ${t(fix)}`;
+  const shells = t(error.category === "helper-unavailable" ? "permissionsTab.homePrivacyShellDenied" : "permissionsTab.homePrivacyShellAsk");
+  return `${fix === null ? sentence : `${sentence} ${t(fix)}`} ${shells}`;
 }
 
 /**
@@ -564,8 +570,6 @@ export function PermissionsTab({
   // this run. The stored value still decides the next run without it, so the control stays usable; what was missing was saying so.
   const envForcedPaths = useEnvForcedSettings();
   const [sandboxBusy, setSandboxBusy] = useState(false);
-  const [windowsShellLocalNetworkAccess, setWindowsShellLocalNetworkAccess] = useState(false);
-  const [windowsShellLocalNetworkBusy, setWindowsShellLocalNetworkBusy] = useState(false);
   // Plugin-worker confinement: its own setting, so the shell toggle above never confines workers
   // and this one never confines shells. `AVE_PLUGIN_WORKER_CONFINEMENT=1` is OR-ed with it at boot.
   const [workBoardApprovalSurface, setWorkBoardApprovalSurface] = useState<WorkBoardToolApprovalSurface | "invalid" | null>(null);
@@ -652,7 +656,6 @@ export function PermissionsTab({
       settle("settings", () => getApi().getSettings(), (settingsRes) => {
         setOwnerAwayAutoSkipMinutes(settingsRes.permissions?.ownerAwayAutoSkipMinutes ?? 0);
         setSandboxEnabled(settingsRes.features?.osToolSandbox ?? false);
-        setWindowsShellLocalNetworkAccess(settingsRes.features?.windowsShellLocalNetworkAccess === true);
         setWorkerConfinementEnabled(settingsRes.features?.pluginWorkerConfinement ?? false);
         // Normalized on load in main, so an out-of-enum value is a contract break: that section says so, without defaulting the
         // preference and without failing the other sections this read feeds.
@@ -997,42 +1000,6 @@ export function PermissionsTab({
   };
   const handleSandboxToggle = () => toggleConfinementScope("shell");
   const handleWorkerConfinementToggle = () => toggleConfinementScope("pluginWorkers");
-  const handleWindowsShellLocalNetworkToggle = async () => {
-    if (windowsShellLocalNetworkBusy) return;
-    const next = !windowsShellLocalNetworkAccess;
-    setWindowsShellLocalNetworkBusy(true);
-    try {
-      const res = await window.ave.permission.updateSecuritySettings({ features: { windowsShellLocalNetworkAccess: next } });
-      if (isIpcErrorResult(res)) {
-        showBanner("error", t("permissionsTab.windowsShellLocalNetworkToggleFailed"));
-        return;
-      }
-      setWindowsShellLocalNetworkAccess(next);
-      await refreshSandboxCapability();
-    } catch {
-      showBanner("error", t("permissionsTab.windowsShellLocalNetworkToggleFailed"));
-    } finally {
-      setWindowsShellLocalNetworkBusy(false);
-    }
-  };
-  const [privacyApprovalBusy, setPrivacyApprovalBusy] = useState(false);
-  const handlePrivacyApproval = async () => {
-    if (privacyApprovalBusy) return;
-    setPrivacyApprovalBusy(true);
-    try {
-      const result = await window.ave.permission.approveExtensionsWithoutIsolation();
-      if (!result.ok) {
-        showBanner("error", t("permissionsTab.homePrivacyApprovalFailed"));
-        return;
-      }
-      setWindowsStatus(await window.ave.permission.sandboxWindowsStatus());
-    } catch (error) {
-      showBanner("error", t("permissionsTab.homePrivacyApprovalFailed"));
-      console.warn("[ave] extension isolation session approval failed:", errorMessage(error));
-    } finally {
-      setPrivacyApprovalBusy(false);
-    }
-  };
 
   // The ONLY user-consented privilege-escalation trigger. The OS sandbox is normally provisioned at app-install time (NSIS customInstall), so this is the manual REPAIR
   // / re-provision path; invoked from an explicit "Re-provision" click inside the win32 panel, never automatically. Triggers ASRT's single self-elevating UAC prompt.
@@ -1286,29 +1253,6 @@ export function PermissionsTab({
             testId="os-sandbox-forced"
             className="mt-2"
           />
-          {sandboxCapability?.platform === "win32" ? (
-            <div className="mt-3 flex items-start gap-3" data-testid="windows-shell-local-network-setting" data-setting-row="features.windowsShellLocalNetworkAccess">
-              <Switch
-                checked={windowsShellLocalNetworkAccess}
-                data-setting-id="features.windowsShellLocalNetworkAccess"
-                data-testid="windows-shell-local-network-toggle"
-                aria-label={t("permissionsTab.windowsShellLocalNetworkLabel")}
-                disabled={windowsShellLocalNetworkBusy}
-                className="mt-0.5 size-5"
-                onCheckedChange={() => void handleWindowsShellLocalNetworkToggle()}
-              />
-              <div className="min-w-0 space-y-0.5">
-                <p className="text-sm">{t("permissionsTab.windowsShellLocalNetworkLabel")}</p>
-                <p data-testid="windows-shell-local-network-risk" className="text-dense text-warning">
-                  {t("permissionsTab.windowsShellLocalNetworkRisk")}
-                </p>
-                <p className="text-dense text-muted-foreground">{t("permissionsTab.windowsShellLocalNetworkHint")}</p>
-                <p data-testid="windows-shell-local-network-extension-scope" className="text-dense text-muted-foreground">
-                  {t("permissionsTab.windowsShellLocalNetworkExtensionScope")}
-                </p>
-              </div>
-            </div>
-          ) : null}
           <div className="mt-3 flex items-start gap-3" data-setting-row="features.pluginWorkerConfinement">
             <Switch
               checked={workerConfinementEffective}
@@ -1339,6 +1283,16 @@ export function PermissionsTab({
               className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning"
             >
               {t("permissionsTab.osSandboxUnavailable", { platform: sandboxCapability.platform })}
+            </p>
+          ) : null}
+          {/* Shown whatever the sandbox setting; the substrate row below already names it when boot recorded the same reason. */}
+          {sandboxCapability?.sandboxHomesUnavailable && !(windowsSubstrate?.mxc.state === "unavailable" && windowsSubstrate.mxc.reason === "runtime-root-unproved") ? (
+            <p
+              role="alert"
+              data-testid="os-sandbox-windows-homes-unavailable"
+              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning"
+            >
+              {t("permissionsTab.osSandboxWindowsMxcReasonRuntimeRootUnproved")}
             </p>
           ) : null}
           {sandboxCapability && sandboxCapability.available ? (
@@ -1389,7 +1343,7 @@ export function PermissionsTab({
                           path: sandboxCapability.homePrivacyError.path,
                           reason: homePrivacyReasonText(sandboxCapability.homePrivacyError),
                         }), sandboxCapability.homePrivacyError)
-                      : t("permissionsTab.homePrivacyBootFailed")
+                      : `${t("permissionsTab.homePrivacyBootFailed")}.`
                     : sandboxBoot.causes.includes("windows-sandbox-integrity-failed")
                     ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
                     : sandboxBoot.causes.includes("windows-sandbox-missing")
@@ -1416,13 +1370,11 @@ export function PermissionsTab({
               <p data-testid="os-sandbox-windows-substrate-shells">
                 {windowsSubstrate.shells === "mxc"
                   ? t("permissionsTab.osSandboxWindowsShellsMxc")
-                  : !windowsSubstrate.shellLocalNetworkAccess && windowsSubstrate.mxc.state !== "unavailable" && windowsSubstrate.shells === "approved-host"
-                    ? t("permissionsTab.osSandboxWindowsShellsLocalNetworkOff")
-                    : windowsSubstrate.mxc.state === "checking" && windowsSubstrate.shells === "approved-host"
-                      ? t("permissionsTab.osSandboxWindowsShellsChecking")
-                      : windowsSubstrate.shells === "approved-host"
-                        ? t("permissionsTab.osSandboxWindowsShellsApprovedHost")
-                        : t("permissionsTab.osSandboxWindowsShellsNone")}
+                  : windowsSubstrate.mxc.state === "checking" && windowsSubstrate.shells === "approved-host"
+                    ? t("permissionsTab.osSandboxWindowsShellsChecking")
+                    : windowsSubstrate.shells === "approved-host"
+                      ? t("permissionsTab.osSandboxWindowsShellsApprovedHost")
+                      : t("permissionsTab.osSandboxWindowsShellsNone")}
               </p>
               {windowsSubstrate.shells === "mxc" ? (
                 <>
@@ -1490,23 +1442,14 @@ export function PermissionsTab({
                 role="alert"
                 className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning"
               >
-                {/* After the session approval extensions run unisolated, so "blocked" and the approval offer would both be false. */}
-                {withHomePrivacyFix(t(windowsStatus.homePrivacyError.approvedForSession
-                  ? "permissionsTab.osSandboxBootDegradedHomePrivacy"
-                  : "permissionsTab.osSandboxWindowsHomePrivacyError", {
+                {withHomePrivacyFix(t("permissionsTab.osSandboxWindowsHomePrivacyError", {
                   path: windowsStatus.homePrivacyError.path,
                   reason: homePrivacyReasonText(windowsStatus.homePrivacyError),
                 }), windowsStatus.homePrivacyError)}
-                {windowsStatus.homePrivacyError.approvedForSession ? null : ` ${t("permissionsTab.homePrivacyApproveHint")}`}
+                {/* A helper that gave no answer offers no run without isolation: only a restart retries the check. */}
+                {windowsStatus.homePrivacyError.category === "helper-unavailable"
+                  ? null : ` ${t("permissionsTab.homePrivacyPerStartHint")}`}
                 <HomePrivacyFixCommand error={windowsStatus.homePrivacyError} />
-                {windowsStatus.homePrivacyError.approvedForSession ? (
-                  <p>{t("permissionsTab.homePrivacyApprovedForSession")}</p>
-                ) : (
-                  <Button type="button" size="sm" variant="default" disabled={privacyApprovalBusy}
-                    onClick={() => void handlePrivacyApproval()}>
-                    {t("permissionsTab.homePrivacyApproveForSession")}
-                  </Button>
-                )}
               </div>
             ) : windowsStatus.helperError ? (
               <p
@@ -1950,8 +1893,8 @@ export function PermissionsTab({
                         {approval.decision === "deny" ? t("permissionsTab.actionDeny") : t("permissionsTab.actionAllow")}
                       </Badge></td>
                       <td className="max-w-[180px] break-all px-3 py-2">
-                        {approval.scope === "session" ? t("permissionsTab.scopeSession") : approval.scope === "global" ? t("permissionsTab.scopeGlobal") : t("permissionsTab.scopePersistent")}
-                        <p className="text-tiny text-muted-foreground">{approval.scope === "session" ? approval.sessionId : approval.scope === "global" ? t("permissionsTab.scopeGlobalTarget") : approval.projectCwd}</p>
+                        {approval.scope === "session" ? t("permissionsTab.scopeSession") : approval.scope === "run" ? t("permissionsTab.scopeRun") : approval.scope === "global" ? t("permissionsTab.scopeGlobal") : t("permissionsTab.scopePersistent")}
+                        <p className="text-tiny text-muted-foreground">{approval.scope === "session" || approval.scope === "run" ? approval.sessionId : approval.scope === "global" ? t("permissionsTab.scopeGlobalTarget") : approval.projectCwd}</p>
                       </td>
                       <td className="px-3 py-2 text-muted-foreground">{approval.source ?? t("permissionsTab.sourceAll")}</td>
                       <td className="px-3 py-2"><Button type="button" variant="ghost" size="sm" disabled={approvalsBusy}

@@ -4,9 +4,10 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 
 /** Boot outcome distinguishes never-enabled isolation from failed activation even when both publish no runtime capability. */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { rmSync } from "node:fs";
+import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
   createSandboxBootHarness,
@@ -40,7 +41,7 @@ vi.mock("../../lib/logger.js", () => ({
 
 // Use a Windows host with neither supported confinement substrate available.
 vi.mock("../../permissions/mxc-windows.js", () => ({
-  detectHostMxcPrerequisites: async () => ({ state: "unavailable", reason: "tier-unsupported", windowsBuild: null, detail: "test host" }),
+  detectHostMxcPrerequisites: async () => ({ state: "unavailable", reason: "container-unavailable", windowsBuild: null, detail: "test host" }),
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
@@ -274,6 +275,23 @@ describe("boot sandbox outcome", () => {
     __resetSandboxRequestedAtBootForTest();
     await initSandboxGate(harness.context(false));
     expect(order).toEqual([]);
+  });
+
+  // The runtime asks Ave only about a destination none of its own lists decided, and Ave's refusals sit in that ask (sharedAsk in
+  // asrt-sandbox.ts). So boot hands it no allow list, and no production source registers a per-command one.
+  it("leaves every destination to the ask: no allow list at boot and no per-command network list anywhere", async () => {
+    await initSandboxGate(harness.context(true));
+    expect(h.initialize.mock.calls.length).toBeGreaterThan(0);
+    for (const call of h.initialize.mock.calls) expect((call[0] as { allowedDomains?: unknown }).allowedDomains).toEqual([]);
+
+    const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+    const files = readdirSync(sourceRoot, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile() && /\.tsx?$/.test(entry.name)
+        && !/\.(?:test|spec)\.tsx?$/.test(entry.name)
+        && !/(?:^|[/\\])__(?:tests|probes)__(?:[/\\]|$)/.test(entry.parentPath))
+      .map((entry) => join(entry.parentPath, entry.name));
+    expect(files.length).toBeGreaterThan(1000);
+    expect(files.filter((file) => readFileSync(file, "utf8").includes("CommandNetworkLists"))).toEqual([]);
   });
 
   it("does not let a caller mutate the sealed outcome", async () => {

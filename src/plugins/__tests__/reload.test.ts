@@ -3,7 +3,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as nodeFs from "node:fs";
-import { TestPluginRuntime as PluginRuntime } from "./test-helpers.js";
+import { TestPluginRuntime as PluginRuntime, stopTestPluginRuntimes } from "./test-helpers.js";
 import { mkdtempSync } from "node:fs";
 import { agentPluginsDocument } from "./test-helpers.js";
 
@@ -30,7 +30,9 @@ describe("PluginRuntime.reloadPlugin", () => {
   });
 
   afterEach(async () => {
+    const stopped = await stopTestPluginRuntimes();
     await rm(testDir, { recursive: true, force: true });
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   async function writePlugin(

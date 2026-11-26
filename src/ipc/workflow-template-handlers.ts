@@ -5,6 +5,7 @@ import { broadcastToAppWindows } from "./window-fanout.js";
 import type { IpcDeps } from "./types.js";
 import { WORK_BOARD } from "../shared/ipc-channels.js";
 import { hasUserKeyboardIntent } from "../shared/chat-origin.js";
+import { isWorkflowTemplateProposalId } from "../shared/workflow-template-types.js";
 import { hasTemplateKeys, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { resolveAuthorizedWorkspaceProject } from "../main/project-root-authorization.js";
 import type { ScheduleAttachmentInput, TemplateScope, WorkflowTemplateConfirmInput, WorkflowTemplateIpcResult } from "../shared/workflow-template-types.js";
@@ -16,6 +17,16 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
     if (scope.kind === "all") return true;
     const resolved = resolveAuthorizedWorkspaceProject(scope.projectRoot);
     return resolved.authorized && resolved.project !== null;
+  };
+  const loadProposal = (id: string) => {
+    requireTemplate(store, "template-not-found");
+    const proposal = store.getProposal(id);
+    const scope = proposal.draft.scope;
+    if (scope.kind === "project") {
+      const resolved = resolveAuthorizedWorkspaceProject(scope.projectRoot);
+      requireTemplate(resolved.authorized && resolved.project?.projectRoot === scope.projectRoot, "scope-not-authorised");
+    }
+    return proposal;
   };
   const load = async (id: unknown) => {
     requireTemplate(isTemplateId(id));
@@ -35,6 +46,10 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
     requireTemplate(args.length === 0); return (await store.list()).filter(t => authorizedScope(t.scope));
   });
   handle(WORK_BOARD.templateGet, async (_store, _event, id, ...args) => { requireTemplate(args.length === 0); return load(id); });
+  handle(WORK_BOARD.templateProposalGet, async (_store, _event, id, ...args) => {
+    requireTemplate(args.length === 0 && isWorkflowTemplateProposalId(id));
+    return loadProposal(id);
+  });
   handle(WORK_BOARD.templateDraft, async (store, _event, id, raw, ...args) => {
     requireTemplate(args.length === 0 && (id === null || isTemplateId(id)));
     const input = parseTemplateDraft(raw);
@@ -81,10 +96,14 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
   handle(WORK_BOARD.templateConfirm, async (store, event, id, raw, intent, ...args) => {
     requireTemplate(args.length === 0 && isTemplateId(id) && hasTemplateKeys(raw, ["expectedGraphHash", "expectedDraftRevision"]) && isGraphHash(raw.expectedGraphHash) && isTemplateId(raw.expectedDraftRevision));
     requireLocalGesture(event, intent, WORK_BOARD.templateConfirm);
-    const record = await load(id);
-    if (record.draft) requireTemplate(authorizedScope(record.draft.scope), "scope-not-authorised");
+    const proposalId = isWorkflowTemplateProposalId(id) ? id : undefined;
+    if (proposalId) loadProposal(proposalId);
+    else {
+      const { draft } = await load(id);
+      if (draft) requireTemplate(authorizedScope(draft.scope), "scope-not-authorised");
+    }
     const result = await store.confirmDraft(id, raw as unknown as WorkflowTemplateConfirmInput, { who: "user", origin: "local-desktop" });
-    deps.auditLogger.log({ timestamp: result.confirmedAt, sessionId: `work-board:${id}`, type: "approval", output: JSON.stringify({ event: "template_confirmed", templateId: id, version: result.version, graphHash: result.graphHash, origin: "local-desktop" }) });
+    deps.auditLogger.log({ timestamp: result.confirmedAt, sessionId: `work-board:${result.templateId}`, type: "approval", output: JSON.stringify({ event: "template_confirmed", proposalId, templateId: result.templateId, version: result.version, graphHash: result.graphHash, origin: "local-desktop" }) });
     return result;
   });
   handle(WORK_BOARD.templateArchive, async (store, _event, id, ...args) => { requireTemplate(args.length === 0); const record = await load(id); await store.archive(record.template.id); return null; });

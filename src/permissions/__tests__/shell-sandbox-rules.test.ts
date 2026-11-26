@@ -1,4 +1,5 @@
 import "../../__tests__/support/trusted-powershell.js";
+import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -180,8 +181,8 @@ describe("shell confinement and escape rules", () => {
     // Runtime confinement remains responsible for descendants not present in the command operands.
     { route: "the MXC container route", expected: { decision: "allow", reasonCode: "read-only-shell" },
       plan: () => buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: mxcShellCapability(), shellSubstrate: "mxc" }) },
-    // A host shell follows ordinary mode policy even when the command is read-only.
-    { route: "the approved-host route", expected: { decision: "ask", reasonCode: "shell-approval" },
+    // A shell the capability does not contain takes the no-confinement ask even when the command is read-only.
+    { route: "the approved-host route", expected: { decision: "ask", reasonCode: "sandbox-unavailable", forceModal: true },
       plan: () => buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: windowsProxyOnlyCapability() }) },
   ])("decides recursive link traversal without a visible sensitive path from $route", ({ plan, expected }) => {
     const clean = join(dir, "clean");
@@ -196,7 +197,7 @@ describe("shell confinement and escape rules", () => {
       shellExecution: { runsSandboxed: hostShellExecutionPlan.sandboxed },
     });
     expect(result).toMatchObject(expected);
-    expect(result.forceModal).toBeUndefined();
+    if (!("forceModal" in expected)) expect(result.forceModal).toBeUndefined();
   });
 
   describe("PowerShell on the MXC route", () => {
@@ -331,7 +332,8 @@ describe("shell confinement and escape rules", () => {
             ruleSubject: { kind: "shell", dialect: "powershell", command, cwd: dir },
             hostShellExecutionPlan,
             shellExecution: { runsSandboxed: hostShellExecutionPlan.sandboxed, pathPolicyRelaxations: [] },
-          }), command).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "project-escape" });
+            // On the approved-host route the no-confinement ask is the reported floor; the escape keeps its card once-only.
+          }), command).toMatchObject({ decision: "ask", forceModal: true, reasonCode: route === "approved host" ? "sandbox-unavailable" : "project-escape" });
         }
       }
     });
@@ -428,7 +430,8 @@ describe("plain-shell invocation authorization", () => {
     expect(check("printf later", true).decision).toBe("allow");
   });
 
-  it.each(["off", "unavailable"] as const)("uses a saved project prefix for host calls with the sandbox %s", async (sandboxState) => {
+  // Sandbox off is the person's choice and keeps saved rules; an unavailable sandbox is a forced ask that no saved rule answers.
+  it.each(["off", "unavailable"] as const)("applies a saved project prefix to host calls only with the sandbox off (%s)", async (sandboxState) => {
     manager.setMode("default");
     setShellSandboxRequestedAtBoot(sandboxState !== "off");
     setActiveSandboxCapability({ kind: "none", confidence: "verified", platform: process.platform, reason: "fixture sandbox unavailable" });
@@ -439,6 +442,11 @@ describe("plain-shell invocation authorization", () => {
     const { run, requests, input, send } = executorWithDock({ executionMode: "host" });
     input.command = "printf ready extra";
     expect((await run())[0]).toMatchObject({ content: "ready", executionPlan: { mode: "plain", executionRequest: "host", sandboxed: false } });
+    if (sandboxState === "unavailable") {
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.shellRule).toMatchObject({ exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true });
+      return;
+    }
     expect(requests).toEqual([]);
     expect(send).not.toHaveBeenCalledWith("ave:approval:request", expect.anything());
     input.command = "printf other";
@@ -460,24 +468,40 @@ describe("plain-shell invocation authorization", () => {
     expect(requests).toHaveLength(1);
   });
 
-  it("asks for an explicit host request while the sandbox is unavailable, until an exact rule approves it", async () => {
+  it("runs an explicit host request on its saved exact rule while the sandbox is unavailable and boot home privacy is verified", async () => {
+    __resetActiveSandboxCapabilityForTest();
+    setAveHomePrivacyAtBoot(process.platform === "win32" ? { enforcement: "win32-dacl", home: "C:\\Users\\alice\\.ave", sid: "S-1-5-21-1" } : { enforcement: "posix-mode", home: "/home/alice/.ave" });
+    try {
+      const { run, requests } = executorWithDock();
+      expect((await run())[0]).toMatchObject({ content: "ready" });
+      expect(requests).toHaveLength(1);
+      await manager.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "user" });
+      expect((await run())[0]).toMatchObject({ content: "ready" });
+      expect(requests).toHaveLength(1);
+    } finally {
+      _resetAveHomePrivacyForTest();
+    }
+  });
+
+  // No boot home privacy result is published in the two cases below, so the exact rule does not pass the ask.
+  it("asks for an explicit host request while the sandbox is unavailable, and again after an exact rule is saved", async () => {
     __resetActiveSandboxCapabilityForTest();
     const { run, requests } = executorWithDock();
     expect((await run())[0]).toMatchObject({ content: "ready" });
-    // The ordinary host card offers reusable command rules.
-    expect(requests[0]?.shellRule).toMatchObject({ exactRule: "Bash(printf ready)", sessionAllowed: true, persistentAllowed: true });
-    expect(requests[0]).not.toHaveProperty("shellExecution");
+    // The forced card offers no reusable command rule.
+    expect(requests[0]?.shellRule).toMatchObject({ exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true });
     await manager.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "user" });
     expect((await run())[0]).toMatchObject({ content: "ready" });
-    expect(requests).toHaveLength(1);
+    expect(requests).toHaveLength(2);
   });
 
-  it("uses an exact rule when the sandbox is unavailable", async () => {
+  it("does not run an explicit host request on an exact rule when the sandbox is unavailable", async () => {
     __resetActiveSandboxCapabilityForTest();
     manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     const { run, requests } = executorWithDock();
     expect((await run())[0]).toMatchObject({ content: "ready" });
-    expect(requests).toEqual([]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ allowedChoices: ["allow-once", "deny-once"] });
   });
 
   function lowReviewer() {
@@ -489,17 +513,17 @@ describe("plain-shell invocation authorization", () => {
     return { classifier, cache };
   }
 
-  it.each(["low", "high"] as const)("reviews an unavailable-sandbox host call before the %s outcome", async (level) => {
+  it.each(["low", "high"] as const)("asks for an unavailable-sandbox call without consulting a reviewer that would say %s", async (level) => {
     setActiveSandboxCapability({ kind: "none", confidence: "verified", platform: process.platform, reason: "fixture sandbox unavailable" });
     const { classifier, cache } = lowReviewer();
     classifier.classify.mockImplementation(async () => ({ level, reason: level === "high" ? "ambiguous host effect" : "bounded host effect" }));
     try {
       const { run, requests } = executorWithDock({ executionMode: "sandbox" });
       expect((await run())[0]).toMatchObject({ content: "ready" });
-      expect(classifier.classify).toHaveBeenCalledOnce();
-      expect(requests).toHaveLength(level === "high" ? 1 : 0);
-      expect(requests.every((request) => request.executionPlan?.mode === "plain")).toBe(true);
-      expect(requests.every((request) => request.allowedChoices === undefined)).toBe(true);
+      expect(classifier.classify).not.toHaveBeenCalled();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ allowedChoices: ["allow-once", "deny-once"],
+        executionPlan: { mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true } });
     } finally { await cache.flush(); }
   });
 

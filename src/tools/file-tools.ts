@@ -42,7 +42,7 @@ import { PATCH_ENVELOPE_PATH_FIELD_SUFFIX } from "../shared/dotted-field-value.j
 import { globToRegExp } from "../lib/glob-matcher.js";
 import { writeDiffSidecar } from "./write-diff-cache.js";
 import { createLogger } from "../lib/logger.js";
-import { admissionDeniedFilePattern, ensureFileAccess, sensitiveFilePattern } from "./file-access-policy.js";
+import { admissionDeniedFilePattern, createStageWorkspacesSkip, ensureFileAccess, sensitiveFilePattern } from "./file-access-policy.js";
 import {
   GREP_FILES_DESCRIPTION,
   GrepFilesInputSchema,
@@ -1922,7 +1922,7 @@ async function listEntries(
     }
     const entries: ListedEntry[] = [];
     const state = newWalkState();
-    await walk(root, root, depth, limit, entries, { filesOnly: false, secretRoot: sensitiveFilePattern(root) !== null }, state);
+    await walk(root, root, depth, limit, entries, { filesOnly: false, secretRoot: sensitiveFilePattern(root) !== null, skip: createStageWorkspacesSkip(root) }, state);
     const truncated = entries.length >= limit || state.truncated;
     return { ok: true, value: { entries, truncated, skippedUnreadable: state.skipped } };
   } catch (err) {
@@ -1950,7 +1950,7 @@ export async function collectFiles(
         mtimeMs: rootStat.mtimeMs,
       });
     } else if (rootStat.isDirectory()) {
-      await walk(root, root, MAX_LIST_DEPTH, limit, files, { filesOnly: true, secretRoot: sensitiveFilePattern(root) !== null }, state);
+      await walk(root, root, MAX_LIST_DEPTH, limit, files, { filesOnly: true, secretRoot: sensitiveFilePattern(root) !== null, skip: createStageWorkspacesSkip(root) }, state);
     } else {
       return { ok: false, error: toolError(`file search requires a file or directory: ${root}`) };
     }
@@ -2001,7 +2001,7 @@ async function walk(
   remainingDepth: number,
   limit: number,
   output: ListedEntry[],
-  opts: { filesOnly: boolean; secretRoot: boolean },
+  opts: { filesOnly: boolean; secretRoot: boolean; skip: (path: string) => boolean },
   state: WalkState,
 ): Promise<void> {
   if (output.length >= limit || remainingDepth < 1 || state.truncated) return;
@@ -2021,7 +2021,7 @@ async function walk(
       return;
     }
     const full = join(current, dirent.name);
-    if (admissionDeniedFilePattern(full) || (!opts.secretRoot && sensitiveFilePattern(full))) {
+    if (admissionDeniedFilePattern(full) || (!opts.secretRoot && sensitiveFilePattern(full)) || opts.skip(full)) {
       continue;
     }
     const rel = normalizeRelativePath(relative(root, full));

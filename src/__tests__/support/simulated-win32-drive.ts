@@ -3,6 +3,7 @@ import type * as Fs from "node:fs";
 import type * as Module from "node:module";
 import type * as Os from "node:os";
 import type * as Path from "node:path";
+import type * as RuntimeRoot from "../../permissions/mxc-runtime-root.js";
 import type * as SandboxProcessHome from "../../permissions/sandbox-process-home.js";
 import type * as StampTargets from "../../permissions/windows-stamp-targets.js";
 import type * as ConfigurationHandles from "../../shared/windows-configuration-handles.js";
@@ -82,6 +83,18 @@ export async function simulatedSandboxProcessHome(actual: typeof SandboxProcessH
   return { ...actual, createSandboxProcessHome };
 }
 
+/** The cache home of the runtime root a simulated win32 process denies: the run directory is spelled by this kernel, and no Windows path names it. */
+export const SIMULATED_MXC_CACHE_HOME = "C:\\runtime-cache";
+
+/** While win32 is simulated, the runtime root's floor row is on the simulated drive, and that root is the proved one a
+ * container start requires. An explicit cache home is passed through. */
+export function simulatedRuntimeRoot(actual: typeof RuntimeRoot, nativeHost = host): typeof RuntimeRoot {
+  if (nativeHost === "win32") return actual;
+  const mxcRuntimeRootFloorPath: typeof actual.mxcRuntimeRootFloorPath = (cacheHome, platform = process.platform) =>
+    actual.mxcRuntimeRootFloorPath(cacheHome ?? (platform === "win32" ? SIMULATED_MXC_CACHE_HOME : undefined), platform);
+  return { ...actual, mxcRuntimeRootFloorPath, requireMxcContainerStartRoot: () => mxcRuntimeRootFloorPath(SIMULATED_MXC_CACHE_HOME, "win32") };
+}
+
 /** Drive-path arguments use win32 path operations while the simulated platform is win32. */
 export function simulatedDrivePath(actual: typeof Path): typeof Path {
   return { ...actual, ...Object.fromEntries(Object.entries(actual.win32)
@@ -106,12 +119,15 @@ export function simulatedDriveFs(actual: typeof Fs) {
   return { ...configurationFs, default: { ...configurationFs, realpathSync }, realpathSync };
 }
 
-/** ASRT's package, and so its vendored srt-win, resolves on the simulated drive; no real checkout path becomes a stamp target. */
-export function simulatedDriveModule(actual: typeof Module) {
+/**
+ * ASRT's package, and so its vendored srt-win, resolves on the simulated drive; no real checkout path becomes a stamp target.
+ * `onDrive` says when the simulated drive spells paths: by default a simulated win32 process, or whenever a fixture switches the path module to win32.
+ */
+export function simulatedDriveModule(actual: typeof Module, onDrive: () => boolean = () => process.platform === "win32") {
   if (host === "win32") return actual;
   const createRequire = (...args: Parameters<typeof actual.createRequire>) => {
     const real = actual.createRequire(...args);
-    const resolve = Object.assign((id: string, options?: { paths?: string[] }) => process.platform === "win32" && id === "@anthropic-ai/sandbox-runtime/package.json"
+    const resolve = Object.assign((id: string, options?: { paths?: string[] }) => onDrive() && id === "@anthropic-ai/sandbox-runtime/package.json"
       ? String.raw`C:\ave\node_modules\@anthropic-ai\sandbox-runtime\package.json` : real.resolve(id, options), { paths: real.resolve.paths });
     return Object.assign((id: string) => real(id), real, { resolve });
   };

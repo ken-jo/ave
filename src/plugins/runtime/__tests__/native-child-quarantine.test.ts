@@ -3,12 +3,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../../../i18n/runtime.js";
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 as winPath } from "node:path";
 import { PassThrough } from "node:stream";
 import { makeTestPluginRuntime, servedAgentPluginsDocument } from "../../__tests__/test-helpers.js";
 import { admittedMxcChild, nativePluginLaunch } from "../../../__tests__/support/mxc-plugin-launch.js";
+import { mxcStagingParentFor } from "../../../__tests__/support/mxc-staging-parent.js";
+import * as runtimeRoot from "../../../permissions/mxc-runtime-root.js";
 import { MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
 import { createOutOfProcessPluginFactory } from "../../isolation/out-of-process-plugin.js";
 import { consumePluginChildInput } from "../../../__tests__/support/plugin-child-input.js";
@@ -18,15 +20,35 @@ import { MxcProcessContractError } from "../../../permissions/mxc-extension-erro
 import { pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../../isolation/out-of-process-plugin.js";
 import { nativePluginChildFactoryBudgetMs, TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import type { PluginRuntime } from "../../runtime.js";
+import type { MxcConfinedChildSpec } from "../../../permissions/confined-child.js";
+import { planWindowsExtensionHolder } from "../../../permissions/mxc-extension-readiness.js";
+import { registerMxcReleaseGateEvidence } from "../../../permissions/mxc-extension-admission.js";
+import { MXC_RELEASE_GATE_EVIDENCE } from "../../../__tests__/support/mxc-supervisor.js";
+import { windowsCommandLine } from "../../../shared/windows-command-line.js";
 
 /** Produces the owned process row-2 admission would return; the mock below wraps it as the admitted holder. */
 const spawnNativeChild = vi.hoisted(() => vi.fn());
+// A staging parent of this suite's own: the runtime root's is shared by every suite of a run.
+vi.mock("../../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/mxc-runtime-root.js")>(),
+  mxcStagingParent: (await import("../../../__tests__/support/mxc-staging-parent.js")).mxcStagingParentFor(),
+}));
 vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../permissions/confined-child.js")>(),
   spawnMxcConfinedChild: async (spec: unknown) => admittedMxcChild(await spawnNativeChild(spec)),
+  spawnConfinedChild: () => accountRoute(),
+}));
+vi.mock("../../../permissions/workspace-authorized-roots.js", () => ({ listAuthorizedWorkspaceRoots: () => [] }));
+const accountRoute = vi.hoisted(() => vi.fn(() => { throw new Error("account route reached"); }));
+const backendPlan = vi.hoisted(() => ({ current: undefined as unknown }));
+vi.mock("../../../permissions/sandbox-capability.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/sandbox-capability.js")>(),
+  getWindowsExtensionBackendPlan: () => backendPlan.current,
 }));
 
 const PLUGIN_ID = "nativequarantine";
+/** The parent the launches below are built from; the mock above installs another instance of the same choice. */
+const stagingParent = mxcStagingParentFor();
 
 /** One owned native process served by the real child runtime. Disposal settles when the test says, or,
  * with `disposeAfterMs`, verifies termination after that long. */
@@ -72,7 +94,7 @@ function routeNative(runtime: PluginRuntime, release: () => void, admitted: () =
         launch: { kind: "entry", entryPath: source.resolvedEntryPath },
         registerSandboxEnvelope: (paths, pluginRoot, pluginDataDir) =>
           routing.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
-        prepareMxcChild: async () => (await admitted(), nativePluginLaunch({ release })),
+        prepareMxcChild: async () => (await admitted(), nativePluginLaunch({ release }, stagingParent())),
       });
     return { arm: "child", createPlugin };
   });
@@ -82,6 +104,7 @@ describe("native plugin child quarantine through the runtime", () => {
   let testDir: string;
   let installedDir: string;
   let registryPath: string;
+  let unregisterReleaseGate: (() => void) | undefined;
 
   beforeEach(async () => {
     testDir = mkdtempSync(join(tmpdir(), "ave-native-quarantine-"));
@@ -90,8 +113,15 @@ describe("native plugin child quarantine through the runtime", () => {
   });
 
   afterEach(async () => {
+    backendPlan.current = undefined;
+    unregisterReleaseGate?.();
+    unregisterReleaseGate = undefined;
     vi.restoreAllMocks();
     await rm(testDir, { recursive: true, force: true });
+  });
+
+  it("checks production's win32 staging request against the parent its launches are built from", () => {
+    expect((runtimeRoot.mxcStagingParent as (...args: unknown[]) => string)("win32")).toBe(stagingParent());
   });
 
   async function installPlugin(entry: string): Promise<void> {
@@ -171,6 +201,68 @@ describe("native plugin child quarantine through the runtime", () => {
   const PONG = `export default async function createPlugin() {
   return { handlers: { native_quarantine_ping: async () => "pong" } };
 }`;
+
+  // The production wiring, with no routed factory: real executable and staging checks, so Windows only.
+  describe.skipIf(process.platform !== "win32")("the production provider under a selected container plan", () => {
+    const selectContainerPlan = (): void => {
+      backendPlan.current = planWindowsExtensionHolder({ requested: true, mxc: { state: "available" }, fallback: { version: "0.0.80", ready: false } });
+      accountRoute.mockClear();
+    };
+
+    it("refuses the start while no release-gate evidence is registered, and runs it on no other route", async () => {
+      selectContainerPlan();
+      await installPlugin(PONG);
+      spawnNativeChild.mockReset();
+      const runtime = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: installedDir });
+      await runtime.startAll();
+      expect(runtime.listPluginCards().find((entry) => entry.id === PLUGIN_ID)?.loadStatus).toBe("failed");
+      expect(readdirSync(stagingParent())).toEqual([]);
+      expect(spawnNativeChild).not.toHaveBeenCalled();
+      expect(accountRoute).not.toHaveBeenCalled();
+      // The missing record was the only refusal: the same wiring starts the child once one is registered.
+      unregisterReleaseGate = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
+      spawnNativeChild.mockResolvedValue(ownedChild(0).owned);
+      await runtime.addPlugin(PLUGIN_ID);
+      await expect(runtime.call("native_quarantine_ping")).resolves.toBe("pong");
+      expect(spawnNativeChild).toHaveBeenCalledOnce();
+      expect(accountRoute).not.toHaveBeenCalled();
+      await runtime.stopAll();
+    });
+
+    it("starts the child through row 2 with a staging HOME/temp, the captured ownership and its own request check", async () => {
+      selectContainerPlan();
+      await installPlugin(PONG);
+      unregisterReleaseGate = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
+      const child = ownedChild(0);
+      spawnNativeChild.mockReset().mockResolvedValue(child.owned);
+      const runtime = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: installedDir });
+      await runtime.startAll();
+      await expect(runtime.call("native_quarantine_ping")).resolves.toBe("pong");
+      expect(spawnNativeChild).toHaveBeenCalledOnce();
+      const spec = spawnNativeChild.mock.lastCall?.[0] as MxcConfinedChildSpec;
+      const staging = winPath.dirname(spec.home);
+      expect(winPath.dirname(staging)).toBe(stagingParent());
+      expect(winPath.basename(staging)).toMatch(/^[0-9a-f]{32}$/u);
+      expect(spec.temp).toBe(winPath.join(staging, "temp"));
+      expect(existsSync(spec.home) && existsSync(spec.temp)).toBe(true);
+      expect(spec.command).toBe(process.execPath);
+      expect(spec.filesystemOwnership.readRoots).toEqual([spec.cwd]);
+      expect(spec.filesystemOwnership.writeRoots).toEqual(spec.allowWrite);
+      expect(spec.allowWrite?.at(-1)).toBe(staging);
+      // Host-only storage beside the data directory (the first envelope write root) is named, so row 2 keeps it denied.
+      expect(spec.filesystemOwnership.hostStorageRoots).toEqual([winPath.join(winPath.dirname(spec.allowWrite?.[0] ?? ""), "storage")]);
+      expect(spec.egressOwner).toEqual({ kind: "worker", role: "plugin-child", pluginId: PLUGIN_ID });
+      expect(spec.floorPierces).toEqual([]);
+      expect(spec).not.toHaveProperty("probe");
+      expect(spec.assertRequest).toBeTypeOf("function");
+      expect(() => spec.assertRequest?.({ command: windowsCommandLine(spec.command, spec.args), workingDirectory: spec.cwd } as never)).not.toThrow();
+      expect(() => spec.assertRequest?.({ command: windowsCommandLine(spec.command, spec.args), workingDirectory: winPath.dirname(spec.cwd) } as never))
+        .toThrow(/^Admitted plugin request does not/u);
+      expect(accountRoute).not.toHaveBeenCalled();
+      await runtime.stopAll();
+      await vi.waitFor(() => expect(existsSync(staging)).toBe(false));
+    });
+  });
 
   it("restarts a healthy native child: verified exit releases its record and the next restart starts", async () => {
     await installPlugin(PONG);

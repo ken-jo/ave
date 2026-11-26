@@ -33,7 +33,7 @@ function surfaceFallback() {
   const answer = deferred<ApprovalDecision>();
   const asked = deferred<void>();
   const quit = new AbortController();
-  const manager = { recheckPermission: () => ask, setUserOwnedSurfaceChoice: () => {}, getPolicyEpoch: () => "epoch" };
+  const manager = { recheckPermission: () => ask, setUserOwnedSurfaceChoice: () => {}, getPolicyEpoch: () => "epoch", getPolicyContextEpoch: () => "epoch" };
   const gate = {
     consumeUserOwnedSurfaceChoice: () => "auto",
     requestAndWait: () => { asked.resolve(); return answer.promise; },
@@ -44,7 +44,7 @@ function surfaceFallback() {
     gate: gate as unknown as ApprovalGate,
     permission: ask,
     decision: { requestId: "surface-card", choice: "allow-once" },
-    request: { id: "surface-card", userOwnedSurface: "browser", abortSignal: quit.signal } as never,
+    request: { id: "surface-card", toolName: "probe", userOwnedSurface: "browser", abortSignal: quit.signal } as never,
     sessionId: "surface-session",
     review: async (permission) => permission,
   });

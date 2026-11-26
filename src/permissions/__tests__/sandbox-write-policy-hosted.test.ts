@@ -78,7 +78,8 @@ vi.mock("../windows-stamp-targets.js", async original => {
   } };
 });
 vi.mock("node:module", async original =>
-  (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original()));
+  // The drive fixture switches every path call to win32, so a POSIX checkout path would be a rootless native spelling: the package resolves on the drive.
+  (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original(), () => driveFixture.enabled));
 vi.mock("../../shared/windows-configuration-handles.js", async original =>
   (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original(), driveFixture.nativeHost));
 vi.mock("../../shared/windows-path-facts.js", async original => {
@@ -106,7 +107,7 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js", async ori
     ? paths.win32.normalize(path) : Reflect.apply(actual.normalizePathForSandbox, undefined, [path, ...args]) };
 });
 
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -116,11 +117,13 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { buildPerCommandSandboxCustomConfig, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
+import { resetWatchedRows, watchedProtectedRows } from "../windows-watched-rows.js";
 
 const hostPlatform = process.platform;
 
 describe("hosted write policy spellings", () => {
   afterEach(() => {
+    resetWatchedRows();
     driveFixture.enabled = false;
     setProcessPlatform(hostPlatform);
     vi.restoreAllMocks();
@@ -166,10 +169,12 @@ describe("hosted write policy spellings", () => {
     { platform: "darwin", prefix: "native-temp" },
     { platform: "win32", prefix: "hosted" },
   ] as const)("keeps long native drive roots within the $platform policy budget under $prefix without reopening the floor", ({ platform, prefix }) => {
-    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     driveFixture.backing = realpathSync(mkdtempSync(join(os.tmpdir(), "wp-")));
     if (hostPlatform !== "win32") mkdirSync(join(driveFixture.backing, "other-drives", "C"), { recursive: true });
     driveFixture.enabled = hostPlatform !== "win32";
+    // Host resources are a native checkout, as they are on a Windows host. Under the drive fixture a POSIX checkout path would be a rootless
+    // native spelling that the policy re-roots under the mocked cwd, a row no real darwin or Windows policy carries.
+    configureHostResources({ resourcePath: hostPlatform === "win32" ? resolve("resources") : String.raw`C:\ave\resources`, isPackaged: false });
     setProcessPlatform(platform);
     const tempSegments = prefix === "native-temp" ? [".ave-test-tmp"] : ["a", "_temp"];
     const rootPrefix = hostPlatform === "win32"
@@ -200,6 +205,12 @@ describe("hosted write policy spellings", () => {
     const ordinaryRoots = [workRoot, ...[".ave/plugins/p/data", ".ave/mcp/s/sandbox", "temp/owned"]
       .map(path => join(root, ...path.split("/"))), literalRoot, interveningGrant];
     for (const path of [...protectedRoots, ...ordinaryRoots]) mkdirSync(path, { recursive: true });
+    if (platform === "win32") {
+      // Windows never stamps an absent row (the native stamp would create it), so the floor rows checked here exist.
+      for (const path of [...protectedRoots, ...ordinaryRoots]) writeFileSync(join(path, ".bash_profile"), "");
+      mkdirSync(join(literalRoot, ".vscode"));
+      writeFileSync(deniedChild, "");
+    }
     mkdirSync(join(root, "pattern-files", "key"), { recursive: true });
     const linkedControl = join(root, ".config", "linked-control");
     const externalControl = join(root, "external-control");
@@ -231,14 +242,26 @@ describe("hosted write policy spellings", () => {
     if (platform === "darwin") {
       expect(writeDenies).toContain(join(root, ".ave", "diff-cache"));
       for (const path of nonCoveringDenies) expect(writeDenies).toContain(path);
+      // The host's own scripts and the vendored broker stay denied, each by its one native spelling.
+      if (hostPlatform !== "win32") {
+        for (const path of [String.raw`C:\ave\dist\skill-scripts`, String.raw`C:\ave\node_modules\@anthropic-ai\sandbox-runtime\vendor\srt-win`]) {
+          expect(writeDenies).toContain(path);
+        }
+      }
+      // No row is a host path re-rooted under the fixture's cwd.
+      for (const entry of writeDenies ?? []) expect((typeof entry === "string" ? entry : entry.path).split("hosted-checkout-").length).toBeLessThanOrEqual(2);
+      // These are the rows the POSIX budget (sandbox-write-policy.ts) counts. A fit by a few bytes fails on a longer checkout or the next floor name,
+      // so the longest supported root keeps 512 bytes of headroom.
+      expect(Buffer.byteLength(JSON.stringify(filesystem?.denyWrite))).toBeLessThanOrEqual(65_536 - 512);
     }
     expect(writeDenies).toContainEqual({ path: join(literalRoot, ".vscode"), literal: true });
     if (platform === "win32") {
-      expect(Buffer.byteLength(JSON.stringify(filesystem?.denyWrite))).toBeGreaterThan(65_536);
+      // Absent floor rows are watched, not stamped, so the native operand stays small; the raw floor below still exceeds the budget.
+      expect(Buffer.byteLength(JSON.stringify(filesystem?.denyWrite))).toBeLessThan(65_536);
       expect(realpathSync.native(workRoot)).toBe(join(root, "MiXeD", "work"));
       expect(writeDenies).toContain(join(root, "MiXeD", "work", ".bash_profile"));
       expect(writeDenies).toContain(deniedChild);
-      // The native expander retains the spelling of an absent literal.
+      // The native expander retains the spelling of a literal.
       // Check the actual operand before mapping it to the simulated drive's backing directory.
       expect(filesystem?.denyWrite).toContain(deniedChild);
       const denyWrite = expandWindowsFsPaths((filesystem?.denyWrite ?? []).map(entry =>
@@ -265,7 +288,10 @@ describe("hosted write policy spellings", () => {
       for (const target of [...mandatoryTargets, ...protectedDenies, ...nonCoveringDenies.filter(path => !path.includes("*")), externalControl]) {
         const physical = driveFixture.toHost(target);
         if (currentGrants.some(grant => atOrUnder(grant, physical))) {
-          expect(ranked.denyWrite.some(deny => atOrUnder(deny, physical)), target).toBe(true);
+          const denied = ranked.denyWrite.some(deny => atOrUnder(deny, physical));
+          // A reached row that is absent is watched, never stamped into existence.
+          const watched = !existsSync(physical) && watchedProtectedRows().some(row => atOrUnder(driveFixture.toHost(row), physical));
+          expect(denied || watched, target).toBe(true);
         } else {
           expect(ranked.grantWrite.some(grant => atOrUnder(grant, physical)), target).toBe(false);
         }

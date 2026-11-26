@@ -824,10 +824,43 @@ each admitted write root, taking precedence over grants:
 - `.vscode/**`;
 - `.envrc`, `.mise.toml`, `mise.toml`, `.tool-versions`, `.npmrc`, `.yarnrc.yml`,
   `bunfig.toml` and `.husky/**`;
+- all of `.agents`, which holds the skills, commands and plugins agent hosts
+  load, and `.ave/commands` and `.ave/hooks`, which Ave loads. Other agents'
+  folders such as `.claude` and `.codex` are not on this floor, and the file
+  tools do not ask about them: each host protects its own (owner decision
+  2026-11-25). On Linux these are entries beneath each write root. On macOS
+  rules appended to the Seatbelt profile, anchored at the write roots, deny the
+  same entries, and also refuse to create, remove or rename `.ave` directly
+  beneath a root, so its parts cannot be moved out from under their names. The
+  Windows floor does not carry these entries yet;
 - configured `core.hooksPath` directories, including absent targets and their
   physical symlink targets;
 - Ave settings, permission settings, rules, policies and approval grants, with
   paths derived from their owning stores rather than copied filenames.
+
+Links and this floor. A protected entry that is a link, or is reached through
+links, is held where it resolves. On macOS every name the resolution of
+`.agents`, `.ave/commands` or `.ave/hooks` looks up, whether a link, a real
+folder, a folder a `..` climbs out of or the first absent name, can be neither
+created, removed nor renamed, so the entry cannot be made to resolve somewhere
+new while the command runs. The target becomes read-only to confined shells whatever it is:
+`.agents -> .claude` makes `.claude` read-only to them. When such a link
+resolves to a work folder or to a folder that holds one, the wrap is refused
+with a named reason, because denying the target would deny the work folder.
+
+Known limit, for every entry on this floor on every platform (`.vscode`,
+`.git/hooks`, the Linux rows and the macOS rules alike): a deny names a path,
+so a link *inside* a protected folder that leads out of it, such as
+`.agents/skills -> ../.claude/skills` or a file link under `.ave/commands`,
+leaves its target writable at the target's own path. The link itself cannot be
+changed, and the host loads whatever the target then holds.
+
+On macOS two more denies sit outside the write roots' own entries. A directory
+named `srt-sock-*` (the sandbox runtime's proxy socket directory under the host
+temp directory) is write-denied wherever it appears, by an appended rule. When a write root holds the
+Ave home or one of the confined processes' private roots, writes to that directory
+are denied except under the wrap's own write roots inside it. Linux masks both
+with a mount.
 
 The Windows MXC PowerShell container receives the same denies from the same
 policy builder: an existing protected entry inside a write grant becomes
@@ -921,6 +954,7 @@ be created during execution and is quarantined after confirmed exit:
 | `worktrees/*/config.worktree`, `worktrees/*/commondir`, `worktrees/*/gitdir` | Protected linked-worktree configuration and discovery. |
 | `commondir`, `gitdir` and a checkout's regular `.git` pointer file | Protected routing entries, including already resolved control targets. |
 | `objects/info/alternates`, `objects/info/http-alternates` | Protected object-store paths and alternate URLs. |
+| `worktrees/*/ave.id`, `ave-pins` | Protected anchors and pins by which a template run holds its worktree registrations. |
 | `remotes/**`, `branches/**` | Protected legacy remote URL and refspec definitions; these are configuration-equivalent routing inputs. |
 | `info/attributes` | Linux protects this control; macOS retains writable attributes as described below. |
 | `objects/**`, `refs/**`, `index`, `HEAD`, `logs/**`, `COMMIT_EDITMSG` | Writable subject to the control-path exceptions. |
@@ -1579,7 +1613,43 @@ check; directory rename/replacement after the host check remains a limitation
 on that platform. Their final policy validation and native spawn share the same
 serial queue.
 
-A sandbox requested but unavailable carries `fallbackReason: "requested-sandbox-unavailable"` and `sandboxed: false` in its host execution plan. The card, model environment and tool result disclose the missing isolation. Explicit environment activation failures retain the startup refusal described above. When a plain host route is available, it uses the decision tree's host-shell mode/human path; ordinary approval may offer prefix rules. Protected floors and host credential-store admission denial remain authoritative. Plan issuance, approval and execution permits must describe the same exact route.
+A sandbox requested but unavailable carries `fallbackReason: "requested-sandbox-unavailable"`
+and `sandboxed: false` in its host execution plan. The card, model environment
+and tool result disclose the missing isolation. Explicit environment activation
+failures retain the startup refusal described above. Every shell and hook
+command on this plan takes the `sandbox-unavailable` forced ask on every OS:
+the person approves it once or waives this sandbox ask for the conversation,
+after which rules and mode decide later shells without a reviewer, and an
+ordinary ask keeps this card; nothing is
+saved; saved prefix rules, allow mode and auto review do not stand in for the
+answer; a headless run denies. One saved rule passes the ask (owner decision
+2026-11-25): a saved user or project rule that is exactly the command, when the
+missing backend is the only forced reason for that command and boot verified
+Ave home privacy. The pass saves nothing, holds no grant, and its audit reason
+names the rule. With home privacy unverified or unpublished at boot, or with a
+second forced reason, the command asks as before. Deny rules and the other protected floors keep their
+place in the decision order, and host credential-store admission denial remains
+authoritative. Such a shell spawns only on the one-shot permit minted from that
+answer; `run_in_background` runs it in the foreground and a timeout does not
+move it to the background. An explicit `executionMode: "host"` request on such
+a host takes the same forced ask, and the conversation's waiver covers it; with
+a backend ready it keeps the host-shell mode/human path. Plan
+issuance, approval and execution permits must describe the same exact route.
+
+#### Hosts with no usable sandbox backend
+
+A host is on the unavailable plan when the sandbox is turned on and its start
+fails or its requirements are not met. The requirements per OS:
+
+| OS | Needed for a sandbox backend | Notice hint |
+|---|---|---|
+| Windows | The container launcher reports the base container tier, the dry run of the shipped request validates and the start check passes. A host is on this plan when neither the container nor the ASRT start is available, or a proxy-only start fails; ASRT without a container is the explicit host approval route instead. | none |
+| macOS | The profile-based backend starts and passes its runtime check. The container backend, once it ships, needs macOS 15 or later on arm64. | none |
+| Linux | bubblewrap, socat and ripgrep installed, and the backend passes its runtime check. The container backend, once it ships, also needs unprivileged user and network namespaces, slirp4netns, unshare, nsenter, ip and iptables, with proxy enforcement reported as supported. | names the missing package among bubblewrap, socat and ripgrep |
+
+The notice on the card and in the model environment says the sandbox is
+unavailable and, where a missing package is the cause, what to install; the
+sandbox returns after the install and a restart.
 
 Inside a live operator-attested disposable one-shot, `executionMode: "host"`
 means the strongest shell authority reachable by that process, which is still

@@ -61,6 +61,12 @@ describe("systemGitCandidates", () => {
       "D:\\First\\git.exe", "D:\\Tools;Git\\cmd\\git.exe", "D:\\Last\\git.exe", "C:\\Program Files\\Git\\cmd\\git.exe",
     ]);
   });
+
+  it("never takes an empty or relative POSIX PATH entry, which would be read against the folder a call runs in", async () => {
+    const { systemGitCandidates } = await import("../host-git-executable.js");
+    expect(systemGitCandidates("linux", ":.:./bin:bin:/usr/local/bin:")).toEqual(["/usr/local/bin/git", "/usr/bin/git"]);
+    expect(systemGitCandidates("darwin", ".::/opt/git/bin")).toEqual(["/opt/git/bin/git", "/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"]);
+  });
 });
 
 describe("resolveHostGit", () => {
@@ -81,10 +87,10 @@ describe("resolveHostGit", () => {
 
   it("caches the selected executable, skipping a directory named like the binary", async () => {
     const other = join(root, "other-bin");
-    vi.stubEnv("PATH", [other, host].join(delimiter));
-    vi.mocked(statSync)
-      .mockReturnValueOnce({ isFile: () => false } as ReturnType<typeof statSync>)
-      .mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
+    const searchPath = [other, host].join(delimiter);
+    vi.stubEnv("PATH", searchPath);
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(statSync).mockImplementation((path) => ({ isFile: () => path === join(host, binary) }) as ReturnType<typeof statSync>);
     const { resolveHostGit } = await import("../host-git-executable.js");
 
     expect(resolveHostGit({ packaged: false })?.path).toBe(join(host, binary));
@@ -92,6 +98,9 @@ describe("resolveHostGit", () => {
     expect(resolveHostGit({ packaged: false })?.path).toBe(join(host, binary));
     expect(vi.mocked(accessSync).mock.calls.map(([path]) => path)).toEqual([join(other, binary), join(host, binary), join(host, binary), join(host, binary)]);
     expect(execFileSync).toHaveBeenCalledExactlyOnceWith(join(host, binary), ["--no-lazy-fetch", "--version"], expect.anything());
+    const runnerGate = new URL("../../../.github/scripts/require-validated-git.mjs", import.meta.url);
+    const { firstPathGit } = await import(runnerGate.href) as { firstPathGit(searchPath: string): string | null };
+    expect(firstPathGit(searchPath)).toBe(join(host, binary));
   });
 
   it("ignores relative and empty PATH entries and discovers an executable after a miss", async () => {
@@ -176,6 +185,36 @@ describe("resolveHostGit", () => {
     }
   });
 
+  it("changes executable identity after a same-size overwrite with the original mtime restored", async () => {
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const { executableIdentitySync } = await import("../host-git-executable.js");
+    const fixture = mkdtempSync(join(tmpdir(), "ave-overwritten-git-"));
+    const path = join(fixture, binary);
+    const timestamp = new Date("2020-01-01T00:00:00Z");
+    try {
+      vi.mocked(statSync).mockImplementation((file) => fs.statSync(file, { bigint: true }));
+      writeFileSync(path, "original", { mode: 0o755 });
+      fs.utimesSync(path, timestamp, timestamp);
+      const before = fs.statSync(path, { bigint: true });
+      const identity = executableIdentitySync(path);
+      expect(identity).not.toBeNull();
+
+      // Retry if the filesystem records both writes in the same clock tick.
+      await vi.waitFor(() => {
+        writeFileSync(path, "modified");
+        fs.utimesSync(path, timestamp, timestamp);
+        expect(fs.statSync(path, { bigint: true }).ctimeNs).not.toBe(before.ctimeNs);
+      });
+      const after = fs.statSync(path, { bigint: true });
+      expect(after).toMatchObject({ dev: before.dev, ino: before.ino, size: before.size, mtimeNs: before.mtimeNs });
+      const overwrittenIdentity = executableIdentitySync(path);
+      expect(overwrittenIdentity).not.toBeNull();
+      expect(overwrittenIdentity).not.toBe(identity);
+    } finally {
+      await cleanupTmpDir(fixture);
+    }
+  });
+
   it("advances to the next candidate when a probe's stdout stays open past the deadline", async () => {
     const { discoverHostGitAsync } = await import("../host-git-executable.js");
     const { TOOL_TIMEOUT_POLICY } = await import("../tool-timeout-policy.js");
@@ -184,11 +223,17 @@ describe("resolveHostGit", () => {
     vi.stubEnv("PATH", [held, host].join(delimiter));
     vi.mocked(statSync).mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
     const heldChild = gitProbeChild(() => {});
-    vi.mocked(spawn).mockImplementationOnce(() => heldChild)
-      .mockImplementationOnce(() => gitProbeChild((complete) => complete("git version 2.56.0")));
+    const heldSpawned = deferred<void>();
+    vi.mocked(spawn).mockImplementationOnce(() => {
+      heldSpawned.resolve();
+      return heldChild;
+    }).mockImplementationOnce(() => gitProbeChild((complete) => complete("git version 2.56.0")));
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       const discovery = discoverHostGitAsync(null);
+      // Candidate checks before the spawn may need real I/O (darwin compares each candidate with the /usr/bin/git shim
+      // through realpath), so advance the clock only once the probe deadline is armed.
+      await heldSpawned.promise;
       await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.projectGitQueryMs);
       await expect(discovery).resolves.toMatchObject({ git: { path: selected } });
       expect(vi.mocked(spawn).mock.calls.map(([file]) => file)).toEqual([join(held, binary), selected]);
@@ -197,6 +242,31 @@ describe("resolveHostGit", () => {
       vi.useRealTimers();
     }
   }, 5_000);
+
+  it("stops discovery when a check finishes after the deadline, before the next check starts", async () => {
+    const { withHostGitRecovery } = await import("../host-git-executable.js");
+    vi.stubEnv("PATH", host);
+    vi.mocked(statSync).mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
+    let now = 1_000;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const deadline = now + 5_000;
+    let statsAtProbe = -1;
+    vi.mocked(spawn).mockImplementation(() => gitProbeChild((complete) => {
+      statsAtProbe = vi.mocked(statSync).mock.calls.length;
+      now = deadline + 1;
+      complete("git version 2.56.0");
+    }));
+    const use = vi.fn(async () => "used");
+    try {
+      await expect(withHostGitRecovery(null, use, deadline)).rejects.toMatchObject({ name: "TimeoutError", message: "Git discovery timed out" });
+      expect(spawn).toHaveBeenCalledOnce();
+      // The identity recheck that follows the probe never starts.
+      expect(vi.mocked(statSync).mock.calls.length).toBe(statsAtProbe);
+      expect(use).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
 
   it.each([false, true])("rechecks identity across an awaited probe (second replacement: %s)", async (replaceAgain) => {
     const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -278,6 +348,29 @@ describe("resolveHostGit", () => {
     }
   });
 
+  it("uses system Git when the bundle fails qualification and keeps the bundle for ordinary discovery", async () => {
+    const { discoverHostGitAsync, withHostGitRecovery } = await import("../host-git-executable.js");
+    const installer = join("C:/Ave", "git");
+    const bundled = join(installer, "cmd", "git.exe");
+    const system = "D:\\SystemGit\\git.exe";
+    setProcessPlatform("win32");
+    vi.stubEnv("PATH", "D:\\SystemGit");
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(statSync).mockImplementation((file) => ({
+      isFile: () => file === bundled || file === system, dev: 1n, ino: file === system ? 2n : 1n,
+    }) as ReturnType<typeof statSync>);
+    vi.mocked(execFile).mockImplementation((_file, _args, _options, callback) => {
+      callback?.(null, systemDirectoryReply("C:\\Windows\\System32").stdout, Buffer.alloc(0));
+      return {} as ReturnType<typeof execFile>;
+    });
+    vi.mocked(spawn).mockImplementation(() => gitProbeChild((complete) => complete("git version 2.56.0")));
+    const acceptsFloor = vi.fn(async ({ path }: { path: string }) => path === system);
+
+    await expect(withHostGitRecovery(installer, async ({ git }) => git?.path, undefined, acceptsFloor)).resolves.toBe(system);
+    expect(acceptsFloor.mock.calls.map(([git]) => git.path)).toEqual([bundled, system]);
+    await expect(discoverHostGitAsync(installer)).resolves.toMatchObject({ git: { path: bundled } });
+  });
+
   it("rejects a semicolon in the bundle directory before calling the helper", async () => {
     const { resolveHostGit } = await import("../host-git-executable.js");
     const originalExecPath = process.execPath;
@@ -303,7 +396,7 @@ describe("resolveHostGit", () => {
   it("does not launch a macOS shim alias without the command line tools", async () => {
     const { resolveHostGit } = await import("../host-git-executable.js");
     setProcessPlatform("darwin");
-    vi.stubEnv("PATH", "/alias:/toolchain");
+    vi.stubEnv("PATH", "/alias::.:/toolchain:bin");
     vi.mocked(statSync).mockImplementation((file) => ({
       isFile: () => true, dev: 1n, ino: file === "/toolchain/git" ? 2n : 1n,
     }) as ReturnType<typeof statSync>);
@@ -313,6 +406,8 @@ describe("resolveHostGit", () => {
     });
     expect(resolveHostGit({ packaged: false })?.path).toBe("/toolchain/git");
     expect(vi.mocked(execFileSync).mock.calls.map(([file]) => file)).toEqual(["/usr/bin/xcode-select", "/toolchain/git"]);
+    // An empty or relative entry would be read against the folder git runs in.
+    expect(resolveHostGit({ packaged: false })?.options.env?.PATH).toBe("/alias:/toolchain");
   });
 
   it("rediscovers after the cached macOS shim guard fails", async () => {
@@ -463,10 +558,11 @@ describe("resolveHostGit", () => {
       Object.defineProperty(process, "execPath", { value: join("C:/Ave", "Ave.exe") });
       vi.stubEnv("SystemRoot", "X:\\UntrustedRoot");
       vi.stubEnv("windir", "Y:\\UntrustedWindows");
+      vi.stubEnv("NoDefaultCurrentDirectoryInExePath", "1");
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(statSync).mockImplementation((path) => path === bundled
         ? { isFile: () => true } as ReturnType<typeof statSync>
-        : actual.statSync(path));
+        : path === cwd ? { isDirectory: () => true } as ReturnType<typeof statSync> : actual.statSync(path));
       vi.mocked(execFile).mockImplementation((_file, args, _options, callback) => {
         if (Array.isArray(args) && args.includes("--system-directory")) {
           callback?.(null, systemDirectoryReply(systemDirectory).stdout, Buffer.alloc(0));
@@ -488,6 +584,7 @@ describe("resolveHostGit", () => {
             systemDirectory, systemRoot].join(";"),
           SystemRoot: systemRoot,
           WINDIR: systemRoot,
+          NoDefaultCurrentDirectoryInExePath: "1",
           GIT_CONFIG_NOSYSTEM: "1",
           GIT_CONFIG_GLOBAL: "NUL",
           GIT_ALLOW_PROTOCOL: "",
@@ -495,10 +592,10 @@ describe("resolveHostGit", () => {
       };
       expect(execFileSync).not.toHaveBeenCalled();
       expect(spawnSync).not.toHaveBeenCalled();
-      expect(spawn).toHaveBeenCalledExactlyOnceWith(bundled, ["--no-lazy-fetch", "--version"], expect.objectContaining(expectedOptions));
-      expect(execFile).toHaveBeenCalledTimes(2);
-      expect.soft(execFile).toHaveBeenNthCalledWith(2, bundled, expect.arrayContaining(["check-ignore"]), expect.objectContaining(expectedOptions), expect.any(Function));
-      expect(execFile).toHaveBeenNthCalledWith(1, helper, ["--system-directory"], expect.objectContaining({
+      expect(spawn).toHaveBeenCalledTimes(2);
+      expect(spawn).toHaveBeenNthCalledWith(1, bundled, ["--no-lazy-fetch", "--version"], expect.objectContaining(expectedOptions));
+      expect.soft(spawn).toHaveBeenNthCalledWith(2, bundled, expect.arrayContaining(["check-ignore"]), expect.objectContaining(expectedOptions));
+      expect(execFile).toHaveBeenCalledExactlyOnceWith(helper, ["--system-directory"], expect.objectContaining({
         shell: false,
         env: {
           HOMEDRIVE: "", HOMEPATH: "", LOGONSERVER: "", PATH: "", SYSTEMDRIVE: "", SYSTEMROOT: "",
@@ -532,6 +629,7 @@ describe("resolveHostGit", () => {
       Object.defineProperty(process, "execPath", { value: join("C:/Ave", "Ave.exe") });
       vi.stubEnv("SystemRoot", "C:\\Windows");
       vi.stubEnv("PATH", "D:\\untrusted;\\\\example\\share");
+      vi.stubEnv("NoDefaultCurrentDirectoryInExePath", "1");
       vi.stubEnv("GIT_TRACE2_EVENT", trace);
       vi.stubEnv("GIT_TRACE", trace);
       vi.stubEnv("Git_Exec_Path", join(install, "other"));
@@ -553,6 +651,7 @@ describe("resolveHostGit", () => {
             win32.join("C:\\Windows", "System32"), "C:\\Windows"].join(";"),
           SystemRoot: "C:\\Windows",
           WINDIR: "C:\\Windows",
+          NoDefaultCurrentDirectoryInExePath: "1",
           GIT_CONFIG_NOSYSTEM: "1",
           GIT_CONFIG_GLOBAL: "NUL",
           GIT_ALLOW_PROTOCOL: "",

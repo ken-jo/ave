@@ -7,13 +7,14 @@ import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-p
 import { WIN32_POWERSHELL_STARTUP_ARGS } from "../shared/powershell-startup-policy.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../shared/windows-command-line.js";
 import { openMxcPolicyPipe } from "./mxc-policy-pipe.js";
+import { isPolicyFloorRow, type PolicyModel, type PolicyRow } from "./policy-model.js";
 
 import { errorMessage } from "../shared/error-message.js";
 import { compileGlobMatcher, globToRegExp } from "../lib/glob-matcher.js";
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
 import MXC_PINS from "./mxc-launcher-pins.json" with { type: "json" };
 
-// The stable MXC configuration schema version every request is written in. The launcher is `@microsoft/mxc-sdk` 1.0.1's, pinned by scripts/fetch-mxc.mjs.
+// The stable MXC configuration schema version every request is written in. The launcher is `@microsoft/mxc-sdk` 1.1.0's, pinned by scripts/fetch-mxc.mjs.
 const MXC_CONFIG_SCHEMA_VERSION = "1.0.0";
 
 // Why MXC cannot carry agent shells on this host. Stable codes, shown in Settings.
@@ -27,6 +28,8 @@ export type MxcSupport =
       readonly windowsBuild: string | null;
       // Main-process diagnostic; may hold local paths, never sent to the renderer.
       readonly detail: string;
+      // The probe's host fact, set only with "container-unavailable".
+      readonly baseContainerApiPresent?: boolean;
     };
 
 // The architectures MXC ships `wxc-exec.exe` for.
@@ -48,6 +51,9 @@ export function wxcExecPathFor(resourcePath: string, arch: string): string | und
 export interface MxcProbeReport {
   readonly tier: string | undefined;
   readonly needsDaclAugmentation: boolean | undefined;
+  // Given instead of a tier when the backend cannot serve the request, beside the host facts.
+  readonly error: string | undefined;
+  readonly baseContainerApiPresent: boolean | undefined;
 }
 
 // Parse `wxc-exec --probe` stdout (one JSON object), or undefined when it is not one.
@@ -62,30 +68,40 @@ export function parseMxcProbeOutput(stdout: string): MxcProbeReport | undefined 
     return undefined;
   }
   if (typeof parsed !== "object" || parsed === null) return undefined;
-  const record = parsed as { tier?: unknown; needsDaclAugmentation?: unknown };
+  const record = parsed as { tier?: unknown; needsDaclAugmentation?: unknown; error?: unknown; probes?: unknown };
+  const apiPresent = typeof record.probes === "object" && record.probes !== null
+    ? (record.probes as { baseContainerApiPresent?: unknown }).baseContainerApiPresent : undefined;
   return {
     tier: typeof record.tier === "string" ? record.tier : undefined,
     needsDaclAugmentation: typeof record.needsDaclAugmentation === "boolean" ? record.needsDaclAugmentation : undefined,
+    error: typeof record.error === "string" ? record.error : undefined,
+    baseContainerApiPresent: typeof apiPresent === "boolean" ? apiPresent : undefined,
   };
 }
 
 export type MxcDryRunResult = { readonly ok: true } | { readonly ok: false; readonly detail: string };
 
-// Judge `wxc-exec --dry-run`: the request must validate AND select the BaseContainer tier. Anything else (a parse error such as an identity-less proxy the host's PSEC contract cannot carry, an AppContainer tier) is a rejection; its first diagnostic line is kept for the log.
-export function parseMxcDryRunOutput(exitCode: number | null, stdout: string, stderr: string): MxcDryRunResult {
-  const text = `${stdout}\n${stderr}`;
-  if (
-    exitCode === 0 &&
-    /selected isolation tier: base-container/i.test(text) &&
-    /validation passed/i.test(text)
-  ) {
-    return { ok: true };
-  }
-  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+const MXC_CONTAINER_TIER = "base-container";
+
+function outputLines(stdout: string, stderr: string): string[] {
+  return `${stdout}\n${stderr}`.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+}
+
+function configurationParseError(lines: readonly string[]): string | undefined {
+  return lines.find((line) => /^configuration parse error/i.test(line));
+}
+
+// Judge `wxc-exec --dry-run`: the request must validate AND `--probe` of the same request must have served it (`probedTier`). The dry run prints no tier; a tier line naming anything else is refused, defensively. Network-policy and PSEC checks happen at launch, so the start probe is what refuses a proxy contract the host cannot carry. A parse error (such as an identity-less proxy the host's PSEC contract cannot carry) is a rejection too; its first diagnostic line is kept for the log.
+export function parseMxcDryRunOutput(exitCode: number | null, stdout: string, stderr: string, probedTier: string | undefined): MxcDryRunResult {
+  const lines = outputLines(stdout, stderr);
+  const otherTier = lines.find((line) => /selected isolation tier/i.test(line) && !/selected isolation tier: base-container$/i.test(line));
+  const validated = exitCode === 0 && lines.some((line) => /validation passed/i.test(line));
+  if (validated && otherTier === undefined && probedTier === MXC_CONTAINER_TIER) return { ok: true };
   const diagnostic =
-    lines.find((line) => /^configuration parse error/i.test(line)) ??
+    configurationParseError(lines) ??
     lines.find((line) => /"message"\s*:/.test(line)) ??
-    lines.find((line) => /selected isolation tier/i.test(line)) ??
+    otherTier ??
+    (validated ? `probed isolation tier: ${probedTier ?? "not reported"}` : undefined) ??
     lines.find((line) => /error/i.test(line) && !/^warning:/i.test(line)) ??
     `exit ${String(exitCode)}`;
   return { ok: false, detail: diagnostic.slice(0, 500) };
@@ -135,14 +151,14 @@ export function classifyMxcStartProbe(
   return { ok: false, reason: "powershell-start-failed", detail };
 }
 
-// Decide, once at boot, whether agent shells can run in MXC on this host. The OS build number is not the gate: MXC 1.0.1 no longer requires PSEC 1.1 for an identity-less loopback proxy (the launcher queries host support, and the directions depend on the Windows build), so a build floor would not establish that the host can carry the request. The gate is what the shipped binary reports: its sha256 must match the pin, `--probe` must select `base-container`, `--dry-run` of the exact request shape Ave launches (proxy mode, DACL fallback refused) must validate on that tier, and System32 Windows PowerShell 5.1 must actually start (`exit 0`) in a real container of that shape. Any failure leaves the shells on the approved-host route.
+// Decide, once at boot, whether agent shells can run in MXC on this host. The OS build number is not the gate: MXC no longer requires PSEC 1.1 for an identity-less loopback proxy (the launcher queries host support, and the directions depend on the Windows build), so a build floor would not establish that the host can carry the request. The gate is what the shipped binary reports: its sha256 must match the pin, `--probe` of the request shape Ave launches (proxy mode, DACL fallback refused) must serve it (the container tier, no DACL changes; an unserved request has no tier and an error), `--dry-run` of that request must validate, and System32 Windows PowerShell 5.1 must actually start (`exit 0`) in a real container of that shape with the loopback proxy; that launch carries the network-policy and PSEC checks the probe does not make. Any failure leaves the shells on the approved-host route.
 export async function detectMxcSupport(deps: DetectMxcSupportDeps): Promise<MxcSupport> {
   const prerequisites = await detectMxcPrerequisites(deps);
   if (prerequisites.state === "unavailable") return prerequisites;
   return await probeMxcPowerShellStart(deps);
 }
 
-// The fast half of detectMxcSupport, run on the boot path: platform, arch, launcher present and pinned, `--probe` tier, `--dry-run` of the shipped request shape. "available" here means only that the start probe is worth running; MXC is not claimed until probeMxcPowerShellStart passes.
+// The fast half of detectMxcSupport, run on the boot path: platform, arch, launcher present and pinned, `--probe` serves the request, `--dry-run` of the shipped request shape. "available" here means only that the start probe is worth running; MXC is not claimed until probeMxcPowerShellStart passes.
 export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promise<MxcSupport> {
   const unavailable = (reason: MxcUnavailableReason, detail: string): MxcSupport => ({
     state: "unavailable",
@@ -162,16 +178,6 @@ export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promis
   }
   if (digest !== pinnedWxcExecSha256(deps.arch)) return unavailable("launcher-mismatch", `${wxcExec} sha256 ${digest}`);
 
-  let probe: MxcRunResult;
-  try {
-    probe = await deps.run(wxcExec, ["--probe"], MXC_PROBE_TIMEOUT_MS);
-  } catch (error) {
-    return unavailable("probe-failed", errorMessage(error));
-  }
-  const report = probe.code === 0 ? parseMxcProbeOutput(probe.stdout) : undefined;
-  if (report === undefined) return unavailable("probe-failed", `--probe exit ${String(probe.code)}`);
-  if (report.tier !== "base-container") return unavailable("tier-unsupported", `tier ${report.tier ?? "unknown"}`);
-
   const request = buildMxcShellRequest({
     commandLine: "cmd.exe /d /c exit 0",
     cwd: deps.probeDirectory,
@@ -180,13 +186,38 @@ export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promis
     proxyUrl: "http://127.0.0.1:9",
     timeoutMs: 1_000,
   });
+  let probe: MxcRunResult;
+  try {
+    probe = await deps.run(wxcExec, ["--probe", ...mxcRequestArgs(request, wxcExec, ["--probe"])], MXC_PROBE_TIMEOUT_MS);
+  } catch (error) {
+    return unavailable("probe-failed", errorMessage(error));
+  }
+  const report = parseMxcProbeOutput(probe.stdout);
+  if (report === undefined) {
+    const rejected = configurationParseError(outputLines(probe.stdout, probe.stderr));
+    return rejected === undefined
+      ? unavailable("probe-failed", `--probe exit ${String(probe.code)}`)
+      : unavailable("request-rejected", rejected.slice(0, 500));
+  }
+  // The probe either serves the request (the container tier, no DACL changes) or omits the tier and gives an error with the host facts. Anything else is not an answer.
+  if (report.tier === undefined && report.error !== undefined) {
+    return {
+      ...unavailable("container-unavailable", `${report.error.slice(0, 400)} (container API ${String(report.baseContainerApiPresent)})`),
+      ...(report.baseContainerApiPresent === undefined ? {} : { baseContainerApiPresent: report.baseContainerApiPresent }),
+    };
+  }
+  if (report.tier !== MXC_CONTAINER_TIER || report.needsDaclAugmentation !== false) {
+    return unavailable("probe-failed", `unexpected probe answer: tier ${String(report.tier).slice(0, 100)}, needsDaclAugmentation ${String(report.needsDaclAugmentation)}`);
+  }
+  if (probe.code !== 0) return unavailable("probe-failed", `--probe exit ${String(probe.code)}`);
+
   let dryRun: MxcRunResult;
   try {
     dryRun = await deps.run(wxcExec, ["--dry-run", ...mxcRequestArgs(request, wxcExec, ["--dry-run"])], MXC_PROBE_TIMEOUT_MS);
   } catch (error) {
     return unavailable("probe-failed", errorMessage(error));
   }
-  const verdict = parseMxcDryRunOutput(dryRun.code, dryRun.stdout, dryRun.stderr);
+  const verdict = parseMxcDryRunOutput(dryRun.code, dryRun.stdout, dryRun.stderr, report.tier);
   if (!verdict.ok) return unavailable("request-rejected", verdict.detail);
   return { state: "available", windowsBuild: deps.windowsBuild };
 }
@@ -233,19 +264,6 @@ export interface MxcFilesystemGrants {
   readonly readwrite: readonly string[];
   readonly readonly: readonly string[];
   readonly denied: readonly string[];
-}
-
-// The per-command policy Ave's shells already compute for an ASRT wrap.
-export interface ShellFilesystemPolicy {
-  readonly allowWrite: readonly string[];
-  readonly allowRead: readonly string[];
-  // Broad and floor read denies (HOME, sandbox private roots, credential paths…).
-  readonly denyRead: readonly string[];
-  readonly denyWrite: readonly string[];
-  // The protected floor (credential paths, the user data directory, trusted custom denies). A grant at or beneath one is dropped, as Windows ASRT drops a grant beneath a credentials entry.
-  readonly protectedFloor: readonly string[];
-  // Grants the shell holds INSIDE the protected floor on purpose (the saved session history, `getBuiltinShellReadPolicy.floorPierces`). A grant at or beneath one is not dropped by the floor.
-  readonly floorPierces?: readonly string[];
 }
 
 function foldPath(path: string): string {
@@ -414,31 +432,64 @@ function expandPatternDenies(
   return dedupe(out).sort();
 }
 
+// The row classes the ranking below reads, each in the order its rows were stated.
+export interface MxcPolicyRows {
+  // Write and read grants.
+  readonly writeGrants: readonly string[];
+  readonly readGrants: readonly string[];
+  // Read denies a more specific grant re-opens (the Ave home boundary, sandbox private directories, a composer's own list).
+  readonly readDenies: readonly string[];
+  // The write floor.
+  readonly writeFloor: readonly string[];
+  // The protected read floor (`secrets` rows). A grant at or beneath one is dropped.
+  readonly protectedFloor: readonly string[];
+  // Host-minted pierces. A grant at or beneath one is not dropped by the floor.
+  readonly floorPierces: readonly string[];
+}
+
+export function mxcPolicyRows(model: PolicyModel): MxcPolicyRows {
+  const paths = (keep: (row: PolicyRow) => boolean): string[] => model.rows.filter(keep).map((row) => row.path);
+  const grant = (row: PolicyRow): boolean => !isPolicyFloorRow(row) && row.reason !== "floor-pierce";
+  return {
+    writeGrants: paths((row) => grant(row) && row.access === "rw"),
+    readGrants: paths((row) => grant(row) && row.access === "ro"),
+    readDenies: paths((row) => isPolicyFloorRow(row) && row.access === "denied" && row.reason !== "secrets"),
+    writeFloor: paths((row) => isPolicyFloorRow(row) && row.access === "ro"),
+    protectedFloor: paths((row) => row.reason === "secrets"),
+    floorPierces: paths((row) => row.reason === "floor-pierce"),
+  };
+}
+
+// The Windows container adapter: policy rows in, the three container lists out. It owns what this backend needs beyond the rows:
+// which grant wins against which floor row, what an absent path becomes, and which rows the container never needs to hear about.
+// A row is read as a pattern by its spelling, whatever its `literal` marker says: the shell hands over spellings, the extension
+// admission hands over literals, and both were always classified by spelling here.
 // Drop grants piercing protected floors except explicit history read exceptions; write denies downgrade grants to read-only. Missing write-deny targets must stay denied because read-only does not prevent creation. Preserve nested read denies, omit redundant denied ancestors, and drop nonexistent grants.
 export function rankMxcFilesystem(
-  policy: ShellFilesystemPolicy,
+  model: PolicyModel,
   exists: (path: string) => boolean,
   list?: (directory: string) => readonly MxcDirectoryEntry[],
 ): MxcFilesystemGrants {
+  const rows = mxcPolicyRows(model);
   // POSIX-rooted floor rows must not turn into current-drive paths.
   const windowsPaths = (paths: readonly string[]): readonly string[] => paths.filter((path) => !/^\/(?!\/)/.test(path));
-  const protectedFloor = windowsPaths(policy.protectedFloor);
-  const denyWrite = windowsPaths(policy.denyWrite);
-  const pierces = policy.floorPierces ?? [];
+  const protectedFloor = windowsPaths(rows.protectedFloor);
+  const denyWrite = windowsPaths(rows.writeFloor);
+  const pierces = rows.floorPierces;
   const floored = (path: string): boolean =>
     protectedFloor.some((floor) => isWindowsPathAtOrUnder(path, floor)) &&
     !pierces.some((pierce) => isWindowsPathAtOrUnder(path, pierce));
   const writeDenied = (path: string): boolean => denyWrite.some((deny) => isWindowsPathAtOrUnder(path, deny));
 
-  const writeGrants = dedupe(policy.allowWrite).filter((path) => exists(path) && !floored(path));
+  const writeGrants = dedupe(rows.writeGrants).filter((path) => exists(path) && !floored(path));
   const readwrite = writeGrants.filter((path) => !writeDenied(path));
   const demoted = writeGrants.filter((path) => writeDenied(path));
-  const readGrants = dedupe(policy.allowRead).filter((path) => exists(path) && !floored(path));
+  const readGrants = dedupe(rows.readGrants).filter((path) => exists(path) && !floored(path));
 
   // A pierced floor row is the read exception itself; kept, it would deny the pierced grant as soon as a wider grant contains it. Only the
   // exact row goes: a floor row above a pierce stays, and the more specific read grant carves the pierce out of it.
   const pierced = new Set(pierces.map(foldPath));
-  const readDenies = dedupe([...windowsPaths(policy.denyRead), ...protectedFloor.filter((row) => !pierced.has(foldPath(row)))]);
+  const readDenies = dedupe([...windowsPaths(rows.readDenies), ...protectedFloor.filter((row) => !pierced.has(foldPath(row)))]);
   // A relative row is unanchored, as a pattern is: it applies wherever the shell reads, so it is expanded rather than dropped.
   const isPatternDeny = (deny: string): boolean => PATTERN_SEGMENT.test(deny) || !WINDOWS_ABSOLUTE.test(deny);
   const literalDenies = readDenies.filter((deny) => !isPatternDeny(deny));
@@ -496,7 +547,7 @@ export function rankMxcFilesystem(
   };
 }
 
-// The MXC 1.0.1 one-shot request Ave launches. Only the fields Ave sets.
+// The MXC 1.1.0 one-shot request Ave launches. Only the fields Ave sets.
 export interface MxcContainerRequest {
   readonly version: typeof MXC_CONFIG_SCHEMA_VERSION;
   readonly containment: "processcontainer";
@@ -673,7 +724,7 @@ export async function resolveHostWxcExecPath(): Promise<string> {
 type HostProbe = (deps: DetectMxcSupportDeps) => Promise<MxcSupport>;
 
 // Run one detection step against this host's shipped binary, in a fresh probe directory.
-async function withHostMxcDeps(step: HostProbe, mayStart?: () => boolean): Promise<MxcSupport> {
+async function withHostMxcDeps(step: HostProbe): Promise<MxcSupport> {
   const [{ execFile }, { existsSync }, { mkdtemp, rm }, os, path, { getHostResources }] = await Promise.all([
     import("node:child_process"),
     import("node:fs"),
@@ -696,10 +747,6 @@ async function withHostMxcDeps(step: HostProbe, mayStart?: () => boolean): Promi
       systemRoot: process.platform === "win32" ? windowsSystemRoot() : "",
       run: (file, args, timeoutMs) =>
         new Promise((resolve, reject) => {
-          if (mayStart !== undefined && !mayStart()) {
-            reject(new Error("Windows shell local-network access is disabled"));
-            return;
-          }
           execFile(file, [...args], { cwd: path.dirname(file), timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
             const code = error === null ? 0 : typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : null;
             if (error !== null && code === null) {
@@ -721,6 +768,14 @@ export async function detectHostMxcPrerequisites(): Promise<MxcSupport> {
 }
 
 // probeMxcPowerShellStart against this host's shipped binary (after boot).
-export async function probeHostMxcPowerShellStart(mayStart: () => boolean): Promise<MxcSupport> {
-  return await withHostMxcDeps(probeMxcPowerShellStart, mayStart);
+export async function probeHostMxcPowerShellStart(): Promise<MxcSupport> {
+  // The probe starts a container too: a runtime root that was not proved private refuses it, under its own reason.
+  const { MxcRuntimeRootError, requireMxcContainerStartRoot } = await import("./mxc-runtime-root.js");
+  try {
+    requireMxcContainerStartRoot();
+  } catch (error) {
+    if (!(error instanceof MxcRuntimeRootError)) throw error;
+    return { state: "unavailable", reason: "runtime-root-unproved", windowsBuild: null, detail: `runtime root proof failed: ${error.message}` };
+  }
+  return await withHostMxcDeps(probeMxcPowerShellStart);
 }

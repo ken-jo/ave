@@ -1164,8 +1164,53 @@ Important rules:
   that says nothing for `browserDownloadHelperStallMs`, or does not end that
   long after a cancel, is killed and its exit awaited before the step fails;
   a killed copy's temporary file is removed through the chosen folder, held
-  anew, and the log names any that may remain (README in
-  `native/macos-dir-ops`). A closed dialog, a failed download or a failed
+  anew, only after it is moved aside and checked to be the file the copy
+  wrote, a helper that stops a copy itself removes its temporary file the
+  same way. The writing handle supplies ownership. Record reads, record
+  writes, removal retries and restoration use held directories. The sweep
+  compares the recorded fingerprint inside the held operation before
+  restoring a mismatched file by an exclusive copy. The source stays if
+  the destination cannot be verified against the new writing handle.
+  When exclusive isolation is unavailable, cleanup keeps and records the
+  entry. Cross-volume publication verifies the part and the final entry
+  around an exclusive rename. It identifies the previous target before
+  copying, moves it aside exclusively before commit, and verifies it before
+  retirement. A failed commit restores the previous target exclusively or
+  records a leftover. See the [helper protocol](../../native/macos-dir-ops/README.md).
+
+  I1. The host touches part, hidden and record entries only through held
+  directory operations.
+
+  I2. The part's identity comes only from the writing handle.
+
+  I3. Destructive cleanup requires exclusive isolation and handle
+  verification. If that proof is unavailable, cleanup leaves and records
+  the entry.
+
+  I4. A displaced original moves only by identity-preserving rename.
+  Startup uses the separate target recovery operation for its record.
+  Copy-back applies only to copy-part recovery.
+
+  I5. Before authorizing isolation, the host syncs a record containing the
+  hidden name, the original and writer identities, and the copy session.
+  Startup reads target records first. A target matching the writer confirms
+  commit and any remaining hidden original is retired by identity. An absent
+  hidden entry and a target matching the original confirm rollback. A vacant
+  target permits exclusive restoration of the verified hidden original.
+  Other observations keep the record and are logged. The recorded part is
+  removed by identity before the record is removed. Failed or unconfirmed
+  retirement keeps the record for the next startup.
+
+  I6. The copy session binds the old target identity captured before ready
+  and the writing identity from the part handle. A target leftover must
+  match the authorized original and hidden name on the held destination volume.
+  A named copy-part leftover must carry the writing identity.
+
+  Accepted residual.
+
+  (a) the gap between the final fd verify and the unlink of a random hidden name; (b) anything after a verified restore or commit (the user's own act). Nothing else.
+
+  A closed dialog, a failed download or a failed
   move removes the staged file and is reported cancelled or failed.
   Staged files a crash left behind are removed at the next start. At most 4
   downloads wait for a dialog at once, and a waiting one that writes more
@@ -2360,6 +2405,18 @@ gone and checks the processes that wrote the heartbeats. On Linux the new sessio
 is also gone. On macOS it survives, acknowledges a probe, and cannot write
 outside its granted roots or use the former host's plugin proxy.
 
+The host sends the resolved environment through an anonymous pipe on fd 4.
+The sandbox-side shim suppresses its setup diagnostics and restores stderr
+when it executes the target. If setup fails before exec, the shim writes one
+fixed byte to fd 5, which the exec line closes. The host reports a setup
+failure only when that byte arrives, so a target that exits 1 keeps its own
+exit status. Wrapper relays started before the shim keep fd 5 open until
+teardown, so the host decides the cause after that pipe ends. Before logging target stderr, the host masks exact resolved
+values of at least eight characters, including values that span stream chunks
+or line breaks, the union of overlapping matches, and a clipped prefix of at
+least eight characters at stream end. Values shorter than eight characters are
+outside this exact-value check.
+
 ### Extension alerts and scheduled routines
 
 The [alerts design](../design/plugin-alerts.md) defines the complete alerts
@@ -2671,10 +2728,7 @@ confinement, so shell/process relaxation must remain stricter than filesystem
 or network-bearing tool relaxation.
 
 `features.osToolSandbox` defaults to `true` on macOS, Linux and Windows.
-An explicit stored value is preserved. On Windows, container-backed agent
-shells also require `features.windowsShellLocalNetworkAccess`, which defaults
-to `false`; while it is off, they use the approved-host route and cannot earn
-sandbox-auto eligibility. Plugin confinement remains independently opt-in.
+An explicit stored value is preserved. Plugin confinement remains independently opt-in.
 Activation still requires a successful runtime
 probe. The host issues one immutable `HostShellExecutionPlan` per invocation;
 its `sandboxed` field describes the selected child, including exclusions and
@@ -2684,7 +2738,7 @@ The boot sandbox gate decision precedes every stdio MCP server spawn and every
 plugin start, enforced by the boot-order test (`bootstrap-integration.test.ts`)
 and the `StdioTransport` guard that refuses a spawn while the gate is undecided.
 
-A shell whose plan is not sandboxed, including explicit host execution or escalation, uses the ordinary mode/human decision in the [decision tree](permission-decision-tree.md). Host state wins even when read-only evidence exists. Normal cards may save prefix rules. Such execution and command-text upload signals are not forced floors; protected-path mutations, critical delete, escape and other-principal turns still are. Upload hints use ordinary mode handling, while actual sandboxed connections pass the egress proxy's destination policy. Non-sandboxed Allow can execute wrapped or opaque uploads. Deny rules remain authoritative.
+A shell whose plan is not sandboxed, including explicit host execution or escalation, uses the ordinary mode/human decision in the [decision tree](permission-decision-tree.md), unless that tree's no-confinement floor applies (confinement was requested but cannot be proven for the shell). Host state wins even when read-only evidence exists. Normal cards may save prefix rules. Such execution and command-text upload signals are not forced floors; protected-path mutations, critical delete, escape and other-principal turns still are. Upload hints use ordinary mode handling, while actual sandboxed connections pass the egress proxy's destination policy. Non-sandboxed Allow can execute wrapped or opaque uploads. Deny rules remain authoritative.
 
 Exact shell-rule identity preserves literal raw words, including case, module qualifier and quoting; normalization for detection does not change that identity. Versioned rule matching and literal analysis supply evidence rather than a separate exact-only host-shell policy.
 
@@ -2946,6 +3000,10 @@ reaches the `cmd.exe` line, a batch file (`.cmd`/`.bat`, or a bare name such as
 `npx` that only one answers) is refused with the reason, and a Windows sandboxed spawn that names neither the
 relay nor `cmd.exe` is refused, because srt-win's PowerShell launch loses stdin,
 environment and exit code alike.
+
+The plain direct Windows hook (`startHook`) has no job owner. The Windows
+relay and grant path must wait for `job-empty` evidence from the `srt-win`
+receipt before releasing the grant, HOME, or wrap.
 
 A plugin root holds two state directories. `data/` is the plugin's own: its
 confined child writes there. `storage/` beside it is host-only: the HostApi
@@ -3229,6 +3287,24 @@ binary and its lifecycle is part of the worker's confinement proof: if the
 holder exits or errors, the host must revoke grants, unmark the worker, and
 terminate the wrapped worker.
 
+### Ave home boundary and protected-name mechanics
+
+The [decision tree](permission-decision-tree.md) states the policy: what is private, what a confined child never writes, and when confinement is refused. This section holds how each platform applies it.
+
+**Windows container runtime root.** Sandbox start-up establishes the private root at `<local application data>\<app id>\mxc-runtime` before the first wrap. If start-up cannot prove the root is private, every container start is refused until the next sandbox start-up. The Windows shell policy's sole read and write exception inside the root is the invocation's own live `HOME`, a direct child of `<root>\homes`. It refuses a working directory inside the root. A container holder gets only its own `<root>\staging\<opaque-id>` staging tree. The former Ave-home child `mxc-staging` has no read re-allow and is denied like any unlisted child. The [runtime root contract](../design/windows-extension-policy-contract.md#runtime-root) specifies how Windows proves the root's ownership, privacy and identity.
+
+**Root deny.** Windows stamps an inheritable deny on the root, and the explicit allow on a granted child ranks above it. Linux masks the root with tmpfs and binds the granted children back. macOS denies the subpath and allows the granted children inside it. Host features (preview, document observation) and the write floor keep the per-file rows.
+
+**Windows home directly under the OS profile.** An Ave home directly under the OS profile (the default `%USERPROFILE%\.ave`) gets no root deny, because a stamp also denies `FILE_DELETE_CHILD` inheritably on the target's parent, and on the profile root that propagates through the whole profile and exceeds the init timeout. Instead each existing top-level child directory that is not wholly re-allowed is denied as its own directory row, so the parent stamp lands on the Ave home. File rows inside those children are dropped; `sessions` and `certs` keep their floor rows; granted grandchildren (a plugin or MCP server directory) are re-opened by their explicit allow exactly as under the relocated root. Each composition (one shell command, one extension or worker child spawn) takes one boundary snapshot: it reads the home's top-level entries once (one readdir, no recursion) and pins the home and each entry that is not wholly re-allowed through the shared non-following path facts, and the floor, session policy, masks, evidence, read/write projections and deny targets of that composition all use it. Nothing is cached across commands or spawns; the next invocation takes a fresh snapshot, and a refusal holds for the rest of its composition. Only a home the native walk reports absent projects no child: a home that is, or lies beneath, a link or any other reparse point (dangling or not), a home that cannot be listed or pinned, and an entry that is a link or any other reparse point or vanishes between listing and pinning all refuse confinement instead of launching with fewer denies. The readdir may list a linked home's target before the refusal, but no linked projection is ever accepted or stamped. Residual set: top-level files of the Ave home stay file rows (see the file-row limit below), and a top-level child created after enumeration is not covered by that projection; the next projection denies it. Entry names are case-folded, so case-distinct siblings in a case-sensitive directory are not supported and no coverage is claimed for them. A relocated Ave home gets the root deny.
+
+Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home): Linux bind masks and Windows ACL stamps are bound to the file object present at spawn, so a long-lived confined child can read a file the host replaces by rename-over. A file absent at spawn has no object to bind; it is held only by that backend's absent-path handling, which this boundary does not change. macOS seatbelt rules are path-based, so neither case reopens a denied path there. Per-exec shells re-apply masks and stamps on every spawn.
+
+Absent protected names on Windows (owner decision 2026-11-24): an ACL can only deny an existing object, and Ave never creates a placeholder in the user's workspace or home to carry a deny. A protected name (for example `.vscode`, `.idea`, `.git/hooks`) that is absent at launch is watched instead: when a sandboxed command ends, a worker is released, or a host-side consumer (host git, host hooks) is about to act on that workspace while a sandboxed process is still live, a watched name that now exists is moved to quarantine under the Ave home, the command result carries a named violation, and the user is told and may restore it. A failed move refuses host-side consumers of that workspace. macOS seatbelt rules are patterns and cover absent names without this.
+
+**Local memory inference.** Local memory inference uses the Windows system directory for its working directory. The sandbox account already has read access there, so inference needs no ACL grant for its fresh process HOME. The active model is under the denied Ave home models directory and the host streams its verified bytes.
+
+**Privacy helper.** The boot category helper-unavailable means the Windows path-kind or ACL helper did not answer.
+
 ### Windows agent shells in Microsoft Execution Containers
 
 **Identity and network (measured 2026-11-11).** On the installed per-machine
@@ -3245,25 +3321,19 @@ inbound, and `hostLoopback: "allow"` requests backend-dependent bidirectional
 connectivity, not only proxy access. Inbound probes failed while host-listener
 controls succeeded; these bounded measurements do not guarantee inbound denial.
 
-`features.windowsShellLocalNetworkAccess` defaults to `false`. OFF keeps
-Windows agent shells on the existing approved-host permission route, without
-sandbox-auto eligibility or an MXC shell start probe. ON permits the existing
-MXC route once readiness passes and accepts possible local-network and loopback
-inbound connections. Changes apply to the next command without restarting;
-either transition revokes shell session rules and floor-only session grants,
-while independent network and extension grants remain. Within an unchanged
-consent state, the floor-only session exception still follows the
-[decision tree](permission-decision-tree.md), including headless denial.
-This explicit opt-in follows the
-[VS Code Windows sandbox proxy access reference](https://code.visualstudio.com/docs/agents/run/agent-sandboxing#check-windows-sandbox-proxy-access).
-The shell setting does not alter the separately opted-in extension policy,
-including stdio MCP servers and its documented [D2 residual](../design/windows-extensions-mxc.md#7-resolved-owner-decisions).
+Windows agent shells take the MXC route with no separate local-network setting
+(owner decision 2026-11-25, [decision tree](permission-decision-tree.md)): each
+command's relay endpoint holds its port on both `127.0.0.1` and `[::1]` and a
+start is refused when another process holds either. A
+`features.windowsShellLocalNetworkAccess` value saved by an earlier build is
+ignored. Extension confinement, including stdio MCP servers, keeps its own
+policy and its documented [D2 residual](../design/windows-extensions-mxc.md#7-resolved-owner-decisions).
 
 By owner decision (2026-10-19, proxy-egress PR 9) a Bash or PowerShell tool
 command on Windows runs in its own Microsoft Execution Containers (MXC)
-BaseContainer when local-network access is enabled and the host offers one.
+BaseContainer when the host offers one.
 The shell path uses the MIT-licensed
-`wxc-exec.exe` launcher from `@microsoft/mxc-sdk` 1.0.1 at
+`wxc-exec.exe` launcher from `@microsoft/mxc-sdk` 1.1.0 at
 `<resources>/mxc/<arch>/wxc-exec.exe` (x64, arm64), staged at build time by
 `scripts/fetch-mxc.mjs` against `src/permissions/mxc-launcher-pins.json` (the
 npm tarball's sha512, each launcher's sha256). The extension process primitive
@@ -3354,26 +3424,34 @@ The remaining backend executables are excluded because Ave never takes their
 paths: `winhttp-proxy-shim.exe` is the elevated, UAC-raising proxy fallback of
 the AppContainer tier, which MXC refuses for `runtimeConfig.networkProxy` with
 egress deny + ingress allow (the only shape Ave sends; boot also requires the
-dry run to select `base-container`); `plm.exe` is the elevated tracing helper
+probe of that request to report that the `base-container` backend can serve
+it); `plm.exe` is the elevated tracing helper
 behind `telemetry`, which Ave never enables; the daemon and host-prep binaries
 serve the WSL-container, Windows Sandbox, isolation-session
 and AppContainer+DACL backends. Every PR 9 measurement ran the launcher alone
 in its directory.
 
 - **Detection.** On the boot path the launcher's sha256 must match the pin,
-  `--probe` must report the `base-container` tier, and `--dry-run` of a request
-  shaped like a real one (loopback proxy, default-deny egress, no DACL
-  fallback) must pass. These checks do not start a container. With shell
-  local-network access off, the real start probe is deferred and shells stay
-  on the approved-host route. Once access is on, MXC is `checking`: off the
+  `--probe` of a request shaped like a real one (loopback proxy, default-deny
+  egress, no DACL fallback) must report the `base-container` tier, and
+  `--dry-run` of the same request must report that validation passed. The dry
+  run prints no tier since 1.1.0, so the probed tier is required: a missing or
+  different tier, or exit 0 without the validation result, is refused. The
+  probe has two answers: served (`base-container`, no DACL changes) or not
+  served (no tier, an error and the host facts), reported as
+  `container-unavailable`. Any other answer, a legacy tier name included, is
+  a failed probe. The
+  probe reports only whether the ProcessContainer backend can serve the
+  request; network-policy and PSEC checks happen at launch, so the start
+  probe below (loopback proxy, `exit 0`) is what refuses a proxy contract the
+  host cannot carry. These checks do not start a container. MXC is then `checking`: off the
   critical path, System32 Windows PowerShell
   5.1 must start (`exit 0`) in a real container of that shape (reduced
   caller-owned environment, proxy mode; a cold start can take tens of
   seconds). Until it settles, shells take the approved-host route and Settings
-  says the check is running; when it passes and local-network access remains
-  on, the effective route switches to MXC. Turning access off prevents a late
-  probe result from enabling that route. Detection reads what the launcher does,
-  not the build number: MXC 1.0.1 no longer requires PSEC 1.1 for an
+  says the check is running; when it passes, the effective route switches to
+  MXC. Detection reads what the launcher does,
+  not the build number: MXC no longer requires PSEC 1.1 for an
   identity-less loopback proxy (the launcher queries host support and the
   directions depend on the Windows build), so the exact request must still
   validate and start. Any failure
@@ -3381,6 +3459,12 @@ in its directory.
   reason in Settings (a proxy-only boot keeps its proxy). A PowerShell start that
   fails with `STATUS_DLL_INIT_FAILED` (`0xC0000142`), which a non-interactive
   session such as SSH causes, is reported as `unverified-session`, not as MXC.
+  A container runtime root that was not proved private is reported as
+  `runtime-root-unproved`, whatever the container prerequisites, and the probe
+  starts no container. Sandbox HOMEs live under that root, so every sandboxed
+  process (terminal, shells, MCP servers, workers, extensions, the memory map) is
+  then unavailable, each with that named reason, until a restart or an install
+  repair.
 - **Integrity.** Detection hashes the launcher at boot, and the first command
   hashes it again before its launch; that result is cached for the process. A
   mismatch at boot leaves the shells off MXC (`launcher-mismatch`); at launch
@@ -3396,7 +3480,7 @@ in its directory.
   changing already-admitted holders. Failure retains the degraded routes and
   publishes the startup diagnostic. Reset invalidates pending promotion before
   releasing session ACLs.
-  With ready MXC and shell local-network access enabled, shells run in containers
+  With ready MXC, shells run in containers
   whether or not srt-win is installed;
   without srt-win, ASRT starts as the proxy only (`windows.externalConfinement`,
   patch part 3, which also skips the srt-win dependency check `initialize()`
@@ -3414,7 +3498,9 @@ in its directory.
   is no managed MXC shell job, so background processes in that container end
   with the invocation's containment.
 
-- **Filesystem.** The per-command ASRT lists are ranked for MXC
+- **Filesystem.** A container working directory inside the runtime root is
+  refused, except the launch's own issued HOME (matched by path and file identity).
+  The per-command ASRT lists are ranked for MXC
   (`rankMxcFilesystem`): the protected read floor drops grants not under a
   pierce, a write grant under a `denyWrite` path becomes read-only, a deny
   strictly inside a grant becomes an explicit `denied` entry when the path
@@ -3499,8 +3585,7 @@ in its directory.
   loopback, LAN, overlay-network and remote peers, while host-listener controls
   succeeded. Firewall and audit policies were unchanged, so attribution to
   a particular filter or firewall rule is an unknown implementation detail.
-  These bounded refusals do not establish an inbound boundary. Shells request
-  this policy only after the local-network access setting is enabled; the
+  These bounded refusals do not establish an inbound boundary. The
   separate account's connect-only WFP filters do not protect MXC-shell inbound.
 - **UI.** Containers run with `ui.disable: false` (PowerShell 5.1 does not
   start without Win32k), clipboard `none` and input injection off. A contained
@@ -3521,11 +3606,9 @@ in its directory.
 - **Settings.** Permissions shows the substrate chosen for shells and
   extensions, the MXC unavailable reason with the Windows build, the Bash
   limit, the DNS channel, and that extensions share one proxy identity.
-  The Windows shell local-network toggle displays: "Commands can accept
-  connections from your local network and loopback; enable only if you accept
-  that." With access off, status and the diagnostics bundle report the
-  approved-host route even when MXC is available. Extension confinement and
-  its local-network policy remain independent.
+  There is no Windows shell local-network setting: once the start probe
+  passes, status and the diagnostics bundle report the MXC route for shells.
+  Extension confinement and its local-network policy remain independent.
 - **Extension disclosure (row 6).** The Permissions card renders the
   extension state from `SandboxWindowsSubstrateInfo.extensionPlan`, never from
   `extensions` alone: `checking` and `rejected` say starts are refused and that

@@ -7,8 +7,89 @@
 #include <string>
 #include <vector>
 #include "pin.h"
+#define AVE_TEST_DIR_RECOVERY
+#include "dir-ops.h"
 #pragma comment(lib, "ntdll.lib")
 #pragma comment(lib, "advapi32.lib")
+
+namespace dir_ops {
+enum class RecoveryBoundary { kNone, kRestoreTarget, kRestoreError, kUnsupportedIsolation, kCommitMismatch, kCommitBlocked, kReplaceCommitFailure, kReplaceRestoreFailure, kReplaceOccupied };
+RecoveryBoundary recovery_boundary = RecoveryBoundary::kNone;
+std::wstring boundary_path;
+std::string stop_boundary;
+int file_id_query_to_fault = 0;
+bool zero_file_id = false;
+bool volume_without_file_ids = false;
+bool volume_query_fails = false;
+
+bool test_volume_flags(bool queried, DWORD& flags) {
+  if (volume_without_file_ids) flags &= ~static_cast<DWORD>(FILE_SUPPORTS_OPEN_BY_FILE_ID);
+  if (volume_query_fails) {
+    SetLastError(ERROR_INVALID_FUNCTION);
+    return false;
+  }
+  return queried;
+}
+
+bool test_file_id_result(bool queried, FILE_ID_INFO& id) {
+  if (file_id_query_to_fault >= 0 && (file_id_query_to_fault == 0 || --file_id_query_to_fault != 0)) return queried;
+  if (zero_file_id && queried) {
+    id.FileId = {};
+    return true;
+  }
+  SetLastError(ERROR_NOT_SUPPORTED);
+  return false;
+}
+
+bool sharing_blocked() {
+  const DWORD error = GetLastError();
+  return error == ERROR_SHARING_VIOLATION || error == ERROR_ACCESS_DENIED;
+}
+
+DWORD test_restore_write_result(DWORD result) {
+  const bool fail_write = recovery_boundary == RecoveryBoundary::kRestoreError;
+  if (recovery_boundary != RecoveryBoundary::kRestoreTarget && !fail_write) return result;
+  recovery_boundary = RecoveryBoundary::kNone;
+  const bool remove_blocked = !DeleteFileW(boundary_path.c_str()) && sharing_blocked();
+  const bool rename_blocked = !MoveFileExW(boundary_path.c_str(), (boundary_path + L".moved").c_str(), 0) && sharing_blocked();
+  if (remove_blocked && rename_blocked) std::fputs("boundary reached; replacement blocked\n", stderr);
+  return fail_write ? ERROR_WRITE_FAULT : result;
+}
+
+FileFailure test_remove_result() {
+  if (recovery_boundary != RecoveryBoundary::kUnsupportedIsolation) return {};
+  // Try introducing a directory at the source name just as disposition becomes unavailable.
+  if (MoveFileExW(boundary_path.c_str(), (boundary_path + L".moved").c_str(), 0)) {
+    CreateDirectoryW(boundary_path.c_str(), nullptr);
+  } else if (sharing_blocked()) {
+    std::fputs("boundary reached; replacement blocked\n", stderr);
+  }
+  return {ERROR_NOT_SUPPORTED};
+}
+
+bool test_fail_replacement_rename(bool restoring) {
+  if (!restoring && recovery_boundary == RecoveryBoundary::kReplaceOccupied) {
+    const PinnedHandle occupied(CreateFileW(boundary_path.c_str(), FILE_WRITE_DATA, 0, nullptr, CREATE_NEW, 0, nullptr));
+    constexpr char contents[] = "competing bytes";
+    if (occupied.value != INVALID_HANDLE_VALUE) write_all(occupied.value, reinterpret_cast<const BYTE*>(contents), static_cast<DWORD>(sizeof(contents) - 1));
+  }
+  return recovery_boundary == RecoveryBoundary::kReplaceRestoreFailure ||
+    (!restoring && recovery_boundary == RecoveryBoundary::kReplaceCommitFailure);
+}
+
+void test_stop_replacement(const char* boundary) {
+  if (stop_boundary == boundary) ExitProcess(7);
+}
+
+NameIdentity test_commit_result(NameIdentity result) {
+  if (recovery_boundary == RecoveryBoundary::kCommitMismatch) return NameIdentity::kUnverified;
+  if (recovery_boundary == RecoveryBoundary::kCommitBlocked) {
+    const PinnedHandle occupied(CreateFileW(boundary_path.c_str(), FILE_WRITE_DATA, 0, nullptr, CREATE_NEW, 0, nullptr));
+    if (occupied.value != INVALID_HANDLE_VALUE) return NameIdentity::kUnverified;
+  }
+  return result;
+}
+}  // namespace dir_ops
 
 namespace {
 int fail(const char* stage) {
@@ -163,6 +244,52 @@ int non_surrogate_child(const std::wstring& path) {
 }
 
 int wmain(int argc, wchar_t** argv) {
+  if (argc >= 8) {
+    const std::wstring test(argv[1]);
+    if (test == L"file-id-query-failure-first" || test == L"file-id-query-failure-second" ||
+        test == L"file-id-zero-first" || test == L"file-id-zero-second" || test == L"file-id-zero-recovery") {
+      dir_ops::file_id_query_to_fault = test == L"file-id-zero-recovery" ? -1
+        : test.find(L"second") == std::wstring::npos ? 1 : 2;
+      dir_ops::zero_file_id = test.find(L"zero") != std::wstring::npos;
+      return dir_ops::run(argc - 1, argv + 1);
+    }
+    if (test == L"volume-without-file-ids" || test == L"volume-query-fails") {
+      dir_ops::volume_without_file_ids = test == L"volume-without-file-ids";
+      dir_ops::volume_query_fails = test == L"volume-query-fails";
+      return dir_ops::run(argc - 1, argv + 1);
+    }
+    if (argc == 13 && test.substr(0, 5) == L"stop-") {
+      const auto boundary = test.substr(5);
+      for (const wchar_t character : boundary) dir_ops::stop_boundary += static_cast<char>(character);
+      if (boundary == L"leftover") dir_ops::recovery_boundary = dir_ops::RecoveryBoundary::kReplaceRestoreFailure;
+      return dir_ops::run(argc - 1, argv + 1);
+    }
+    if (test == L"replace-occupied") {
+      if (argc != 13) return 2;
+      dir_ops::recovery_boundary = dir_ops::RecoveryBoundary::kReplaceOccupied;
+      dir_ops::boundary_path = std::wstring(argv[7]) + L"\\" + argv[10];
+      return dir_ops::run(argc - 1, argv + 1);
+    }
+    if (test == L"replace-commit-failure" || test == L"replace-restore-failure") {
+      if (argc != 13) return 2;
+      dir_ops::recovery_boundary = test == L"replace-commit-failure"
+        ? dir_ops::RecoveryBoundary::kReplaceCommitFailure : dir_ops::RecoveryBoundary::kReplaceRestoreFailure;
+      return dir_ops::run(argc - 1, argv + 1);
+    }
+    if (test == L"commit-mismatch" || test == L"commit-blocked") {
+      if (argc != 13) return 2;
+      dir_ops::recovery_boundary = test == L"commit-mismatch" ? dir_ops::RecoveryBoundary::kCommitMismatch : dir_ops::RecoveryBoundary::kCommitBlocked;
+      dir_ops::boundary_path = std::wstring(argv[7]) + L"\\" + argv[11];
+      return dir_ops::run(argc - 1, argv + 1);
+    }
+    if (test == L"restore-target") dir_ops::recovery_boundary = dir_ops::RecoveryBoundary::kRestoreTarget;
+    else if (test == L"restore-write-error") dir_ops::recovery_boundary = dir_ops::RecoveryBoundary::kRestoreError;
+    else if (test == L"no-exclusive-rename") dir_ops::recovery_boundary = dir_ops::RecoveryBoundary::kUnsupportedIsolation;
+    else return 2;
+    const int name = test == L"no-exclusive-rename" ? 6 : 7;
+    dir_ops::boundary_path = std::wstring(argv[3]) + L"\\" + argv[name];
+    return dir_ops::run(argc - 1, argv + 1);
+  }
   if (argc != 2) return 2;
   if (change_time(argv[1]) != 0) return 1;
   const std::wstring root = argv[1], parent = root + L"\\retag-parent", target = root + L"\\retag-target";

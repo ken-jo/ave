@@ -3,7 +3,6 @@
 
 
 import { lstat, readdir, realpath, unlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
 import { createLogger } from "../../lib/logger.js";
@@ -24,19 +23,35 @@ import { classifySandboxDependencyErrors } from "../../permissions/sandbox-start
 import { errorMessage } from "../../shared/error-message.js";
 import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
 import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
-import { AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, aveHomeBoundaryFailure, getAveHomePrivacyFailure, setAveHomePrivacyAtBoot, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
+import { AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, aveHomeBoundaryFailure, getAveHomePrivacyFailure, isAveHomePrivacyApprovable, setAveHomePrivacyAtBoot, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
 import { isAveHomeTrustPendingAtBoot } from "../../shared/ave-home-trust.js";
 import type { ProcessRunStateProbe } from "../../permissions/windows-process-start-time.js";
 import type { AsrtSandboxInitialization } from "../../permissions/asrt-sandbox.js";
 
 const log = createLogger("ave");
 
+// This start could not prove the container runtime root private: no container, and no sandbox HOME, until a restart.
+let runtimeRootUnproved = false;
+
 export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSignal): Promise<void> {
   startupSignal?.throwIfAborted();
   const { settingsService, bootAuditLogger, buildWorkerEgressAllowlists } = ctx;
-  // Sandbox HOMEs are made whether or not the gate activates, so their sweep does not wait on it.
-  // Not awaited: the in-use set and live owner markers keep this process's HOMEs, and a slow probe must not hold boot.
-  if (process.platform === "win32") void sweepWindowsSandboxHomes();
+  // Sandbox HOMEs are made whether or not the gate activates, so their parent is established here, on every Windows start,
+  // before anything can ask for a HOME; a root that cannot be proved private leaves every HOME refused.
+  // The sweep is not awaited: the in-use set and live owner markers keep this process's HOMEs, and a slow probe must not hold boot.
+  if (process.platform === "win32") {
+    const { establishMxcSandboxHomesParent } = await import("../../permissions/mxc-runtime-root.js");
+    try {
+      establishMxcSandboxHomesParent();
+      runtimeRootUnproved = false;
+    } catch (error) {
+      runtimeRootUnproved = true;
+      const { markSandboxHomesUnavailable } = await import("../../permissions/sandbox-capability.js");
+      markSandboxHomesUnavailable();
+      log.warn("boot: Windows sandbox HOME root unavailable: %s", errorMessage(error));
+    }
+    void sweepWindowsSandboxHomes();
+  }
   setAveHomePrivacyRefusalReporter((message) => {
     log.warn(message);
     bootAuditLogger.log({ timestamp: new Date().toISOString(), sessionId: "extensions", type: "error",
@@ -65,9 +80,6 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
       detectSandboxCapability,
       setWindowsSandboxSubstrate,
       getWindowsSandboxSubstrate,
-      bindWindowsShellLocalNetworkAccess,
-      isWindowsShellLocalNetworkAccessAllowed,
-      setWindowsShellStartProbe,
     } = await import("../../permissions/sandbox-capability.js");
     const { sandboxConfinementForPlatform } = await import(
       "../../shared/sandbox-capability-info.js"
@@ -79,8 +91,6 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
     // Shell and worker signals control independent scopes; either may initialize the shared runtime.
     // Explicit environment activation and settings activation use different failure policies.
     const features = settingsService.get("features");
-    bindWindowsShellLocalNetworkAccess(settingsService);
-    setWindowsShellStartProbe(undefined);
     const shellExplicitEnv = process.env["AVE_SANDBOX_ENABLED"] === "1";
     const workerExplicitEnv = process.env["AVE_PLUGIN_WORKER_CONFINEMENT"] === "1";
     // While any Ave folder input is pending review, both scopes are requested whatever the settings say; the verdict is the
@@ -145,7 +155,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
         : [];
       // Record every Windows substrate branch for Settings; available containers carry agent shells independently of the other runtime.
       const windowsInputs = process.platform === "win32"
-        ? await detectWindowsBootInputs(shellRequested, workerRequested, deps.errors.length === 0, isWindowsShellLocalNetworkAccessAllowed())
+        ? await detectWindowsBootInputs(shellRequested, workerRequested, deps.errors.length === 0)
         : undefined;
       const windowsPlan = windowsInputs === undefined ? undefined : planWindowsSandbox(windowsInputs);
       // Track proxy-only startup separately from the requested runtime plan.
@@ -156,8 +166,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
       const recordWindows = (started: "srt-win" | "proxy-only" | "none", failed: boolean): void => {
         if (windowsInputs === undefined) return;
         const at = (mxc: WindowsSandboxPlanInputs["mxc"]) => {
-          const substrate = windowsSubstrateFor({ ...windowsInputs, mxc,
-            shellLocalNetworkAccess: isWindowsShellLocalNetworkAccessAllowed() }, started);
+          const substrate = windowsSubstrateFor({ ...windowsInputs, mxc }, started);
           return failed ? windowsSubstrateWithoutAsrt(substrate) : substrate;
         };
         const first = at(windowsMxc ?? windowsInputs.mxc);
@@ -165,38 +174,25 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
         if (started === "proxy-only" && !failed) {
           setActiveSandboxCapability(windowsProxyOnlyCapability(first));
         }
-        if (windowsMxc?.state !== "checking") return;
+        // The probe only settles the shell route; skip it when no shell will take that route.
+        if (windowsMxc?.state !== "checking" || failed || started === "none" || !windowsInputs.shellRequested) return;
         const recordedMxc = getWindowsSandboxSubstrate()?.mxc;
-        let probing = false;
-        const startProbe = (): void => {
-          if (probing || !isWindowsShellLocalNetworkAccessAllowed() || failed || started === "none" ||
-              getWindowsSandboxSubstrate()?.mxc !== recordedMxc || windowsMxc?.state !== "checking") return;
-          probing = true;
-          shellStartProbe ??= settleWindowsMxcStartProbe(isWindowsShellLocalNetworkAccessAllowed)
-            .finally(() => { shellStartProbe = undefined; });
-          void shellStartProbe.then((mxc) => {
-            probing = false;
-            if (getWindowsSandboxSubstrate()?.mxc !== recordedMxc) return;
-            if (mxc.state === "checking") {
-              if (isWindowsShellLocalNetworkAccessAllowed()) startProbe();
-              return;
-            }
-            windowsMxc = mxc;
-            const settled = at(mxc);
-            setWindowsSandboxSubstrate(settled, settled.mxc.state === "available" && settled.shells !== "none" ? mxcShellCapability() : undefined);
-            if (started === "proxy-only" && !failed) {
-              setActiveSandboxCapability(windowsProxyOnlyCapability(settled));
-            }
-            log.info(
-              "boot: Windows sandbox settled — MXC %s, shells: %s, shell egress identity: %s",
-              mxc.state === "unavailable" ? `unavailable (${mxc.reason})` : mxc.state,
-              settled.shells,
-              settled.shellEgressIdentity,
-            );
-          });
-        };
-        setWindowsShellStartProbe(startProbe);
-        startProbe();
+        shellStartProbe ??= settleWindowsMxcStartProbe();
+        void shellStartProbe.then((mxc) => {
+          if (getWindowsSandboxSubstrate()?.mxc !== recordedMxc) return;
+          windowsMxc = mxc;
+          const settled = at(mxc);
+          setWindowsSandboxSubstrate(settled, settled.mxc.state === "available" && settled.shells !== "none" ? mxcShellCapability() : undefined);
+          if (started === "proxy-only") {
+            setActiveSandboxCapability(windowsProxyOnlyCapability(settled));
+          }
+          log.info(
+            "boot: Windows sandbox settled — MXC %s, shells: %s, shell egress identity: %s",
+            mxc.state === "unavailable" ? `unavailable (${mxc.reason})` : mxc.state,
+            settled.shells,
+            settled.shellEgressIdentity,
+          );
+        });
       };
       // Proxy-only startup can confine container shells while extensions remain unconfined.
       const decision: { action: SandboxGateAction; reason: SandboxGateReason } =
@@ -210,9 +206,13 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             });
 
       const privacyFailure = getAveHomePrivacyFailure();
-      if (privacyFailure !== undefined && windowsStart !== "proxy-only") {
+      // Every home pins its profile-child deny rows (the profile ~/.ave root is always one) through the same helper, so helper-unavailable also refuses proxy-only.
+      if (privacyFailure !== undefined && (windowsStart !== "proxy-only" || !isAveHomePrivacyApprovable(privacyFailure.category))) {
         const path = privacyFailure.failedPath ?? privacyFailure.home;
-        log.warn("boot: extension isolation is OFF; AVE_HOME privacy failed (%s, %s). Extensions require session approval in Settings > Permissions.", privacyFailure.category, path);
+        log.warn("boot: extension isolation is OFF; AVE_HOME privacy failed (%s, %s). %s", privacyFailure.category, path,
+          isAveHomePrivacyApprovable(privacyFailure.category)
+            ? "Each extension start asks for approval until the folder is fixed."
+            : "Extensions stay blocked until a restart; if it persists, reinstall Ave.");
         recordWindows("none", true);
         recordGate("degrade", "degrade-ave-home-privacy-failed", [privacyFailure.reason], ["ave-home-privacy-failed"]);
       } else if (decision.action === "abort") {
@@ -274,6 +274,15 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
           await sweepSandboxPrivateRoots();
           // Create both roots before any wrap; Linux may omit read denies for paths that do not yet exist.
           ensureSandboxPrivateRoot(appOwnedSandboxHomeRoot());
+          // The container runtime root is on the same read floor, and this is the only place that creates it: a wrap built while it was absent may carry no deny for it. The floor names its path either way, so a root that cannot be established leaves every shell sandboxed as before and refuses container starts for the rest of this process.
+          {
+            const { establishMxcRuntimeRoot } = await import("../../permissions/mxc-runtime-root.js");
+            try {
+              establishMxcRuntimeRoot();
+            } catch (error) {
+              log.warn("boot: container runtime root unavailable: %s", errorMessage(error));
+            }
+          }
           const sandboxTempRoot = useAppOwnedSandboxTempRoot();
           // Subscribe before starting the proxy so no deny precedes monitoring.
           {
@@ -321,6 +330,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
               // Derive deny paths from actual userData so custom directories remain protected.
               userDataDir: ctx.host.userDataPath,
               queryWindowsDocumentsPath: ctx.host.queryWindowsDocumentsPath,
+              ...(deps.linuxWrapperPrograms !== undefined ? { linuxWrapperPrograms: deps.linuxWrapperPrograms } : {}),
               ...(start === "proxy-only" ? { windows: { externalConfinement: true } } : {}),
               ...(start === "srt-win" ? { windows: { backgroundInitialization: true } } : {}),
             }, egressAskCallback, false, startupSignal);
@@ -424,11 +434,15 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
           const boundaryFailure = process.platform === "win32" ? aveHomeBoundaryFailure(initErr) : undefined;
           if (boundaryFailure !== undefined) {
             // Not the generic Windows degrade: publish it as an AVE_HOME privacy refusal, so confined extension starts refuse until the
-            // user approves running without isolation in Settings > Permissions. The log carries codes only; the error names paths.
+            // user approves running without isolation in Settings > Permissions, or, for helper-unavailable, until a restart.
+            // The log carries codes only; the error names paths.
             setAveHomePrivacyAtBoot({ enforcement: "none", home: boundaryFailure.home, reason: AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE,
               category: boundaryFailure.category });
-            log.warn("boot: extension isolation is OFF; the AVE_HOME read boundary could not be verified (%s, %s). Extensions require session approval in Settings > Permissions.",
-              AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, boundaryFailure.category);
+            log.warn("boot: extension isolation is OFF; the AVE_HOME read boundary could not be verified (%s, %s). %s",
+              AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, boundaryFailure.category,
+              isAveHomePrivacyApprovable(boundaryFailure.category)
+                ? "Each extension start asks for approval until the folder is fixed."
+                : "Extensions stay blocked until a restart; if it persists, reinstall Ave.");
             recordWindows("none", true);
             recordGate("degrade", "degrade-ave-home-boundary-unverified", [AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE], ["ave-home-privacy-failed"]);
           } else {
@@ -563,14 +577,24 @@ export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<s
   return counts;
 }
 
-/** Windows sandbox HOMEs live in the host temp directory, which other Ave instances share, so only a HOME whose marked owner is gone is removed. */
+/** Windows sandbox HOMEs live under the container runtime root, which this account's other Ave instances share, so only a HOME whose marked owner is gone is removed. It sweeps the parent `initSandboxGate` established, whatever the sandbox setting: a HOME is created for unconfined children too. A root that cannot be proved private leaves nothing to sweep, and every later HOME is refused. */
 async function sweepWindowsSandboxHomes(): Promise<void> {
   try {
     const { sandboxProcessHomesInUse, warmSandboxHomeOwner } = await import("../../permissions/sandbox-process-home.js");
     warmSandboxHomeOwner();
+    const { mxcSandboxHomesParent } = await import("../../permissions/mxc-runtime-root.js");
+    let homes: string;
+    try {
+      homes = mxcSandboxHomesParent();
+    } catch (error) {
+      log.warn("boot: Windows sandbox HOME root unavailable: %s", errorMessage(error));
+      return;
+    }
     const { readWindowsProcessRunStates } = await import("../../permissions/windows-process-start-time.js");
     const { removed, failed } = await sweepStaleWindowsSandboxHomes(
-      tmpdir(), sandboxProcessHomesInUse(), readWindowsProcessRunStates);
+      homes, sandboxProcessHomesInUse(), readWindowsProcessRunStates, () => {
+        if (mxcSandboxHomesParent() !== homes) throw new Error("Sandbox HOME parent changed during the sweep");
+      });
     if (removed > 0) log.info("boot: removed %d stale Windows sandbox HOME(s)", removed);
     if (failed > 0) log.warn("boot: could not remove %d stale Windows sandbox HOME(s)", failed);
   } catch (error) {
@@ -578,11 +602,12 @@ async function sweepWindowsSandboxHomes(): Promise<void> {
   }
 }
 
-/** Remove `ave-sandbox-home-*` directories directly under `root` whose sibling owner marker names a process that is gone or a reused pid, with their markers, and drop orphan markers of dead owners. Keep unmarked, unreadable and undetermined ones. Never follows links. */
+/** Remove `ave-sandbox-home-*` directories directly under `root` whose sibling owner marker names a process that is gone or a reused pid, with their markers, and drop orphan markers of dead owners. Keep unmarked, unreadable and undetermined ones. Never follows links. `assertRootUnmoved` runs before each removal and stops the sweep by throwing. */
 export async function sweepStaleWindowsSandboxHomes(
   root: string,
   inUse: ReadonlySet<string>,
   probe: ProcessRunStateProbe,
+  assertRootUnmoved: () => void = () => {},
 ): Promise<{ removed: number; failed: number }> {
   const { SANDBOX_HOME_OWNER_SUFFIX, SANDBOX_HOME_PREFIX, readSandboxHomeOwner } =
     await import("../../permissions/sandbox-process-home.js");
@@ -619,6 +644,7 @@ export async function sweepStaleWindowsSandboxHomes(
     const stale = state !== undefined
       && (!state.running || (state.startTime !== null && state.startTime !== startTime));
     if (!stale) continue;
+    assertRootUnmoved();
     try {
       if (!orphan) {
         const entry = await lstat(home);
@@ -641,17 +667,18 @@ async function detectWindowsBootInputs(
   shellRequested: boolean,
   workerRequested: boolean,
   srtWinReady: boolean,
-  shellLocalNetworkAccess: boolean,
 ): Promise<WindowsSandboxPlanInputs> {
   const { detectHostMxcPrerequisites } = await import("../../permissions/mxc-windows.js");
   const mxc = await detectHostMxcPrerequisites();
-  if (mxc.state === "unavailable") logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
+  if (runtimeRootUnproved) logMxcUnavailable("runtime-root-unproved", mxc.windowsBuild, "the container runtime root was not proved at start-up");
+  else if (mxc.state === "unavailable") logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
   return {
     shellRequested,
-    shellLocalNetworkAccess,
     workerRequested,
-    mxc: mxc.state === "available" ? { state: "checking" } : { state: "unavailable", reason: mxc.reason },
-    // Shell startup never certifies the separate installed SDK/request/endpoint native gate.
+    mxc: runtimeRootUnproved ? { state: "unavailable", reason: "runtime-root-unproved" }
+      : mxc.state === "available" ? { state: "checking" } : { state: "unavailable", reason: mxc.reason },
+    // Pinned until this installation carries a release-gate record (contract fields 8-13, gathered on the packaged build).
+    // Neither shell startup nor a holder's own start evidence (fields 1-5, known only after a start) certifies that gate.
     extensionMxc: { state: "unavailable", reason: "native-validation-required" },
     windowsBuild: mxc.windowsBuild,
     srtWinReady,
@@ -659,25 +686,16 @@ async function detectWindowsBootInputs(
 }
 
 /** Probe a real shell start after boot. */
-async function settleWindowsMxcStartProbe(mayStart: () => boolean): Promise<WindowsSandboxPlanInputs["mxc"]> {
+async function settleWindowsMxcStartProbe(): Promise<WindowsSandboxPlanInputs["mxc"]> {
   const { probeHostMxcPowerShellStart } = await import("../../permissions/mxc-windows.js");
-  if (!mayStart()) return { state: "checking" };
   const started = Date.now();
-  let cancelled = false;
-  const canStart = (): boolean => {
-    if (mayStart()) return true;
-    cancelled = true;
-    return false;
-  };
   try {
-    const mxc = await probeHostMxcPowerShellStart(canStart);
-    if (cancelled) return { state: "checking" };
+    const mxc = await probeHostMxcPowerShellStart();
     log.info("boot: MXC PowerShell start probe finished in %d ms (%s)", Date.now() - started, mxc.state);
     if (mxc.state === "available") return { state: "available" };
     logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
     return { state: "unavailable", reason: mxc.reason };
   } catch (error) {
-    if (!mayStart()) return { state: "checking" };
     logMxcUnavailable("powershell-start-failed", null, errorMessage(error));
     return { state: "unavailable", reason: "powershell-start-failed" };
   }

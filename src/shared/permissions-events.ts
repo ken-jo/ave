@@ -4,11 +4,12 @@ import type { ShellRuleVersion } from "./shell-rule-version.js";
 import type { RiskLevel } from "./permission-review-status.js";
 
 
-/** Approval-scope literal. `session`: the root conversation, in memory. `persistent`: this project folder (the request's working directory),
+/** Approval-scope literal. `session`: the root conversation, in memory. `run`: the stage sessions of one template run, in memory, until the
+ * run ends (owner decision 2026-11-16, "Allow for this run"); never on disk. `persistent`: this project folder (the request's working directory),
  * on disk. `global`: every project, on disk (owner decision 2026-10-25, "Always allow everywhere" for exact tool approvals).
  * Approval-scope literal. Hoisted from inline `"session" | "persistent"` unions so renderer types
  * (`ui/renderer/types.ts`) can share the same SOT as the IPC payload. Cross-cutting follow-up of #802. */
-export type UserApprovalScope = "session" | "persistent" | "global";
+export type UserApprovalScope = "session" | "run" | "persistent" | "global";
 
 /** Historical host evidence attached when a person re-adjudicates an exact plugin request. */
 export interface PluginReadjudicationEvidence {
@@ -31,6 +32,41 @@ export type BrowserSiteChoice = "this-site" | "any-site";
 
 export function isBrowserSiteChoice(value: unknown): value is BrowserSiteChoice {
   return value === "this-site" || value === "any-site";
+}
+
+export type ExtensionStartChoice = "yes" | "no";
+
+/** One start on the shared extension-start card. `id` names the row for this card only; the host keeps what it stands for. */
+export interface ExtensionStartApprovalRow {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: "plugin-child" | "mcp-stdio" | "worker" | "plugin-hook";
+  readonly cause: "no-backend" | "readiness-deadline" | "home-privacy-unverified";
+}
+
+const EXTENSION_START_ROW_KINDS: readonly string[] = ["plugin-child", "mcp-stdio", "worker", "plugin-hook"];
+
+/** The rows an extension-start card carries in its signed `args`, or undefined when `args` is not such a list. */
+export function extensionStartApprovalRows(args: unknown): readonly ExtensionStartApprovalRow[] | undefined {
+  const starts = typeof args === "object" && args !== null ? (args as { starts?: unknown }).starts : undefined;
+  if (!Array.isArray(starts) || starts.length === 0) return undefined;
+  const rows: ExtensionStartApprovalRow[] = [];
+  for (const start of starts as unknown[]) {
+    if (typeof start !== "object" || start === null) return undefined;
+    const { id, label, kind, cause } = start as Record<string, unknown>;
+    if (typeof id !== "string" || id.length === 0 || typeof label !== "string" || typeof kind !== "string" || !EXTENSION_START_ROW_KINDS.includes(kind)
+      || (cause !== "no-backend" && cause !== "readiness-deadline" && cause !== "home-privacy-unverified")) return undefined;
+    rows.push({ id, label, kind: kind as ExtensionStartApprovalRow["kind"], cause });
+  }
+  return new Set(rows.map((row) => row.id)).size === rows.length ? rows : undefined;
+}
+
+/** A per-row answer map: plain own string keys, each "yes" or "no". Which rows it must cover is the host's check. */
+export function isExtensionStartChoices(value: unknown): value is Readonly<Record<string, ExtensionStartChoice>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value) as unknown;
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  return Object.values(value).every((choice) => choice === "yes" || choice === "no");
 }
 
 export type UserOwnedSurface = "browser" | "host-terminal";
@@ -68,11 +104,11 @@ export interface ScopedPermissionRule extends ShellRuleVersion {
 /** The shell dialects with a rule language: `Bash(...)` rules match bash, `PowerShell(...)` rules match PowerShell. */
 export type ShellRuleDialect = "bash" | "powershell";
 
-/** Where an approval card saves a rule (owner 2026-10-25, unified approval card): this conversation (in memory, ends with it), this project's rule file, or the user-global rules. */
-export type ShellRuleSaveScope = "session" | "project" | "always";
+/** Where an approval card saves a rule (owner 2026-10-25, unified approval card): this conversation (in memory, ends with it), this template run (in memory, ends with the run; offered to its stage sessions only), this project's rule file, or the user-global rules. */
+export type ShellRuleSaveScope = "session" | "run" | "project" | "always";
 
 export function isShellRuleSaveScope(value: unknown): value is ShellRuleSaveScope {
-  return value === "session" || value === "project" || value === "always";
+  return value === "session" || value === "run" || value === "project" || value === "always";
 }
 
 /** What a card sends to save a rule (`userApprovalRecord` `rule`): the action and scope of the choice and, only when the person edited it, the edited rule text. The host validates an edited rule against the card's own rule grammar and requires it to decide this very request; without one it stores the rule it derived itself. */

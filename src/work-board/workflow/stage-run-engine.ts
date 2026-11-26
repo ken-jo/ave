@@ -34,6 +34,7 @@ import type { PassConditionRegistry } from "./stage-gates.js";
 import { assertPinnedVersion, stepsOf } from "./stage-graph.js";
 import { MAX_STAGE_ATTEMPTS, reduceRun, type RunEffect, type RunEvent } from "./stage-machine.js";
 import { buildStagePrompt, type StageInput } from "./stage-prompt.js";
+import { OwnedFsError } from "./owned-fs.js";
 import { isAwaitingStageReview, reconcileRunRecord, type RunRecord, type RunWriteFailure, type WorkflowRunState } from "./run-state.js";
 import type { RunRef, StageWorkspaceProvider } from "./stage-workspace.js";
 import { WorkflowInvariantError } from "./workflow-errors.js";
@@ -46,7 +47,13 @@ const STAGE_OUTPUT_MAX_CHARS = 48_000;
 
 const runKeyOf = (itemId: number, runId: string): string => `work-board:${itemId}#${runId}`;
 
-interface RunScopeHooks { sessionLinked(runKey: string, sessionId: string): void; sessionEnded(sessionId: string): void; runEnded(runKey: string): void }
+/** The run's permission scope: its "Allow for this run" grants and each stage session's own reviewer breaker. `sessionLinked` names the
+ * stage and the lane the run authority gave the run, and throws when it refuses the link; `runEnded` revokes every grant of the run. */
+interface RunScopeHooks {
+  sessionLinked(runKey: string, sessionId: string, member: { stageId: string; stageName: string; lane: "attended" | "unattended" }): void;
+  sessionEnded(sessionId: string): void;
+  runEnded(runKey: string): void;
+}
 interface LaneHooks {
   admit(a: { runKey: string; stageId: string; envelope: StageEnvelope | undefined; workspaceRoot: string }): Promise<{ ok: true } | { ok: false; code: LaneBlockCode }>;
   sessionLinked(a: { runKey: string; stageId: string; sessionId: string; envelope: StageEnvelope; workspaceRoot: string }): void;
@@ -72,7 +79,7 @@ export interface StageRunEngineDeps {
   emit: (e: Omit<WorkBoardRunEvent, "at">) => void;
   /** What a board reader is told about the item's run changed without a board write (a gate opened, a restart's run was taken over). */
   itemChanged?: (itemId: number) => void;
-  /** Default: no template run can start until a real provider is wired. */
+  /** Where the stages of a run work. */
   workspace: StageWorkspaceProvider;
   authoriseRunSource: AuthoriseRunSource;
   /** The project-access check the template handlers use, applied to the scope an approval bound. */
@@ -85,6 +92,8 @@ export interface StageRunEngineDeps {
   outputs?: RequestedOutputHooks;
   /** Absent: no-op. */
   runScope?: RunScopeHooks;
+  /** Binds a stage child's session to its own workspace folder for the permission floor. Absent: no session is bound. */
+  workspaceBinding?: { bind(sessionId: string, workspaceRoot: string): void; unbind(sessionId: string): void };
   passConditions: PassConditionRegistry;
   /** The core engine's in-flight guard: a template run holds its item from start to settle. */
   holdItem: (itemId: number) => void;
@@ -278,7 +287,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   function openState(itemId: number, runId: string, projectRoot: string | undefined, surface: WebContents | null, parked = false): RunState {
     const state: RunState = {
-      itemId, runId, ref: { itemId, runId, runKey: runKeyOf(itemId, runId) }, projectRoot, surface, chain: Promise.resolve(), busy: 0, pendingStages: new Map(), waiters: new Set(),
+      itemId, runId, ref: { itemId, runId, runKey: runKeyOf(itemId, runId), ...(projectRoot !== undefined ? { projectRoot } : {}) }, projectRoot, surface, chain: Promise.resolve(), busy: 0, pendingStages: new Map(), waiters: new Set(),
       stopping: false, rowGone: false, removedAs: "item-removed", lost: false, faulted: null, refused: null, live: new Map(), due: new Set(), starting: new Set(), interruptAsked: new Set(),
       revoked: new Set(), results: new Map(), held: [], heldAgain: false, draining: false, boardUnread: false, parked, sealOutcomes: new Map(), integrating: new Set(),
     };
@@ -776,7 +785,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (prior?.status === run.status && prior.attempt === run.attempt) continue;
       if (!claimEffect(replay, `stage:${run.stageId}`)) continue;
       shown = true;
-      const about = { itemId: state.itemId, stageId: run.stageId, attempt: run.attempt };
+      const about = { itemId: state.itemId, stageId: run.stageId, attempt: run.attempt, ...(run.gate?.judgedBy === "model" ? { judgedBy: run.gate.judgedBy } : {}) };
       if (run.status === "awaiting_gate") emit({ ...about, phase: "stage_gate" });
       else if (run.status === "passed") emit({ ...about, phase: "stage_passed" });
       else if (run.status === "failed") emit({ ...about, phase: "stage_failed", ...(run.failure ? { message: run.failure } : {}) });
@@ -930,6 +939,14 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const lane = (await authorise()).lane;
       if ((stage.requestedOutputs?.length ?? 0) > 0 && !deps.outputs) throw new WorkflowInvariantError("outputs-unavailable");
 
+      // `Retry` starts from a fresh folder; a rerun after `Request changes` keeps the one it has.
+      const revising = run.gate?.type === "human" && run.gate.status === "changes_requested";
+      if (attempt > 1 && !revising) {
+        // A folder that is no longer the run's own is not removed, and the stage is not started in it.
+        try { await workspace.release(state.ref, [stageId]); } catch (error) {
+          throw new WorkflowInvariantError("workspace-missing", error instanceof OwnedFsError ? "workspace-identity-changed" : "workspace-unavailable");
+        }
+      }
       const prepared = await workspace.prepare(state.ref, stage, attempt);
       const runRoot = record.runWorkspace?.runRoot;
       if (!prepared.ok) throw new WorkflowInvariantError("workspace-missing", prepared.code);
@@ -973,6 +990,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");
 
       let linked: string | undefined;
+      let scoped = false;
       try {
         const result = await runner.spawn(
           {
@@ -993,9 +1011,15 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
               linked = childSessionId;
               state.live.set(stageId, childSessionId);
               state.starting.delete(stageId);
+              // A child whose folder cannot be bound does not work in it.
+              let bound = true;
+              try { deps.workspaceBinding?.bind(childSessionId, stageRoot); } catch { bound = false; }
               // A stop, a rejection or a revocation that arrived while the child was starting reaches it here.
-              if (state.stopping || state.faulted !== null || state.interruptAsked.has(stageId) || state.revoked.has(stageId)) runner.interruptRun(childSessionId, workBoardOriginSessionId(state.itemId));
-              deps.runScope?.sessionLinked(runKey, childSessionId);
+              if (!bound || state.stopping || state.faulted !== null || state.interruptAsked.has(stageId) || state.revoked.has(stageId)) runner.interruptRun(childSessionId, workBoardOriginSessionId(state.itemId));
+              // The run's permission scope takes the session with its stage and the lane the authority gave the run. A refused link (the
+              // run has ended, or the session belongs to another run) throws and fails the launch.
+              deps.runScope?.sessionLinked(runKey, childSessionId, { stageId, stageName: stage.name, lane });
+              scoped = true;
               if (lane === "unattended" && stage.envelope) deps.lane?.sessionLinked({ runKey, stageId, sessionId: childSessionId, envelope: stage.envelope, workspaceRoot: stageRoot });
               emit({ itemId: state.itemId, phase: "executing", stageId, attempt, runSessionId: childSessionId });
               post(state, { type: "stage_linked", stageId, childSessionId }, attempt);
@@ -1009,7 +1033,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       } finally {
         state.live.delete(stageId);
         if (linked !== undefined) {
-          deps.runScope?.sessionEnded(linked);
+          deps.workspaceBinding?.unbind(linked);
+          if (scoped) deps.runScope?.sessionEnded(linked);
           if (lane === "unattended") deps.lane?.sessionEnded(linked);
         }
       }
@@ -1167,7 +1192,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (!deps.outputs && version.stages.some(stage => (stage.requestedOutputs?.length ?? 0) > 0)) return refused("outputs-unavailable");
 
     const runId = randomUUID();
-    const ref: RunRef = { itemId, runId, runKey: runKeyOf(itemId, runId) };
+    const ref: RunRef = { itemId, runId, runKey: runKeyOf(itemId, runId), ...(projectRoot !== undefined ? { projectRoot } : {}) };
     const opened = await workspace.open(ref, projectRoot);
     if (!opened.ok) return refused(opened.code);
     const startedAt = new Date().toISOString();
@@ -1234,6 +1259,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (named) await showOnRow(ref.itemId, "error", undefined);
     }
     await workspace.release(ref, "all").catch(() => undefined);
+    // The row may have gone while the workspace was opened, before there was a folder for that removal's discard to find. The release
+    // keeps a run's output for its row, so the stores are asked once more whether this one still has a row or a record.
+    await workspace.discard(new Map(ref.projectRoot === undefined ? [] : [[ref.runId, { projectRoot: ref.projectRoot, itemId: ref.itemId }]])).catch(() => undefined);
     return result;
   }
 
@@ -1441,8 +1469,15 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       }
       releaseWorkspace(run.runId);
     }
+    // The run file is the host's own, closed to every confined process with the rest of the home: what it says of a run's project
+    // stands in for the open project of a run nothing has open any more.
+    const projects = new Map<string, string>();
+    for (const run of only === undefined ? found.runs : []) {
+      const root = await runProjectOf(run.runStartedBy).catch(() => undefined);
+      if (root !== undefined) projects.set(run.runId, root);
+    }
     await records.pruneSettled();
-    if (only === undefined && found.keepWorkspaces !== undefined) await workspace.sweep([...new Set(active)]).catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));
+    if (only === undefined && found.keepWorkspaces !== undefined) await workspace.sweep([...new Set(active)], projects).catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));
     const still = new Set(found.kept.map(run => run.runId));
     kept = only === undefined ? still : new Set([...kept].filter(runId => still.has(runId)));
     return { ok: true };

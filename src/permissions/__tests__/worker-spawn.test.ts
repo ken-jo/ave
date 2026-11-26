@@ -9,6 +9,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { PassThrough } from "node:stream";
 import { join, sep } from "node:path";
+import { cleanupBwrapMountPoints, wrapCommandWithSandboxLinux } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
+import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
+import { parseSandboxWrappedWords } from "../sandbox-wrapped-command.js";
 
 // Lifecycle fixtures intercept the launch; real image verification has native tests.
 vi.mock("../srt-win-integrity.js", async (original) => ({
@@ -41,19 +44,39 @@ vi.mock("node:fs", async (importOriginal) => ({
 
 const SANDBOX_HOME = "/tmp/ave-sandbox-home-test";
 const sandboxHomeCleanupMock = vi.fn();
+const sandboxHomeRefusal = vi.hoisted(() => ({ next: undefined as Error | undefined }));
 vi.mock("../sandbox-process-home.js", () => ({
-  createSandboxProcessHome: () => ({
-    path: SANDBOX_HOME,
-    env: {
-      HOME: SANDBOX_HOME,
-      USERPROFILE: SANDBOX_HOME,
-      APPDATA: `${SANDBOX_HOME}/AppData/Roaming`,
-      LOCALAPPDATA: `${SANDBOX_HOME}/AppData/Local`,
-      XDG_CONFIG_HOME: `${SANDBOX_HOME}/config`,
-    },
-    cleanup: sandboxHomeCleanupMock,
-  }),
+  createSandboxProcessHome: () => {
+    const refusal = sandboxHomeRefusal.next;
+    sandboxHomeRefusal.next = undefined;
+    if (refusal !== undefined) throw refusal;
+    return sandboxHomeFixture();
+  },
 }));
+const sandboxHomeFixture = () => ({
+  path: SANDBOX_HOME,
+  env: {
+    HOME: SANDBOX_HOME,
+    USERPROFILE: SANDBOX_HOME,
+    APPDATA: `${SANDBOX_HOME}/AppData/Roaming`,
+    LOCALAPPDATA: `${SANDBOX_HOME}/AppData/Local`,
+    XDG_CONFIG_HOME: `${SANDBOX_HOME}/config`,
+  },
+  cleanup: sandboxHomeCleanupMock,
+});
+const workerWarnings = vi.hoisted((): string[] => []);
+vi.mock("../../lib/logger.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../lib/logger.js")>();
+  return {
+    ...original,
+    createLogger: (name: string) => {
+      const real = original.createLogger(name);
+      return name === "worker-spawn"
+        ? new Proxy(real, { get: (target, key) => (key === "warn" ? (message: string) => workerWarnings.push(message) : Reflect.get(target, key)) })
+        : real;
+    },
+  };
+});
 
 // child_process mock
 const spawnMock = vi.fn<
@@ -91,6 +114,7 @@ const grantWindowsWorkerFilesystemAccessMock = vi.fn<
 );
 vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
   assertExtensionStartAllowed: (await importOriginal<typeof import("../asrt-sandbox.js")>()).assertExtensionStartAllowed,
+  pluginGrantPathsBeyondOwnRoots: (await importOriginal<typeof import("../asrt-sandbox.js")>()).pluginGrantPathsBeyondOwnRoots,
   // The real launcher and naming; the directory itself is not created.
   sandboxTempEnvLaunch: (await importOriginal<typeof import("../asrt-sandbox.js")>()).sandboxTempEnvLaunch,
   ensureSandboxTempPrincipalDir: (principal: { kind: string; id: string }) => ({
@@ -139,7 +163,9 @@ import {
 import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { startFakeRelayPeer } from "../../__tests__/support/fake-relay-peer.js";
-import { resolvePluginChildEntryPath } from "../confined-child.js";
+import { installProgramsOnPath, withPlantedProgram } from "../../__tests__/support/planted-program.js";
+import { resolvePluginChildEntryPath, type MxcConfinedChildSpawn } from "../confined-child.js";
+import { registerMxcPluginChildHolder } from "../mxc-holder-lifetime.js";
 import { HostApiDispatcher, HOSTAPI_DISPATCH_TABLE, defineHostApiPath } from "../../plugins/isolation/host-api-dispatcher.js";
 import { PluginHostApiError } from "../../plugins/isolation/host-api-wire.js";
 import { hostApiRequest, settleHostApiReply } from "../../__tests__/support/host-protocol-wire.js";
@@ -149,6 +175,7 @@ class StubWorkerChild extends EventEmitter {
   stdin = new PassThrough();
   stdout = new PassThrough();
   stderr = new PassThrough();
+  stdio = [this.stdin, this.stdout, this.stderr, null, new PassThrough()];
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   pid = 4242;
@@ -178,9 +205,13 @@ function setEnvForTest(values: Record<string, string | undefined>): () => void {
 
 const REAL_PLATFORM = process.platform;
 
+function workerCommand(): string {
+  return process.platform === "win32" ? "C:/opt/worker.exe" : "/opt/worker";
+}
+
 type OutputOnlySpec = SpawnWorkerSpec & { readonly control: "output-only-v1" };
 function workerOptions(overrides: Partial<Omit<SpawnWorkerSpec, "control">> = {}): OutputOnlySpec {
-  return { pluginId: "local-indexer", workerId: "embed", command: "/opt/worker", control: "output-only-v1", ...overrides };
+  return { pluginId: "local-indexer", workerId: "embed", command: workerCommand(), control: "output-only-v1", ...overrides };
 }
 
 // The control socket lives under the Ave home, and a Unix socket path is limited to 103 bytes on macOS. The per-file test home sits under `$HOME/.ave/test-tmp/<run>/<file>`, so with a HOME of a little over 20 bytes the longest plugin/worker pair here passes the limit and every gate-ON case fails with the length error instead of testing what it names. These cases run in a short Ave home of their own; `/tmp` rather than `os.tmpdir`, which on macOS is itself about 50 bytes. The guard allows it: it is outside the account's `~/.ave`.
@@ -240,13 +271,19 @@ afterEach(() => {
 describe("spawnWorker — selected container backend", () => {
   afterEach(() => __resetWindowsSandboxSubstrateForTest());
 
-  it("refuses an unmigrated worker with the D1 worker transport code before any process exists", async () => {
+  it("takes a worker to the container holder, which refuses while native readiness is not established", async () => {
     setProcessPlatform("win32");
     const { substrate } = planWindowsSandbox({ shellRequested: false, workerRequested: true,
       mxc: { state: "available" }, extensionMxc: { state: "available" }, windowsBuild: null, srtWinReady: false });
     setWindowsSandboxSubstrate(substrate);
-    await expect(spawnWorker({ pluginId: "sample", workerId: "control", command: "C:/runtime/worker.exe", control: "output-only-v1" as const }))
-      .rejects.toMatchObject({ code: "worker-transport-unsupported" });
+    const start = () => spawnWorker({ pluginId: "sample", workerId: "control", command: "C:/runtime/worker.exe", control: "output-only-v1" as const });
+    await expect(start()).rejects.toThrow("refusing a container worker whose plugin has no live container process");
+    const withdraw = registerMxcPluginChildHolder("sample", { confinement: "windows-mxc" } as MxcConfinedChildSpawn, () => true);
+    try {
+      await expect(start()).rejects.toThrow("No release-gate evidence is registered for this installation");
+      // The refusal frees the identity; a retry is refused for the same reason, never as a running worker.
+      await expect(start()).rejects.toThrow("No release-gate evidence is registered for this installation");
+    } finally { withdraw(); }
     expect(spawnMock).not.toHaveBeenCalled();
   });
 });
@@ -282,6 +319,31 @@ describe("spawnWorker — gate OFF (default)", () => {
     } finally {
       peer.close();
     }
+  });
+
+  it("refuses a Windows worker with the named reason when no sandbox HOME can be made, and frees its slot", async () => {
+    setProcessPlatform("win32");
+    gateActive = true;
+    setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: "win32", reason: "Filesystem confinement", confines: { filesystem: true, process: false, network: true } });
+    const holder = new StubWorkerChild();
+    holder.pid = 5103;
+    spawnMock.mockReturnValueOnce(holder);
+    const refusal = Object.assign(new Error("sandboxed processes are unavailable"), { code: "sandbox-home-unavailable" });
+    sandboxHomeRefusal.next = refusal;
+    const spec = { pluginId: "local-indexer", workerId: "no-home", command: "C:/runtime/worker.exe", control: "output-only-v1" as const };
+    await expect(spawnWorker(spec)).rejects.toBe(refusal);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    // The grant holder started for it is stopped: its stdin closed and the process terminated.
+    expect(holder.stdin.writableEnded).toBe(true);
+    expect(holder.killCalls).not.toEqual([]);
+    sandboxHomeRefusal.next = refusal;
+    const second = new StubWorkerChild();
+    spawnMock.mockReturnValueOnce(second);
+    await expect(spawnWorker(spec)).rejects.toBe(refusal);
+    // The freed slot admits the second attempt, which again starts only its holder and stops it.
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(spawnMock.mock.calls.map(([command]) => String(command).toLowerCase().endsWith("more.com"))).toEqual([true, true]);
+    expect(second.stdin.writableEnded).toBe(true);
   });
 
   it("starts srt-win and the worker in the worker's granted sandbox HOME, never the host's cwd", async () => {
@@ -351,18 +413,42 @@ describe("spawnWorker — gate OFF (default)", () => {
     await expect(spawnWorker({
       pluginId: "local-indexer",
       workerId: "embed:primary",
-      command: "/opt/worker", control: "output-only-v1" as const,
+      command: workerCommand(), control: "output-only-v1" as const,
     })).rejects.toThrow(/invalid workerId/);
     await expect(spawnWorker({
       pluginId: "local-indexer",
       workerId: "embed?primary",
-      command: "/opt/worker", control: "output-only-v1" as const,
+      command: workerCommand(), control: "output-only-v1" as const,
     })).rejects.toThrow(/invalid workerId/);
     await expect(spawnWorker({
       pluginId: "local-indexer",
       workerId: "Embed",
-      command: "/opt/worker", control: "output-only-v1" as const,
+      command: workerCommand(), control: "output-only-v1" as const,
     })).rejects.toThrow(/invalid workerId/);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("spawns a bare worker name from its absolute PATH location, so existing specs keep working", async () => {
+    const programs = installProgramsOnPath(["ave-worker-on-path"]);
+    try {
+      spawnMock.mockReturnValueOnce(new StubWorkerChild());
+      const worker = await spawnWorker(workerOptions({ command: "ave-worker-on-path" }));
+      expect(spawnMock.mock.calls[0]?.[0]).toBe(programs.program("ave-worker-on-path"));
+      worker.stop();
+    } finally {
+      await programs.restore();
+    }
+  });
+
+  it("refuses a worker name reachable only through the cwd or empty and relative PATH entries, and a relative path", async () => {
+    await withPlantedProgram(["ave-planted-worker"], async () => {
+      for (const [command, message] of [
+        ["ave-planted-worker", /'ave-planted-worker' was not found on PATH/u],
+        ["./ave-planted-worker", /'\.\/ave-planted-worker' is a relative path\. Use an absolute path or a program name on PATH/u],
+      ] as const) {
+        await expect(spawnWorker(workerOptions({ command }))).rejects.toThrow(message);
+      }
+    });
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
@@ -380,7 +466,7 @@ describe("spawnWorker — gate OFF (default)", () => {
     // Plain spawn with the EXACT command + args, shell:false. stdin is piped: it is the host's liveness pipe, the one EOF a worker of a crashed or killed host ever gets.
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [cmd, args, opts] = spawnMock.mock.calls[0] as [string, string[], { shell: boolean; stdio: unknown[] }];
-    expect(cmd).toBe("/opt/worker");
+    expect(cmd).toBe(workerCommand());
     expect(args).toEqual(["--serve"]);
     expect(opts.shell).toBe(false);
     expect(opts.stdio).toEqual(["pipe", "pipe", "pipe"]);
@@ -406,7 +492,159 @@ describe("spawnWorker — gate OFF (default)", () => {
 
 // Gate ON (macOS) — wrapped spawn + state directory + reviewer; no socket on any platform
 
+describe("spawnWorker — launcher environment", () => {
+  it.each(["linux", "darwin"] as const)("keeps worker environment inside the %s wrap", async platform => {
+    setProcessPlatform(platform);
+    gateActive = true;
+    vi.stubEnv("BASH_ENV", "inert-fixture");
+    vi.stubEnv("LD_PRELOAD", "inert-fixture");
+    vi.stubEnv("DYLD_INSERT_LIBRARIES", "inert-fixture");
+    wrapWorkerCommandMock.mockImplementationOnce(async command => {
+      const options = {
+        command,
+        needsNetworkRestriction: false,
+        readConfig: undefined,
+        writeConfig: undefined,
+        setEnvVars: { SANDBOX_RUNTIME: "1" },
+        binShell: process.execPath.replaceAll("\\", "/"),
+      };
+      const wrapper = platform === "linux"
+        ? await wrapCommandWithSandboxLinux({ ...options, bwrapPath: "/usr/bin/bwrap", allowAllUnixSockets: true, allowNestedUserNamespaces: true })
+        : wrapCommandWithSandboxMacOS(options);
+      return { argv: ["/bin/bash", "-c", wrapper], env: process.env };
+    });
+    const child = new StubWorkerChild();
+    spawnMock.mockReturnValueOnce(child);
+
+    try {
+      const canary = "-worker-canary=quoted ' value\nnext line";
+      await spawnWorker(workerOptions({ env: { WORKER_PROBE: canary } }));
+      const [, args, launch] = spawnMock.mock.calls[0] ?? [];
+      const options = launch as { env: NodeJS.ProcessEnv; stdio: unknown } | undefined;
+      expect(options?.env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHLVL: "1" });
+      expect(options?.stdio).toEqual(["pipe", "pipe", "pipe", "ignore", "pipe", "pipe"]);
+      const cmdline = wrapWorkerCommandMock.mock.calls[0]?.[0];
+      expect(cmdline).not.toContain("worker-canary");
+      expect(JSON.stringify(args)).not.toContain("worker-canary");
+      expect(child.stdio[4]?.read()?.toString().split("\0")).toContain(`WORKER_PROBE=${canary}`);
+      const words = parseSandboxWrappedWords(args?.[1] ?? "").map(word => word.value);
+      expect(words).toContain(platform === "linux" ? "/usr/bin/bwrap" : "/usr/bin/sandbox-exec");
+      expect(words.at(-1)).toBe(cmdline);
+    } finally {
+      child.emit("exit", 0, null);
+      if (platform === "linux") cleanupBwrapMountPoints();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each(["BASH_ENV", "ENV", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "PATH", "bad=name"])("refuses %s before wrapping", async name => {
+    setProcessPlatform("linux");
+    gateActive = true;
+    const child = new StubWorkerChild();
+    spawnMock.mockReturnValueOnce(child);
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["/bin/bash", "-c", "wrapped"], env: {} });
+    try {
+      await expect(spawnWorker(workerOptions({ env: { [name]: "inert-fixture" } }))).rejects.toMatchObject({
+        name: "LauncherEnvironmentError",
+        code: "launcher-environment-refused",
+      });
+      expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+      expect(spawnMock).not.toHaveBeenCalled();
+    } finally {
+      child.emit("exit", 0, null);
+    }
+  });
+
+  it.each(["Path", "systemroot", "WinDir", "systemdrive"])("reserves the Windows launcher key %s regardless of case", async name => {
+    setProcessPlatform("win32");
+    await expect(spawnWorker(workerOptions({ env: { [name]: "inert-fixture" } }))).rejects.toMatchObject({
+      code: "launcher-environment-refused",
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("spawnWorker — gate ON (macOS)", () => {
+  it.each([false, true])("resolves the same POSIX worker from PATH with confinement %s", async (confined) => {
+    setProcessPlatform("darwin");
+    gateActive = confined;
+    const command = "ave-worker-on-path";
+    const programs = installProgramsOnPath([command], "darwin");
+    const child = new StubWorkerChild();
+    spawnMock.mockReturnValueOnce(child);
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["/bin/bash", "-c", "wrapped"], env: {} });
+    try {
+      vi.stubEnv("PATH", `:.:relative:${programs.dir}`);
+      const worker = await spawnWorker(workerOptions({ command }));
+      if (confined) expect(wrapWorkerCommandMock.mock.calls[0]?.[0]).toContain(`'${programs.program(command)}'`);
+      else expect(spawnMock.mock.calls[0]?.[0]).toBe(programs.program(command));
+      worker.stop();
+      child.emit("exit", 0, null);
+    } finally {
+      vi.unstubAllEnvs();
+      await programs.restore();
+    }
+  });
+
+  it.each([false, true])("refuses a POSIX worker found only through relative PATH entries with confinement %s", async (confined) => {
+    setProcessPlatform("darwin");
+    gateActive = confined;
+    const command = "ave-planted-worker";
+    await withPlantedProgram([command], async () => {
+      await expect(spawnWorker(workerOptions({ command })))
+        .rejects.toThrow(/was not found on PATH/u);
+    });
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("refuses a Windows current-drive-relative command with confinement %s", async (confined) => {
+    setProcessPlatform("win32");
+    gateActive = confined;
+    await expect(spawnWorker(workerOptions({ command: "\\Tools\\worker.exe", stateDirectory: true })))
+      .rejects.toThrow(/use an absolute path or a program name on PATH/iu);
+    expect(mkdirMock).not.toHaveBeenCalled();
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a relative command with guidance before allocating or wrapping a worker", async () => {
+    setProcessPlatform("darwin");
+    gateActive = true;
+    await expect(spawnWorker(workerOptions({ command: "./worker", stateDirectory: true })))
+      .rejects.toThrow(/use an absolute path or a program name on PATH/iu);
+    expect(mkdirMock).not.toHaveBeenCalled();
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a setup failure byte", true],
+    ["no status byte", false],
+  ])("logs a setup failure only from the target status pipe: %s", async (_name, failed) => {
+    workerWarnings.length = 0;
+    setProcessPlatform("darwin");
+    gateActive = true;
+    setActiveSandboxCapability({
+      kind: "asrt", confidence: "verified", platform: "darwin", reason: "test",
+      confines: { filesystem: true, process: true, network: true },
+    });
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["/bin/bash", "-c", "wrapped"], env: { ...process.env } });
+    const child = new StubWorkerChild();
+    const status = new PassThrough();
+    child.stdio = [child.stdin, child.stdout, child.stderr, null, new PassThrough(), status];
+    spawnMock.mockReturnValueOnce(child);
+    await spawnWorker(workerOptions({ args: [] }));
+
+    child.exitCode = 1;
+    child.emit("exit", 1, null);
+    status.end(failed ? Buffer.from([1]) : undefined);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    const reported = workerWarnings.some(message => message.includes("sandbox target environment setup failed"));
+    expect(reported).toBe(failed);
+    child.emit("close", 1, null);
+  });
+
   it("wraps with the FS jail only, grants the host-made state dir, registers no socket, marks wrapped", async () => {
     setProcessPlatform("darwin");
     gateActive = true;
@@ -441,8 +679,7 @@ describe("spawnWorker — gate ON (macOS)", () => {
     const stateDir = join(aveHome(), "plugins", "local-indexer", "workers", "embed");
     expect(mkdirMock).toHaveBeenCalledWith(stateDir, { mode: 0o700 });
     expect(chmodSyncMock).toHaveBeenCalledWith(stateDir, 0o700);
-    expect(capturedEnv[WORKER_STATE_DIR_ENV]).toBe(stateDir);
-    expect(capturedEnv.HOME).toBe(SANDBOX_HOME);
+    expect(capturedEnv).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHLVL: "1" });
 
     // No platform registers a control socket any more: the channel is the worker's own stdin/stdout.
     expect(registerUdsMock).not.toHaveBeenCalled();
@@ -460,7 +697,10 @@ describe("spawnWorker — gate ON (macOS)", () => {
     expect(options.filesystem.allowRead).toContain(stateDir);
     expect(options.filesystem.allowWrite).not.toContain("/tmp/ave-test-sandbox-tmp");
     expect(options.filesystem.denyRead).toContain("/tmp/ave-test-sandbox-tmp");
-    expect(cmdline.startsWith(`'/usr/bin/env' 'TMPDIR=${pluginTempDir}' `)).toBe(true);
+    expect(cmdline).toContain(`'${pluginTempDir}'`);
+    const assignments = child.stdio[4]?.read()?.toString().split("\0");
+    expect(assignments).toContain(`${WORKER_STATE_DIR_ENV}=${stateDir}`);
+    expect(assignments).toContain(`HOME=${SANDBOX_HOME}`);
     expect(options.filesystem.allowWrite).toContain(SANDBOX_HOME);
     expect(options.filesystem.allowRead).toContain(SANDBOX_HOME);
     expect(options.filesystem.allowWrite).toContain("/data/index");
@@ -482,14 +722,14 @@ describe("spawnWorker — gate ON (macOS)", () => {
     expect(options.filesystem.denyWrite).toContain("/home/u/Library/LaunchAgents");
     // The argv is the plugin's own: nothing names a socket.
     expect(cmdline).toContain("--serve");
-    expect(cmdline).not.toMatch(/sock|--uds/);
+    expect(cmdline).not.toMatch(/--uds/);
 
     // Spawn ran the WRAPPED argv, shell:false, stdin piped (the liveness pipe reaches the worker through the wrapper on this path too).
     const [scmd, sargs, sopts] = spawnMock.mock.calls[0] as [string, string[], { shell: boolean; stdio: unknown[] }];
     expect(scmd).toBe("/bin/bash");
     expect(sargs[0]).toBe("-c");
     expect(sopts.shell).toBe(false);
-    expect(sopts.stdio).toEqual(["pipe", "pipe", "pipe"]);
+    expect(sopts.stdio).toEqual(["pipe", "pipe", "pipe", "ignore", "pipe", "pipe"]);
 
     expect(worker.control).toBe("output-only-v1");
     expect(isPluginWorkerWrapped("local-indexer", "embed")).toBe(true);
@@ -632,7 +872,7 @@ describe("spawnWorker — gate ON (linux)", () => {
     wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["/bin/bash", "-c", "wrapped"], env: { ...process.env } });
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
-    const worker = await spawnWorker({ pluginId: "sandbox-candidate", workerId: "index", command: "/opt/worker", control: "output-only-v1" });
+    const worker = await spawnWorker({ pluginId: "sandbox-candidate", workerId: "index", command: workerCommand(), control: "output-only-v1" });
     let completed = false;
     const waiting = waitForPluginWorkersStopped("sandbox-candidate").then(() => { completed = true; });
     worker.stop();
@@ -792,7 +1032,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
   it("drains trailing output after process exit before publishing completion", async () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
-    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "drain", command: "/opt/worker", control: "output-only-v1" as const });
+    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "drain", command: workerCommand(), control: "output-only-v1" as const });
     const events: unknown[] = [];
     worker.onStdout((chunk) => events.push(["stdout", chunk]));
     worker.onStderr((chunk) => events.push(["stderr", chunk]));
@@ -818,7 +1058,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
   it("logs a live output listener that throws, keeps the worker and still delivers to the other listeners", async () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
-    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "throwing", command: "/opt/worker", control: "output-only-v1" as const });
+    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "throwing", command: workerCommand(), control: "output-only-v1" as const });
     const seen: string[] = [];
     worker.onStdout(() => {
       throw new Error("listener bug");
@@ -835,7 +1075,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
   it("stops and clears both output queues when a replay listener throws", async () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
-    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "replay", command: "/opt/worker", control: "output-only-v1" as const });
+    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "replay", command: workerCommand(), control: "output-only-v1" as const });
     child.stdout.write("first");
     child.stdout.write("second");
     child.stderr.write("warning");
@@ -852,7 +1092,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
   it.each([null, undefined, 0, ""])("retains a falsy replay failure (%s)", async (failure) => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
-    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "falsy-replay", command: "/opt/worker", control: "output-only-v1" as const });
+    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "falsy-replay", command: workerCommand(), control: "output-only-v1" as const });
     child.stdout.write("captured");
     const caught = (run: () => void) => {
       try {
@@ -979,7 +1219,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
       },
     });
     const reply = await dispatcher.handle(hostApiRequest("spawnWorker", [{
-      workerId: "embed", command: "/opt/worker", control: "output-only-v1",
+      workerId: "embed", command: workerCommand(), control: "output-only-v1",
     }]));
     expect(() => settleHostApiReply(reply)).toThrow(expect.objectContaining({
       code: "host-internal", message: "Host request failed.",
@@ -1030,6 +1270,7 @@ describe("spawnWorker — Windows with gate ON", () => {
           workerId: "embed",
           command: pythonExecutable, control: "output-only-v1" as const,
           args: [workerScript, "--serve"],
+          env: { WORKER_PROBE: "-a=b" },
           allowReadPaths: [pythonExecutable, workerScript],
           allowWritePaths: [indexDir],
           stateDirectory: true,
@@ -1048,6 +1289,7 @@ describe("spawnWorker — Windows with gate ON", () => {
       allowRead: [SANDBOX_HOME, stateDir, pythonExecutable, workerScript],
       allowWrite: [SANDBOX_HOME, stateDir, indexDir],
       assertStillValid: expect.any(Function),
+      sandboxHome: SANDBOX_HOME,
     });
 
     expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);
@@ -1088,18 +1330,12 @@ describe("spawnWorker — Windows with gate ON", () => {
     ];
     expect(workerCmd).toBe("srt-win.exe");
     expect(workerArgs[0]).toBe("exec");
-    expect(workerOpts.env?.SystemRoot).toBe("C:\\Windows");
-    expect(workerOpts.env?.WINDIR).toBe("C:\\Windows");
-    expect(workerOpts.env?.COMSPEC).toBe("C:\\Windows\\System32\\cmd.exe");
-    expect(workerOpts.env?.PATHEXT).toBe(".COM;.EXE;.BAT;.CMD");
-    expect(workerOpts.env?.HOME).toBe(SANDBOX_HOME);
-    expect(workerOpts.env?.USERPROFILE).toBe(SANDBOX_HOME);
-    expect(workerOpts.env?.LOCALAPPDATA).toBe(`${SANDBOX_HOME}/AppData/Local`);
-    expect(workerOpts.env?.TEMP).toBe("C:\\Users\\test\\AppData\\Local\\Temp");
-    expect(workerOpts.env?.TMP).toBe("C:\\Users\\test\\AppData\\Local\\Temp");
-    expect(workerOpts.env?.HTTPS_PROXY).toBe("http://127.0.0.1:60080");
-    expect(workerOpts.env?.ANTHROPIC_API_KEY).toBeUndefined();
-    expect(workerOpts.env?.AVE_INTERNAL_SECRET).toBeUndefined();
+    expect(workerOpts.env).toEqual({
+      Path: "C:\\Windows\\System32",
+      SystemRoot: "C:\\Windows",
+      WINDIR: "C:\\Windows",
+      SystemDrive: "C:",
+    });
     expect(workerOpts.shell).toBe(false);
     expect(workerOpts.stdio).toEqual(["pipe", "pipe", "pipe"]);
 
@@ -1112,6 +1348,7 @@ describe("spawnWorker — Windows with gate ON", () => {
     expect(relayedEnv[WORKER_STATE_DIR_ENV]).toBe(stateDir);
     expect(relayedEnv.HOME).toBe(SANDBOX_HOME);
     expect(relayedEnv.USERPROFILE).toBe(SANDBOX_HOME);
+    expect(relayedEnv.WORKER_PROBE).toBe("-a=b");
     expect(relayedEnv.NODE_OPTIONS).toBe("--preserve-symlinks --preserve-symlinks-main");
     expect(relayedEnv.PATH).toBeUndefined();
     expect(relayedEnv.PATHEXT).toBeUndefined();

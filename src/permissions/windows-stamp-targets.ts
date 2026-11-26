@@ -1,3 +1,4 @@
+// Sandbox runtime package types stay here on purpose: this module builds or feeds a package config. They go when the package dependency goes.
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { containsGlobCharsWin, expandTilde, expandWindowsEnvRefs, globPatternBaseDir, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";

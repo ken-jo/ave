@@ -29,7 +29,6 @@ export interface SandboxWindowsStatusInfo {
   helperError?: "srt-win-not-found" | "srt-win-integrity-mismatch";
   /** Confinement is refused until this private directory verifies at restart. */
   homePrivacyError?: {
-    approvedForSession?: boolean;
     path: string;
     category: AveHomePrivacyFailureCategory;
     extraPrincipals?: AveHomePrincipal[];
@@ -105,7 +104,7 @@ export type SandboxStartFailureCause =
   | "init-failed";
 
 /** Why the shell sandbox is requested for this session but host shells still run without it: a start failure, a platform without a sandbox, a Windows sandbox that is active
- * but cannot contain one-shot shells, or (`shell-not-contained`) an active sandbox that cannot contain shells at all, in which case shell commands are blocked rather than run. */
+ * but cannot contain one-shot shells, or (`shell-not-contained`) an active sandbox that cannot contain shells at all, in which case shell commands ask for approval and run without it. */
 export type ShellSandboxUnavailableCause =
   | SandboxStartFailureCause
   | "platform-unsupported"
@@ -153,7 +152,8 @@ export interface ShellSandboxStatusInput {
     | "platform-unsupported"
     | "windows-partial-shell-acl-unsafe"
     | "requested-sandbox-unavailable"
-    | "active-sandbox-not-shell-contained";
+    | "active-sandbox-not-shell-contained"
+    | "home-privacy-helper-unavailable";
 }
 
 /** Decide the shell sandbox state from what the host observed. The one place that decides it: the IPC snapshot calls it, the renderer only renders
@@ -182,6 +182,9 @@ export function describeShellSandboxStatus(input: ShellSandboxStatusInput): Shel
   }
   if (input.shellPlanFallback === "windows-partial-shell-acl-unsafe") {
     return { ...base, state: "unavailable", causes: ["windows-shell-not-contained"] };
+  }
+  if (input.shellPlanFallback === "home-privacy-helper-unavailable") {
+    return { ...base, state: "unavailable", causes: ["ave-home-privacy-failed"] };
   }
   if (input.shellPlanFallback === "active-sandbox-not-shell-contained") {
     return { ...base, state: "unavailable", causes: ["shell-not-contained"] };
@@ -249,12 +252,14 @@ export function maxEgressGrantScope(strength: EgressIdentityStrength): EgressGra
 /** Why Microsoft Execution Containers cannot carry agent shells on this host (`mxc-windows.ts`). */
 const MXC_UNAVAILABLE_REASONS = {
   "not-windows": true, "unsupported-arch": true, "binary-missing": true, "probe-failed": true,
-  "tier-unsupported": true, "request-rejected": true,
+  "container-unavailable": true, "request-rejected": true,
   /** Installed launcher integrity does not match its pin. */
   "launcher-mismatch": true,
   "powershell-start-failed": true,
   /** An interactive runtime start has not been established. */
   "unverified-session": true,
+  /** The container runtime root was not proved private, so no container starts. */
+  "runtime-root-unproved": true,
 } as const;
 export type SandboxMxcUnavailableReason = keyof typeof MXC_UNAVAILABLE_REASONS;
 
@@ -307,8 +312,8 @@ export function assertSandboxWindowsExtensionPlan(value: unknown): asserts value
       case "checking": if (plan.selectedBackend !== "none" || plan.reason !== "checking") fail(); break;
       case "ready": if (plan.selectedBackend !== "mxc" || plan.reason !== "ready") fail(); break;
       case "fallback": if (plan.selectedBackend !== "srt-win" || ["not-requested", "checking", "ready", "ancestor-already-admitted"].includes(plan.reason)) fail(); break;
-      case "unavailable": if (plan.selectedBackend !== "none" || ["not-requested", "checking", "ready", "readiness-deadline", "ancestor-already-admitted"].includes(plan.reason)) fail(); break;
-      case "rejected": if (plan.selectedBackend !== "none" || !["readiness-deadline", "ancestor-already-admitted", "request-rejected"].includes(plan.reason)) fail(); break;
+      case "unavailable": if (plan.selectedBackend !== "none" || ["not-requested", "checking", "ready", "ancestor-already-admitted"].includes(plan.reason)) fail(); break;
+      case "rejected": if (plan.selectedBackend !== "none" || !["ancestor-already-admitted", "request-rejected"].includes(plan.reason)) fail(); break;
       default: fail();
     }
   }
@@ -333,8 +338,6 @@ export interface SandboxWindowsSubstrateInfo {
   readonly windowsBuild: string | null;
   /** Whether srt-win (the one-time administrator install) was ready at boot. */
   readonly srtWinReady: boolean;
-  /** Live shell-only consent for the container proxy's local-network and loopback access. */
-  readonly shellLocalNetworkAccess: boolean;
   /** Bash/PowerShell tool commands: each in its own MXC container (`mxc`), or; with srt-win active and no MXC; as
    * an ordinary process after a per-command approval (`approved-host`), or without the sandbox at all (`none`). */
   readonly shells: "mxc" | "approved-host" | "none";
@@ -384,6 +387,8 @@ export interface SandboxCapabilityInfo {
   boot?: SandboxBootOutcomeView | null;
   /** Windows: which substrate carries shells and extensions this boot, and how strongly their egress is attributed. `null` off Windows, and on Windows when boot never ran the gate. */
   windowsSubstrate?: SandboxWindowsSubstrateInfo | null;
+  /** Windows: no sandboxed process can start this run because the container runtime root is unproved; set whatever the sandbox setting. */
+  sandboxHomesUnavailable?: boolean;
   /** The shell sandbox as the chat input's permission card shows it. */
   shell: ShellSandboxStatusInfo;
   /** What the sandbox actually confines on this platform when active. */

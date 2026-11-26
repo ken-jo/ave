@@ -93,9 +93,13 @@ export class ProjectRuleScopes {
       console.error(`[permission] ${error.message}`);
       state = { ok: false, projectRoot: location.projectRoot, error };
     }
+    // A project's first load changes no decision made so far: nothing is decided for a project before its rules are loaded (`stateFor`
+    // throws), and no other project reads them. Only a load that replaces what was already read is a policy change. Without this, a
+    // session that starts work in another folder (each stage of a template run has its own) would void every approval card still open.
+    const replaced = this.states.has(location.identity);
     this.states.set(location.identity, state);
     this.policyVersions.set(location.identity, loadedPolicy && policyVersion !== undefined && isPersistedPolicyVersionCurrent(policyVersion) ? policyVersion : undefined);
-    this.revision += 1;
+    if (replaced) this.revision += 1;
     this.stamps.set(location.identity, stamp);
     return state;
   }

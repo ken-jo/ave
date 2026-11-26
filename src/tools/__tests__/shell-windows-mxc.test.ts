@@ -16,6 +16,13 @@ const childProcessMock = vi.hoisted(() => ({
 }));
 const installationMock = vi.hoisted(() => ({ resolve: vi.fn() }));
 const sandboxHomeMock = vi.hoisted(() => ({ onCreate: vi.fn<() => void>(), onCleanup: vi.fn<(home: string) => void>() }));
+// The runtime root start-up proved, or the refusal of one that was not.
+const startRoot = vi.hoisted(() => vi.fn((): string => "C:\\ave-fixture\\cache\\mxc-runtime"));
+// While win32 is simulated, the runtime root floor row is on the simulated drive like every other host-derived path.
+vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => ({
+  ...(await import("../../__tests__/support/simulated-win32-drive.js")).simulatedRuntimeRoot(await importOriginal()),
+  requireMxcContainerStartRoot: () => startRoot(),
+}));
 vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: installationMock.resolve }));
 const mxcLaunchMock = vi.hoisted(() => ({
   prepare: vi.fn(),
@@ -31,7 +38,11 @@ vi.mock("node:child_process", async (importOriginal) => {
       ? Reflect.apply(actual.execFileSync, undefined, args) : Reflect.apply(childProcessMock.execFileSync, undefined, args),
   };
 });
-vi.mock("../mxc-shell-launch.js", () => ({ prepareMxcShellLaunch: mxcLaunchMock.prepare }));
+// Only the launch is replaced; the rest of the module stays real so its other exports keep resolving.
+vi.mock("../mxc-shell-launch.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../mxc-shell-launch.js")>(),
+  prepareMxcShellLaunch: mxcLaunchMock.prepare,
+}));
 // Mock Windows profile creation on POSIX so backslash paths cannot become entries in the working tree.
 vi.mock("../../permissions/sandbox-process-home.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../permissions/sandbox-process-home.js")>();
@@ -60,7 +71,8 @@ import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "
 import { setAgentTerminalObservationSink } from "../agent-terminal-observation.js";
 import { MAX_POWERSHELL_PARSER_RESPONSE_BYTES } from "../powershell-parser-response.js";
 import type { ToolExecutionContext } from "../types.js";
-import { MXC_BASH_UNAVAILABLE_MESSAGE, rankMxcFilesystem } from "../../permissions/mxc-windows.js";
+import { MXC_BASH_UNAVAILABLE_MESSAGE } from "../../permissions/mxc-windows.js";
+import { rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 import { permissionsFilePath } from "../../permissions/permissions-store.js";
 import { userApprovalFilePath } from "../../permissions/user-approval-store.js";
 import { egressGrantFilePath } from "../../permissions/egress-grants.js";
@@ -79,7 +91,6 @@ import {
   setActiveSandboxCapability,
   setShellSandboxRequestedAtBoot,
   setWindowsSandboxSubstrate,
-  setWindowsShellLocalNetworkAccess,
 } from "../../permissions/sandbox-capability.js";
 import {
   mxcShellCapability,
@@ -145,7 +156,7 @@ function bootMxcShells(): void {
   setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability(windowsProxyOnlyCapability());
   const { substrate } = planWindowsSandbox({
-    shellRequested: true, shellLocalNetworkAccess: true,
+    shellRequested: true,
     workerRequested: false,
     mxc: { state: "available" },
     windowsBuild: "10.0.26300.9711",
@@ -163,78 +174,55 @@ function context(toolUseId: string): ToolExecutionContext {
   };
 }
 
+// The container route goes away mid-flight: the substrate is withdrawn, so no MXC shell capability is published.
+const endMxcRoute = (): void => __resetWindowsSandboxSubstrateForTest();
+
 function executePowerShell(toolContext: ToolExecutionContext, command = "Write-Output hi") {
   return new PowerShellTool().execute({ command, timeoutSeconds: 7 }, toolContext);
 }
 
 describe("builtin shell — Windows MXC containers", () => {
-  it("never prepares an MXC parser or command with local-network access off", async () => {
-    bootMxcShells();
-    setWindowsShellLocalNetworkAccess(false);
-    const result = await executePowerShell(context("local-network-off"));
-    expect(result.isError).toBe(true);
-    expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", sandboxed: false, requiresExplicitUserApproval: true });
-    expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
-    expect(childProcessMock.spawn.mock.calls.some(([file]) => file === WXC_EXEC)).toBe(false);
-  });
-
-  it("refuses a prepared parser when consent is disabled before native spawn", async () => {
+  it("refuses a prepared parser when the container route ends before native spawn", async () => {
     bootMxcShells();
     const prepare = mxcLaunchMock.prepare.getMockImplementation();
     if (!prepare) throw new Error("Container preparation fixture is unavailable");
     mxcLaunchMock.prepare.mockImplementation(async (input, lifecycle) => {
       const launch = await prepare(input, lifecycle);
-      setWindowsShellLocalNetworkAccess(false);
+      endMxcRoute();
       return launch;
     });
-    const result = await executePowerShell(context("local-network-disabled-during-parser"));
+    const result = await executePowerShell(context("route-ended-during-parser"));
     expect(result.isError).toBe(true);
     expect(mxcLaunchMock.prepare).toHaveBeenCalledOnce();
     expect(childProcessMock.spawn.mock.calls.some(([file]) => file === WXC_EXEC)).toBe(false);
     expect(mxcLaunchMock.release).toHaveBeenCalledOnce();
   });
 
-  it("refuses the command when consent is disabled after its parser completed", async () => {
+  it("refuses the command when the container route ends after its parser completed", async () => {
     bootMxcShells();
     const prepare = mxcLaunchMock.prepare.getMockImplementation();
     if (!prepare) throw new Error("Container preparation fixture is unavailable");
     mxcLaunchMock.prepare.mockImplementation(async (input, lifecycle) => {
       const launch = await prepare(input, lifecycle);
-      if (!isParserLaunch(input)) setWindowsShellLocalNetworkAccess(false);
+      if (!isParserLaunch(input)) endMxcRoute();
       return launch;
     });
-    const result = await executePowerShell(context("local-network-disabled-before-command"));
+    const result = await executePowerShell(context("route-ended-before-command"));
     expect(result.isError).toBe(true);
     expect(mxcLaunchMock.prepare).toHaveBeenCalledTimes(2);
     expect(childProcessMock.spawn.mock.calls.filter(([file]) => file === WXC_EXEC)).toHaveLength(1);
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
   });
 
-  it("does not restore an old parser admission after consent is switched off and on", async () => {
-    bootMxcShells();
-    const prepare = mxcLaunchMock.prepare.getMockImplementation();
-    if (!prepare) throw new Error("Container preparation fixture is unavailable");
-    mxcLaunchMock.prepare.mockImplementation(async (input, lifecycle) => {
-      const launch = await prepare(input, lifecycle);
-      setWindowsShellLocalNetworkAccess(false);
-      setWindowsShellLocalNetworkAccess(true);
-      return launch;
-    });
-    const result = await executePowerShell(context("old-local-network-admission"));
-    expect(result.isError).toBe(true);
-    expect(childProcessMock.spawn.mock.calls.some(([file]) => file === WXC_EXEC)).toBe(false);
-    expect(mxcLaunchMock.release).toHaveBeenCalledOnce();
-  });
-
-  it("refuses the command at admission, as an unavailable spawn, when consent is disabled while its parser runs", async () => {
+  it("refuses the command at admission, as an unavailable spawn, when the container route ends while its parser runs", async () => {
     bootMxcShells();
     const spawn = childProcessMock.spawn.getMockImplementation();
     if (spawn === undefined) throw new Error("Missing child spawn fixture");
     childProcessMock.spawn.mockImplementation((file: string, args: readonly string[], options: unknown) => {
-      if (args.includes(PARSER_REQUEST)) setWindowsShellLocalNetworkAccess(false);
+      if (args.includes(PARSER_REQUEST)) endMxcRoute();
       return spawn(file, args, options);
     });
-    const result = await executePowerShell(context("local-network-disabled-at-command-admission"));
+    const result = await executePowerShell(context("route-ended-at-command-admission"));
     expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
     expect(result.output).toBe("PowerShell spawn failed: container shell route is no longer available");
     // Only the parser was prepared: the command stopped before allocating anything.
@@ -475,8 +463,8 @@ describe("builtin shell — Windows MXC containers", () => {
           return target === parent || target.startsWith(parent + "/");
         });
       };
-      // Execution controls remain protected, including the whole settings directory.
-      for (const entry of [join(".git", "hooks"), join(".git", "config"), ".vscode", ".husky", ".claude", ".envrc"]) {
+      // Execution controls remain protected, including a whole editor settings directory.
+      for (const entry of [join(".git", "hooks"), join(".git", "config"), ".vscode", ".husky", ".idea", ".envrc"]) {
         expect(writeDenyCovers(join(workspace, entry)), entry).toBe(true);
       }
       for (const store of [permissionsFilePath(), userApprovalFilePath(), egressGrantFilePath()]) {
@@ -484,7 +472,7 @@ describe("builtin shell — Windows MXC containers", () => {
       }
       // Windows keeps denied workspace controls read-only when present and denied when absent.
       if (process.platform === "win32" && ORIGINAL_PLATFORM === "win32") {
-        const grants = rankMxcFilesystem({ ...filesystem, protectedFloor: [] }, existsSync);
+        const grants = rankMxcLists({ ...filesystem, protectedFloor: [] }, existsSync);
         // Compare Windows paths case-insensitively, including canonical drive letters.
         const folded = (paths: readonly string[]) => paths.map(pathKey);
         expect(folded(grants.readwrite)).toContain(pathKey(workspace));
@@ -513,6 +501,37 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(result.output).toBe("PowerShell spawn failed: could not create isolated HOME: profile directory failed");
     expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
     expect(childProcessMock.spawn).not.toHaveBeenCalled();
+  });
+
+  it("carries the named refusal, and prepares nothing, when no sandbox HOME can be made", async () => {
+    bootMxcShells();
+    const { SandboxHomeUnavailableError } = await import("../../permissions/sandbox-home-registry.js");
+    const { t } = await import("../../i18n/index.js");
+    sandboxHomeMock.onCreate.mockImplementationOnce(() => { throw new SandboxHomeUnavailableError(new Error("root unproved")); });
+    const result = await executePowerShell(context("ps-mxc-home-unavailable"));
+    expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+    expect(result.output).toBe(`PowerShell spawn failed: could not create isolated HOME: ${t("sandboxPolicy.homesUnavailable")}: root unproved`);
+    expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
+    expect(childProcessMock.spawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses the container while the runtime root is not proved, and releases its HOME", async () => {
+    bootMxcShells();
+    const { prepareMxcShellLaunch } = await vi.importActual<typeof import("../mxc-shell-launch.js")>("../mxc-shell-launch.js");
+    mxcLaunchMock.prepare.mockImplementation(prepareMxcShellLaunch);
+    const resolveLauncher = vi.spyOn(mxcWindows, "resolveHostWxcExecPath").mockResolvedValue(WXC_EXEC);
+    startRoot.mockImplementation(() => { throw new Error("Container runtime root was not established when the sandbox started"); });
+    try {
+      const result = await executePowerShell(context("ps-mxc-root-unproved"));
+      expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+      expect(result.output).toMatch(/^PowerShell spawn failed: .*not established/u);
+      expect(resolveLauncher).not.toHaveBeenCalled();
+      expect(childProcessMock.spawn.mock.calls.some((call) => call[0] === WXC_EXEC)).toBe(false);
+      expect(sandboxHomeMock.onCleanup).toHaveBeenCalledOnce();
+    } finally {
+      startRoot.mockReset();
+      startRoot.mockReturnValue("C:\\ave-fixture\\cache\\mxc-runtime");
+    }
   });
 
   it.each([false, true])("fails closed on policy delivery failure with headless=%s", async (headless) => {
@@ -934,7 +953,7 @@ describe("builtin shell — Windows MXC containers", () => {
     return closeRelay;
   }
 
-  it.each(["consent revocation", "cancellation"] as const)("reports the transport open failure first after %s during preparation", async (trigger) => {
+  it.each(["route loss", "cancellation"] as const)("reports the transport open failure first after %s during preparation", async (trigger) => {
     bootMxcShells();
     const abort = new AbortController();
     const opening = deferred<void>();
@@ -945,7 +964,7 @@ describe("builtin shell — Windows MXC containers", () => {
     }, new Error("invocation release observer failed"));
     const execution = executePowerShell({ ...context("ps-mxc-open-error"), abortSignal: abort.signal });
     await Promise.race([opening.promise, execution.then(() => { throw new Error("shell settled before opening the transport"); })]);
-    if (trigger === "consent revocation") setWindowsShellLocalNetworkAccess(false);
+    if (trigger === "route loss") endMxcRoute();
     else abort.abort();
     transportFailure.resolve(new Error("policy transport open failed"));
     const result = await execution;

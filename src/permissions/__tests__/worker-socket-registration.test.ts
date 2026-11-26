@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { registerLinuxWrapperProgramFixtures } from "../../__tests__/support/linux-wrapper-programs.js";
 import {
   initializeAsrtSandbox,
   registerWorkerUnixSocketDir,
@@ -39,7 +40,9 @@ vi.mock("node:child_process", () => ({
   },
 }));
 
+
 describe("worker socket directory ownership", () => {
+  registerLinuxWrapperProgramFixtures();
   const originalPlatform = process.platform;
   const dir = "/run/plugin/sockets";
   const allowed = () => manager.config?.network.allowUnixSockets ?? [];

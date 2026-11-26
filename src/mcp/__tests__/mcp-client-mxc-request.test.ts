@@ -5,6 +5,8 @@ import { PassThrough } from "node:stream";
 import { win32 as winPath } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
+import { SYNTHETIC_MXC_STAGING_PARENT } from "../../__tests__/support/mxc-staging-parent.js";
+import { escapeRegExp } from "../../shared/escape-reg-exp.js";
 
 const state = vi.hoisted(() => ({
   plan: undefined as unknown,
@@ -14,6 +16,7 @@ const state = vi.hoisted(() => ({
 
 const NODE = "C:\\Program Files\\nodejs\\node.exe";
 const SANDBOX = "C:\\ave\\mcp\\fs\\sandbox";
+const STAGING_HOME_PATTERN = new RegExp(String.raw`^${escapeRegExp(SYNTHETIC_MXC_STAGING_PARENT)}\\[0-9a-f]{32}\\home$`, "u");
 
 /** A server on owned streams answering the legacy handshake. */
 function containedServer() {
@@ -41,6 +44,11 @@ function containedServer() {
     release: async () => finish({ exitCode: 0, timedOut: false }) };
 }
 
+// The in-memory drive has no directory identities: recording the issued HOME is observed, not performed.
+vi.mock("../../permissions/sandbox-home-registry.js", async (original) => ({
+  ...await original<typeof import("../../permissions/sandbox-home-registry.js")>(),
+  recordIssuedContainerHome: vi.fn(), forgetIssuedContainerHome: vi.fn(),
+}));
 vi.mock("../../permissions/confined-child.js", async (original) => {
   const actual = await original<typeof import("../../permissions/confined-child.js")>();
   const { buildMxcConfinedChildRequest } = await import("../../permissions/mxc-confined-child-request.js");
@@ -67,6 +75,14 @@ vi.mock("../../shared/ave-home.js", async (original) => ({
   ...await original<typeof import("../../shared/ave-home.js")>(),
   aveHome: () => "C:\\ave",
 }));
+// The staging parent start-up establishes under the runtime root, as a synthetic drive-letter path.
+vi.mock("../../permissions/mxc-runtime-root.js", async (original) => {
+  const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../__tests__/support/mxc-staging-parent.js");
+  return {
+    ...await original<typeof import("../../permissions/mxc-runtime-root.js")>(),
+    mxcStagingParent: () => SYNTHETIC_MXC_STAGING_PARENT,
+  };
+});
 // Synthetic drive-letter paths: the server executable is a file, staging directories exist once made.
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
@@ -95,6 +111,9 @@ vi.mock("node:fs", async (original) => {
     readdirSync: ((path: unknown, options?: unknown) => drive(path) ? [] : actual.readdirSync(path as string, options as never)) as typeof actual.readdirSync,
     renameSync: ((from: unknown, to: unknown) => drive(from) ? undefined : actual.renameSync(from as string, to as string)) as typeof actual.renameSync,
     rmdirSync: ((path: unknown) => drive(path) ? undefined : actual.rmdirSync(path as string)) as typeof actual.rmdirSync,
+    writeFileSync: ((path: unknown, data: unknown, options?: unknown) => drive(path) ? undefined
+      : actual.writeFileSync(path as string, data as string, options as never)) as typeof actual.writeFileSync,
+    unlinkSync: ((path: unknown) => drive(path) ? undefined : actual.unlinkSync(path as string)) as typeof actual.unlinkSync,
   };
 });
 
@@ -114,7 +133,8 @@ const { unusedNetworkFetch } = await import("../../__tests__/support/network-fet
 const { governanceWithPolicy, buildPolicy, stdioApproval } = await import("./test-helpers.js");
 const { __resetWrappedMcpServersForTest } = await import("../../permissions/sandbox-capability.js");
 const { planWindowsExtensionHolder } = await import("../../permissions/mxc-extension-readiness.js");
-const { registerMxcHolderReadinessProbe } = await import("../../sandbox/wrap-bundled-command.js");
+const { registerMxcReleaseGateEvidence } = await import("../../permissions/mxc-extension-admission.js");
+const { MXC_RELEASE_GATE_EVIDENCE } = await import("../../__tests__/support/mxc-supervisor.js");
 const { setProcessPlatform } = await import("../../__tests__/support/process-platform.js");
 
 const REAL_PLATFORM = process.platform;
@@ -136,7 +156,7 @@ beforeEach(() => {
   state.requests = [];
   state.nativeStarts = 0;
   __resetWrappedMcpServersForTest();
-  unregister = registerMxcHolderReadinessProbe(async () => { throw new Error("row 2 calls the probe"); });
+  unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
 });
 
 afterEach(() => {
@@ -157,7 +177,7 @@ describe("contained MCP request", () => {
     // The host's APPDATA/LOCALAPPDATA never reach the container, even when configured: both are the staging HOME.
     expect(request!.environment!.LOCALAPPDATA).toBe(request!.environment!.HOME);
     expect(request!.environment!.APPDATA).toBe(request!.environment!.HOME);
-    expect(request!.environment!.LOCALAPPDATA).toMatch(/^C:\\ave\\mxc-staging\\[0-9a-f]{32}\\home$/u);
+    expect(request!.environment!.LOCALAPPDATA).toMatch(STAGING_HOME_PATTERN);
     expect(request!.workingDirectory).toBe(SANDBOX);
     expect(request!.inheritDefaultEnvironment).toBe(false);
     expect(request!.command.startsWith(`"${NODE}"`)).toBe(true);
@@ -168,7 +188,7 @@ describe("contained MCP request", () => {
     await mcp.connect();
     await mcp.disconnect();
     const [request] = state.requests;
-    expect(request!.workingDirectory).toMatch(/^C:\\ave\\mxc-staging\\[0-9a-f]{32}\\home$/u);
+    expect(request!.workingDirectory).toMatch(STAGING_HOME_PATTERN);
     expect(request!.workingDirectory).toBe(request!.environment!.HOME);
   });
 

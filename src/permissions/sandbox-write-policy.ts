@@ -1,7 +1,8 @@
 import { type BigIntStats, type Stats, closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+// Sandbox runtime package types stay here on purpose: this module builds or feeds a package config. They go when the package dependency goes.
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
-import { normalizeCaseForComparison, stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { normalizeCaseForComparison, stripExtendedPathPrefix } from "./sandbox-path-spelling.js";
 import { settingsFilePath } from "../data/settings-store.js";
 import { AVE_HOME_CONFIGURATION_DIRECTORY, aveHome } from "../shared/ave-home.js";
 import { inspectPhysicalFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
@@ -22,12 +23,28 @@ export function isSandboxGitMetadataEntry(entry: string): boolean {
 }
 const SANDBOX_LOADER_ENTRIES = [
   ".bash_profile", ".githooks", ".pre-commit-config.yaml", "lefthook.yml",
-  ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands", ".idea/workspace.xml",
+  ".idea/workspace.xml",
   ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky",
 ] as const;
 const SANDBOX_PROTECTED_ROOT_ENTRIES = [...new Set([
-  ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry)), ...SANDBOX_LOADER_ENTRIES,
+  // `.agents` rides with the named entries below, not as a row per root on every platform.
+  ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry) && entry !== ".agents"), ...SANDBOX_LOADER_ENTRIES,
 ])];
+
+// More entries directly beneath each write root, the same depth as the rest of this floor. `.agents` holds the skills, commands and
+// plugins agent hosts load, and is denied whole. `.ave/commands` and `.ave/hooks` are what Ave itself loads from a project
+// (custom-commands.ts, hook-source-controller.ts): the file tools ask before touching any `.ave`, and a confined command must not
+// edit them without that card. The two children are named, not `.ave` itself: under a write root that holds the Ave home,
+// `<root>/.ave` is the home, and a deny there would take the command's own HOME and temp with it. `.codex` and a project `.aws`
+// are not named (owner decision 2026-11-25).
+// Linux carries one row per root for each entry. macOS carries none here; its wrap appends rules anchored at the write roots
+// (macos-sandbox-wrap.ts), because a row per root costs the root's length for every entry, which the longest supported darwin
+// layout cannot fit in MAX_POSIX_WRITE_DENY_POLICY_BYTES, and because the `.ave` directory itself can be pinned there. The Windows
+// floor is stamped and watched per row and is not changed here.
+export const SANDBOX_NAMED_ENTRIES = [".agents", ".ave/commands", ".ave/hooks"] as const;
+function caseInsensitivePattern(path: string): string {
+  return path.replace(/[a-z]/gu, character => `[${character}${character.toUpperCase()}]`);
+}
 
 // Linux discovery depth; the admitted root is depth zero.
 export const SANDBOX_GIT_SCAN_DEPTH = 3;
@@ -67,14 +84,11 @@ const GIT_CONTROL_ENTRIES = [
 ] as const;
 const LINUX_GIT_CONTROL_ENTRIES = [...GIT_CONTROL_ENTRIES, "info/attributes"] as const;
 export const SANDBOX_BARE_REPOSITORY_ENTRIES = ["HEAD", "objects", "refs", "config"] as const;
-function caseInsensitiveGitPattern(path: string): string {
-  return path.replace(/[a-z]/gu, character => `[${character}${character.toUpperCase()}]`);
-}
 const MAC_GIT_CONTROL_GLOBS = GIT_CONTROL_ENTRIES.flatMap(entry => [
-  `/**/${caseInsensitiveGitPattern(`.git/${entry}`)}`,
-  `/**/${caseInsensitiveGitPattern(".git/modules")}/**/${caseInsensitiveGitPattern(entry)}`,
-  `/**/${caseInsensitiveGitPattern(".git/worktrees")}/*/${caseInsensitiveGitPattern(entry)}`,
-]);
+  `/**/${caseInsensitivePattern(`.git/${entry}`)}`,
+  `/**/${caseInsensitivePattern(".git/modules")}/**/${caseInsensitivePattern(entry)}`,
+  `/**/${caseInsensitivePattern(".git/worktrees")}/*/${caseInsensitivePattern(entry)}`,
+]).concat(`/**/${caseInsensitivePattern(".git/ave-pins")}`, `/**/${caseInsensitivePattern(".git/modules")}/**/${caseInsensitivePattern("ave-pins")}`, `/**/${caseInsensitivePattern(".git/worktrees")}/*/${caseInsensitivePattern("ave.id")}`);
 interface GitDiscoveryBudget { entries: number; metadataBytes: number }
 interface GitControlEntryIdentity {
   readonly dev: number | bigint;
@@ -118,6 +132,17 @@ interface GitControlDiscovery {
 }
 function gitControlEntries(discovery?: GitControlDiscovery): readonly string[] {
   return process.platform === "linux" || discovery ? LINUX_GIT_CONTROL_ENTRIES : GIT_CONTROL_ENTRIES;
+}
+// The host anchors a run's admin folder with ave.id and keeps a repository's pins in ave-pins (work-board workspace-layout.ts).
+// As in git rev-parse --git-common-dir, only a store whose commondir resolves to the common dir holding it in worktrees/ is an admin folder.
+function storeControlEntries(directory: string, budget: GitDiscoveryBudget, discovery?: GitControlDiscovery): readonly string[] {
+  const container = dirname(directory);
+  const commonPath = basename(container) === "worktrees" ? readGitMetadata(join(directory, "commondir"), budget) : undefined;
+  // An unusable commondir cannot settle the folder's kind, so it keeps both names.
+  if (commonPath !== undefined && (!commonPath || /[\r\n\0]/.test(commonPath))) return [...gitControlEntries(discovery), "ave.id", "ave-pins"];
+  const commonContainer = commonPath ? resolvePolicyPath(join(commonPath, "worktrees"), directory) : undefined;
+  const admin = commonContainer !== undefined && isPhysicalPathWithin(container, commonContainer) && isPhysicalPathWithin(commonContainer, container);
+  return [...gitControlEntries(discovery), admin ? "ave.id" : "ave-pins"];
 }
 function gitEntryIdentity(path: string): GitControlEntryIdentity | undefined {
   let stat;
@@ -627,7 +652,7 @@ function addGitDirectoryControls(
       addInheritedGitConfigHookPaths([directory, dirname(directory)], discovery?.loaderPaths ?? paths, routingPins, budget);
       for (const name of ["config", "config.worktree"]) addConfiguredGitHookPaths(join(directory, name), [directory, dirname(directory)], discovery?.loaderPaths ?? paths, routingPins, budget, new Set(), 0, false);
     }
-    for (const entry of gitControlEntries(discovery)) paths.add(join(directory, entry));
+    for (const entry of storeControlEntries(directory, budget, discovery)) paths.add(join(directory, entry));
     if ([...paths, ...routingPins].reduce((bytes, path) => bytes + Buffer.byteLength(path), 0) > MAX_GIT_ROOT_POLICY_BYTES) return false;
     for (const containerName of ["modules", "worktrees"]) {
       const container = join(directory, containerName);
@@ -673,7 +698,7 @@ function addGitDirectoryControls(
               // An existing grouping directory can become a module store in the same invocation; protect its future controls as well.
               discovery?.stores.set(nested, gitEntryIdentity(nested));
               if (discovery) queue.push(nested);
-              for (const control of gitControlEntries(discovery)) paths.add(join(nested, control));
+              for (const control of storeControlEntries(nested, budget, discovery)) paths.add(join(nested, control));
               if ([...paths, ...routingPins].reduce((bytes, path) => bytes + Buffer.byteLength(path), 0) > MAX_GIT_ROOT_POLICY_BYTES) return false;
               directories.push(nested);
             }
@@ -976,9 +1001,10 @@ export function buildMandatorySandboxWritePolicy(
     // A marked literal already carries the admitted identity; discovery must retain that canonical path.
     return { original, physical: typeof entry === "string" ? resolvePolicyPath(original, process.cwd()) : original };
   });
+  const rootEntries = process.platform === "linux" ? [...SANDBOX_PROTECTED_ROOT_ENTRIES, ...SANDBOX_NAMED_ENTRIES] : SANDBOX_PROTECTED_ROOT_ENTRIES;
   const paths = new Set([
     ...rootSnapshots.flatMap(({ original, physical }) => [original, physical]).flatMap((root) =>
-      SANDBOX_PROTECTED_ROOT_ENTRIES.map((entry) => join(root, entry))),
+      rootEntries.map((entry) => join(root, entry))),
     // The configuration directory is a control boundary, including future files.
     join(aveHome(), AVE_HOME_CONFIGURATION_DIRECTORY),
     permissionSettingsPath(),

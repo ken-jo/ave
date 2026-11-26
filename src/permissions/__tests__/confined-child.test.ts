@@ -13,6 +13,7 @@ import { PassThrough } from "node:stream";
 import { egressInvocationOwner, liveEgressInvocationCount, onEgressInvocationReleased } from "../egress-invocations.js";
 import { TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 import * as helperIntegrity from "../srt-win-integrity.js";
+import { installProgramsOnPath, withPlantedProgram } from "../../__tests__/support/planted-program.js";
 
 const wrapWorkerCommandMock = vi.fn<
   (command: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
@@ -212,9 +213,9 @@ describe("spawnConfinedChild", () => {
       baseEnv: {},
     });
     const [cmdline] = wrapWorkerCommandMock.mock.calls.at(-1)!;
-    expect(cmdline).toBe(
-      `'/usr/bin/env' 'TMPDIR=${TEMP_DIR}' 'TMP=${TEMP_DIR}' 'TEMP=${TEMP_DIR}' '/usr/bin/python3' '-u'`,
-    );
+    expect(cmdline).toContain('runtime_env+=("TMPDIR=$1" "TMP=$1" "TEMP=$1")');
+    expect(cmdline).toContain(`'${TEMP_DIR}'`);
+    expect(cmdline).toContain("'/usr/bin/python3' '-u'");
   });
 
   it("refuses an allow-list spawn that names no temp principal, before any wrap", async () => {
@@ -245,9 +246,9 @@ describe("spawnConfinedChild", () => {
     expect(fs.allowRead).toBeUndefined();
     expect(fs.allowWrite).toBeUndefined();
     expect(fs.denyRead).toContain("/home/u/.ave/secrets");
-    // The sandbox HOME's own TEMP is per process there; no env launcher.
+    // An empty temp operand leaves the sandbox HOME's own TEMP in effect.
     const [cmdline] = wrapWorkerCommandMock.mock.calls.at(-1)!;
-    expect(cmdline).not.toContain("TMPDIR=");
+    expect(cmdline).toContain("'sandbox-target' '' 'python.exe'");
   });
 
   it("refuses an offline owner while the OS sandbox is not active, before any wrap or spawn", async () => {
@@ -487,6 +488,10 @@ describe("spawnConfinedChild", () => {
 
   it("lets the sandbox HOME win over the base environment", async () => {
     // The sandbox process home is the last overlay on purpose: a stale HOME inherited from the host would send the child's writes outside its jail.
+    const child = fakeChild();
+    const environmentPipe = new PassThrough();
+    child.stdio = [null, child.stdout, child.stderr, null, environmentPipe];
+    spawnMock.mockReturnValueOnce(child);
     await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/python3",
       args: [],
@@ -499,8 +504,13 @@ describe("spawnConfinedChild", () => {
 
     const [, , options] = spawnMock.mock.calls.at(-1)!;
     const env = (options as { env: NodeJS.ProcessEnv }).env;
-    expect(env.HOME).toBe("/sandbox/home");
-    expect(env.KEEP).toBe("1");
+    expect(env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHLVL: "1" });
+    const cmdline = wrapWorkerCommandMock.mock.calls.at(-1)?.[0];
+    expect(cmdline).not.toContain("HOME=");
+    const assignments = environmentPipe.read()?.toString().split("\0");
+    expect(assignments).toContain("HOME=/sandbox/home");
+    expect(assignments).toContain("KEEP=1");
+    expect(assignments).not.toContain("HOME=/home/u");
   });
 
   it("registers the child under the caller's label", async () => {
@@ -608,7 +618,7 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
     for (const platform of ["darwin", "linux", "win32"] as const) {
       setProcessPlatform(platform);
       const spawned = await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
-        command: "/usr/bin/python3",
+        command: platform === "win32" ? "C:/runtime/python3.exe" : "/usr/bin/python3",
         args: [],
         label: "worker:x:main",
         grantMode: platform === "win32" ? "deny-only" : "allow-list",
@@ -920,5 +930,28 @@ describe("spawnConfinedChild's Windows stdio relay", () => {
     const [cmdline] = wrapWorkerCommandMock.mock.calls[0]! as [string];
     expect(cmdline).toContain("'/usr/bin/python3' 'w.py'");
     expect(spawned.stdin).toBe(child.stdin);
+  });
+});
+
+describe("spawnConfinedChild unconfined program lookup", () => {
+  const spec = (command: string) => ({ egressOwner: EGRESS_OWNER, command, args: [], label: "worker:x:main", grantMode: "deny-only" as const, baseEnv: { PATH: process.env.PATH } });
+
+  it("spawns a bare name found on PATH by its absolute path", async () => {
+    sandboxActiveMock.mockReturnValue(false);
+    const programs = installProgramsOnPath(["ave-child-on-path"]);
+    try {
+      await spawnConfinedChild(spec("ave-child-on-path"));
+      expect(spawnMock.mock.calls[0]?.[0]).toBe(programs.program("ave-child-on-path"));
+    } finally {
+      await programs.restore();
+    }
+  });
+
+  it("never spawns a bare name planted in the cwd or reached through an empty or relative PATH entry", async () => {
+    sandboxActiveMock.mockReturnValue(false);
+    await withPlantedProgram(["ave-planted-child"], async () => {
+      await expect(spawnConfinedChild(spec("ave-planted-child"))).rejects.toThrow(/'ave-planted-child' was not found on PATH/u);
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 });

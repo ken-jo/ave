@@ -1,15 +1,14 @@
 // Shell grants bind canonical destination, approved network class and origin; spelling/class changes cannot widen them and terminal grants never cover agent shells. Invocation/session/tab grants stay in memory (session grants end with their conversation); project/always persist until revoked. Terminal once means one connection, and tab grants end with the shell.
 // Never consult these grants for workers or add them to runtime allowedDomains. Canonicalize project roots and strictly validate persisted shape; corrupt stores raise an error and the ask denies instead of silently dropping data. The v1 file's `workspace` scope is migrated to `project` explicitly on read (owner 2026-10-25, five-choice network card); no other old value is accepted.
 import { join, resolve } from "node:path";
-import { canonicalizeHost } from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
+import { canonicalRelayHost } from "./egress-relay/destination.js";
 import {
   addRange,
   addressInSet,
   embeddedIPv4,
-  isLoopbackAddress,
   isLoopbackName,
   LOOPBACK_RANGES,
-} from "@anthropic-ai/sandbox-runtime/dist/sandbox/address.js";
+} from "./egress-relay/address-set.js";
 import { BlockList, isIP } from "node:net";
 import { openFeatureNamespace, preparePrivateFileDirectory, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { assertAveHomeInputWritable, readAveHomeInput, readAveHomeInputSync } from "../shared/ave-home-trust.js";
@@ -62,10 +61,10 @@ export interface EgressGrantDestination extends EgressDestination {
   readonly network?: EgressGrantNetwork;
 }
 
-// The canonical form of a destination host, or undefined for one that is not a host name or an IP literal: ASRT's own `canonicalizeHost` (the spelling its allow and deny lists are compared in: lower case, no trailing dot, IPv6 compressed and unbracketed, an IPv4-mapped address as IPv4), since the callback is handed the host as the client spelled it.
+// The canonical form of a destination host, or undefined for one that is not a host name or an IP literal: `canonicalRelayHost` (the spelling allow and deny lists are compared in: lower case, no trailing dot, IPv6 compressed and unbracketed, an IPv4-mapped address as IPv4), since the callback is handed the host as the client spelled it.
 export function canonicalEgressHost(host: string): string | undefined {
   if (typeof host !== "string" || host.length === 0 || host.length > 253) return undefined;
-  const canonical = canonicalizeHost(host)?.toLowerCase();
+  const canonical = canonicalRelayHost(host)?.toLowerCase();
   return canonical === undefined || canonical.length === 0 ? undefined : canonical;
 }
 
@@ -93,11 +92,11 @@ function isLocalNetworkName(name: string): boolean {
 
 function addressNetwork(address: string): EgressDestinationNetwork {
   // Before the embedded-IPv4 rule: `::1`'s IPv4-compatible form is 0.0.0.1.
-  if (isLoopbackAddress(address)) return "local";
+  if (addressInSet(LOOPBACK, address)) return "local";
   // An address that carries an IPv4 address (NAT64, 6to4, IPv4-compatible) is delivered to that address, so it is judged by it as well.
   const forms = [address, embeddedIPv4(address)].filter((a): a is string => a !== undefined);
   if (forms.some((a) => addressInSet(RESERVED, a))) return "reserved";
-  if (forms.some((a) => isLoopbackAddress(a) || addressInSet(LOCAL, a))) return "local";
+  if (forms.some((a) => addressInSet(LOCAL, a))) return "local";
   return "public";
 }
 
@@ -110,6 +109,7 @@ function rangeList(ranges: readonly string[]): BlockList {
 }
 const RESERVED = rangeList(RESERVED_RANGES);
 const LOCAL = rangeList(LOCAL_RANGES);
+const LOOPBACK = rangeList(LOOPBACK_RANGES);
 
 export function egressDestinationNetwork(
   canonicalHost: string,

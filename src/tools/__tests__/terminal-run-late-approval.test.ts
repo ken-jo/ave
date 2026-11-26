@@ -30,6 +30,8 @@ const SESSION_ID = "late-host-terminal";
 const TAB_ID = "terminal:0000c0de-2";
 const WINDOW_ID = 8;
 const COMMAND = "printf ready";
+// Loaded runners deliver the outside-write card after the 1 s vi.waitFor default.
+const CARD_WAIT = { timeout: 30_000 };
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -273,7 +275,7 @@ describe("host terminal late native approval", () => {
     const f = await fixture({ outside: true, mode, exactRule: false, holdFinalizer: false });
     await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "outside-command-turn" }, async () => {
       const pending = f.run();
-      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1), CARD_WAIT);
       const card = f.cards[0];
       expect(card.kind).toBe("out-of-allowed-dir");
       expect(f.request.mock.calls[0]?.[0]).toMatchObject({

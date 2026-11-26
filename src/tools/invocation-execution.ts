@@ -1,9 +1,10 @@
 import { appendToolInvocationAudit, trackDetachedToolInvocation } from "./invocation-ledger.js";
 import { isHostExitAbort } from "../shared/host-exit-abort.js";
 import type { ToolAuditTerminationReason } from "../audit/audit-logger.js";
+import { type AnswerEpochs, answerEpochsOf, onlyMemoryRulesChangedSince, personAnswerStands } from "../permissions/pending-answer-policy.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
-import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
+import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
 import { checkReplayRootBinding, type ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { attachSandboxBlock, sandboxBlockForResult, type SandboxBlock } from "../shared/sandbox-block.js";
 import { answeredApprovalProvenance, answeredRecordForAction, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalRejectedDecision, provenanceTrustOrigin, RULE_PROVENANCE } from "../permissions/approval-gate.js";
@@ -18,6 +19,7 @@ import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-o
 import type { ApprovalDecision, ApprovalRequestInput, LinkedApprovalTarget } from "../permissions/approval-gate.js";
 import { randomUUID } from "node:crypto";
 import type { PermissionCheckResult } from "../permissions/permission-manager.js";
+import { HOST_TERMINAL_PERMISSION_CHANGED, issueHostTerminalWriteAuthority, type HostTerminalWriteAuthority } from "../permissions/host-terminal-write-authority.js";
 import type { ToolExecutionAuditMetadata } from "../audit/audit-schema.js";
 import { isPiiRedactionEnabled, maskSensitiveData } from "../audit/dlp-filter.js";
 import { emitEffectShadowLog } from "../permissions/reviewer/risk-shadow-log.js";
@@ -90,6 +92,7 @@ import {
   type ToolUseBlock,
 } from "./executor-contract.js";
 import type { RationaleResumeExecutionContext } from "./invocation-runner.js";
+import type { AuthorizedInvocation } from "./invocation-authorization.js";
 import type { ResolvedPluginOperation } from "./plugin-operation-governance.js";
 import {
   PluginOperationExecutionLeaseAbortedError,
@@ -203,7 +206,9 @@ export interface ExecutionStageContext {
   hostShellExecutionPlan: HostShellExecutionPlan | undefined;
   executionRouteGrant?: ExecutionGrant;
   finalizeExecutionRouteGrant?: () => Promise<ExecutionGrant | undefined>;
-  hostTerminalRoute?: { recheck(): Promise<void> };
+  hostTerminalRoute?: { recheck(): Promise<void>; decidedBackend: string; backendIdentity(): string | undefined };
+  checkCurrentHostTerminalPermission?: AuthorizedInvocation["checkCurrentHostTerminalPermission"];
+  onHostTerminalWriteRefused?: (releasedGeneration: number, policyEpoch: string) => void;
   preparedShellInvocation?: import("./prepared-shell-invocation.js").PreparedShellInvocation;
   verifiedShellCommand?: import("../permissions/verified-shell-command.js").VerifiedShellCommand;
   hostShellRequiresExplicitApproval: boolean;
@@ -310,6 +315,22 @@ export async function executeAuthorizedToolInvocation(
   }
   let humanApproved = initialHumanApproved;
   let approvedPolicyEpoch = context.approvedPolicyEpoch;
+  const approvalMemory = invocationPermissionContext.approvalMemory;
+  let terminalWriteAuthority: HostTerminalWriteAuthority | undefined;
+  let terminalWriteRefused = false;
+  let terminalReapproval: { generation: number; policyEpoch: string } | undefined;
+  const issueTerminalWriteAuthority = (): void => {
+    const manager = services.permissionManager;
+    const check = context.checkCurrentHostTerminalPermission;
+    if (!hostTerminalRoute || !manager || !check || permissionResult?.decision !== "allow") return;
+    terminalWriteAuthority = issueHostTerminalWriteAuthority({
+      manager, check, settled: permissionResult,
+      human: humanApproved, cardForced: humanApproved && permissionResult.forceModal === true,
+      reviewed: permissionResult.pipelineRequest?.userOwnedSurface?.choice === "auto" && permissionResult.reviewer?.verdict !== undefined &&
+        (permissionResult.reasonCode === "user-owned-surface-reviewed" || permissionResult.reasonCode === EXACT_HOST_RULE_REASON_CODE),
+      decidedBackend: hostTerminalRoute.decidedBackend, backendIdentity: hostTerminalRoute.backendIdentity,
+    });
+  };
   let permissionRecheckResult = context.permissionRecheckResult;
 
 
@@ -739,7 +760,18 @@ export async function executeAuthorizedToolInvocation(
         if (!manager || !gate || !sessionId || origin === null || !validateExternalUrl(url).ok || invocationPermissionContext.headless || invocationPermissionContext.approvalSurface === "unavailable") throw new Error(NO_APPROVER_MESSAGE);
         siteSignal.throwIfAborted();
         if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
-        const policyEpoch = manager.getPolicyEpoch();
+        const opened = answerEpochsOf(manager);
+        const policyEpoch = opened.epoch;
+        /** The destination judged again after a card the person answered, across memory-only allow-rule steps (pending-answer-policy.ts). */
+        const siteAnswerStands = async (): Promise<boolean> => {
+          if (manager.getPolicyEpoch() === policyEpoch) return true;
+          if (!onlyMemoryRulesChangedSince(manager, opened)) return false;
+          const now = await manager.checkNetworkRules(url, executionCwd, false);
+          // Never stricter than what was judged first: a destination that is now denied, or now asked for or flagged when it was not
+          // (a run's network rule went with its run), is refused.
+          return onlyMemoryRulesChangedSince(manager, opened) && !now.admissionDenial && now.decision !== "deny"
+            && (now.decision !== "ask" || rules.decision === "ask") && (!now.exfiltration || Boolean(rules.exfiltration));
+        };
         const rules = await manager.checkNetworkRules(url, executionCwd, false);
         if (rules.admissionDenial || rules.decision === "deny") throw new Error(rules.admissionDenial ?? "Browser destination denied");
         const screened = screenEgressRequest({ url, allowPrivateNetwork: false });
@@ -752,11 +784,11 @@ export async function executeAuthorizedToolInvocation(
           });
           if (actionDecision.choice !== "allow-once" || isHostApprovalRejectedDecision(actionDecision)) throw new Error("Browser navigation denied");
           siteSignal.throwIfAborted();
-          if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId) || manager.getPolicyEpoch() !== policyEpoch) throw new Error("Browser navigation authority changed");
+          if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId) || !await siteAnswerStands()) throw new Error("Browser navigation authority changed");
         }
         if (manager.browserSites.allows(sessionId, url)) {
           siteSignal.throwIfAborted();
-          if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId) || manager.getPolicyEpoch() !== policyEpoch || !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("Browser navigation authority changed");
+          if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId) || !await siteAnswerStands() || !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("Browser navigation authority changed");
           return;
         }
         const decision = await gate.requestAndWait({
@@ -767,7 +799,7 @@ export async function executeAuthorizedToolInvocation(
         });
         siteSignal.throwIfAborted();
         if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
-        if (manager.getPolicyEpoch() !== policyEpoch || !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("Permission policy changed during site approval");
+        if (!await siteAnswerStands() || !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("Permission policy changed during site approval");
         const choice = gate.consumeBrowserSiteChoice(decision, sessionId, origin);
         if (decision.choice !== "allow-once" || choice === undefined || isHostApprovalRejectedDecision(decision)) throw new Error("Browser site opening denied");
         siteSignal.throwIfAborted();
@@ -812,7 +844,26 @@ export async function executeAuthorizedToolInvocation(
     ...(ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot } : {}),
     ...(hostShellExecutionPlan ? { hostShellExecutionPlan } : {}),
     ...(executionRouteGrant ? { executionRouteGrant } : {}),
-    ...(hostTerminalRoute ? { hostTerminalRoute } : {}),
+    ...(hostTerminalRoute ? { hostTerminalRoute: {
+      recheck: hostTerminalRoute.recheck,
+      refusal: () => {
+        if (terminalWriteAuthority === undefined) return HOST_TERMINAL_PERMISSION_CHANGED;
+        const refusal = terminalWriteAuthority.refusal();
+        if (refusal !== undefined) terminalWriteRefused = true;
+        return refusal;
+      },
+      onLeaseAbandoned: (generation) => {
+        const manager = services.permissionManager;
+        const check = context.checkCurrentHostTerminalPermission;
+        if (!terminalWriteRefused || humanApproved || !context.onHostTerminalWriteRefused || !manager || !check ||
+            invocationPermissionContext.headless || invocationPermissionContext.approvalSurface === "unavailable" || !services.approvalGate ||
+            hostTerminalRoute.backendIdentity() !== hostTerminalRoute.decidedBackend) return false;
+        const current = check();
+        if (current.decision === "deny" || current.pipelineRequest?.userOwnedSurface?.kind !== "host-terminal") return false;
+        terminalReapproval = { generation, policyEpoch: manager.getPolicyEpoch() };
+        return true;
+      },
+    } } : {}),
     ...(preparedShellInvocation ? { preparedShellInvocation } : {}),
     ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
     ...(hostShellExecutionPermit ? { hostShellExecutionPermit } : {}),
@@ -829,12 +880,6 @@ export async function executeAuthorizedToolInvocation(
       ...(turnMessageId !== undefined ? { turnMessageId } : {}),
       // Fail closed: only an explicit false from the turn lets memory tools write.
       memoryWriteTainted: memoryWriteTainted !== false,
-      // The target-wide scope this call was authorized under (see
-      // approval-memory-context.ts): a tool whose target can move between the
-      // prompt and execution re-checks it here.
-      ...(invocationPermissionContext.approvalMemory?.kind === "key"
-        ? { [APPROVAL_MEMORY_SCOPE_METADATA_KEY]: invocationPermissionContext.approvalMemory.scope }
-        : {}),
       supportsA2AParentDelivery: supportsA2AParentDelivery === true,
       ...(invocationPermissionContext.approvalSurface
         ? { approvalSurface: invocationPermissionContext.approvalSurface }
@@ -912,8 +957,8 @@ export async function executeAuthorizedToolInvocation(
       const refreshed = services.permissionManager.recheckPermission(recheckTarget);
       if (permissionRecheckResult) permissionRecheckResult = refreshed;
       const paused = refreshed.decision === "ask" && refreshed.pipelineRequest?.automationPause !== undefined;
-      // A floor session allow is the person's own earlier answer on this floor's card, so it still stands.
-      const forced = refreshed.forceModal === true || refreshed.pipelineRequest?.floor !== undefined && refreshed.reasonCode !== "floor-session-allow" || refreshed.pipelineRequest?.manualRerun === true;
+      // A floor session allow is the person's own earlier answer on this floor's card, and an exact saved rule is their saved one, so both still stand.
+      const forced = refreshed.forceModal === true || refreshed.pipelineRequest?.floor !== undefined && refreshed.reasonCode !== "floor-session-allow" && refreshed.reasonCode !== EXACT_HOST_RULE_REASON_CODE || refreshed.pipelineRequest?.manualRerun === true;
       if (!permissionRecheckResult || refreshed.decision === "deny" || paused || forced) permissionResult = refreshed;
       if (refreshed.decision === "deny") throw new Error(refreshed.reason);
       if (paused || refreshed.decision === "ask" && (refreshed.pipelineRequest?.floor !== undefined || refreshed.pipelineRequest?.userOwnedSurface !== undefined)) throw new HandlerPermissionAskError();
@@ -938,12 +983,31 @@ export async function executeAuthorizedToolInvocation(
       throw new Error("remote-controller-revoked");
     }
     signal.throwIfAborted();
+    issueTerminalWriteAuthority();
   };
 
   let lateApprovalPolicyEpoch: string | undefined;
+  let lateApprovalAnswerEpochs: AnswerEpochs | undefined;
+  /** The late card's question judged again across memory-only allow-rule steps (pending-answer-policy.ts). Before the card is asked it
+   * stands while it is still asked; once a person `answered`, also when the policy now allows the call, as on the main card. Never
+   * when the question is denied or more forced than it was, and never across any other change. */
+  const lateApprovalStandsAcrossMemoryRules = (answered: boolean): boolean => {
+    const manager = services.permissionManager;
+    const pending = permissionResult;
+    if (!manager || lateApprovalAnswerEpochs === undefined || !pending?.pipelineRequest) return false;
+    if (!personAnswerStands(manager, lateApprovalAnswerEpochs, pending.forceModal === true, () => {
+      permissionResult = manager.recheckPermission(pending, { acrossMemoryRuleChanges: true });
+      return answered || permissionResult.decision === "ask" ? permissionResult : { decision: "deny" };
+    })) return false;
+    lateApprovalAnswerEpochs = answerEpochsOf(manager);
+    lateApprovalPolicyEpoch = lateApprovalAnswerEpochs.epoch;
+    return true;
+  };
   const assertLateApprovalPolicyCurrent = (): void => {
     const manager = services.permissionManager;
     if (manager && lateApprovalPolicyEpoch !== manager.getPolicyEpoch()) {
+      // A sibling stage's "Allow for this run", or a run that ended, does not withdraw a card that is about to be asked.
+      if (lateApprovalStandsAcrossMemoryRules(false)) return;
       if (permissionResult?.pipelineRequest) permissionResult = manager.recheckPermission(permissionResult);
       throw new Error(permissionResult?.reason ?? "Permission policy changed before execution.");
     }
@@ -964,7 +1028,8 @@ export async function executeAuthorizedToolInvocation(
     });
     if (!userAvailable) throw new Error(NO_APPROVER_MESSAGE);
     if (sessionId === undefined) throw new Error("Automated approval is missing its session identity");
-    lateApprovalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
+    lateApprovalAnswerEpochs = services.permissionManager ? answerEpochsOf(services.permissionManager) : undefined;
+    lateApprovalPolicyEpoch = lateApprovalAnswerEpochs?.epoch;
     let permHook: Awaited<ReturnType<typeof runScriptHook>>;
     try {
       permHook = await runScriptHook(
@@ -998,7 +1063,7 @@ export async function executeAuthorizedToolInvocation(
       permissionResult = services.permissionManager.recheckPermission(permissionResult);
       if (permissionResult.decision !== "ask") throw new Error(permissionResult.reason);
     }
-    const hostTerminalFacts = hostTerminalApprovalFacts(tool, invocationPermissionContext.approvalMemory, finalInput.command);
+    const hostTerminalFacts = hostTerminalApprovalFacts(tool, approvalMemory, finalInput.command);
     const classifyCurrentRule = () => classifyApprovalRuleVerdict({
           toolName: toolUse.name, source, category: invocationCategory,
           pathFields: tool.pathFields ?? [], finalInput, approvalCacheKey, executionCwd,
@@ -1034,15 +1099,14 @@ export async function executeAuthorizedToolInvocation(
       args: finalInput, reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${reason}` : reason,
       ...(approvalReasonPrefix ? { approvalReasonPrefix } : {}),
       createdAt: Date.now(), abortSignal,
-      ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
-      ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
-        ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}) } : {}),
+      ...browserApprovalCardFacts(tool, approvalMemory),
+      ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false } : {}),
       ownerUnattended: invocationPermissionContext.ownerUnattended === true,
       ...(approvalRequestTarget(targetFilePath, linkedTargets, permissionResult.reasonCode) ? { target: approvalRequestTarget(targetFilePath, linkedTargets, permissionResult.reasonCode) } : {}),
       ...approvalReasonFields(permissionResult, { fileTarget: targetFilePath !== undefined && invocationCategory !== "shell" }),
       sensitivePathPattern, evaluationContext,
       ...(approvalCacheKey ? { approvalCacheKey } : {}),
-      ...(invocationPermissionContext.approvalMemory ? { approvalMemory: invocationPermissionContext.approvalMemory } : {}),
+      ...(approvalMemory ? { approvalMemory } : {}),
       ...(approvalPurpose ? { approvalPurpose } : {}),
       ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
       ...(hostShellExecutionPermitBinding ? { hostShellExecutionPermitBinding } : {}),
@@ -1065,7 +1129,8 @@ export async function executeAuthorizedToolInvocation(
   const requestLateApproval = async (request: ApprovalRequestInput): Promise<void> => {
     lateApprovalDecision = undefined;
     abortSignal?.throwIfAborted();
-    if (permissionResult?.decision !== "ask" || !(permissionResult.pipelineRequest?.automationPause || permissionResult.forceModal && permissionResult.pipelineRequest?.floor)) {
+    if (permissionResult?.decision !== "ask" || !(permissionResult.pipelineRequest?.automationPause ||
+        permissionResult.forceModal && permissionResult.pipelineRequest?.floor)) {
       throw new Error("Late approval requires an issued human approval decision");
     }
     assertLateApprovalPolicyCurrent();
@@ -1076,11 +1141,12 @@ export async function executeAuthorizedToolInvocation(
     // The surface facts, the code of the decision that asked included, are the recheck's own: a card that is no longer a surface card carries none.
     const liveRequest: ApprovalRequestInput = { ...request, invocationToolUseId: toolUse.id,
       userOwnedSurface: undefined, userOwnedSurfaceReviewFallback: undefined, reasonCode: undefined,
-      ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
+      ...browserApprovalCardFacts(tool, approvalMemory),
       reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${permissionResult.reason}` : permissionResult.reason,
       ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
-        ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}) } : {}),
-      ...hostTerminalApprovalFacts(tool, invocationPermissionContext.approvalMemory, finalInput.command),
+        ...(lateApprovalPolicyEpoch !== undefined && offersFloorSessionAllow(permissionResult)
+          ? { floorSessionAllowed: true as const, floorSessionPolicyEpoch: lateApprovalPolicyEpoch } : {}) } : {}),
+      ...hostTerminalApprovalFacts(tool, approvalMemory, finalInput.command),
       ...userOwnedSurfaceCardFacts(permissionResult),
     };
     let decision = await services.approvalGate!.requestAndWait(liveRequest);
@@ -1093,16 +1159,18 @@ export async function executeAuthorizedToolInvocation(
       throw new Error(failure?.content ?? request.reason);
     }
     const currentEpoch = services.permissionManager?.getPolicyEpoch();
+    // The person's answer across another conversation's or run's memory-only allow rule stands; any other change refuses it.
     if (lateApprovalPolicyEpoch !== currentEpoch &&
         (lateApprovalPolicyEpoch === undefined || currentEpoch === undefined ||
-          !services.approvalGate!.allowsPolicyTransition(decision, lateApprovalPolicyEpoch, currentEpoch))) {
+          !services.approvalGate!.allowsPolicyTransition(decision, lateApprovalPolicyEpoch, currentEpoch)) &&
+        !lateApprovalStandsAcrossMemoryRules(true)) {
       permissionResult = refusal("Permission policy changed before execution.", RULE_PROVENANCE);
       throw new Error(permissionResult.reason);
     }
     const surfaceResolution = services.permissionManager ? await resolveUserOwnedSurfaceApproval({
       manager: services.permissionManager, gate: services.approvalGate!, permission: permissionResult, decision, request: liveRequest, sessionId,
       review: async permission => await dispatchReviewerForInteractiveAuto(services.permissionManager, toolUse.name, source, invocationCategory, tool.pathFields ?? [], finalInput, invocationAllowedScope.directories, sensitivePathPattern ? [sensitivePathPattern] : [], invocationPermissionContext, evaluationContext, { ...(ownerPluginSandboxRoot ? { ownerPluginSandboxRoot } : {}) }, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, undefined, sessionId, permission) ?? permission,
-    }) : { permission: permissionResult, decision, provenance: undefined };
+    }) : { permission: permissionResult, decision, provenance: undefined, humanApproved: undefined };
     permissionResult = surfaceResolution.permission;
     decision = surfaceResolution.decision;
     lateApprovalDecision = decision;
@@ -1112,15 +1180,17 @@ export async function executeAuthorizedToolInvocation(
       permissionResult = failure.permission;
       throw new Error(failure.content);
     }
-    humanApproved = surfaceResolution.provenance === undefined && decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision);
-    if (!humanApproved && permissionResult.decision !== "allow") {
+    humanApproved = surfaceResolution.humanApproved ?? (decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision));
+    // The person's Deny stands whatever the policy now says of the call: an allow the re-check found never overrides it.
+    if (!humanApproved && (permissionResult.decision !== "allow" || decision.choice.startsWith("deny"))) {
       permissionResult = refusal(permissionResult.decision === "deny" ? permissionResult.reason : request.reason, surfaceResolution.provenance ?? answeredApprovalProvenance(decision));
-      throw new Error(request.reason);
+      throw new Error(permissionResult.reason);
     }
     if (humanApproved) {
       permissionResult = answeredPermission({ ...permissionResult, decision: "allow", reason: `user approved approval request (${decision.choice})` }, decision);
     }
     approvedPolicyEpoch = currentEpoch;
+    issueTerminalWriteAuthority();
     if (hostShellExecutionPlan && hostShellExecutionPermitBinding) {
       const permit = mintHostShellExecutionPermit({ plan: hostShellExecutionPlan, approvalDecision: decision,
         permissionManager: services.permissionManager, binding: hostShellExecutionPermitBinding });
@@ -1130,12 +1200,17 @@ export async function executeAuthorizedToolInvocation(
   };
 
   const attemptHandler = async (signal: AbortSignal): Promise<Awaited<ReturnType<Tool["execute"]>>> => {
+    terminalWriteRefused = false;
+    terminalReapproval = undefined;
     // Renew route admission after every asynchronous wait, including a card.
     const finalExecutionRouteGrant = finalizeExecutionRouteGrant === undefined
       ? executionRouteGrant
       : await finalizeExecutionRouteGrant();
     const ctx: ToolExecutionContext = {
       ...executionContext,
+      ...(approvalMemory?.kind === "key" ? { metadata: {
+        ...executionContext.metadata, [APPROVAL_MEMORY_SCOPE_METADATA_KEY]: approvalMemory.scope,
+      } } : {}),
       ...(finalExecutionRouteGrant === undefined ? {} : { executionRouteGrant: finalExecutionRouteGrant }),
       abortSignal: signal,
     };
@@ -1290,6 +1365,9 @@ export async function executeAuthorizedToolInvocation(
     terminationReason = "error";
   } else if (outcome.ok) {
     const result = outcome.value;
+    if (result.isError && terminalReapproval) {
+      context.onHostTerminalWriteRefused?.(terminalReapproval.generation, terminalReapproval.policyEpoch);
+    }
     sandboxBlock = sandboxBlockForResult(result);
     content = result.output;
     isError = result.isError;

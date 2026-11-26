@@ -4,12 +4,12 @@ import { mkdirSync, statSync } from "node:fs";
 import { sameFileIdentity, type FileIdentity } from "../../lib/file-identity.js";
 import type { Socket } from "node:net";
 import { Writable, type Readable } from "node:stream";
-import { ENV_NAME_RE } from "../../mcp/safe-names.js";
 import { ProcessEntryUnconfinedError, type ProcessLaunch } from "../process-entry.js";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { capturePluginStderr } from "./plugin-stderr.js";
+import { sandboxTargetSetupFailed } from "../../permissions/launcher-environment.js";
 import {
   NODE_PRESERVE_SYMLINK_FLAGS,
   resolvePluginChildEntryPath,
@@ -28,11 +28,13 @@ import {
   assertExtensionStartAllowed,
   outermostContainingRoots,
   pluginGrantPathsBeyondOwnRoots,
+  appOwnedSandboxPrivateRoots,
   aveHomeReadBoundaryCovering,
   protectedReadDenyCovering,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
 } from "../../permissions/asrt-sandbox.js";
+import { extensionStartIdentity, pluginChildStartKey, type ExtensionStartAuthority } from "../../permissions/extension-start-consent.js";
 import { holdWindowsFilesystemGrant, type HeldWindowsGrant } from "../../permissions/windows-acl-grant-holder.js";
 import {
   resolvePluginSocketDir,
@@ -53,7 +55,7 @@ import {
 } from "../../permissions/sensitive-paths.js";
 import { assertAveHomeRuntimeBoundary, AVE_HOME_RUNTIME_DIRECTORY, aveHome } from "../../shared/ave-home.js";
 import { isPathWithin } from "../plugin-storage-containment.js";
-import { HOST_DIRECTORY_CATALOG, hostDirectoryFloorPierces } from "../sandbox-authority.js";
+import { declaredHostDirectoryFloorPierces, HOST_DIRECTORY_CATALOG, hostDirectoryFloorPierces } from "../sandbox-authority.js";
 import type {
   PluginManifest,
   PluginRuntimeContext,
@@ -223,7 +225,9 @@ function resolveUserChosenDirectory(
   // The host guard above pins only the per-platform DEFAULT user data locations. The sandbox floor denies the exact one the host runs with (`--user-data-dir`, XDG_CONFIG_HOME) and
   // any trusted custom deny, and a grant under either would re-open it: the read half everywhere, the write half too on Linux, where bubblewrap binds the root over the deny's mask.
   // The Ave home is read-denied as a whole outside its re-allowed children, and a grant there would re-open it the same way.
-  const floorDeny = protectedReadDenyCovering(target) ?? aveHomeReadBoundaryCovering(target);
+  // The confined processes' private roots are on the floor too, wherever they live: every other process's HOME and temp, and the container runtime root outside the Ave home.
+  const floorDeny = protectedReadDenyCovering(target) ?? aveHomeReadBoundaryCovering(target)
+    ?? protectedReadDenyCovering(target, appOwnedSandboxPrivateRoots());
   if (floorDeny !== undefined) {
     rejectEnvelopeGrant(
       inputs.pluginId,
@@ -364,6 +368,8 @@ export interface ConfinedPluginChildSpec {
   readonly socketDir: string;
   /** What the wrap runs: see {@link ConfinedPluginLaunch}. */
   readonly launch: ConfinedPluginLaunch;
+  /** This start as its factory identified it, with the consent for it when nothing confines it; spent at the spawn. */
+  readonly extensionStart?: { readonly identity: string; readonly authority: ExtensionStartAuthority | undefined };
 }
 
 /** The two ways a plugin child is produced (docs/design/plugin-hostapi-protocol.md §2.1). - `entry`: the host's reference runtime, `childEntryPath`, run by the Electron binary as Node.
@@ -371,56 +377,6 @@ export interface ConfinedPluginChildSpec {
 type ConfinedPluginLaunch =
   | { readonly kind: "entry"; readonly childEntryPath: string }
   | ({ readonly kind: "process" } & ProcessLaunch);
-
-/** Where a `process` launch's environment is applied: `env(1)`, INSIDE the wrap. Never a `PATH` lookup; both supported platforms ship it here. */
-const PROCESS_ENV_LAUNCHER = "/usr/bin/env";
-
-/** The spawn line for one launch (decision 36). A `process` launch runs `/usr/bin/env <declared pairs> PLUGIN_ROOT=… PLUGIN_DATA=… <command> <args>`, so every variable; host-owned and declared; is set by a process that already runs inside the wrap. The outer executable ASRT
- * spawns is `/bin/bash -c <wrapped>`, which reads its OWN environment before the sandbox command runs (a `BASH_ENV` there is sourced unconfined), so the base environment carries no manifest byte at all: the safe host allow-list, plus the sandbox HOME the caller overlays. */
-function confinedSpawnLine(
-  pluginId: string,
-  launch: ConfinedPluginLaunch,
-): { command: string; args: string[]; baseEnv: NodeJS.ProcessEnv } {
-  if (launch.kind === "entry") {
-    return {
-      // Spawn the production executable in runtime-as-node mode to remove desktop APIs; test each module system because resolution differs.
-      command: process.execPath,
-      args: [launch.childEntryPath],
-      baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
-    };
-  }
-  // `env` reads an operand containing `=` as an assignment, so a command path with one would be split rather than run. The manifest schema refuses
-  // it in `command`; a resolved path can still carry one through a user-chosen home or data directory, and that is refused here, never passed on.
-  if (launch.command.includes("=")) {
-    throw new Error(
-      `[out-of-process-plugin] ${pluginId}: the process entry's resolved path '${launch.command}' contains '=', `
-        + "which env(1) would read as an assignment; move the plugin to a directory without '=' in its path",
-    );
-  }
-  const pairs = Object.entries(launch.env).map(([name, value]) => {
-    if (!ENV_NAME_RE.test(name)) {
-      throw new Error(`[out-of-process-plugin] ${pluginId}: '${name}' is not an environment variable name`);
-    }
-    return `${name}=${value}`;
-  });
-  let launcherIsFile = false;
-  try {
-    launcherIsFile = statSync(PROCESS_ENV_LAUNCHER).isFile();
-  } catch {
-    launcherIsFile = false;
-  }
-  if (!launcherIsFile) {
-    throw new Error(
-      `[out-of-process-plugin] ${pluginId}: ${PROCESS_ENV_LAUNCHER} is missing or not a regular file on this system; `
-        + "a process entry is launched through it",
-    );
-  }
-  return {
-    command: PROCESS_ENV_LAUNCHER,
-    args: [...pairs, launch.command, ...launch.args],
-    baseEnv: buildSafeChildEnv(),
-  };
-}
 
 /** A spawned, confined child. A {@link ChildLink} plus what the factory's owner needs about the process: its pid and its exit. The protocol session
  * never touches a `ChildProcess`, so the protocol can be exercised over in-memory paired streams while the confinement is exercised against a real process. */
@@ -474,12 +430,13 @@ function windowsLoopbackLaunchLine(
 export async function spawnConfinedPluginChild(
   spec: ConfinedPluginChildSpec,
 ): Promise<ConfinedPluginChild> {
-  assertExtensionStartAllowed();
-  const processLaunch = spec.launch.kind === "process";
+  // A spawn its factory did not identify presents no start, so no consent passes for it.
+  const extensionStart = spec.extensionStart === undefined ? undefined : { key: pluginChildStartKey(spec.pluginId), ...spec.extensionStart };
+  assertExtensionStartAllowed(extensionStart ? { start: extensionStart } : {});
+  const { launch } = spec;
+  const processLaunch = launch.kind === "process";
   if (processLaunch && process.platform === "win32") throw new ProcessEntryUnconfinedError();
   spec.assertStillValid?.();
-  // Decided before anything is created, so a refused line leaves nothing behind.
-  const spawnLine = confinedSpawnLine(spec.pluginId, spec.launch);
   const sandboxHome = createSandboxProcessHome();
   const socketDir = spec.socketDir;
   let socketDirRegistered = false;
@@ -546,24 +503,29 @@ export async function spawnConfinedPluginChild(
         allowWrite,
         // Refuses a turn that starts after the factory deadline, before any holder or ACL change.
         assertStillValid: () => spec.assertStillValid?.(),
+        sandboxHome: sandboxHome.path,
       });
       // The deadline may also pass during the turn; a refusal here releases the grant.
       spec.assertStillValid?.();
     }
     const grant = windowsGrant;
-    const { command, baseEnv } = spawnLine;
-    const extraEnv = { ...sandboxHome.env };
+    const command = processLaunch ? launch.command : process.execPath;
+    const args = processLaunch ? launch.args : [launch.childEntryPath];
+    const baseEnv = buildSafeChildEnv(processLaunch ? undefined : { ELECTRON_RUN_AS_NODE: "1" });
+    // Process entries require POSIX confinement, which delivers this environment through fd 4.
+    const extraEnv = { ...(processLaunch ? launch.env : undefined), ...sandboxHome.env };
     // Windows, wrapped: srt-win relays no stdin, delivers none of this spawn's environment, and PowerShell does not wait for `electron.exe`; so the child is launched through `cmd.exe`, told its environment in
     // an argument, and spoken to over an authenticated loopback connection instead of its pipes (`child-loopback-link.ts`).
-    const windowsLoopback = spec.launch.kind === "entry" && process.platform === "win32" && isPluginWorkerConfinementActive();
-    const referenceStdio = spec.launch.kind === "entry" && !windowsLoopback;
+    const windowsLoopback = !processLaunch && process.platform === "win32" && isPluginWorkerConfinementActive();
+    const referenceStdio = !processLaunch && !windowsLoopback;
     const launchLine = windowsLoopback
-      ? windowsLoopbackLaunchLine(spawnLine.args, baseEnv, extraEnv)
-      : { args: referenceStdio ? [...spawnLine.args, CHILD_PRIVATE_STDIO_TRANSPORT_ARG] : spawnLine.args };
+      ? windowsLoopbackLaunchLine(args, baseEnv, extraEnv)
+      : { args: referenceStdio ? [...args, CHILD_PRIVATE_STDIO_TRANSPORT_ARG] : args };
     const { child, confinement } = await spawnConfinedChild({
       command,
       ...launchLine,
       label: `plugin-child:${spec.pluginId}`,
+      ...(extensionStart ? { extensionStart } : {}),
       egressOwner: { kind: "worker", role: "plugin-child", pluginId: spec.pluginId },
       grantMode: process.platform === "win32" ? "deny-only" : "allow-list",
       requireWrap: processLaunch,
@@ -605,7 +567,7 @@ export async function spawnConfinedPluginChild(
       throw new Error(`[out-of-process-plugin] ${spec.pluginId}: child has no pipes`);
     }
     // Diagnostics only. The child rebinds everything except the framer to stderr precisely so a stray plugin `console.log` lands here instead of corrupting the protocol.
-    if (child.stderr) capturePluginStderr(child.stderr, spec.pluginId);
+    if (child.stderr) capturePluginStderr(child.stderr, spec.pluginId, processLaunch ? Object.values(launch.env) : undefined);
     // A launch that hands back a child already gone (its `exit` emitted before these listeners) is released and reported at once, not waited on.
     const alreadyExited = child.exitCode !== null || child.signalCode !== null;
     const exited = new Promise<void>((resolve) => {
@@ -624,14 +586,17 @@ export async function spawnConfinedPluginChild(
     });
     // Why the child is gone, settled from here on: a child that dies before anyone asks; while the channel is still being set up, or before the caller attaches `onGone`; is
     // still reported, and one that had already exited by the time the launch handed it back (`exitCode`/`signalCode` set, its `exit` possibly already emitted) is reported at once.
-    const exitedReason = (code: number | null, signal: NodeJS.Signals | null): string =>
-      `[out-of-process-plugin] ${spec.pluginId}: child exited code=${String(code)} signal=${String(signal)}`;
+    // The status pipe can outlive the exit while the wrapper tears down, so the cause waits for its end.
+    const exitedReason = async (code: number | null, signal: NodeJS.Signals | null): Promise<string> =>
+      (await sandboxTargetSetupFailed(child)) === true
+        ? `[out-of-process-plugin] ${spec.pluginId}: sandbox target environment setup failed`
+        : `[out-of-process-plugin] ${spec.pluginId}: child exited code=${String(code)} signal=${String(signal)}`;
     const gone = new Promise<string>((resolve) => {
       if (alreadyExited) {
-        resolve(exitedReason(child.exitCode, child.signalCode));
+        void exitedReason(child.exitCode, child.signalCode).then(resolve);
         return;
       }
-      child.once("exit", (code, signal) => resolve(exitedReason(code, signal)));
+      child.once("exit", (code, signal) => { void exitedReason(code, signal).then(resolve); });
       child.on("error", (error: Error) => {
         if (!hasProcess()) resolve(`[out-of-process-plugin] ${spec.pluginId}: child error: ${error.message}`);
       });
@@ -680,7 +645,7 @@ export async function spawnConfinedPluginChild(
         channel.destroy();
         terminateChild();
         throw new Error(
-          `${exitedReason(child.exitCode, child.signalCode)} as its channel was connected`,
+          `${await exitedReason(child.exitCode, child.signalCode)} as its channel was connected`,
         );
       }
       // stdout now carries nothing the protocol reads; keep it drained and logged, as stderr is.
@@ -739,8 +704,8 @@ export interface OutOfProcessPluginSpec {
   readonly childEntryPath?: string;
   /** Internal backend-plan integration. Absent until the policy owner admits this holder;
    * the existing path stays authoritative otherwise. Never infer readiness from the OS or a PID.
-   * The planner supplies the holder's staging HOME/temp (`<AVE_HOME>\mxc-staging\<opaque-id>`), the captured
-   * filesystem ownership, the readiness probe and revocation. The command, arguments, cwd, environment and
+   * The planner supplies the holder's staging HOME/temp (`<runtime root>staging<opaque-id>`), the captured
+   * filesystem ownership and revocation. The command, arguments, cwd, environment and
    * grants are the host's, from this intent and the envelope; the spawn goes through row 2's admitted
    * `spawnMxcConfinedChild`, whose request forms `command` with `windowsCommandLine(intent.command, intent.args)`
    * and passes `intent.cwd` verbatim. The adapter compares the measured request with the intent exactly and
@@ -751,6 +716,10 @@ export interface OutOfProcessPluginSpec {
     readonly command: string;
     readonly args: readonly string[];
     readonly cwd: string;
+    /** Where the plugin's data lives; its host-only storage sibling is named from it. */
+    readonly pluginDataDir: string;
+    /** The child's environment; the planner refuses a loader or SDK override in it before it creates anything. */
+    readonly baseEnv: NodeJS.ProcessEnv;
     readonly envelope: DelegatedWorkerConfinement;
   }) => Promise<MxcPluginChildLaunch>;
   readonly registerSandboxEnvelope?: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) => {
@@ -776,6 +745,10 @@ export interface OutOfProcessPluginSpec {
    * handshake succeed (never for a child that died first), and calls the returned function when it begins terminating, which withdraws the marker. Not
    * called when no child was spawned. The runtime records it for the Doctor (`PluginConfinementReport`); it can read a value and nothing more. */
   readonly onChildSpawned?: (confinement: SpawnConfinement) => (() => void) | void;
+  /** Takes the consent a person gave for this plugin's next child start, if one waits. */
+  readonly takeExtensionStart?: () => ExtensionStartAuthority | undefined;
+  /** The install evidence this load was verified against. Part of what a start consent answers for; absent for a load with no receipt. */
+  readonly integrity?: object;
 }
 
 /** The host protocol version this plugin's connection speaks (§3.2). Its declared, served `requires.hostProtocol`. Omission and unserved
@@ -786,6 +759,20 @@ export function connectionHostProtocol(manifest: PluginManifest): HostProtocolVe
     throw new IncompatibleHostProtocolError(manifest.id, { declared: declared ?? null });
   }
   return declared;
+}
+
+/** What a plugin child start runs: its manifest (id, version, declared entry and roots), the kind of launch, and the install
+ * evidence the load was verified against (the artifact hash, where one exists). A consent answers exactly this, so an upgraded,
+ * reinstalled or edited plugin is asked about again. The paths of one activation are left out on purpose: every activation runs
+ * from its own generation directory, and a consent given for a start must still fit that same plugin's next attempt.
+ * A load with no receipt (a local-dev plugin) is named by its manifest alone, so an edit to its code that leaves the manifest as it
+ * was is the same start. That code is the user's own, edited by the user; it is not the replaced artifact this binding guards against. */
+export function pluginChildStartIdentity(facts: {
+  readonly manifest: PluginManifest;
+  readonly launchKind: OutOfProcessPluginSpec["launch"]["kind"];
+  readonly integrity?: object | undefined;
+}): string {
+  return extensionStartIdentity({ pluginId: facts.manifest.id, manifest: facts.manifest, launchKind: facts.launchKind, integrity: facts.integrity ?? null });
 }
 
 /** Build the factory the lifecycle calls in place of the in-process one. The returned factory does the whole of the boundary's setup; spawn, dispatcher assembly, construct; inside ONE call, which is what puts it under
@@ -802,7 +789,13 @@ export function createOutOfProcessPluginFactory(
   }
 
   const factory = async (context: PluginRuntimeContext): Promise<RuntimePlugin> => {
-    assertExtensionStartAllowed();
+    // A native launch is admitted by row 2's own native-entry guard; the legacy guard refuses a selected container plan.
+    // The factory, the child spawn and its wrap are three crossings of one start: they share this consent.
+    const extensionStart = spec.prepareMxcChild ? undefined : {
+      identity: pluginChildStartIdentity({ manifest: spec.manifest, launchKind: spec.launch.kind, integrity: spec.integrity }),
+      authority: spec.takeExtensionStart?.(),
+    };
+    if (extensionStart) assertExtensionStartAllowed({ start: { key: pluginChildStartKey(pluginId), ...extensionStart } });
     // Refused before anything is spawned. `runtime/index.ts` refuses the same manifest at every load path; this is the spawn path's
     // own copy of the rule, so a factory reached any other way cannot start a child that would be told a version it does not speak.
     const hostProtocolVersion = connectionHostProtocol(spec.manifest);
@@ -834,8 +827,11 @@ export function createOutOfProcessPluginFactory(
     let withdrawConfinement: (() => void) | undefined;
     try {
       if (spec.prepareMxcChild) {
-        const intent = { pluginId, command: process.execPath, args: [childEntryPath], cwd: context.pluginRoot };
-        const launch = await spec.prepareMxcChild({ ...intent, envelope });
+        // Derived before the planner creates anything, so nothing between its staging and the adapter can strand it.
+        const intent = { pluginId, command: process.execPath, args: [childEntryPath], cwd: context.pluginRoot,
+          baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }) };
+        const floorPierces = declaredHostDirectoryFloorPierces(spec.manifest.sandbox);
+        const launch = await spec.prepareMxcChild({ ...intent, pluginDataDir: context.pluginDataDir, envelope });
         // The incumbent may have begun terminating, or been quarantined, while admission was awaited:
         // recheck synchronously right before spawn (and again after it) through the registration.
         const native = await spawnMxcPluginChild({
@@ -847,8 +843,7 @@ export function createOutOfProcessPluginFactory(
         }, {
           ...intent,
           envelope,
-          floorPierces: envelope.read.filter((path) => hostDirectoryFloorPierces().includes(path)),
-          baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
+          floorPierces,
         }, () => {
           nativeRevoked = true;
           withdrawConfinement?.();
@@ -863,6 +858,7 @@ export function createOutOfProcessPluginFactory(
         });
       } else child = await spawnConfinedPluginChild({
         pluginId,
+        ...(extensionStart ? { extensionStart } : {}),
         envelope,
         assertStillValid: () => registration?.assertCurrent(),
         socketDir: resolvePluginSocketDir(context.pluginDataDir),

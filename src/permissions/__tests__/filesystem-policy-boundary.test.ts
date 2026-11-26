@@ -12,11 +12,17 @@ import * as integrity from "../srt-win-integrity.js";
 import * as writePolicy from "../sandbox-write-policy.js";
 import { TEST_COMMAND_ID, TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 
-const phase = vi.hoisted(() => ({ before: undefined as (() => void) | undefined, after: undefined as (() => void) | undefined, guarded: false }));
+const phase = vi.hoisted(() => ({ before: undefined as (() => void) | undefined, after: undefined as (() => void) | undefined, guarded: false, homesParent: undefined as string | undefined }));
 vi.mock("../../shared/ave-home-test-guard.js", async original => ({
   ...await original<typeof import("../../shared/ave-home-test-guard.js")>(),
   get AVE_HOME_ISOLATION_GUARD_ACTIVE() { return phase.guarded; },
 }));
+// A sandbox HOME parent as start-up establishes it, so a spawn reaches its grant checks.
+vi.mock("../mxc-runtime-root.js", async original => {
+  const actual = await original<typeof import("../mxc-runtime-root.js")>();
+  return { ...actual, mxcSandboxHomesParent: (...args: Parameters<typeof actual.mxcSandboxHomesParent>) =>
+    phase.homesParent ?? actual.mxcSandboxHomesParent(...args) };
+});
 vi.mock("../windows-stamp-targets.js", async original => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();
   return { ...actual, pinWindowsFilesystemConfig: (...args: Parameters<typeof actual.pinWindowsFilesystemConfig>) => {
@@ -35,7 +41,7 @@ vi.mock("@anthropic-ai/sandbox-runtime", async original => ({
 useVerifiedAveHomePrivacy();
 const scratch = useTempDirs("filesystem-boundary-");
 const link = useScratchLinks();
-beforeEach(() => { phase.before = undefined; phase.after = undefined; phase.guarded = false; });
+beforeEach(() => { phase.before = undefined; phase.after = undefined; phase.guarded = false; phase.homesParent = undefined; });
 afterEach(async () => {
   phase.before = undefined; phase.after = undefined;
   await (await import("../asrt-sandbox.js")).resetAsrtSandbox();
@@ -43,8 +49,9 @@ afterEach(async () => {
   syncBuiltinESMExports();
 });
 
-async function setup(settings: { allowWrite: string[]; windows: { externalConfinement: true } } = { allowWrite: [], windows: { externalConfinement: true } }) {
+async function setup(settings: { allowWrite: string[] } = { allowWrite: [] }) {
   const profile = scratch();
+  phase.homesParent = join(scratch(), "homes"); mkdirSync(phase.homesParent);
   vi.stubEnv("USERPROFILE", profile); vi.stubEnv("HOME", profile);
   vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
   const executable = join(scratch(), "fixture.exe");
@@ -130,8 +137,10 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
     const { sandbox } = await setup();
     const target = scratch();
     const canonical = (await import("node:fs")).realpathSync.native(target);
+    // Present, so the row reaches the native list; an absent row would be watched instead.
+    writeFileSync(join(canonical, ".bashrc"), "");
     const controls = vi.spyOn(writePolicy, "buildMandatorySandboxWritePolicy");
-    const config = sandbox.buildSandboxConfig({ allowWrite: [target.toLowerCase()], windows: { externalConfinement: true } });
+    const config = sandbox.buildSandboxConfig({ allowWrite: [target.toLowerCase()] });
     expect(controls.mock.calls[0]![0].map(entry => typeof entry === "string" ? entry : entry.path)).toEqual([canonical]);
     expect(config.filesystem.denyWrite.map(entry => {
       const path = typeof entry === "string" ? entry : entry.path;
@@ -151,7 +160,7 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
 
   it.each(["session-init", "config-register", "config-unregister", "per-command", "worker-api", "worker-spawn", "holder", "plugin", "bundled"] as const)
     ("refuses machine-root writes from %s without a native boundary call", async producer => {
-      const settings = { allowWrite: [] as string[], windows: { externalConfinement: true as const } };
+      const settings = { allowWrite: [] as string[] };
       const { sandbox, runtime, update } = await setup(settings);
       const allowWrite = [process.env.ProgramData!];
       const holder = Object.assign(new EventEmitter(), { pid: 5101, exitCode: 0, signalCode: null, stdin: { end: vi.fn() } }) as unknown as ChildProcess;
@@ -163,7 +172,7 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
       try {
         if (producer === "session-init") {
           await sandbox.resetAsrtSandbox();
-          await expect(sandbox.initializeAsrtSandbox({ allowWrite, windows: { externalConfinement: true } })).rejects.toThrow(/contains machine root/);
+          await expect(sandbox.initializeAsrtSandbox({ allowWrite })).rejects.toThrow(/contains machine root/);
         } else if (producer.startsWith("config-")) {
           const socket = scratch(), owner = {};
           if (producer === "config-unregister") await sandbox.registerWorkerUnixSocketDir(socket, owner);

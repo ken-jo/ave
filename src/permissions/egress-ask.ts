@@ -12,8 +12,9 @@ import {
   refreshApprovalPersistence,
 } from "./approval-persistence-guard.js";
 import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
+// The sandbox runtime package type stays here on purpose: this callback is still handed to the package's proxy. It goes when the package dependency goes.
 import type { SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
-import { matchesDomainPatternWithPort } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
+import { matchesDomainPatternWithPort } from "./egress-relay/domain-pattern.js";
 import type { SandboxEgressDecisionAuditEntry, EgressDecisionBasis } from "../audit/sandbox-audit.js";
 import { maskSensitiveData, redactHomePathsInText } from "../audit/dlp-filter.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -94,6 +95,8 @@ interface ShellNetworkPermissionRequest {
 
 interface ShellNetworkPermissionSnapshot extends NetworkPermissionEvaluation {
   readonly policyEpoch: string;
+  /** The epoch without memory-only allow-rule steps (`PermissionManager.getPolicyContextEpoch`), for the card's answer. */
+  readonly policyContextEpoch: string;
   readonly approvalIdentity: string;
 }
 
@@ -214,6 +217,7 @@ type AskAnswer =
   | { readonly allow: false; readonly decision: Decision; readonly humanDenied?: true };
 
 // Whether `host:port` matches one allowlist entry, by ASRT's own `allowedDomains` matcher (`d` exactly, `*.d` strictly under `d`, `*` anything, an optional `:port` suffix), so a worker reaches exactly what the shared allowlist let it reach before the lists were split per extension.
+// Not the relay's RelayAllowEntry: that one requires a port and has no bare `*`, so one grammar for both would widen or narrow extension allowlists.
 export function egressAllowlistMatches(entries: readonly string[], destination: EgressDestination): boolean {
   return entries.some((entry) =>
     typeof entry === "string" && matchesDomainPatternWithPort(destination.host, destination.port, entry));

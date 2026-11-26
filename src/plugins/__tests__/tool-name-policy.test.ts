@@ -8,6 +8,7 @@ import {
   writeTestPlugin,
   writeTestPluginRegistry,
   type TestPluginRuntimeFixture,
+  stopTestPluginRuntimes,
 } from "./test-helpers.js";
 
 describe("PluginRuntime — Tool name policy", () => {
@@ -20,7 +21,9 @@ describe("PluginRuntime — Tool name policy", () => {
   });
 
   afterEach(async () => {
+    const stopped = await stopTestPluginRuntimes();
     await rm(fixture.rootDir, { recursive: true, force: true });
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   async function writePlugin(id: string, manifestOverrides: Record<string, unknown> = {}): Promise<void> {

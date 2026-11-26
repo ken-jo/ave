@@ -1,13 +1,11 @@
-// Host-wide admission for pre-push checks.
+// Host-wide admission for the manual full checks.
 //
-// Several checkouts of this repository on one machine push at once (parallel
-// writers, each in its own clone). Each full tier runs the whole suite and the
-// build; two or more of them together pushed the load average past 190 and
-// load-sensitive tests timed out, which then failed pushes that were correct.
-// The full tier therefore takes one exclusive host lock, and the fast tier
-// takes one of a few shared slots. The lock only orders runs: it never skips
-// or shortens a check, and a run that cannot get its turn before the timeout
-// fails the push instead of passing it.
+// Several checkouts of this repository on one machine may run the full suite
+// and the build at once; two or more of them together pushed the load average
+// past 190 and load-sensitive tests timed out. A full run therefore takes one
+// exclusive host lock. The lock only orders runs: it never skips or shortens a
+// check, and a run that cannot get its turn before the timeout fails instead
+// of passing.
 //
 // Ownership is prepared in a private directory, then published by renaming
 // that nonempty directory into place atomically. The owner filename carries
@@ -20,7 +18,6 @@
 //                               or the OS temp directory on Windows)
 //   AVE_PREPUSH_LOCK_TIMEOUT_S  seconds to wait for a turn before the push
 //                               fails (default 3600)
-//   AVE_PREPUSH_FAST_SLOTS      concurrent fast-tier runs per host (default 4)
 
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -31,7 +28,6 @@ const ownerFilename = (token) => `owner-${token}.json`;
 const OWNER_FILENAME = /^owner-([A-Za-z0-9-]{1,128})\.json$/;
 const ORPHANED_LOCK_GRACE_MS = 10_000;
 const DEFAULT_TIMEOUT_S = 3600;
-const DEFAULT_FAST_SLOTS = 4;
 const WAIT_NOTICE_INTERVAL_MS = 60_000;
 const SAFE_TOKEN = /^[A-Za-z0-9-]{1,128}$/;
 
@@ -49,7 +45,6 @@ export function resolveHostLockSettings(env = process.env) {
   return {
     directory,
     timeoutMs: positiveWholeNumber(env, "AVE_PREPUSH_LOCK_TIMEOUT_S", DEFAULT_TIMEOUT_S) * 1000,
-    fastSlots: positiveWholeNumber(env, "AVE_PREPUSH_FAST_SLOTS", DEFAULT_FAST_SLOTS),
   };
 }
 
@@ -177,9 +172,7 @@ function tryAcquire(lockPath, now) {
 }
 
 /**
- * Run synchronous `callback` while holding one of `slots` host-wide locks named `name`
- * (omitting slots uses one exclusive lock; specifying slots uses indexed
- * pool paths even for one slot). Waits, printing who holds the lock, and
+ * Run synchronous `callback` while holding the exclusive host-wide lock named `name`. Waits, printing who holds the lock, and
  * throws once `timeoutMs` passes without a turn. The lock is released when
  * the callback returns or throws; a killed process leaves a lock that the
  * next waiter reclaims by PID liveness.
@@ -190,7 +183,6 @@ export function withHostLock(options, callback) {
     label,
     directory,
     timeoutMs,
-    slots = 1,
     pollMs = 1000,
     now = Date.now,
     sleep = sleepSync,
@@ -198,12 +190,9 @@ export function withHostLock(options, callback) {
   } = options;
   if (!/^[a-z][a-z0-9-]*$/.test(name ?? "")) throw new Error(`[PRE_PUSH_HOST_LOCK] invalid lock name ${name}`);
   if (!directory) throw new Error("[PRE_PUSH_HOST_LOCK] lock directory is required");
-  if (!Number.isSafeInteger(slots) || slots < 1) throw new Error(`[PRE_PUSH_HOST_LOCK] invalid slot count ${slots}`);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error(`[PRE_PUSH_HOST_LOCK] invalid timeout ${timeoutMs}`);
   mkdirSync(directory, { recursive: true });
-  const paths = options.slots === undefined
-    ? [join(directory, `ave-prepush-${name}.lock`)]
-    : Array.from({ length: slots }, (_, slot) => join(directory, `ave-prepush-${name}-${slot}.lock`));
+  const paths = [join(directory, `ave-prepush-${name}.lock`)];
 
   const startedAt = now();
   let lastNoticeAt = null;
@@ -232,8 +221,8 @@ export function withHostLock(options, callback) {
     if (waitedMs >= timeoutMs) {
       throw new Error(
         `[PRE_PUSH_HOST_LOCK_TIMEOUT] waited ${Math.round(waitedMs / 1000)}s for the ${label} host lock ` +
-          `(held by ${holders.join(", ")}: ${paths.join(", ")}); no checks ran and the push is refused. ` +
-          "Push again when that run finishes, or raise AVE_PREPUSH_LOCK_TIMEOUT_S.",
+          `(held by ${holders.join(", ")}: ${paths.join(", ")}); no checks ran. ` +
+          "Run again when that run finishes, or raise AVE_PREPUSH_LOCK_TIMEOUT_S.",
       );
     }
     sleep(pollMs);

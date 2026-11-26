@@ -1,3 +1,7 @@
+import childProcess from "node:child_process";
+import { EventEmitter, getEventListeners } from "node:events";
+import { PassThrough } from "node:stream";
+import { syncBuiltinESMExports } from "node:module";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -5,6 +9,8 @@ import { PermissionTestResources } from "../../permissions/__tests__/test-resour
 import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { runOneHookScript, type RunnableHook } from "../script-hook-runner.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import type { ScriptHookStdin } from "../script-hook-types.js";
 
 const resources = new PermissionTestResources();
@@ -30,6 +36,15 @@ describe("script hook caller cancellation", () => {
     const secondPath = join(root, "second.pid");
     const first = new AbortController();
     const second = new AbortController();
+    const spawn = childProcess.spawn;
+    let firstArmedAtSpawn = false;
+    const observed = vi.spyOn(childProcess, "spawn").mockImplementation((command, args, options) => {
+      if (Array.isArray(args) && args.includes(firstPath)) {
+        firstArmedAtSpawn = getEventListeners(first.signal, "abort").length > 0;
+      }
+      return spawn(command, args, options);
+    });
+    syncBuiltinESMExports();
     const firstRun = runOneHookScript(waitingHook(firstPath), payload, { cwd: root, abortSignal: first.signal });
     const secondRun = runOneHookScript(waitingHook(secondPath), payload, { cwd: root, abortSignal: second.signal });
     try {
@@ -41,6 +56,7 @@ describe("script hook caller cancellation", () => {
         expect(firstPid).toBeGreaterThan(0);
         expect(secondPid).toBeGreaterThan(0);
       });
+      expect(firstArmedAtSpawn).toBe(true);
       first.abort(new Error("owner stopped first hook"));
       expect(await firstRun).toMatchObject({ decision: "deny", reason: "Hook execution cancelled", timedOut: false });
       expect(() => process.kill(firstPid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
@@ -48,7 +64,59 @@ describe("script hook caller cancellation", () => {
     } finally {
       first.abort();
       second.abort();
-      await Promise.all([firstRun, secondRun]);
+      try { await Promise.all([firstRun, secondRun]); }
+      finally { observed.mockRestore(); syncBuiltinESMExports(); }
+    }
+  });
+
+  it.each(["delayed group kill", "leader close", "missing close"] as const)("waits for the managed POSIX verdict after %s", async scenario => {
+    const platform = process.platform;
+    const root = resources.makeTmpDir("ave-hook-group-");
+    const caller = new AbortController();
+    const acquired = deferred<void>();
+    const child = Object.assign(new EventEmitter(), { pid: 14003, exitCode: null, signalCode: null,
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
+    let groupAlive = true;
+    const nativeKill = process.kill;
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid !== -child.pid) return nativeKill(pid, signal);
+      if (groupAlive) return true;
+      throw Object.assign(new Error("Group exited"), { code: "ESRCH" });
+    });
+    const spawn = vi.spyOn(childProcess, "spawn").mockImplementation(() => {
+      acquired.resolve();
+      return child as unknown as ReturnType<typeof childProcess.spawn>;
+    });
+    syncBuiltinESMExports();
+    setProcessPlatform("linux");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    let result: Awaited<ReturnType<typeof runOneHookScript>> | undefined;
+    const pending = runOneHookScript({ ...waitingHook(join(root, "unused.pid")), command: [process.execPath] }, payload,
+      { cwd: root, abortSignal: caller.signal }).then(value => { result = value; });
+    const close = (): void => { child.emit("close", null, "SIGKILL"); };
+    try {
+      await acquired.promise;
+      caller.abort(new Error("Stop the process group"));
+      if (scenario === "leader close") close();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(kill).toHaveBeenCalledWith(-child.pid, "SIGKILL");
+      expect(result).toBeUndefined();
+      if (scenario !== "missing close") {
+        groupAlive = false;
+        if (scenario === "delayed group kill") close();
+      }
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.processTreeKillMs);
+      expect(result).toMatchObject({ decision: "deny", reason: scenario === "missing close"
+        ? expect.stringContaining("hook-termination-unverified") : "Hook execution cancelled" });
+    } finally {
+      groupAlive = false;
+      close();
+      await pending;
+      vi.useRealTimers();
+      setProcessPlatform(platform);
+      kill.mockRestore();
+      spawn.mockRestore();
+      syncBuiltinESMExports();
     }
   });
 

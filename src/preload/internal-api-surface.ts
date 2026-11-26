@@ -1,5 +1,5 @@
 import { memoryMapApiSurface } from './memory-map-api-surface.js';
-import type { ScheduleAttachmentInput, ScheduleAttachment, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../shared/workflow-template-types.js";
+import type { ScheduleAttachmentInput, ScheduleAttachment, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../shared/workflow-template-types.js";
 import type { MemoryDetailResult, MemorySummariesResult } from "../shared/memory-detail.js";
 import type { HookTrustListResult, HookTrustReviewRequest, HookTrustReviewResult } from "../shared/hook-trust-review.js";
 import type { RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
@@ -688,6 +688,10 @@ export function buildInternalApiSurface() {
     egressGrantsList: async () => ipcRenderer.invoke(PERMISSIONS.egressGrantsList),
     /** MUTATING: revoke one shell egress grant (user-keyboard intent attached). */
     egressGrantRevoke: async (grant: RevocableEgressGrant) => ipcRenderer.invoke(PERMISSIONS.egressGrantRevoke, { ...grant, intent: ipcUserKeyboardIntent() }),
+    /** Read-only: protected paths a contained process created, moved to quarantine. */
+    watchedQuarantineList: async () => ipcRenderer.invoke(PERMISSIONS.watchedQuarantineList),
+    /** MUTATING: restore one quarantined entry (user-keyboard intent attached). */
+    watchedQuarantineRestore: async (slot: string, index: number) => ipcRenderer.invoke(PERMISSIONS.watchedQuarantineRestore, { slot, index, intent: ipcUserKeyboardIntent() }),
     /** Read-only: the upstream proxy setting, whether credentials are stored, and the effective upstream. */
     upstreamProxyGet: async () => ipcRenderer.invoke(PERMISSIONS.upstreamProxyGet),
     updateSecuritySettings: async (patch: import("../shared/security-settings.js").SecuritySettingsPatch) =>
@@ -704,8 +708,6 @@ export function buildInternalApiSurface() {
      * point; only ever called from an explicit "Install now" click. Auto-injects the user-keyboard intent the sender-guarded handler requires. */
     sandboxWindowsInstall: async () =>
       ipcRenderer.invoke(PERMISSIONS.sandboxWindowsInstall, { intent: ipcUserKeyboardIntent() }),
-    approveExtensionsWithoutIsolation: async () =>
-      ipcRenderer.invoke(PERMISSIONS.approveExtensionsWithoutIsolation, { intent: ipcUserKeyboardIntent() }),
     homeTrustReview: async () => ipcRenderer.invoke(PERMISSIONS.homeTrustReview),
     /** MUTATING: approve rows of the served review snapshot; without keys, approve all (offered only for a clean legacy home). */
     homeTrustApprove: async (snapshotId: string, keys?: readonly string[]) =>
@@ -973,6 +975,7 @@ export function buildInternalApiSurface() {
   // unauthorized-frame / no-store), forwarded verbatim; no fallback / re-shaping. Shared payload + result types come from the renderer-safe `shared/work-board-types.js` (no Node built-ins).
   listWorkflowTemplates: async () => ipcRenderer.invoke(WORK_BOARD.templateList) as Promise<WorkflowTemplateIpcResult<WorkflowTemplate[]>>,
   getWorkflowTemplate: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateGet, id) as Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>,
+  getWorkflowTemplateProposal: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateProposalGet, id) as Promise<WorkflowTemplateIpcResult<WorkflowTemplateProposal>>,
   draftWorkflowTemplate: async (id: string | null, input: WorkflowTemplateDraftInput) => ipcRenderer.invoke(WORK_BOARD.templateDraft, id, input) as Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>,
   confirmWorkflowTemplate: async (id: string, input: WorkflowTemplateConfirmInput) => ipcRenderer.invoke(WORK_BOARD.templateConfirm, id, input, ipcUserKeyboardIntent()) as Promise<WorkflowTemplateIpcResult<TemplateVersion>>,
   detachWorkflowTemplateSchedule: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateDetachSchedule, id, ipcUserKeyboardIntent()) as Promise<WorkflowTemplateIpcResult<boolean>>,

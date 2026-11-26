@@ -5,7 +5,7 @@ import { getBashCapabilities, resolveShell, shellEnvForChild, shellPathForHostPa
 import { createSandboxProcessHome, type SandboxProcessHome } from "../permissions/sandbox-process-home.js";
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
 import { verifiedShellEnvironment, verifiedShellExecution, type VerifiedShellCommand } from "../permissions/verified-shell-command.js";
-import type { ShellExecutionFacts } from "../shared/shell-execution.js";
+import { withHostCdFaults, type ShellExecutionFacts } from "../shared/shell-execution.js";
 import { buildHostShellChildEnv, buildSafeChildEnv, captureSandboxEnvironmentBaseline, FORWARD_ENV_KEYS, overlaySandboxChildEnv } from "./safe-env.js";
 import { collectShellExecutableReadPaths } from "./shell-executable-read-paths.js";
 import { createShellCwdProbe, type ShellCwdProbe } from "./shell-cwd-probe.js";
@@ -102,6 +102,12 @@ export function matchesPreparedShellInvocation(handle: PreparedShellInvocation, 
 /** The provider tool-use id the invocation was prepared for, when it had one. */
 export function preparedShellToolUseId(handle: PreparedShellInvocation): string | undefined { return stateOf(handle).identity.toolUseId; }
 export function preparedShellFacts(handle: PreparedShellInvocation): Readonly<ShellExecutionFacts> { return stateOf(handle).facts; }
+/** Shell analysis facts for a host plan: only the unsandboxed host substrate models a cd that fails at execution. */
+export function hostShellAnalysisFacts(handle: PreparedShellInvocation, plan: Pick<HostShellExecutionPlan, "substrate"> | undefined): ShellExecutionFacts;
+export function hostShellAnalysisFacts(handle: PreparedShellInvocation | undefined, plan: Pick<HostShellExecutionPlan, "substrate"> | undefined): ShellExecutionFacts | undefined;
+export function hostShellAnalysisFacts(handle: PreparedShellInvocation | undefined, plan: Pick<HostShellExecutionPlan, "substrate"> | undefined): ShellExecutionFacts | undefined {
+  return withHostCdFaults(handle ? stateOf(handle).facts : undefined, plan?.substrate === "none");
+}
 
 /** Bind only after command policy accepts the final source, before approval. */
 export function bindPreparedShellExecutableReadPaths(handle: PreparedShellInvocation): void {
@@ -169,15 +175,20 @@ export function disposePreparedShellInvocation(handle: PreparedShellInvocation |
 export function claimPreparedShellInvocation(handle: PreparedShellInvocation): () => void {
   const state = stateOf(handle);
   if (state.phase !== "prepared") throw new Error("Shell preparation has already been claimed");
-  if (state.identity.verifiedShellCommand !== undefined && verifiedShellExecution(state.identity.verifiedShellCommand, {
-    command: state.identity.command, dialect: "bash", cwd: state.identity.resolvedCwd,
-  }) === undefined) throw new Error("Verified shell command is no longer available for this invocation");
+  assertPreparedShellAvailable(handle);
   state.phase = "claimed";
   return () => {
     if (state.phase !== "claimed") return;
     state.phase = "disposed";
     state.home?.cleanup();
   };
+}
+
+export function assertPreparedShellAvailable(handle: PreparedShellInvocation): void {
+  const { command, resolvedCwd, verifiedShellCommand } = stateOf(handle).identity;
+  if (verifiedShellCommand !== undefined && verifiedShellExecution(verifiedShellCommand, {
+    command, dialect: "bash", cwd: resolvedCwd,
+  }) === undefined) throw new Error("Verified shell command is no longer available for this invocation");
 }
 
 /** Call immediately after successful spawn; invoke the returned cleanup only after termination. */

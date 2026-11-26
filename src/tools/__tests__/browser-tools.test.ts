@@ -11,6 +11,7 @@ import { AuditLogger } from "../../audit/audit-logger.js";
 import { ApprovalGate, answeredApprovalProvenance, answeredRecordForAction, type ApprovalDecision, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
+import { registerRunSession, __resetRunGrantsForTest } from "../../permissions/run-grants.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import {
   __resetSessionStoreForTest,
@@ -766,6 +767,59 @@ describe("browser tools", () => {
       const provenance = answeredApprovalProvenance(decision);
       expect(answeredRecordForAction(provenance, "allow", BROWSER_TOOL.navigate, "call-1").toolUseId).toBe("call-1");
       expect(() => answeredRecordForAction(provenance, "allow", BROWSER_TOOL.navigate, "other-invocation")).toThrow("does not settle this allow");
+    }
+  });
+
+  // The site card is answered while the policy moves (pending-answer-policy.ts): a sibling stage's "Allow for this run" leaves the
+  // answer standing; any other change refuses it, and so does a destination the rules now treat more strictly than when it was asked.
+  // The same with rules as they are really saved and dropped, no stand-in for the re-check: a run's own network rule that goes with
+  // its run is a memory-only step and leaves the answer standing; a deny or an ask rule saved for the destination refuses it.
+  it.each(["run with a network rule ends", "deny rule saved", "ask rule saved"] as const)("a site card answered while real rules change: %s", async (change) => {
+    let changed = false;
+    const h = harness({ mode: "default", onCard: async (card) => {
+      if (card.browserSite === undefined || changed) return;
+      changed = true;
+      if (change === "run with a network rule ends") expect(h.manager.endRun("work-board:7#run-a")).toBe(true);
+      else await h.manager.addRulePersist({ pattern: "WebFetch(domain:evil.com)", action: change === "deny rule saved" ? "deny" : "ask" }, { kind: "user" });
+    } });
+    try {
+      registerRunSession("work-board:7#run-a", "sibling-stage-session", { stageId: "build", stageName: "Build", lane: "attended" });
+      h.manager.addRunRule("sibling-stage-session", "Network(evil.com:443)");
+      const tab = await h.agentTab("https://example.com/");
+      const result = await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://evil.com/x" });
+      expect(changed).toBe(true);
+      if (change === "run with a network rule ends") expect(result.isError, String(result.output)).toBe(false);
+      else expect(result).toMatchObject({ isError: true, output: expect.stringContaining("Permission policy changed during site approval") });
+    } finally {
+      __resetRunGrantsForTest();
+    }
+  });
+
+  it.each(["sibling run rule", "other policy change", "stricter destination"] as const)("a site card answered across a policy change: %s", async (change) => {
+    let changed = false;
+    const h = harness({ mode: "default", onCard: (card) => {
+      if (card.browserSite === undefined || changed) return;
+      changed = true;
+      if (change === "other policy change") {
+        h.manager.setRules([{ pattern: "Bash(npm test)", action: "allow" }]);
+        return;
+      }
+      registerRunSession("work-board:7#run-a", "sibling-stage-session", { stageId: "build", stageName: "Build", lane: "attended" });
+      h.manager.addRunRule("sibling-stage-session", "Bash(npm test)");
+      if (change === "stricter destination") {
+        const check = h.manager.checkNetworkRules.bind(h.manager);
+        vi.spyOn(h.manager, "checkNetworkRules").mockImplementation(async (...args) => ({ ...await check(...args), decision: "ask" }));
+      }
+    } });
+    try {
+      const tab = await h.agentTab("https://example.com/");
+      const result = await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://evil.com/x" });
+      expect(changed).toBe(true);
+      expect(h.cards.filter((card) => card.browserSite !== undefined)).toHaveLength(1);
+      if (change === "sibling run rule") expect(result.isError, String(result.output)).toBe(false);
+      else expect(result).toMatchObject({ isError: true, output: expect.stringContaining("Permission policy changed during site approval") });
+    } finally {
+      __resetRunGrantsForTest();
     }
   });
 

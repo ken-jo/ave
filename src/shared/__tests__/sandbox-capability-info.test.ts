@@ -124,6 +124,12 @@ describe("describeShellSandboxStatus", () => {
     }))).toMatchObject({ state: "unavailable", causes: ["windows-shell-not-contained"] });
   });
 
+  it("reports a helper-unavailable shell denial as a home privacy failure", () => {
+    expect(describeShellSandboxStatus(input({
+      setting: true, requestedAtBoot: true, boot: ACTIVATED, shellPlanMode: "blocked", shellPlanFallback: "home-privacy-helper-unavailable",
+    }))).toMatchObject({ state: "unavailable", causes: ["ave-home-privacy-failed"] });
+  });
+
   it("is pending-on when the setting was turned on after boot, including a worker-only activation", () => {
     expect(describeShellSandboxStatus(input({ setting: true })).state).toBe("pending-on");
     expect(describeShellSandboxStatus(input({ setting: true, boot: ACTIVATED })).state).toBe("pending-on");

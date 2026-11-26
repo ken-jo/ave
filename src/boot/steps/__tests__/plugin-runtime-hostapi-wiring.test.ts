@@ -19,6 +19,10 @@ import { HOSTAPI_DISPATCH_TABLE, HostApiDispatcher, createServiceHostApiPaths } 
 import { startPluginChildRuntime } from "../../../plugins/isolation/plugin-child-runtime.js";
 import type { PluginHostApi } from "../../../plugins/types.js";
 import { EffectBoundaryDeniedError, runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
+import {
+  __resetExtensionStartsForTest, ExtensionStartConsentRequiredError, listPendingExtensionStarts, setExtensionStartAsker, type ExtensionStartAsker,
+} from "../../../permissions/extension-start-consent.js";
+import { turnExtensionPolicyContext } from "../../../shared/turn-extension-policy.js";
 import { backgroundEffectSubject, PluginBackgroundEffectApprovals } from "../../../plugins/plugin-background-effects.js";
 import { SettingsService } from "../../../data/settings-store.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
@@ -145,6 +149,7 @@ import { withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
 import type { PluginRegistryEntry, PluginRegistryTrust } from "../../../plugins/types.js";
 import { HostApiGenerationScope } from "../../../plugins/plugin-host-effect-scope.js";
 import { settleMacrotask } from "../../../__tests__/test-helpers.js";
+import { answerEachStart } from "../../../__tests__/support/approved-extension-start.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import { recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
 import { agentPluginsDocument, pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
@@ -1067,6 +1072,56 @@ describe("HostApi incarnation authority", () => {
     expect(await call(manifest, manifestSha256)).toMatchObject({ ok: true, exposure: "lease" });
     // A manifest not read from a document matches no pin, not even one taken over its projection.
     expect(await call(unread, projectionSha256)).toMatchObject({ ok: false, reason: "not-whitelisted" });
+  });
+
+  it("asks the tool call's own session for a worker nothing confines, and leaves one outside a tool call waiting", async () => {
+    const handle = { control: "output-only-v1", pid: 7, stop: vi.fn(), onStdout: vi.fn(), onStderr: vi.fn(), onExit: vi.fn() };
+    // The spawn site names the start it refuses; the question and the consent are for exactly that one.
+    runtimeTestState.spawnWorker.mockImplementation(async (spec: { extensionStart?: unknown }) => {
+      if (spec.extensionStart === undefined) throw new ExtensionStartConsentRequiredError("no-backend", { key: "worker:plugin-a/w", identity: "worker-spec" });
+      return handle;
+    });
+    const ask = vi.fn<ExtensionStartAsker["ask"]>(answerEachStart(() => "yes"));
+    setExtensionStartAsker({ ask, notify: vi.fn() });
+    try {
+      const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-worker-start-")));
+      const permissionManager = new PermissionManager(join(root, "permissions.json"));
+      permissionManager.setMode("allow");
+      const createHostApi = await initAndGetFactory(
+        makeSettingsService(new Map()), { log: vi.fn() }, vi.fn() as unknown as typeof fetch, { requestAndWait: vi.fn() }, { permissionManager });
+      const api = createHostApi(
+        "plugin-a", { id: "plugin-a", config: {} } as never,
+        pluginDataDirIn(root),
+        { registerDisposer: () => {}, trackOperation: <T>(operation: Promise<T>) => operation, isActive: () => true, isLifecycleHookActive: () => false },
+        "plugin-a",
+      );
+      const spawn = () => api.spawnWorker({ workerId: "w", command: "node", control: "output-only-v1" } as never);
+      const toolCall = { headless: false, approvalSurface: "interactive", sessionId: "tool-session", toolName: "sample" } as const;
+      await turnExtensionPolicyContext.run({ allowExternalHooks: true }, () => runWithEffectGateContext(toolCall, spawn));
+      expect(ask.mock.calls.map(([starts, session]) => [starts.map((start) => [start.key, start.identity, start.label]), session.sessionId]))
+        .toEqual([[[["worker:plugin-a/w", "worker-spec", "plugin-a / w"]], "tool-session"]]);
+      expect(runtimeTestState.spawnWorker).toHaveBeenCalledTimes(2);
+
+      // A no covers that spawn only: the next spawn in a tool call asks again.
+      ask.mockImplementationOnce(answerEachStart(() => "no"));
+      const inToolCall = () => turnExtensionPolicyContext.run({ allowExternalHooks: true }, () => runWithEffectGateContext(toolCall, spawn));
+      await expect(inToolCall()).rejects.toThrow("extension-start-consent-required");
+      await inToolCall();
+      expect(ask).toHaveBeenCalledTimes(3);
+      ask.mockClear();
+
+      // The turn decides who is present, as it does for a hook: a routine waking a chat has nobody to ask.
+      await expect(turnExtensionPolicyContext.run({ allowExternalHooks: true, withholdSessionAuthority: true }, () => runWithEffectGateContext(toolCall, spawn)))
+        .rejects.toThrow("extension-start-consent-required");
+      expect(ask).not.toHaveBeenCalled();
+      expect(listPendingExtensionStarts()).toEqual([]);
+
+      await expect(spawn()).rejects.toThrow("extension-start-consent-required");
+      expect(ask).not.toHaveBeenCalled();
+      expect(listPendingExtensionStarts()).toMatchObject([{ key: "worker:plugin-a/w", kind: "worker", state: "pending" }]);
+    } finally {
+      __resetExtensionStartsForTest();
+    }
   });
 
   it("gives a worker only the floor pierces its plugin's reviewed declaration asked for", async () => {

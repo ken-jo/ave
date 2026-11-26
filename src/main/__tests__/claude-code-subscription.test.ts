@@ -92,6 +92,7 @@ describe("claude-code subscription contract", () => {
         ENABLE_CLAUDEAI_MCP_SERVERS: "true",
         DISABLE_UPDATES: "0",
         LANG: "en_US.UTF-8",
+        NoDefaultCurrentDirectoryInExePath: "1",
       },
       "win32",
       "C:\\isolated\\claude-tmp",
@@ -102,6 +103,7 @@ describe("claude-code subscription contract", () => {
     expect(env.ENABLE_CLAUDEAI_MCP_SERVERS).toBe("false");
     expect(env.DISABLE_UPDATES).toBe("1");
     expect(env.LANG).toBe("en_US.UTF-8");
+    expect(env.NoDefaultCurrentDirectoryInExePath).toBe("1");
     expect(env.TEMP).toBe("C:\\isolated\\claude-tmp");
   });
 

@@ -35,6 +35,7 @@ import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 import * as readDenyEvidenceModule from "../../shared/windows-read-deny-evidence.js";
 import { win32SystemBinary } from "../../shared/ave-home.js";
 import * as windowsStampTargets from "../windows-stamp-targets.js";
+import * as watchedRows from "../windows-watched-rows.js";
 import { configureHostResources } from "../../main/host-resources.js";
 
 vi.mock("../../shared/policy-home.js", async (importOriginal) => {
@@ -1546,8 +1547,9 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const sensitive = getDefaultSensitiveReadDenyPaths();
     const privateRoots = appOwnedSandboxPrivateRoots();
     for (const p of sensitive) {
-      // The sandbox private roots and the Ave home boundary roots are spelled exactly, so ASRT's late deny emission keeps the re-allows beneath them.
-      const spelled = privateRoots.includes(p) || aveHomeReadBoundaryCovering(p) === p ? exactDenySpelling(p) : p;
+      // The sandbox private roots and the Ave home boundary roots are spelled exactly, so ASRT's late deny emission keeps the re-allows beneath them. The container runtime root has no re-allow beneath it on this route and stays as written.
+      const reopened = privateRoots.includes(p) && basename(p) !== "mxc-runtime";
+      const spelled = reopened || aveHomeReadBoundaryCovering(p) === p ? exactDenySpelling(p) : p;
       if (reachesAsrt(p)) expect(bare(config.filesystem.denyRead)).toContain(bare([spelled])[0]);
     }
     // The Ave home is one boundary row, so a file inside it and a child created later are both covered.
@@ -1783,6 +1785,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const profile = join(tmpdir(), "ave-windeny-profile");
     process.env.AVE_ASRT_TEST_HOME = profile;
     setProcessPlatform("win32");
+    const watch = vi.spyOn(watchedRows, "watchAbsentProtectedRow").mockImplementation(() => {});
     try {
       const work = join(profile, "work");
       const config = buildSandboxConfig({
@@ -1792,13 +1795,15 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
         denyWrite: [join(work, "locked")],
       });
       const denies = [...config.filesystem.denyRead, ...config.filesystem.denyWrite].map(entry => nativeDenySpelling(typeof entry === "string" ? entry : entry.path));
-      // Under the grant: kept, the sandbox user could otherwise reach it.
-      expect(denies).toContain(join(work, "locked"));
+      // Under the grant: watched, never handed to the native stamp that would create it.
+      expect(denies).not.toContain(join(work, "locked"));
+      expect(watch).toHaveBeenCalledWith(join(work, "locked"), expect.arrayContaining([expect.any(String)]));
       // Missing disjoint rows would create placeholders and stamp the profile itself as the parent.
       expect(denies.filter((p) => p.startsWith(profile) && !p.startsWith(work))).toEqual([]);
       // Outside the profile: kept.
       expect(denies).toContain(join(fakeAveHome, "settings.json"));
     } finally {
+      watch.mockRestore();
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
@@ -1863,7 +1868,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     ["profile roots", "C:\\Users\\tester", "C:\\Users\\tester\\", "C:\\Users\\tester\\locked", true],
     ["network paths", "\\\\server\\profiles\\tester", "//SERVER/profiles/tester/work/", "\\\\server\\profiles\\tester\\work\\locked", true],
     ["network share boundaries", "\\\\server\\profiles\\tester", "\\\\server\\profiles\\tester\\work", "\\\\server\\profiles\\tester\\work-neighbor\\locked", false],
-  ])("Windows: profile deny coverage respects %s", (_name, profile, grant, target, kept) => {
+  ])("Windows: profile deny coverage respects %s", (_name, profile, grant, target, reached) => {
     // This table tests lexical coverage, including spellings native admission deliberately refuses.
     const pin = vi.spyOn(windowsStampTargets, "pinWindowsFilesystemConfig").mockImplementation(filesystem => filesystem === undefined ? filesystem : ({
       ...filesystem,
@@ -1904,6 +1909,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const currentEvidence = readDenyEvidenceModule.windowsReadDenyEvidence;
     const evidence = vi.spyOn(readDenyEvidenceModule, "windowsReadDenyEvidence").mockImplementation((path, snapshot) =>
       /^\\\\server\\profiles\\tester(?:\\|$)/i.test(path) ? { status: "missing" } : currentEvidence(path, snapshot));
+    const watch = vi.spyOn(watchedRows, "watchAbsentProtectedRow").mockImplementation(() => {});
     try {
       const config = buildSandboxConfig({
         allowedDomains: [],
@@ -1912,9 +1918,15 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
         denyRead: [target],
         denyWrite: [target],
       }, new Map([[windowsReadDenyKey(target), { status: "missing" } as const]]));
-      expect(bare(config.filesystem.denyRead).includes(target)).toBe(kept);
-      expect(bare(config.filesystem.denyWrite).includes(target)).toBe(kept);
+      // A reached absent row is watched; only a network row, which cannot be watched, stays in the native list.
+      const fold = (path: string) => resolve(path.replace(/^\\\\\?\\/, "")).toLowerCase();
+      const watched = watch.mock.calls.some(([path]) => fold(path) === fold(target));
+      const network = /^\\\\server\\/i.test(target);
+      expect(watched).toBe(reached && !network);
+      expect(bare(config.filesystem.denyRead).includes(target)).toBe(reached && network);
+      expect(bare(config.filesystem.denyWrite).includes(target)).toBe(reached && network);
     } finally {
+      watch.mockRestore();
       pin.mockRestore();
       vi.mocked(lstatSync).mockImplementation(nativeLstat);
       vi.mocked(readdirSync).mockImplementation(nativeReaddir);
@@ -1997,6 +2009,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const profile = homedir();
     vi.stubEnv("USERPROFILE", profile);
     vi.stubEnv("HOME", profile);
+    const watch = vi.spyOn(watchedRows, "watchAbsentProtectedRow").mockImplementation(() => {});
     try {
       const root = join(profile, "x");
       mkdirSync(root, { recursive: true });
@@ -2010,11 +2023,14 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       for (const config of configs) {
         expect(bare(config.allowRead ?? []).map(path => resolve(path))).toEqual([root]);
         const denies = bare(config.denyWrite ?? []);
-        expect(denies).toContain(join(root, ".bashrc"));
         expect(denies).not.toContain(join(grant, ".bashrc"));
         expect(denies).not.toContain(resolve(grant, ".bashrc"));
       }
+      // The absent control row is watched under its expanded spelling.
+      expect(watch.mock.calls.map(([path]) => path)).toContain(join(root, ".bashrc"));
+      expect(watch.mock.calls.map(([path]) => path)).not.toContain(resolve(grant, ".bashrc"));
     } finally {
+      watch.mockRestore();
       vi.unstubAllEnvs();
     }
   });

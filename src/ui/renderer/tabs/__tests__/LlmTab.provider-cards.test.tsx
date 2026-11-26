@@ -628,7 +628,7 @@ describe("LlmTab provider cards", () => {
     await renderTab(api);
     api.updateSettings.mockRejectedValueOnce(new Error("unavailable"));
     await pickCompactionModel("summary-model");
-    await waitFor(() => expect(screen.getByText(t("compactionSettings.saveFailed"))).toHaveAttribute("role", "alert"));
+    await waitFor(() => expect(screen.getByText("압축 모델을 저장하지 못했습니다. 입력한 내용은 유지됩니다. 다시 시도하세요.")).toHaveAttribute("role", "alert"));
     expect(screen.getByTestId("compaction-model")).toHaveTextContent(t("compactionSettings.currentModel"));
     await act(async () => { await api.updateSettings({ llm: { pinnedModels: [] } }); });
     expect(screen.getByTestId("compaction-model")).toHaveTextContent(t("compactionSettings.currentModel"));
@@ -649,7 +649,7 @@ describe("LlmTab provider cards", () => {
     const { api } = profileApi({ compactionModelSelection: { vendor: "claude", model: "missing-summary" } });
     await renderTab(api);
     expect(screen.getByTestId("compaction-model")).toHaveTextContent("missing-summary");
-    expect(await screen.findByTestId("compaction-model-unavailable")).toHaveTextContent(t("compactionSettings.selectedUnavailable"));
+    expect(await screen.findByTestId("compaction-model-unavailable")).toHaveTextContent("선택한 압축 모델을 사용할 수 없습니다. 사용 가능한 모델을 고르거나 현재 채팅 모델 따르기로 바꾼 뒤 압축하세요.");
     expect(screen.queryByTestId("compaction-model-save")).toBeNull();
   });
 
@@ -745,7 +745,7 @@ describe("LlmTab provider cards", () => {
     const api = makeApi();
     await renderTab(api, { fallbackOpen: true, marketplaceProviderPresetId: "fixture-preset", fallbackChain: [{ provider: "openai", model: "draft-model" }] });
     const fallback = screen.getByTestId("fallback-chain-section");
-    expect(within(fallback).getByRole("status")).toHaveTextContent(t("llmTab.fallbackPresetUnavailable"));
+    expect(within(fallback).getByRole("status")).toHaveTextContent("마켓플레이스 공급자를 사용하는 동안에는 사용자 지정 공급자를 대체 모델 목록에 추가할 수 없습니다.");
     const [providerPicker] = within(fallback).getAllByRole("combobox");
     assert.exists(providerPicker);
     openMenu(providerPicker);
@@ -1216,7 +1216,7 @@ describe("LlmTab provider cards", () => {
     // The deprecated tier sets no marker: the trigger names the model and its tier.
     await renderTab(api, { vendor: "openai", model: "o4-mini" });
     await waitFor(() => expect(screen.getByTestId(TEST_IDS.llmModelSelect))
-      .toHaveTextContent(t("llmTab.modelDeprecatedPlaceholder", { model: "o4-mini" })));
+      .toHaveTextContent("o4-mini 모델은 지원 종료 예정입니다 — 모델 선택"));
     const ids = await chooserModelIds();
     expect(ids).toContain("gpt-5.4");
     expect(ids).toContain("o3");
@@ -1247,7 +1247,7 @@ describe("LlmTab provider cards", () => {
     const section = screen.getByTestId("fallback-chain-section");
     const triggers = [...section.querySelectorAll<HTMLElement>("[role='combobox']")];
     const modelTrigger = triggers[triggers.length - 1]!;
-    await waitFor(() => expect(modelTrigger).toHaveTextContent(t("llmTab.modelRetiredPlaceholder", { model: "gpt-4.1" })));
+    await waitFor(() => expect(modelTrigger).toHaveTextContent("gpt-4.1 모델은 더 이상 제공되지 않습니다 — 모델 선택"));
     openMenu(modelTrigger);
     const ids = await waitFor(() => {
       const found = [...document.querySelectorAll<HTMLElement>("[role='option']")]
@@ -1282,10 +1282,10 @@ describe("LlmTab provider cards", () => {
     const badge = row.queryByTestId(`llm-tab:model-reasoning-unstated:${model}`);
     expect(Boolean(badge)).toBe(unstated);
     if (badge) {
-      expect(badge).toHaveTextContent(t("llmTab.modelReasoningUnstatedBadge"));
+      expect(badge).toHaveTextContent(/^추론 수준 미상$/);
       expect(badge).toHaveAttribute("role", "note");
       expect(badge.getAttribute("title")).toContain("llm.vendors.openai.catalogModel");
-      expect(badge).toHaveAccessibleName(t("llmTab.modelReasoningUnstatedHelp", { vendor: "openai" }));
+      expect(badge).toHaveAccessibleName("이 모델이 받는 추론 수준을 알려 주는 곳이 없어, 생각하기를 켜도 추론 강도를 보내지 않습니다. 설정 파일의 llm.vendors.openai.catalogModel 에 이 모델이 해당하는 카탈로그 항목을 지정하면 추론 수준이 정해집니다.");
     }
     expect(Boolean(row.queryByTestId(`llm-tab:model-reasoning:${model}`))).toBe(reasoning);
   });
@@ -1716,7 +1716,7 @@ describe("LlmTab provider cards leave the chat route alone", () => {
     fireEvent.click(await screen.findByTestId("llm-tab:connection:claude:toggle"));
     fireEvent.click(screen.getByText(/^(삭제|Delete|Remove)$/));
     expect(await screen.findByTestId("llm-settings-persist-error")).toHaveAttribute("role", "alert");
-    expect(screen.getByTestId("llm-tab:api-key-status")).toHaveTextContent(t("llmTab.apiKeySet"));
+    expect(screen.getByTestId("llm-tab:api-key-status")).toHaveTextContent("설정됨");
   });
 
   it("keeps the card on screen after its only credential is deleted", async () => {
@@ -1747,7 +1747,7 @@ describe("LlmTab provider cards leave the chat route alone", () => {
     expect(screen.getByTestId("llm-tab:connection:claude")).toBeInTheDocument();
     expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
     expect(screen.getByTestId("llm-tab:api-key-status"))
-      .toHaveTextContent(t("llmTab.apiKeyNotSet"));
+      .toHaveTextContent("미설정");
   });
 });
 
@@ -2495,7 +2495,7 @@ describe("LlmTab asks how to sign in to a subscription row", () => {
     expect(method("codex", "plan")).toHaveAttribute("aria-checked", "true");
     expect(logout).not.toHaveBeenCalled();
     const note = screen.getByTestId("llm-tab:other-credential:codex:subscription");
-    expect(note).toHaveTextContent(t("subscriptionProvidersSection.otherSubscriptionSignedIn", { plan: "ChatGPT" }));
+    expect(note).toHaveTextContent("ChatGPT 구독으로도 로그인되어 있습니다. 로그아웃하기 전까지 유지됩니다.");
 
     fireEvent.click(within(note).getByTestId("llm-tab:other-credential:codex:sign-out"));
     expect(logout).toHaveBeenCalledExactlyOnceWith("codex");
@@ -2515,7 +2515,7 @@ describe("LlmTab asks how to sign in to a subscription row", () => {
       fireEvent.click(within(card).getByTestId("llm-tab:connection:codex:toggle"));
     }
     expect(within(card).getByTestId("llm-tab:connection-subline:codex"))
-      .toHaveTextContent(t("subscriptionProvidersSection.statusCliNotFound"));
+      .toHaveTextContent("CLI 미설치");
     expect(within(card).getByTestId("llm-tab:connection:codex:state"))
       .toHaveTextContent(t("connectionRow.stateNeedsSetup"));
     expect(within(card).getByTestId("subscription-provider:codex:install-guidance"))
@@ -2542,7 +2542,7 @@ describe("LlmTab asks how to sign in to a subscription row", () => {
     }), { vendor: "openai", model: "gpt-5", hasKey: true });
     const card = await screen.findByTestId("llm-tab:connection:openai");
     await waitFor(() => expect(within(card).getByTestId("llm-tab:connection:openai:state")).toHaveTextContent(CONNECTED));
-    expect(card).not.toHaveTextContent(t("subscriptionProvidersSection.statusCliNotFound"));
+    expect(card).not.toHaveTextContent("CLI 미설치");
     // The key never makes the subscription row connected, so a signed-out runtime stays off the list.
     expect(screen.queryByTestId("llm-tab:connection:codex")).toBeNull();
   });
@@ -2557,7 +2557,7 @@ describe("LlmTab asks how to sign in to a subscription row", () => {
     api.hasApiKey = vi.fn().mockResolvedValue(false);
     fireEvent.click(within(await within(card).findByTestId("llm-tab:manual-section")).getByRole("button", { name: t("llmTab.delete") }));
     await waitFor(() => expect(api.deleteApiKey).toHaveBeenCalledWith("openai"));
-    await waitFor(() => expect(within(card).getByTestId("llm-tab:api-key-status")).toHaveTextContent(t("llmTab.apiKeyNotSet")));
+    await waitFor(() => expect(within(card).getByTestId("llm-tab:api-key-status")).toHaveTextContent("미설정"));
     expect(within(card).getByTestId("llm-api-key-input")).toBeInTheDocument();
     expect(within(screen.getByTestId("llm-tab:connection:codex")).queryByTestId("llm-api-key-input")).toBeNull();
   });

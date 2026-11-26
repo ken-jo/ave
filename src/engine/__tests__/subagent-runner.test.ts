@@ -3379,6 +3379,36 @@ describe("SubAgentRunner activity ordering", () => {
   });
 });
 
+describe("SubAgentRunner — a refused link", () => {
+  it("ends the tracked run when the linkage hook throws, and the refusal reaches the caller", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-subagent-link-refused-"));
+    vi.stubEnv("AVE_HOME", root);
+    const registry = new ToolRegistry();
+    const memory = new MemoryManager({ aveDir: join(root, "subagent") });
+    const runner = new SubAgentRunner({ parentDeps: buildLoopDeps(registry), toolRegistry: registry, subAgentMemoryManager: memory });
+    const runTurn = vi.spyOn(ConversationLoop.prototype, "runTurn");
+    const originSessionId = "a1bdc27a-c758-4a74-8955-5e9188412366";
+    let linked: string | undefined;
+    try {
+      await expect(runner.spawn(
+        { title: "refused child", instructions: "work", toolScope: PARENT_ALL_TOOL_SCOPE, originSessionId },
+        { onLinked: ({ childSessionId }) => { linked = childSessionId; throw new Error("the run has ended and takes no session"); } },
+      )).rejects.toThrow("the run has ended and takes no session");
+      expect(linked).toMatch(/^sub-/);
+      expect(runTurn).not.toHaveBeenCalled();
+      const statuses = runner.listRunStatuses(originSessionId);
+      expect(statuses).toHaveLength(1);
+      expect(statuses[0]).toMatchObject({ childSessionId: linked, status: "error", error: "the run has ended and takes no session" });
+      expect(statuses.some((run) => run.status === "running" || run.taskState === A2ATaskState.SUBMITTED)).toBe(false);
+    } finally {
+      memory.sessions.closeSearchIndex();
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      await cleanupTmpDir(root);
+    }
+  });
+});
+
 describe("SubAgentRunner — host input taint", () => {
   const input = { toolScope: PARENT_ALL_TOOL_SCOPE, title: "stage", instructions: "do" };
 

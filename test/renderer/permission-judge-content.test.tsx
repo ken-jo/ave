@@ -6,7 +6,7 @@ import { makeMockAveApi } from "./mock-ave-api.js";
 import { SavedToastProvider } from "../../src/ui/renderer/context/SavedToastContext.js";
 import { PermissionJudgeContent } from "../../src/ui/renderer/components/permissions/PermissionJudgeContent.js";
 import { requiredFixture } from "../../src/__tests__/support/required-fixture.js";
-import { setLocale, t } from "../../src/i18n/runtime.js";
+import { setLocale } from "../../src/i18n/runtime.js";
 import type { PermissionJudgeSettings, PermissionJudgeSnapshot, PermissionJudgeWriteResult } from "../../src/shared/permission-judge-settings.js";
 
 function settings(): PermissionJudgeSettings {
@@ -389,7 +389,7 @@ it("keeps the reviewer model modified when its owning reset is refused", async (
     });
     view.judgeSet.mockResolvedValueOnce({ ok: false, error: "judge-save-failed" });
     fireEvent.click(requiredFixture(row.querySelector('button')));
-    await waitFor(() => expect(row.closest('[data-settings-actions]')).toHaveTextContent(t("settingsEditor.actionFailed")));
+    await waitFor(() => expect(row.closest('[data-settings-actions]')).toHaveTextContent("Could not complete the setting action. Your saved setting has not changed."));
     expect(row.dataset.settingModified).toBe("true");
     expect(view.notifySaved).not.toHaveBeenCalled();
     expect(view.api.updateSettings).not.toHaveBeenCalled();

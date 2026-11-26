@@ -11,9 +11,10 @@ import {
   type ApprovalDecision,
   type ApprovalRequest,
 } from "../approval-gate.js";
+import { offersFloorSessionAllow } from "../decision-pipeline.js";
 import { buildHostShellExecutionPlan, requiresExplicitHostShellApproval } from "../host-shell-execution-plan.js";
 import { updatePermissionsFile } from "../permissions-store.js";
-import { setWindowsShellLocalNetworkAccess, __resetWindowsSandboxSubstrateForTest } from "../sandbox-capability.js";
+import { __resetWindowsSandboxSubstrateForTest } from "../sandbox-capability.js";
 import {
   buildHostShellExecutionPermitBinding,
   resolveHostShellWorkingDirectory,
@@ -136,17 +137,6 @@ function permitInput(
 
 describe("Windows partial-shell execution permit", () => {
   afterEach(() => __resetWindowsSandboxSubstrateForTest());
-
-  it.each([false, true])("rejects policy authorization recorded before consent changes from %s", initial => {
-    setWindowsShellLocalNetworkAccess(initial);
-    const binding = makeBinding();
-    recordHostShellPolicyAuthorization(binding);
-    setWindowsShellLocalNetworkAccess(!initial);
-    setWindowsShellLocalNetworkAccess(initial);
-    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: undefined })).toBeUndefined();
-    recordHostShellPolicyAuthorization(binding);
-    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: undefined })).toBeDefined();
-  });
 
   it("binds host policy authorization to one action and consumes it once", () => {
     const binding = makeBinding();
@@ -322,9 +312,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     expect(mintHostShellExecutionPermit({
       plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision("echo one-shot", directory), permissionManager: pm, binding,
     })).toBeUndefined();
-    // This rule-proof path serves only an explicit host retry. A Windows Plan B shell that an exact Bash(<command>) rule
-    // allows gets its permit from the policy lane, which invocation authorization records for that exact action
-    // (see executor-windows-partial-shell.test.ts), so a bare rule decision never mints a Plan B permit here.
+    // An ordinary host-request rule decision cannot mint a permit for a default shell under the floor.
     const planB = windowsPlan();
     const planBBinding = hostBinding(planB);
     expect(mintHostShellExecutionPermit({
@@ -345,6 +333,99 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     expect(mintHostShellExecutionPermit({
       plan: marked, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
     })).toBeUndefined();
+  });
+
+  const floorCases = [
+    { label: "no backend", activeCapability: { kind: "none", confidence: "verified", platform: "linux", reason: "fixture unavailable sandbox" } },
+    { label: "backend without shell containment", activeCapability: { kind: "asrt", confidence: "verified", platform: "win32", reason: "fixture partial containment",
+      confines: { filesystem: true, process: false, network: true } } },
+  ] as const;
+  it.each(floorCases.flatMap(entry => (["default", "host"] as const).map(executionMode => ({ ...entry, executionMode }))))(
+    "lets only an exact saved rule pass the $executionMode ask with $label and verified boot home privacy", async ({ activeCapability, executionMode }) => {
+    const build = (boot: { homePrivacyVerified?: boolean; unavailableSandboxRequiresAsk?: boolean }) => buildHostShellExecutionPlan({
+      platform: activeCapability.platform, requestedSandbox: true, executionMode, activeCapability, ...boot,
+    });
+    const verified = build({ homePrivacyVerified: true });
+    const cwd = join(directory, "subdir");
+    const decide = (command = "echo one-shot", plan = verified, extra: Record<string, unknown> = {}): PermissionCheckResult => pm.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "bash", command, cwd }, hostShellExecutionPlan: plan, shellExecution: HOST_ROUTE_ON_SANDBOX_HOST, sessionId: "exact-rule", ...extra,
+    });
+    const mint = (decision: PermissionCheckResult, plan = verified, bound = hostBinding(plan), manager = pm) => mintHostShellExecutionPermit({
+      plan, approvalDecision: undefined, allowRuleDecision: decision, floorSessionDecision: decision, permissionManager: manager, binding: bound,
+    });
+    const asks = (decision: PermissionCheckResult) => {
+      expect(decision).toMatchObject({ decision: "ask", forceModal: true });
+      expect(isIssuedShellAllowRuleDecision(decision)).toBe(false);
+    };
+
+    pm.setRules([]);
+    await pm.addRulePersist({ pattern: "Bash(echo one-shot)", action: "allow" }, { kind: "user" });
+    const passed = decide();
+    expect(passed).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
+    // The audited reason names the rule.
+    expect(passed.reason).toContain("Bash(echo one-shot)");
+    expect(isIssuedShellAllowRuleDecision(passed, pm)).toBe(true);
+    const binding = hostBinding(verified);
+    const permit = mint(passed, verified, binding);
+    expect(permit).toBeDefined();
+    expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(true);
+    // One decision, one run.
+    expect(mint(passed, verified, binding)).toBeUndefined();
+    // A recheck keeps the proof on the refreshed decision only.
+    const rechecked = pm.recheckPermission(decide());
+    expect(rechecked).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
+    expect(mint(rechecked)).toBeDefined();
+    // The mode and the reviewer are not consulted, and nobody present still denies.
+    for (const mode of ["strict", "auto", "allow"] as const) {
+      pm.setMode(mode);
+      expect(decide()).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
+      expect(decide().reviewer).toBeUndefined();
+    }
+    expect(decide("echo one-shot", verified, { headless: true })).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+
+    // Prefix and tool-name rules, the allow mode, a session rule and a compound of exact rules keep the forced ask.
+    pm.setMode("allow");
+    asks(decide("echo one-shot && echo other"));
+    pm.setRules(([{ pattern: "Bash(echo *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
+    asks(decide());
+    pm.setRules([{ pattern: "bash", action: "allow" }]);
+    asks(decide());
+    pm.setRules([]);
+    pm.addSessionRule("exact-rule", "Bash(echo one-shot)");
+    asks(decide());
+    // The same exact rule set in code is not a saved rule.
+    pm.setRules(([{ pattern: "Bash(echo one-shot)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
+    asks(decide());
+    pm.setRules([]);
+    await pm.addRulePersist({ pattern: "Bash(echo one-shot)", action: "allow" }, { kind: "user" });
+    expect(decide()).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
+    // An ask rule and a second forced reason keep it too; the second floor's card is once-only.
+    asks(decide("echo one-shot", verified, { floor: { code: "other-principal", reason: "fixture" } }));
+    expect(offersFloorSessionAllow(decide("echo one-shot", verified, { floor: { code: "other-principal", reason: "fixture" } }))).toBe(false);
+    asks(decide("echo one-shot", verified, { manualRerun: true }));
+    pm.setRules(([{ pattern: "Bash(echo *)", action: "ask" }] as const).map(withCurrentShellRuleVersion));
+    await pm.loadRulesFromFile();
+    asks(decide());
+    pm.setRules([]);
+    await pm.loadRulesFromFile();
+
+    // Boot home privacy unverified or unpublished: the boot floor governs and no saved rule passes.
+    for (const plan of [build({}), build({ unavailableSandboxRequiresAsk: true })]) {
+      const asked = decide("echo one-shot", plan);
+      asks(asked);
+      expect(asked.reasonCode).toBe("sandbox-unavailable");
+      expect(offersFloorSessionAllow(asked)).toBe(true);
+      // A pass issued on the verified plan answers no other plan.
+      expect(mint(decide(), plan, hostBinding(plan))).toBeUndefined();
+    }
+    // A forged lookalike, another manager, another command and a rule changed after the decision mint nothing.
+    expect(mint({ decision: "allow", reason: "forged", reasonCode: "exact-host-rule" } as PermissionCheckResult)).toBeUndefined();
+    expect(mint(decide(), verified, hostBinding(verified), new PermissionManager(join(directory, "other.json")))).toBeUndefined();
+    expect(mint(decide(), verified, hostBinding(verified, { command: "echo other" }))).toBeUndefined();
+    const stale = decide();
+    pm.setRules([]);
+    expect(mint(stale)).toBeUndefined();
+    asks(decide());
   });
 
   it("mints one permit per issued floor session decision for its own command, cwd and marked plan; the grant covers the session", () => {
@@ -412,50 +493,6 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
   it("refuses a floor session grant without its conversation or for another floor", () => {
     expect(() => pm.addFloorSessionGrant("", { code: "sandbox-unavailable" })).toThrow();
     expect(() => pm.addFloorSessionGrant("floor-session", { code: "protected-path" as never })).toThrow();
-  });
-
-  it.each([
-    [false, "consume", false], [true, "consume", false],
-    [false, "handoff", false], [true, "handoff", false],
-    [false, "consume", true], [true, "consume", true],
-    [false, "handoff", true], [true, "handoff", true],
-  ] as const)("revokes a minted Windows floor permit from consent %s before %s, round trip %s", async (initial, stage, roundTrip) => {
-    setWindowsShellLocalNetworkAccess(initial);
-    const plan = buildHostShellExecutionPlan({
-      platform: "win32", requestedSandbox: true, executionMode: "host", unavailableSandboxRequiresAsk: true,
-      activeCapability: { kind: "none", confidence: "verified", platform: "win32", reason: "fixture unavailable sandbox" },
-    });
-    const binding = hostBinding(plan);
-    pm.setMode("allow");
-    pm.addFloorSessionGrant("floor-session", { code: "sandbox-unavailable" });
-    const mint = () => {
-      const decision = pm.checkDetailed("bash", "builtin", "shell", null, {
-        ruleSubject: { kind: "shell", dialect: "bash", command: binding.command, cwd: binding.resolvedCwd },
-        hostShellExecutionPlan: plan, shellExecution: HOST_ROUTE_ON_SANDBOX_HOST, sessionId: "floor-session",
-      });
-      expect(decision).toMatchObject({ decision: "allow", reasonCode: "floor-session-allow" });
-      const permit = mintHostShellExecutionPermit({ plan, binding, approvalDecision: undefined, floorSessionDecision: decision, permissionManager: pm });
-      expect(permit).toBeDefined();
-      return permit;
-    };
-    const control = consumeHostShellExecutionPermitForSpawn(permitInput(binding, mint()));
-    if (control === undefined) throw new Error("Unchanged consent must admit the control permit");
-    expect(await withHostShellExecutionHandoff(control, () => true)).toBe(true);
-    const permit = mint();
-    const transition = () => {
-      setWindowsShellLocalNetworkAccess(!initial);
-      if (roundTrip) setWindowsShellLocalNetworkAccess(initial);
-    };
-    if (stage === "consume") {
-      transition();
-      expect(consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))).toBeUndefined();
-    } else {
-      const authorization = consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit));
-      if (authorization === undefined) throw new Error("Unchanged consent must admit the pending permit");
-      const handoff = vi.fn(() => true);
-      expect(await withHostShellExecutionHandoff(authorization, handoff, async () => transition())).toBeUndefined();
-      expect(handoff).not.toHaveBeenCalled();
-    }
   });
 
   it("separates ordinary upload permission from host rule authority and retains protected floors", () => {

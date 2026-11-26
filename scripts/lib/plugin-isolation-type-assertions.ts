@@ -29,6 +29,8 @@ export type OutOfProcessPluginSpecKeysAreExact = Expect<
     | "onMalformedCredentialSelector"
     | "observeChild"
     | "onChildSpawned"
+    | "takeExtensionStart"
+    | "integrity"
   >
 >;
 

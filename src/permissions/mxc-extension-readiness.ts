@@ -1,5 +1,6 @@
 import { egressProtocolCoverageFor, type SandboxWindowsExtensionPlan, type SandboxWindowsExtensionReason } from "../shared/sandbox-capability-info.js";
 import { MxcCapabilityUnavailableError } from "./mxc-extension-errors.js";
+import type { MxcExtensionStartEvidence } from "./mxc-extension-protocol.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 /** Readiness of an exact runtime/request, separate from the shell launcher probe. */
@@ -49,18 +50,14 @@ export function planWindowsExtensionHolder(input: WindowsExtensionHolderInputs):
     return { ...base, selectedBackend: "srt-win", readiness: "fallback", reason: input.mxc.reason,
       fallbackVersion: "0.0.80", egressProtocolCoverage: egressProtocolCoverageFor("srt-win") };
   }
-  return { ...base, readiness: input.mxc.reason === "readiness-deadline" ? "rejected" : "unavailable", reason: input.mxc.reason };
+  // An expired readiness deadline is a start with no backend (per-start ask), not a refusal; the reason says which it was.
+  return { ...base, readiness: "unavailable", reason: input.mxc.reason };
 }
 
-/** Every field is an observation from the exact installed runtime/request probe, not a host version guess. */
-export interface MxcExtensionReadinessEvidence {
-  readonly installedPayloadVerified: boolean;
-  readonly baseContainerReady: boolean;
-  readonly exactRequestAccepted: boolean;
-  readonly uiEnabledRuntimeStarted: boolean;
-  readonly ancestorQueriesSupported: boolean;
-  readonly standardStreamsRoundTrip: boolean;
-  readonly cleanTermination: boolean;
+/** Contract fields 8-13. Install-wide: the native release gate gathers them once per release on the packaged build. A
+ * holder start checks the registered record and never gathers them. Fields 1-5 are `MxcExtensionStartEvidence` (this
+ * holder's own start); field 6 (stream round trip) is the MCP marker rule; field 7 (clean termination) is teardown evidence. */
+export interface MxcExtensionReleaseGateEvidence {
   readonly ownProxySucceeded: boolean;
   readonly otherListenerRefused: boolean;
   readonly directEgressRefused: boolean;
@@ -70,24 +67,28 @@ export interface MxcExtensionReadinessEvidence {
   readonly reparseSubstitutionRefused: boolean;
 }
 
-export function classifyMxcExtensionReadiness(evidence: MxcExtensionReadinessEvidence): WindowsExtensionMxcState {
-  if (!evidence.ancestorQueriesSupported) return { state: "unavailable", reason: "ancestor-policy-unsupported" };
-  if (!evidence.uiEnabledRuntimeStarted) return { state: "unavailable", reason: "runtime-start-failed" };
-  if (![evidence.ownProxySucceeded, evidence.otherListenerRefused, evidence.directEgressRefused,
-    evidence.forgedLabelsAttributed, evidence.noWorkerPort].every(value => value === true)) {
-    return { state: "unavailable", reason: "endpoint-isolation-unverified" };
-  }
-  return [evidence.installedPayloadVerified, evidence.baseContainerReady, evidence.exactRequestAccepted,
-    evidence.uiEnabledRuntimeStarted, evidence.ancestorQueriesSupported, evidence.standardStreamsRoundTrip,
-    evidence.cleanTermination, evidence.ownProxySucceeded, evidence.otherListenerRefused, evidence.directEgressRefused,
-    evidence.forgedLabelsAttributed, evidence.noWorkerPort, evidence.reparseSubstitutionRefused].every(value => value === true)
+/** Per-start readiness: every one of fields 1-5, observed by the holder's own start. Absent counts as not observed. */
+export function classifyMxcExtensionReadiness(evidence: MxcExtensionStartEvidence): WindowsExtensionMxcState {
+  if (evidence.ancestorQueriesSupported !== true) return { state: "unavailable", reason: "ancestor-policy-unsupported" };
+  if (evidence.uiEnabledRuntimeStarted !== true) return { state: "unavailable", reason: "runtime-start-failed" };
+  return [evidence.installedPayloadVerified, evidence.baseContainerReady, evidence.exactRequestAccepted].every(value => value === true)
     ? { state: "available" }
     : { state: "unavailable", reason: "native-validation-required" };
 }
 
-/** A deadline selects an already-ready fallback or rejects. It never initializes a backend or retries a spawn. */
+/** Install-wide readiness: every one of fields 8-13 in the release-gate record. */
+export function classifyMxcReleaseGate(evidence: MxcExtensionReleaseGateEvidence): WindowsExtensionMxcState {
+  if (![evidence.ownProxySucceeded, evidence.otherListenerRefused, evidence.directEgressRefused,
+    evidence.forgedLabelsAttributed, evidence.noWorkerPort].every(value => value === true)) {
+    return { state: "unavailable", reason: "endpoint-isolation-unverified" };
+  }
+  return evidence.reparseSubstitutionRefused === true ? { state: "available" } : { state: "unavailable", reason: "native-validation-required" };
+}
+
+/** Bounds one readiness wait; `probe` is the holder's own start, which its lifetime owner cleans up. A deadline selects an
+ * already-ready fallback or settles with no backend. It never initializes a backend or retries a spawn. */
 export async function settleWindowsExtensionReadiness(input: {
-  readonly probe: (signal: AbortSignal) => Promise<MxcExtensionReadinessEvidence>;
+  readonly probe: (signal: AbortSignal) => Promise<MxcExtensionStartEvidence>;
   readonly fallback: WindowsExtensionHolderInputs["fallback"];
   readonly admittedAncestorBackend: () => AdmittedAncestorBackend | undefined;
   readonly signal?: AbortSignal;

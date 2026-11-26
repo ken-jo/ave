@@ -1,14 +1,15 @@
 import { win32 as winPath } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import type { OwnedMxcExtensionProcess } from "../../permissions/mxc-extension-process.js";
-import { spawnMxcConfinedChild, type MxcConfinedChildSpawn, type MxcConfinedChildSpec } from "../../permissions/confined-child.js";
+import { isMxcConfinedChildLive, spawnMxcConfinedChild, type MxcConfinedChildSpawn } from "../../permissions/confined-child.js";
 import { assertMxcHolderStaging, type MxcExtensionFilesystemOwnership } from "../../permissions/mxc-filesystem-ownership.js";
+import { mxcStagingParent } from "../../permissions/mxc-runtime-root.js";
+import { registerMxcPluginChildHolder } from "../../permissions/mxc-holder-lifetime.js";
 import { isWindowsPathAtOrUnder } from "../../permissions/mxc-windows.js";
 import { MxcProcessCleanupError, MxcProcessContractError } from "../../permissions/mxc-extension-errors.js";
 import { PluginChildTerminationUnverifiedError, terminationUnverified, type ChildLink } from "./plugin-child-transport.js";
 import type { DelegatedWorkerConfinement } from "./host-api-dispatcher.js";
 import { windowsCommandLine } from "../../shared/windows-command-line.js";
-import { aveHome } from "../../shared/ave-home.js";
 import { capturePluginStderr } from "./plugin-stderr.js";
 import { pacePluginChildInput } from "./plugin-child-credit.js";
 import { createLogger } from "../../lib/logger.js";
@@ -19,13 +20,12 @@ const log = createLogger("mxc-plugin-child");
 /** The backend planner's part of one incarnation's admission, never supplied by a manifest or a child message. The command,
  * arguments, cwd, environment and grants are not here: the adapter derives them from the host's intent and envelope. */
 export interface MxcPluginChildLaunch {
-  /** `<AVE_HOME>\mxc-staging\<opaque-id>\…`, see `assertMxcHolderStaging`. */
+  /** `<staging parent>\<opaque-id>\…` (`mxcStagingParent`), see `assertMxcHolderStaging`. */
   readonly home: string;
   readonly temp: string;
   /** Captured by the host from the owning incarnation. Its write roots must contain the staging directory and every
    * envelope write root, or row-2 admission refuses the spawn. */
   readonly filesystemOwnership: MxcExtensionFilesystemOwnership;
-  readonly probe: MxcConfinedChildSpec["probe"];
   readonly signal: AbortSignal;
   assertCurrent(): void;
   /** Release the planner's own state (staging tree, ownership capture) only after verified termination. */
@@ -161,7 +161,7 @@ export async function spawnMxcPluginChild(
   try {
     launch.assertCurrent();
     if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
-    const staging = assertMxcHolderStaging({ aveHome: aveHome(), home: launch.home, temp: launch.temp });
+    const staging = assertMxcHolderStaging({ stagingParent: mxcStagingParent("win32"), home: launch.home, temp: launch.temp });
     const args = Object.freeze([...intent.args]);
     const allowRead = pluginChildReadRoots(intent.envelope.read, intent.command, args[0]);
     admitted = await spawnMxcConfinedChild({
@@ -184,13 +184,8 @@ export async function spawnMxcPluginChild(
         launch.assertCurrent();
         if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
       },
-      // Readiness is probed on a snapshot of the exact request admission later consumes, so this is the request
-      // that runs. Readiness settlement maps only `MxcCapabilityUnavailableError` to not-ready; this contract error
-      // propagates out of admission unchanged.
-      probe: async (request, signal) => {
-        assertLaunchMatchesIntent(request, intent);
-        return launch.probe(request, signal);
-      },
+      // Checked on a snapshot of the exact request admission later consumes, so this is the request that runs.
+      assertRequest: (request) => assertLaunchMatchesIntent(request, intent),
     });
   } catch (error) {
     // Unverified startup cleanup keeps the planner's state: the process may still exist.
@@ -206,6 +201,8 @@ export async function spawnMxcPluginChild(
       await launch.release();
     },
   }, intent.pluginId);
+  // This plugin's contained workers bind to this incarnation, and to none once its termination begins.
+  child.onTerminating(registerMxcPluginChildHolder(intent.pluginId, admitted, () => isMxcConfinedChildLive(admitted)));
   if (onTerminating) child.onTerminating(onTerminating);
   try {
     launch.assertCurrent();

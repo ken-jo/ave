@@ -1,4 +1,5 @@
 import { commitTerminalRow, type TerminalDenialLifecycle, type TerminalDenyKind } from "./invocation-ledger.js";
+import { answerEpochsOf, personAnswerStands } from "../permissions/pending-answer-policy.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval as resolveSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { issueReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
@@ -20,7 +21,7 @@ import { resolveToolPathForPermission } from "../shared/tool-path-resolution.js"
 import { areProjectWriteTargetsInside } from "./project-write-scope.js";
 import { prepareVerifiedShellCommand, type VerifiedShellCommand } from "../permissions/verified-shell-command.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
-import { prepareShellInvocation, preparedShellFacts, bindPreparedShellExecutableReadPaths, disposePreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
+import { hostShellAnalysisFacts, prepareShellInvocation, preparedShellFacts, bindPreparedShellExecutableReadPaths, disposePreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { resolveHostShellWorkingDirectory } from "../permissions/host-shell-execution-permit.js";
 import { randomUUID } from "node:crypto";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
@@ -36,7 +37,7 @@ import {
   findPowerShellCommandPathViolation,
   validatePowerShellCommandStructure,
 } from "./shell-tools.js";
-import { isCanonicalTerminalRunTool, terminalCommandScopeOf } from "./terminal-run.js";
+import { isCanonicalTerminalRunTool, terminalCommandScopeOf, type HostTerminalCommandScope } from "./terminal-run.js";
 import { normalizeMcpResourceReadInput } from "./mcp-resource-tools.js";
 import {
   isCanonicalFileTool,
@@ -71,7 +72,7 @@ import {
   refreshApprovalPersistence,
 } from "../permissions/approval-persistence-guard.js";
 import { isRationaleEligible, RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
-import { answeredApprovalProvenance, approvalReasonFields, approvalTargetFor, HOST_PROVENANCE, isHostApprovalCancelledDecision, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision, type DecisionProvenance } from "../permissions/approval-gate.js";
+import { answeredApprovalProvenance, approvalReasonFields, approvalTargetFor, HOST_PROVENANCE, isAnsweredApprovalDenial, isHostApprovalCancelledDecision, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision, type DecisionProvenance } from "../permissions/approval-gate.js";
 import { answeredPermission, approvalFailureOutcome as getApprovalFailureOutcome, hostRefusalOfApproval, hostShutdownDenial, isSelectedRefusal, refusal, userAbortRefusal } from "./pipeline/approval-outcome.js";
 import {
   buildPermissionEvaluationContext,
@@ -102,8 +103,11 @@ import {
 } from "../permissions/sandbox-capability.js";
 import {
   getHostShellExecutionPlanAuditProjection,
+  isHomePrivacyHelperUnavailablePlan,
   parseHostShellExecutionInput,
   requiresExplicitHostShellApproval,
+  requiresUnsandboxedShellAsk,
+  type HostShellExecutionPlan,
   type HostShellExecutionPlanAuditProjection,
 } from "../permissions/host-shell-execution-plan.js";
 import {
@@ -179,7 +183,7 @@ import {
   authorizeToolInvocation,
   type AuthorizationStageContext,
 } from "./invocation-authorization.js";
-import { executeAuthorizedToolInvocation } from "./invocation-execution.js";
+import { executeAuthorizedToolInvocation, type ExecutionStageContext } from "./invocation-execution.js";
 import {
   resolvePluginOperation,
   type ResolvedPluginOperation,
@@ -345,6 +349,14 @@ export interface RationaleResumeExecutionContext {
   terminalized?: boolean;
 }
 
+export interface HostTerminalReapproval {
+  input: Record<string, unknown>;
+  scope: HostTerminalCommandScope;
+  backend: string;
+  policyEpoch: string;
+  executionCwd: string;
+}
+
 export async function runToolInvocation(
   services: InvocationRunnerServices,
   toolUse: ToolUseBlock,
@@ -353,6 +365,8 @@ export async function runToolInvocation(
   opts: ExecuteOptions = {},
   rationaleBatchContext?: RationaleBatchExecutionContext,
   rationaleResumeContext?: RationaleResumeExecutionContext,
+  hostTerminalReapproval?: HostTerminalReapproval,
+  onHostTerminalReapproval?: (reapproval: HostTerminalReapproval) => void,
 ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> {
   const context: string[] = [];
   const parentInfluence = hookInfluenceContext.getStore();
@@ -370,7 +384,9 @@ export async function runToolInvocation(
     for (let mutations = 0; ; mutations += 1) {
       try {
         const result = await runToolInvocationAttempt(services, current, groupId, displayOrder,
-          { ...opts, callbacks }, rationaleBatchContext, rationaleResumeContext);
+          { ...opts, callbacks }, rationaleBatchContext, rationaleResumeContext, hostTerminalReapproval,
+          hostTerminalReapproval === undefined && rationaleResumeContext === undefined
+            ? onHostTerminalReapproval : undefined);
         if ("content" in result) return { ...result, content: appendContext(result.content) };
         attachHookControlContext(result.control.control, context);
         for (const text of context) {
@@ -384,7 +400,8 @@ export async function runToolInvocation(
         return result;
       } catch (error) {
         if (!(error instanceof HookInputMutationRequest)) throw error;
-        const denied = mutations >= 3 || rationaleResumeContext !== undefined || opts.pluginAuthLifecycle !== undefined;
+        const denied = mutations >= 3 || rationaleResumeContext !== undefined || opts.pluginAuthLifecycle !== undefined ||
+          hostTerminalReapproval !== undefined;
         const reason = denied ? "Hook input mutation could not safely restart permission classification" : "Hook input changed; restarting the full permission decision";
         const hookChain = error.hooks.flatMap((result) => hookChainFromDispatch(result.hookType === "perm" ? "perm" : "pre", {
           decision: result.decision, reason: result.reason, results: [result],
@@ -424,6 +441,8 @@ async function runToolInvocationAttempt(
     opts: ExecuteOptions = {},
     rationaleBatchContext?: RationaleBatchExecutionContext,
     rationaleResumeContext?: RationaleResumeExecutionContext,
+    hostTerminalReapproval?: HostTerminalReapproval,
+    onHostTerminalReapproval?: (request: HostTerminalReapproval) => void,
   ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> {
     const {
       callbacks,
@@ -1332,21 +1351,34 @@ async function runToolInvocationAttempt(
       });
     }
     // A command typed into the user's own host terminal runs on the host and nowhere else. Seal that route with the same router the shells
-    // use, so the permission decision sees its (empty) path-policy relaxations, and re-prove it before every write to the terminal: a route
-    // that would now move the effect elsewhere, or relax path policy, is a contract violation and types nothing.
-    let hostTerminalRoute: { recheck(): Promise<void> } | undefined;
+    // use, with its empty path-policy relaxations. The write fence checks whether the command still belongs on that route.
+    let hostTerminalRoute: ExecutionStageContext["hostTerminalRoute"];
     const hostTerminalCommand = isCanonicalTerminalRunTool(tool) && approvalMemory.kind === "key"
       && approvalMemory.scope.kind === "terminal-command" && approvalMemory.scope.lane === "manual" && typeof finalInput.command === "string"
       ? { command: finalInput.command, cwd: approvalMemory.scope.physicalCwd } : undefined;
-    if (hostTerminalCommand !== undefined) {
-      const buildHostTerminalRoute = async () => {
+    // The agent's command is a host shell under the boot privacy floor: the permission check gets the host plan only when it carries that floor.
+    const hostTerminalPlan = hostTerminalCommand === undefined ? undefined : getHostShellExecutionPlan("host");
+    const hostTerminalFloorPlan = hostTerminalPlan !== undefined
+      && (isHomePrivacyHelperUnavailablePlan(hostTerminalPlan) || requiresUnsandboxedShellAsk(hostTerminalPlan)) ? hostTerminalPlan : undefined;
+    if (hostTerminalReapproval && (
+      hostTerminalCommand === undefined || approvalMemory.kind !== "key" ||
+      canonicalStringify(approvalMemory.scope) !== canonicalStringify(hostTerminalReapproval.scope) ||
+      canonicalStringify(finalInput) !== canonicalStringify(hostTerminalReapproval.input) ||
+      hostTerminalPlan?.identity !== hostTerminalReapproval.backend ||
+      services.permissionManager?.getPolicyEpoch() !== hostTerminalReapproval.policyEpoch
+    )) {
+      return await returnExecutionRouteFailure(new Error("The terminal target, execution plan or policy changed before reapproval."));
+    }
+    // A blocked plan has no host route to seal; its denial is decided below, and the tool types nothing without a sealed route.
+    if (hostTerminalCommand !== undefined && hostTerminalPlan !== undefined && !isHomePrivacyHelperUnavailablePlan(hostTerminalFloorPlan)) {
+      const buildHostTerminalRoute = async (legacyPlan?: HostShellExecutionPlan) => {
         const router = await import("../permissions/execution-router.js");
         const broker = await acquireConfiguredBrokerCapability();
         const operator = broker === null
           ? await (await import("../permissions/operator-container-attestation.js")).acquirePublishedOperatorContainerCapabilityForGrant()
           : null;
         const route = router.buildHostShellExecutionRoute({
-          legacyPlan: getHostShellExecutionPlan("host"),
+          legacyPlan: legacyPlan ?? getHostShellExecutionPlan("host"),
           toolName: "bash",
           command: hostTerminalCommand.command,
           cwd: hostTerminalCommand.cwd,
@@ -1359,19 +1391,42 @@ async function runToolInvocationAttempt(
         return { router, plan: route.plan };
       };
       try {
-        const sealed = await buildHostTerminalRoute();
+        const [{ isWorkloadBrokerActive }, { isOperatorContainerPublished }] = await Promise.all([
+          import("../workload/runtime.js"),
+          import("../permissions/operator-container-attestation.js"),
+        ]);
+        const sealed = await buildHostTerminalRoute(hostTerminalPlan);
         if (sealed.plan.route !== "host") {
           throw new Error("a command for the user's own terminal runs only on the host, and this host now routes shell effects elsewhere");
         }
         executionRoutePathPolicyRelaxations = sealed.router.executionPlanPathPolicyRelaxations(sealed.plan);
         const decided = executionRoutePathPolicyRelaxations;
-        hostTerminalRoute = Object.freeze({
+        const decidedLegacyPlanIdentity = sealed.plan.legacyPlanIdentity;
+        const route = Object.freeze({
+          decidedBackend: hostTerminalPlan.identity,
+          backendIdentity: () => {
+            try {
+              if (isWorkloadBrokerActive() || isOperatorContainerPublished()) return undefined;
+              return getHostShellExecutionPlan("host").identity;
+            } catch {
+              return undefined;
+            }
+          },
           recheck: async () => {
             const current = await buildHostTerminalRoute();
             current.router.assertDecidedPathPolicyRelaxations(current.plan, decided);
-            if (current.plan.route !== "host") throw new Error(current.router.PATH_POLICY_DECISION_MISMATCH_ERROR);
+            if (current.plan.route !== "host" || current.plan.legacyPlanIdentity !== decidedLegacyPlanIdentity) {
+              throw new Error(current.router.PATH_POLICY_DECISION_MISMATCH_ERROR);
+            }
           },
         });
+        hostTerminalRoute = route;
+        if (hostTerminalReapproval) {
+          finalizeExecutionRouteGrant = async () => {
+            await route.recheck();
+            return undefined;
+          };
+        }
       } catch (error) {
         return await returnExecutionRouteFailure(error);
       }
@@ -1552,13 +1607,13 @@ async function runToolInvocationAttempt(
             cwd: terminalScope?.cwd ?? resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined) }
         : undefined;
       await manager.ensureProjectRulesLoaded(shellSubject?.cwd ?? executionCwd);
-      let directoryPermission = behavior !== undefined ? manager.recheckPermission(behavior.reviewedPermission) : manager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
+      const checkDirectoryPermission = (): PermissionCheckResult => manager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
         ...invocationPermissionContext, sessionId, projectRulesCwd: shellSubject?.cwd ?? executionCwd,
         userOwnedBrowser: userOwnedBrowserScopeOf(tool, approvalMemory),
         agentBrowser: agentBrowserScopeOf(tool, approvalMemory),
         ...(terminalScope?.lane === "manual" ? { hostTerminalTurn: terminalScope, trustOrigin: invocationPermissionContext.trustOrigin } : {}),
         ...(invocationCategory === "read" && blockReadsOutsideWorkingDirectories ? { admissionDenial: { code: "read-boundary", reason: "This read is outside the configured allowed directories." } } : {}),
-        ...(invocationCategory === "shell" ? { ...(shellSubject ? { ruleSubject: shellSubject } : {}), hostShellExecutionPlan,
+        ...(invocationCategory === "shell" ? { ...(shellSubject ? { ruleSubject: shellSubject } : {}), hostShellExecutionPlan: hostShellExecutionPlan ?? hostTerminalFloorPlan,
           shellEscalated: true,
           shellExecution: { runsSandboxed: hostShellExecutionPlan !== undefined && isConfinedHostShellExecution(hostShellExecutionPlan, disposableSubstrate),
             ...(isCanonicalBashTool(tool) && preparedShellInvocation !== undefined && hostShellExecutionPlan?.substrate !== "mxc"
@@ -1570,6 +1625,7 @@ async function runToolInvocationAttempt(
         }),
         ...(approvalReasonPrefix || invocationPermissionContext.otherPrincipal ? { floor: { code: "other-principal" as const, reason: "This action requires the user's approval." } } : {}),
       });
+      let directoryPermission = behavior !== undefined ? manager.recheckPermission(behavior.reviewedPermission) : checkDirectoryPermission();
       const memoryRequest = directoryPermission.pipelineRequest;
       if (behavior === undefined && directoryPermission.decision !== "allow" && memoryRequest && !memoryRequest.admissionDenial && !memoryRequest.floor
         && !memoryRequest.rules?.deny && !memoryRequest.rules?.ask && !memoryRequest.manualRerun && !rationaleResumeContext) {
@@ -1597,7 +1653,7 @@ async function runToolInvocationAttempt(
         }) };
       }
       dirLayerResult = directoryPermission;
-      const directoryPolicyEpoch = manager.getPolicyEpoch();
+      const directoryAnswerEpochs = answerEpochsOf(manager);
 
       const trustOrigin = invocationPermissionContext.trustOrigin;
       // A directory-confirm modal is an approval like any other, so it carries
@@ -1713,7 +1769,7 @@ async function runToolInvocationAttempt(
         const approvalFailureOutcome = (decision: ApprovalDecision, name: string, permission: typeof dirLayerResult) => {
           const failure = getApprovalFailureOutcome(decision, name);
           if (failure !== null) return failure;
-          if (permission.decision === "deny") return { content: permission.reason, permission };
+          if (permission.decision === "deny" && !isAnsweredApprovalDenial(decision)) return { content: permission.reason, permission };
           dirLayerResult = refusal(permission.reason, answeredApprovalProvenance(decision));
           return null;
         };
@@ -1798,7 +1854,7 @@ async function runToolInvocationAttempt(
         };
         const permissionHook = await runScriptHook(services.scriptHookManager, "perm", toolUse.name, source,
           invocationCategory, finalInput, sessionId, invocationPermissionContext, tool.mcpServerId, tool.pluginId,
-          undefined, undefined, tool.pluginGeneration !== undefined, abortSignal);
+          undefined, undefined, tool.pluginGeneration !== undefined, directorySignal);
         if (permissionHook.decision === "deny") {
           const reason = permissionHook.reason;
           const denied = refusal(reason, RULE_PROVENANCE);
@@ -1872,7 +1928,8 @@ async function runToolInvocationAttempt(
         if (grantGuard && !grantGuard.isCurrent()) {
           return { allowed: false, result: await denyDirectoryGrant(directorySignal) };
         }
-        if (directoryPolicyEpoch !== manager.getPolicyEpoch()) {
+        // The one rule for answered cards (pending-answer-policy.ts): a sibling stage's "Allow for this run" leaves the answer standing.
+        if (!personAnswerStands(manager, directoryAnswerEpochs, dirLayerResult.forceModal === true, checkDirectoryPermission)) {
           const denied: PermissionCheckResult = { decision: "deny", reason: "Permission policy changed during approval.", };
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, denied.reason, true, startTime, denied, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: denied.reason, is_error: true, durationMs: Date.now() - startTime }) };
@@ -1891,7 +1948,8 @@ async function runToolInvocationAttempt(
           return { allowed: false, result: await denyDirectoryGrant(directorySignal) };
         }
         // A policy allow is kept as issued: later rechecks look the result itself up.
-        const approvedPermissionResult = surfaceResolution.provenance === undefined
+        const humanApproved = surfaceResolution.humanApproved ?? surfaceResolution.provenance === undefined;
+        const approvedPermissionResult = humanApproved
           ? answeredPermission({ ...dirLayerResult, decision: "allow", reason: "The user approved this exact invocation." }, decision)
           : dirLayerResult;
         // No remembered grant is kept while boot refuses the home folder (the card already answers once with a notice); an
@@ -1946,7 +2004,7 @@ async function runToolInvocationAttempt(
             await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, hostRefusalOfApproval(`folder rule save failed: ${dirResult.ok ? "unexpected result" : dirResult.error}`, approvedPermissionResult.provenance), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
             return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
           }
-          return { allowed: true, approvalDecision: decision, approvedDirectory, scope: "always", permissionResult: approvedPermissionResult, humanApproved: surfaceResolution.provenance === undefined };
+          return { allowed: true, approvalDecision: decision, approvedDirectory, scope: "always", permissionResult: approvedPermissionResult, humanApproved };
         }
         if (decision.choice === "allow-session") {
           // Mirror allow-always' persist convention so the permission
@@ -2056,8 +2114,9 @@ async function runToolInvocationAttempt(
     if ((hostShellToolName === "bash" || hostShellToolName === "powershell") && hostShellExecutionPlan !== undefined
       && hostShellExecutionPlan.substrate !== "mxc" && invocationPermissionContext.disposableSubstrate === undefined
       && !brokeredHostShellRouteSelected() && typeof finalInput.command === "string") {
-      verifiedShellCommand = prepareVerifiedShellCommand({ command: finalInput.command, dialect: hostShellToolName,
-        cwd: resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined) }, hostShellExecutionPlan);
+      verifiedShellCommand = await prepareVerifiedShellCommand({ command: finalInput.command, dialect: hostShellToolName,
+        cwd: resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined) }, hostShellExecutionPlan, abortSignal);
+      if (abortSignal?.aborted) return withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput)));
     }
 
     // A broker capability names a Linux guest namespace. Host shell discovery,
@@ -2120,7 +2179,7 @@ async function runToolInvocationAttempt(
             : finalInput;
           shellPathViolation = shellPathPolicyViolation(
             pathPolicyInput, executionCwd, invocationRuntimeAllowedDirectories, blockReadsOutsideWorkingDirectories,
-            preparedShellInvocation ? preparedShellFacts(preparedShellInvocation) : undefined,
+            hostShellAnalysisFacts(preparedShellInvocation, hostShellExecutionPlan),
           );
         }
         if (!shellPathViolation) break;
@@ -2256,7 +2315,7 @@ async function runToolInvocationAttempt(
       services.bashAstValidator &&
       executionRoutePlan?.disposableCapability?.kind !== "workload-broker"
     ) {
-      const bashResult = services.bashAstValidator.validate(toolUse.name, finalInput, preparedShellInvocation ? { cwd: executionCwd, facts: preparedShellFacts(preparedShellInvocation) } : undefined);
+      const bashResult = services.bashAstValidator.validate(toolUse.name, finalInput, preparedShellInvocation ? { cwd: executionCwd, facts: hostShellAnalysisFacts(preparedShellInvocation, hostShellExecutionPlan) } : undefined);
       if (bashResult.decision === "deny") {
         const msg = t("be_executor.bashAstBlock", { reason: bashResult.reason ?? "", patternId: bashResult.patternId ?? "" })
           + buildPolicyDenialGuidance({
@@ -2538,6 +2597,7 @@ async function runToolInvocationAttempt(
     });
 
     const authorization = await authorizeToolInvocation({
+      hostTerminalReapproval: hostTerminalReapproval !== undefined,
       pluginRuntimeInstance: generationLease?.generation.state.runtime.instance,
       directoryAuthorization,
       paths: invocationPermissionContext.paths,
@@ -2557,7 +2617,7 @@ async function runToolInvocationAttempt(
       approvalReasonPrefix,
       overlayTriggerOrigin,
       hostShellRequiresExplicitApproval,
-      hostShellExecutionPlan,
+      hostShellExecutionPlan: hostShellExecutionPlan ?? hostTerminalFloorPlan,
       hostShellExecutionPlanAudit,
       hostShellPathPolicyRelaxations: executionRoutePathPolicyRelaxations,
       hostShellExecutionPermitBinding,
@@ -2597,6 +2657,9 @@ async function runToolInvocationAttempt(
     });
     if ("tool_use_id" in authorization || authorization.outcome === "rationale-required") {
       return authorization;
+    }
+    if (hostTerminalReapproval && !authorization.humanApproved) {
+      return await returnExecutionRouteFailure(new Error("Terminal reapproval requires an explicit human answer."));
     }
     permissionResult = authorization.permissionResult;
     hostShellApprovalDecision = authorization.hostShellApprovalDecision;
@@ -2669,6 +2732,9 @@ async function runToolInvocationAttempt(
       };
     }
 
+    const terminalScope = approvalMemory.kind === "key" && approvalMemory.scope.kind === "terminal-command" &&
+      approvalMemory.scope.lane === "manual" ? approvalMemory.scope : undefined;
+    const terminalBackend = hostTerminalRoute?.decidedBackend;
     const executeAuthorized = () => executeAuthorizedToolInvocation({
       pluginRuntimeInstance: generationLease?.generation.state.runtime.instance,
       services,
@@ -2712,6 +2778,15 @@ async function runToolInvocationAttempt(
       executionRouteGrant,
       finalizeExecutionRouteGrant,
       hostTerminalRoute,
+      checkCurrentHostTerminalPermission: authorization.checkCurrentHostTerminalPermission,
+      onHostTerminalWriteRefused: onHostTerminalReapproval && terminalScope && terminalBackend !== undefined
+        ? (releasedGeneration, policyEpoch) => {
+          onHostTerminalReapproval({
+            input: structuredClone(finalInput), scope: { ...terminalScope, controlGeneration: releasedGeneration },
+            backend: terminalBackend, policyEpoch, executionCwd,
+          });
+        }
+        : undefined,
       preparedShellInvocation,
       verifiedShellCommand,
       invocationRuntimeAllowedDirectories,

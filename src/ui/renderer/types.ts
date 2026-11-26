@@ -1,6 +1,6 @@
 import type { MemoryMapApi } from '../../shared/memory-map.js';
 import type { PermissionAuditIntegrity } from "../../audit/audit-schema.js";
-import type { ScheduleAttachment, ScheduleAttachmentInput, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../../shared/workflow-template-types.js";
+import type { ScheduleAttachment, ScheduleAttachmentInput, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../../shared/workflow-template-types.js";
 import type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 export type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 import type { WindowControlsPlacement } from "../../shared/shell-geometry.js";
@@ -424,6 +424,7 @@ export type AskUserQuestionResponse = {
 export type AvePreloadApi = {
   listWorkflowTemplates: () => Promise<WorkflowTemplateIpcResult<WorkflowTemplate[]>>;
   getWorkflowTemplate: (id: string) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>;
+  getWorkflowTemplateProposal: (id: string) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateProposal>>;
   draftWorkflowTemplate: (id: string | null, input: WorkflowTemplateDraftInput) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>;
   confirmWorkflowTemplate: (id: string, input: WorkflowTemplateConfirmInput) => Promise<WorkflowTemplateIpcResult<TemplateVersion>>;
   attachWorkflowTemplateSchedule: (input: ScheduleAttachmentInput) => Promise<WorkflowTemplateIpcResult<ScheduleAttachment>>;
@@ -1550,6 +1551,14 @@ export type AvePermissionApi = {
     | { ok: false; error: string; message: string }
     | IpcErrorResult
   >;
+  /** Read-only: protected paths a contained process created that Ave moved to quarantine. */
+  watchedQuarantineList: () => Promise<
+    | { ok: true; entries: Array<{ slot: string; index: number; original: string; quarantined: string; row: string; time: string; commandId: string; sessionId?: string; command?: string; restored?: string }> }
+    | { ok: false; error: string; message: string }
+    | IpcErrorResult
+  >;
+  /** MUTATING: move one quarantined entry back to its original path. */
+  watchedQuarantineRestore: (slot: string, index: number) => Promise<{ ok: true; restored: string } | { ok: false; error: string; message: string } | IpcErrorResult>;
   /** MUTATING: revoke one shell egress grant. */
   egressGrantRevoke: (grant: RevocableEgressGrant) => Promise<{ ok: boolean; error?: string; message?: string; durabilitySyncFailed?: true } | IpcErrorResult>;
   /**
@@ -1562,7 +1571,6 @@ export type AvePermissionApi = {
    * user activation lapses after ~5 s, and main reads status itself.
    */
   sandboxWindowsInstall: () => Promise<SandboxWindowsInstallResult | IpcErrorResult>;
-  approveExtensionsWithoutIsolation: () => Promise<{ ok: true } | IpcErrorResult>;
   /** The pending home content review, or null when this boot evaluated nothing. */
   homeTrustReview: () => Promise<import("../../shared/ave-home-trust.js").AveHomeTrustReviewView | null | IpcErrorResult>;
   homeTrustApprove: (snapshotId: string, keys?: readonly string[]) => Promise<{ ok: true; approved: number } | IpcErrorResult>;

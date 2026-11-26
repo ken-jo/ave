@@ -1,6 +1,17 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
-vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
+const presentTargets = vi.hoisted(() => new Set<string>());
+vi.mock("node:fs", async original => {
+  const actual = await original<typeof import("node:fs")>();
+  const fs = (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(actual);
+  const { win32: drivePath } = await vi.importActual<typeof import("node:path")>("node:path");
+  // Registered deny targets exist, so they reach the stamp instead of being watched.
+  const lstatSync = ((path: import("node:fs").PathLike, options?: import("node:fs").StatSyncOptions) => {
+    if (presentTargets.has(drivePath.resolve(String(path)).replace(/\\$/u, "").toLowerCase())) return actual.lstatSync(".");
+    return actual.lstatSync(path, options);
+  }) as typeof actual.lstatSync;
+  return { ...fs, lstatSync, default: { ...(fs as { default?: object }).default ?? fs, lstatSync } };
+});
 vi.mock("node:module", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original()));
 vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
 vi.mock("../../shared/ave-home-test-guard.js", async original => {
@@ -26,6 +37,10 @@ vi.mock("../../shared/policy-home.js", async original => {
 });
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { answerEachStart } from "../../__tests__/support/approved-extension-start.js";
+import {
+  __resetExtensionStartsForTest, deferExtensionStart, listPendingExtensionStarts, setExtensionStartAsker, settlePendingExtensionStarts, takeExtensionStartGrant,
+} from "../extension-start-consent.js";
 import { resolve, win32 } from "node:path";
 import { realpathSync } from "node:fs";
 import { WindowsSandboxError } from "@anthropic-ai/sandbox-runtime";
@@ -41,7 +56,7 @@ import * as facts from "../../shared/windows-path-facts.js";
 import * as denyAcl from "../windows-deny-acl.js";
 import * as stampTargets from "../windows-stamp-targets.js";
 import { windowsDenyOperandKey } from "../sandbox-write-policy.js";
-import { grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, isOfflineProcessConfinementActive, isPluginWorkerConfinementActive, resetAsrtSandbox, wrapToolCommand, wrapWorkerCommand } from "../asrt-sandbox.js";
+import { assertExtensionStartAllowed, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, probeExtensionStart, isAsrtSandboxActive, isOfflineProcessConfinementActive, isPluginWorkerConfinementActive, resetAsrtSandbox, wrapToolCommand, wrapWorkerCommand } from "../asrt-sandbox.js";
 
 const manager = vi.hoisted(() => ({
   initialize: vi.fn(async () => undefined),
@@ -90,6 +105,10 @@ function denyPatterns(prefix: string, count: number): string[] {
   return Array.from({ length: count }, (_, index) => win32.join(fixtureRoot, prefix, `${index}-*.deny`));
 }
 
+function present(paths: readonly string[]): void {
+  for (const path of paths) presentTargets.add(win32.resolve(path).replace(/\\$/u, "").toLowerCase());
+}
+
 function pinWorkerRoot(root: string): void {
   const pin = facts.pinWindowsPaths;
   vi.spyOn(facts, "pinWindowsPaths").mockImplementation(requests => requests.map(path => {
@@ -121,6 +140,7 @@ afterEach(async () => {
   try {
     await resetAsrtSandbox();
   } finally {
+    presentTargets.clear();
     process.chdir(checkout);
     __resetSandboxRequestedAtBootForTest();
     setProcessPlatform(ORIGINAL_PLATFORM);
@@ -151,7 +171,8 @@ describe("background session isolation", () => {
       return [path, index % 2 === 0 ? alias.replaceAll("\\", "/") : `\\\\?\\${alias}`];
     });
     expect(denies.every(path => win32.isAbsolute(path) === (kind === "absolute"))).toBe(true);
-    await initializeAsrtSandbox({ denyRead: denies, windows: { externalConfinement: true } });
+    present(paths);
+    await initializeAsrtSandbox({ denyRead: denies });
     pinWorkerRoot(root);
     const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => requests.map(() => ({
       denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40, directory: false,
@@ -168,7 +189,8 @@ describe("background session isolation", () => {
     const root = win32.join(fixtureRoot, "worker");
     const paths = Array.from({ length: 510 }, (_, index) => win32.join(root, `denied-${index}`));
     paths.push(win32.join(root, "Case"), win32.join(root, "case"), `${win32.join(root, "absent-dir")}\\`);
-    await initializeAsrtSandbox({ denyWrite: paths, windows: { externalConfinement: true } });
+    present(paths);
+    await initializeAsrtSandbox({ denyWrite: paths });
     pinWorkerRoot(root);
     const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => requests.map(() => ({
       denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: denyAcl.WINDOWS_WRITE_DENY_MASK, parentMask: 0x40, directory: false,
@@ -184,7 +206,7 @@ describe("background session isolation", () => {
   it("refuses cumulative retained deny growth without recording the rejected request", async () => {
     const paths = (prefix: string, length = 600) => Array.from({ length }, (_, index) => win32.join(fixtureRoot, "retained", prefix, String(index)));
     const base = paths("base", 300);
-    await initializeAsrtSandbox({ denyWrite: base, windows: { externalConfinement: true } });
+    await initializeAsrtSandbox({ denyWrite: base });
     const wrap = (denyWrite: string[]) => wrapToolCommand("echo safe", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [], denyWrite } });
     const first = [...base, ...paths("first")];
     await wrap(first);
@@ -195,7 +217,7 @@ describe("background session isolation", () => {
   });
 
   it.each(WIN32_WRAPPERS)("keeps the next %s wrap admissible after mandatory rows exceed the budget", async (_name, wrap) => {
-    await initializeAsrtSandbox({ windows: { externalConfinement: true } });
+    await initializeAsrtSandbox({});
     await expect(wrapWriteDenies(wrap, denyPatterns("oversized", 1024)))
       .rejects.toThrow(t("sandboxPolicy.configuredDeniesTooLarge"));
     expect(manager.wrapWithSandboxArgv).not.toHaveBeenCalled();
@@ -204,7 +226,7 @@ describe("background session isolation", () => {
   });
 
   it.each(WIN32_WRAPPERS)("keeps the next %s wrap admissible after the runtime rejects its expanded policy", async (_name, wrap) => {
-    await initializeAsrtSandbox({ windows: { externalConfinement: true } });
+    await initializeAsrtSandbox({});
     const cause = new WindowsSandboxError("acl_policy_too_large", "Expanded policy exceeds the ACL budget");
     manager.wrapWithSandboxArgv.mockRejectedValueOnce(cause);
     await expect(wrapWriteDenies(wrap, denyPatterns("expanded", 900)))
@@ -217,7 +239,8 @@ describe("background session isolation", () => {
   it("keeps an in-progress worker verification on the same deny revision when a wrap is refused", async () => {
     const root = win32.join(fixtureRoot, "worker");
     const protectedPath = win32.join(root, "protected");
-    await initializeAsrtSandbox({ denyWrite: [protectedPath], windows: { externalConfinement: true } });
+    present([protectedPath]);
+    await initializeAsrtSandbox({ denyWrite: [protectedPath] });
     pinWorkerRoot(root);
     let refused: Promise<void> | undefined;
     const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => {
@@ -245,7 +268,8 @@ describe("background session isolation", () => {
     const root = win32.join(fixtureRoot, "worker");
     const initial = win32.join(root, "initial");
     const late = win32.join(root, kind === "glob" ? "*.secret" : "late-secret");
-    await initializeAsrtSandbox({ denyRead: [initial], windows: { externalConfinement: true } });
+    present([initial, late]);
+    await initializeAsrtSandbox({ denyRead: [initial] });
     pinWorkerRoot(root);
     let reads = 0;
     let wrapping: Promise<void> | undefined;
@@ -270,6 +294,31 @@ describe("background session isolation", () => {
     }
   });
 
+  it.each(WIN32_WRAPPERS)("refuses a worker grant when a %s wrap adds a glob deny while every reached row is watched", async (_name, wrap) => {
+    const root = win32.join(fixtureRoot, "worker");
+    const initial = win32.join(root, "initial");
+    await initializeAsrtSandbox({ denyRead: [initial] });
+    pinWorkerRoot(root);
+    let wrapping: Promise<void> | undefined;
+    const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => {
+      wrapping ??= expect(wrap("echo late", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [win32.join(root, "*.secret")] } }))
+        .resolves.toMatchObject({ argv: ["confined"] });
+      return requests.map(() => ({
+        denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40, directory: false,
+      }));
+    });
+    try {
+      const grant = grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [root] })
+        .then(held => { held.release(); return held; });
+      await expect(grant).rejects.toThrow(/obligation|glob|changed/i);
+      expect(read.mock.calls.map(([targets]) => targets)).toEqual([[]]);
+      expect(nativeWorker.grantWindowsAcl).not.toHaveBeenCalled();
+      expect(stampWindowsAclAsync).not.toHaveBeenCalled();
+    } finally {
+      await wrapping;
+    }
+  });
+
   it("keeps both full-isolation gates closed until a late success", async () => {
     const initialization = await initializeAsrtSandbox({ windows: { backgroundInitialization: true } });
     expect(initialization.isCurrent()).toBe(true);
@@ -280,10 +329,24 @@ describe("background session isolation", () => {
     expect(isAsrtSandboxActive()).toBe(true);
     expect(isPluginWorkerConfinementActive()).toBe(false);
     expect(isOfflineProcessConfinementActive()).toBe(false);
+    expect(() => assertExtensionStartAllowed()).toThrow("extension-start-consent-required");
+    // A start refused in this window waits; once the backend is ready it runs confined, with no card and no consent.
+    const ask = vi.fn(answerEachStart(() => "yes"));
+    const taken: unknown[] = [];
+    setExtensionStartAsker({ ask, notify: vi.fn() });
+    deferExtensionStart({ key: "plugin-child:early", identity: "fixture", kind: "plugin-child", label: "early", cause: "no-backend", recheck: () => probeExtensionStart(),
+      retry: async () => { taken.push(takeExtensionStartGrant("plugin-child:early"), probeExtensionStart()); } });
 
     succeed();
     await expect(initialization.windowsIsolation).resolves.toEqual({ status: "ready" });
     expect(isPluginWorkerConfinementActive()).toBe(true);
+    // A ready backend confines the start: nobody is asked and no consent is needed.
+    expect(() => assertExtensionStartAllowed()).not.toThrow();
+    await settlePendingExtensionStarts({ sessionId: "s1", attended: true });
+    expect(ask).not.toHaveBeenCalled();
+    expect(taken).toEqual([undefined, "confined"]);
+    expect(listPendingExtensionStarts()).toEqual([]);
+    __resetExtensionStartsForTest();
     expect(isOfflineProcessConfinementActive()).toBe(true);
     expect(manager.reset).not.toHaveBeenCalled();
   });

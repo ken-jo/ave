@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 // The inventory records every literal reference to a tracked document.
 // Only consumers of document bytes require more than the docs-only checks.
 // `readers` maps a document that tests read to every test file or source
-// module that reads it, so a change to it runs those readers on the fast tier
+// module that reads it, so CI's affected selection runs those readers
 // instead of the whole suite. A test-read document without an entry keeps
 // the full checks.
 const { consumed, readers } = JSON.parse(readFileSync(

@@ -1200,7 +1200,7 @@ describe("ApprovalDock", () => {
 
     await waitFor(() => {
       expect(document.body.querySelector('[data-testid="exact-decision-save-error"]')?.textContent)
-        .toContain(t("toolApprovalDialog.exactDecisionSaveFailed"));
+        .toContain("정확 일치 권한 결정을 저장하지 못했습니다.");
       expect(document.body.querySelector('[data-testid="exact-decision-save-error"]')?.textContent)
         .not.toContain("disk unavailable");
     });
@@ -1224,7 +1224,7 @@ describe("ApprovalDock", () => {
 
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-once", undefined));
     expect(onDecide).toHaveBeenCalledTimes(1);
-    expect(notice).toHaveBeenCalledWith(t("toolApprovalDialog.homeFolderRefusedOnce"));
+    expect(notice).toHaveBeenCalledWith("이번 한 번만 허용했습니다. 내 계정만 Ave 폴더를 바꿀 수 있는지 확인하지 못해 승인을 기억하지 않습니다. 설정 > 권한에서 폴더 권한을 수정한 뒤 Ave를 다시 시작하세요.");
     expect(document.body.querySelector('[data-testid="exact-decision-save-error"]')).toBeNull();
   });
 
@@ -1284,7 +1284,7 @@ describe("unattributed panel approval labels", () => {
       .toBe("익스텐션 요청 · sample-panel");
   });
   it("retains host and unopened conversation attribution", () => {
-    expect(unattributedRequestLabel({}, t)).toBe(t("approvalAttribution.hostRequest"));
-    expect(unattributedRequestLabel({ sessionId: "closed-chat" }, t)).toBe(t("approvalAttribution.headlessSession"));
+    expect(unattributedRequestLabel({}, t)).toBe("호스트 요청");
+    expect(unattributedRequestLabel({ sessionId: "closed-chat" }, t)).toBe("어느 타일에도 열려 있지 않은 대화");
   });
 });

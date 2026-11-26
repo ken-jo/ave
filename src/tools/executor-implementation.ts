@@ -38,7 +38,7 @@ import type {
   ToolUseBlock,
 } from "./executor-contract.js";
 import type { ToolCategory, ToolSource } from "./types.js";
-import { runToolInvocation } from "./invocation-runner.js";
+import { runToolInvocation, type HostTerminalReapproval } from "./invocation-runner.js";
 import { createLogger } from "../lib/logger.js";
 import {
   resolvePluginOperation,
@@ -71,6 +71,11 @@ interface RationaleBatchExecutionContext {
 interface RationaleRequiredExecuteOneOutcome {
   outcome: "rationale-required";
   control: RationaleExecutorControlOutcome;
+}
+
+interface InvocationResult<T> {
+  result: T;
+  reapprove?: () => Promise<void>;
 }
 
 interface RationaleResumeExecutionContext {
@@ -499,7 +504,7 @@ export class ToolExecutor {
       toolUse: ToolUseBlock,
       displayOrder: number,
       completedToolUseIds: string[],
-    ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> => runtime?.requestAnchor
+    ): Promise<InvocationResult<ToolResult | RationaleRequiredExecuteOneOutcome>> => runtime?.requestAnchor
       ? this.invokeOne(toolUse, batchId, displayOrder, opts, {
           runtime,
           batchId,
@@ -672,11 +677,12 @@ export class ToolExecutor {
 
   /** The result callback waits on the turn journal, so delivery stays outside the admission the quit joins. */
   private async deliverToolResult<T extends ToolResult | RationaleRequiredExecuteOneOutcome>(
-    started: Promise<T>,
+    started: Promise<InvocationResult<T>>,
     opts: ExecuteOptions,
   ): Promise<T> {
-    const result = await started;
+    const { result, reapprove } = await started;
     if (!isRationaleRequiredExecuteOneOutcome(result)) await opts.onToolResult?.(result as ToolResult);
+    await reapprove?.();
     return result;
   }
 
@@ -685,14 +691,14 @@ export class ToolExecutor {
     groupId: string,
     displayOrder: number,
     opts?: ExecuteOptions,
-  ): Promise<ToolResult>;
+  ): Promise<InvocationResult<ToolResult>>;
   private async invokeOne(
     toolUse: ToolUseBlock,
     groupId: string,
     displayOrder: number,
     opts: ExecuteOptions,
     rationaleBatchContext: RationaleBatchExecutionContext,
-  ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome>;
+  ): Promise<InvocationResult<ToolResult | RationaleRequiredExecuteOneOutcome>>;
   private async invokeOne(
     toolUse: ToolUseBlock,
     groupId: string,
@@ -700,7 +706,16 @@ export class ToolExecutor {
     opts: ExecuteOptions,
     rationaleBatchContext: undefined,
     rationaleResumeContext: RationaleResumeExecutionContext,
-  ): Promise<ToolResult>;
+  ): Promise<InvocationResult<ToolResult>>;
+  private async invokeOne(
+    toolUse: ToolUseBlock,
+    groupId: string,
+    displayOrder: number,
+    opts: ExecuteOptions,
+    rationaleBatchContext: undefined,
+    rationaleResumeContext: undefined,
+    hostTerminalReapproval: HostTerminalReapproval,
+  ): Promise<InvocationResult<ToolResult>>;
   private async invokeOne(
     toolUse: ToolUseBlock,
     groupId: string,
@@ -708,20 +723,22 @@ export class ToolExecutor {
     opts: ExecuteOptions = {},
     rationaleBatchContext?: RationaleBatchExecutionContext,
     rationaleResumeContext?: RationaleResumeExecutionContext,
-  ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> {
+    hostTerminalReapproval?: HostTerminalReapproval,
+  ): Promise<InvocationResult<ToolResult | RationaleRequiredExecuteOneOutcome>> {
     // Sealed-but-open work is admitted and writes its host-shutdown row; only a closed audit refuses without one.
     // A sealed start takes back the attempt its rationale card held.
     const signals = [opts.abortSignal, turnExtensionPolicyContext.getStore()?.abortSignal];
     const admission = admitToolInvocationWhileAuditOpen(toolUse.name, AbortSignal.any(signals.filter((signal) => signal !== undefined)),
       rationaleResumeContext ? toolUse.id : undefined);
     if (!admission) {
-      return {
+      return { result: {
         tool_use_id: toolUse.id,
         content: t("be_executor.toolExecutionCancelled"),
         is_error: true,
         durationMs: 0,
-      };
+      } };
     }
+    const continuation: { reapproval?: HostTerminalReapproval } = {};
     let result: Awaited<ReturnType<typeof runToolInvocation>>;
     try {
       result = await runToolInvocation(
@@ -752,6 +769,8 @@ export class ToolExecutor {
         { ...opts, abortSignal: admission.signal },
         rationaleBatchContext,
         rationaleResumeContext,
+        hostTerminalReapproval,
+        reapproval => { continuation.reapproval = reapproval; },
       );
     } catch (error) {
       // An invocation that threw before its terminal row ends with the host's.
@@ -763,9 +782,22 @@ export class ToolExecutor {
     if ("tool_use_id" in result && admission.terminal.denyKind === "cancelled") {
       const cancelled = t("be_executor.toolExecutionCancelled");
       const content = result.content && result.content !== cancelled ? `${cancelled}\n${result.content}` : cancelled;
-      return { ...result, content, is_error: true };
+      return { result: { ...result, content, is_error: true } };
     }
-    return result;
+    const reapproval = continuation.reapproval;
+    if (reapproval === undefined || !("tool_use_id" in result) || !result.is_error) return { result };
+    return {
+      result,
+      reapprove: async () => {
+        if (admission.signal.aborted || toolInvocationsSealed()) return;
+        // The original result is already delivered. The new card is a separately admitted invocation.
+        await this.invokeOne(
+          { ...toolUse, id: randomUUID(), input: structuredClone(reapproval.input) },
+          randomUUID(), 0, { ...opts, executionCwd: reapproval.executionCwd },
+          undefined, undefined, reapproval,
+        );
+      },
+    };
   }
 
 

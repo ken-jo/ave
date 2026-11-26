@@ -7,7 +7,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 const require = createRequire(import.meta.url);
 const pins = require("../src/permissions/srt-win-pins.json");
-const { TARGETS, RECEIPTS_DIRECTORY, digest, readPlainFile, readBuildReceipts, readUpstreamSrtWinInput, assertBuildReceipt, assertSrtWinVendor, assertSrtWinBuildInputs, assertSrtWinReceiptModule } = require("./lib/srt-win-integrity.cjs");
+const { TARGETS, RECEIPTS_DIRECTORY, digest, readPlainFile, readBuildReceipts, readUpstreamSrtWinInput, assertBuildReceipt, assertSrtWinVendor, readSrtWinBuildPatch, assertSrtWinReceiptModule } = require("./lib/srt-win-integrity.cjs");
 
 export function parseBuildOptions(args) {
   const options = { arches: Object.keys(TARGETS), testNative: false, sourceArchive: undefined };
@@ -122,7 +122,7 @@ export async function buildSrtWin(options) {
   if (process.platform !== "win32") throw new Error("Native helper builds require Windows");
   require("./prepare-srt-win-receipts.cjs").prepareSrtWinReceipts();
   const vendor = join(dirname(require.resolve(`${pins.package}/package.json`)), "vendor");
-  assertSrtWinBuildInputs(vendor);
+  const patch = readSrtWinBuildPatch(vendor);
   if (options.testNative && !options.arches.includes(process.arch)) throw new Error("Native tests require the host architecture");
   retainUpstreamSrtWinInputs(vendor, options.arches);
   if (!options.testNative && !options.sourceArchive) {
@@ -132,7 +132,12 @@ export async function buildSrtWin(options) {
       return;
     }
   }
-  const patch = readPlainFile(join(vendor, "srt-win", "object-only-parent-guard.patch"));
+  const reuseNative = options.testNative && !options.sourceArchive
+    && process.env.GITHUB_ACTIONS === "true" && process.env.AVE_WINDOWS_PREP_VERIFIED === "true";
+  if (reuseNative) {
+    assertSrtWinReceiptModule();
+    if (!canReuseSrtWinBuild(vendor, options.arches)) throw new Error("Verified helper build is unavailable");
+  }
   const scratch = mkdtempSync(join(tmpdir(), "ave-srt-native-build-"));
   try {
     let archive;
@@ -180,8 +185,9 @@ export async function buildSrtWin(options) {
       const target = TARGETS[arch];
       run("rustup", ["target", "add", "--toolchain", pins.rustToolchain, target], extracted);
       const cargoArgs = [`+${pins.rustToolchain}`, "--release", "--locked", "--manifest-path", join(source, "Cargo.toml"), "--target", target];
-      run("cargo", [cargoArgs[0], "build", ...cargoArgs.slice(1)], extracted);
+      if (!reuseNative) run("cargo", [cargoArgs[0], "build", ...cargoArgs.slice(1)], extracted);
       if (options.testNative && arch === process.arch) run("cargo", [cargoArgs[0], "test", "--no-fail-fast", ...cargoArgs.slice(1), "--", "--nocapture"], extracted);
+      if (reuseNative) continue;
       const binary = join(source, "target", target, "release", "srt-win.exe");
       const bytes = readPlainFile(binary);
       receipts[arch] = { schemaVersion: 1, sourceRevision: pins.source.revision, sourceArchiveSha256: pins.source.sha256,
@@ -190,6 +196,11 @@ export async function buildSrtWin(options) {
       mkdirSync(directory, { recursive: true });
       publishSrtWinExecutable(vendor, arch, bytes);
       atomicWrite(join(directory, "build-receipt.json"), `${JSON.stringify(receipts[arch], null, 2)}\n`);
+    }
+    if (reuseNative) {
+      assertSrtWinVendor(vendor, options.arches);
+      console.log("srt-win: tested current sources and retained the verified helper binaries");
+      return;
     }
     const complete = recordBuildReceipts(vendor, receipts);
     assertSrtWinVendor(vendor, options.arches, complete);

@@ -7,7 +7,7 @@ import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { cleanupAsrtSandboxAfterCommand } from '../../permissions/asrt-sandbox.js';
 import { NODE_PRESERVE_SYMLINK_FLAGS, spawnConfinedChild, srtWinTargetEnv } from '../../permissions/confined-child.js';
-import { createSandboxProcessHome } from '../../permissions/sandbox-process-home.js';
+import { createSandboxProcessHome, isSandboxHomeUnavailable } from '../../permissions/sandbox-process-home.js';
 import { CHILD_LOOPBACK_TRANSPORT_ARG, connectToAnnouncedChild, encodeChildEnv } from '../../plugins/isolation/child-loopback-link.js';
 import type { MemoryMapProgress } from '../../shared/memory-map.js';
 import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
@@ -73,9 +73,18 @@ async function writeRequest(output: Writable, folder: string, taskJson: string, 
   } finally { await Promise.all(handles.map(handle => handle.close())); }
 }
 
+function sandboxHomeOrRefusal(): ReturnType<typeof createSandboxProcessHome> {
+  try {
+    return createSandboxProcessHome();
+  } catch (error) {
+    if (isSandboxHomeUnavailable(error)) throw new MemoryMapHostError('sandbox-home-unavailable');
+    throw error;
+  }
+}
+
 async function spawnInferenceChild(): Promise<{ child: ChildProcess; input: Readable; output: Writable; release: () => void }> {
   const windows = process.platform === 'win32';
-  const home = windows ? createSandboxProcessHome() : undefined;
+  const home = windows ? sandboxHomeOrRefusal() : undefined;
   let wrapped = false;
   const release = () => {
     home?.cleanup();

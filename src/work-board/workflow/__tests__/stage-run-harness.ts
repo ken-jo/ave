@@ -46,6 +46,8 @@ type Flight = { startedAt: number; endedAt: number; pending: number[]; failure?:
 
 const ITEM_RECHECK_BURST = 8;
 
+type WakingWorkspaceCall = <Args extends unknown[], Result>(call: (...args: Args) => Result) => (...args: Args) => Result;
+
 function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>, onScheduled?: () => void) {
   const pending = new Set<Promise<unknown>>();
   const launchesPending = new Set<Promise<unknown>>();
@@ -78,9 +80,11 @@ function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>, onScheduled
 export async function stageRunHarness(opts: {
   /** Returns a result to end the child at once; undefined leaves it live until the test finishes it. */
   script?: (input: SubAgentSpawnInput) => Partial<SubAgentSpawnResult> | undefined;
+  /** Use a real runner for tests that need child-loop behavior. */
+  runner?: (dir: string) => SubAgentRunner;
   workflow?: Partial<WorkflowDeps>;
   /** Parts chosen for the board store the engine runs on (the production wiring is chosen this way); they replace the harness's own. */
-  wiring?: (store: WorkBoardStore, harness: { workspace: StageWorkspaceProvider }) => Partial<WorkflowDeps>;
+  wiring?: (store: WorkBoardStore, harness: { workspace: StageWorkspaceProvider; templates: WorkflowTemplateStore; waking: WakingWorkspaceCall }) => Partial<WorkflowDeps>;
   integrate?: () => IntegrateResult | Promise<IntegrateResult>;
   /** Replaces a part of the workspace provider. */
   workspace?: Partial<StageWorkspaceProvider>;
@@ -89,6 +93,7 @@ export async function stageRunHarness(opts: {
   onRunWorkScheduled?: () => void;
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ave-stage-run-"));
+  const suppliedRunner = opts.runner?.(dir);
   const boardPath = join(dir, "board.json");
   const runWaits = new Set<(runId: string) => void>();
   const stopRunSources: (() => void)[] = [];
@@ -117,9 +122,9 @@ export async function stageRunHarness(opts: {
   }
   /** A replaced workspace part wakes the workspace-call waits as the harness's own parts do: once its synchronous part has run, and once
    * its call settles. */
-  function waking(call: (...args: never[]) => unknown): (...args: never[]) => unknown {
+  function waking<Args extends unknown[], Result>(call: (...args: Args) => Result): (...args: Args) => Result {
     return (...args) => {
-      let result: unknown;
+      let result: Result;
       try {
         result = call(...args);
       } finally {
@@ -131,6 +136,8 @@ export async function stageRunHarness(opts: {
   }
   /** The run ids each boot sweep kept. */
   const sweeps: string[][] = [];
+  /** The project roots each boot sweep was given, by run id. */
+  const sweptProjects: Map<string, string>[] = [];
   const registry = boardParentToolRegistry();
   const launches = new AsyncLocalStorage<ObservedLaunch>();
   const runWorkObservers: ReturnType<typeof observeRunWork>[] = [];
@@ -261,11 +268,13 @@ export async function stageRunHarness(opts: {
     seal: async (_run, stageId) => { recordCall(`seal:${stageId}`); return { ok: true }; },
     integrate: async (_run, joinId) => { recordCall(`integrate:${joinId}`); return opts.integrate?.() ?? { ok: true }; },
     release: async () => undefined,
-    sweep: async (active) => {
+    discard: async () => [],
+    sweep: async (active, projects) => {
       sweeps.push([...active]);
+      sweptProjects.push(new Map(projects));
       wakeCalls();
     },
-    ...Object.fromEntries(Object.entries(opts.workspace ?? {}).map(([name, part]) => [name, typeof part === "function" ? waking(part) : part])) as Partial<StageWorkspaceProvider>,
+    ...Object.fromEntries(Object.entries(opts.workspace ?? {}).map(([name, part]) => [name, typeof part === "function" ? waking<never[], unknown>(part) : part])) as Partial<StageWorkspaceProvider>,
   };
 
   function engineOn(store: WorkBoardStore): ReturnType<typeof createWorkBoardEngine> {
@@ -277,7 +286,7 @@ export async function stageRunHarness(opts: {
       resolveProjectRoot: (root: string) => unauthorised.has(root) ? null : root,
       audit: (event: (typeof audits)[number]) => { audits.push(event); },
       ...opts.workflow,
-      ...opts.wiring?.(store, { workspace }),
+      ...opts.wiring?.(store, { workspace, templates, waking }),
       ...(runWork ? { _observeDetachedWorkForTest: runWork.observe } : {}),
     } satisfies WorkflowDeps;
     // A replaced engine's later events never show that this engine's child registered.
@@ -295,7 +304,7 @@ export async function stageRunHarness(opts: {
     });
     const current = createWorkBoardEngine({
       store,
-      getRunner: () => engineRunner,
+      getRunner: () => suppliedRunner ?? engineRunner,
       emitProgress: event => {
         const { itemId, phase, stageId, attempt } = event;
         if (engine === wrapped) {
@@ -636,17 +645,17 @@ export async function stageRunHarness(opts: {
   /** Assertion waits still pending; cleanup ends each, saying the harness was cleaned up. */
   const assertionWaits = new Set<Expire>();
   /** An assertion wait under the harness bound: past it, or at cleanup, it rejects naming `what`, how it ended and the assertion's last failure. */
-  function untilPasses(subscribe: (wake: () => void) => () => void, assertion: () => void | Promise<void>, what: string): Promise<void> {
+  function untilPasses(subscribe: (wake: () => void) => () => void, assertion: () => void | Promise<void>, what: string, timeoutMs?: number): Promise<void> {
     if (closed) return Promise.reject(new Error(`the harness was cleaned up before waiting for ${what}`));
     return untilAsserted(subscribe, assertion, what, expire => {
-      const clearBound = boundWait(expire);
+      const clearBound = boundWait(expire, timeoutMs);
       assertionWaits.add(expire);
       return () => { clearBound(); assertionWaits.delete(expire); };
     });
   }
   /** Reruns `assertion` after each run-file commit, by any store, until it passes. */
-  const untilRunFile = (assertion: () => void | Promise<void>, what = "a run-file commit that passes the assertion") =>
-    untilPasses(signalOf(runWaits), assertion, what);
+  const untilRunFile = (assertion: () => void | Promise<void>, what = "a run-file commit that passes the assertion", timeoutMs?: number) =>
+    untilPasses(signalOf(runWaits), assertion, what, timeoutMs);
   /** Reruns `assertion` after each run-file commit or progress event until it passes. */
   const untilObserved = (assertion: () => void | Promise<void>, what = "a run-file commit or progress event that passes the assertion") =>
     untilPasses(wake => {
@@ -654,8 +663,8 @@ export async function stageRunHarness(opts: {
       return () => { for (const stop of stops) stop(); };
     }, assertion, what);
   /** Reruns `assertion` after each workspace call or sweep until it passes. */
-  const untilWorkspaceCalls = (assertion: () => void | Promise<void>, what = "a workspace call or sweep that passes the assertion") =>
-    untilPasses(signalOf(callWaits), assertion, what);
+  const untilWorkspaceCalls = (assertion: () => void | Promise<void>, what = "a workspace call or sweep that passes the assertion", timeoutMs?: number) =>
+    untilPasses(signalOf(callWaits), assertion, what, timeoutMs);
   /** The event that ended the run; it follows the stored status, so a test waits for it. */
   const settleEvent = () => waitForProgress(event => event.phase === "cancelled" || event.phase === "done" || event.phase === "denied" || event.phase === "error",
     "a run's end (cancelled, done, denied or error)");
@@ -696,7 +705,7 @@ export async function stageRunHarness(opts: {
   }
 
   return {
-    dir, boardPath, get board() { return board; }, templates, get engine() { return engine; }, makeEngine, editRow, runOf, events, children, interrupts, audits, unauthorised, workspaceCalls, sweeps,
+    dir, boardPath, get board() { return board; }, templates, get engine() { return engine; }, makeEngine, editRow, runOf, events, children, interrupts, audits, unauthorised, workspaceCalls, sweeps, sweptProjects,
     confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, waitForLive, waitForProgress, untilRunFile, untilObserved, untilWorkspaceCalls, live, decide, statusOf, start,
     drainRunWork, drainAllRunWork, runThenEnd, cleanup,
     /** Child, progress, item and assertion waits still pending. */

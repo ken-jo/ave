@@ -1,3 +1,5 @@
+import { t } from "../../i18n/runtime.js";
+import { answerEpochsOf, personAnswerStands } from "../../permissions/pending-answer-policy.js";
 import { randomUUID } from "node:crypto";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { HOST_PROVENANCE, isHostApprovalRejectedDecision, RULE_PROVENANCE, type HostProvenance, type RuleProvenance } from "../../permissions/approval-gate.js";
@@ -5,18 +7,24 @@ import type { PermissionCheckResult, PermissionManager } from "../../permissions
 import { errorMessage } from "../../shared/error-message.js";
 import { abortSupersedesApprovalDecision, isSettledRefusal, refusal } from "./approval-outcome.js";
 
-type SurfaceResolution = { permission: PermissionCheckResult; decision: ApprovalDecision; provenance?: RuleProvenance | HostProvenance };
+type SurfaceResolution = {
+  permission: PermissionCheckResult;
+  decision: ApprovalDecision;
+  provenance?: RuleProvenance | HostProvenance;
+  humanApproved?: boolean;
+};
 
 function refused(decision: ApprovalDecision, reason: string, provenance: RuleProvenance | HostProvenance): SurfaceResolution {
-  return { permission: refusal(reason, provenance), decision: { requestId: decision.requestId, choice: "deny-once" }, provenance };
+  return { permission: refusal(reason, provenance), decision: { requestId: decision.requestId, choice: "deny-once" }, provenance, humanApproved: false };
 }
 
 export function userOwnedSurfaceCardFacts(
   permission: PermissionCheckResult,
 ): Pick<ApprovalRequestInput, "userOwnedSurface" | "userOwnedSurfaceReviewFallback" | "reasonCode"> {
   const request = permission.pipelineRequest;
-  if (!request?.userOwnedSurface || permission.forceModal || request.floor || request.manualRerun) return {};
-  const reviewFallback = request.exfiltration !== undefined || request.userOwnedSurface.choice === "auto" && request.reviewer !== undefined;
+  if (!request?.userOwnedSurface || permission.forceModal || request.manualRerun) return {};
+  const reviewFallback = request.exfiltration !== undefined || request.userOwnedSurface.choice === "auto" &&
+    (request.reviewer !== undefined || request.userOwnedSurface.kind === "host-terminal" && request.automationPause !== undefined);
   return {
     userOwnedSurface: request.userOwnedSurface.kind,
     // The surface card shows its own sentence for the decision that asked; no other card reads it, so no other card is sent it. A review fallback
@@ -51,10 +59,16 @@ type SurfaceInput = {
 async function resolveSurface(input: SurfaceInput): Promise<SurfaceResolution> {
   const { manager, gate, request, sessionId } = input;
   let { permission, decision } = input;
+  // A person's Deny is a deny permission from here on, whatever a re-check of the call said: no caller has to read the choice again
+  // to keep a denied call from running.
+  const personDenied = (answer: ApprovalDecision): { permission: PermissionCheckResult; decision: ApprovalDecision; humanApproved: false } => ({
+    permission: permission.decision === "deny" ? permission : { ...permission, decision: "deny", reason: t("be_executor.approvalDeniedByUser", { name: request.toolName }) },
+    decision: answer, humanApproved: false,
+  });
+  if (decision.choice.startsWith("deny") && !isHostApprovalRejectedDecision(decision)) return personDenied(decision);
   if (!request.userOwnedSurface || !sessionId || !decision.choice.startsWith("allow") || Boolean(isHostApprovalRejectedDecision(decision))) return { permission, decision };
   permission = manager.recheckPermission(permission);
-  if (permission.decision === "deny") return { permission, decision: { requestId: decision.requestId, choice: "deny-once" }, provenance: RULE_PROVENANCE };
-  if (permission.forceModal && !request.forceExplicit) return { permission, decision: { requestId: decision.requestId, choice: "deny-once" }, provenance: RULE_PROVENANCE };
+  if (permission.decision === "deny" || permission.forceModal && !request.forceExplicit) return refused(decision, permission.reason, RULE_PROVENANCE);
   if (request.userOwnedSurfaceReviewFallback) return { permission, decision };
   const choice = gate.consumeUserOwnedSurfaceChoice(decision, sessionId, request.userOwnedSurface);
   if (choice === undefined) return refused(decision, "User-owned surface approval receipt is unavailable.", HOST_PROVENANCE);
@@ -63,8 +77,9 @@ async function resolveSurface(input: SurfaceInput): Promise<SurfaceResolution> {
   permission = manager.recheckPermission(permission);
   if (permission.reviewer && permission.decision === "ask") permission = await input.review(permission);
   if (permission.decision === "deny") return refused(decision, permission.reason, RULE_PROVENANCE);
-  if (permission.decision === "allow") return { permission, decision, provenance: RULE_PROVENANCE };
-  const epoch = manager.getPolicyEpoch();
+  if (permission.decision === "allow") return { permission, decision, provenance: RULE_PROVENANCE, humanApproved: false };
+  const opened = answerEpochsOf(manager);
+  const epoch = opened.epoch;
   const fallback: ApprovalRequestInput = {
     ...request,
     id: randomUUID(),
@@ -75,10 +90,16 @@ async function resolveSurface(input: SurfaceInput): Promise<SurfaceResolution> {
   };
   decision = await gate.requestAndWait(fallback);
   if (abortSupersedesApprovalDecision(request.abortSignal, decision)) return { permission, decision };
-  // A settled refusal is terminal: neither a policy change nor the refreshed permission reopens it.
-  if (isSettledRefusal(decision)) return { permission, decision };
-  if (epoch !== manager.getPolicyEpoch() && !gate.allowsPolicyTransition(decision, epoch, manager.getPolicyEpoch())) return refused(decision, "Permission policy changed while approval was pending.", RULE_PROVENANCE);
-  permission = manager.recheckPermission(permission);
+  if (isSettledRefusal(decision)) {
+    return isHostApprovalRejectedDecision(decision) ? { permission, decision, humanApproved: false } : personDenied(decision);
+  }
+  if (epoch !== manager.getPolicyEpoch() && !gate.allowsPolicyTransition(decision, epoch, manager.getPolicyEpoch())) {
+    // Another conversation's or run's memory-only allow rule leaves the answer standing; any other change refuses it.
+    if (!personAnswerStands(manager, opened, fallback.forceExplicit === true, () => {
+      permission = manager.recheckPermission(permission, { acrossMemoryRuleChanges: true });
+      return permission;
+    })) return refused(decision, "Permission policy changed while approval was pending.", RULE_PROVENANCE);
+  } else permission = manager.recheckPermission(permission);
   if (permission.decision === "deny") return refused(decision, permission.reason, RULE_PROVENANCE);
-  return { permission, decision };
+  return { permission, decision, humanApproved: decision.choice === "allow-once" };
 }

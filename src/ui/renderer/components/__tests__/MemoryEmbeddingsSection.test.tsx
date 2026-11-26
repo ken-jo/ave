@@ -195,7 +195,7 @@ describe('memory embeddings settings', () => {
     api.settingsSet.mockResolvedValue({ ok: true, value: { ...settings, source: 'provider' } });
 
     render(<MemoryEmbeddingsSection api={api} />);
-    const unavailable = ko['memoryMap.error.local-runtime-unavailable'];
+    const unavailable = "로컬 모델을 네트워크에서 차단하는 OS 샌드박스가 활성화되어 있지 않아 로컬 임베딩을 사용할 수 없습니다.";
     expect(await screen.findByText(unavailable)).toBeTruthy();
     const download = screen.getByRole('button', { name: '로컬 모델 다운로드' });
     const existing = screen.getByRole('button', { name: '기존 모델 사용' });
@@ -223,10 +223,10 @@ describe('memory embeddings settings', () => {
     expect(api.settingsSet).not.toHaveBeenCalled();
     expect(screen.getByText(/135 MB/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '기존 모델 사용' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(ko['memoryMap.error.model-folder-invalid']);
+    expect(await screen.findByRole('alert')).toHaveTextContent("로컬 모델이 있는 폴더를 선택하세요.");
     fireEvent.click(download);
     await waitFor(() => expect(api.modelDownload).toHaveBeenCalledOnce());
-    expect(await screen.findByRole('alert')).toHaveTextContent(ko['memoryMap.error.model-download-failed']);
+    expect(await screen.findByRole('alert')).toHaveTextContent("로컬 모델을 다운로드할 수 없습니다.");
   });
   it('shows progress bytes, cancel, ready revision and removes its subscription', async () => {
     const api = createMemoryMapApi();
@@ -250,7 +250,7 @@ describe('memory embeddings settings', () => {
     api.modelUseExisting.mockResolvedValue({ ok: true, value: { ...status, status: 'ready', error: undefined } });
     render(<MemoryEmbeddingsSection api={api} />);
     expect(await screen.findByRole('button', { name: '다운로드 재시도' })).toBeTruthy();
-    expect(screen.getByRole('alert')).toHaveTextContent(ko['memoryMap.error.model-integrity-failed']);
+    expect(screen.getByRole('alert')).toHaveTextContent("모델 파일이 고정된 버전과 일치하지 않습니다.");
     fireEvent.click(screen.getByRole('button', { name: '기존 모델 사용' }));
     expect(await screen.findByText(/모델 준비됨/)).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();

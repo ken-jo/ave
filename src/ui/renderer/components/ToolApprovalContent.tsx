@@ -25,6 +25,7 @@ import { useApprovalSurfaceNotice, type ApprovalDecisionExtras } from "../hooks/
 import { HOME_FOLDER_REFUSED } from "../../../shared/permissions-events.js";
 import { EgressHostApprovalCard } from "./permissions/EgressHostApprovalCard.js";
 import { BrowserSiteApprovalCard } from "./permissions/BrowserSiteApprovalCard.js";
+import { ExtensionStartApprovalCard } from "./permissions/ExtensionStartApprovalCard.js";
 import { UserOwnedSurfaceApprovalCard, type HostTerminalCommandFacts } from "./permissions/UserOwnedSurfaceApprovalCard.js";
 import type { ReviewerSuggestion } from "../hooks/use-permission-signals.js";
 import type { ApprovalChoice, ApprovalRequest } from "../types.js";
@@ -627,10 +628,12 @@ export function ToolApprovalContent({
   const exactDenyRefusal = request?.exactRecordAllowed === false ? "toolApprovalDialog.persistentUnavailableOneShot" : null;
   const settingsEditing = onOpenPermanentDeny !== undefined;
   const hasSession = Boolean(request?.sessionId);
+  // The template-run stage this card was raised for (host-derived); its card lists "Allow for this run".
+  const runStage = request?.runStage;
   // One decision row for every approval type (owner 2026-10-25, unified approval card); only this model is type-specific. A request the host
   // answers once only is one-shot whatever else it is, so that is decided before the folder card.
   const decisionModel = useMemo(() => {
-    if (shellRule) return shellDecisionModel(shellRule);
+    if (shellRule) return shellDecisionModel(shellRule, runStage);
     if (approvalIsOneShot) {
       return oneShotDecisionModel(finalVerdict === "high" ? "toolApprovalDialog.persistentUnavailableHighRisk" : "toolApprovalDialog.persistentUnavailableOneShot");
     }
@@ -643,8 +646,8 @@ export function ToolApprovalContent({
         outOfDirScopes.session?.path ?? null,
       );
     }
-    return exactDecisionModel({ sessionOnly: rememberIsSessionOnly, hasSession, allowRefusalKey: exactAllowRefusal, denyRefusalKey: exactDenyRefusal, settingsEditing });
-  }, [shellRule, outOfDirScopes, outOfDirSuggestedParent, settingsEditing, approvalIsOneShot, finalVerdict, rememberIsSessionOnly, hasSession, exactAllowRefusal, exactDenyRefusal]);
+    return exactDecisionModel({ sessionOnly: rememberIsSessionOnly, hasSession, allowRefusalKey: exactAllowRefusal, denyRefusalKey: exactDenyRefusal, settingsEditing, ...(runStage === undefined ? {} : { stage: runStage }) });
+  }, [shellRule, outOfDirScopes, outOfDirSuggestedParent, settingsEditing, approvalIsOneShot, finalVerdict, rememberIsSessionOnly, hasSession, exactAllowRefusal, exactDenyRefusal, runStage]);
   const decision = useApprovalDecisionState(request?.id ?? null);
   const readjudicationOffered = request?.readjudication !== undefined && request.source === "plugin"
     && finalVerdict === "high" && decisionModel.variant === "exact" && !approvalIsOneShot
@@ -781,6 +784,8 @@ export function ToolApprovalContent({
           if (activeRequestIdRef.current === request.id) {
             setRecordError(record.readjudicate && result?.error === "readjudication-unavailable"
               ? tHook("formatIpcError.readjudicationUnavailable")
+              // The run ended, or the session left it, while the card was open: the run allow is gone and the card says so.
+              : result?.error === "run-scope-unavailable" ? tHook("formatIpcError.runScopeUnavailable")
               : record.rule ? ruleSaveErrorText(result, tHook(failureKey)) : tHook(failureKey));
           }
           return;
@@ -829,7 +834,7 @@ export function ToolApprovalContent({
       case "shell": {
         const rule = ruleSaveFor(choice, editedRule);
         void recordThenRespond(
-          { decision: rule.action, scope: rule.scope === "session" ? "session" : "persistent", rule },
+          { decision: rule.action, scope: rule.scope === "session" || rule.scope === "run" ? rule.scope : "persistent", rule },
           () => (rule.action === "deny" ? onDecide("deny-once") : onDecide("allow-once", undefined)),
         );
         return;
@@ -855,6 +860,11 @@ export function ToolApprovalContent({
               void recordThenRespond(null, () => onDecide("allow-once", undefined));
             } else void recordThenRespond(null, () => onDecide("allow-always", parent));
           }
+          return;
+        }
+        // "Allow for this run": the host keeps the grant for the run's stage sessions; this request itself is answered once.
+        if (choice === "allow-run") {
+          void recordThenRespond({ decision: "allow", scope: "run" }, () => onDecide("allow-once", undefined));
           return;
         }
         // The gate answer matches the record: a conversation approval answers allow-session (so a host-held descriptor grant lasts the
@@ -945,6 +955,9 @@ export function ToolApprovalContent({
       targetDescription={request.userOwnedSurface === "browser" ? browserTargetText(tHook, request) : terminalTargetText(tHook, request)}
       notes={request.userOwnedSurface === "host-terminal" ? terminalCommandNotes(tHook, request) : []}
       command={request.userOwnedSurface === "host-terminal" ? hostTerminalCommandFacts(tHook, request) : null} />;
+  }
+  if (request.kind === "extension-start") {
+    return <ExtensionStartApprovalCard key={request.id} request={request} conversationLabel={conversationLabel} interactionLocked={interactionLocked} onDecide={onDecide} />;
   }
   if (request.kind === "egress-host") {
     return (
@@ -1056,6 +1069,14 @@ export function ToolApprovalContent({
                     <span className="min-w-0 truncate" data-testid="approval-conversation">
                       {conversationLabel}
                     </span>
+                    {request.runStage ? (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="min-w-0 truncate" data-testid="approval-run-stage" data-stage-id={request.runStage.stageId}>
+                          {tHook("toolApprovalDialog.runStage", { stage: request.runStage.stageName })}
+                        </span>
+                      </>
+                    ) : null}
                   </div>
                   {request.kind === "agent-action" && request.approvalScope ? (
                     <p className="break-words text-tiny text-muted-foreground">
@@ -1514,7 +1535,9 @@ export function ToolApprovalContent({
             ))}
             {decisionModel.variant === "exact" && allowRefusal === null && request.persistentApprovalCwd ? (
               <p className="text-tiny text-muted-foreground" data-testid="allow-always-exact-scope">
-                {decision.selected === "allow-everywhere"
+                {decision.selected === "allow-run"
+                  ? tHook("toolApprovalDialog.exactScopeRun")
+                  : decision.selected === "allow-everywhere"
                   ? !readjudicateSelected && request.approvalMemory?.kind === "key" && request.approvalMemory.scope.kind === "mcp-tool"
                     ? tHook("toolApprovalDialog.rememberScopeMcpToolGlobal", { serverId: request.approvalMemory.scope.serverId, toolName: request.approvalMemory.scope.toolName })
                     : tHook("toolApprovalDialog.exactScopeEverywhere")

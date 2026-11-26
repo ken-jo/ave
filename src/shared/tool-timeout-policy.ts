@@ -14,6 +14,7 @@ export function resolveShellTimeoutMs(timeoutSeconds: number): number {
 export const TOOL_TIMEOUT_POLICY = {
   shellDefaultMs: 120_000,
   projectGitQueryMs: 2_000,
+  stageWorkspaceGitMs: 120_000,
   // Reserve host-owned handshake, receipt, cleanup, and outer-timer headroom beyond semantic shell time on every route.
   shellCeilingGraceMs: 31_000,
   globalCeilingMs: 120_000,
@@ -30,14 +31,17 @@ export const TOOL_TIMEOUT_POLICY = {
   browserDownloadHelperStallMs: 30_000,
   // A fresh local identity probe bounds synchronous remote authority checks.
   tailnetIdentityProbeMs: 5_000,
-  windowsDocumentsLookupMs: 5_000,
+  // The path-kind helper answers drive and Documents queries from the OS in milliseconds; this bound only ends a stalled start.
+  windowsPathKindQueryMs: 15_000,
   // Cold native startup includes module loading, compilation and account-provider initialization before READY.
   windowsAclHostStartupMs: 120_000,
   // Bound each serial native-location ACL check so a stalled host releases queued admissions before the global ceiling.
   windowsAclRequestMs: 15_000,
+  // One bounded .git evidence walk in the resident inspection worker; expiry refuses the verified read.
+  gitRepositoryInspectionMs: 30_000,
   // Bound policy delivery even when the container launcher never connects.
   mxcRequestTransportMs: 15_000,
-  // Exact installed extension runtime/request readiness must settle before a holder is admitted.
+  // A holder's own start must report its ready-frame evidence inside this bound, from supervisor start, or it is refused.
   mxcExtensionReadinessMs: 30_000,
   // Share the exact workload-identity handshake budget with the protocol.
   workloadBrokerPreEffectHandshakeMs: 15_000,
@@ -61,7 +65,6 @@ export const TOOL_TIMEOUT_POLICY = {
   documentEngineDownloadStallMs: 30_000,
   documentEngineStartupMs: 30_000,
   documentEngineConversionMs: 60_000,
-  documentEngineShutdownMs: 10_000,
   // A forwarding client exits after the resident prints its receipt; this bounds delivery of that already-written line.
   documentEngineReceiptMs: 2_000,
   // terminal_run wait expiry returns a running block without stopping the command; keep the wait below executor ceiling and expose whole seconds.
@@ -117,6 +120,8 @@ export const TOOL_TIMEOUT_POLICY = {
   shutdownCleanupMs: 60_000,
   // Bounded POSIX child-list lookup during process tree termination.
   processTreeKillMs: 1_000,
+  orphanProcessCleanupMs: 10_000,
+  processGroupExitPollMs: 25,
   // Allow loaded Windows hosts enough time to enumerate and terminate process trees.
   windowsProcessTreeKillMs: 10_000,
   // Outlast the pinned PTY dependency's five-second console lookup and allow exit cleanup.
@@ -145,7 +150,7 @@ export function windowsSrtPluginChildFactoryBudgetMs(): number {
 
 /** Constructing a native plugin child: native startup, the construct request (import plus factory), and, after a
  * refused bring-up, the disposal deadline, so a termination verified in time never becomes a factory timeout.
- * Row-2 admission also runs inside this budget: the egress lease and the readiness probe with its `mxcExtensionReadinessMs` (30 s) deadline. */
+ * Row-2 admission also runs inside this budget: the egress lease and the holder's own start with its `mxcExtensionReadinessMs` (30 s) deadline. */
 export function nativePluginChildFactoryBudgetMs(): number {
   return TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.pluginImportMs
     + TOOL_TIMEOUT_POLICY.pluginFactoryMs + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;

@@ -37,7 +37,6 @@ export function SandboxStatusBadge({
   // While the Windows MXC start probe runs, shells take the interim route and the plan reads as unsandboxed. That is a phase, not the
   // outcome: say so, and let the settle hint from main replace it with the real plan.
   const checking = !statusQueryFailed && plan !== undefined && !plan.sandboxed && plan.requestedSandbox
-    && capability?.windowsSubstrate?.shellLocalNetworkAccess === true
     && capability?.windowsSubstrate?.mxc.state === "checking";
   const reasonText =
     plan?.fallbackReason === "platform-unsupported"
@@ -45,7 +44,8 @@ export function SandboxStatusBadge({
       : plan?.fallbackReason === "disabled-by-setting"
         ? t("sandboxStatus.disabled")
         : plan?.fallbackReason === "windows-partial-shell-acl-unsafe" ||
-            plan?.fallbackReason === "active-sandbox-not-shell-contained"
+            plan?.fallbackReason === "active-sandbox-not-shell-contained" ||
+            plan?.fallbackReason === "home-privacy-helper-unavailable"
           ? t("sandboxStatus.shellUnavailable")
           : t("sandboxStatus.unavailable");
   const label = statusQueryFailed

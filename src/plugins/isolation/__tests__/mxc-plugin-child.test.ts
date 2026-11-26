@@ -3,11 +3,11 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { createMxcExtensionRequest } from "../../../__tests__/support/mxc-supervisor.js";
-import type { MxcConfinedChildSpec } from "../../../permissions/confined-child.js";
+import type { MxcConfinedChildSpawn, MxcConfinedChildSpec } from "../../../permissions/confined-child.js";
 import type { OwnedMxcExtensionProcess } from "../../../permissions/mxc-extension-process.js";
-import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError } from "../../../permissions/mxc-extension-errors.js";
-import { registerMxcHolderLifetime } from "../../../permissions/mxc-holder-lifetime.js";
-import { aveHome } from "../../../shared/ave-home.js";
+import { MxcProcessCleanupError, MxcProcessContractError } from "../../../permissions/mxc-extension-errors.js";
+import { liveMxcPluginChildHolder, registerMxcHolderLifetime } from "../../../permissions/mxc-holder-lifetime.js";
+import { SYNTHETIC_MXC_STAGING_PARENT } from "../../../__tests__/support/mxc-staging-parent.js";
 import { windowsCommandLine } from "../../../shared/windows-command-line.js";
 import { PluginChildTerminationUnverifiedError } from "../plugin-child-transport.js";
 import { attachMxcPluginChild, spawnMxcPluginChild } from "../mxc-plugin-child.js";
@@ -20,9 +20,19 @@ vi.mock("../../../lib/logger.js", async (importOriginal) => {
 });
 
 const spawn = vi.hoisted(() => vi.fn());
+// The staging parent start-up establishes under the runtime root, as a synthetic path.
+vi.mock("../../../permissions/mxc-runtime-root.js", async (importOriginal) => {
+  const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../../__tests__/support/mxc-staging-parent.js");
+  return {
+    ...await importOriginal<typeof import("../../../permissions/mxc-runtime-root.js")>(),
+    mxcStagingParent: () => SYNTHETIC_MXC_STAGING_PARENT,
+  };
+});
 vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../permissions/confined-child.js")>(),
   spawnMxcConfinedChild: spawn,
+  // The admitted holders here are fakes; row 2 liveness is pinned with a real parent in worker-spawn-native-parent.test.ts.
+  isMxcConfinedChildLive: () => true,
 }));
 
 const STAGING_ID = "0123456789abcdef0123456789abcdef";
@@ -39,14 +49,14 @@ function fixture() {
   const owned: OwnedMxcExtensionProcess = {
     id: 42, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), completion,
     diagnostics: { nodeVersion: "", nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "" },
+    startEvidence: undefined,
     dispose: vi.fn(async () => { resolve({ exitCode: 0, timedOut: false }); }),
   };
   const controller = new AbortController();
-  const staging = winPath.join(aveHome(), "mxc-staging", STAGING_ID);
+  const staging = winPath.join(SYNTHETIC_MXC_STAGING_PARENT, STAGING_ID);
   const launch = {
     home: winPath.join(staging, "home"), temp: winPath.join(staging, "temp"),
     filesystemOwnership: { readRoots: [], writeRoots: [staging], hostStorageRoots: [] },
-    probe: vi.fn(async () => ({ version: "0.0.80", ready: true }) as never),
     signal: controller.signal, assertCurrent: vi.fn(), release: vi.fn(),
   };
   const intent = {
@@ -55,15 +65,9 @@ function fixture() {
     floorPierces: [], baseEnv: { ELECTRON_RUN_AS_NODE: "1" },
   };
   const holderRelease = vi.fn(async () => {});
-  // Row 2 stand-in: probe the measured request, then hand back the owned process.
+  // Row 2 stand-in: run the adapter's check on the measured request, then hand back the owned process.
   spawn.mockReset().mockImplementation(async (spec: MxcConfinedChildSpec) => {
-    try {
-      await spec.probe(admittedRequest(spec), new AbortController().signal);
-    } catch (error) {
-      // As readiness settlement does: only a capability failure becomes not-ready; anything else propagates.
-      if (error instanceof MxcCapabilityUnavailableError) throw new MxcCapabilityUnavailableError("Native admission readiness failed: probe-failed");
-      throw error;
-    }
+    spec.assertRequest?.(admittedRequest(spec));
     return { process: owned, confinement: "windows-mxc", release: holderRelease };
   });
   return { owned, launch, intent, controller, resolve, reject, holderRelease, staging };
@@ -176,7 +180,9 @@ describe("native plugin stream ownership", () => {
       baseEnv: intent.baseEnv, signal: launch.signal,
     });
     expect(spec.holder).toEqual({});
-    expect(launch.probe).toHaveBeenCalledOnce();
+    // No per-start probe: the spec carries only the adapter's own request check.
+    expect(spec).not.toHaveProperty("probe");
+    expect(spec.assertRequest).toBeTypeOf("function");
     // The registration recheck runs inside row 2 (and so in its beforeSpawn), and so does revocation.
     launch.assertCurrent.mockClear();
     spec.assertStillValid!();
@@ -200,6 +206,29 @@ describe("native plugin stream ownership", () => {
     const { launch, intent } = fixture();
     await spawnMxcPluginChild(launch, { ...intent, command, args: [entry] });
     expect((spawn.mock.calls[0]![0] as MxcConfinedChildSpec).allowRead).toEqual(expected);
+  });
+
+  it("publishes its holder as the plugin's worker parent until its termination begins, and never withdraws a later one", async () => {
+    const { launch, intent } = fixture();
+    const first = await spawnMxcPluginChild(launch, intent);
+    const firstHolder = await (spawn.mock.results[0] as { value: Promise<MxcConfinedChildSpawn> }).value;
+    expect(liveMxcPluginChildHolder(intent.pluginId)).toBe(firstHolder);
+    expect(liveMxcPluginChildHolder("another-plugin")).toBeUndefined();
+    first.link.terminate("stop");
+    // Withdrawn synchronously, before disposal settles.
+    expect(liveMxcPluginChildHolder(intent.pluginId)).toBeUndefined();
+    await first.waitForExit();
+
+    const old = fixture();
+    const ended = await spawnMxcPluginChild(old.launch, old.intent);
+    const next = fixture();
+    const replacement = await spawnMxcPluginChild(next.launch, next.intent);
+    const replacementHolder = await (spawn.mock.results[0] as { value: Promise<MxcConfinedChildSpawn> }).value;
+    ended.link.terminate("replaced");
+    expect(liveMxcPluginChildHolder(intent.pluginId)).toBe(replacementHolder);
+    replacement.link.terminate("stop");
+    expect(liveMxcPluginChildHolder(intent.pluginId)).toBeUndefined();
+    await Promise.all([ended.waitForExit(), replacement.waitForExit()]);
   });
 
   it("revocation fails row 2's validity check", async () => {
@@ -248,19 +277,19 @@ describe("native plugin stream ownership", () => {
   });
 
   it.each([
-    ["outside AVE_HOME", (l: { home: string; temp: string }) => { l.home = "C:\\Other\\mxc-staging\\0123456789abcdef0123456789abcdef\\home"; }],
+    ["outside the runtime root", (l: { home: string; temp: string }) => { l.home = "C:\\Other\\staging\\0123456789abcdef0123456789abcdef\\home"; }],
     ["named after the plugin", (l: { home: string; temp: string }) => {
-      l.home = winPath.join(aveHome(), "mxc-staging", "native-probe", "home"); l.temp = winPath.join(aveHome(), "mxc-staging", "native-probe", "temp");
+      l.home = winPath.join(SYNTHETIC_MXC_STAGING_PARENT, "native-probe", "home"); l.temp = winPath.join(SYNTHETIC_MXC_STAGING_PARENT, "native-probe", "temp");
     }],
     ["shared between HOME and temp", (l: { home: string; temp: string }) => { l.temp = l.home; }],
     ["in different staging directories", (l: { home: string; temp: string }) => {
-      l.temp = winPath.join(aveHome(), "mxc-staging", "fedcba9876543210fedcba9876543210", "temp");
+      l.temp = winPath.join(SYNTHETIC_MXC_STAGING_PARENT, "fedcba9876543210fedcba9876543210", "temp");
     }],
     ["nested below the staging directory", (l: { home: string; temp: string }) => { l.home = winPath.join(l.home, "deeper"); }],
   ])("refuses HOME/temp %s before admission", async (_label, mutate) => {
     const { launch, intent } = fixture();
     mutate(launch);
-    await expect(spawnMxcPluginChild(launch, intent)).rejects.toThrow("mxc-staging");
+    await expect(spawnMxcPluginChild(launch, intent)).rejects.toThrow("runtime-root");
     expect(spawn).not.toHaveBeenCalled(); expect(launch.release).toHaveBeenCalledOnce();
   });
 
@@ -324,14 +353,14 @@ describe("native plugin stream ownership", () => {
   ])("refuses a measured request whose %s differs from the derived intent, with the contract error", async (_label, mutate) => {
     const { launch, intent } = fixture();
     const base = spawn.getMockImplementation()!;
-    spawn.mockImplementation(async (spec: MxcConfinedChildSpec) => base({ ...spec, probe: (request: ContainerRequest, signal: AbortSignal) => {
+    spawn.mockImplementation(async (spec: MxcConfinedChildSpec) => base({ ...spec, assertRequest: (request: ContainerRequest) => {
       mutate(request);
-      return spec.probe(request, signal);
+      spec.assertRequest?.(request);
     } }));
     const failure = await spawnMxcPluginChild(launch, intent).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(MxcProcessContractError);
     expect((failure as Error).message).toMatch(/^Admitted plugin request does not/u);
-    expect(launch.probe).not.toHaveBeenCalled(); expect(launch.release).toHaveBeenCalledOnce();
+    expect(launch.release).toHaveBeenCalledOnce();
   });
 });
 

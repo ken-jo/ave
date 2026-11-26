@@ -5,6 +5,7 @@ import { errorMessage } from "../shared/error-message.js";
 import { createLogger } from "../lib/logger.js";
 import { registerWorkerOutputFlow } from "./worker-flow.js";
 import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdir } from "node:fs/promises";
 import { chmodSync, lstatSync } from "node:fs";
 import { resolve as pathResolve } from "node:path";
@@ -29,7 +30,12 @@ import {
   type WorkerStdioControl,
 } from "./worker-stdio-control.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
-import { spawnConfinedChild } from "./confined-child.js";
+import { assertHostProgramNotRelative, resolveHostProgram } from "../shared/host-program-path.js";
+import { assertMxcDescendantOutsideParent, spawnConfinedChild, type MxcConfinedChildSpawn } from "./confined-child.js";
+import { assertConfiguredLauncherEnvironment, sandboxTargetSetupFailed } from "./launcher-environment.js";
+import { MxcProcessCleanupError } from "./mxc-extension-errors.js";
+import { isMxcExtensionBackendSelected, spawnMxcBundledHolder, type MxcBundledHolder } from "../sandbox/wrap-bundled-command.js";
+import { liveMxcPluginChildHolder } from "./mxc-holder-lifetime.js";
 import {
   assertManagedChildProcessAdmissionOpen,
   trackManagedChildProcess,
@@ -45,8 +51,10 @@ import {
   isPluginWorkerConfinementActive,
   cleanupAsrtSandboxAfterCommand,
   grantWindowsWorkerFilesystemAccess,
+  pluginGrantPathsBeyondOwnRoots,
   type WindowsWorkerFilesystemGrant,
 } from "./asrt-sandbox.js";
+import { extensionStartIdentity, workerStartKey, type ExtensionStartAuthority } from "./extension-start-consent.js";
 import {
   markPluginWorkerWrapped,
   unmarkPluginWorkerWrapped,
@@ -57,6 +65,8 @@ export type WorkerOutputListener = (chunk: string) => void;
 
 // The spec the HOST hands spawnWorker. The hostApi factory binds `pluginId` from the calling plugin instance; workerId/command/grant paths are declared by trusted first-party plugin code and reviewed at the HostApi effect boundary. `allowWritePaths` is the worker's filesystem write-jail; a requested state directory is added to it by the host.
 export interface SpawnWorkerSpec {
+  /** Host-set: the consent for this one start when nothing confines it. */
+  readonly extensionStart?: ExtensionStartAuthority;
   // Owning plugin id — selects the `~/.ave/plugins/<pluginId>/` sandbox root.
   readonly pluginId: string;
   // Stable per-worker id — names the `workers/<workerId>/` state dir + the reviewer wrapped-registry key. Sanitized to a single safe path segment.
@@ -106,7 +116,7 @@ function wrappedWorkerKey(pluginId: string, workerId: string): string {
   return `${pluginId.length}:${pluginId}:${workerId}`;
 }
 
-function reserveWrappedWorker(pluginId: string, workerId: string): () => void {
+function reserveWrappedWorker(pluginId: string, workerId: string): (keepReserved?: boolean) => void {
   const key = wrappedWorkerKey(pluginId, workerId);
   if (activeWrappedWorkerKeys.has(key)) {
     throw new WorkerAlreadyRunningError(pluginId, workerId);
@@ -115,10 +125,11 @@ function reserveWrappedWorker(pluginId: string, workerId: string): () => void {
   let resolveExit!: () => void;
   workerExitWaiters.set(key, new Promise<void>((resolve) => { resolveExit = resolve; }));
   let released = false;
-  return () => {
+  // `keepReserved` ends the wait without freeing the identity: its termination is unverified.
+  return (keepReserved = false) => {
     if (released) return;
     released = true;
-    activeWrappedWorkerKeys.delete(key);
+    if (!keepReserved) activeWrappedWorkerKeys.delete(key);
     workerExitWaiters.delete(key);
     resolveExit();
   };
@@ -208,11 +219,7 @@ async function prepareWorkerStateDirectory(pluginId: string, workerId: string): 
 const WORKER_STDIO: StdioOptions = ["pipe", "pipe", "pipe"];
 
 function definedEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string> {
-  const extra: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env ?? {})) {
-    if (value !== undefined) extra[key] = value;
-  }
-  return extra;
+  return Object.fromEntries(Object.entries(env ?? {}).filter((entry): entry is [string, string] => entry[1] !== undefined));
 }
 
 // Spawn a plugin worker, host-mediated and (gate ON) ASRT-wrapped. See the module header for the model. A stdio-control worker resolves only after it answered the host's hello; otherwise it is stopped, its exit awaited, and the call rejects with WorkerControlFailedError.
@@ -220,7 +227,16 @@ export function spawnWorker(spec: SpawnWorkerSpec & { readonly control: "output-
 export function spawnWorker(spec: SpawnWorkerSpec & { readonly control: "stdio-control-v1" }): Promise<StdioControlWorker>;
 export function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>;
 export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker> {
-  assertExtensionStartAllowed({ holder: "worker" });
+  // A selected container backend carries the worker itself; its holder asserts the native entry. The legacy guard
+  // refuses that plan, and the legacy gate reads off under it, so neither is consulted on this route.
+  const contained = process.platform === "win32" && isMxcExtensionBackendSelected();
+  // An unconfined worker is a plain spawn below with no later crossing, so this one spends the consent.
+  if (!contained) {
+    // Everything the host was handed to run this worker from is its identity: a consent for another spec does not start this one.
+    const { extensionStart, ...facts } = spec;
+    assertExtensionStartAllowed({ holder: "worker",
+      start: { key: workerStartKey(spec.pluginId, spec.workerId), identity: extensionStartIdentity(facts), authority: extensionStart, spend: true } });
+  }
   const safePlugin = safeSegment(spec.pluginId, "pluginId");
   const safeWorker = safeSegment(spec.workerId, "workerId");
   if (typeof spec.control !== "string" || !WORKER_CONTROLS.has(spec.control)) {
@@ -237,18 +253,48 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     throw new Error(`[worker-spawn] worker ${safePlugin}/${safeWorker} may not set ${WORKER_STATE_DIR_ENV}; the host names the state directory`);
   }
   const label = `worker:${safePlugin}:${safeWorker}`;
+  assertHostProgramNotRelative(spec.command);
   const args = [...(spec.args ?? [])];
+  let parent: MxcConfinedChildSpawn | undefined;
+  if (contained) {
+    // Taken before the first await, so this spawn cannot pick up a replacement incarnation. Row 2 refuses the start
+    // once this parent is gone and ends the worker with it.
+    parent = liveMxcPluginChildHolder(spec.pluginId);
+    if (parent === undefined) {
+      throw new Error(`[worker-spawn] ${label}: refusing a container worker whose plugin has no live container process`);
+    }
+    // The holder's ownership roots repeat the worker's declared grants, so, before anything is created, the host holds the declaration to the
+    // plugin's own install and cache here: nothing inside another plugin's storage, nothing at or above a plugin root.
+    const beyond = pluginGrantPathsBeyondOwnRoots(safePlugin, [...(spec.allowReadPaths ?? []), ...(spec.allowWritePaths ?? [])]);
+    if (beyond.length > 0) {
+      throw new Error(`[worker-spawn] ${label}: refusing a container grant beyond the plugin's own roots: ${[...new Set(beyond)].join(", ")}`);
+    }
+    // Sibling roots: nothing declared inside the parent's writable roots (its data directory included), nothing above them.
+    try {
+      assertMxcDescendantOutsideParent(parent, { read: spec.allowReadPaths ?? [], write: spec.allowWritePaths ?? [] });
+    } catch (error) {
+      throw new Error(`[worker-spawn] ${label}: refusing a container grant that nests with its plugin's container process: ${errorMessage(error)}`, { cause: error });
+    }
+  }
 
   // Secret-stripped base env (Least Privilege), shared with other child process spawners so Windows runtime variables stay complete without forwarding provider/API-key secrets.
-  const baseEnv: NodeJS.ProcessEnv = buildSafeChildEnv(definedEnv(spec.env));
+  const configuredEnv = definedEnv(spec.env);
+  assertConfiguredLauncherEnvironment(configuredEnv);
+  const baseEnv: NodeJS.ProcessEnv = buildSafeChildEnv(configuredEnv);
   const stateDir = spec.stateDirectory === true ? await prepareWorkerStateDirectory(safePlugin, safeWorker) : undefined;
   if (stateDir !== undefined) baseEnv[WORKER_STATE_DIR_ENV] = stateDir;
   const stateGrant = stateDir !== undefined ? [stateDir] : [];
 
+  if (parent !== undefined) {
+    return await spawnContainedWorker(spec, { plugin: safePlugin, worker: safeWorker }, control, label, args, stateDir, parent,
+      reserveWrappedWorker(safePlugin, safeWorker));
+  }
+
   // Gate OFF → plain unwrapped spawn
   if (!isPluginWorkerConfinementActive()) {
     assertManagedChildProcessAdmissionOpen(`worker:${safePlugin}:${safeWorker}`);
-    const child = spawn(spec.command, args, {
+    // A bare name resolves on PATH only, never in the inherited host cwd.
+    const child = spawn(resolveHostProgram(spec.command, baseEnv), args, {
       stdio: WORKER_STDIO,
       shell: false,
       windowsHide: true,
@@ -349,6 +395,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
         allowRead: [sandboxHome.path, ...stateGrant, ...(spec.allowReadPaths ?? [])],
         allowWrite: [sandboxHome.path, ...stateGrant, ...(spec.allowWritePaths ?? [])],
         assertStillValid: assertHolderAlive,
+        sandboxHome: sandboxHome.path,
       });
       assertHolderAlive();
 
@@ -373,11 +420,11 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
         },
       });
       child = spawned.child;
-      child.once("exit", finalizeResources);
+      child.once("exit", () => finalizeResources());
       child.once("error", () => {
         // `error` can mean signal/message delivery failed while the child is still alive. Definitive resource finalization stays on exit/close.
       });
-      child.once("close", finalizeResources);
+      child.once("close", () => finalizeResources());
       assertHolderAlive();
 
       return await openHandle(child, control, label, spawned);
@@ -393,8 +440,10 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     }
   }
 
+  let command: string;
   let sandboxHome: ReturnType<typeof createSandboxProcessHome>;
   try {
+    command = resolveHostProgram(spec.command, baseEnv);
     sandboxHome = createSandboxProcessHome();
   } catch (err) {
     releaseWorkerReservation();
@@ -417,7 +466,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   try {
     // Assemble the command DEFENSIVELY: shell-quote the binary + every arg so a path with spaces/metacharacters cannot mis-split. ASRT runs this branch under a POSIX shell (mac/linux). The per-command wrap carries ONLY the filesystem jail (the `--bind`).
     ({ child } = await spawnConfinedChild({
-      command: spec.command,
+      command,
       args,
       label: `worker:${safePlugin}:${safeWorker}:asrt`,
       egressOwner: { kind: "worker", role: "worker", pluginId: spec.pluginId, instanceId: spec.workerId },
@@ -442,6 +491,9 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       },
     }));
     trackManagedChildProcess(child, { label: `worker:${safePlugin}:${safeWorker}:asrt` });
+    void sandboxTargetSetupFailed(child)?.then(failed => {
+      if (failed) log.warn(`[worker-spawn] worker:${safePlugin}:${safeWorker}: sandbox target environment setup failed`);
+    });
 
     // Idempotent definitive-termination cleanup (mirrors mcp-client): exit or close runs it once. A stop request and process-operation error retain ownership because neither proves the child is dead. Drops the reviewer marker and releases the per-command ASRT state.
     let cleanupRan = false;
@@ -456,11 +508,11 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       sandboxHome.cleanup();
       releaseWorkerReservation();
     };
-    child.once("exit", finalizeOnce);
+    child.once("exit", () => finalizeOnce());
     child.once("error", () => {
       // A process-operation error is not proof of death. `close` is the asynchronous-spawn-failure finalizer; live children finalize on exit.
     });
-    child.once("close", finalizeOnce);
+    child.once("close", () => finalizeOnce());
   } catch (err) {
     // FAIL CLOSED: wrap/spawn setup failed. If the wrap had SUCCEEDED (failure was the post-wrap spawn / empty-argv), also decrement ASRT's per-command state and drop the reviewer marker — `cleanupOnce` never wired up, so the catch owns that teardown.
     if (wrapped) {
@@ -475,12 +527,93 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   return await openHandle(child, control, label);
 }
 
+// What a handle observes of its process: a spawned child, or a contained holder's owned streams and verified end.
+interface WorkerProcess {
+  readonly pid?: number | undefined;
+  readonly stdin: Writable | null;
+  readonly stdout: Readable | null;
+  readonly stderr: Readable | null;
+  readonly exitCode: number | null;
+  readonly signalCode: NodeJS.Signals | null;
+  once(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+  once(event: "close", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+}
+
+// The container route: one holder per worker, with no account grant and no ACL holder. `exit` follows the holder's release; an
+// unverified termination keeps the worker identity reserved, so it cannot be respawned.
+async function spawnContainedWorker(
+  spec: SpawnWorkerSpec,
+  ids: { readonly plugin: string; readonly worker: string },
+  control: PluginWorkerControl,
+  label: string,
+  args: readonly string[],
+  stateDir: string | undefined,
+  parent: MxcConfinedChildSpawn,
+  releaseWorkerReservation: (keepReserved?: boolean) => void,
+): Promise<SpawnedWorker> {
+  const holderEnv = { ...definedEnv(spec.env), ...(stateDir !== undefined ? { [WORKER_STATE_DIR_ENV]: stateDir } : {}) };
+  const stateGrant = stateDir !== undefined ? [stateDir] : [];
+  let holder: MxcBundledHolder;
+  try {
+    holder = await spawnMxcBundledHolder({
+      label,
+      command: spec.command,
+      args,
+      baseEnv: buildSafeChildEnv(holderEnv),
+      holderEnv,
+      allowRead: [...stateGrant, ...(spec.allowReadPaths ?? [])],
+      allowWrite: [...stateGrant, ...(spec.allowWritePaths ?? [])],
+      ownedReadRoots: [...(spec.allowReadPaths ?? [])],
+      egressOwner: { kind: "worker", role: "worker", pluginId: spec.pluginId, instanceId: spec.workerId },
+      workerTransport: control,
+      parent,
+      ...(spec.floorPierces !== undefined ? { floorPierces: spec.floorPierces } : {}),
+    });
+  } catch (error) {
+    releaseWorkerReservation(error instanceof MxcProcessCleanupError);
+    throw error;
+  }
+  const events = new EventEmitter();
+  let exitCode: number | null = null;
+  let ended = false;
+  let finishing: Promise<void> | undefined;
+  const observed = holder.process.completion.then((result) => { exitCode = result.exitCode; }, () => {});
+  const finish = (): Promise<void> => finishing ??= holder.release().then(async () => {
+    await Promise.race([observed, new Promise<void>((resolve) => setImmediate(resolve))]);
+    unmarkPluginWorkerWrapped(ids.plugin, ids.worker);
+    ended = true;
+    exitCode ??= 1;
+    releaseWorkerReservation();
+    events.emit("exit", exitCode, null);
+  }, (error: unknown) => {
+    unmarkPluginWorkerWrapped(ids.plugin, ids.worker);
+    releaseWorkerReservation(true);
+    ended = true;
+    events.emit("exit", exitCode, null);
+    log.error(`[worker-spawn] ${label}: contained termination is unverified; respawn refused until restart: ${errorMessage(error)}`);
+  });
+  void observed.then(finish);
+  const owned: WorkerProcess = {
+    pid: holder.process.id,
+    stdin: holder.process.stdin,
+    stdout: holder.process.stdout,
+    stderr: holder.process.stderr,
+    get exitCode() { return ended ? exitCode : null; },
+    signalCode: null,
+    once: (event: "exit" | "close", listener: (code: number | null, signal: NodeJS.Signals | null) => void) => events.once(event, listener),
+  };
+  const handle = await openHandle(owned, control, label, owned, () => { void finish(); });
+  if (finishing === undefined) markPluginWorkerWrapped(ids.plugin, ids.worker);
+  return handle;
+}
+
 // Build the SpawnedWorker handle around a spawned child. A stdio-control worker must complete the hello first; when it does not, it is stopped and its exit awaited before the error surfaces, so no failed spawn leaves a process behind.
 async function openHandle(
-  child: ChildProcess,
+  child: WorkerProcess,
   control: PluginWorkerControl,
   label: string,
   io: { readonly stdin: Writable | null; readonly stdout: Readable | null } = child,
+  terminate: () => void = () => terminateChildBestEffort(child as ChildProcess),
 ): Promise<SpawnedWorker> {
   const outputBacklogMax = 1024 * 1024;
   const outputBacklogEventMax = 256;
@@ -494,7 +627,7 @@ async function openHandle(
     stopped = true;
     endReason ??= reason;
     channel?.close();
-    terminateChildBestEffort(child);
+    terminate();
   };
   type OutputState = {
     listeners: WorkerOutputListener[];

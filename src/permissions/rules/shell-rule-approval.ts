@@ -38,12 +38,7 @@ export function buildShellRuleApproval(
   const bound = verifiedShellParsed(verifiedCommand, { command, dialect, cwd: projectCwd });
   const syntax: CommandSyntax = bound === undefined ? commandSyntax(dialect, command)
     : "syntax" in bound ? { powershell: bound } : { bash: bound };
-  const candidate = saves.allow && command.length <= MAX_LITERAL_COMMAND_LENGTH
-    ? dialect === "bash" ? exactBashRule(syntax.bash!, projectCwd) : exactPowerShellRule(syntax.powershell!, projectCwd, plan)
-    : null;
-  // The rule must cover this whole invocation and disclose no secret.
-  const exactRule = candidate !== null && maskSensitiveData(candidate).masked === candidate && suggestionCovers(dialect, candidate, "allow", command, projectCwd, syntax, plan)
-    ? candidate : null;
+  const exactRule = saves.allow ? exactRuleOf(dialect, command, projectCwd, syntax, plan) : null;
   const denyCandidate = saves.deny ? literalCommandRule(dialect, command, syntax) : null;
   const denyRule = denyCandidate !== null && maskSensitiveData(denyCandidate).masked === denyCandidate && suggestionCovers(dialect, denyCandidate, "deny", command, projectCwd, syntax, plan)
     ? denyCandidate : null;
@@ -58,6 +53,21 @@ export function buildShellRuleApproval(
     sessionAllowed: exactRule !== null && Boolean(sessionId),
     persistentAllowed: exactRule !== null,
   };
+}
+
+function exactRuleOf(dialect: ShellRuleDialect, command: string, cwd: string, syntax: CommandSyntax, plan?: HostShellExecutionPlan): string | null {
+  const candidate = command.length <= MAX_LITERAL_COMMAND_LENGTH
+    ? dialect === "bash" ? exactBashRule(syntax.bash!, cwd) : exactPowerShellRule(syntax.powershell!, cwd, plan)
+    : null;
+  // The rule must cover this whole invocation and disclose no secret.
+  return candidate !== null && maskSensitiveData(candidate).masked === candidate && suggestionCovers(dialect, candidate, "allow", command, cwd, syntax, plan)
+    ? candidate : null;
+}
+
+// The one exact allow rule that is this whole command (the rule its card would save), or null: a compound, unproven or secret-bearing command has none.
+export function exactShellRuleFor(dialect: ShellRuleDialect, command: string, cwd: string, verifiedCommand?: VerifiedShellCommand, plan?: HostShellExecutionPlan): string | null {
+  const syntax = commandSyntax(dialect, command, cwd, verifiedCommand);
+  return syntax.bash === undefined && syntax.powershell === undefined ? null : exactRuleOf(dialect, command, cwd, syntax, plan);
 }
 
 /** Host-owned description of one command for the user's own host terminal (invocation-authorization, from the sealed terminal target). */

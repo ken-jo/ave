@@ -63,6 +63,7 @@
       "src/ipc/domains/__tests__/preview-document.test.ts",
       "src/main/__tests__/codex-conversation-runtime.test.ts",
       "src/main/__tests__/process-group-reaper.test.ts",
+      "src/main/__tests__/windows-program-lookup.test.ts",
       "src/main/memory-map/__tests__/inference-child-native.test.ts",
       "src/mcp/__tests__/tasks-extension.test.ts",
       "src/plugins/__tests__/registry-atomicity.test.ts",
@@ -81,9 +82,10 @@
       "test/scripts/preview-document-bundle.test.ts"
     ],
     "tree-invariants": [
+      "src/work-board/workflow/__tests__/host-git.test.ts",
+      "test/scripts/plan-windows-tests.test.ts",
       "test/scripts/pre-push-markdown-policy.test.ts",
       "test/scripts/pre-push-source-policy.test.ts",
-      "test/scripts/pre-push-tier.test.ts",
       "test/scripts/repository-identity.test.ts",
       "test/scripts/run-ci-suite.test.ts"
     ],

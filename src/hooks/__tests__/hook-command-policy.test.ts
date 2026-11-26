@@ -31,6 +31,7 @@ import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import type { ToolInvocationContext } from "../../permissions/reviewer/risk-classifier.js";
 import { shellRuleCoversCommand } from "../../permissions/rules/shell-rule-approval.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
+import { cardGate } from "../../__tests__/support/forced-shell-card.js";
 
 const sandboxedHost = vi.hoisted(() => ({ active: false }));
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
@@ -38,7 +39,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
   isAsrtSandboxActive: () => false,
 }));
 
-// The partial Windows sandbox plan requires a per-invocation permit; an unavailable sandbox does not. Override only the plan's platform probe so the hook still runs on this host.
+// Override only the plan platform for Windows fixtures so the hook still runs on this host.
 const plans = vi.hoisted(() => ({ windowsPartial: false }));
 vi.mock("../../permissions/sandbox-capability.js", async (original) => {
   const actual = await original<typeof import("../../permissions/sandbox-capability.js")>();
@@ -250,20 +251,98 @@ describe("hook command permission admission", () => {
     expect(JSON.parse(result.rawStdout).reason).toBe("received");
   });
 
-  it("follows the sandbox-off policy, without a one-shot receipt, when the requested sandbox is unavailable", async () => {
-    // A requested-but-unavailable sandbox is a plain shell under the exact-rule policy, as for the bash tool (owner 2026-10-25, unsandboxed shell exact-rule requirement); it records its fallback reason instead.
+  it("takes the forced ask when the requested sandbox is unavailable: a saved allow and allow mode do not run the hook unasked", async () => {
     setShellSandboxRequestedAtBoot(true);
     expect(getHostShellExecutionPlan()).toMatchObject({
-      mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: false,
+      mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true,
     });
-    const p = policy("allow-once");
+    const p = policy("deny-once");
+    p.permissionManager.setMode("allow");
     p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
-    expect(result.decision, result.reason).toBe("allow");
-    expect(JSON.parse(result.rawStdout).reason).toBe("received");
-    // The hook's own approval is asked once, with no host-execution permit to bind.
+    expect(result.decision).toBe("deny");
+    expect(result.rawStdout).toBe("");
     expect(p.requestAndWait).toHaveBeenCalledOnce();
-    expect(p.requestAndWait).not.toHaveBeenCalledWith(expect.objectContaining({ hostShellExecutionPermitBinding: expect.anything() }));
+    expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
+      forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false, floorSessionAllowed: true,
+      executionPlan: expect.objectContaining({ fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true }),
+      hostShellExecutionPermitBinding: expect.anything(),
+    }));
+  });
+
+  it.each(["missing", "filesystem-only"] as const)("requires verified boot privacy for the saved hook rule with a %s backend", async (backend) => {
+    setShellSandboxRequestedAtBoot(true);
+    if (backend === "filesystem-only") {
+      setActiveSandboxCapability({ kind: "fs-only", confidence: "verified", platform: process.platform, reason: "fixture",
+        confines: { filesystem: true, process: false, network: false } });
+    }
+    const printfHook = { ...hook, command: ["printf", "ready"] };
+    const rule = { pattern: "Bash('printf' 'ready')", action: "allow" as const };
+    try {
+      setAveHomePrivacyAtBoot(process.platform === "win32" ? { enforcement: "win32-dacl", home: "C:\\Users\\alice\\.ave", sid: "S-1-5-21-1" } : { enforcement: "posix-mode", home: "/home/alice/.ave" });
+      const p = policy("deny-once");
+      await p.permissionManager.addRulePersist(rule, { kind: "user" });
+      const passed = await p.authorizeCommand(printfHook, payload, process.cwd());
+      expect(passed.decision, passed.reason).toBe("allow");
+      expect(passed.reason).toContain(rule.pattern);
+      expect(p.requestAndWait).not.toHaveBeenCalled();
+      // The hook command the rule does not name still asks.
+      expect((await p.authorizeCommand(hook, payload, process.cwd())).decision).toBe("deny");
+      expect(p.requestAndWait).toHaveBeenCalledOnce();
+
+      _resetAveHomePrivacyForTest();
+      const unverified = policy("deny-once");
+      await unverified.permissionManager.addRulePersist(rule, { kind: "user" });
+      expect((await unverified.authorizeCommand(printfHook, payload, process.cwd())).decision).toBe("deny");
+      expect(unverified.requestAndWait).toHaveBeenCalledOnce();
+    } finally {
+      _resetAveHomePrivacyForTest();
+    }
+  });
+
+  it("keeps a hook floor answer across memory-only rules but refuses it after a mode change", async () => {
+    setShellSandboxRequestedAtBoot(true);
+    const p = policy();
+    p.permissionManager.setMode("allow");
+    const memory = cardGate("allow-once", () => p.permissionManager.addSessionRule("other-hook", "Bash(printf ready)"));
+    const allowed = await createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: memory.gate })(hook, payload, process.cwd());
+    expect(memory.cards()).toEqual([expect.objectContaining({ allowedChoices: ["allow-once", "deny-once"] })]);
+    expect(allowed.decision, allowed.reason).toBe("allow");
+
+    const changed = cardGate("allow-once", () => p.permissionManager.setMode("strict"));
+    const denied = await createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: changed.gate })(hook, payload, process.cwd());
+    expect(changed.cards()).toHaveLength(1);
+    expect(denied).toEqual({ decision: "deny", reason: "Permission policy changed while approval was pending" });
+  });
+
+  it("runs the hook once per gate-signed allow-once on the unavailable-sandbox forced card, and asks again next time", async () => {
+    setShellSandboxRequestedAtBoot(true);
+    const p = policy();
+    p.permissionManager.setMode("allow");
+    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+    const runOnce = async () => {
+      const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+      const gate = new ApprovalGate(wc as never);
+      const pending = runOneHookScript(hook, payload, { authorizeCommand: createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate }) });
+      const deadline = Date.now() + 3000;
+      while (wc.send.mock.calls.length === 0 && Date.now() < deadline) await new Promise((done) => setTimeout(done, 1));
+      const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+      expect(request?.nonce).toBeTruthy();
+      expect(request).toMatchObject({ allowedChoices: ["allow-once", "deny-once"],
+        executionPlan: { requestedSandbox: true, fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true } });
+      gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+      const result = await pending;
+      return { result, cards: wc.send.mock.calls.filter(([, sent]) => (sent as ApprovalRequest | undefined)?.nonce !== undefined).length };
+    };
+    const first = await runOnce();
+    expect(first.result.decision, first.result.reason).toBe("allow");
+    expect(JSON.parse(first.result.rawStdout).reason).toBe("received");
+    expect(first.cards).toBe(1);
+    expect(permits).toMatchObject({ minted: 1, consumed: [true] });
+    const second = await runOnce();
+    expect(second.cards).toBe(1);
+    expect(second.result.decision, second.result.reason).toBe("allow");
+    expect(permits).toMatchObject({ minted: 2, consumed: [true, true] });
   });
 
   describe.each(["boundary-link", "boundary-unlisted"] as const)("worker-only boot with an unverifiable boundary (%s)", (category) => {
@@ -341,7 +420,7 @@ describe("hook command permission admission", () => {
           .toMatchObject({ ok: true, scope: "session" });
         gate.completeApprovalRuleSave(token, p.permissionManager.getPolicyEpoch(), "session");
       }
-      gate.resolve(request.id, { requestId: request.id, choice: answer === "allow-session" ? "allow-once" : "deny-once", nonce: request.nonce, hmac: request.hmac });
+      gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: answer === "allow-session" ? "allow-once" : "deny-once", nonce: request.nonce, hmac: request.hmac }, wc as never);
       return { result: await pending, gate, wc, authorizeCommand };
     }
 
@@ -399,6 +478,55 @@ describe("hook command permission admission", () => {
     });
   });
 
+  // Owner decision 2026-11-24: a helper that gave no answer leaves hooks denied until a restart; no card, rule or mode passes it.
+  describe.each([{ label: "shell scope off", requested: false }, { label: "requested sandbox unavailable", requested: true }])("helper-unavailable boot privacy failure ($label)", ({ requested }) => {
+    afterEach(() => _resetAveHomePrivacyForTest());
+    const cases = [
+      { label: "a saved allow rule", mode: "default" as const, headless: false },
+      { label: "allow mode and a saved allow rule", mode: "allow" as const, headless: false },
+      { label: "headless allow mode", mode: "allow" as const, headless: true },
+    ];
+
+    it.each(cases)("denies the hook with the restart notice and no card under $label", async ({ mode, headless }) => {
+      setShellSandboxRequestedAtBoot(requested);
+      setAveHomePrivacyAtBoot({ enforcement: "none", home: "C:\\Users\\alice\\.ave", reason: "helper-unavailable", category: "helper-unavailable" });
+      const p = policy("allow-once");
+      p.permissionManager.setMode(mode);
+      p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+      const run = () => runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
+      const result = headless ? await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, true), run) : await run();
+      expect(result).toMatchObject({ decision: "deny", rawStdout: "" });
+      expect(result.reason).toContain("Restart Ave; if it persists, reinstall Ave.");
+      expect(result.reason).not.toContain(NO_APPROVER_MESSAGE);
+      expect(p.requestAndWait).not.toHaveBeenCalled();
+      expect(permits.minted).toBe(0);
+    });
+
+    // Outside the failure an exact rule admits this command with no card (scope off) or the sandbox-unavailable forced card shows; either way the deny is what refuses it here.
+    it.each([{ mode: "default" as const }, { mode: "allow" as const }])("denies an exactly allowed hook command in $mode mode", async ({ mode }) => {
+      setShellSandboxRequestedAtBoot(requested);
+      const p = policy("allow-once");
+      p.permissionManager.setMode(mode);
+      p.permissionManager.setRules([{ pattern: "Bash('printf' 'ready')", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+      const exact = { ...hook, command: ["printf", "ready"] };
+      const baseline = await p.authorizeCommand(exact, payload, process.cwd());
+      if (requested) {
+        expect(p.requestAndWait).toHaveBeenCalledOnce();
+        expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ forceExplicit: true }));
+        // The mock answer never passed the gate, so it carries no host receipt.
+        expect(baseline).toMatchObject({ decision: "deny", reason: expect.stringContaining("approval receipt is invalid") });
+        p.requestAndWait.mockClear();
+      } else {
+        expect(baseline.decision).toBe("allow");
+      }
+      setAveHomePrivacyAtBoot({ enforcement: "none", home: "C:\\Users\\alice\\.ave", reason: "helper-unavailable", category: "helper-unavailable" });
+      const denied = await p.authorizeCommand(exact, payload, process.cwd());
+      expect(denied.decision).toBe("deny");
+      expect(denied.reason).toContain("Restart Ave; if it persists, reinstall Ave.");
+      expect(p.requestAndWait).not.toHaveBeenCalled();
+    });
+  });
+
   it("keeps the ordinary sandbox-off hook policy outside the boundary state", async () => {
     setShellSandboxRequestedAtBoot(false);
     expect(getHostShellExecutionPlan()).toMatchObject({ fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: false });
@@ -413,7 +541,7 @@ describe("hook command permission admission", () => {
   it("consumes a real gate-approved host execution receipt before spawning", async () => {
     windowsPartialPlan();
     expect(getHostShellExecutionPlan()).toMatchObject({
-      mode: "plain", fallbackReason: "windows-partial-shell-acl-unsafe", requiresExplicitUserApproval: true,
+      mode: "plain", fallbackReason: "active-sandbox-not-shell-contained", requiresExplicitUserApproval: true,
     });
     const p = policy();
     p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
@@ -446,8 +574,8 @@ describe("hook command permission admission", () => {
 
   it.each(["approval", "authority refresh"])("keeps an approved hook on its captured shell route when the stamp succeeds during %s", async stage => {
     const input: WindowsSandboxPlanInputs = {
-      shellRequested: true, shellLocalNetworkAccess: true, workerRequested: true, srtWinReady: true, windowsBuild: null,
-      mxc: { state: "unavailable", reason: "tier-unsupported" },
+      shellRequested: true, workerRequested: true, srtWinReady: true, windowsBuild: null,
+      mxc: { state: "unavailable", reason: "container-unavailable" },
     };
     plans.windowsPartial = true;
     setShellSandboxRequestedAtBoot(true);
@@ -566,14 +694,20 @@ describe("hook command permission admission", () => {
       allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false }));
   });
 
-  it("uses action-bound native permits for a normal allow-mode decision", async () => {
+  it("takes the forced ask for a host hook the capability does not contain: a saved allow and allow mode do not run it unasked", async () => {
     windowsPartialPlan();
-    const p = policy();
+    const p = policy("deny-once");
     p.permissionManager.setMode("allow");
+    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
-    expect(result.decision, result.reason).toBe("allow");
-    expect(p.requestAndWait).not.toHaveBeenCalled();
-    expect(permits).toMatchObject({ minted: 1, consumed: [true] });
+    expect(result.decision).toBe("deny");
+    expect(result.rawStdout).toBe("");
+    expect(p.requestAndWait).toHaveBeenCalledOnce();
+    expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
+      forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false, floorSessionAllowed: true,
+      executionPlan: expect.objectContaining({ fallbackReason: "active-sandbox-not-shell-contained", requiresExplicitUserApproval: true }),
+    }));
+    expect(permits.minted).toBe(0);
   });
 
   it("refuses an automatic hook decision after policy changes during review", async () => {

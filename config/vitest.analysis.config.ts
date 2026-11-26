@@ -6,28 +6,15 @@ import { defineConfig } from "vitest/config";
 import { electronNodeNormalizerArgument } from "../scripts/run-vitest-under-electron.mjs";
 import { documentGuardImportArgument } from "../scripts/lib/document-consumer-node-options.mjs";
 import { assertAllowedDocumentRead } from "../scripts/lib/document-consumer-guard.mjs";
+import { baseExclude, rendererTestGlobs, suiteInclude } from "../scripts/lib/vitest-collection.mjs";
+import { NATIVE_TIER_TESTS, selectedVitestTiers } from "../scripts/lib/vitest-tiers.mjs";
 import BoundarySequencer from "./vitest-sequencer.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const rootPath = (p: string) => path.resolve(ROOT, p);
+// AVE_VITEST_TIERS selects the projects; an unknown tier fails before collection.
+const tiers = selectedVitestTiers();
 
-const testFileGlob = "**/*.{test,spec}.{ts,tsx}";
-const baseExclude = [
-  "node_modules/**",
-  "dist/**",
-  "plugins/**",
-  ".claude/**",
-  // UI specs require their own runner; collecting them here causes import errors.
-  "test/e2e/**",
-  // The screenshot harness has its own runner configuration.
-  "test/screenshots/**",
-];
-const rendererTestGlobs = [
-  `test/renderer/${testFileGlob}`,
-  `src/ui/__tests__/${testFileGlob}`,
-  `src/ui/renderer/__tests__/${testFileGlob}`,
-  `src/ui/renderer/**/__tests__/${testFileGlob}`,
-];
 const permissionTimingTests = [
   "src/permissions/__tests__/permission-decision-cost.test.ts",
   "src/permissions/__tests__/permission-adversarial-performance.test.ts",
@@ -124,51 +111,62 @@ export default defineConfig({
       excludeAfterRemap: true,
     },
     projects: [
-      {
-        extends: true,
-        test: {
-          name: "node",
-          environment: "node",
-          // Pin the locale for tests asserting Korean strings; default-locale tests set their own.
-          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts")],
-          include: [
-            `src/**/__tests__/${testFileGlob}`,
-            `test/${testFileGlob}`,
-          ],
-          exclude: [
-            ...baseExclude,
-            ...rendererTestGlobs,
-            ...permissionTimingTests,
-          ],
+      ...(tiers.has("default") ? [
+        {
+          extends: true,
+          test: {
+            name: "node",
+            environment: "node",
+            // Pin the locale for tests asserting Korean strings; default-locale tests set their own.
+            setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts")],
+            include: suiteInclude,
+            exclude: [
+              ...baseExclude,
+              ...rendererTestGlobs,
+              ...permissionTimingTests,
+              ...NATIVE_TIER_TESTS,
+            ],
+          },
         },
-      },
-      {
+        {
+          extends: true,
+          test: {
+            name: "jsdom",
+            environment: "jsdom",
+            // Reuse workers while giving each renderer file fresh globals and a module graph.
+            // Backend tests require forks for native modules, confinement and mock identity.
+            pool: "vmForks",
+            // Pin Korean to preserve renderer string assertions and exercise the catalog.
+            setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts"), rootPath("src/__tests__/vitest-vm-exit-hooks.ts"), rootPath("src/__tests__/vitest-renderer-web-streams.ts")],
+            include: rendererTestGlobs,
+            exclude: baseExclude,
+          },
+        },
+        {
+          extends: true,
+          test: {
+            name: "permission-timing",
+            environment: "node",
+            setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts")],
+            include: permissionTimingTests,
+            exclude: baseExclude,
+            // Complete other projects before measuring a single file at a time.
+            sequence: { groupOrder: 1 },
+            fileParallelism: false,
+          },
+        },
+      ] : []),
+      // Suites that run real native processes; the native tier runs them apart from the default shards.
+      ...(tiers.has("native") ? [{
         extends: true,
         test: {
-          name: "jsdom",
-          environment: "jsdom",
-          // Reuse workers while giving each renderer file fresh globals and a module graph.
-          // Backend tests require forks for native modules, confinement and mock identity.
-          pool: "vmForks",
-          // Pin Korean to preserve renderer string assertions and exercise the catalog.
-          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts"), rootPath("src/__tests__/vitest-vm-exit-hooks.ts"), rootPath("src/__tests__/vitest-renderer-web-streams.ts")],
-          include: rendererTestGlobs,
+          name: "native",
+          environment: "node",
+          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts")],
+          include: [...NATIVE_TIER_TESTS],
           exclude: baseExclude,
         },
-      },
-      {
-        extends: true,
-        test: {
-          name: "permission-timing",
-          environment: "node",
-          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts")],
-          include: permissionTimingTests,
-          exclude: baseExclude,
-          // Complete other projects before measuring a single file at a time.
-          sequence: { groupOrder: 1 },
-          fileParallelism: false,
-        },
-      },
+      }] : []),
     ],
   },
   resolve: {

@@ -95,6 +95,26 @@ describe("ordered admission, floors and explicit rules", () => {
       expect(decidePermission({ ...evidence, rules: { ...evidence.rules, allow: "Allow rule." }, headless: true }).outcome).toBe("deny");
       expect(decidePermission({ ...evidence, rules: { allow: "Allow rule." } }).outcome).toBe("ask-forced");
     });
+    // Tree T:151, T:232: the one saved-rule pass of the sandbox-unavailable floor, in every mode.
+    it(`an exact saved rule passes the sandbox-unavailable floor only when nothing else asks, in ${mode}`, () => {
+      const evidence = request({ mode, tool: SHELL, shell: { ...SAFE_SHELL, sandboxed: false }, floor: { code: "sandbox-unavailable", reason: "No sandbox." },
+        floorSessionEligible: true, rules: { allow: "Bash(echo exact)", exactHostRule: "Bash(echo exact)" }, reviewer: { status: "success", level: "low" } });
+      const passed = decidePermission(evidence);
+      expect(passed).toMatchObject({ outcome: "allow", reasonCode: "exact-host-rule" });
+      expect(passed.reason).toContain("Bash(echo exact)");
+      // A prefix or tool-name allow, the mode and the reviewer never pass it.
+      expect(decidePermission({ ...evidence, rules: { allow: "Bash(echo *)" } }).outcome).toBe("ask-forced");
+      // A second forced reason, an ask rule, a rerun, an exfiltration signal or a user-owned surface keeps the card.
+      expect(decidePermission({ ...evidence, floorSessionEligible: undefined }).outcome).toBe("ask-forced");
+      expect(decidePermission({ ...evidence, floor: { code: "protected-path", reason: "Protected." } }).outcome).toBe("ask-forced");
+      expect(decidePermission({ ...evidence, rules: { ...evidence.rules, ask: "Ask rule." } }).outcome).toBe("ask-forced");
+      expect(decidePermission({ ...evidence, manualRerun: true }).outcome).toBe("ask-forced");
+      expect(decidePermission({ ...evidence, exfiltration: { reason: "Upload." } }).outcome).toBe("ask-forced");
+      expect(decidePermission({ ...evidence, userOwnedSurface: { kind: "browser", choice: "ask" } }).outcome).toBe("ask-forced");
+      // Deny and admission still win, and nobody present still denies.
+      expect(decidePermission({ ...evidence, rules: { ...evidence.rules, deny: "Deny rule." } }).reasonCode).toBe("rule-deny");
+      expect(decidePermission({ ...evidence, headless: true })).toMatchObject({ outcome: "deny", reasonCode: "no-approver" });
+    });
     it(`ordinary ask rules reach mode handling before read and grants in ${mode}`, () => {
       const result = decidePermission(request({ mode, rules: { ask: "Ask before reading.", allow: "Tool grant.", remembered: "Prior grant." } }));
       expect(result.outcome).toBe(["ask", "ask", "ask", "allow"][index]);
@@ -106,6 +126,44 @@ describe("ordered admission, floors and explicit rules", () => {
       });
     }
   }
+});
+
+describe("automatic terminal review after the floor", () => {
+  const evidence = request({
+    tool: { name: "terminal_run", source: "builtin", kind: "shell" },
+    floor: { code: "sandbox-unavailable", reason: "No sandbox." },
+    floorSessionEligible: true,
+    rules: { exactHostRule: "Bash(printf ready)" },
+    userOwnedSurface: { kind: "host-terminal", choice: "auto" },
+  });
+
+  it("asks for review after the exact rule answers the floor", () => {
+    expect(decidePermission(evidence)).toMatchObject({
+      outcome: "ask", reasonCode: "user-owned-surface-review", reviewRequired: true,
+    });
+  });
+
+  it.each([
+    [{ status: "success", level: "low" }, "allow", "exact-host-rule"],
+    [{ status: "success", level: "high" }, "ask", "user-owned-surface-human-required"],
+    [{ status: "error", level: "low" }, "ask", "user-owned-surface-human-required"],
+    [{ status: "success", level: "low", breakerOpen: true }, "ask", "user-owned-surface-human-required"],
+  ] as const)("uses the review outcome %j only once the exact rule answers the floor", (reviewer, outcome, reasonCode) => {
+    expect(decidePermission({ ...evidence, reviewer })).toMatchObject({ outcome, reasonCode });
+    expect(decidePermission({ ...evidence, reviewer, rules: {} })).toMatchObject({
+      outcome: "ask-forced", reasonCode: "sandbox-unavailable",
+    });
+  });
+
+  it("asks the person when automation is paused after an exact rule answers the floor", () => {
+    expect(decidePermission({ ...evidence, automationPause: { kind: "consecutive", reason: "Paused." } }))
+      .toMatchObject({ outcome: "ask", reasonCode: "automation-paused" });
+  });
+
+  it("keeps the forced card for a session waiver with Auto", () => {
+    expect(decidePermission({ ...evidence, rules: { floorSession: "Session grant." }, reviewer: { status: "success", level: "low" } }))
+      .toMatchObject({ outcome: "ask-forced", reasonCode: "sandbox-unavailable" });
+  });
 });
 
 describe("reviewer and human availability", () => {

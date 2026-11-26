@@ -72,7 +72,7 @@ export type TerminalSpawnResult =
        * restart, or a running shell's output so far for a view that was reloaded. Display bytes only; it never reaches a tool, and the view
        * answers none of the terminal queries in it. */
       readonly scrollback?: string }
-  | { readonly ok: false; readonly reason: "not-shell-contained" | "bad-request" | "spawn-failed" | "too-many-terminals" | "still-closing" | "no-terminal" | "unauthorized-frame"; readonly message: string };
+  | { readonly ok: false; readonly reason: "not-shell-contained" | "bad-request" | "spawn-failed" | "sandbox-unavailable" | "too-many-terminals" | "still-closing" | "no-terminal" | "unauthorized-frame"; readonly message: string };
 export type TerminalDataEvent = TerminalSessionRef & { readonly chunk: string };
 export type TerminalExitEvent = TerminalSessionRef & { readonly exitCode: number; readonly signal?: number };
 

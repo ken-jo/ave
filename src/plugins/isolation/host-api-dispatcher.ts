@@ -4,6 +4,7 @@
 import { workerOutputFlowOf } from "../../permissions/worker-flow.js";
 import { isDeviceCodeAuthorizationErrorCode, PluginDeviceAuthError } from "../../auth/plugin-device-auth-error.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { HOST_PROGRAM_PATH_GUIDANCE, isRelativeHostProgram } from "../../shared/host-program-path.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isAbsolute } from "node:path";
 import { createLogger } from "../../lib/logger.js";
@@ -692,6 +693,7 @@ function decodeWorkerSpec(
   const command = spec.command;
   if (typeof workerId !== "string") rejectArgument(call.path, "spec.workerId must be a string");
   if (typeof command !== "string") rejectArgument(call.path, "spec.command must be a string");
+  if (isRelativeHostProgram(command)) rejectArgument(call.path, `spec.command is relative. ${HOST_PROGRAM_PATH_GUIDANCE}`);
   const args = optionalStringList(call, spec, "args");
   const allowReadPaths = optionalStringList(call, spec, "allowReadPaths");
   const allowWritePaths = optionalStringList(call, spec, "allowWritePaths");
@@ -1475,9 +1477,14 @@ export class HostApiDispatcher {
     }
     if (invocation.live && readsEffectFrame(path)) {
       // The child picks the token, so a gated effect runs only when every live call would authorize it alike.
+      // Any live call without an effect-gate frame imposes no gate (gateMutatingEffect and the enforced wrapper pass through
+      // without a frame; app-only calls such as a panel's long poll are the usual case), so naming a gated call is never weaker than it;
+      // naming the frameless call while a gated one is live still refuses, or the child could escape that call's gate.
       const named = invocation.run(currentEffectGateContext);
       for (const other of this.options.invocations?.live() ?? []) {
-        if (!sameEffectAuthority(named, other(currentEffectGateContext))) {
+        const otherFrame = other(currentEffectGateContext);
+        if (named !== undefined && otherFrame === undefined) continue;
+        if (!sameEffectAuthority(named, otherFrame)) {
           throw new HostApiBoundaryError(
             "argument-marshalling-rejected",
             `[host-api-dispatcher] '${path}' names one of several active tool calls with different permission contexts`,

@@ -1,13 +1,9 @@
 // Route only after destination-name approval: off is direct, manual honors bypass, and system mode prefers proxy env before OS resolution, then direct only when no resolver exists. Environment proxy selection is scheme-specific with lowercase precedence; unusable/SOCKS-only routes deny and proxy routes must never reach internal listeners.
 // Build resolver URLs only from canonical host/port, never client bytes. Upstream credentials go only to proxy authentication, never child env, logs, audit or renderer; confined processes see only their invocation proxy.
 import { BlockList, isIP } from "node:net";
-import {
-  canonicalizeHost,
-  formatAuthority,
-  isValidHost,
-} from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
-import { isLoopbackAddress } from "@anthropic-ai/sandbox-runtime/dist/sandbox/address.js";
-import type { ParentProxyRoute, ParentProxyRouter } from "@anthropic-ai/sandbox-runtime";
+import { isLoopbackAddress } from "./egress-relay/address-set.js";
+import { canonicalRelayHost, formatAuthority, isValidRelayHost } from "./egress-relay/destination.js";
+import type { EgressRelayRoute, EgressRelayRouter } from "./egress-relay/relay.js";
 import { parsePacAnswer } from "../shared/pac-proxy.js";
 import { egressDestinationNetwork } from "./egress-grants.js";
 import {
@@ -41,8 +37,8 @@ export function parseProxyUrl(raw: string): ParsedProxyUrl {
   }
   const kind = url.protocol === "https:" ? "https" : "http";
   const bare = url.hostname.startsWith("[") ? url.hostname.slice(1, -1) : url.hostname;
-  const host = canonicalizeHost(bare);
-  if (host === undefined || !isValidHost(host)) return { ok: false, reason: "malformed" };
+  const host = canonicalRelayHost(bare);
+  if (host === undefined || !isValidRelayHost(host)) return { ok: false, reason: "malformed" };
   if ((url.pathname !== "/" && url.pathname !== "") || url.search !== "" || url.hash !== "") return { ok: false, reason: "malformed" };
   // URL removes an explicitly written default port; retain the authority so credentials remain bound to the service the person actually named.
   const authority = (scheme === undefined ? text : text.slice(text.indexOf("://") + 3)).split(/[/?#\\]/u)[0]!;
@@ -158,7 +154,7 @@ export function bypassesProxy(list: string, host: string): boolean {
 
 // One destination's routes, with what Settings shows about them.
 export interface UpstreamRouteAnswer {
-  routes: ParentProxyRoute[];
+  routes: EgressRelayRoute[];
   reason?: string;
   source: UpstreamProxySource;
   envVar?: string;
@@ -229,16 +225,16 @@ function proxyRoute(
   port: number,
   auth: { username: string; password: string } | undefined,
   resolvesNames: boolean,
-): { route: ParentProxyRoute; view: UpstreamProxyRouteView } {
+): { route: EgressRelayRoute; view: UpstreamProxyRouteView } {
   return {
     route: { kind: scheme, host, port, ...(auth ? { auth } : {}), ...(resolvesNames ? { resolvesNames: true } : {}) },
     view: { kind: scheme, endpoint: endpointOf(host, port), ...(auth ? { credentials: true } : {}) },
   };
 }
 
-const DIRECT: { route: ParentProxyRoute; view: UpstreamProxyRouteView } = { route: { kind: "direct" }, view: { kind: "direct" } };
+const DIRECT: { route: EgressRelayRoute; view: UpstreamProxyRouteView } = { route: { kind: "direct" }, view: { kind: "direct" } };
 
-function answer(source: UpstreamProxySource, entries: Array<{ route: ParentProxyRoute; view: UpstreamProxyRouteView }>, extra: Partial<UpstreamRouteAnswer> = {}): UpstreamRouteAnswer {
+function answer(source: UpstreamProxySource, entries: Array<{ route: EgressRelayRoute; view: UpstreamProxyRouteView }>, extra: Partial<UpstreamRouteAnswer> = {}): UpstreamRouteAnswer {
   return {
     routes: entries.map((entry) => entry.route),
     views: entries.map((entry) => entry.view),
@@ -254,9 +250,9 @@ export async function upstreamRoutesFor(
   destination: { host: string; port: number; scheme: "http" | "https" },
 ): Promise<UpstreamRouteAnswer> {
   const settings = deps.settings();
-  const host = canonicalizeHost(destination.host);
+  const host = canonicalRelayHost(destination.host);
   const { port, scheme } = destination;
-  if (host === undefined || host !== destination.host || !isValidHost(host) || !Number.isInteger(port) || port < 1 || port > 65535) {
+  if (host === undefined || host !== destination.host || !isValidRelayHost(host) || !Number.isInteger(port) || port < 1 || port > 65535) {
     return answer("off", [], { reason: "the destination is not a canonical host and port" });
   }
   if (settings.mode === "off") return answer("off", [DIRECT]);
@@ -303,7 +299,7 @@ export async function upstreamRoutesFor(
   } catch {
     return answer("system", [], { reason: "the system proxy configuration could not be read", transient: true });
   }
-  const entries: Array<{ route: ParentProxyRoute; view: UpstreamProxyRouteView }> = [];
+  const entries: Array<{ route: EgressRelayRoute; view: UpstreamProxyRouteView }> = [];
   const skipped: string[] = [];
   for (const entry of parsePacAnswer(typeof pac === "string" ? pac : "")) {
     if (entry.kind === "direct") entries.push(DIRECT);
@@ -319,7 +315,7 @@ export async function upstreamRoutesFor(
 
 // The route hook for ASRT, with a short per-destination cache (the OS configuration does not change between two connections a second apart, and a PAC evaluation is not free). Electron has no proxy-change event, so the TTL bounds how long an OS change takes to apply; a Settings change clears the cache at once (UpstreamProxyRouter.invalidate).
 export interface UpstreamProxyRouter {
-  router: ParentProxyRouter;
+  router: EgressRelayRouter;
   invalidate(): void;
   // What the routes for `url` would be now (uncached), for the Settings diagnostic line.
   describe(url: string): Promise<UpstreamProxyDiagnostic>;
@@ -360,7 +356,7 @@ export function createUpstreamProxyRouter(input: UpstreamProxyRouterDeps): Upstr
     return value;
   };
 
-  const lookup = async (destination: Parameters<ParentProxyRouter>[0]): Promise<UpstreamRouteAnswer> => {
+  const lookup = async (destination: Parameters<EgressRelayRouter>[0]): Promise<UpstreamRouteAnswer> => {
     for (let attempt = 0; attempt < 8; attempt += 1) {
       const started = generation;
       const result = await lookupOnce(destination);
@@ -368,8 +364,8 @@ export function createUpstreamProxyRouter(input: UpstreamProxyRouterDeps): Upstr
     }
     return answer("off", [], { reason: "the upstream proxy configuration changed too often", transient: true });
   };
-  const router: ParentProxyRouter = Object.assign(
-    async (destination: Parameters<ParentProxyRouter>[0]) => {
+  const router: EgressRelayRouter = Object.assign(
+    async (destination: Parameters<EgressRelayRouter>[0]) => {
       const result = await lookup(destination);
       return result.reason !== undefined ? { routes: result.routes, reason: result.reason } : { routes: result.routes };
     },
@@ -397,7 +393,7 @@ export async function describeUpstreamProxy(deps: UpstreamProxyRouterDeps, url: 
   const parsed = new URL(url);
   const scheme = parsed.protocol === "http:" ? "http" : "https";
   const bare = parsed.hostname.startsWith("[") ? parsed.hostname.slice(1, -1) : parsed.hostname;
-  const host = canonicalizeHost(bare) ?? bare;
+  const host = canonicalRelayHost(bare) ?? bare;
   const defaultPort = scheme === "https" ? 443 : 80;
   const port = parsed.port === "" ? defaultPort : Number(parsed.port);
   const result = await upstreamRoutesFor(deps, { host, port, scheme });

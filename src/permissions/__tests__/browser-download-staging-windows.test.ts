@@ -125,8 +125,9 @@ vi.mock("node:fs", async (original) => {
     if (!present(path)) throw enoent(path);
     return win32.normalize(path).replace(/(?<!:)[\\/]+$/, "");
   };
+  // A host scratch path under the simulated win32 can carry a trailing `\` directory suffix, which is a separator there.
   const stats = (real: typeof actual.lstatSync) => ((path: unknown, options?: { bigint?: boolean; throwIfNoEntry?: boolean }) => {
-    if (!isDrive(path)) return real(path as string, options as never);
+    if (!isDrive(path)) return real(typeof path === "string" ? path.replace(/(?<=.)\\+$/u, "") : path as string, options as never);
     if (!present(path)) {
       if (options?.throwIfNoEntry === false) return undefined;
       throw enoent(path);
@@ -135,8 +136,10 @@ vi.mock("node:fs", async (original) => {
   }) as typeof actual.lstatSync;
   const names = (path: string): string[] => [...new Set([...drive.dirs, ...drive.files]
     .filter((entry) => key(win32.dirname(entry)) === key(path) && key(entry) !== key(path)).map((entry) => win32.basename(entry)))];
+  const contents = new Map<string, string>();
   const remove = (path: string): void => {
     for (const set of [drive.dirs, drive.files]) for (const entry of [...set]) if (key(entry) === key(path)) set.delete(entry);
+    contents.delete(key(path));
   };
   const modelled = {
     existsSync: (path: unknown) => (isDrive(path) ? present(path) : actual.existsSync(path as string)),
@@ -160,6 +163,19 @@ vi.mock("node:fs", async (original) => {
     rmdirSync: ((path: unknown) => (isDrive(path) ? remove(path) : actual.rmdirSync(path as string))) as typeof actual.rmdirSync,
     unlinkSync: ((path: unknown) => (isDrive(path) ? remove(path) : actual.unlinkSync(path as string))) as typeof actual.unlinkSync,
     chmodSync: ((path: unknown, mode: unknown) => (isDrive(path) ? undefined : actual.chmodSync(path as string, mode as never))) as typeof actual.chmodSync,
+    writeFileSync: ((path: unknown, data: unknown, options?: unknown) => {
+      if (!isDrive(path)) return actual.writeFileSync(path as string, data as string, options as never);
+      if ((options as { flag?: string } | undefined)?.flag === "wx" && present(path)) throw Object.assign(new Error(`EEXIST: '${path}'`), { code: "EEXIST" });
+      drive.files.add(win32.normalize(path));
+      contents.set(key(path), String(data));
+      return undefined;
+    }) as typeof actual.writeFileSync,
+    readFileSync: ((path: unknown, options?: unknown) => {
+      if (!isDrive(path)) return actual.readFileSync(path as string, options as never);
+      const text = contents.get(key(path));
+      if (text === undefined) throw enoent(path);
+      return text;
+    }) as typeof actual.readFileSync,
   };
   // Any other call on a drive path would reach the host's filesystem as a relative path: answer it as absent instead.
   const unmodelled = Object.fromEntries(Object.entries(actual).filter(([name, value]) => typeof value === "function" && !(name in modelled))
@@ -299,6 +315,12 @@ vi.mock("../egress-host-listener.js", async (original) => ({
   openMxcEgressLease: runtime.openMxcEgressLease.mockImplementation(async () => ({ url: "http://127.0.0.1:43210", port: 43210, close: async () => {} })),
 }));
 // The container holder's OS edge: the native process entry, and the boot plan that selects the container backend.
+// The staging parent start-up establishes under the runtime root, and the floor row of the root itself, on the simulated drive off Windows.
+vi.mock("../mxc-runtime-root.js", async (original) => {
+  const { mxcStagingParentFor } = await import("../../__tests__/support/mxc-staging-parent.js");
+  const { simulatedRuntimeRoot } = await import("../../__tests__/support/simulated-win32-drive.js");
+  return { ...simulatedRuntimeRoot(await original()), mxcStagingParent: mxcStagingParentFor() };
+});
 vi.mock("../mxc-extension-process.js", () => ({ spawnMxcExtensionProcess: (...args: unknown[]) => runtime.nativeSpawn(...args) }));
 vi.mock("../sandbox-capability.js", async (original) => {
   const actual = await original<typeof import("../sandbox-capability.js")>();
@@ -427,8 +449,11 @@ const { assertWindowsGrantGrammar, pinWindowsGrantTargets } = await import("../w
 const { prepareOwnedMxcShellLaunch } = await import("../../__tests__/support/contained-shell-launch.js");
 const { existsSync, mkdirSync, mkdtempSync, rmdirSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
+const runtimeRoot = await import("../mxc-runtime-root.js");
+const { mxcStagingParentFor } = await import("../../__tests__/support/mxc-staging-parent.js");
 const { join: hostJoin } = await vi.importActual<typeof import("node:path")>("node:path");
 
+const stagingParent = mxcStagingParentFor();
 const originalCwd = process.cwd();
 
 function checkCheckoutStampTargets(paths: readonly string[], checkout = originalCwd): void {
@@ -802,6 +827,32 @@ describe("the browser download staging folder in the srt-win session floor and w
     }
   });
 
+  it("refuses a worker wrap whose protected deny target disappears before the runtime stamps it", async () => {
+    useLayout(OUTSIDE_PROFILE, { staged: false });
+    await sessionFloor();
+    const secrets = `${aveHome()}\\secrets`;
+    const egress = openEgressInvocation(TEST_WORKER_EGRESS_OWNER);
+    try {
+      const boundarySnapshot = createAveHomeBoundarySnapshot();
+      runtime.wrap.mockImplementationOnce(async (...args: unknown[]) => {
+        const { filesystem } = args[2] as { filesystem: { denyRead: DenyList; denyWrite: DenyList } };
+        expect([...spelledRows(filesystem.denyRead), ...spelledRows(filesystem.denyWrite)].map(fold)).toContain(fold(secrets));
+        rmdirSync(secrets);
+        return { argv: [srtPath, "node", "server.js"], env: {} };
+      });
+      await expect(wrapWorkerCommand("node server.js", {
+        commandId: egress.token, boundarySnapshot,
+        filesystem: boundarySnapshot.run(() => ({ denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths() })),
+      })).rejects.toThrow(/Windows deny target is absent and would be created: .*secrets/u);
+    } finally {
+      try {
+        await cleanupAsrtSandboxAfterCommand();
+      } finally {
+        egress.release();
+      }
+    }
+  });
+
   it("proves missing grant targets through the drive's existing ancestor identities", () => {
     useLayout(PROFILE_CHILD, { staged: false });
     const missing = `${PROFILE_CHILD.home}\\plugins\\cache`;
@@ -1032,10 +1083,9 @@ describe("the browser download staging folder in a container holder's native req
   beforeEach(async () => {
     runtime.containerBackend = true;
     writeDriveFile(nodePath);
-    const { registerMxcHolderReadinessProbe } = await import("../../sandbox/wrap-bundled-command.js");
-    unregister = registerMxcHolderReadinessProbe(async () => ({ installedPayloadVerified: true, baseContainerReady: true, exactRequestAccepted: true,
-      uiEnabledRuntimeStarted: true, ancestorQueriesSupported: true, standardStreamsRoundTrip: true, cleanTermination: true, ownProxySucceeded: true,
-      otherListenerRefused: true, directEgressRefused: true, forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true }));
+    const { registerMxcReleaseGateEvidence } = await import("../mxc-extension-admission.js");
+    const { MXC_RELEASE_GATE_EVIDENCE, mxcStartRecord } = await import("../../__tests__/support/mxc-supervisor.js");
+    unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
     runtime.nativeSpawn.mockImplementation(async (request: { filesystem: ContainerFilesystem }, options: { onOwned: (child: unknown) => void; beforeSpawn: () => void }) => {
       for (const row of pinWindowsPaths([...request.filesystem.readonlyPaths, ...request.filesystem.readwritePaths])) {
         expect(row).toMatchObject({ exists: true, directory: true });
@@ -1044,7 +1094,7 @@ describe("the browser download staging folder in a container holder's native req
         expect(row.fileId).not.toBeNull();
       }
       const child = { id: 42, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), completion: new Promise(() => {}),
-        dispose: vi.fn(async () => undefined), diagnostics: {} };
+        dispose: vi.fn(async () => undefined), diagnostics: {}, startEvidence: mxcStartRecord(request) };
       options.onOwned(child);
       options.beforeSpawn();
       return child;
@@ -1055,6 +1105,10 @@ describe("the browser download staging folder in a container holder's native req
     runtime.containerBackend = false;
     const { drainMxcHolderLifetimes } = await import("../mxc-holder-lifetime.js");
     await drainMxcHolderLifetimes();
+  });
+
+  it("hands production's win32 staging request the parent of this host", () => {
+    expect((runtimeRoot.mxcStagingParent as (...args: unknown[]) => string)("win32")).toBe(stagingParent());
   });
 
   /** An MCP server's container start as `McpClient.openContained` asks for it, through the real holder adapter and native-entry

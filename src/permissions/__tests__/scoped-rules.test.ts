@@ -121,9 +121,9 @@ describe("scoped permission rules", () => {
 
   it.each([
     ".git/hooks/pre-commit", ".git/config", ".husky/pre-commit",
-    ".claude/settings.json", ".claude/settings.local.json",
+    ".agents/skills/x/SKILL.md", ".agents/plugins/marketplace.json",
     ".vscode/tasks.json", ".vscode/settings.json", ".vscode/launch.json", ".idea/workspace.xml",
-    ".cargo/config.toml", ".devcontainer/devcontainer.json", ".yarn/config", ".mvn/config", ".claude/hooks/stop.sh", ".claude/commands/x.md", ".envrc", ".mcp.json",
+    ".cargo/config.toml", ".devcontainer/devcontainer.json", ".yarn/config", ".mvn/config", ".agents/hooks/stop.sh", ".agents/commands/x.md", ".envrc", ".mcp.json",
   ])("keeps broad Edit grants below the write floor for %s", async (path) => {
     await manager.ensureProjectRulesLoaded(project);
     manager.setMode("allow");
@@ -148,7 +148,7 @@ describe("scoped permission rules", () => {
     return requestAndWait;
   }
 
-  it.runIf(process.platform !== "linux").each([".GIT/hooks/pre-push", ".VSCODE/tasks.json", ".Claude/Settings.json"])(
+  it.runIf(process.platform !== "linux").each([".GIT/hooks/pre-push", ".VSCODE/tasks.json", ".Agents/Skills/x.md"])(
     "asks before writing the case-variant control file %s under Edit(**)", async (path) => {
       const requestAndWait = await writeUnderGrant("Edit(**)", path);
       expect(requestAndWait).toHaveBeenCalledOnce();

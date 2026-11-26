@@ -1,6 +1,7 @@
 // Per-command deny arrays replace the shared boot floor, even when empty; this primitive always restates it so children cannot regain secret reads. Callers provide allow paths only.
 import { spawn, type ChildProcess, type SpawnOptions, type StdioOptions } from "node:child_process";
 import { assertSrtWinSpawnIntegrity } from "./srt-win-integrity.js";
+import { resolveHostProgram } from "../shared/host-program-path.js";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -19,7 +20,6 @@ import {
   appOwnedSandboxTempRoot,
   appOwnedTerminalHandoffRoot,
   runWithSandboxWritePreflight,
-  sandboxTempEnvLaunch,
   wrapWorkerCommand,
   type SandboxTempPrincipal,
   type WrapOptions,
@@ -45,18 +45,21 @@ import {
   MxcProcessContractError,
   WorkerTransportUnsupportedError,
 } from "./mxc-extension-errors.js";
-import { createMxcExtensionAdmission, consumeMxcExtensionAdmission } from "./mxc-extension-admission.js";
-import type { MxcExtensionReadinessEvidence } from "./mxc-extension-readiness.js";
+import { admitMxcExtensionStart, assertMxcReleaseGateEvidence, createMxcExtensionAdmission, consumeMxcExtensionAdmission } from "./mxc-extension-admission.js";
+import type { ExtensionStartPresentation } from "./extension-start-consent.js";
+import type { PluginWorkerControl } from "../plugins/public-contract.js";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { registerMxcHolderLifetime } from "./mxc-holder-lifetime.js";
+import { requireMxcContainerStartRoot } from "./mxc-runtime-root.js";
+import { assertIssuedContainerHomeInPlace, isIssuedContainerHome } from "./sandbox-home-registry.js";
 import { assertMxcHolderPrivateDirectories, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
-import { buildSandboxedChildEnv, isSandboxWrapperEnvKey } from "../tools/safe-env.js";
+import { isSandboxWrapperEnvKey } from "../tools/safe-env.js";
 import {
   assertManagedChildProcessAdmissionOpen,
   spawnGatedManagedProcess,
   trackManagedChildProcess,
 } from "../main/managed-child-processes.js";
-import { shellQuote } from "../lib/shell-resolver.js";
+import { buildLauncherEnvironment, prepareSandboxTargetLaunch, type SandboxTargetLaunch } from "./launcher-environment.js";
 import { createLogger } from "../lib/logger.js";
 import { mainDir } from "../main/main-paths.js";
 import {
@@ -131,6 +134,7 @@ export interface ConfinedChildSpec {
   readonly refreshStillValid?: () => Promise<void>;
   // Called the instant the wrap succeeds, BEFORE the spawn. The wrap increments ASRT per-command state (the Linux active-sandbox count and proxy refcount). From that moment a later failure must decrement it, and only the caller knows how its own cleanup is arranged — so this is where the caller records that the wrap happened.
   readonly onWrapped?: () => void;
+  readonly onSpawn?: (child: ChildProcess) => void;
   // The child's standard streams. Defaults to `["ignore", "pipe", "pipe"]`, so a caller with no use for stdin does not hand an idle descriptor into a confined process. Both callers pipe stdin today, for different reasons: the JS plugin child is a JSON-RPC server whose pipes the host owns, and the plugin worker's stdin is the host's liveness pipe (see `worker-spawn.ts`) — it carries no bytes and closes only when the host process is gone.
   readonly stdio?: StdioOptions;
   // Windows direct children require exact cmd flags with delayed expansion off; checked tokens are not escaped. Refuse sandboxed spawns without this or a relay: the default inner shell loses stdin/env/exit status and may not wait for GUI children. Other platforms/unwrapped paths ignore this mode.
@@ -146,6 +150,8 @@ export interface ConfinedChildSpec {
   // substrate) plan of a plugin-less hook owner exempts the spawn from the extension-backend guard. A plugin holder can never
   // qualify: its egress owner names its plugin. See `isAdmittedUserHookShellRoute`.
   readonly userHookShellPlan?: HostShellExecutionPlan;
+  /** The per-start consent of an extension start nothing confines; this spawn spends it. */
+  readonly extensionStart?: Omit<ExtensionStartPresentation, "spend">;
 }
 
 // The wrap a spawn actually applied — never the `features.pluginWorkerConfinement` setting. A child spawned unwrapped is `unconfined` whatever the setting says, because "confined" is a claim about this process, and only the wrap makes it true. One value per substrate ASRT wraps with.
@@ -173,9 +179,10 @@ export interface MxcConfinedChildSpec extends Pick<ConfinedChildSpec,
   readonly filesystemOwnership: MxcExtensionFilesystemOwnership;
   readonly holder: object;
   readonly parent?: MxcConfinedChildSpawn;
-  readonly probe: (request: ContainerRequest, signal: AbortSignal) => Promise<MxcExtensionReadinessEvidence>;
+  /** The adapter's own check of the exact request, on a snapshot, before the receipt is minted. A throw refuses the start. */
+  readonly assertRequest?: (request: ContainerRequest) => void;
   /** Host adapter's negotiated mode; public worker negotiation is owned by its contract. */
-  readonly workerTransport?: "stdio-control-v1";
+  readonly workerTransport?: PluginWorkerControl;
   readonly signal?: AbortSignal;
 }
 
@@ -186,16 +193,36 @@ export interface MxcConfinedChildSpawn {
   release(): Promise<void>;
 }
 
-function assertMxcWorkerTransport(owner: WorkerEgressOwner, transport?: "stdio-control-v1"): void {
-  if (owner.role === "worker" && transport !== "stdio-control-v1") throw new WorkerTransportUnsupportedError();
+// Both declared modes run over the container's own pipes; an undeclared or socket-based worker has no carrier.
+function assertMxcWorkerTransport(owner: WorkerEgressOwner, transport?: PluginWorkerControl): void {
+  if (owner.role === "worker" && transport !== "stdio-control-v1" && transport !== "output-only-v1") throw new WorkerTransportUnsupportedError();
 }
 
 interface NativeHolderBinding {
   readonly plan: object;
   active: boolean;
   readonly children: Set<{ release(): Promise<void> }>;
+  readonly footprint: LiveHolderFootprint;
 }
 const nativeHolderBindings = new WeakMap<MxcConfinedChildSpawn, NativeHolderBinding>();
+
+/** Whether row 2 still admits descendants of this holder: false from the start of its release. */
+export function isMxcConfinedChildLive(holder: MxcConfinedChildSpawn): boolean {
+  return nativeHolderBindings.get(holder)?.active === true;
+}
+
+/** The co-holder nesting rule, applied before anything is created to a descendant's declared grants against its live
+ * parent: no declared path inside the parent's writable roots, and no declared write root above a parent path. Row 2's
+ * own check at admission stays the authority, and refuses a parent it never admitted. */
+export function assertMxcDescendantOutsideParent(parent: MxcConfinedChildSpawn, grants: { readonly read: readonly string[]; readonly write: readonly string[] }): void {
+  const binding = nativeHolderBindings.get(parent);
+  if (binding === undefined) return;
+  if (!binding.active) throw new MxcProcessContractError("Extension parent backend is no longer admitted");
+  const forms = (paths: readonly string[]): readonly string[] => [...new Set(paths.flatMap(pathForms))];
+  const declared: LiveHolderFootprint = { writable: forms(grants.write), paths: forms([...grants.read, ...grants.write]), privateDirectories: [], command: [] };
+  const refusal = writableContains(binding.footprint, declared) ?? writableContains(declared, binding.footprint);
+  if (refusal !== undefined) throw new MxcProcessContractError(refusal);
+}
 const admittedNativeHolderIdentities = new WeakSet<object>();
 
 /** Synchronous file identity of the admitted executable: canonical path, volume/file ID, size and timestamps.
@@ -255,16 +282,17 @@ export function liveMxcHolderWritableRoots(): readonly string[] {
  * outcome does not depend on admission order: a new holder's paths inside a live holder's writable root, and a live
  * holder's paths inside the new holder's writable root. Equal pinned roots are allowed, except for HOME/temp. Every
  * executable must lie outside every live writable root, this holder's own included. */
+function writableContains(writer: LiveHolderFootprint, target: LiveHolderFootprint): string | undefined {
+  for (const root of writer.writable) {
+    if (target.command.some((form) => isWindowsPathAtOrUnder(form, root))) return "Container executable lies inside a holder's writable root";
+    if (writer === target) continue;
+    if (target.privateDirectories.some((form) => isWindowsPathAtOrUnder(form, root))) return "Container HOME or temp lies at or inside another live holder's writable root";
+    if (target.paths.some((form) => strictlyUnder(form, root))) return "Container path lies inside another live holder's writable root";
+  }
+  return undefined;
+}
+
 function assertNoCoHolderNesting(self: LiveHolderFootprint): void {
-  const writableContains = (writer: LiveHolderFootprint, target: LiveHolderFootprint): string | undefined => {
-    for (const root of writer.writable) {
-      if (target.command.some((form) => isWindowsPathAtOrUnder(form, root))) return "Container executable lies inside a holder's writable root";
-      if (writer === target) continue;
-      if (target.privateDirectories.some((form) => isWindowsPathAtOrUnder(form, root))) return "Container HOME or temp lies at or inside another live holder's writable root";
-      if (target.paths.some((form) => strictlyUnder(form, root))) return "Container path lies inside another live holder's writable root";
-    }
-    return undefined;
-  };
   for (const holder of new Set([...liveHolderFootprints, self])) {
     const refusal = writableContains(holder, self) ?? (holder === self ? undefined : writableContains(self, holder));
     if (refusal !== undefined) throw new MxcProcessContractError(refusal);
@@ -285,6 +313,10 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   if (process.platform !== "win32" || plan?.selectedBackend !== "mxc" || plan.readiness !== "ready") {
     throw new MxcProcessContractError("Extension container backend is not ready");
   }
+  // Checked before filesystem admission, the egress invocation and the lease.
+  assertMxcReleaseGateEvidence();
+  // A runtime root that was not proved private refuses every container start.
+  const runtimeRoot = requireMxcContainerStartRoot();
   spec = Object.freeze({ ...spec, args: Object.freeze([...spec.args]),
     baseEnv: Object.freeze({ ...spec.baseEnv }), egressOwner: Object.freeze({ ...spec.egressOwner }),
     holderEnv: Object.freeze({ ...(spec.holderEnv ?? {}) }),
@@ -293,6 +325,11 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     filesystemOwnership: Object.freeze({ readRoots: Object.freeze([...spec.filesystemOwnership.readRoots]),
       writeRoots: Object.freeze([...spec.filesystemOwnership.writeRoots]), hostStorageRoots: Object.freeze([...spec.filesystemOwnership.hostStorageRoots]) }),
   });
+  assertIssuedContainerHomeInPlace(spec.home);
+  // No working directory inside the runtime root except the launch's own issued HOME itself, by identity.
+  if (pathForms(spec.cwd).some((form) => isWindowsPathAtOrUnder(form, runtimeRoot)) && !isIssuedContainerHome(spec.cwd, spec.home)) {
+    throw new MxcProcessContractError("Container working directory is inside the sandbox runtime root");
+  }
   const assertParent = (): void => {
     if (spec.parent === undefined) return;
     const parent = nativeHolderBindings.get(spec.parent);
@@ -307,7 +344,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyEntries(),
     floorPierces: spec.floorPierces, denyPluginsRoot: true, pinWriteRoots: true,
   }, spec.filesystemOwnership)));
-  const grants = rankMxcFilesystem(admitted.policy, existsSync);
+  const grants = rankMxcFilesystem(admitted.model, existsSync);
   assertWritesInsideEnvelope(grants, spec.filesystemOwnership);
   assertMxcHolderPrivateDirectories({ home: spec.home, temp: spec.temp, ownership: spec.filesystemOwnership,
     sharedPrivateRoots: [appOwnedSandboxHomeRoot(), appOwnedSandboxTempRoot(), appOwnedTerminalHandoffRoot()] });
@@ -329,11 +366,17 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   let lease: Awaited<ReturnType<typeof openMxcEgressLease>> | undefined;
   let native: OwnedMxcExtensionProcess | undefined;
   let binding: NativeHolderBinding | undefined;
+  let starting: Promise<unknown> | undefined;
   let settleStartup!: () => void;
   const startupSettled = new Promise<void>((resolve) => { settleStartup = resolve; });
   let lifetime: ReturnType<typeof registerMxcHolderLifetime>;
+  // The caller's abort after admission releases the holder, which disposes the native process.
+  const releaseOnAbort = (): void => {
+    void lifetime.release().catch((error: unknown) => { log.warn(`Extension cleanup failed: ${String(error)}`); });
+  };
   try {
     lifetime = registerMxcHolderLifetime(spec.label, async () => {
+      spec.signal?.removeEventListener("abort", releaseOnAbort);
       if (binding) binding.active = false;
       controller.abort();
       // Start cancellation immediately, then retain ownership until startup adopts
@@ -366,21 +409,29 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     const request = buildMxcConfinedChildRequest({ ...spec, grants, proxyUrl: lease.url });
     assertNesting();
     const admissionInput = { request, holder: spec.holder, executableIdentity: measureExecutableIdentity(spec.command), bootPlan: plan };
-    const admission = await createMxcExtensionAdmission({ ...admissionInput, probe: spec.probe, signal });
-    const child = await spawnMxcExtensionProcess(request, {
-      signal,
-      onOwned: (owned) => { native = owned; },
-      beforeSpawn: () => {
-        assertParent();
-        if (signal.aborted) throw new MxcProcessContractError("Extension start was cancelled");
-        spec.assertStillValid?.();
-        admitted.assertStillValid();
-        assertManagedChildProcessAdmissionOpen(spec.label);
-        if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before native creation");
-        assertNesting();
-        consumeMxcExtensionAdmission(admission, { ...admissionInput, executableIdentity: measureExecutableIdentity(spec.command) });
-      },
-    });
+    // A separate snapshot, so the callback cannot mutate the production request.
+    spec.assertRequest?.(structuredClone(request));
+    const admission = createMxcExtensionAdmission(admissionInput);
+    let child!: OwnedMxcExtensionProcess;
+    // Readiness is this holder's own start: admitted only once its ready frame carries the start evidence for this request.
+    // A refusal here can follow native creation; the catch below disposes it through the lifetime owner.
+    await admitMxcExtensionStart(admission, { ...admissionInput, signal, start: (startSignal) => starting = (async () => {
+      child = await spawnMxcExtensionProcess(request, {
+        signal: startSignal,
+        onOwned: (owned) => { native = owned; },
+        beforeSpawn: () => {
+          assertParent();
+          if (signal.aborted) throw new MxcProcessContractError("Extension start was cancelled");
+          spec.assertStillValid?.();
+          admitted.assertStillValid();
+          assertManagedChildProcessAdmissionOpen(spec.label);
+          if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before native creation");
+          assertNesting();
+          consumeMxcExtensionAdmission(admission, { ...admissionInput, executableIdentity: measureExecutableIdentity(spec.command) });
+        },
+      });
+      return child.startEvidence;
+    })() });
     native = child;
     spec.assertStillValid?.();
     if (signal.aborted) throw new MxcProcessContractError("Extension start was cancelled");
@@ -388,9 +439,10 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     admitted.assertStillValid();
     assertManagedChildProcessAdmissionOpen(spec.label);
     if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed during native start");
-    binding = { plan, active: true, children: new Set() };
+    binding = { plan, active: true, children: new Set(), footprint: ownRoots };
     const result: MxcConfinedChildSpawn = Object.freeze({ process: child, confinement: "windows-mxc", release: lifetime.release });
     nativeHolderBindings.set(result, binding);
+    spec.signal?.addEventListener("abort", releaseOnAbort, { once: true });
     // Revocation closes descendant admission even when termination cannot be established.
     void child.completion.then(() => result.release(), () => result.release()).catch((error: unknown) => {
       log.warn(`Extension cleanup failed: ${String(error)}`);
@@ -398,6 +450,8 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     settleStartup();
     return result;
   } catch (error) {
+    // A refusal at the readiness deadline leaves the cancelled start in flight: it settles before its handle is released.
+    await starting?.then(undefined, () => {});
     settleStartup();
     // Cleanup failure retains the closure, native owner and endpoint in the shutdown registry.
     try { await lifetime.release(); } catch (cause) {
@@ -438,7 +492,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
   const stdio = spec.stdio ?? ["ignore", "pipe", "pipe"];
   if (spec.windowsStdio === "relay") assertRelayableSpec(spec, stdio);
 
-  const { executable, args, wrappedEnv, confinement, relayRequest, egress } = await resolveSpawnLine(spec);
+  const { executable, args, env, confinement, relayRequest, egress, targetLaunch } = await resolveSpawnLine(spec);
   let child: ChildProcess;
   const assertStillValid = (): void => {
     spec.assertStillValid?.();
@@ -448,6 +502,8 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
     }
   };
   const noteSpawn = (running: ChildProcess): void => {
+    targetLaunch?.sendEnvironment(running);
+    spec.onSpawn?.(running);
     if (egress === undefined) return;
     if (process.platform !== "win32" && running.pid !== undefined) egress.noteProcessGroup(running.pid);
     running.once("exit", () => egress.release());
@@ -458,13 +514,15 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
     if (spec.refreshStillValid) await spec.refreshStillValid();
     assertStillValid();
     if (confinement !== "unconfined") assertSrtWinSpawnIntegrity(executable);
+    // An unconfined child is a plain host spawn, so a bare name resolves on PATH only, never in a current directory.
+    const program = confinement === "unconfined" ? resolveHostProgram(executable, env) : executable;
     const options: SpawnOptions = {
-      stdio,
+      stdio: targetLaunch?.withStdio(stdio) ?? stdio,
       shell: false,
       windowsHide: true,
       // A wrapped child starts its own process session, so the sandbox profile's refusal to read other processes' arguments and environment (the carried ASRT patch) covers this process group too: Seatbelt only refuses it across sessions.
       ...(egress !== undefined && process.platform !== "win32" ? { detached: true } : {}),
-      env: composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {}),
+      env,
       // On the relay the program's directory also travels in its request; srt-win itself still starts in it.
       ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
     };
@@ -472,9 +530,9 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
       if (confinement !== "linux-bubblewrap" && confinement !== "macos-sandbox") {
         throw new Error(`[confined-child] ${spec.label}: process group launch requires POSIX confinement`);
       }
-      child = await spawnGatedManagedProcess(executable, args, options, { label: spec.label, onSpawn: noteSpawn, assertStillValid });
+      child = await spawnGatedManagedProcess(program, args, options, { label: spec.label, onSpawn: noteSpawn, assertStillValid });
     } else {
-      child = spawn(executable, args, options);
+      child = spawn(program, args, options);
       noteSpawn(child);
       trackManagedChildProcess(child, { label: spec.label, killProcessGroup: egress !== undefined && process.platform !== "win32" });
     }
@@ -581,18 +639,23 @@ async function resolveSpawnLine(
 ): Promise<{
   executable: string;
   args: string[];
-  wrappedEnv: NodeJS.ProcessEnv;
+  env: NodeJS.ProcessEnv;
   confinement: SpawnConfinement;
   relayRequest?: RelayRequest;
   egress?: EgressInvocation;
+  targetLaunch?: SandboxTargetLaunch;
 }> {
-  assertExtensionStartAllowed();
+  // The inference child is host-owned code, outside the extension-start floor: never asked, no consent route. Its own gate
+  // below decides, and today it refuses without the OS sandbox. The ruled Settings switch (OQ-14, on by default, unconfined
+  // with no backend) is not built. Every other owner is an extension start.
+  assertExtensionStartAllowed(isOfflineOwner(spec) ? { hostOwned: true }
+    : { ...(spec.extensionStart ? { start: { ...spec.extensionStart, spend: true } } : {}) });
   // An offline owner's refusal is enforced by the wrap, so it never runs without one; it follows the offline-service gate, not the extension setting.
   const offline = isOfflineOwner(spec);
   if (offline ? !isOfflineProcessConfinementActive() : !isPluginWorkerConfinementActive()) {
     if (offline) throw new Error(`[confined-child] ${spec.label}: an offline process needs the OS sandbox, which is not active`);
     if (spec.requireWrap) throw new Error(`[confined-child] ${spec.label}: child requires active confinement`);
-    return { executable: spec.command, args: [...spec.args], wrappedEnv: {}, confinement: "unconfined" };
+    return { executable: spec.command, args: [...spec.args], env: { ...spec.baseEnv, ...spec.extraEnv }, confinement: "unconfined" };
   }
   const confinement = wrapConfinement(spec.label);
   // srt-win refuses to start unless the sandbox account can read the attributes of its working directory (it reports that as
@@ -603,15 +666,18 @@ async function resolveSpawnLine(
   }
   const relay = spec.windowsStdio === "relay" && confinement === "windows-srt" ? windowsRelayLaunch(spec) : undefined;
   const temp = spec.grantMode === "allow-list" ? ensureSandboxTempPrincipalDir(requireTempPrincipal(spec)) : undefined;
-  const launch = relay?.launch ?? (temp ? sandboxTempEnvLaunch(temp.dir, spec.command, spec.args) : spec);
-  const { cmdline, binShell } = buildConfinedCommandLine(launch.command, launch.args, relay?.launch ?? spec);
+  const launcherEnv = buildLauncherEnvironment();
+  const targetLaunch = confinement === "windows-srt" ? undefined
+    : prepareSandboxTargetLaunch(spec.command, spec.args, { ...spec.baseEnv, ...spec.extraEnv }, temp?.dir);
+  const { cmdline, binShell } = targetLaunch === undefined
+    ? buildWindowsConfinedCommandLine(relay?.launch ?? spec)
+    : { cmdline: targetLaunch.command, binShell: undefined };
   const egress = openEgressInvocation(spec.egressOwner);
   // The child's floor and its wrap share one Ave home boundary snapshot.
   const boundarySnapshot = createAveHomeBoundarySnapshot();
   let argv: string[];
-  let env: NodeJS.ProcessEnv;
   try {
-    ({ argv, env } = await runWithSandboxWritePreflight(undefined, () => wrapWorkerCommand(cmdline, {
+    ({ argv } = await runWithSandboxWritePreflight(undefined, () => wrapWorkerCommand(cmdline, {
       filesystem: boundarySnapshot.run(() => buildFilesystemConfinement(spec, temp)),
       boundarySnapshot,
       ...(binShell !== undefined ? { binShell } : {}),
@@ -636,9 +702,10 @@ async function resolveSpawnLine(
   return {
     executable,
     args,
-    wrappedEnv: env,
+    env: launcherEnv,
     confinement,
     egress,
+    ...(targetLaunch !== undefined ? { targetLaunch } : {}),
     ...(relay !== undefined ? { relayRequest: relay.request } : {}),
   };
 }
@@ -688,28 +755,22 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
   };
 }
 
-// Assemble the command line ASRT will run. Every token is quoted so a path containing spaces or shell metacharacters cannot mis-split: ASRT runs this through a shell on both platforms.
-function buildConfinedCommandLine(
-  command: string,
-  args: readonly string[],
-  spec: Pick<ConfinedChildSpec, "label" | "windowsShell" | "windowsCommandLineEnv">,
+function buildWindowsConfinedCommandLine(
+  spec: Pick<ConfinedChildSpec, "command" | "args" | "label" | "windowsShell" | "windowsCommandLineEnv">,
 ): { readonly cmdline: string; readonly binShell?: WrapOptions["binShell"] } {
   if (spec.windowsCommandLineEnv !== undefined && spec.windowsShell !== "cmd") {
     throw new Error(`[confined-child] ${spec.label}: windowsCommandLineEnv needs windowsShell "cmd"`);
   }
-  if (process.platform === "win32") {
-    if (spec.windowsShell !== "cmd") {
-      throw new Error(
-        `[confined-child] ${spec.label}: a Windows sandboxed spawn names windowsStdio "relay" or windowsShell "cmd"; `
-          + "srt-win's PowerShell launch delivers no stdin, no environment and no exit code",
-      );
-    }
-    return {
-      cmdline: buildCmdCommandLine(spec.label, command, args, spec.windowsCommandLineEnv ?? {}),
-      binShell: { exe: win32SystemBinary("cmd"), args: ["/d", "/v:off", "/s", "/c"] },
-    };
+  if (spec.windowsShell !== "cmd") {
+    throw new Error(
+      `[confined-child] ${spec.label}: a Windows sandboxed spawn names windowsStdio "relay" or windowsShell "cmd"; `
+        + "srt-win's PowerShell launch delivers no stdin, no environment and no exit code",
+    );
   }
-  return { cmdline: [command, ...args].map((part) => shellQuote(part)).join(" ") };
+  return {
+    cmdline: buildCmdCommandLine(spec.label, spec.command, spec.args, spec.windowsCommandLineEnv ?? {}),
+    binShell: { exe: win32SystemBinary("cmd"), args: ["/d", "/v:off", "/s", "/c"] },
+  };
 }
 
 // `cmd.exe` limits its command line to 8191 characters; this leaves room for nothing else to be added to it.
@@ -753,21 +814,4 @@ function assertCmdSafe(label: string, token: string): void {
         + "move the plugin, or the app, to a path without it",
     );
   }
-}
-
-// Compose the child's environment. Only the variables ASRT actually CHANGED are overlaid. Taking its whole composed environment would drag in this process's own values under the guise of proxy configuration, so it is diffed against a baseline composed from `process.env` and only the differences carry over.
-function composeConfinedEnv(
-  baseEnv: NodeJS.ProcessEnv,
-  wrappedEnv: NodeJS.ProcessEnv,
-  extraEnv: Record<string, string>,
-): NodeJS.ProcessEnv {
-  const asrtComposed: Record<string, string> = buildSandboxedChildEnv(wrappedEnv);
-  const safeBaseline: Record<string, string> = buildSandboxedChildEnv(process.env);
-  const proxyOverlay: Record<string, string> = {};
-  for (const [key, value] of Object.entries(asrtComposed)) {
-    if (value === undefined) continue;
-    if (safeBaseline[key] === value) continue;
-    proxyOverlay[key] = value;
-  }
-  return { ...baseEnv, ...proxyOverlay, ...extraEnv };
 }

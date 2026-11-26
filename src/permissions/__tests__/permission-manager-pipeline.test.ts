@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PermissionManager, isIssuedShellAllowRuleDecision, type PermissionCheckContext, type ReviewerDispatchResult } from "../permission-manager.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
-import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
+import { buildHostShellExecutionPlan, HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL } from "../host-shell-execution-plan.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import { JudgeContractError } from "../judge/judge-contract.js";
 import { issueHostNetworkSubject } from "../host-network-subject.js";
@@ -178,6 +178,20 @@ describe("permission manager pipeline integration", () => {
     });
     expect(result).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
     expect(isIssuedShellAllowRuleDecision(result, manager)).toBe(true);
+  });
+
+  // No container route's plan carries a mount list, so none can prove the host Ave home stays unmounted: the denial holds there too.
+  it("keeps the helper-unavailable denial on a disposable container route, which carries no mount evidence", async () => {
+    manager.setMode("allow");
+    await manager.addRulePersist(withCurrentShellRuleVersion({ pattern: "Bash(echo *)", action: "allow" }), { kind: "user" });
+    const result = manager.checkDetailed("bash", "builtin", "shell", undefined, {
+      ruleSubject: { kind: "shell", dialect: "bash", command: "echo ready", cwd: directory },
+      disposableSubstrate: { authority: "workload-broker", id: "a".repeat(64) },
+      shellExecution: { runsSandboxed: true, pathPolicyRelaxations: [] },
+      hostShellExecutionPlan: buildHostShellExecutionPlan({ platform: process.platform, requestedSandbox: true, unconfinedShellDenied: true,
+        activeCapability: { kind: "none", confidence: "verified", platform: process.platform, reason: "fixture" } }),
+    });
+    expect(result).toMatchObject({ decision: "deny", reason: HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL.reason });
   });
 
   it("routes headless auto through review and denies a high fallback without retry", () => {

@@ -167,7 +167,25 @@ bun run check:plugin-host-protocol-schema
 bun run test -- src/permissions/__tests__/allowed-directories.test.ts src/permissions/__tests__/sensitive-paths-canonicalize.test.ts src/shared/__tests__/ave-home.test.ts src/lib/__tests__/atomic-file.test.ts src/lib/__tests__/with-file-lock.test.ts src/tools/__tests__/bash-dialect.test.ts src/tools/__tests__/shell-windows-partial-plan-b.test.ts src/permissions/__tests__/windows-sandbox-logic.test.ts src/permissions/__tests__/asrt-windows-support.test.ts src/main/__tests__/windows-job-launcher.test.ts
 ```
 
-The CI job is the full list. It also builds the native helpers (`scripts/build-windows-job.ps1`, then `node scripts/test-windows-job.mjs` and `node scripts/test-windows-path-kind.mjs`).
+When CI requires native platform checks, Windows runs every collected Vitest suite across six shards of two workers each. The build job plans the split from `config/windows-test-times.json`: Windows samples first, then Mac durations scaled to Windows, then a 1 s default. Each suite lands in exactly one shard, so a new suite needs no list edit. Each shard re-derives the collected suites from its own checkout and refuses a plan that omits, repeats or adds one.
+
+One preparation job supplies the helpers to all six shards. It reuses only native helper build outputs when the tracked inputs, toolchain, runner image, and installed pinned patch and upstream binaries match. The job verifies the cached digests and binary identities before use, and rebuilds if verification fails. Every run builds and verifies both payload packages and runs the native tests.
+
+**Trust anchor.** The helper cache is authentic because of who can write it, not because of the digests:
+
+- Only default-branch runs (push, schedule or dispatch) save the entry.
+- Pull requests may restore main's entries but never save one.
+- Tag builds neither restore nor save it.
+- The digests travel inside the cache entry, so they catch damage or a mismatched entry. They cannot prove where the entry came from.
+
+The preparation job trusts its own workflow steps, because code running in any of those steps already controls the job. On a hit, the verifier installs the checked bytes. The guard in `.github/scripts/check-windows-workflow.mjs` requires every step that executes a restored or cached binary to follow the job's trust point:
+
+- In the preparation job, the trust point rehashes the launcher and helpers at their installed paths against the same sealed manifest. A mismatch stops that step before launch.
+- In each shard, the trust point installs the same run's checked artifacts.
+
+The `node_modules` cache can also carry a sandbox helper saved after an earlier rebuild. So the sandbox helper runs only after the job has replaced that copy and the same step has checked its integrity.
+
+Publication requires the producer's preparation steps to succeed through containment cleanup and the final digest check. A cancellation after the verified upload leaves that entry eligible for reuse.
 
 Use `bun run test`, not `bun test`. The suite runs under Vitest through `scripts/run-vitest-under-electron.mjs`.
 

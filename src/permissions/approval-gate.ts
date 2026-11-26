@@ -1,6 +1,6 @@
 import { HostExitAbortError, isHostExitAbort } from "../shared/host-exit-abort.js";
 import { browserOrigin } from "../shared/browser-tools.js";
-import { isBrowserSiteChoice, type BrowserSiteChoice } from "../shared/permissions-events.js";
+import { extensionStartApprovalRows, isBrowserSiteChoice, isExtensionStartChoices, type BrowserSiteChoice, type ExtensionStartChoice } from "../shared/permissions-events.js";
 import { aveHome, isAveHomeConfigurationRefused } from "../shared/ave-home.js";
 import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
@@ -27,8 +27,9 @@ import { matchesApprovalRuleBasis, type ApprovalRuleBasis } from "./approval-rul
 import { NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { isIssuedToolApprovalWait, withToolApprovalWait, type ToolApprovalWait } from "../tools/executor-ceiling.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
+import { runSessionOf } from "./run-grants.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
-import { isUserOwnedSurface, isUserOwnedSurfaceChoice, resolveUserApprovalVerdict, type ApprovalMemory, type UserOwnedSurface, type UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
+import { isSessionOnlyApprovalMemoryScope, isUserOwnedSurface, isUserOwnedSurfaceChoice, resolveUserApprovalVerdict, type ApprovalMemory, type UserOwnedSurface, type UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
 import { buildShellRuleApproval, type HostTerminalApprovalBinding } from "./rules/shell-rule-approval.js";
 import type { ShellRuleApproval } from "../shared/permissions-events.js";
 import { captureApprovalWorkingDirectory } from "./user-approval-store.js";
@@ -52,6 +53,7 @@ import {
   requiresUnsandboxedShellAsk,
   type HostShellExecutionPlanAuditProjection,
 } from "./host-shell-execution-plan.js";
+import { isCurrentIssuedHostShellExecutionPlan } from "./host-shell-execution-plan-issuance.js";
 import type { FloorSessionGrant } from "./permission-manager.js";
 import { errorMessage } from "../shared/error-message.js";
 import { resolve as pathResolve } from "node:path";
@@ -81,6 +83,18 @@ function maskArgsForDisplay(value: unknown, detections: Set<string>): unknown {
   return value;
 }
 
+// An extension-start card's row ids are host-minted keys, not content: the answers name them (`extensionStartChoices`,
+// `extensionStartRow`) and the gate checks those against the ids it offered. A random id can read as a phone or card number,
+// so masking one would leave the desk card naming a row the gate never offered, and the desk answer would be refused.
+// The rest of each row (its label) is masked as usual. `assertExtensionStartRequestShape` has already checked the rows.
+function maskExtensionStartArgsForDisplay(args: unknown, detections: Set<string>): unknown {
+  const { starts, ...rest } = args as { starts: readonly Readonly<Record<string, unknown>>[] };
+  return {
+    ...(maskArgsForDisplay(rest, detections) as Record<string, unknown>),
+    starts: starts.map(({ id, ...row }) => ({ id, ...(maskArgsForDisplay(row, detections) as Record<string, unknown>) })),
+  };
+}
+
 function maskApprovalPurposeForDisplay(
   purpose: ApprovalPurposeSuggestion,
   detections: Set<string>,
@@ -92,7 +106,7 @@ function maskApprovalPurposeForDisplay(
 
 // Permission policy.5 — discriminated kinds for the approval dock. Default `"tool"` is the normal Layer 3 ask; `"out-of-allowed-dir"` is the Layer 1 directory-confirm variant; and `"agent-action"` is a plugin-origin host approval request that does not correspond to a host tool execution.
 type ApprovalKind =
-  "tool" | "out-of-allowed-dir" | "agent-action" | "egress-host";
+  "tool" | "out-of-allowed-dir" | "agent-action" | "egress-host" | "extension-start";
 
 // The egress-host ask's payload (`kind: "egress-host"`): a sandboxed shell call or workspace terminal tab wants to reach `host:port`, and the person picks how long an allow lasts from `scopes`. Built by `egress-approval.ts`.
 interface EgressHostApproval {
@@ -175,6 +189,10 @@ export interface ApprovalRequest {
   toolUseId?: string;
   // Display-only title derived from host-tracked child provenance.
   requestingAgentTitle?: string;
+  // Host-derived from the run engine's membership record, present iff a template run's stage session asked: the stage whose approval lane
+  // draws this card, and whether "Allow for this run" may be recorded for it (an attended run, and a card that may be remembered for
+  // its session). Display-only: the record handler checks the membership and the request again. Never an approval capability.
+  runStage?: { readonly stageId: string; readonly stageName: string; readonly runAllowOffered: boolean };
   id: string;
   // Display-only: the code of the pipeline decision that asked, so the card can word its reason in the user's language instead of the host's English `reason`. A user-owned-surface card gets its surface decision's code; a card about a file target gets one of `APPROVAL_REASON_CODES`, the tree stage that raised it. Never an approval capability, and never read back from a decision.
   reasonCode?: string;
@@ -231,6 +249,8 @@ export interface ApprovalRequest {
   };
   // Present iff `kind === "egress-host"`.
   egressHost?: EgressHostApproval;
+  // Display-only, on an `extension-start` card: the rows another surface already answered, by row id. The host keeps those answers whatever this card sends for them; the card shows them answered and locked. The card is sent again, under the same id, each time a row is answered.
+  extensionStartAnswered?: Readonly<Record<string, ExtensionStartChoice>>;
   // Permission policy.5 — trust origin classification (user-keyboard / plugin-emitted / app-emitted / llm-tool-arg / file-content). Audited; renderer may surface badge.
   trustOrigin?: string;
   // OS-level execution sandbox SOT, surfaced to the approval dock so the user can see whether the tool will run under the ASRT OS sandbox (macOS Seatbelt / Linux bwrap) or with no isolation. Captured at request build time by the executor (and by ApprovalGate for non-tool approvals) from detectSandboxCapability; immutable thereafter. Typed as the canonical SandboxCapability (not a structural mirror) to keep the `platform: NodeJS.Platform` enum tight. Mirror declarations in the renderer type SHOULD use the same shape.
@@ -291,7 +311,7 @@ export function signApprovalRequest(
 // Input accepted by ApprovalGate.requestAndWait before the host seals nonce/HMAC and derives the renderer-facing `requireExplicit` field. `forceExplicit` is deliberately one-way: callers can only make a prompt stricter than the current policy, never relax it. It is used by execution routes whose substrate requires per-invocation, affirmative consent.
 export type ApprovalRequestInput = Omit<
   ApprovalRequest,
-  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused" | "requestingAgentTitle" | "readjudication"
+  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused" | "requestingAgentTitle" | "runStage" | "readjudication"
 > & {
   // Host-only: the tool call this card asks about. Its accepted answer is bound to it and never sent to the renderer.
   readonly invocationToolUseId?: string;
@@ -315,6 +335,7 @@ export type ApprovalRequestInput = Omit<
   readonly hostShellExecutionPermitBinding?: HostShellExecutionPermitBinding;
   // Host-only: the forced card answers the sandbox-unavailable floor alone (`offersFloorSessionAllow`), so later shells and hooks of this conversation may also pass that floor.
   readonly floorSessionAllowed?: true;
+  readonly floorSessionPolicyEpoch?: string;
   // Host-only: this request types one command into the user's own host terminal. Only the desktop window answers it (no remote, plugin,
   // parked observer or away answer), it is never remembered and offers no rule saves. Set by the
   // executor from the sealed terminal target, never by a renderer.
@@ -355,6 +376,10 @@ export interface ApprovalDecision {
   userOwnedSurfaceChoice?: UserOwnedSurfaceChoice;
   // For an `egress-host` ask answered `allow-once`: how long the allow lasts, one of the request's `egressHost.scopes`. Required there, ignored everywhere else; a missing or unoffered scope makes the answer a deny.
   egressScope?: EgressGrantScope;
+  // For an `extension-start` ask: the person's own yes or no for each start on the card, by row id. The host accepts it only when it covers exactly the rows the card offered; an allow with no map is honoured only on a one-start card.
+  extensionStartChoices?: Readonly<Record<string, ExtensionStartChoice>>;
+  // For an `extension-start` ask, from a surface that shows one start at a time: the one row this answer is for. `choice` is that start's yes (allow-once) or no (deny-once). The first answer a row gets stands; the card settles when every row has one.
+  extensionStartRow?: string;
 
   rememberPattern?: string;
   // One-shot structured content captured by renderer-only approval surfaces. Currently used for MCP `elicitation/create` form-mode requests; never persisted in the user-approval memory store.
@@ -527,6 +552,41 @@ function assertEgressHostRequestShape(req: ApprovalRequestInput): void {
   }
 }
 
+// An `extension-start` request lists its starts in the signed `args`, offers exactly allow-once and deny-once, always needs a person, belongs to a conversation and is never recorded.
+function assertExtensionStartRequestShape(req: ApprovalRequestInput): void {
+  if (req.kind !== "extension-start") return;
+  if (extensionStartApprovalRows(req.args) === undefined) {
+    throw new Error("approval: an extension-start request lists at least one start, each with its own row id");
+  }
+  const choices = req.allowedChoices ?? [];
+  if (choices.length !== 2 || !choices.includes("allow-once") || !choices.includes("deny-once")) {
+    throw new Error("approval: an extension-start request offers exactly allow-once and deny-once");
+  }
+  if (req.durableApprovalRecordAllowed !== false || req.forceExplicit !== true || !req.sessionId) {
+    throw new Error("approval: an extension-start request is asked of a person in its conversation and never recorded");
+  }
+}
+
+// What an answer to an `extension-start` card may be. A map must answer exactly the offered rows and agree with the choice.
+// With no map, a deny refuses every start and an allow is an answer only on a one-start card. "desktop-only": a surface other
+// than the desktop said one allow to several starts; that is no start's answer, so the card stays open. Such a surface answers
+// one start at a time instead (`extensionStartRow`).
+function extensionStartAnswerProblem(
+  offered: readonly string[], decision: ApprovalDecision, nativeRenderer: boolean, rowsAlreadyAnswered: number,
+): string | "desktop-only" | undefined {
+  const choices: unknown = decision.extensionStartChoices;
+  if (choices === undefined) {
+    // A lone allow speaks for a start only when that start is the whole card and nobody has answered it.
+    if (decision.choice === "deny-once" || (offered.length === 1 && rowsAlreadyAnswered === 0)) return undefined;
+    return nativeRenderer ? "extension start answers missing" : "desktop-only";
+  }
+  if (!isExtensionStartChoices(choices)) return "extension start answers malformed";
+  const answered = Object.keys(choices);
+  if (answered.length !== offered.length || !offered.every((id) => Object.hasOwn(choices, id))) return "extension start answers do not match the starts offered";
+  if ((decision.choice === "allow-once") !== Object.values(choices).includes("yes")) return "extension start answers disagree with the choice";
+  return undefined;
+}
+
 function markHostApprovalRejectedDecision(
   decision: ApprovalDecision,
 ): ApprovalDecision {
@@ -673,6 +733,10 @@ interface PendingEntry {
     candidatePath: string;
     suggestedParent: string | null;
   };
+  // The row ids an `extension-start` ask offered, kept host-side for the answer check.
+  extensionStartIds?: readonly string[];
+  // Rows a one-start-at-a-time surface has already answered. The first answer a row gets stands.
+  extensionStartRowAnswers?: Map<string, ExtensionStartChoice>;
   // The scopes an `egress-host` ask offered, kept host-side for the answer check.
   egressScopes?: readonly EgressGrantScope[];
   // A workspace terminal tab's egress ask: only the window that owns the tab may fetch or answer it (`listPendingRendererRequests`, `resolveFromDesktopRenderer`).
@@ -692,9 +756,12 @@ interface PendingEntry {
   // Host-owned permission to create a user-approval-store record.
   durableApprovalRecordAllowed: boolean;
   persistentAllowAllowed: boolean;
+  // The stage a template run's session asked for and whether the host offered "Allow for this run" on the card; the record handlers
+  // require the offer.
+  runStage: ApprovalRequest["runStage"];
   shellRule?: ShellRuleApproval;
   // Host-only: the floor a "This session" save on this card answers (never sent to the renderer).
-  floorSessionGrant?: FloorSessionGrant;
+  floorSessionGrant?: FloorSessionGrant & { policyEpoch: string; plan: NonNullable<ApprovalRequestInput["hostShellExecutionPlan"]> };
   hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
   verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   invocationToolUseId?: string;
@@ -722,6 +789,8 @@ export interface PendingApprovalView {
   readonly allowedChoices?: readonly ApprovalChoice[];
   // Conversation attribution, as on the request; never renderer-supplied.
   readonly sessionId?: string;
+  // An `extension-start` ask's row ids, in card order, so a surface that shows one start at a time can answer each (`ApprovalDecision.extensionStartRow`). Opaque: no start name or key.
+  readonly extensionStartRows?: readonly string[];
   // Echo material ApprovalGate.resolve verifies; host-internal only.
   readonly nonce: string;
   readonly hmac: string;
@@ -921,7 +990,7 @@ export class ApprovalGate {
     transition.saving = false;
     const before = Number(saved.before);
     if (!Number.isSafeInteger(before) || before < 0 || after !== String(before + 1) ||
-        !["session", "persistent", "global"].includes(scope)) transition.valid = false;
+        !["session", "run", "persistent", "global"].includes(scope)) transition.valid = false;
     transition.to = after;
     transition.scope = scope;
   }
@@ -960,7 +1029,7 @@ export class ApprovalGate {
   }
 
   /** Complete only a successful, validated rule save; any other mutation breaks the chain. */
-  completeApprovalRuleSave(token: object | undefined, after: string, scope?: "session" | "project" | "always"): void {
+  completeApprovalRuleSave(token: object | undefined, after: string, scope?: "session" | "run" | "project" | "always"): void {
     if (!token) return;
     const saved = this.ruleSaveTokens.get(token);
     this.ruleSaveTokens.delete(token);
@@ -1162,6 +1231,7 @@ export class ApprovalGate {
         requestId: req.id, choice: "deny-once", ...(rememberPattern === undefined ? {} : { rememberPattern }),
       });
     assertEgressHostRequestShape(req);
+    assertExtensionStartRequestShape(req);
     if (req.browserSite !== undefined && (browserOrigin(req.browserSite) !== req.browserSite || !req.sessionId || req.source !== "builtin" || req.forceExplicit !== true || req.durableApprovalRecordAllowed !== false || req.evaluationContext?.headless === true)) {
       return rejectBeforeAnswer();
     }
@@ -1173,6 +1243,7 @@ export class ApprovalGate {
       durableApprovalRecordAllowed: requestedDurableApprovalRecordAllowed,
       hostShellExecutionPermitBinding,
       floorSessionAllowed: requestedFloorSessionAllowed,
+      floorSessionPolicyEpoch,
       hostTerminal,
       hostTerminalAfterExternalContent: _requestedAfterExternalContent,
       homeFolderRefused: _requestedHomeFolderRefused,
@@ -1188,6 +1259,7 @@ export class ApprovalGate {
       onSettled,
       childProvenance,
       requestingAgentTitle: _requestedAgentTitle,
+      runStage: _requestedRunStage,
       reviewerOutcome,
       reviewerApprovalBasis,
       approvalRuleBasis,
@@ -1197,7 +1269,7 @@ export class ApprovalGate {
       hostShellExecutionPlan,
       invocationToolUseId,
       ...request
-    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown; requestingAgentTitle?: unknown; readjudication?: unknown };
+    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown; requestingAgentTitle?: unknown; runStage?: unknown; readjudication?: unknown };
     if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
       return rejectBeforeAnswer("Approval execution budget was not issued by the host");
     }
@@ -1255,13 +1327,18 @@ export class ApprovalGate {
       req.source === "builtin" && (req.toolName === "bash" || req.toolName === "powershell" || hostTerminal !== undefined) && req.toolCategory === "shell" &&
       req.category === "tool" && (req.kind === undefined || req.kind === "tool");
     const hasHostShellApprovalContract = hasOneShotHostShellApprovalContract || hasShellRuleApprovalContract;
-    // The sandbox-unavailable floor card keeps its one-shot answer and permit binding; its only lasting choice is this conversation's later shells and hooks.
-    const floorSessionGrant: FloorSessionGrant | undefined = requestedFloorSessionAllowed === true && hasOneShotHostShellApprovalContract &&
-      hostShellExecutionPermitBinding !== undefined && requiresUnsandboxedShellAsk(hostShellExecutionPermitBinding.plan) &&
-      hostTerminal === undefined && typeof req.sessionId === "string" && req.sessionId.length > 0 && req.source === "builtin" &&
-      (req.toolName === "bash" || req.toolName === "powershell") && req.toolCategory === "shell" &&
+    // A terminal types into an existing shell, so its sealed host route carries a plan without a spawn permit binding.
+    const terminalFloorPlan = hostTerminal !== undefined && hostShellExecutionPlan?.executionRequest === "host" &&
+      isCurrentIssuedHostShellExecutionPlan(hostShellExecutionPlan) ? hostShellExecutionPlan : undefined;
+    const floorSessionPlan = hostTerminal !== undefined
+      ? terminalFloorPlan
+      : req.toolName === "bash" || req.toolName === "powershell" ? hostShellExecutionPermitBinding?.plan : undefined;
+    const floorSessionGrant: PendingEntry["floorSessionGrant"] = requestedFloorSessionAllowed === true && hasOneShotHostShellApprovalContract &&
+      floorSessionPolicyEpoch !== undefined && floorSessionPlan !== undefined &&
+      requiresUnsandboxedShellAsk(floorSessionPlan) &&
+      typeof req.sessionId === "string" && req.sessionId.length > 0 && req.source === "builtin" && req.toolCategory === "shell" &&
       req.category === "tool" && (req.kind === undefined || req.kind === "tool")
-      ? Object.freeze({ code: "sandbox-unavailable" as const })
+      ? Object.freeze({ code: "sandbox-unavailable" as const, policyEpoch: floorSessionPolicyEpoch, plan: floorSessionPlan })
       : undefined;
     if (
       hostShellExecutionPermitBinding !== undefined &&
@@ -1365,11 +1442,31 @@ export class ApprovalGate {
       }, req.sessionId, verifiedShellCommand, hostShellExecutionPlan)
       : undefined;
     // The floor's session allow covers this conversation's later shells and hooks on this floor, saved by the host from the pending card: no rule text, no project or global rule.
-    const shellRule = builtShellRule !== undefined && floorSessionGrant !== undefined
-      ? { ...builtShellRule, exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true as const }
+    const terminalFloorContext = hostTerminal !== undefined && floorSessionGrant !== undefined ? {
+      dialect: "bash" as const,
+      denyRule: null,
+      denyAllowed: false,
+      projectCwd: hostTerminal.physicalCwd,
+      projectRoot: hostTerminal.physicalCwd,
+    } : undefined;
+    const floorRuleContext = builtShellRule ?? terminalFloorContext;
+    const shellRule: ShellRuleApproval | undefined = floorRuleContext !== undefined && floorSessionGrant !== undefined
+      ? { ...floorRuleContext, exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true }
       : builtShellRule;
+    // One approval lane per stage session: the card names the stage of the run member that asked. "Allow for this run" is offered where
+    // this card's session allow is: a shell card's session rule, any other card's remembered exact allow. A scope that only ever lives
+    // for its own session (a browser or terminal target) and a schedule-started run offer none.
+    const runMember = runSessionOf(req.sessionId);
+    const sessionOnlyMemory = req.approvalMemory?.kind === "key" && isSessionOnlyApprovalMemoryScope(req.approvalMemory.scope);
+    const runStage = runMember === undefined ? undefined : Object.freeze({
+      stageId: runMember.stageId,
+      stageName: maskSensitiveData(runMember.stageName).masked.slice(0, 120),
+      runAllowOffered: runMember.lane === "attended" && userOwnedSurface === undefined && hostTerminal === undefined &&
+        (shellRule !== undefined ? shellRule.sessionAllowed && shellRule.floorSessionOnly !== true : persistentAllowAllowed && !sessionOnlyMemory),
+    });
     const fullReq: ApprovalRequest = {
       ...request,
+      ...(runStage === undefined ? {} : { runStage }),
       ...(readjudication === undefined ? {} : { args: JSON.parse(exactCanonicalStringify(req.args)) }),
       ...(childProvenance === undefined ? {} : { requestingAgentTitle: maskSensitiveData(childProvenance.childTitle).masked.slice(0, 240) }),
       ...(hostTerminal?.afterExternalContent === true ? { hostTerminalAfterExternalContent: true as const } : {}),
@@ -1606,6 +1703,9 @@ export class ApprovalGate {
                 suggestedParent: fullReq.outOfAllowedDir.suggestedParent,
               },
             }),
+        ...(fullReq.kind === "extension-start"
+          ? { extensionStartIds: (extensionStartApprovalRows(fullReq.args) ?? []).map((row) => row.id) }
+          : {}),
         ...(fullReq.egressHost === undefined
           ? {}
           : {
@@ -1625,6 +1725,7 @@ export class ApprovalGate {
         approvalMemory: fullReq.approvalMemory,
         durableApprovalRecordAllowed,
         persistentAllowAllowed,
+        runStage,
         shellRule,
         ...(floorSessionGrant !== undefined && shellRule?.sessionAllowed === true ? { floorSessionGrant } : {}),
         verifiedShellCommand,
@@ -1652,6 +1753,7 @@ export class ApprovalGate {
         ...(fullReq.source === undefined ? {} : { source: fullReq.source }),
         category: fullReq.category,
         ...(fullReq.kind === undefined ? {} : { kind: fullReq.kind }),
+        ...(fullReq.kind === "extension-start" ? { extensionStartRows: (extensionStartApprovalRows(fullReq.args) ?? []).map((row) => row.id) } : {}),
         ...(fullReq.allowedChoices === undefined
           ? {}
           : { allowedChoices: fullReq.allowedChoices }),
@@ -1669,7 +1771,9 @@ export class ApprovalGate {
       try {
         maskedSignedReq = {
               ...signedReq,
-              args: maskArgsForDisplay(fullReq.args, dlpHits),
+              args: fullReq.kind === "extension-start"
+                ? maskExtensionStartArgsForDisplay(fullReq.args, dlpHits)
+                : maskArgsForDisplay(fullReq.args, dlpHits),
               ...(signedReq.approvalPurpose
                 ? {
                     approvalPurpose: maskApprovalPurposeForDisplay(
@@ -1857,6 +1961,19 @@ export class ApprovalGate {
     return false;
   }
 
+  // Send the desk its extension-start card again with the rows another surface answered. Same id, same signed contents: the
+  // window that holds the card replaces it in place. A window that loads later gets this copy too (`listPendingRendererRequests`).
+  private showExtensionStartRowsAnswered(entry: PendingEntry, answered: ReadonlyMap<string, ExtensionStartChoice>): void {
+    if (entry.rendererRequest === undefined) return;
+    entry.rendererRequest = { ...entry.rendererRequest, extensionStartAnswered: Object.fromEntries(answered) };
+    try {
+      const surface = this.liveSurfaceFor(entry.sessionId);
+      if (surface && !surface.isDestroyed()) surface.send(IPC_APPROVAL_REQUEST, entry.rendererRequest);
+    } catch {
+      // The window went away: the host still holds the answers, and the next window is handed the card with them.
+    }
+  }
+
   private resolveDecision(
     requestId: string,
     decision: ApprovalDecision,
@@ -1983,6 +2100,100 @@ export class ApprovalGate {
         return forcedDecision;
       }
     }
+    // One start's answer from a surface that shows one start at a time. An answer that is not for an open row of this card is
+    // refused on its own: the card and the rows already answered stay as they are.
+    if (entry.kind === "extension-start" && decision.extensionStartRow !== undefined) {
+      const offered = entry.extensionStartIds ?? [];
+      const answered = entry.extensionStartRowAnswers ?? new Map<string, ExtensionStartChoice>();
+      const row = decision.extensionStartRow;
+      const refusal = typeof row !== "string" || !offered.includes(row) ? "row-not-offered"
+        : answered.has(row) ? "row-already-answered"
+          : decision.extensionStartChoices !== undefined ? "row-with-card-answers" : undefined;
+      if (refusal !== undefined) {
+        this.auditLogger?.log({
+          timestamp: new Date().toISOString(),
+          sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+          type: "approval",
+          output: `[approval:extension-start-row-rejected] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} reason=${refusal} -> response-rejected`,
+        });
+        return null;
+      }
+      answered.set(row, decision.choice === "allow-once" ? "yes" : "no");
+      entry.extensionStartRowAnswers = answered;
+      this.auditLogger?.log({
+        timestamp: new Date().toISOString(),
+        sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:extension-start-row] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} row=${offered.indexOf(row) + 1}/${offered.length} choice=${decision.choice}`,
+      });
+      // Still waiting on other rows: this row is answered, the card is not. The desk card is sent again so it shows the row answered.
+      if (answered.size < offered.length) {
+        this.showExtensionStartRowsAnswered(entry, answered);
+        return { requestId, choice: decision.choice };
+      }
+      // Every row has its answer: the card settles with them, through the same checks as an answer for the whole card.
+      entry.extensionStartRowAnswers = undefined;
+      const choices = Object.fromEntries(answered);
+      return this.resolveDecision(requestId, {
+        requestId, choice: Object.values(choices).includes("yes") ? "allow-once" : "deny-once", extensionStartChoices: choices,
+        ...(decision.nonce === undefined ? {} : { nonce: decision.nonce }), ...(decision.hmac === undefined ? {} : { hmac: decision.hmac }),
+      }, answeredBy, nativeRenderer, responder, identityRefreshed);
+    }
+    // Each start on an extension-start card has its own answer. A yes is never inferred for a start the answer does not name.
+    if (entry.kind === "extension-start" || decision.extensionStartChoices !== undefined) {
+      const problem = entry.kind === "extension-start"
+        ? extensionStartAnswerProblem(entry.extensionStartIds ?? [], decision, nativeRenderer, entry.extensionStartRowAnswers?.size ?? 0)
+        : "extension start answers on another request";
+      if (problem === "desktop-only") {
+        this.auditLogger?.log({
+          timestamp: new Date().toISOString(),
+          sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+          type: "approval",
+          output: `[approval:native-desktop-required] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} -> response-rejected`,
+        });
+        return null;
+      }
+      if (problem !== undefined) {
+        clearTimeout(entry.timer);
+        this.pending.delete(requestId);
+        this.auditLogger?.log({
+          timestamp: new Date().toISOString(),
+          sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+          type: "approval",
+          output: `[approval:extension-start-answers-rejected] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${decision.choice} → deny-once (forced)`,
+        });
+        const forcedDecision: ApprovalDecision = { requestId, choice: "deny-once", rememberPattern: problem };
+        hostRejectedApprovalDecisions.add(forcedDecision);
+        entry.resolve(forcedDecision);
+        return forcedDecision;
+      }
+    }
+    // An answer for the whole card arrives after some rows were answered one at a time: those rows keep their first answer, and
+    // this answer decides only the rest. A dismissed card is a no for the rest.
+    if (entry.kind === "extension-start" && entry.extensionStartRowAnswers !== undefined && entry.extensionStartRowAnswers.size > 0) {
+      const first = entry.extensionStartRowAnswers;
+      const offered = entry.extensionStartIds ?? [];
+      const late = decision.extensionStartChoices;
+      const choices: Record<string, ExtensionStartChoice> = {};
+      for (const [index, id] of offered.entries()) {
+        const earlier = first.get(id);
+        const later: ExtensionStartChoice = late !== undefined && Object.hasOwn(late, id) && late[id] === "yes" ? "yes" : "no";
+        choices[id] = earlier ?? later;
+        if (earlier !== undefined && late !== undefined && earlier !== later) {
+          this.auditLogger?.log({
+            timestamp: new Date().toISOString(),
+            sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+            type: "approval",
+            output: `[approval:extension-start-row-late] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} row=${index + 1}/${offered.length} kept=${earlier} -> response-rejected`,
+          });
+        }
+      }
+      entry.extensionStartRowAnswers = undefined;
+      return this.resolveDecision(requestId, {
+        requestId, choice: Object.values(choices).includes("yes") ? "allow-once" : "deny-once", extensionStartChoices: choices,
+        ...(decision.nonce === undefined ? {} : { nonce: decision.nonce }), ...(decision.hmac === undefined ? {} : { hmac: decision.hmac }),
+      }, answeredBy, nativeRenderer, responder, identityRefreshed);
+    }
     // User-owned surface choices carry only their authenticated selection, never auxiliary renderer content.
     // Every accepted answer is a fresh frozen object: consumers read the settled choice, never the caller's mutable response.
     const resolvedDecision: ApprovalDecision = Object.freeze(
@@ -2074,10 +2285,11 @@ export class ApprovalGate {
     approvalMemory: ApprovalMemory | undefined;
     durableApprovalRecordAllowed: boolean;
     persistentAllowAllowed: boolean;
+    runStage: ApprovalRequest["runStage"];
     sessionId: string | undefined;
     projectCwd: string | undefined;
     shellRule: ShellRuleApproval | undefined;
-    floorSessionGrant?: FloorSessionGrant;
+    floorSessionGrant?: PendingEntry["floorSessionGrant"];
     hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
     verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
     egress: (NonNullable<PendingEntry["egressRule"]> & { scopes: readonly EgressGrantScope[]; terminalTabId?: string }) | undefined;
@@ -2098,6 +2310,7 @@ export class ApprovalGate {
       approvalMemory: entry.approvalMemory,
       durableApprovalRecordAllowed: entry.durableApprovalRecordAllowed,
       persistentAllowAllowed: entry.persistentAllowAllowed,
+      runStage: entry.runStage,
       sessionId: entry.sessionId,
       projectCwd: entry.projectCwd,
       shellRule: entry.shellRule,

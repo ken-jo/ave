@@ -53,6 +53,7 @@ export const ROUTINES = {
 export const WORK_BOARD = {
   templateList: "ave:work-board:template-list",
   templateGet: "ave:work-board:template-get",
+  templateProposalGet: "ave:work-board:template-proposal-get",
   templateDraft: "ave:work-board:template-draft",
   templateConfirm: "ave:work-board:template-confirm",
   templateAttachSchedule: "ave:work-board:template-attach-schedule",
@@ -157,6 +158,10 @@ export const PERMISSIONS = {
   egressGrantsList: "ave:permissions:egress-grants-list",
   // MUTATING (sender-frame-guarded + user-keyboard intent): revoke one of those grants.
   egressGrantRevoke: "ave:permissions:egress-grant-revoke",
+  // Read-only (sender-frame-guarded): protected paths a contained process created that Ave moved to quarantine.
+  watchedQuarantineList: "ave:permissions:watched-quarantine-list",
+  // MUTATING (sender-frame-guarded + user-keyboard intent): move one quarantined entry back.
+  watchedQuarantineRestore: "ave:permissions:watched-quarantine-restore",
   // Read-only (sender-frame-guarded): the main-owned upstream proxy setting (no credential values), whether manual credentials are
   // stored, and the effective upstream for https://example.com. Drives Settings → Permissions → OS Tool Sandbox "Upstream proxy".
   upstreamProxyGet: "ave:permissions:upstream-proxy-get",
@@ -166,7 +171,6 @@ export const PERMISSIONS = {
   // MUTATING (sender-frame-guarded): the ONLY user-consented privilege escalation entry point;
   // triggers ASRT installWindowsSandbox's single self-elevating UAC prompt. Never auto-triggered.
   sandboxWindowsInstall: "ave:permissions:sandbox-windows-install",
-  approveExtensionsWithoutIsolation: "ave:permissions:approve-extensions-without-isolation",
   // Home content review: the read serves one snapshot; approve and remove act only on its rows and need a user gesture.
   homeTrustReview: "ave:permissions:home-trust-review",
   homeTrustApprove: "ave:permissions:home-trust-approve",

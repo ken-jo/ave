@@ -1,37 +1,46 @@
-import { shellQuote } from "../lib/shell-resolver.js";
 import {
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyEntries,
   cleanupAsrtSandboxAfterCommand,
   ensureSandboxTempPrincipalDir,
-  sandboxTempEnvLaunch,
   wrapWorkerCommand,
   type SandboxTempPrincipal,
 } from "../permissions/asrt-sandbox.js";
 import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
-import { buildSandboxedChildEnv } from "../tools/safe-env.js";
+import { buildLauncherEnvironment, prepareSandboxTargetLaunch, type SandboxTargetLaunch } from "../permissions/launcher-environment.js";
 import type { ChildProcess } from "node:child_process";
+import {
+  abandonManagedLaunch, createManagedRelayResources, observeManagedWindowsRelayExit, recordManagedCleanup,
+  releaseManagedResources, type ManagedResources, type RelayBestEffortExit,
+} from "../main/managed-child-processes.js";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync } from "node:fs";
+import {
+  chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync,
+} from "node:fs";
 import { join, win32 as winPath } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { t } from "../i18n/index.js";
+import { errorMessage } from "../shared/error-message.js";
 import { createLogger } from "../lib/logger.js";
 import {
   liveMxcHolderWritableRoots,
   spawnConfinedChild,
   spawnMxcConfinedChild,
+  type MxcConfinedChildSpawn,
   type MxcConfinedChildSpec,
 } from "../permissions/confined-child.js";
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
-import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError } from "../permissions/mxc-extension-errors.js";
+import { assertMxcReleaseGateEvidence } from "../permissions/mxc-extension-admission.js";
+import { MxcProcessCleanupError, MxcProcessContractError } from "../permissions/mxc-extension-errors.js";
 import type { OwnedMxcExtensionProcess } from "../permissions/mxc-extension-process.js";
 import { planWindowsExtensionHolder } from "../permissions/mxc-extension-readiness.js";
 import { isWindowsPathAtOrUnder } from "../permissions/mxc-windows.js";
 import { getWindowsExtensionBackendPlan } from "../permissions/sandbox-capability.js";
 import { listAuthorizedWorkspaceRoots } from "../permissions/workspace-authorized-roots.js";
 import type { SandboxWindowsExtensionPlan } from "../shared/sandbox-capability-info.js";
-import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
+import { createSandboxProcessHome, resolvedHostProcessOwner } from "../permissions/sandbox-process-home.js";
+import { forgetIssuedContainerHome, recordIssuedContainerHome } from "../permissions/sandbox-home-registry.js";
+import { readWindowsProcessRunStates, type ProcessRunStateProbe } from "../permissions/windows-process-start-time.js";
 import {
   holdWindowsFilesystemGrant,
   terminateChildBestEffort,
@@ -40,7 +49,8 @@ import {
 import { isPathWithin } from "../plugins/plugin-storage-containment.js";
 import { AVE_HOME_RUNTIME_DIRECTORY, AVE_RUNTIME_LAYOUT, aveHome } from "../shared/ave-home.js";
 import { assertMxcHolderStaging } from "../permissions/mxc-filesystem-ownership.js";
-import { renameDirectory } from "../lib/transient-fs-lock-retry.js";
+import { mxcStagingParent } from "../permissions/mxc-runtime-root.js";
+import { renameDirectory, renameDirectorySyncOnce } from "../lib/transient-fs-lock-retry.js";
 import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "../permissions/egress-invocations.js";
 
 const log = createLogger("wrap-bundled-command");
@@ -49,6 +59,7 @@ export interface BundledWrapInput {
   command: string;
   args: readonly string[];
   sandboxHome: { path: string; env: Record<string, string> };
+  targetEnv: NodeJS.ProcessEnv;
   allowWrite: readonly string[];
   /** The directories of the process's own plugin it reads, re-allowed inside the plugins-root deny: a hook's generation root,
    * a bundled server's payload root. Empty for a server that belongs to no plugin, which then reads nothing under the root. */
@@ -61,7 +72,9 @@ export interface BundledWrapInput {
 
 /** Apply the same sensitive-path floors and egress policy to bundled processes. The wrapped launch, and the egress token it carries. The
  * caller spawns the process itself, so it owns the token too: `egress.release()` once the process has exited, or when the spawn fails. */
-export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ argv: string[]; env: NodeJS.ProcessEnv; egress: EgressInvocation }> {
+export async function wrapBundledCommand(input: BundledWrapInput): Promise<{
+  argv: string[]; env: NodeJS.ProcessEnv; egress: EgressInvocation; targetLaunch: SandboxTargetLaunch;
+}> {
   if (process.platform === "win32") {
     // The macOS and Linux wrap: allow paths in the command. Windows has no per-exec allow; its
     // bundled processes go through `spawnWindowsBundledProcess`, and reaching here is a caller's mistake.
@@ -71,13 +84,12 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
   // The principal's own temp directory, set as its TMPDIR inside the wrap (ASRT's own assignment would otherwise name the shared root) and granted alone; the read floor denies the
   // shared temp and HOME roots, so no other principal's temp files or HOME can be read either, and the process HOME re-allowed here is its own; as `confined-child.ts` does for its children.
   const temp = ensureSandboxTempPrincipalDir(input.tempPrincipal);
-  const launch = sandboxTempEnvLaunch(temp.dir, input.command, input.args);
-  const cmdline = [launch.command, ...launch.args].map(shellQuote).join(" ");
+  const targetLaunch = prepareSandboxTargetLaunch(input.command, input.args, { ...input.targetEnv, ...input.sandboxHome.env }, temp.dir);
   const egress = openEgressInvocation(input.egressOwner);
   let result: { argv: string[]; env: NodeJS.ProcessEnv };
   try {
     const boundarySnapshot = createAveHomeBoundarySnapshot();
-    result = await wrapWorkerCommand(cmdline, {
+    result = await wrapWorkerCommand(targetLaunch.command, {
       commandId: egress.token,
       boundarySnapshot,
       filesystem: {
@@ -106,22 +118,33 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
     await cleanupAsrtSandboxAfterCommand();
     throw new Error("ASRT returned an empty argv for a bundled process");
   }
-  return { ...result, egress };
+  return { argv: result.argv, env: buildLauncherEnvironment(), egress, targetLaunch };
 }
 
-/** Preserve only ASRT's changed proxy keys over the caller's stripped environment. */
-export function bundledWrappedEnv(
-  baseEnv: NodeJS.ProcessEnv,
-  wrappedEnv: NodeJS.ProcessEnv,
-  sandboxHomeEnv: Record<string, string>,
-): NodeJS.ProcessEnv {
-  const composed = buildSandboxedChildEnv(wrappedEnv);
-  const baseline = buildSandboxedChildEnv(process.env);
-  const overlay: Record<string, string> = {};
-  for (const [key, value] of Object.entries(composed)) {
-    if (value !== undefined && baseline[key] !== value) overlay[key] = value;
+/** {@link wrapBundledCommand} with a throwaway HOME, whose teardown the owner holds on `resources` from acquisition: the caller
+ * gets the launch and the egress group hook, never the cleanup. A wrap failure records only the HOME. */
+export async function wrapManagedBundledCommand(input: Omit<BundledWrapInput, "sandboxHome"> & {
+  readonly resources: ManagedResources;
+}): Promise<{
+  argv: string[]; env: NodeJS.ProcessEnv; homeEnv: Record<string, string>; targetLaunch: SandboxTargetLaunch; noteProcessGroup: (pid: number) => void;
+}> {
+  const { resources, ...wrapInput } = input;
+  const sandboxHome = createSandboxProcessHome();
+  let wrapped: Awaited<ReturnType<typeof wrapBundledCommand>>;
+  try {
+    wrapped = await wrapBundledCommand({ ...wrapInput, sandboxHome });
+  } catch (error) {
+    recordManagedCleanup(resources, sandboxHome.cleanup);
+    throw error;
   }
-  return { ...baseEnv, ...overlay, ...sandboxHomeEnv };
+  recordManagedCleanup(resources, wrapped.egress.release, cleanupAsrtSandboxAfterCommand, sandboxHome.cleanup);
+  return {
+    argv: wrapped.argv,
+    env: wrapped.env,
+    homeEnv: sandboxHome.env,
+    targetLaunch: wrapped.targetLaunch,
+    noteProcessGroup: (pid) => wrapped.egress.noteProcessGroup(pid),
+  };
 }
 
 /** A bundled process started under srt-win, and what it holds while it runs. */
@@ -130,8 +153,9 @@ export interface WindowsBundledSpawn {
   /** The program's input and output, through the stdio relay (`confined-child.ts`). */
   readonly stdin: Writable;
   readonly stdout: Readable;
-  /** Revoke the filesystem grant and remove the throwaway HOME. Idempotent; the HOME removal stays retryable, as `createSandboxProcessHome`
-   * documents. Call it on the child's exit and again on its close. ASRT's per-command cleanup is the caller's, as it is for {@link wrapBundledCommand}. */
+  readonly exit: Promise<RelayBestEffortExit>;
+  /** Revoke the filesystem grant and remove the throwaway HOME once the relay settles. Idempotent; the HOME removal stays retryable, as
+   * `createSandboxProcessHome` documents. ASRT's per-command cleanup is the caller's unless it passed `ownsCommandSandbox`. */
   readonly releaseHold: () => void;
 }
 
@@ -152,23 +176,36 @@ export async function spawnWindowsBundledProcess(input: {
   readonly refreshStillValid?: () => Promise<void>;
   /** A user hook's host-issued admitted shell plan; see `ConfinedChildSpec.userHookShellPlan`. */
   readonly userHookShellPlan?: HostShellExecutionPlan;
+  /** The owner also runs ASRT's per-command cleanup with the hold. */
+  readonly ownsCommandSandbox?: boolean;
 }): Promise<WindowsBundledSpawn> {
   if (process.platform !== "win32") {
     throw new Error(`[wrap-bundled-command] ${input.label}: spawnWindowsBundledProcess is the Windows path`);
   }
   const sandboxHome = createSandboxProcessHome();
+  const resources = createManagedRelayResources();
   let grant: HeldWindowsGrant | undefined;
-  const releaseHold = (): void => {
-    grant?.release();
-    sandboxHome.cleanup();
-  };
   let wrapped = false;
+  let launchFailed = false;
   let child: ChildProcess | undefined;
+  let exit: Promise<RelayBestEffortExit> | undefined;
+  // Recorded with the handle; the grant and wrap state are read when the owner releases.
+  recordManagedCleanup(resources,
+    () => (wrapped && (launchFailed || input.ownsCommandSandbox) ? cleanupAsrtSandboxAfterCommand() : undefined), () => grant?.release(), sandboxHome.cleanup);
+  const settleHold = (): void => {
+    const release = exit ? exit.then(receipt => releaseManagedResources(resources, receipt)) : abandonManagedLaunch(resources);
+    void release.catch((error: unknown) => log.warn(`[${input.label}] sandbox hold release failed: ${errorMessage(error)}`));
+  };
+  const acquire = (running: ChildProcess): void => {
+    child = running;
+    exit = observeManagedWindowsRelayExit(running, resources);
+  };
   try {
     grant = await holdWindowsFilesystemGrant({
       label: `${input.label}:asrt-win-acl`,
       allowRead: [...new Set([sandboxHome.path, ...input.allowWrite, ...input.allowRead, ...hostRuntimeReads(input.command)])],
       allowWrite: [...new Set([sandboxHome.path, ...input.allowWrite])],
+      sandboxHome: sandboxHome.path,
     });
     const held = grant;
     const spawned = await spawnConfinedChild({
@@ -192,25 +229,26 @@ export async function spawnWindowsBundledProcess(input: {
       onWrapped: () => {
         wrapped = true;
       },
+      onSpawn: acquire,
     });
-    child = spawned.child;
     if (spawned.confinement !== "windows-srt") {
       throw new Error(`[wrap-bundled-command] ${input.label}: the sandbox was expected but the process came back ${spawned.confinement}`);
     }
-    const running = child;
+    const running = spawned.child;
+    if (!exit) throw new Error("Windows relay exit is unowned.");
     held.onLost((reason) => {
       log.warn(`[${input.label}] filesystem grant lost, ending the process: ${reason.message}`);
       terminateChildBestEffort(running);
     });
     // A start that produced no process emits `error` and may emit nothing else.
     running.once("error", () => {
-      if (running.pid === undefined) releaseHold();
+      if (running.pid === undefined) settleHold();
     });
-    return { child: running, stdin: spawned.stdin!, stdout: spawned.stdout!, releaseHold };
+    return { child: running, stdin: spawned.stdin!, stdout: spawned.stdout!, exit, releaseHold: settleHold };
   } catch (error) {
     if (child !== undefined) terminateChildBestEffort(child);
-    if (wrapped) void cleanupAsrtSandboxAfterCommand();
-    releaseHold();
+    launchFailed = true;
+    settleHold();
     throw error instanceof Error ? error : new Error(String(error));
   }
 }
@@ -256,8 +294,8 @@ export class MxcExecutableNotAdmissibleError extends Error {
 }
 
 /** Another live extension holder writes the same workspace; two such holders cannot be live at once and are never queued.
- * `stagingOverlap`: the overlap is another holder's private staging tree under AVE_HOME inside this workspace (a project
- * rooted at the user profile), which the message then names. */
+ * `stagingOverlap`: the overlap is another holder's private staging tree under the runtime root inside this workspace (a
+ * project rooted at the user profile), which the message then names. */
 export class MxcHolderWorkspaceBusyError extends Error {
   readonly code = "holder-workspace-busy";
   constructor(readonly stagingOverlap = false) {
@@ -332,27 +370,6 @@ export function assertMxcHolderNotBashForm(command: string, shellFlavor?: string
   }));
 }
 
-type HolderReadinessProbe = MxcConfinedChildSpec["probe"];
-let holderReadinessProbe: HolderReadinessProbe | undefined;
-
-/** The exact-request readiness probe for MCP and hook holders. The native release gate (row 7) registers it; until then
- * every holder start fails closed with `MxcCapabilityUnavailableError`. Returns the unregister function. */
-export function registerMxcHolderReadinessProbe(probe: HolderReadinessProbe): () => void {
-  if (holderReadinessProbe !== undefined) throw new MxcProcessContractError("An extension holder readiness probe is already registered");
-  holderReadinessProbe = probe;
-  return () => {
-    if (holderReadinessProbe === probe) holderReadinessProbe = undefined;
-  };
-}
-
-function registeredHolderReadinessProbe(): HolderReadinessProbe {
-  const probe = holderReadinessProbe;
-  if (probe === undefined) {
-    throw new MxcCapabilityUnavailableError("No extension holder readiness probe is registered; native readiness has not been established");
-  }
-  return probe;
-}
-
 function stripExtendedPrefix(path: string): string {
   return path.replace(/^\\\\\?\\/u, "");
 }
@@ -423,28 +440,71 @@ function assertNoLiveWorkspaceWriter(allowWrite: readonly string[], workspaceRoo
   if (workspaceWrites.length === 0) return;
   const busy = liveMxcHolderWritableRoots().filter((live) => workspaceWrites.some((write) => overlaps(write, live)));
   if (busy.length === 0) return;
-  // The profile / AVE_HOME case: the caller's workspace write contains another holder's private staging tree.
-  const staging = pathForms(winPath.join(aveHome(), "mxc-staging"));
+  // The caller's workspace write contains another holder's private staging tree.
+  let staging: string[] = [];
+  try { staging = pathForms(mxcStagingParent("win32")); } catch { /* no staging parent: the busy root is not under one */ }
   throw new MxcHolderWorkspaceBusyError(busy.some((live) => staging.some((root) => isWindowsPathAtOrUnder(live, root))));
 }
 
 interface HolderStaging { readonly root: string; readonly home: string; readonly temp: string }
 
-/** `<AVE_HOME>\mxc-staging\<opaque-id>\{home,temp}`: its enumerate grant reveals only opaque IDs (contract doc). */
+/** Resolve the staging parent again, which re-reads the runtime root's path, and refuse one that is no longer `parent`. */
+function assertSameStagingParent(parent: string): void {
+  if (mxcStagingParent("win32") !== parent) throw new MxcProcessContractError("Container staging parent changed while a holder's directories were created");
+}
+
+/** `instance` tells two copies of this module in one process apart: each copy knows only its own live holders.
+ * `start` is the process creation time, or null while the start-up probe has not read it. */
+interface StagingOwner { readonly pid: number; readonly start: string | null; readonly instance: string }
+
+const STAGING_INSTANCE = randomBytes(8).toString("hex");
+const STAGING_OWNER_SUFFIX = ".owner";
+const STAGING_RETIRED_SUFFIX = ".retired";
+const STAGING_OWNER_MAX_BYTES = 256;
+const STAGING_ID = /^[0-9a-f]{32}$/u;
+
+/** Staging roots this copy created and has not yet been told to remove. A sweep never touches them. */
+const liveStaging = new Set<string>();
+/** Staging parents whose other instances' leftovers this process has already asked the OS about. */
+const probedStagingParents = new Set<string>();
+
+/**
+ * `<staging parent>\<opaque-id>\{home,temp}`: its enumerate grant reveals only opaque IDs (contract doc). The parent is
+ * the platform's (`mxcStagingParent`), under the runtime root outside the Ave home, which every Ave home and running
+ * instance of this account shares. A sibling `<id>.owner` therefore records this process before the directory exists,
+ * so a crash never leaves an unmarked tree. The marker sits in the staging parent, which no holder is granted.
+ */
 function createHolderStaging(): HolderStaging {
-  const parent = winPath.join(aveHome(), "mxc-staging");
-  mkdirSync(parent, { recursive: true });
-  // A link at the staging parent would place every holder's HOME/temp, and later its removal, somewhere else.
-  if (lstatSync(parent).isSymbolicLink()) throw new MxcProcessContractError("Holder staging parent is a link");
-  sweepRetiredStaging(parent);
+  const parent = mxcStagingParent("win32");
+  sweepHolderStaging(parent);
   const dir = winPath.join(parent, randomBytes(16).toString("hex"));
   const home = winPath.join(dir, "home");
   const temp = winPath.join(dir, "temp");
-  // The shared staging-shape check (also the plugin-child adapter's): exactly <AVE_HOME>\mxc-staging\<32-hex>\{home,temp}.
-  const root = assertMxcHolderStaging({ aveHome: aveHome(), home, temp });
-  mkdirSync(home, { recursive: true });
-  mkdirSync(temp, { recursive: true });
-  if (lstatSync(root).isSymbolicLink()) throw new MxcProcessContractError("Holder staging root is a link");
+  // The shared staging-shape check (also the plugin-child adapter's): exactly <staging parent>\<32-hex>\{home,temp}.
+  const root = assertMxcHolderStaging({ stagingParent: parent, home, temp });
+  const owner: StagingOwner = { pid: process.pid, start: resolvedHostProcessOwner()?.startTime ?? null, instance: STAGING_INSTANCE };
+  // The sweep ran since the parent was resolved: the runtime root's path is read again right before the tree is created.
+  assertSameStagingParent(parent);
+  writeFileSync(`${root}${STAGING_OWNER_SUFFIX}`, JSON.stringify(owner), { flag: "wx" });
+  liveStaging.add(root);
+  try {
+    // Exclusive: an existing entry under a fresh random name is not this holder's.
+    for (const directory of [root, home, temp]) mkdirSync(directory);
+  } catch (error) {
+    liveStaging.delete(root);
+    try { removeStagingTree(root); } catch { /* the marked remainder is left for a sweep */ }
+    throw error;
+  }
+  try {
+    // And once it exists: a tree created while the path was swapped is never handed to a holder.
+    assertSameStagingParent(parent);
+  } catch (error) {
+    // Nothing is removed through a path that no longer leads to the root; the marked tree is left for a sweep.
+    liveStaging.delete(root);
+    throw error;
+  }
+  // The one directory under the runtime root this holder may use as its working directory.
+  recordIssuedContainerHome(home, winPath.dirname(parent));
   return Object.freeze({ root, home, temp });
 }
 
@@ -466,43 +526,138 @@ function removeTreeWithoutFollowingLinks(path: string): void {
   rmdirSync(path);
 }
 
-/** Remove a dead holder's staging tree. It is first renamed to a random `retired-` sibling, so nothing can reach it by
- * its old name mid-removal. The rename retries Windows lock codes, which a just-exited holder's handles can still
- * raise. A partial failure leaves the retired tree for the next sweep. */
-async function removeHolderStaging(root: string): Promise<void> {
-  let target = root;
+/** The retired and unretired trees a marker stands for, where they exist. Each must be a real directory. */
+function stagingTrees(root: string): string[] {
+  return [`${root}${STAGING_RETIRED_SUFFIX}`, root].filter((tree) => {
+    const entry = lstatSync(tree, { throwIfNoEntry: false });
+    if (entry !== undefined && (entry.isSymbolicLink() || !entry.isDirectory())) throw new Error("the marked entry is not a directory");
+    return entry !== undefined;
+  });
+}
+
+/** Delete one holder's retired and unretired trees and, last, its owner marker. A marked entry that is a link or a
+ * file is not a staging tree and stops the removal. The marker goes only once neither tree is left, so an interrupted
+ * removal stays provably this owner's for a later sweep. */
+function removeStagingTree(root: string): void {
+  for (const tree of stagingTrees(root)) removeTreeWithoutFollowingLinks(tree);
   try {
-    const retired = winPath.join(winPath.dirname(root), `retired-${randomBytes(16).toString("hex")}`);
-    await renameDirectory(root, retired);
-    target = retired;
-    // Synchronous after the rename, so no sweep in this process interleaves with it.
-    removeTreeWithoutFollowingLinks(target);
+    unlinkSync(`${root}${STAGING_OWNER_SUFFIX}`);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" && target === root) return;
+    // Already removed by another remover of the same tree.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+/** Remove a dead holder's staging tree. It is first renamed to its `.retired` sibling, so nothing can reach it by its
+ * granted name mid-removal. The rename retries Windows lock codes, which a just-exited holder's handles can still
+ * raise. A partial failure leaves the marked remainder for the next sweep. */
+async function removeHolderStaging(root: string): Promise<void> {
+  if (!liveStaging.delete(root)) return;
+  forgetIssuedContainerHome(winPath.join(root, "home"));
+  try {
+    try {
+      await renameDirectory(root, `${root}${STAGING_RETIRED_SUFFIX}`);
+    } catch (error) {
+      // Never created.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    // Synchronous after the rename, so no sweep in this process interleaves with it.
+    removeStagingTree(root);
+  } catch (error) {
     log.warn(`holder staging removal incomplete: ${(error as Error).message}`);
   }
 }
 
-/** Remove `retired-*` siblings a partial removal left behind, with the same link-refusing delete. A tree that a live
- * holder's writable roots reach is skipped. Failure only warns: a leftover never blocks a start. */
-function sweepRetiredStaging(parent: string): void {
+function readStagingOwner(markerPath: string): StagingOwner | null {
+  try {
+    const entry = lstatSync(markerPath);
+    if (!entry.isFile() || entry.nlink !== 1 || entry.size > STAGING_OWNER_MAX_BYTES) return null;
+    const parsed: unknown = JSON.parse(readFileSync(markerPath, "utf8"));
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const { pid, start, instance } = parsed as Record<string, unknown>;
+    if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0 || typeof instance !== "string" || instance === ""
+        || !(start === null || (typeof start === "string" && start !== ""))) return null;
+    return { pid, start, instance };
+  } catch {
+    return null;
+  }
+}
+
+function processIsGone(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+function sweepStagingTree(root: string): void {
+  // A holder this process still runs keeps its tree, whichever copy of this module started it.
+  if (liveMxcHolderWritableRoots().some((live) => overlaps(live, root))) return;
+  try {
+    // Before the rename: a link or a file beside a marker is left exactly where it is.
+    stagingTrees(root);
+    try {
+      renameDirectorySyncOnce(root, `${root}${STAGING_RETIRED_SUFFIX}`);
+    } catch (error) {
+      // Already retired by an interrupted removal, or never created. EPERM is not among them: a process that outlived
+      // its owner may still hold the tree open, so it is kept whole, marker included, for a sweep after a later start.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST") throw error;
+    }
+    removeStagingTree(root);
+  } catch (error) {
+    log.warn(`abandoned holder staging not removed: ${(error as Error).message}`);
+  }
+}
+
+/**
+ * Remove what crashed or interrupted holders left under the staging parent. A tree is another instance's until its
+ * sibling marker proves otherwise: it is removed only when the marker names this copy of this module for a holder it
+ * already released, or a process that is provably gone (no such pid, or a pid whose creation time is no longer the
+ * recorded one). Entries with no marker, an unreadable marker, or a live or undetermined owner are kept. The first
+ * call per staging parent asks the OS for the creation times of the owners still running and removes the reused ones
+ * when the answer arrives. Failure only warns: a leftover never blocks a start.
+ */
+function sweepHolderStaging(parent: string, probe: ProcessRunStateProbe = readWindowsProcessRunStates): void {
   let names: string[];
   try {
-    names = readdirSync(parent).filter((name) => /^retired-/iu.test(name));
+    names = readdirSync(parent).filter((name) => name.endsWith(STAGING_OWNER_SUFFIX) && STAGING_ID.test(name.slice(0, -STAGING_OWNER_SUFFIX.length)));
   } catch (error) {
-    log.warn(`retired holder staging sweep skipped: ${(error as Error).message}`);
+    log.warn(`holder staging sweep skipped: ${(error as Error).message}`);
     return;
   }
-  const live = liveMxcHolderWritableRoots();
+  const running = new Map<string, StagingOwner>();
   for (const name of names) {
-    const path = winPath.join(parent, name);
-    if (live.some((root) => overlaps(root, path))) continue;
-    try {
-      removeTreeWithoutFollowingLinks(path);
-    } catch (error) {
-      log.warn(`retired holder staging not removed: ${(error as Error).message}`);
+    const root = winPath.join(parent, name.slice(0, -STAGING_OWNER_SUFFIX.length));
+    if (liveStaging.has(root)) continue;
+    const owner = readStagingOwner(`${root}${STAGING_OWNER_SUFFIX}`);
+    if (owner === null) continue;
+    if (owner.pid === process.pid) {
+      if (owner.instance === STAGING_INSTANCE) sweepStagingTree(root);
+    } else if (processIsGone(owner.pid)) {
+      sweepStagingTree(root);
+    } else if (owner.start !== null) {
+      running.set(root, owner);
     }
   }
+  if (running.size === 0 || probedStagingParents.has(parent)) return;
+  probedStagingParents.add(parent);
+  void probe([...new Set([...running.values()].map((owner) => owner.pid))]).then((states) => {
+    for (const [root, owner] of running) {
+      const state = states.get(owner.pid);
+      // A different creation time under the same pid is another process: the owner exited and its pid was reused.
+      const gone = state !== undefined && (!state.running || (state.startTime !== null && state.startTime !== owner.start));
+      // The marker is read again: it must still be the one the question was asked about.
+      const current = readStagingOwner(`${root}${STAGING_OWNER_SUFFIX}`);
+      if (gone && current !== null && current.pid === owner.pid && current.start === owner.start && current.instance === owner.instance) {
+        sweepStagingTree(root);
+      }
+    }
+  }).catch((error: unknown) => {
+    log.warn(`holder staging owner probe failed: ${errorMessage(error)}`);
+  });
 }
 
 export interface MxcBundledHolderInput {
@@ -520,11 +675,17 @@ export interface MxcBundledHolderInput {
   readonly allowWrite: readonly string[];
   /** Host-captured read roots of the owning incarnation (a plugin generation, a bundled payload). */
   readonly ownedReadRoots: readonly string[];
+  /** The reads, among `allowRead`, held inside the protected read floor. Named by the host from the reviewed declaration, never by the plugin. */
+  readonly floorPierces?: readonly string[];
   readonly egressOwner: WorkerEgressOwner;
   /** Workspace roots beyond the authorized ones this holder writes (a user hook's cwd). */
   readonly workspaceRoots?: readonly string[];
   /** Synchronous caller authority, rechecked by row 2 immediately before native creation. */
   readonly assertStillValid?: () => void;
+  /** A worker's declared control mode; required for the worker role. */
+  readonly workerTransport?: MxcConfinedChildSpec["workerTransport"];
+  /** The live holder this one descends from: row 2 refuses the start once it is gone and ends this holder with it. */
+  readonly parent?: MxcConfinedChildSpawn;
   readonly signal?: AbortSignal;
 }
 
@@ -538,12 +699,39 @@ export interface MxcBundledHolder {
   readonly quarantined: boolean;
 }
 
+/** What a plugin child's planner needs from this adapter: a fresh staging tree. The plugin-child adapter drives row 2
+ * itself, so nothing is spawned here. Every refusal comes before the staging tree exists; with no registered
+ * release-gate evidence the start is refused, never run another way. */
+export function prepareMxcHolderStart(input: {
+  readonly label: string;
+  readonly executable: string;
+  readonly baseEnv: Readonly<Record<string, string | undefined>>;
+  readonly allowWrite: readonly string[];
+}): {
+  readonly root: string;
+  readonly home: string;
+  readonly temp: string;
+  /** Only after verified termination, or for a start that never reached native creation. */
+  release(): Promise<void>;
+} {
+  if (!isMxcExtensionBackendSelected()) throw new MxcProcessContractError(`${input.label}: the extension container backend is not selected`);
+  assertHolderEnvironmentAdmissible(input.baseEnv);
+  assertMxcReleaseGateEvidence();
+  const executable = resolveHolderExecutable(input.executable, {});
+  assertMxcHolderNotBashForm(executable);
+  assertExecutableAdmissible(executable, input.allowWrite, []);
+  assertNoLiveWorkspaceWriter(input.allowWrite, []);
+  const staging = createHolderStaging();
+  return { root: staging.root, home: staging.home, temp: staging.temp, release: () => removeHolderStaging(staging.root) };
+}
+
 /** One holder incarnation per call: its own sibling roots and staging, never the caller's plan passed through. */
 export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promise<MxcBundledHolder> {
   if (!isMxcExtensionBackendSelected()) throw new MxcProcessContractError(`${input.label}: the extension container backend is not selected`);
   assertMxcHolderNotBashForm(input.command);
   assertHolderEnvironmentAdmissible(input.baseEnv, input.holderEnv);
-  const probe = registeredHolderReadinessProbe();
+  // Before any staging: row 2 checks it again when it mints the receipt.
+  assertMxcReleaseGateEvidence();
   const executable = resolveHolderExecutable(input.command, input.baseEnv);
   assertMxcHolderNotBashForm(executable);
   const workspaceRoots = input.workspaceRoots ?? [];
@@ -572,8 +760,10 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
       temp: staging.temp,
       filesystemOwnership: { readRoots: [...input.ownedReadRoots], writeRoots: allowWrite, hostStorageRoots: [] },
       holder: Object.freeze({ label: input.label }),
-      probe,
+      ...(input.floorPierces !== undefined ? { floorPierces: [...input.floorPierces] } : {}),
       ...(input.assertStillValid ? { assertStillValid: input.assertStillValid } : {}),
+      ...(input.workerTransport ? { workerTransport: input.workerTransport } : {}),
+      ...(input.parent ? { parent: input.parent } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
     });
   } catch (error) {

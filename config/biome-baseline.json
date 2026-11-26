@@ -43,11 +43,6 @@
       "count": 1
     },
     {
-      "file": "scripts/hooks/pre-push-comment-policy.mjs",
-      "category": "lint/complexity/noUselessEscapeInRegex",
-      "count": 1
-    },
-    {
       "file": "scripts/hooks/pre-push-markdown-policy.mjs",
       "category": "lint/suspicious/noControlCharactersInRegex",
       "count": 2
@@ -14173,11 +14168,6 @@
       "count": 30
     },
     {
-      "file": "test/scripts/pre-push-tier.test.ts",
-      "category": "lint/suspicious/noTemplateCurlyInString",
-      "count": 1
-    },
-    {
       "file": "test/scripts/preview-document-bundle.test.ts",
       "category": "lint/style/noNonNullAssertion",
       "count": 7
@@ -14270,16 +14260,6 @@
     {
       "file": "test/scripts/webpack-cache.test.ts",
       "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "test/scripts/windows-ci-test-list.test.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "test/scripts/windows-ci-test-list.test.ts",
-      "category": "lint/suspicious/noTemplateCurlyInString",
       "count": 1
     },
     {

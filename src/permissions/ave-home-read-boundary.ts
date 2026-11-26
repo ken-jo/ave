@@ -4,6 +4,8 @@ type BoundarySegment = string | ((name: string) => boolean);
 interface AveHomeReadReallow {
   readonly segments: readonly BoundarySegment[];
   readonly why: string;
+  /** The platforms the row applies on; every platform when absent. */
+  readonly platforms?: readonly NodeJS.Platform[];
 }
 
 // A directory a host composer names per extension or server: never a dot entry (caches, install staging) and never one of the
@@ -16,6 +18,10 @@ const payloadDirectory = directoryBeside("plugin-contribution-trust");
 const mcpServerDirectory = (name: string): boolean => /^[a-z0-9_-][a-z0-9._-]*$/iu.test(name) && directoryBeside("servers.json")(name);
 // `McpInstaller.dataDir`: one `assertSafeArtifactSlug` directory per installed marketplace server.
 const marketplaceServerData = (name: string): boolean => /^[a-z0-9][a-z0-9._-]{0,127}$/iu.test(name);
+
+// `<project>/<run>/<stage>` under `worktrees`: the host's slugs, and a stage id, which never begins with `_`.
+const workspaceSlug = (name: string): boolean => /^[a-z0-9][a-z0-9-]*$/u.test(name);
+const stageDirectory = (name: string): boolean => /^[a-z0-9][a-z0-9-]{0,31}$/u.test(name);
 
 /**
  * The sandbox read-deny covers the whole Ave home; these are the only children a confined process may be granted beneath it. A
@@ -37,12 +43,13 @@ export const AVE_HOME_READ_REALLOWS: readonly AveHomeReadReallow[] = Object.free
   { segments: ["runtime", "python"], why: "the base interpreter that venv was created from, granted with it" },
   { segments: ["certs"], why: "corporate CA bundle; still floor-protected, opened only by a declared hostDirectory pierce" },
   { segments: ["sessions"], why: "saved sessions; still floor-protected, opened only by the builtin shell's session pierce" },
-  { segments: ["mxc-staging"], why: "Windows container holder staging directories" },
+  { segments: ["worktrees", workspaceSlug, workspaceSlug, stageDirectory], why: "one workflow stage's own workspace; the run root, `_join` and `_out` beside it stay closed" },
 ]);
 
 /** Whether `segments` (relative to the Ave home, case-folded like the path they came from) lie inside a re-allowed child. */
-export function isAveHomeReadReallowed(segments: readonly string[]): boolean {
+export function isAveHomeReadReallowed(segments: readonly string[], platform: NodeJS.Platform = process.platform): boolean {
   return AVE_HOME_READ_REALLOWS.some((row) => row.segments.length <= segments.length
+    && (row.platforms === undefined || row.platforms.includes(platform))
     && row.segments.every((segment, index) => {
       const value = segments[index];
       if (value === undefined) throw new Error("Ave home re-allow match ran past the path segments");

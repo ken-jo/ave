@@ -612,3 +612,19 @@ describe("the read fence setting", () => {
       .toBe(true);
   });
 });
+
+describe("a zero-byte placeholder settings file", () => {
+  it("reads as absent without a fault, is left in place, and the next write succeeds", async () => {
+    const { dir: root, path: settings } = fixture();
+    writeFileSync(settings, "");
+    const read = readPermissionSettings(settings);
+    expect(read.fault).toBeNull();
+    expect(read.permissions.additionalDirectories ?? []).toEqual([]);
+    expect(readFileSync(settings, "utf-8")).toBe("");
+    const project = join(root, "project");
+    mkdirSync(project);
+    const stored = await addAllowedDirectoryPersist(project, settings);
+    expect(stored).toEqual([canonicalizePathForMatch(project)]);
+    expect(readPermissionSettings(settings).permissions.additionalDirectories).toEqual(stored);
+  });
+});

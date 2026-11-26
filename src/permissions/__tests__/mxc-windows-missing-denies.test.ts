@@ -9,8 +9,9 @@ import * as policyHome from "../../shared/policy-home.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { getDefaultSensitiveWriteDenyPaths, getProtectedReadDenyFloor } from "../asrt-sandbox.js";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
-import { buildMxcShellRequest, isWindowsPathAtOrUnder, mxcRequestArgs, powerShellMxcCommandLine, rankMxcFilesystem, resolveHostWxcExecPath, type MxcDirectoryEntry } from "../mxc-windows.js";
+import { buildMxcShellRequest, isWindowsPathAtOrUnder, mxcRequestArgs, powerShellMxcCommandLine, resolveHostWxcExecPath, type MxcDirectoryEntry } from "../mxc-windows.js";
 import { SENSITIVE_PATH_PATTERNS } from "../sensitive-paths.js";
+import { rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -21,7 +22,7 @@ describe("missing deny parents", () => {
 
   it("raises nested denies and preserves a superset of their denied paths", () => {
     const original = [win32.join(root, "a", "b", ".ssh"), win32.join(root, "a", "other")];
-    const grants = rankMxcFilesystem(policy(original), exists);
+    const grants = rankMxcLists(policy(original), exists);
     expect(grants.denied).toEqual([win32.join(root, "a")]);
     for (const deny of original) for (const probe of [deny, win32.join(deny, "child"), win32.join(deny.toUpperCase(), "future", "secret")]) {
       expect(grants.denied.some((raised) => isWindowsPathAtOrUnder(probe, raised)), probe).toBe(true);
@@ -30,29 +31,29 @@ describe("missing deny parents", () => {
 
   it("keeps a missing leaf unchanged", () => {
     const deny = win32.join(root, ".vscode");
-    expect(rankMxcFilesystem(policy([deny]), exists).denied).toEqual([deny]);
+    expect(rankMxcLists(policy([deny]), exists).denied).toEqual([deny]);
   });
 
   it("names a directory-form deny without its trailing separator", () => {
     const deny = win32.join(root, "routine");
-    expect(rankMxcFilesystem(policy([`${deny}\\`]), () => true).denied).toEqual([deny]);
+    expect(rankMxcLists(policy([`${deny}\\`]), () => true).denied).toEqual([deny]);
   });
 
   it("keeps a present deny unchanged", () => {
     const deny = win32.join(root, "a", "b", ".ssh");
-    expect(rankMxcFilesystem(policy([deny]), () => true).denied).toEqual([deny]);
+    expect(rankMxcLists(policy([deny]), () => true).denied).toEqual([deny]);
   });
 
   it("fails closed if a grant disappears and raising would deny its root", () => {
     let rootChecks = 0;
     const deny = win32.join(root, "a", "b");
     const racedExists = (path: string) => path === root ? ++rootChecks === 1 : isWindowsPathAtOrUnder(win32.dirname(root), path);
-    expect(() => rankMxcFilesystem(policy([deny]), racedExists)).toThrow(/^Windows sandbox policy cannot raise/);
+    expect(() => rankMxcLists(policy([deny]), racedExists)).toThrow(/^Windows sandbox policy cannot raise/);
   });
 
   it("fails closed when the raised component is outside every writable grant", () => {
     const readonly = String.raw`C:\Users\bob`;
-    expect(() => rankMxcFilesystem({ ...policy([win32.join(readonly, "a", "b")]), allowRead: [readonly] },
+    expect(() => rankMxcLists({ ...policy([win32.join(readonly, "a", "b")]), allowRead: [readonly] },
       (path) => exists(path) || isWindowsPathAtOrUnder(readonly, path))).toThrow(/^Windows sandbox policy cannot raise/);
   });
 });
@@ -88,31 +89,31 @@ describe("pattern denies", () => {
   const sessionPatterns = SENSITIVE_PATH_PATTERNS.map((pattern) => `${sessions}/${pattern.endsWith("/**") ? pattern.slice(0, -3) : pattern}`);
 
   it("denies each existing match of a pattern under a read-only grant", () => {
-    const grants = rankMxcFilesystem(policy([String.raw`${sessions}\**\.ssh`, `${sessions}/**/id_rsa`]), exists, list);
+    const grants = rankMxcLists(policy([String.raw`${sessions}\**\.ssh`, `${sessions}/**/id_rsa`]), exists, list);
     expect(grants.readonly).toEqual([sessions]);
     expect(grants.denied).toEqual([win32.join(sessions, "one", ".SSH"), win32.join(sessions, "one", "notes", "id_rsa")]);
   });
 
   it("adds nothing for a pattern with no match", () => {
-    expect(rankMxcFilesystem(policy([String.raw`${sessions}\**\.aws`, `${sessions}/proc/*/environ`]), exists, list).denied).toEqual([]);
+    expect(rankMxcLists(policy([String.raw`${sessions}\**\.aws`, `${sessions}/proc/*/environ`]), exists, list).denied).toEqual([]);
   });
 
   it("refuses the shell, naming the pattern, when the shell could create a match", () => {
-    expect(() => rankMxcFilesystem(policy([String.raw`${work}\**\.ssh`]), exists, list))
+    expect(() => rankMxcLists(policy([String.raw`${work}\**\.ssh`]), exists, list))
       .toThrow(/^Windows sandbox policy cannot hold pattern deny: .*work\\\*\*\\\.ssh \(the shell can write where it matches\)$/);
   });
 
   it("fails closed when it cannot list the pattern's directory", () => {
-    expect(() => rankMxcFilesystem(policy([String.raw`${sessions}\**\.ssh`]), exists)).toThrow(/^Windows sandbox policy cannot hold pattern deny: .* \(no directory lister\)$/);
+    expect(() => rankMxcLists(policy([String.raw`${sessions}\**\.ssh`]), exists)).toThrow(/^Windows sandbox policy cannot hold pattern deny: .* \(no directory lister\)$/);
   });
 
   it("refuses the shell with a named reason when the walk passes its cap, and holds every match at the cap", () => {
     const wide = (count: number) => (directory: string) => directory === sessions
       ? [...Array.from({ length: count }, (_, index) => entry(`session-${index}.jsonl`)), entry("id_rsa")]
       : [];
-    expect(() => rankMxcFilesystem(policy([`${sessions}/**/id_rsa`]), exists, wide(20_000)))
+    expect(() => rankMxcLists(policy([`${sessions}/**/id_rsa`]), exists, wide(20_000)))
       .toThrow(/^Windows sandbox policy cannot hold pattern deny: .*id_rsa \(more than 20000 entries to check under .*sessions\)$/);
-    expect(rankMxcFilesystem(policy([`${sessions}/**/id_rsa`]), existsIn({ [sessions]: wide(19_999)(sessions) }), wide(19_999)).denied)
+    expect(rankMxcLists(policy([`${sessions}/**/id_rsa`]), existsIn({ [sessions]: wide(19_999)(sessions) }), wide(19_999)).denied)
       .toEqual([win32.join(sessions, "id_rsa")]);
   });
 
@@ -121,9 +122,9 @@ describe("pattern denies", () => {
     const files = (count: number) => Array.from({ length: count }, (_, index) => entry(`file-${index}`));
     const directories = { [sessions]: files(12_000), [other]: files(9_000) };
     const both = policy([`${sessions}/**/id_rsa`, `${sessions}/**/.ssh`, `${sessions}/**/.aws`], [sessions]);
-    expect(rankMxcFilesystem(both, existsIn(directories), lister(directories)).denied).toEqual([]);
+    expect(rankMxcLists(both, existsIn(directories), lister(directories)).denied).toEqual([]);
     const twoRoots = policy([`${sessions}/**/id_rsa`, `${other}/**/id_rsa`], [sessions, other]);
-    expect(() => rankMxcFilesystem(twoRoots, existsIn(directories), lister(directories))).toThrow(/more than 20000 entries to check/);
+    expect(() => rankMxcLists(twoRoots, existsIn(directories), lister(directories))).toThrow(/more than 20000 entries to check/);
   });
 
   it("holds every sensitive pattern over a large session store within one shell start", () => {
@@ -136,7 +137,7 @@ describe("pattern denies", () => {
     directories[win32.join(sessions, "session-5", ".ssh")] = [];
     directories[win32.join(sessions, "session-7")]!.push(entry("id_rsa"));
     const started = performance.now();
-    const grants = rankMxcFilesystem(policy(sessionPatterns), existsIn(directories), lister(directories));
+    const grants = rankMxcLists(policy(sessionPatterns), existsIn(directories), lister(directories));
     const elapsed = performance.now() - started;
     expect(grants.denied).toEqual([win32.join(sessions, "session-5", ".ssh"), win32.join(sessions, "session-7", "id_rsa")]);
     // One pass over 19,9xx entries; a walk per pattern takes seconds here.
@@ -145,18 +146,18 @@ describe("pattern denies", () => {
 
   it("denies a reparse-point directory it cannot walk as a whole, and leaves links alone", () => {
     const directories = { [sessions]: [entry("cloud", "reparse-directory"), entry("elsewhere", "link"), entry("id_rsa", "link")] };
-    expect(rankMxcFilesystem(policy([`${sessions}/**/id_rsa`]), existsIn(directories), lister(directories)).denied)
+    expect(rankMxcLists(policy([`${sessions}/**/id_rsa`]), existsIn(directories), lister(directories)).denied)
       .toEqual([win32.join(sessions, "cloud"), win32.join(sessions, "id_rsa")]);
   });
 
   it("skips a directory removed during the walk and refuses, naming the pattern and root, on any other listing error", () => {
     const gone = { [sessions]: [entry("gone", "directory"), entry("id_rsa")] };
-    expect(rankMxcFilesystem(policy([`${sessions}/**/id_rsa`]), existsIn(gone), lister(gone)).denied).toEqual([win32.join(sessions, "id_rsa")]);
+    expect(rankMxcLists(policy([`${sessions}/**/id_rsa`]), existsIn(gone), lister(gone)).denied).toEqual([win32.join(sessions, "id_rsa")]);
     const locked = (directory: string): readonly MxcDirectoryEntry[] => {
       if (directory === sessions) return [entry("locked", "directory")];
       throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
     };
-    expect(() => rankMxcFilesystem(policy([`${sessions}/**/id_rsa`]), exists, locked))
+    expect(() => rankMxcLists(policy([`${sessions}/**/id_rsa`]), exists, locked))
       .toThrow(/^Windows sandbox policy cannot hold pattern deny: .*id_rsa \(cannot list .*locked under .*sessions: EACCES: permission denied\)$/);
   });
 
@@ -165,7 +166,7 @@ describe("pattern denies", () => {
     let walked = false;
     const listOnce = (directory: string) => { walked = true; return list(directory); };
     const vanishing = (path: string) => exists(path) && !(walked && removed.has(path));
-    expect(rankMxcFilesystem(policy([`${sessions}/**/id_rsa`]), vanishing, listOnce).denied).toEqual([]);
+    expect(rankMxcLists(policy([`${sessions}/**/id_rsa`]), vanishing, listOnce).denied).toEqual([]);
   });
 
   it("holds the default layout: a writable workspace beside the read-only sessions root under one home", () => {
@@ -178,7 +179,7 @@ describe("pattern denies", () => {
       [win32.join(sessions, "a")]: [entry("note.txt"), entry(".ssh", "directory")],
       [win32.join(sessions, "a", ".ssh")]: [],
     };
-    const grants = rankMxcFilesystem({
+    const grants = rankMxcLists({
       allowWrite: [workspace], allowRead: [workspace, sessions], denyRead: sessionPatterns, denyWrite: [],
       protectedFloor: [`${sessions}\\`, `${win32.join(aveHome, "config")}\\`], floorPierces: [sessions],
     }, existsIn(directories), lister(directories));
@@ -199,7 +200,7 @@ describe("pattern denies", () => {
     };
     const present = new Set([aveHome, sessionsRoot, ...Object.entries(directories).flatMap(([directory, entries]) => entries.map((child) => win32.join(directory, child.name)))]
       .map((path) => path.toLowerCase()));
-    const grants = rankMxcFilesystem({
+    const grants = rankMxcLists({
       allowWrite: [aveHome], allowRead: [pierce],
       denyRead: SENSITIVE_PATH_PATTERNS.map((pattern) => `${pierce}/${pattern.endsWith("/**") ? pattern.slice(0, -3) : pattern}`), denyWrite: [],
       protectedFloor: [`${sessionsRoot}\\`, `${win32.join(aveHome, "config")}\\`], floorPierces: [pierce],
@@ -212,21 +213,21 @@ describe("pattern denies", () => {
   it("walks a read-only grant that sits behind a link inside the prefix, and lists a nested root only once", () => {
     const inner = win32.join(sessions, "j", "inner");
     const behindLink = { [sessions]: [entry("j", "link")], [inner]: [entry("id_rsa")] };
-    expect(rankMxcFilesystem(policy([`${sessions}/**/id_rsa`], [sessions, inner]), existsIn(behindLink), lister(behindLink)).denied)
+    expect(rankMxcLists(policy([`${sessions}/**/id_rsa`], [sessions, inner]), existsIn(behindLink), lister(behindLink)).denied)
       .toEqual([win32.join(inner, "id_rsa")]);
     const nested = win32.join(sessions, "inner");
     const files = (count: number) => Array.from({ length: count }, (_, index) => entry(`file-${index}`));
     const plain = { [sessions]: [...files(6_000), entry("inner", "directory")], [nested]: [...files(8_000), entry("id_rsa")] };
-    expect(rankMxcFilesystem(policy([`${sessions}/**/id_rsa`], [sessions, nested]), existsIn(plain), lister(plain)).denied)
+    expect(rankMxcLists(policy([`${sessions}/**/id_rsa`], [sessions, nested]), existsIn(plain), lister(plain)).denied)
       .toEqual([win32.join(nested, "id_rsa")]);
   });
 
   it("expands an unanchored pattern over every read-only grant, and refuses it beside a writable grant", () => {
     const other = win32.join(home, "notes");
     const directories = { ...tree, [other]: [entry("id_rsa")] };
-    expect(rankMxcFilesystem(policy(["**/id_rsa", ".SSH"], [sessions, other], []), existsIn(directories), lister(directories)).denied)
+    expect(rankMxcLists(policy(["**/id_rsa", ".SSH"], [sessions, other], []), existsIn(directories), lister(directories)).denied)
       .toEqual([win32.join(sessions, "one", ".SSH"), win32.join(sessions, "one", "notes", "id_rsa"), win32.join(home, "notes", "id_rsa")]);
-    expect(() => rankMxcFilesystem(policy(["**/.ssh"]), exists, list))
+    expect(() => rankMxcLists(policy(["**/.ssh"]), exists, list))
       .toThrow(/^Windows sandbox policy cannot hold pattern deny: \*\*\\\.ssh \(an unanchored pattern reaches a writable grant\)$/);
   });
 });
@@ -252,7 +253,7 @@ describe.skipIf(process.platform !== "win32")("native missing deny parents", () 
         ["nested", [join(directory, "a", "b", ".ssh")]], ["workspace", workspaceDenies]] as const) {
         // A floor row in directory form over a placeholder file, as `~/.ave/routine` can be.
         const floorRow = label === "file in directory form";
-        const grants = rankMxcFilesystem({ allowWrite: [directory], allowRead: [], denyRead: floorRow ? denies : [],
+        const grants = rankMxcLists({ allowWrite: [directory], allowRead: [], denyRead: floorRow ? denies : [],
           denyWrite: floorRow ? [] : denies, protectedFloor: label === "workspace" ? floor : [] }, existsSync);
         const request = buildMxcShellRequest({ commandLine: powerShellMxcCommandLine(process.env.SystemRoot!, "exit 0"), cwd: directory, grants,
           env: { SYSTEMROOT: process.env.SystemRoot!, LOCALAPPDATA: directory }, proxyUrl: "http://127.0.0.1:9", timeoutMs: TOOL_TIMEOUT_POLICY.shellDefaultMs });

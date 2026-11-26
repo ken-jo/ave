@@ -2,11 +2,12 @@ import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { isSecuritySettingsPatch } from "../../shared/security-settings.js";
 import { broadcastSettingsSnapshot, rendererSettingsSnapshot } from "./settings.js";
 /** Permissions domain IPC handlers. Covers: ave:permission:*, ave:approval:*, ave:policy:* */
-import { isBrowserSiteChoice } from "../../shared/permissions-events.js";
+import { isBrowserSiteChoice, isExtensionStartChoices } from "../../shared/permissions-events.js";
 import { ipcMain, session, type IpcMainInvokeEvent } from "electron";
 import { isRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
+import { RunGrantError, runGrantKeyOfSession } from "../../permissions/run-grants.js";
 import { loadPolicy, savePolicy, validatePolicyPatch, PolicyWriteError } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import { UNATTRIBUTED_APPROVAL_SESSION_ID, type ApprovalDecision } from "../../permissions/approval-gate.js";
@@ -22,7 +23,7 @@ import {
 const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
 import { errorMessage } from "../../shared/error-message.js";
 import { exactCanonicalStringify } from "../../shared/exact-json.js";
-import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, AveHomeConfigurationRefusedWriteError, getAveHomePrivacyFailure, isAveHomeBoundaryCategory } from "../../shared/ave-home.js";
+import { AveHomeConfigurationRefusedWriteError, getAveHomePrivacyFailure } from "../../shared/ave-home.js";
 import { approveAveHomeTrustItems, AveHomeTrustReviewError, getAveHomeTrustReview, removeAveHomeTrustItem, type AveHomeTrustReviewView } from "../../shared/ave-home-trust.js";
 import { AveHomeConfigurationNotOwnerError } from "../../shared/ave-home-configuration-access.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
@@ -82,6 +83,7 @@ import {
   getHostShellExecutionPlan,
   getSandboxBootOutcome,
   getWindowsSandboxSubstrate,
+  getSandboxHomesUnavailable,
   isShellSandboxRequestedAtBoot,
   isPluginWorkerConfinementRequestedAtBoot,
   setSandboxStatusChangeListener,
@@ -383,7 +385,6 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         path: privacyFailure.failedPath ?? privacyFailure.home,
         category: privacyFailure.category,
         extraPrincipals: privacyFailure.extraPrincipals,
-        approvedForSession: areExtensionsWithoutIsolationApproved(),
       } } : {}),
       // What the gate decided THIS boot. The runtime snapshot cannot stand in for it: a degraded gate never publishes a capability, so `runtime` reports the same "no OS
       // sandbox configured" it reports when the user never turned the sandbox on. Raw dependency messages stay main-side (boot log); the renderer gets the classified causes.
@@ -391,6 +392,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       shell,
       // Windows: which substrate carries shells and extensions this boot and how strongly their egress is attributed (proxy-egress PR 9).
       windowsSubstrate: platform === "win32" ? getWindowsSandboxSubstrate() : null,
+      ...(platform === "win32" && getSandboxHomesUnavailable() ? { sandboxHomesUnavailable: true } : {}),
       shellExecutionPlan: getHostShellExecutionPlanAuditProjection(shellPlan),
       confines: sandboxConfinementForPlatform(platform, kind),
     };
@@ -493,6 +495,32 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       diagnostic: await describeUpstreamProxy(routerDeps, UPSTREAM_PROXY_DIAGNOSTIC_URL),
     };
   };
+
+  ipcMain.handle(PERMISSIONS.watchedQuarantineList, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.watchedQuarantineList, e); return UNAUTHORIZED_FRAME; }
+    const { listWatchedQuarantine } = await import("../../permissions/windows-watched-rows.js");
+    try { return { ok: true as const, entries: listWatchedQuarantine() }; }
+    catch (error) { return { ok: false as const, error: "watched-quarantine-unreadable", message: errorMessage(error) }; }
+  });
+
+  ipcMain.handle(PERMISSIONS.watchedQuarantineRestore, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.watchedQuarantineRestore, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    const { slot, index } = body;
+    if (typeof slot !== "string" || typeof index !== "number" || !Number.isInteger(index) || index < 0) {
+      return { ok: false, error: "invalid-watched-quarantine-entry", message: "restore: slot and index are required" };
+    }
+    const { restoreWatchedQuarantine } = await import("../../permissions/windows-watched-rows.js");
+    try {
+      const { restored } = await restoreWatchedQuarantine(slot, index);
+      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "settings", type: "approval", output: `[watched-quarantine:restore] slot=${slot} index=${index} restored=${JSON.stringify(restored)}` });
+      return { ok: true as const, restored };
+    } catch (error) {
+      return { ok: false as const, error: "watched-quarantine-restore-failed", message: errorMessage(error) };
+    }
+  });
 
   ipcMain.handle(PERMISSIONS.upstreamProxyGet, async (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.upstreamProxyGet, e); return UNAUTHORIZED_FRAME; }
@@ -598,23 +626,6 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       return { ok: false, error: "not-applicable", message: "Windows sandbox install is only available on win32" };
     }
     return installAsrtWindowsSandbox();
-  });
-
-  ipcMain.handle(PERMISSIONS.approveExtensionsWithoutIsolation, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approveExtensionsWithoutIsolation, e); return UNAUTHORIZED_FRAME; }
-    const intent = requireUserKeyboardIntent(payloadRecord(payload).intent);
-    if (!intent.ok) return intent;
-    const failure = getAveHomePrivacyFailure();
-    if (failure === undefined) return { ok: false, error: "not-applicable", message: "Home privacy approval is not applicable" };
-    if (!areExtensionsWithoutIsolationApproved()) {
-      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
-        output: JSON.stringify({ action: "extensions_without_isolation_approved", who: "user-ui",
-          category: failure.category,
-          // A read-boundary refusal's audit carries its category and code only.
-          ...(isAveHomeBoundaryCategory(failure.category) ? { code: failure.reason } : { path: failure.failedPath ?? failure.home }) }) });
-      approveExtensionsWithoutIsolation();
-    }
-    return { ok: true };
   });
 
   ipcMain.handle(PERMISSIONS.homeTrustReview, async (e) => {
@@ -829,8 +840,11 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const body = payloadRecord(payload);
     if (typeof body.requestId !== "string" ||
       body.browserSite !== undefined || body.userOwnedSurface !== undefined || body.userOwnedSurfaceReviewFallback !== undefined ||
+      // The desktop card answers every start at once; a single-row answer is the remote surface's form.
+      body.extensionStartRow !== undefined ||
       (body.choice !== "allow-once" && body.choice !== "allow-session" && body.choice !== "allow-always" && body.choice !== "deny-once" && body.choice !== "deny-always") ||
       (body.browserSiteChoice !== undefined && !isBrowserSiteChoice(body.browserSiteChoice)) ||
+      (body.extensionStartChoices !== undefined && !isExtensionStartChoices(body.extensionStartChoices)) ||
       (body.userOwnedSurfaceChoice !== undefined && !isUserOwnedSurfaceChoice(body.userOwnedSurfaceChoice))) {
       return { ok: false, error: "invalid-payload", message: "Invalid approval response" };
     }
@@ -1187,13 +1201,13 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     if (
       typeof args !== "string" ||
       (decision !== "allow" && decision !== "deny") ||
-      (scope !== "session" && scope !== "persistent" && scope !== "global") ||
+      (scope !== "session" && scope !== "run" && scope !== "persistent" && scope !== "global") ||
       (displayedVerdictAtApproval !== "low" && displayedVerdictAtApproval !== "medium" && displayedVerdictAtApproval !== "high")
       || (body.readjudicate !== undefined && body.readjudicate !== true)
     ) {
       return { ok: false, error: "invalid-payload", message: "user-approval record: invalid payload" };
     }
-    if (decision === "deny" && scope === "session") {
+    if (decision === "deny" && (scope === "session" || scope === "run")) {
       return { ok: false, error: "deny-requires-persistent-scope", message: "Exact deny decisions are managed persistently in Settings" };
     }
     // Server-side SOT lookup. If the approval already resolved/timed out or never existed, reject; we
@@ -1223,7 +1237,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       }
       const manager = conversationLoop.permissionManager;
       const saveToken = manager === undefined ? undefined : approvalGate.beginApprovalRuleSave(requestId, manager.getPolicyEpoch());
-      let savedScope: "session" | "project" | "always" | undefined;
+      let savedScope: "session" | "run" | "project" | "always" | undefined;
       try {
         const saved = await saveApprovalCardRule(snapshot, payloadRecord(body.rule), { decision, scope, displayedVerdictAtApproval }, manager, authority, async (rule) => {
           await auditLogger.append({
@@ -1265,8 +1279,14 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     // Conservative risk display during a failed assessment does not decide persistence. Only the gate's live eligibility snapshot can authorize it.
     // Every session approval (shell, browser, terminal, any exact tool approval) belongs to the
     // root conversation of the request, so one without a conversation has nothing to be scoped to.
-    if (scope === "session" && !snapshot.sessionId) {
+    if ((scope === "session" || scope === "run") && !snapshot.sessionId) {
       return { ok: false, error: "missing-session", message: "This request has no conversation session" };
+    }
+    // "Allow for this run" (permission tree, node R): only a stage session of a live attended template run makes one, by the host's own
+    // membership record. The floors and one-shot cards were refused above, like every remembered scope.
+    // The host offered the run on this card (`runStage.runAllowOffered`), and its session is still a member of a live attended run.
+    if (scope === "run" && (snapshot.runStage?.runAllowOffered !== true || runGrantKeyOfSession(snapshot.sessionId) === undefined)) {
+      return { ok: false, error: "run-scope-unavailable", message: "This request does not belong to a run that takes a run allow" };
     }
     // A project allow is bound to the request's working directory; a global one (owner 2026-10-25, "Always allow everywhere") applies in every project
     // and needs none, but the live request must still permit remembering it.
@@ -1299,8 +1319,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       await recordApproval(snapshot.toolName, canonicalArgs, snapshot.source, {
         decision,
         scope,
-        ...(scope === "session" ? { sessionId: snapshot.sessionId } : {}),
-        ...(snapshot.projectCwd === undefined || scope === "global" ? {} : { projectCwd: snapshot.projectCwd }),
+        ...(scope === "session" || scope === "run" ? { sessionId: snapshot.sessionId } : {}),
+        ...(snapshot.projectCwd === undefined || scope === "global" || scope === "run" ? {} : { projectCwd: snapshot.projectCwd }),
         verdictAtApproval,
         nlJustification: typeof nlJustification === "string" ? nlJustification : null,
         trustOrigin: snapshot.trustOrigin,
@@ -1326,6 +1346,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     } catch (err) {
       // The saved-approvals store refuses writes while boot refuses the home folder: the card answers once instead and says why.
       if (err instanceof AveHomeConfigurationRefusedWriteError) return { ok: false, error: HOME_FOLDER_REFUSED, message: err.message };
+      // The run ended while the card's authority was checked: nothing was stored.
+      if (err instanceof RunGrantError) return { ok: false, error: "run-scope-unavailable", message: err.message };
       return { ok: false, error: "managed", message: (err as Error).message };
     }
   });

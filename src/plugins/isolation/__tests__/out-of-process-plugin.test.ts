@@ -1,11 +1,29 @@
+// The staging parent start-up establishes under the runtime root, as a synthetic path.
+vi.mock("../../../permissions/mxc-runtime-root.js", async (original) => {
+  const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../../__tests__/support/mxc-staging-parent.js");
+  return {
+    ...await original<typeof import("../../../permissions/mxc-runtime-root.js")>(),
+    mxcStagingParent: () => SYNTHETIC_MXC_STAGING_PARENT,
+  };
+});
 vi.mock("../../../shared/windows-path-facts.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../../shared/windows-configuration-handles.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
-vi.mock("node:fs", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+vi.mock("node:fs", async original => {
+  const fs = (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original());
+  const nativePlatform = process.platform;
+  return {
+    ...fs,
+    statSync: (path: unknown, ...args: unknown[]) => Reflect.apply(fs.statSync, fs, [
+      path === "/usr/bin/env" && nativePlatform === "win32" && process.platform === "linux" ? process.execPath : path,
+      ...args,
+    ]),
+  };
+});
 
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
-import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
+import { aveHome, ensureAveHomePrivate } from "../../../shared/ave-home.js";
 /** Exercise the real child runtime and factory; recorded spawn calls alone do not prove confinement. */
 import { beforeAll, describe, expect, it, type TestContext, vi } from "vitest";
 import { configureHostResources } from "../../../main/host-resources.js";
@@ -157,9 +175,14 @@ import type {
 import { servePluginChild } from "../plugin-child-main.js";
 import { createOutOfProcessPluginFactory, PluginSandboxGrantError, pluginFactoryDeadlineMs, spawnConfinedPluginChild } from "../out-of-process-plugin.js";
 import { TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../../../shared/tool-timeout-policy.js";
-import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
-import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
+import { setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
+import { approvedExtensionStart } from "../../../__tests__/support/approved-extension-start.js";
+import { EXTENSION_START_CONSENT_REQUIRED_CODE, pluginChildStartKey, type ExtensionStartAuthority } from "../../../permissions/extension-start-consent.js";
+import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest, setWindowsSandboxSubstrate } from "../../../permissions/sandbox-capability.js";
+import { planWindowsSandbox } from "../../../boot/steps/windows-sandbox-plan.js";
+import { prepareMxcPluginChildLaunch } from "../mxc-plugin-child-launch.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
+import { prepareSandboxTargetLaunch } from "../../../permissions/launcher-environment.js";
 import { getManagedChildProcessCount, trackManagedChildProcess } from "../../../main/managed-child-processes.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import {
@@ -183,11 +206,10 @@ import {
 import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
 import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { buildSafeChildEnv } from "../../../tools/safe-env.js";
-import { createSandboxProcessHome } from "../../../permissions/sandbox-process-home.js";
 import { ProcessEntryUnconfinedError } from "../../process-entry.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 import { admittedMxcChild, nativePluginLaunch } from "../../../__tests__/support/mxc-plugin-launch.js";
-import { MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
+import { MxcNativeEntryRequiredError, MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
 import { holdWindowsFilesystemGrant } from "../../../permissions/windows-acl-grant-holder.js";
 import { PluginRuntime, createNoopHostApiForTests } from "../../runtime.js";
 import { runPluginFactoryWithTimeout } from "../../runtime/index.js";
@@ -1127,6 +1149,60 @@ describe("native factory failures with unverified termination", () => {
   });
 });
 
+describe("native floor pierces", () => {
+  it("pierces the read floor only for the reviewed host directories the manifest declares", async () => {
+    const roots = spawnableRoots();
+    const registration = { assertCurrent: vi.fn(), dispose: vi.fn(), quarantine: vi.fn(), terminating: vi.fn() };
+    const { dir, entryPath } = writePluginModule();
+    spawnNativeChild.mockReset().mockRejectedValue(new Error("stop at admission"));
+    try {
+      const pierces = async (sandbox?: PluginManifest["sandbox"]): Promise<unknown> => {
+        const factory = createOutOfProcessPluginFactory({ manifest: { ...MANIFEST, ...(sandbox ? { sandbox } : {}) }, launch: { kind: "entry", entryPath },
+          prepareMxcChild: async () => nativePluginLaunch(), registerSandboxEnvelope: () => registration });
+        await Promise.resolve().then(() => factory(hostContext(fakeHostApi(), roots.context))).catch(() => undefined);
+        const [admitted] = spawnNativeChild.mock.lastCall as [{ floorPierces: unknown }];
+        return admitted.floorPierces;
+      };
+      await expect(pierces()).resolves.toEqual([]);
+      await expect(pierces({ read: [{ kind: "hostDirectory", segments: ["runtime"], why: "Managed runtimes." }] })).resolves.toEqual([]);
+      await expect(pierces({ read: [{ kind: "hostDirectory", segments: ["certs"], why: "Trust anchors." }] }))
+        .resolves.toEqual([join(aveHome(), "certs")]);
+      expect(spawnNativeChild).toHaveBeenCalledTimes(3);
+    } finally { roots.remove(); rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+// The runtime routes a factory to one route from the selection it reads then; a later change is refused, never run.
+describe.skipIf(process.platform !== "win32")("container backend selection changed after routing", () => {
+  it("refuses the start in either direction, on no route", async () => {
+    const roots = spawnableRoots();
+    const registration = { assertCurrent: vi.fn(), dispose: vi.fn(), quarantine: vi.fn(), terminating: vi.fn() };
+    const { dir, entryPath } = writePluginModule();
+    const select = (): void => setWindowsSandboxSubstrate(planWindowsSandbox({ shellRequested: false, workerRequested: true,
+      mxc: { state: "available" }, extensionMxc: { state: "available" }, windowsBuild: null, srtWinReady: false }).substrate);
+    const start = (factory: ReturnType<typeof createOutOfProcessPluginFactory>) =>
+      Promise.resolve().then(() => factory(hostContext(fakeHostApi(), roots.context)));
+    spawnNativeChild.mockReset();
+    spawnConfinedChild.mockClear();
+    try {
+      select();
+      const routedNative = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath },
+        prepareMxcChild: prepareMxcPluginChildLaunch, registerSandboxEnvelope: () => registration });
+      __resetWindowsSandboxSubstrateForTest();
+      await expect(start(routedNative)).rejects.toThrow("the extension container backend is not selected");
+      const routedLegacy = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
+      select();
+      await expect(start(routedLegacy)).rejects.toBeInstanceOf(MxcNativeEntryRequiredError);
+      expect(spawnNativeChild).not.toHaveBeenCalled();
+      expect(spawnConfinedChild).not.toHaveBeenCalled();
+    } finally {
+      __resetWindowsSandboxSubstrateForTest();
+      roots.remove();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("a native setup the factory deadline abandoned", () => {
   it("refuses the native spawn once the deadline passed during admission, and releases the launch", async () => {
     const roots = spawnableRoots();
@@ -1230,21 +1306,54 @@ describe("construct negotiates the host protocol", () => {
     } finally { service.hostGone(); roots.remove(); rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it("refuses a factory start before home privacy approval and reaches the child spawn after approval", async () => {
+  it("refuses a factory start under an unverified home until a person approves that one start", async () => {
     const roots = spawnableRoots();
     const originalPlatform = process.platform;
     spawnConfinedChild.mockReset();
     setProcessPlatform("win32");
     setPluginWorkerConfinementRequestedAtBoot(true);
     setAveHomePrivacyAtBoot({ enforcement: "none", home: roots.context.pluginRoot!, category: "read-back-failed", reason: "fixture" });
+    let waiting: ExtensionStartAuthority | undefined;
     const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST,
-      launch: { kind: "entry", entryPath: join(roots.context.pluginRoot!, "never-imported.mjs") } });
+      launch: { kind: "entry", entryPath: join(roots.context.pluginRoot!, "never-imported.mjs") },
+      takeExtensionStart: () => { const taken = waiting; waiting = undefined; return taken; } });
     try {
-      await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toThrow("Settings > Permissions");
+      // The refusal names the start by what it would run: this manifest, this entry and these roots.
+      type Refusal = { code?: string; start?: { key: string; identity: string } } | undefined;
+      const refusalOf = (start: () => unknown): Promise<Refusal> => Promise.resolve().then(start).then(() => undefined, (error: unknown) => error as Refusal);
+      const named = (refusal: Refusal): string => refusal?.start?.identity ?? "the refusal names no start";
+      const refused = await refusalOf(() => factory(hostContext(fakeHostApi(), roots.context)));
+      expect(refused).toMatchObject({ code: EXTENSION_START_CONSENT_REQUIRED_CODE, start: { key: pluginChildStartKey(MANIFEST.id), identity: expect.stringMatching(/^[0-9a-f]{64}$/u) } });
+      const identity = named(refused);
       expect(spawnConfinedChild).not.toHaveBeenCalled();
-      approveExtensionsWithoutIsolation();
+      // A yes for the same plugin id under another version, another declared entry or another verified artifact does not start
+      // this one, and is spent by trying.
+      for (const other of [
+        { manifest: { ...MANIFEST, version: `${MANIFEST.version}-next` } },
+        { manifest: { ...MANIFEST, entry: "another-entry.mjs" } },
+        { manifest: MANIFEST, integrity: { installSource: "marketplace", artifactSha256: "b".repeat(64) } },
+      ]) {
+        const changed = createOutOfProcessPluginFactory({ ...other, launch: { kind: "entry", entryPath: join(String(roots.context.pluginRoot), "never-imported.mjs") } });
+        const shown = await refusalOf(() => changed(hostContext(fakeHostApi(), roots.context)));
+        expect(shown).toMatchObject({ start: { identity: expect.stringMatching(/^[0-9a-f]{64}$/u) } });
+        expect(named(shown)).not.toBe(identity);
+        waiting = await approvedExtensionStart(pluginChildStartKey(MANIFEST.id), named(shown));
+        await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toThrow(EXTENSION_START_CONSENT_REQUIRED_CODE);
+        expect(waiting).toBeUndefined();
+      }
+      // The same plugin's next activation runs from another generation directory: it is the same start to the person.
+      const nextActivation = createOutOfProcessPluginFactory({ manifest: MANIFEST,
+        launch: { kind: "entry", entryPath: join(String(roots.context.pluginRoot), "generations", "next", "never-imported.mjs") } });
+      expect(named(await refusalOf(() => nextActivation(hostContext(fakeHostApi(), { ...roots.context, pluginRoot: join(String(roots.context.pluginRoot), "generations", "next") })))))
+        .toBe(identity);
+      expect(spawnConfinedChild).not.toHaveBeenCalled();
+      waiting = await approvedExtensionStart(pluginChildStartKey(MANIFEST.id), identity);
       spawnConfinedChild.mockRejectedValueOnce(new Error("fixture spawn reached"));
       await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toThrow("fixture spawn reached");
+      expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
+      expect(spawnConfinedChild.mock.calls.at(0)?.[0]).toMatchObject({ extensionStart: { key: pluginChildStartKey(MANIFEST.id), identity } });
+      // The next start has no consent of its own.
+      await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toThrow(EXTENSION_START_CONSENT_REQUIRED_CODE);
       expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
     } finally {
       _resetAveHomePrivacyForTest();
@@ -1542,59 +1651,37 @@ describe("the factory's launch reaches the spawn as decided", () => {
     return Promise.resolve(factory(hostContext(fakeHostApi(), roots.context))).then(() => undefined, (error: unknown) => error);
   }
 
-  // POSIX process launches are not measured on Windows; every platform still checks the Windows refusal.
-  it.skipIf(process.platform === "win32")(
-    "spawns /usr/bin/env inside the wrap with the declared pairs, then the host-owned pair, then the command",
-    async () => {
+  it.each(["ordinary", "with=equals"])(
+    "gives the spawn gate only the resolved program and ordinary args for path case %s",
+    async (directory) => {
       const roots = spawnableRoots();
-      const root = roots.context.pluginRoot!;
-      spawnConfinedChild.mockClear();
+      const launch = processLaunch(join(roots.context.pluginRoot!, directory));
+      const platform = process.platform;
+      spawnConfinedChild.mockReset();
+      const reachedGate = new Error("fixture spawn reached");
+      spawnConfinedChild.mockRejectedValueOnce(reachedGate);
       sandbox.active = true;
-      const sandboxHomeKeys = (() => {
-        const home = createSandboxProcessHome();
-        try {
-          return Object.keys(home.env).sort();
-        } finally {
-          home.cleanup();
-        }
-      })();
+      fakeSandboxHome.on = true;
+      setProcessPlatform("linux");
       try {
-        await attempt(processLaunch(root), PROCESS_MANIFEST, roots);
+        expect(await attempt(launch, PROCESS_MANIFEST, roots)).toBe(reachedGate);
         expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
-        const spec = spawnConfinedChild.mock.calls[0]![0] as {
-          command: string;
-          args: string[];
-          baseEnv: NodeJS.ProcessEnv;
-          extraEnv: Record<string, string>;
-          requireWrap: boolean;
-        };
-        expect(spec.command).toBe("/usr/bin/env");
-        expect(spec.requireWrap).toBe(true);
-        expect(spec.args).toEqual([
-          `SMOKE_VENDOR_DIR=${join(root, "vendor")}`,
-          `PLUGIN_ROOT=${root}`,
-          `PLUGIN_DATA=${join(root, "data")}`,
-          join(root, "bin", "plugin"),
-          "--x=1",
-        ]);
-        // Keep manifest bytes out of wrapper environment because the outer shell reads it before confinement.
-        expect(spec.baseEnv).toEqual(buildSafeChildEnv());
-        expect(Object.keys(spec.extraEnv).sort()).toEqual(sandboxHomeKeys);
-        // Deny sibling plugin directories while reallowing only this child root and data.
-        const reach = spawnConfinedChild.mock.calls[0]![0] as {
-          grantMode: string;
-          denyPluginsRoot?: boolean;
-          allowRead: string[];
-        };
-        expect(reach.grantMode).toBe("allow-list");
-        expect(reach.denyPluginsRoot).toBe(true);
-        expect(reach.allowRead).toEqual(expect.arrayContaining([root, join(root, "data")]));
-        for (const name of ["SMOKE_VENDOR_DIR", "PLUGIN_ROOT", "PLUGIN_DATA", "ELECTRON_RUN_AS_NODE"]) {
-          expect(spec.baseEnv).not.toHaveProperty(name);
-          expect(spec.extraEnv).not.toHaveProperty(name);
-        }
+        expect(spawnConfinedChild).toHaveBeenCalledWith(expect.objectContaining({
+          command: launch.command,
+          args: launch.args,
+          baseEnv: buildSafeChildEnv(),
+          extraEnv: expect.objectContaining({ ...launch.env, HOME: expect.any(String) }),
+          requireWrap: true,
+          requireProcessGroupReaper: true,
+          grantMode: "allow-list",
+          denyPluginsRoot: true,
+          allowRead: expect.arrayContaining([roots.context.pluginRoot]),
+        }));
       } finally {
+        setProcessPlatform(platform);
         sandbox.active = false;
+        fakeSandboxHome.on = false;
+        spawnConfinedChild.mockReset();
         roots.remove();
       }
     },
@@ -1609,6 +1696,96 @@ describe("the factory's launch reaches the spawn as decided", () => {
       expect(refused).toMatchObject({ code: "process-entry-unconfined" });
       expect(spawnConfinedChild).not.toHaveBeenCalled();
     } finally {
+      roots.remove();
+    }
+  });
+
+  it.each([
+    ["a setup failure byte", true, "sandbox target environment setup failed"],
+    ["no status byte", false, "child exited code=1 signal=null"],
+  ])("reports an exit 1 with %s without the resolved value", async (_case, setupFailed, expected) => {
+    const roots = spawnableRoots();
+    const platform = process.platform;
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const status = new PassThrough();
+    const canary = "invalid-locale-fixture-canary";
+    const launch = processLaunch(roots.context.pluginRoot!);
+    const child = Object.assign(new EventEmitter(), {
+      exitCode: 1, signalCode: null, stdin, stdout, stdio: [stdin, stdout, null, null, new PassThrough(), status],
+    });
+    prepareSandboxTargetLaunch("/bin/sh", [], {}).sendEnvironment(child as unknown as ChildProcess);
+    // The exit is already recorded; the status byte arrives afterwards.
+    setTimeout(() => status.end(setupFailed ? Buffer.from([1]) : undefined), 5);
+    spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "linux-bubblewrap" });
+    sandbox.active = true;
+    fakeSandboxHome.on = true;
+    setProcessPlatform("linux");
+    try {
+      const spawned = await spawnConfinedPluginChild({
+        pluginId: PROCESS_MANIFEST.id,
+        socketDir: resolvePluginSocketDir(launch.env.PLUGIN_DATA),
+        envelope: { read: [], write: [] },
+        launch: { ...launch, env: { ...launch.env, LC_ALL: canary } },
+      });
+      const reason = await new Promise<string>(resolve => spawned.link.onGone(resolve));
+      expect(reason).toBe(`[out-of-process-plugin] ${PROCESS_MANIFEST.id}: ${expected}`);
+      expect(reason).not.toContain(canary);
+    } finally {
+      setProcessPlatform(platform);
+      sandbox.active = false;
+      fakeSandboxHome.on = false;
+      spawnConfinedChild.mockReset();
+      stdin.destroy();
+      stdout.destroy();
+      status.destroy();
+      roots.remove();
+    }
+  });
+
+  it("redacts resolved values only from the stderr of the launch that received them", async () => {
+    const roots = spawnableRoots();
+    const platform = process.platform;
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const firstStderr = new PassThrough();
+    const secondStderr = new PassThrough();
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    const canary = "resolved-env-canary";
+    const launch = processLaunch(roots.context.pluginRoot!);
+    sandbox.active = true;
+    fakeSandboxHome.on = true;
+    setProcessPlatform("linux");
+    try {
+      for (const [stderr, env] of [
+        [firstStderr, { ...launch.env, LC_ALL: canary }],
+        [secondStderr, launch.env],
+      ] as const) {
+        const child = Object.assign(new EventEmitter(), { exitCode: 0, signalCode: null, stdin, stdout, stderr });
+        spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "linux-bubblewrap" });
+        await spawnConfinedPluginChild({
+          pluginId: PROCESS_MANIFEST.id,
+          socketDir: resolvePluginSocketDir(launch.env.PLUGIN_DATA),
+          envelope: { read: [], write: [] },
+          launch: { ...launch, env },
+        });
+        stderr.end(`diagnostic ${canary}\n`);
+      }
+      const fields = { pluginId: PROCESS_MANIFEST.id };
+      expect(info.mock.calls.filter(([, data]) => (data as { pluginId?: string } | undefined)?.pluginId === fields.pluginId)).toEqual([
+        ["[plugin-stderr] diagnostic [REDACTED]", fields],
+        [`[plugin-stderr] diagnostic ${canary}`, fields],
+      ]);
+    } finally {
+      setProcessPlatform(platform);
+      sandbox.active = false;
+      fakeSandboxHome.on = false;
+      spawnConfinedChild.mockReset();
+      stdin.destroy();
+      stdout.destroy();
+      firstStderr.destroy();
+      secondStderr.destroy();
+      info.mockRestore();
       roots.remove();
     }
   });
@@ -1654,25 +1831,6 @@ describe("the factory's launch reaches the spawn as decided", () => {
       roots.remove();
     }
   });
-
-  it.skipIf(process.platform === "win32")(
-    "refuses a resolved command path containing '=' before the spawn, naming the path",
-    async () => {
-      const roots = spawnableRoots();
-      const root = join(roots.context.pluginRoot!, "a=b");
-      spawnConfinedChild.mockClear();
-      sandbox.active = true;
-      try {
-        const refused = await attempt(processLaunch(root), PROCESS_MANIFEST, roots);
-        expect(refused).toBeInstanceOf(Error);
-        expect((refused as Error).message).toContain(`'${join(root, "bin", "plugin")}' contains '='`);
-        expect(spawnConfinedChild).not.toHaveBeenCalled();
-      } finally {
-        sandbox.active = false;
-        roots.remove();
-      }
-    },
-  );
 
   it.skipIf(process.platform === "win32")(
     "grants the child no worker run root: it reads, and holds a Unix-socket allow for, its own socket directory only",

@@ -1,5 +1,5 @@
 import net from "node:net";
-import { execFile } from "node:child_process";
+import { execFile, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
@@ -14,7 +14,8 @@ import * as policyPipe from "../mxc-policy-pipe.js";
 import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../../shared/windows-command-line.js";
-import { buildMxcShellRequest, isWindowsPathAtOrUnder, mxcRequestArgs, MXC_REQUEST_CHARACTER_LIMIT, openMxcRequestTransport, parseMxcDryRunOutput, rankMxcFilesystem, resolveHostWxcExecPath } from "../mxc-windows.js";
+import { buildMxcShellRequest, isWindowsPathAtOrUnder, mxcRequestArgs, MXC_REQUEST_CHARACTER_LIMIT, openMxcRequestTransport, parseMxcDryRunOutput, parseMxcProbeOutput, resolveHostWxcExecPath } from "../mxc-windows.js";
+import { rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 
 const LAUNCHER = String.raw`C:\Program Files\Ave\resources\mxc\x64\wxc-exec.exe`;
 function request(padding = 0) {
@@ -143,7 +144,7 @@ describe.skipIf(process.platform !== "win32")("named-pipe policy delivery", () =
     const workspace = `${home}\\work`;
     const policy = { allowWrite: [workspace], allowRead: [home], denyRead: floor, protectedFloor: floor,
       denyWrite: [`${workspace}\\controls`, `${workspace}\\controls\\nested`, `${workspace}\\missing`, `${workspace}\\missing\\nested`] };
-    const grants = rankMxcFilesystem(policy, (path) => !path.includes("missing"));
+    const grants = rankMxcLists(policy, (path) => !path.includes("missing"));
     expect(grants.readwrite).toEqual([workspace]);
     expect(grants.readonly).toEqual([home, `${workspace}\\controls`, `${workspace}\\controls\\nested`]);
     const original = [...floor.filter((path) => isWindowsPathAtOrUnder(path, home)), `${workspace}\\missing`, `${workspace}\\missing\\nested`];
@@ -202,6 +203,22 @@ describe.skipIf(process.platform !== "win32")("named-pipe policy delivery", () =
       grants: { readwrite: [directory], readonly: [], denied: [] },
       env: { SYSTEMROOT: process.env.SystemRoot!, LOCALAPPDATA: directory, PAD: "x".repeat(25_000) },
       proxyUrl: "http://127.0.0.1:9", timeoutMs: 1000 });
+    const launch = (mode: string, delivery: { args: readonly string[]; bindChild(child: ChildProcess): void }) =>
+      new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+        const child = execFile(launcher, [mode, ...delivery.args], { cwd: win32.dirname(launcher), windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.mxcRequestTransportMs }, (error, stdout, stderr) => {
+          if (error && typeof error.code !== "number") { reject(error); return; }
+          resolve({ code: error?.code as number | undefined ?? 0, stdout, stderr });
+        });
+        delivery.bindChild(child);
+      });
+    // The launcher's own tier for this request, delivered the same way.
+    const probeDelivery = await openMxcRequestTransport(body, launcher);
+    let probedTier: string | undefined;
+    try {
+      const probe = await launch("--probe", probeDelivery);
+      expect(probe.code, JSON.stringify(probe)).toBe(0);
+      probedTier = parseMxcProbeOutput(probe.stdout)?.tier;
+    } finally { await probeDelivery.release(); }
     const transport = await openMxcRequestTransport(body, launcher);
     try {
       let refused: Promise<{ data: string; error: string | undefined }> | undefined;
@@ -217,14 +234,8 @@ describe.skipIf(process.platform !== "win32")("named-pipe policy delivery", () =
         });
         await new Promise<void>((resolveConnect, reject) => { socket.once("connect", resolveConnect); socket.once("error", reject); });
       }
-      const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-        const child = execFile(launcher, ["--dry-run", ...transport.args], { cwd: win32.dirname(launcher), windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.mxcRequestTransportMs }, (error, stdout, stderr) => {
-          if (error && typeof error.code !== "number") { reject(error); return; }
-          resolve({ code: error?.code as number | undefined ?? 0, stdout, stderr });
-        });
-        transport.bindChild(child);
-      });
-      expect(parseMxcDryRunOutput(result.code, result.stdout, result.stderr), JSON.stringify(result)).toEqual({ ok: true });
+      const result = await launch("--dry-run", transport);
+      expect(parseMxcDryRunOutput(result.code, result.stdout, result.stderr, probedTier), JSON.stringify({ result, probedTier })).toEqual({ ok: true });
       if (refused) {
         const refusal = await refused;
         expect(refusal.data).toBe("");
@@ -254,7 +265,7 @@ describe.skipIf(process.platform !== "win32")("named-pipe policy delivery", () =
         const env = { SYSTEMROOT: process.env.SystemRoot!, LOCALAPPDATA: directory };
         const launch = await prepareOwnedMxcShellLaunch({ egressToken: "length", cwd: directory, commandLine: "cmd.exe /d /c exit 0", filesystem, env, timeoutMs: 1000, exists: () => true });
         try {
-          const grants = rankMxcFilesystem({ ...filesystem, protectedFloor: floor }, () => true);
+          const grants = rankMxcLists({ ...filesystem, protectedFloor: floor }, () => true);
           const body = buildMxcShellRequest({ cwd: directory, commandLine: "cmd.exe /d /c exit 0", grants, env, proxyUrl: `http://127.0.0.1:${launch.proxyPort}`, timeoutMs: 31_000 });
           const inlineLength = windowsCommandLineLength(launcher, ["--config-base64", Buffer.from(JSON.stringify(body)).toString("base64")]);
           const length = windowsCommandLineLength(launch.argv[0]!, launch.argv.slice(1));

@@ -1,10 +1,23 @@
+import { type ChildProcess, spawn, type SpawnOptions } from "node:child_process";
+import { statSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
 import { inspectPhysicalFilesystemPath } from "./shell-filesystem-path.js";
 
 /** Configuration every host-owned Git process carries before its subcommand. */
 const HOST_GIT_CONFIG = ["safe.bareRepository=explicit", "core.fsmonitor=false"] as const;
+/** Every hook event Git documents, as of the release `HOOK_EVENTS_VALIDATED` names; bumping that release means validating this list
+ * again. A configured hook is found apart from the hooks path, and some events are run under `--no-verify` too, so each event is
+ * switched off as a whole; a Git child the process starts inherits the switches. */
+export const HOOK_EVENTS_VALIDATED = [2, 56] as const;
+export const HOOK_EVENTS = [
+  "applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase",
+  "post-checkout", "post-merge", "pre-push", "pre-receive", "update", "proc-receive", "post-receive", "post-update", "reference-transaction", "push-to-checkout",
+  "pre-auto-gc", "post-rewrite", "sendemail-validate", "fsmonitor-watchman", "p4-changelist", "p4-prepare-changelist", "p4-post-changelist", "p4-pre-submit",
+  "post-index-change",
+] as const;
 const MAX_WORKSPACE_PATH_COMPONENTS = 64;
 const sandboxGitWrites = new Map<symbol, readonly string[]>();
+let workspaceGuard: ((workspace: string) => boolean) | undefined;
 
 function canonicalWorkspacePath(root: string): string {
   const resolution = inspectPhysicalFilesystemPath(root, process.cwd(), MAX_WORKSPACE_PATH_COMPONENTS);
@@ -27,8 +40,14 @@ export function holdSandboxGitWrites(writeRoots: readonly string[]): () => void 
   return () => { sandboxGitWrites.delete(token); };
 }
 
+/** The sandbox installs one extra refusal (a workspace holding a contained process's unswept protected entry). */
+export function setHostGitWorkspaceGuard(guard: (workspace: string) => boolean): void {
+  workspaceGuard = guard;
+}
+
 /** In-process ordering only; independent sibling workspaces remain available. */
 export function isHostGitWorkspaceAvailable(root: string): boolean {
+  if (workspaceGuard !== undefined && !workspaceGuard(root)) return false;
   if (sandboxGitWrites.size === 0) return true;
   let workspace: string;
   try {
@@ -40,6 +59,25 @@ export function isHostGitWorkspaceAvailable(root: string): boolean {
     if (roots.some((held) => containsWorkspace(held, workspace) || containsWorkspace(workspace, held))) return false;
   }
   return true;
+}
+
+/** The one place host git starts on a workspace: the hold on `workspace` is asked and the process started in one synchronous step, so
+ * no sandboxed command can take the hold in between. `held` starts nothing; neither does `no-folder`, a `cwd` that is no folder, which
+ * says nothing of the program and so is no failure to start it. */
+export function spawnHostGitIfWorkspaceFree(workspace: string, program: string, args: readonly string[], options: SpawnOptions, deadline?: number): ChildProcess | "held" | "no-folder" {
+  if (!isHostGitWorkspaceAvailable(workspace)) return "held";
+  if (options.cwd !== undefined && !isFolder(options.cwd)) return "no-folder";
+  const spawnOptions = { ...options, shell: false };
+  if (deadline !== undefined && performance.now() >= deadline) throw new DOMException("Git launch timed out", "TimeoutError");
+  return spawn(program, args, spawnOptions);
+}
+
+function isFolder(path: string | URL): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** Refuse implicit bare-repository discovery and prevent repository metadata from starting monitors or hooks. Callers retain their environment,
@@ -54,6 +92,7 @@ export function buildHostGitArgs(args: readonly string[], options: {
     ...options.configArgs ?? [],
     ...HOST_GIT_CONFIG.flatMap((entry) => ["-c", entry]),
     "-c", `core.hooksPath=${disabledHooksPath}`,
+    ...HOOK_EVENTS.flatMap((event) => ["-c", `hook.${event}.enabled=false`]),
     ...args,
   ];
 }

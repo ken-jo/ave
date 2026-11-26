@@ -1,4 +1,4 @@
-import type { EnvelopeToolRef } from "./workflow-template-types.js";
+import type { EnvelopeToolRef, WorkItemStageRun } from "./workflow-template-types.js";
 
 /** Keep board contracts renderer-safe. Overdue is derived on read for incomplete items past due, never persisted. */
 
@@ -399,6 +399,8 @@ export interface WorkBoardRunEvent {
   /** Template runs: the stage (and its attempt) the event is about. */
   stageId?: string;
   attempt?: number;
+  /** How the stage's pass condition was judged, when reported by the scheduler. */
+  judgedBy?: NonNullable<WorkItemStageRun["gate"]>["judgedBy"];
   /** Template runs: the run-authority code that refused the start or ended the run, with the tool it names when it names one. */
   reasonCode?: string;
   reasonTool?: EnvelopeToolRef;

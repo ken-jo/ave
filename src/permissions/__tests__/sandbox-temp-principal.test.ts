@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { basename, join, sep } from "node:path";
 
 import {
   appOwnedSandboxHomeRoot,
@@ -39,6 +39,7 @@ import {
   sandboxTempPrincipalDirName,
   type SandboxTempPrincipal,
 } from "../asrt-sandbox.js";
+import { mxcRuntimeRootFloorPath } from "../mxc-runtime-root.js";
 import { sweepSandboxPrivateRoot } from "../../boot/steps/sandbox-init.js";
 import { makeTestTreeWritable } from "../../plugins/__tests__/test-helpers.js";
 import { createSandboxProcessHome } from "../sandbox-process-home.js";
@@ -139,8 +140,12 @@ describe("the launcher that sets a principal's temp directory", () => {
     });
   });
 
-  it("refuses a command env(1) would read as an assignment", () => {
-    expect(() => sandboxTempEnvLaunch("/t/plugin-70", "/opt/a=b/tool", [])).toThrow(/contains '='/);
+  it("launches a pathname containing an equals sign as an executable", () => {
+    expect(sandboxTempEnvLaunch("/t/plugin-70", "/opt/a=b/tool", ["a b"])).toEqual({
+      command: "/usr/bin/env",
+      args: ["TMPDIR=/t/plugin-70", "TMP=/t/plugin-70", "TEMP=/t/plugin-70",
+        "/bin/bash", "-c", 'exec -- "$@"', "sandbox-temp", "/opt/a=b/tool", "a b"],
+    });
   });
 });
 
@@ -217,8 +222,10 @@ describe("the private roots in a sandbox read deny", () => {
       expect(denyRead).not.toContain(appOwnedSandboxTempRoot());
       expect(denyRead).not.toContain(appOwnedSandboxHomeRoot());
       expect(denyRead).not.toContain(appOwnedTerminalHandoffRoot());
+      // The container runtime root stays literal: no wrap on this route re-opens anything inside it.
+      expect(denyRead).toContain(mxcRuntimeRootFloorPath());
       const globRoots = new Set([
-        ...appOwnedSandboxPrivateRoots(),
+        appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot(), appOwnedTerminalHandoffRoot(),
         aveHome(),
         ...policyHomeAnchors().map((anchor) => join(anchor, ".ave")),
       ].flatMap((root) => [root, existsSync(root) ? realpathSync(root) : root]));
@@ -241,8 +248,11 @@ describe("the private roots in a sandbox read deny", () => {
     try {
       process.env.AVE_HOME = join(alias, ".ave");
       for (const root of appOwnedSandboxPrivateRoots()) ensureSandboxPrivateRoot(root);
-      const roots = appOwnedSandboxPrivateRoots();
+      // The roots under the aliased home. The container runtime root is outside the Ave home and already canonical.
+      const roots = appOwnedSandboxPrivateRoots().filter((root) => root.startsWith(`${alias}/`));
+      expect(roots.map((root) => basename(root))).toEqual(["tmp", "home", "handoff"]);
       const denyRead = buildPerCommandSandboxCustomConfig({ denyRead: getDefaultSensitiveReadDenyPaths() })!.filesystem!.denyRead;
+      expect(denyRead).toContain(mxcRuntimeRootFloorPath());
       for (const root of roots) {
         const canonical = realpathSync(root);
         expect(canonical).not.toBe(root);

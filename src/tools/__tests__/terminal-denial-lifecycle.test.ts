@@ -97,15 +97,11 @@ async function setup(source: Source, { disarmChain = false } = {}) {
   if (source === "shell-prep-abort") permissions.setRules([{ pattern: `Bash(${SHELL_COMMAND})`, action: "allow" }]);
   const controller = new AbortController();
   const inherited = new AbortController();
-  // shell-prep-abort: the Stop lands during the exact Settings lookup (invocation-runner.ts lookupUserDecision), the last
-  // await before the real shell preparation with no abort re-check between them.
   if (source === "shell-prep-abort") {
-    const approvals = await import("../../permissions/user-approval-store.js");
-    const lookup = approvals.lookupUserDecision;
-    vi.spyOn(approvals, "lookupUserDecision").mockImplementation(async (...args) => {
-      const decision = await lookup(...args);
+    const preparation = await import("../prepared-shell-invocation.js");
+    vi.spyOn(preparation, "prepareShellInvocation").mockImplementationOnce(() => {
       controller.abort();
-      return decision;
+      throw new Error("Shell preparation interrupted");
     });
   }
   // human-then-*: the person's deny-always is accepted, and the Stop or the quit lands while its rule saves.

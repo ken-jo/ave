@@ -27,8 +27,8 @@ owns state transitions. The following table defines the legacy start guard:
 | `checking` | `none` | Per-holder candidate only; never published as the boot snapshot (see below). Refuse until the bounded readiness queue settles. |
 | `ready` | `mxc` | Refuse legacy transport; only the explicit native entry may proceed. |
 | `fallback` | `srt-win` | Retain existing pinned account-backed admission and release. |
-| `unavailable` | `none` | Preserve settled initial degraded-host behavior and privacy/approval checks; no confinement relaxation. |
-| `rejected` | `none` | Refuse; a deadline rejection cannot become an unconfined start. |
+| `unavailable` | `none` | Preserve settled initial degraded-host behavior and privacy/approval checks; no confinement relaxation. An expired readiness deadline with no ready fallback settles here with reason `readiness-deadline` and takes the same per-start ask as any other no-backend start (owner decision 2026-11-25). |
+| `rejected` | `none` | Refuse; an admitted-ancestor or cancelled selection cannot become an unconfined start. |
 
 The native entry always requires `ready` plus `mxc`. A checking record
 is not permission to run and the synchronous guard itself does not queue.
@@ -63,24 +63,63 @@ missing endpoint isolation or unsupported query policy remains a readiness
 failure, not an accepted exposure.
 
 `planWindowsExtensionHolder()` selects for the exact runtime/request. A caller
-must not reuse another holder's readiness or widen the request to make a probe
-pass. Checking queues admission without a temporary fallback or unconfined
+must not use another holder's start evidence or widen the request to make a
+start pass. Checking queues admission without a temporary fallback or unconfined
 process. `settleWindowsExtensionReadiness()` bounds this wait using
 `TOOL_TIMEOUT_POLICY.mxcExtensionReadinessMs` and passes cancellation to the
-probe. The millisecond budget starts when the resolver is called and includes
-its wait. Cancellation observed before settlement rejects even if the probe
-also succeeds. The probe owns cleanup of any native resources it created;
-this resolver installs no process markers and owns no persisted queue. Its
-caller owns admission serialization, captured session identity and cancellation
-of queued starts. Fallback readiness must come from the same boot/session, and
-ancestor admission is rechecked at settlement before returning the candidate.
+start it waits on. The millisecond budget starts when the resolver is called and
+includes its wait. Cancellation observed before settlement rejects even if the
+start also succeeds. The holder's lifetime owner cleans up any native resources
+that start created; this resolver installs no process markers and owns no
+persisted queue. Its caller owns admission serialization, captured session
+identity and cancellation of queued starts. Fallback readiness must come from
+the same boot/session, and ancestor admission is rechecked at settlement before
+returning the candidate.
 
-The readiness classifier requires every recorded observation: verified installed
-payload, BaseContainer support, exact-request acceptance, UI-enabled runtime
-startup, query ancestors, standard-stream round trip, clean termination,
-endpoint isolation with correct forged-label attribution and no worker port, and
-refusal of reparse substitution of grant paths (`reparseSubstitutionRefused`).
-A launcher-only shell result supplies none of that extension evidence.
+Readiness evidence has thirteen fields, in three groups with different owners
+(owner decision 2026-11-25):
+
+| Fields | Evidence | Gathered | Judged by |
+| --- | --- | --- | --- |
+| 1 verified installed payload, 2 BaseContainer support, 3 exact-request acceptance, 4 UI-enabled runtime startup, 5 query ancestors | Per-start admission | By the holder's own start, on every start, and reported on its ready frame | `admitMxcExtensionStart()` through `classifyMxcExtensionReadiness()` |
+| 6 standard-stream round trip | MCP only | When a JSON-RPC response crosses the native pipes | The MCP `windows-mxc` marker rule (see Lifetime) |
+| 7 clean termination | Teardown evidence | When the holder stops | `dispose()`: termination that cannot be established keeps the holder, its endpoint and its HOME owned |
+| 8 own proxy succeeds, 9 other listener refused, 10 direct egress refused, 11 forged labels attributed, 12 no worker port, 13 reparse substitution of grant paths refused (`reparseSubstitutionRefused`) | Release-gate evidence | Once per release, on the packaged build, by the native release gate | `assertMxcReleaseGateEvidence()` through `classifyMxcReleaseGate()` |
+
+Per-start admission is the holder's own start, with no separate probe start.
+The supervisor's ready frame carries the digest of the request it started and
+fields 1-5 as five explicit booleans. The holder is admitted only after that
+frame arrives, names this holder's request, and reports every field true,
+inside the readiness deadline. It fails closed: no ready frame, a ready frame
+without the evidence, evidence for another request, a false field, expiry or
+cancellation refuses the start, stops what the start created, and never
+selects another backend or runs the holder another way. A ready frame that
+carries any other field (6-13) is an invalid frame. The deadline starts when
+admission begins the start, so it covers supervisor startup, native creation and
+the ready frame; an expiry here is a refusal of this start and is never written
+into the boot plan.
+
+What the start reports today, per field. Field 5 is the SDK probe's enumeration
+support; the supervisor refuses before native creation when the probe lacks it,
+whether or not the request names ancestor queries, so a ready frame always
+reports it true. Field 2 is the SDK probe's tier; the supervisor refuses a non-BaseContainer tier
+before native creation, so a ready frame always reports it true. Fields 1 and 3 are implied by the frame existing:
+the supervisor verified the installed payload before loading it, and the SDK
+created a process for the digested request. Field 4 is the request's UI policy
+plus an attached process that is not cleanup-failed; runtime initialisation
+inside the container is not observed. So what admission adds
+today is the request-digest binding, the frame shape and the deadline. Stronger
+observations for fields 1, 3 and 4 belong to the native release gate.
+
+Release-gate evidence is an install property. A start checks the registered
+record and never gathers it; nothing runs fields 8-13 per start. With no record,
+or a record with a field not observed, every holder start is refused with
+`MxcCapabilityUnavailableError` before any staging or listener exists.
+
+No reuse means no other holder's start evidence: start evidence is bound to the
+start that produced it and is never borrowed, cached or carried to a later start.
+The install-wide record is not start evidence, and every start reads the same one.
+A launcher-only shell result supplies none of this extension evidence.
 
 On deadline or settled host unavailability, fallback requires version `0.0.80`,
 ready in the current boot/session, and no admitted holder or ancestor. The
@@ -95,8 +134,10 @@ already-ready fallback. Cancellation rejects without fallback.
 Current delivery status: boot reports `native-validation-required` for
 extension requests.
 It retains an already-ready pinned fallback or reports no extension substrate.
-The native release gate must provide the actual request evidence before MXC
-extension activation. The capability snapshot never turns proxy-only startup
+Per-start evidence exists only after a start, so it cannot let boot publish an
+MXC plan. The native release gate must produce the release-gate record on the
+packaged build, bound to that build, and boot must register it before MXC
+extension activation; until then nothing registers a record and the pin stays. The capability snapshot never turns proxy-only startup
 into process-wide confinement. Per-process markers still require a completed
 native spawn and transport setup, and are removed when authority is revoked.
 `assertExtensionStartAllowed()` rejects checking/rejected starts before legacy
@@ -152,11 +193,16 @@ A parent's owned descendant set includes pending startups before their first
 asynchronous probe. Parent release aborts those starts and waits for startup
 settlement and native termination before reporting tree cleanup. A holder
 incarnation cannot be admitted twice while its earlier lifetime remains owned.
+A contained plugin worker's parent is the incarnation of its plugin's native
+child that is live when the worker's start begins.
 
 Native admission additionally requires a single-use receipt from
-`createMxcExtensionAdmission()`. Its actual-request probe observes a separate
-request snapshot. Mutation of that snapshot, the production request or the
-captured boot plan during readiness rejects admission. A private receipt map
+`createMxcExtensionAdmission()`, minted only while the release-gate record is
+registered and complete. An adapter's own request check (`assertRequest`)
+observes a separate request snapshot. `admitMxcExtensionStart()` then runs the
+holder's own start and admits it on that start's ready-frame evidence. Mutation
+of the production request or the captured boot plan during readiness rejects
+admission. A private receipt map
 binds the full canonical request, including the held proxy endpoint, to the
 captured holder object, the `executableIdentity` and the exact boot-plan object.
 `executableIdentity` is a digest of the admitted executable's (`spec.command`)
@@ -175,9 +221,10 @@ holder adapters must not admit executables from a workspace (see the adapter
 requirements below).
 `consumeMxcExtensionAdmission()` runs at the native spawn boundary; a mismatch
 or second use refuses the start and cannot retry the receipt. A globally ready
-selection, a copied receipt or another holder's evidence cannot substitute.
-The callback is trusted host probe implementation, never plugin-supplied proof;
-its native observations still belong to the release gate.
+selection, a copied receipt or another holder's evidence cannot substitute:
+admission requires that this receipt was spent at this start's native boundary
+and that the evidence names this receipt's request. The evidence comes from the
+host's own supervisor over its authenticated channel, never from the plugin.
 
 Filesystem ownership is an independent host-captured
 `MxcExtensionFilesystemOwnership` with read roots, write roots and host-only
@@ -186,13 +233,15 @@ must lie inside a captured write root, inside or outside plugin namespaces, and
 the holder's HOME and temp must lie inside them too. HOME and temp must not lie
 below the shared private HOME, temp or handoff roots: an ancestor enumerate
 grant there would list every other holder's leaf. Holder adapters (rows 3 and 5)
-place them in a dedicated staging tree such as `<AVE_HOME>\mxc-staging\<opaque-id>`,
-so the staging root's enumerate grant reveals only opaque IDs. The staging tree
-still lives under the user profile, so its ancestor queries expose profile and
-`AVE_HOME` sibling names; the plugins root also gets enumerate access above a
-plugin's own data and generation roots, revealing other plugin IDs. Both are
-disclosed residuals (`ancestorNameExposure`), not privacy guarantees; a location
-outside the profile would need a separate owner decision. Requested grants cannot declare their own ownership. Admission
+place them in a dedicated staging tree, `<staging parent>\<opaque-id>`, so the
+staging root's enumerate grant reveals only opaque IDs. The staging parent is
+the platform's ([Runtime root](#runtime-root)); on Windows it is
+`<runtime root>\staging` under the account's local application data. That
+tree lives under the user profile, so its ancestor queries expose the names
+beside it in the profile, in `AppData` and in `AppData\Local`; the plugins root
+also gets enumerate access above a plugin's own data and generation roots,
+revealing other plugin IDs. Both are disclosed residuals
+(`ancestorNameExposure`), not privacy guarantees. Requested grants cannot declare their own ownership. Admission
 rejects grants at or above plugin, cache and private HOME/temp namespace roots,
 another holder's roots,
 write access to a read-only generation, and read or write grants intersecting
@@ -205,8 +254,8 @@ below such a mask remains hard. No host DACL is augmented.
 Capability publication validates the serialized plan's complete field set,
 closed states/reasons and fixed D2/D3 posture. Readiness, requested/selected
 backend, selected-only fallback version and both outer egress identities must
-agree. Withdrawing a backend clears its fallback version; deadline rejection
-remains rejection when the runtime is absent.
+agree. Withdrawing a backend clears its fallback version; an expired deadline
+keeps its `readiness-deadline` reason when the runtime is absent.
 
 Threat model for path substitution: the attacker is a confined co-holder, not
 the signed-in user. The SDK opens string paths after the host's final identity
@@ -255,10 +304,178 @@ Hard requirements for holder adapters (rows 3–5):
   the same workspace (for example two delegated workers on one workspace) cannot
   both be live: the second is refused while the first is owned. Serialize such
   holders, or give each a disjoint root.
-- HOME/temp go in `<AVE_HOME>\mxc-staging\<opaque-id>`, inside the holder's
-  captured write roots.
+- HOME/temp go in `<staging parent>\<opaque-id>`, inside the holder's captured
+  write roots. The staging parent is under the [runtime root](#runtime-root),
+  outside the Ave home, on every platform. A holder grant at or above the
+  runtime root is refused, as one at or above another holder's namespace is.
 - Executables come from installation or generation roots, never from a workspace
   or any holder-writable root.
+
+## Runtime root
+
+Owner decision 2026-11-25: nothing a container needs lives under the Ave home.
+The Ave home is a denied directory. The macOS sandbox lets a deny override
+every allow, so a HOME or temp nested inside the Ave home cannot be written
+there, and this contract already refuses an admitted root under a denied path.
+Staging, HOME, temp and socket directories therefore go under one per-account
+runtime root outside the Ave home. The Ave home is then never granted to a
+container, and no container grant is re-allowed inside it.
+
+`src/permissions/mxc-runtime-root.ts` is the only place that decides the
+location (`mxcStagingParent`). Every producer and the shared staging-shape
+check (`assertMxcHolderStaging`) take the staging parent from it.
+
+| Platform | Runtime root | Staging parent |
+|---|---|---|
+| macOS | `~/Library/Caches/ai.agent-connector.ave/mxc-runtime` | `<runtime root>/staging` |
+| Linux | `$XDG_CACHE_HOME/ai.agent-connector.ave/mxc-runtime`, with `~/.cache` when the variable is unset or not absolute | `<runtime root>/staging` |
+| Windows | `%LOCALAPPDATA%\ai.agent-connector.ave\mxc-runtime`, with `<profile>\AppData\Local` when the variable is unset or not a drive path | `<runtime root>\staging` |
+
+- **Selection.**
+  - The base is the account's cache directory, named by the packaged app id.
+    It is per-user, so no other account can occupy the name. It is on disk, so
+    a HOME's worth of files fits, which a session runtime directory
+    (`$XDG_RUNTIME_DIR`) is not meant for. Nothing ages files out of it; macOS
+    removes files from the per-user temp directory after days without a read,
+    which a long-lived holder would lose.
+  - Only the cache directory is resolved to its canonical form, because the
+    macOS sandbox matches real paths. The app's directory and the root's own
+    name are never resolved: a link at either is refused, not followed.
+  - The cache directory and every directory above it must be owned by this
+    account or by root, and writable by no one else unless sticky. The app's
+    directory must be this account's and writable by no one else.
+  - The root must lie neither inside nor above the Ave home, compared on both
+    the lexical home and the home resolved as far as it exists. This is
+    checked before anything is created.
+  - The root and the staging parent are created with mode 0700: a real
+    directory, not a link, owned by this account, closed to every other
+    account.
+  - Any failure refuses the start (`MxcRuntimeRootError`). A directory that
+    fails is never re-moded, replaced or bypassed, and staging never falls back
+    into the Ave home.
+- **Established once, at sandbox start-up.**
+  - Sandbox start-up is the only place that creates the root
+    (`establishMxcRuntimeRoot`), before the first wrap, and the outcome is kept
+    for the life of the process. A wrap built while the root was absent may
+    carry no deny for it, because Linux omits a read deny for a path that does
+    not exist yet.
+  - A run is created only under that root (`requireMxcRuntimeRoot`), and only
+    while it is still the same directory, private and this account's: the same
+    device and inode, and still holding the mark start-up left in it
+    (`.established-<pid>-<random>`, 0600, created exclusively). The mark is
+    what tells a replacement apart, because a filesystem may give a new
+    directory the inode of one just removed. A process removes its own mark
+    when it exits and never another's: a pid names a process only inside one
+    pid namespace, so it cannot prove another instance gone. A crash leaves an
+    empty file. Nothing on the run path creates the root.
+  - A root that start-up could not establish stays refused until the app
+    restarts, even if it becomes creatable. So does a root that was removed or
+    replaced mid-session.
+- **Read floor.** The run directories are Ave-private data, as they were under
+  the Ave home, and the move does not open them.
+  - The runtime root is one of the confined processes' private roots
+    (`appOwnedSandboxPrivateRoots`), so the sandbox read floor denies it to
+    every process on the sandbox route, and a read grant inside it is withheld
+    like one inside the other private roots.
+  - A plugin's user-chosen directory inside any private root is refused,
+    whatever the user approved. Under the Ave home the home's own exclusion
+    covered that; the rule now covers the roots wherever they live.
+  - A container is granted its own run directory and nothing above it, so
+    every other run stays out of its reach. A macOS container policy must not
+    carry the runtime root's deny for the container's own run: there the deny
+    would override the run's own HOME and temp.
+  - Naming the floor's path never fails (`mxcRuntimeRootFloorPath`). With the
+    cache directory resolvable it is the canonical path; otherwise it is the
+    path as spelled. No wrap on the sandbox route re-opens anything inside the
+    root, so its deny is a plain one. A cache directory that cannot hold the
+    root (a file in its place, a link loop, no access) therefore leaves every
+    shell sandboxed as before and refuses container starts only.
+- **Layout.**
+  - `<runtime root>/staging/<opaque-id>/{home,temp}`, each 0700. The id is 32
+    lowercase hex digits. `<opaque-id>` is the run's only write grant.
+  - `<runtime root>/staging/<opaque-id>.owner` records the creating process:
+    its pid, a start identity that differs when a pid is reused, and a value
+    unique to the loaded copy of the module, so a second copy in one process
+    never takes the first copy's live runs for released ones. It is
+    written before the run directory exists, so a crash never leaves an
+    unmarked tree. It sits in the staging parent, which no container is
+    granted, so a container cannot forge or remove it. A run that cannot be
+    marked is refused.
+  - `<runtime root>/s/<first 8 id digits>` holds the run's unix sockets. It
+    is created on first use, outside the run's write grant, on a short path.
+    A sibling `<8 digits>.owner` names the run it belongs to; a directory
+    already there is another run's and refuses this one. Granting the
+    directory is the backend's decision.
+  - A socket address holds 104 bytes on macOS and 108 on Linux. On macOS 62
+    bytes of the path are fixed below the home directory, so a socket name may
+    be as long as 41 bytes less the home directory's length: 31 for
+    `/Users/you`, 15 for a 20-character account name. A longer path is refused
+    with its byte count before anything binds it.
+  - The runtime root, the staging parent and the socket parent are host-only.
+- **Cleanup.**
+  - A run's directories are removed only after its exit is confirmed, and only
+    by the process that created them. The tree is first renamed to
+    `<opaque-id>.retired`, then removed without following links. The socket
+    directory follows, only when its marker names this run.
+  - The owner marker goes last, and only once neither tree is left. A removal
+    that was interrupted, or that raced another remover, keeps the marker, so
+    no tree is ever left without the proof of whose it is. An entry another
+    remover already took is skipped.
+  - The removal never enters another filesystem: a directory on another device
+    is a mount point, and the removal stops and keeps the tree. Each directory
+    is checked to be the same one after it is listed. A bind mount of the same
+    filesystem cannot be told apart this way, so a backend that binds host
+    directories must do it inside the container's own mount namespace, where
+    the host never sees them.
+  - The runtime root is per account: every Ave home and every running instance
+    of the account shares it. The first run under a staging parent sweeps what
+    earlier runs left. A tree is removed only when its marker is a plain file
+    of this account that names a process that is provably gone, or this copy of
+    the module in this process for a run it already released. An entry with no
+    marker, an unreadable marker, a running or undetermined owner, or another
+    account's ownership is kept. A sweep failure only warns and never blocks a
+    start.
+- **Windows.**
+  - The base is the account's local application data directory. It is
+    per-user. Unlike the roaming directory it is never copied to another
+    machine or redirected to a share. Unlike the temp directory nothing ages
+    files out of it. Under the test runner the base is the run's own directory.
+  - Start-up establishes the root as on the other platforms: once, before the
+    first wrap, and a root that could not be established then refuses every
+    container start until the next start-up. Nothing falls back into the Ave
+    home.
+  - The root must be a real directory on an NTFS volume of this machine. The
+    OS must report it at the planned drive path: a share reports another path,
+    and so does a mapped drive, which resolves to its share. No component of
+    its path may be a link or junction. Its access control list must be
+    protected from inheritance, owned by this account, and grant only this
+    account's inheritable full control. Deny entries are not grants: the
+    sandbox account's read deny is stamped on it.
+  - A missing root is created with that access control list as part of the
+    creation. A root that is already there is proved as it is and never given a
+    new one. A root inside or above the Ave home is refused before anything is
+    created.
+  - A run re-checks that the root is still the same directory (volume, 64-bit
+    file id, the start-up mark) without reading the access control list again:
+    only this account or an administrator can rewrite it.
+  - The root is on the read floor (`appOwnedSandboxPrivateRoots`): denied to
+    every confined process, a read grant inside it is refused, a plugin may not
+    choose a directory inside it, and a container reads only its own
+    `<runtime root>\staging\<opaque-id>`.
+  - Each holder's `<opaque-id>.owner` beside its tree records the process (pid,
+    creation time, a per-module nonce) before the tree exists. Removal renames
+    the tree to `<opaque-id>.retired`, deletes it without following links, and
+    removes the marker last. A sweep removes a tree only when its marker names
+    a holder this copy already released, a pid that no longer exists, or a pid
+    whose creation time is no longer the recorded one. Everything else is kept.
+  - The Windows adapters create no socket directory. The policy pipe is a
+    kernel object under a fresh random name, owned by the helper process that
+    created it, and it leaves nothing on disk to remove.
+  - The supervisor's per-user state directory sits beside the staging trees, so
+    it is per account, not per Ave home.
+  - Staging trees that an earlier version left under `<AVE_HOME>\mxc-staging`
+    are not moved or removed. The Ave home's read boundary no longer re-opens
+    `mxc-staging`, so they are denied like every other unlisted child.
 
 ## Holder adapters (row 5)
 
@@ -286,8 +503,9 @@ nesting and the lifetime registry stay row 2's.
   - A copied or stale plan is also refused as a contract violation.
 - **Layout.**
   - Each start is a new holder incarnation with its own
-    `<AVE_HOME>\mxc-staging\<opaque-id>\{home,temp}`. That staging root is
-    added to the captured write roots.
+    `<staging parent>\<opaque-id>\{home,temp}`. That staging root is added
+    to the captured write roots. This adapter is the Windows one, whose staging
+    parent is `<runtime root>\staging` (`mxcStagingParent`).
   - The caller's roots are passed as the holder's own explicit roots, never as
     another holder's plan.
   - The executable's directory is the only added read. A configured cwd must
@@ -296,7 +514,7 @@ nesting and the lifetime registry stay row 2's.
     in its sandbox root, as on the legacy route. Only without a sandbox root
     does the cwd default to the private HOME. Neither the host process cwd nor
     a workspace is ever the default.
-  - The staging parent (`<AVE_HOME>\mxc-staging`) is refused if it is a link.
+  - The staging parent is refused if it is a link.
   - After verified termination the staging tree is first renamed to a random
     `retired-<opaque-id>` sibling, then removed without following links. A
     link is unlinked itself and never chmod-ed or traversed. A file has its
@@ -371,9 +589,11 @@ nesting and the lifetime registry stay row 2's.
     route instead refuses any configured `NODE_OPTIONS`. A server that depends
     on one starts on srt-win and is refused under a selected container plan;
     the Permissions disclosure for a selected container plan says so.
-- **Readiness probe.** The exact-request probe is registered by the native
-  release gate through `registerMxcHolderReadinessProbe`. Until then every
-  holder start fails closed with `MxcCapabilityUnavailableError`.
+- **Readiness.** A holder start is admitted on its own ready-frame evidence
+  (fields 1-5). The install's release-gate record (fields 8-13) is registered
+  through `registerMxcReleaseGateEvidence` once the native release gate has
+  produced it. Until then every holder start fails closed with
+  `MxcCapabilityUnavailableError`.
 - **Lifetime.**
   - MCP reports `windows-mxc` (the wrapped marker) only after a JSON-RPC 2.0
     response (string or number `id`, with `result` or `error`) crosses the

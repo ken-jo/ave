@@ -10,7 +10,7 @@ import { assertSandboxWindowsExtensionPlan, type SandboxWindowsExtensionPlan } f
 afterEach(() => vi.restoreAllMocks());
 
 const homePrivacyError = {
-  path: "D:/ave-home", category: "extra-principals" as const, approvedForSession: false,
+  path: "D:/ave-home", category: "extra-principals" as const,
   extraPrincipals: [{ sid: "S-1-5-11", account: "NT AUTHORITY\\Authenticated Users" }],
 };
 const extensionPlan: SandboxWindowsExtensionPlan = {
@@ -27,7 +27,7 @@ const snapshot = {
   boot: { action: "degrade", reason: "degrade-ave-home-privacy-failed", onSignal: "default-settings", causes: ["ave-home-privacy-failed"] },
   shell: { state: "unavailable", setting: true, envForced: true, causes: ["ave-home-privacy-failed"] },
   windowsSubstrate: {
-        mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false, shellLocalNetworkAccess: true,
+        mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false,
     shells: "none", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared", extensionPlan,
   },
 };
@@ -45,7 +45,6 @@ async function openPermissions(opts: { directories?: Reply; reviewer?: unknown }
     sandboxCapability: vi.fn(async () => snapshot),
     sandboxWindowsStatus: vi.fn(async () => ({ applicable: true, userState: "absent", wfpState: "absent", ready: false, instructions: "", homePrivacyError })),
     sandboxWindowsInstall: vi.fn(async () => ({ cancelled: true })),
-    approveExtensionsWithoutIsolation: vi.fn(async () => ({ ok: true })),
     hookTrustList: vi.fn(async () => ({ ok: true, active: [], disabled: [], totalDisabled: 0 })),
     // Panel reads the OS sandbox section does not use; before the fix one failure left the tab with no section at all.
     dirDispatch: vi.fn(() => reply(opts.directories ?? "resolve", dirList, "directory policy unavailable")),
@@ -65,7 +64,7 @@ const reason = () => t("permissionsTab.homePrivacyExtraPrincipals", { principals
 async function expectDisclosure(container: HTMLElement): Promise<void> {
   await waitFor(() => expect(container.querySelector('[data-testid="os-sandbox-boot-degraded"]')).toBeTruthy());
   expect(container.querySelector('[data-testid="os-sandbox-boot-degraded-detail"]')?.textContent)
-    .toBe(t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/ave-home", reason: reason() }));
+    .toBe(`${t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/ave-home", reason: reason() })} ${t("permissionsTab.homePrivacyShellAsk")}`);
   const substrate = container.querySelector<HTMLElement>('[data-testid="os-sandbox-windows-substrate"]');
   expect(substrate?.dataset.mxc).toBe("available");
   expect(substrate?.dataset.shells).toBe("none");

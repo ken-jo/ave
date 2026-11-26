@@ -271,32 +271,26 @@ Use the smallest check that can disprove the current change while iterating:
 - Packaging, permissions, IPC, sandbox, or release paths: add the focused
   security or packaged-app check required by the owning design.
 
-Pre-push picks one tier and logs it with the reason
-(`scripts/hooks/run-local-checks.mjs` owns the rules):
+Pre-push runs static checks only and logs its tier
+(`scripts/hooks/run-local-checks.mjs` owns the rules); pull request CI runs
+the tests and the build through `scripts/run-ci-suite.mjs`:
 
-- docs-only: documentation prose with no test or build consumer takes the
-  static-policy path.
-- comment-only and test-only: an eligible test-only push uses the hook's
-  targeted Vitest path; a standalone-comment edit runs the typecheck gate.
-- fast, the default for a source branch push: the typecheck gate, the
-  duplicate-helper scan, the lock suites whose trigger paths changed, the
-  changed test files, the recorded readers of a changed test-read document,
-  and `vitest related` for the changed modules (narrowed to direct importers
-  when a shared module reaches over 150 test files). A message catalog change
-  (`src/i18n/messages/` locale catalogs) adds
-  `check:i18n-catalog`, the `src/i18n/__tests__`
-  suites, and the tests and modules that name a changed key's namespace.
-  No full `bun run test`, no build. A new sub-branch is measured from the
-  closest live tip of the default or an `integration/*` branch, so only its
-  own commits count. Fast runs share `AVE_PREPUSH_FAST_SLOTS` (default 4)
-  host slots.
-- global-input: the fast checks, every lock suite, and a frozen-lockfile install
-  dry run for global inputs, untraceable changes, integration branches and tags.
-  `AVE_PREPUSH_FULL=1` also selects global-input checks.
-  Runs share the fast host slots. There is no automatic full tier; CI owns
-  the build and full-suite backstop through `scripts/run-ci-suite.mjs`.
-  The explicit manual stage retains full checks under an exclusive host lock.
-  `AVE_HOOKS_SKIP=1` still skips the hook.
+- every push: ref, shared-history and checkout guards, `git diff --check`
+  and merge-marker checks on pushed Markdown and HTML, the ASRT version-claim check when such a
+  document changes, and the retired-name and Biome gates.
+- docs-only: documentation prose with no test or build consumer stops there.
+- static, every other push: also the typecheck gate (`typecheck` and
+  `check:typecheck-tests`) and the duplicate-helper scan, `check:i18n-catalog`
+  when a locale catalog changes, and a frozen-lockfile install dry run when
+  `package.json`, `bun.lock`, `bunfig.toml` or `patches/` changes. A change
+  set the hook cannot resolve runs every static check.
+- Pre-push requires a clean index, so its staged scan sees no files. Merge
+  markers and TLS-verification bypasses are blocked at pre-commit (staged
+  scan), by the Markdown and HTML safety checks above, and in CI by
+  `bun run build` (`scripts/check-no-tls-bypass.mjs`).
+- The hook runs no Vitest. `node scripts/hooks/run-local-checks.mjs` (manual
+  stage) runs typecheck, the full suite, the build and gate-core under an
+  exclusive host lock. `AVE_HOOKS_SKIP=1` still skips the hook.
 
 Every non-deletion ref update must name the checked-out `HEAD`. The tracked
 working tree and index must be clean before and after checks; otherwise the

@@ -6,14 +6,13 @@ import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
 import { getHostResources } from "./host-resources.js";
 
-// The drive query opens nothing, so its lookup timeout only bounds a hung process.
-const QUERY_TIMEOUT_MS = 5_000;
-
 // The helper's one answer about a drive: the OS has no mapping for it (native/windows-path-kind/README.md).
 const EXIT_NO_MAPPING = 1;
 
 // What to do when the helper is broken: it ships with Ave, so the install is incomplete.
 const REPAIR = "Reinstall Ave; in a development checkout, build it with scripts/build-windows-job.ps1 -Helper path-kind.";
+// What to do when the helper gave no answer (helper-unavailable): the same restart wording as the home privacy notice.
+const RESTART = "Restart Ave; if it persists, reinstall Ave.";
 
 /** Where the helper ships inside the host resources folder `resourcePath`; it may be missing from an incomplete install. */
 export function windowsPathKindHelperIn(resourcePath: string): string {
@@ -23,14 +22,43 @@ export function windowsPathKindHelperIn(resourcePath: string): string {
 export function resolveWindowsPathKindHelper(): string {
   const binary = windowsPathKindHelperIn(getHostResources().resourcePath);
   if (!existsSync(binary)) {
-    throw missingWindowsPathKindHelper(binary);
+    throw missingWindowsPathKindHelper();
   }
   return binary;
 }
 
-function missingWindowsPathKindHelper(binary: string): Error {
-  return new Error("Windows folder classifier is missing: " + binary
-    + ". Ave cannot tell whether a drive is on another computer, so it reads no folder on a drive. " + REPAIR);
+function missingWindowsPathKindHelper(): Error {
+  return windowsPathKindHelperUnavailable("Windows folder classifier is missing. Ave cannot tell whether a drive is on another computer, "
+    + `so it reads no folder on a drive. ${RESTART}`);
+}
+
+const HELPER_UNAVAILABLE = Symbol.for("ave.windows-path-kind-helper-unavailable");
+
+/** The helper is missing, could not start, or did not answer in time: no answer, as opposed to a wrong one. No message names the
+ * helper's install path: it reaches the privacy failure reason, the boot gate and the audit log. */
+export function windowsPathKindHelperUnavailable(message: string, code?: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(message), { ...(code === undefined ? {} : { code }), [HELPER_UNAVAILABLE]: true });
+}
+
+/** True when `error` or any error in its cause chain carries the marker, so a wrapper never hides a helper failure. */
+export function isWindowsPathKindHelperUnavailable(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  for (let current = error; typeof current === "object" && current !== null && !seen.has(current); current = (current as { cause?: unknown }).cause) {
+    if ((current as Record<symbol, unknown>)[HELPER_UNAVAILABLE] === true) return true;
+    seen.add(current);
+  }
+  return false;
+}
+
+/** A child killed at its deadline: the sync spawns report ETIMEDOUT; `execFile` sets `killed` with no code (an output overrun has one). */
+export function isWindowsPathKindHelperTimeout(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { code, killed } = error as { code?: unknown; killed?: unknown };
+  return code === "ETIMEDOUT" || (killed === true && (code === null || code === undefined));
+}
+
+function helperTimeout(what: string, ms: number): NodeJS.ErrnoException {
+  return windowsPathKindHelperUnavailable(`${what} did not answer within ${ms} ms`, "ETIMEDOUT");
 }
 
 export async function queryWindowsDocumentsDirectory(signal?: AbortSignal): Promise<string> {
@@ -38,10 +66,11 @@ export async function queryWindowsDocumentsDirectory(signal?: AbortSignal): Prom
   const helper = resolveWindowsPathKindHelper();
   return new Promise((resolve, reject) => {
     execFile(helper, ["--documents-directory"], {
-      windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsDocumentsLookupMs, encoding: "buffer", maxBuffer: 128 * 1024, signal,
+      windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs, encoding: "buffer", maxBuffer: 128 * 1024, signal,
     }, (error, stdout) => {
       try {
         signal?.throwIfAborted();
+        if (error && isWindowsPathKindHelperTimeout(error)) throw helperTimeout("The Windows Documents lookup", TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs);
         if (error) throw error;
         resolve(decodeWindowsNativeReply(stdout).replace(/\r?\n$/u, ""));
       } catch (cause) {
@@ -63,8 +92,13 @@ export function queryDosDevice(drive: string): Promise<string | null> {
     return Promise.reject(error);
   }
   return new Promise((resolve, reject) => {
-    execFile(helper, [drive], { windowsHide: true, timeout: QUERY_TIMEOUT_MS, encoding: "buffer" }, (error, stdout, stderr) => {
+    execFile(helper, [drive], { windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs, encoding: "buffer" }, (error, stdout, stderr) => {
       try {
+        // A slow start is no broken install: a restart, not a reinstall, recovers it. Partial output is not read.
+        if (error && isWindowsPathKindHelperTimeout(error)) {
+          reject(helperTimeout(`the Windows folder classifier for ${drive}`, TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs));
+          return;
+        }
         const reply = decodeWindowsNativeReply(stdout);
         const diagnostics = decodeWindowsNativeReply(stderr);
         if (error) {
@@ -73,8 +107,13 @@ export function queryDosDevice(drive: string): Promise<string | null> {
             resolve(null);
             return;
           }
-          const why = error.killed ? `did not answer within ${QUERY_TIMEOUT_MS} ms` : diagnostics.trim() || error.message;
-          reject(new Error(`the Windows folder classifier failed for ${drive}: ${why}. ${REPAIR}`, { cause: error }));
+          // The spawn error's message and fields name the install path, so only its code is kept.
+          if (typeof error.code === "string") {
+            reject(windowsPathKindHelperUnavailable(`the Windows folder classifier for ${drive} could not start (${error.code}). ${RESTART}`));
+            return;
+          }
+          const detail = diagnostics.trim();
+          reject(new Error(`the Windows folder classifier failed for ${drive}${detail ? `: ${detail}` : ` (exit ${error.code ?? error.signal ?? "unknown"})`}. ${REPAIR}`));
           return;
         }
         const mapping = reply.replace(/\r?\n$/u, "");
@@ -91,18 +130,28 @@ export function queryDosDevice(drive: string): Promise<string | null> {
 }
 
 // The packaged helper asks the OS directly; environment variables cannot choose a system verifier.
-export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT_POLICY.globalCeilingMs): Promise<string> {
+export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT_POLICY.globalCeilingMs, deadline?: number): Promise<string> {
   if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
   const helper = windowsPathKindHelperIn(getHostResources().resourcePath);
   try {
     await access(helper);
   } catch {
-    throw missingWindowsPathKindHelper(helper);
+    throw missingWindowsPathKindHelper();
   }
   return new Promise((resolve, reject) => {
+    const options = windowsSystemDirectorySpawnOptions(helper);
+    const remaining = deadline === undefined ? timeout : Math.min(timeout, deadline - performance.now());
+    if (deadline !== undefined && remaining <= 0) {
+      reject(new DOMException("Windows system directory query timed out", "TimeoutError"));
+      return;
+    }
     execFile(helper, ["--system-directory"], {
-      ...windowsSystemDirectorySpawnOptions(helper), timeout, encoding: "buffer",
+      ...options, timeout: Math.ceil(remaining), encoding: "buffer",
     }, (error, stdout, stderr) => {
+      if (error && isWindowsPathKindHelperTimeout(error)) {
+        reject(helperTimeout("The Windows system directory query", timeout));
+        return;
+      }
       if (error || stderr.length > 0) {
         reject(new Error(`Windows system directory query failed. ${REPAIR}`, { cause: error ?? undefined }));
         return;
@@ -119,7 +168,9 @@ export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT
 export function queryWindowsSystemDirectorySync(): string {
   if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
   const helper = resolveWindowsPathKindHelper();
-  const result = spawnSync(helper, ["--system-directory"], windowsSystemDirectorySpawnOptions(helper));
+  const options = windowsSystemDirectorySpawnOptions(helper);
+  const result = spawnSync(helper, ["--system-directory"], options);
+  if (isWindowsPathKindHelperTimeout(result.error)) throw helperTimeout("The Windows system directory query", options.timeout);
   if (result.error || result.status !== 0 || result.stderr.length > 0) {
     throw new Error(`Windows system directory query failed. ${REPAIR}`, { cause: result.error });
   }

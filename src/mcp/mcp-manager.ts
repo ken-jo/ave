@@ -40,6 +40,10 @@ import { errorMessage } from "../shared/error-message.js";
 import { boundBundledCredential, bundledConfigId, bundledCredentialDeclaration, bundledCredentialKey, parseBundledConfigId, readBoundBundledCredential, type BundledPackageRef } from "./bundled-credential.js";
 import { MCP_CONFIG_RECOVERY_REQUIRED, MCP_CREDENTIAL_MIGRATION_FAILED } from "../shared/mcp-error-code.js";
 import { userServerApproval, userServerFingerprint, userServerTrustSecretId } from "./user-server-trust.js";
+import {
+  deferExtensionStart, dropExtensionStart, isExtensionStartConsentRequired, mcpStdioStartIdentity, mcpStdioStartKey,
+} from "../permissions/extension-start-consent.js";
+import { probeExtensionStart } from "../permissions/asrt-sandbox.js";
 const log = createLogger("mcp-manager");
 
 interface BundledCredentialDeclaration {
@@ -108,6 +112,11 @@ function oauthErrorCode(error: unknown, status: McpAuthStatus | undefined): McpA
 
 const defaultConfigPath = (): string => join(aveHome(), "mcp", "servers.json");
 
+/** What a person agreed to or declined when asked about an unconfined server start. */
+function sameStartIdentity(a: McpServerConfig, b: McpServerConfig): boolean {
+  return mcpStdioStartIdentity(a) === mcpStdioStartIdentity(b);
+}
+
 function validatedApiKey(value: unknown): string {
   if (typeof value !== "string") throw new Error("MCP credential must be text");
   if (/[\r\n\x00-\x08\x0B-\x1F\x7F]/u.test(value)) {
@@ -156,6 +165,8 @@ export interface PreparedBundledMcpGeneration {
 
 export class McpManager {
   private clients = new Map<string, McpClient>();
+  /** The config whose start waits for a person, per server id. */
+  private readonly unconfinedStarts = new Map<string, McpServerConfig>();
   private readonly oauthSessions = new Map<string, { fingerprint: string; session: McpOAuthSession }>();
   private readonly bundledOAuthSessions = new Map<string, { fingerprint: string; session: McpOAuthSession }>();
   private readonly bundledOAuthRuntimeIds = new Map<string, string>();
@@ -473,8 +484,18 @@ export class McpManager {
     return { connected, failed };
   }
 
+  private forgetUnconfinedStart(serverId: string): void {
+    this.unconfinedStarts.delete(serverId);
+    dropExtensionStart(mcpStdioStartKey(serverId));
+  }
+
   async connectServer(config: McpServerConfig, opts: { force?: boolean } = {}): Promise<void> {
     this.assertConfigRecoverable();
+    // An edited command, args, env or cwd is another start: no earlier answer covers it. Decided before the first await,
+    // so a yes on its way to the old command is gone before this connect can reach a spawn.
+    const waited = this.unconfinedStarts.get(config.id);
+    if (waited !== undefined && !sameStartIdentity(waited, config)) this.forgetUnconfinedStart(config.id);
+    const waitedAtEntry = this.unconfinedStarts.get(config.id);
     if (config.auth === "api-key" && !config.apiKey) throw new Error("mcp-api-key-required: Add an API key before starting this server");
     await this.installUserServerApproval(config);
     const epoch = this.oauthEpoch(config.id);
@@ -551,8 +572,19 @@ export class McpManager {
           registeredTools: client.getState().registeredTools,
         }),
       });
+      // Connected: whatever waited for this server id is answered.
+      if (this.unconfinedStarts.delete(config.id)) dropExtensionStart(mcpStdioStartKey(config.id));
     } catch (err) {
       if (this.clients.get(config.id) === client) this.clients.delete(config.id);
+      // Nothing confines this server: it waits for a person, who is asked at the next attended turn.
+      // A connect that another one overtook leaves the newer waiting start alone.
+      if (isExtensionStartConsentRequired(err) && this.unconfinedStarts.get(config.id) === waitedAtEntry) {
+        this.unconfinedStarts.set(config.id, config);
+        deferExtensionStart({ key: mcpStdioStartKey(config.id), identity: mcpStdioStartIdentity(config), kind: "mcp-stdio", label: config.id, cause: err.unconfinedCause,
+          recheck: () => probeExtensionStart(),
+          // Only the config that was refused is retried: a removed server is not reconnected from here.
+          retry: async () => { if (this.unconfinedStarts.get(config.id) === config) await this.connectServer(config); } });
+      }
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
         sessionId: "mcp-manager",
@@ -1764,6 +1796,8 @@ export class McpManager {
     }
 
     if (requiresTrust) return { connected: false, warning: "mcp-trust-required" };
+    // A changed credential is another start too.
+    this.forgetUnconfinedStart(id);
     const existingClient = this.clients.get(id);
     if (existingClient) {
       await existingClient.disconnect().catch((err) => {
@@ -1870,6 +1904,7 @@ export class McpManager {
         if (removedConfig) this.removedUserServer = { config: removedConfig, trust: removedTrust };
       });
       committed = true;
+      this.forgetUnconfinedStart(serverId);
       this.retireOAuth(serverId);
       this.governance.unregisterRuntimeApproval(serverId);
       const session = this.oauthSessions.get(serverId)?.session;

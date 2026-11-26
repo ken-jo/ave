@@ -17,6 +17,7 @@ const HOSTED_LABELS: ReadonlySet<string> = new Set([
   "ubuntu-24.04",
   "ubuntu-24.04-arm",
   "windows-2025",
+  "windows-11-arm",
   "macos-15",
 ]);
 

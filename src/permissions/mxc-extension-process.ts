@@ -1,15 +1,17 @@
 import { randomBytes } from "node:crypto";
 import { PassThrough, Writable, type Duplex } from "node:stream";
 import type { ChildProcess } from "node:child_process";
-import { join } from "node:path";
+import { mkdirSync } from "node:fs";
+import { join, win32 as winPath } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { getHostResources } from "../main/host-resources.js";
 import { spawnManaged } from "../main/managed-child-processes.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
+import { mxcStagingParent } from "./mxc-runtime-root.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
 import { MxcExtensionChannel } from "./mxc-extension-channel.js";
-import { MXC_STREAM_CHUNK_BYTES } from "./mxc-extension-protocol.js";
+import { MXC_STREAM_CHUNK_BYTES, type MxcExtensionStartRecord } from "./mxc-extension-protocol.js";
 import { MxcIntegrityError } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
 
@@ -31,6 +33,8 @@ export interface OwnedMxcExtensionProcess {
   readonly stderr: PassThrough;
   readonly completion: Promise<ProcessResult>;
   readonly diagnostics: { nodeVersion: string; nativeModules: readonly string[]; nativeModuleCount: number; nativeModulesTruncated: boolean; ownerHandle: string };
+  /** What this start's own ready frame carried; holder admission judges it. Absent until that frame arrives. */
+  readonly startEvidence: MxcExtensionStartRecord | undefined;
   dispose(): Promise<void>;
 }
 
@@ -42,6 +46,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
   readonly completion: Promise<ProcessResult>;
   readonly ready: Promise<void>;
   diagnostics = { nodeVersion: "", nativeModules: [] as string[], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "" };
+  startEvidence: MxcExtensionStartRecord | undefined;
   private readonly channel: MxcExtensionChannel;
   private readonly liveness: Duplex;
   private readonly closed: Promise<void>;
@@ -155,6 +160,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
         if (this.id) throw new MxcProcessContractError("Duplicate supervisor readiness");
         this.id = frame.id;
         this.diagnostics = { nodeVersion: frame.nodeVersion, nativeModules: frame.nativeModules, nativeModuleCount: frame.nativeModuleCount, nativeModulesTruncated: frame.nativeModulesTruncated, ownerHandle: frame.ownerHandle };
+        this.startEvidence = Object.freeze({ requestDigest: frame.requestDigest, evidence: Object.freeze({ ...frame.startEvidence }) });
         this.resolveReady();
       } else if (frame.type === "stdout" || frame.type === "stderr") {
         if (!this.id) throw new MxcProcessContractError("Supervisor output preceded readiness");
@@ -287,6 +293,26 @@ interface MxcNativeSpawnOptions {
   readonly onOwned?: (owned: OwnedMxcExtensionProcess) => void;
 }
 
+/** The supervisor's own environment. No loader override reaches it, OS tools resolve before anything else on PATH,
+ * and the runtime's per-user state lands beside the holder staging (`mxcStagingParent`) instead of the account's
+ * application data. */
+export function mxcSupervisorEnvironment(base: Readonly<Record<string, string>> = buildSafeChildEnv(),
+  stateDirectory: string = winPath.join(mxcStagingParent("win32"), "supervisor-state")): Record<string, string> {
+  const env: Record<string, string> = {};
+  let systemRoot: string | undefined, path = "";
+  for (const [key, value] of Object.entries(base)) {
+    const name = key.toUpperCase();
+    if (name.startsWith("MXC_") || name === "NODE_OPTIONS" || name === "NODE_PATH" || name === "LOCALAPPDATA") continue;
+    if (name === "PATH") { path = value; continue; }
+    if (name === "SYSTEMROOT") systemRoot = value;
+    env[key] = value;
+  }
+  if (!systemRoot || !winPath.isAbsolute(systemRoot)) throw new MxcCapabilityUnavailableError("Native extension supervisor needs the Windows directory");
+  mkdirSync(stateDirectory, { recursive: true });
+  return { ...env, PATH: [winPath.join(systemRoot, "System32"), systemRoot, ...path.split(";").filter(Boolean)].join(";"),
+    LOCALAPPDATA: stateDirectory, ELECTRON_RUN_AS_NODE: "1" };
+}
+
 function spawnPackaged(request: ContainerRequest, options: MxcNativeSpawnOptions, beforeSpawn: (() => void) | undefined): Promise<OwnedMxcExtensionProcess> {
   if (process.platform !== "win32") throw new MxcCapabilityUnavailableError("Native extension processes require Windows");
   const resources = getHostResources();
@@ -296,7 +322,7 @@ function spawnPackaged(request: ContainerRequest, options: MxcNativeSpawnOptions
   // The supervisor needs only the runtime mode; the admitted container environment
   // is a separate sealed request and never inherits the supervisor's environment.
   return spawnWith(request, nodeModules, entry, (file, modules, generation) => spawnManaged(process.execPath, [file, modules, generation], {
-    env: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }), cwd: resources.resourcePath, stdio: ["pipe", "pipe", "pipe", "pipe"],
+    env: mxcSupervisorEnvironment(), cwd: resources.resourcePath, stdio: ["pipe", "pipe", "pipe", "pipe"],
   }, { label: "extension-native-supervisor" }), options.signal, options.onLifecycle, beforeSpawn, options.onOwned);
 }
 

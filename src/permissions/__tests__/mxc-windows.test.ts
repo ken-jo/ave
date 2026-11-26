@@ -14,11 +14,11 @@ import {
   pinnedWxcExecSha256,
   probeMxcPowerShellStart,
   powerShellMxcCommandLine,
-  rankMxcFilesystem,
   wxcExecPathFor,
   type DetectMxcSupportDeps,
   type MxcRunResult,
 } from "../mxc-windows.js";
+import { rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 
 // Verbatim shapes captured from wxc-exec 1.0.0 on Windows 11 26300.9711 (2026-10-19).
 const PROBE_BASE_CONTAINER = `{
@@ -29,17 +29,25 @@ const PROBE_BASE_CONTAINER = `{
     "baseContainerSupportsIngressHostLoopbackAllow": true }
 }
 `;
+// The 1.1.0 probe of a request the backend cannot serve: no tier, an `error`, the host facts (the shape its API validates; not captured on such a host).
+const PROBE_NO_TIER = (apiPresent: boolean, error: unknown = "the container backend is unavailable on this host"): string => JSON.stringify({
+  warnings: [],
+  probes: { baseContainerApiPresent: apiPresent, baseContainerSupportsDenyPaths: false },
+  error,
+});
+// What the 1.1.0 launcher prints for a validated request (measured 2026-11-25): no tier line.
 const DRY_RUN_PASSED = [
   "SECTION: Request simplified",
-  "Script code length: 19",
+  "Script code length: 20",
   "Working directory: D:\\cc-verify\\win-mxc-2026-10-19\\m1\\rw",
-  "Script timeout: 60000",
-  "Container name: CLI",
-  "selected isolation tier: base-container",
+  "Script timeout: 1000",
+  "Container name: (assigned by the backend)",
   "Runner completed in 0ms",
   "Dry run completed. Result: validation passed",
   "",
 ].join("\r\n");
+// The 1.0.1 launcher also named the tier it selected.
+const DRY_RUN_PASSED_WITH_TIER = DRY_RUN_PASSED.replace("Runner completed", "selected isolation tier: base-container\r\nRunner completed");
 const DRY_RUN_PROXY_RULE_REJECTED =
   "Request error\r\nConfiguration parse error: runtimeConfig.networkProxy requires network.egress.default='deny' with no direct allow or deny rules\r\n";
 // What wxc-exec printed when Windows PowerShell 5.1 started in a container over SSH (session 0, 2026-10-19), and its exit code.
@@ -51,7 +59,15 @@ const DRY_RUN_NON_LOOPBACK =
 
 describe("parseMxcProbeOutput", () => {
   it("reads the tier from the probe JSON", () => {
-    expect(parseMxcProbeOutput(PROBE_BASE_CONTAINER)).toEqual({ tier: "base-container", needsDaclAugmentation: false });
+    expect(parseMxcProbeOutput(PROBE_BASE_CONTAINER)).toEqual({ tier: "base-container", needsDaclAugmentation: false, error: undefined, baseContainerApiPresent: true });
+  });
+  it("reads the error and the host fact a tier-less probe carries", () => {
+    expect(parseMxcProbeOutput(PROBE_NO_TIER(false))).toEqual({
+      tier: undefined, needsDaclAugmentation: undefined, error: "the container backend is unavailable on this host", baseContainerApiPresent: false,
+    });
+    expect(parseMxcProbeOutput(PROBE_NO_TIER(true, { code: "malformed_request" }))).toEqual({
+      tier: undefined, needsDaclAugmentation: undefined, error: undefined, baseContainerApiPresent: true,
+    });
   });
   it("returns undefined for output that is not JSON", () => {
     expect(parseMxcProbeOutput("Request error")).toBeUndefined();
@@ -61,24 +77,36 @@ describe("parseMxcProbeOutput", () => {
 
 describe("parseMxcDryRunOutput", () => {
   it("accepts only a validated request on the base-container tier", () => {
-    expect(parseMxcDryRunOutput(0, DRY_RUN_PASSED, "")).toEqual({ ok: true });
-    expect(parseMxcDryRunOutput(0, DRY_RUN_PASSED.replace("base-container", "appcontainer"), "")).toEqual({
+    expect(parseMxcDryRunOutput(0, DRY_RUN_PASSED, "", "base-container")).toEqual({ ok: true });
+    expect(parseMxcDryRunOutput(0, DRY_RUN_PASSED_WITH_TIER, "", "base-container")).toEqual({ ok: true });
+    expect(parseMxcDryRunOutput(0, DRY_RUN_PASSED_WITH_TIER.replace("base-container", "appcontainer"), "", "base-container")).toEqual({
       ok: false,
       detail: "selected isolation tier: appcontainer",
     });
   });
+  it.each([
+    [undefined, "probed isolation tier: not reported"],
+    ["appcontainer-dacl", "probed isolation tier: appcontainer-dacl"],
+    ["base-container-like", "probed isolation tier: base-container-like"],
+  ])("refuses a validated request whose probed tier is %s", (probedTier, detail) => {
+    expect(parseMxcDryRunOutput(0, DRY_RUN_PASSED, "", probedTier)).toEqual({ ok: false, detail });
+    expect(parseMxcDryRunOutput(0, DRY_RUN_PASSED_WITH_TIER, "", probedTier)).toEqual({ ok: false, detail });
+  });
+  it("refuses exit 0 without the validation result", () => {
+    expect(parseMxcDryRunOutput(0, "", "", "base-container")).toEqual({ ok: false, detail: "exit 0" });
+  });
   it("keeps the parse error, not the path warnings, as the diagnostic", () => {
-    expect(parseMxcDryRunOutput(1, DRY_RUN_PROXY_RULE_REJECTED, "")).toEqual({
+    expect(parseMxcDryRunOutput(1, DRY_RUN_PROXY_RULE_REJECTED, "", "base-container")).toEqual({
       ok: false,
       detail: "Configuration parse error: runtimeConfig.networkProxy requires network.egress.default='deny' with no direct allow or deny rules",
     });
-    expect(parseMxcDryRunOutput(1, "", DRY_RUN_NON_LOOPBACK)).toEqual({
+    expect(parseMxcDryRunOutput(1, "", DRY_RUN_NON_LOOPBACK, "base-container")).toEqual({
       ok: false,
       detail: "Configuration parse error: runtimeConfig.networkProxy must use localhost, 127.0.0.1, or [::1]",
     });
   });
   it("rejects a non-zero exit even when the text looks successful", () => {
-    expect(parseMxcDryRunOutput(2, DRY_RUN_PASSED, "")).toMatchObject({ ok: false });
+    expect(parseMxcDryRunOutput(2, DRY_RUN_PASSED, "", "base-container")).toMatchObject({ ok: false });
   });
 });
 
@@ -116,12 +144,13 @@ describe("detectMxcSupport", () => {
     const d = deps();
     await expect(detectMxcSupport(d)).resolves.toEqual({ state: "available", windowsBuild: "10.0.26300" });
     expect(d.calls.map((c) => c[0])).toEqual(["--probe", "--dry-run", "--config-base64"]);
-    for (const args of d.calls.slice(1)) {
+    for (const args of d.calls) {
       expect(args).toContain("--config-base64");
       expect(windowsCommandLineLength(wxcExecPathFor(d.resourcePath, d.arch)!, args) + WINDOWS_COMMAND_LINE_MARGIN)
         .toBeLessThan(WINDOWS_COMMAND_LINE_LIMIT);
     }
-    // The dry run validates the request Ave launches: proxy mode, no DACL fallback.
+    // The probe and the dry run judge one request, the shape Ave launches: proxy mode, no DACL fallback.
+    expect(d.calls[0]?.slice(1)).toEqual(d.calls[1]?.slice(1));
     const encoded = d.calls[1]![d.calls[1]!.indexOf("--config-base64") + 1]!;
     const request = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
     expect(request.fallback).toEqual({ allowDaclMutation: false });
@@ -162,13 +191,45 @@ describe("detectMxcSupport", () => {
     [{ exists: () => false }, "binary-missing"],
     [{ runs: { "--probe": { code: 1, stdout: "", stderr: "boom" } } }, "probe-failed"],
     [{ runs: { "--probe": new Error("spawn EACCES") } }, "probe-failed"],
-    [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace("base-container", "appcontainer-dacl"), stderr: "" } } }, "tier-unsupported"],
+    [{ runs: { "--probe": { code: 1, stdout: PROBE_BASE_CONTAINER, stderr: "" } } }, "probe-failed"],
+    [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace("base-container", "appcontainer-dacl"), stderr: "" } } }, "probe-failed"],
+    [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace("base-container", "future-container"), stderr: "" } } }, "probe-failed"],
+    [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace('"tier": "base-container",', ""), stderr: "" } } }, "probe-failed"],
+    [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace('"needsDaclAugmentation": false', '"needsDaclAugmentation": true'), stderr: "" } } }, "probe-failed"],
+    [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace('"needsDaclAugmentation": false,', ""), stderr: "" } } }, "probe-failed"],
+    [{ runs: { "--probe": { code: 0, stdout: PROBE_NO_TIER(false), stderr: "" } } }, "container-unavailable"],
+    [{ runs: { "--probe": { code: 1, stdout: "", stderr: DRY_RUN_NON_LOOPBACK } } }, "request-rejected"],
+    [{ runs: { "--dry-run": { code: 0, stdout: "", stderr: "" } } }, "request-rejected"],
+    [{ runs: { "--dry-run": { code: 0, stdout: DRY_RUN_PASSED_WITH_TIER.replace("base-container", "appcontainer"), stderr: "" } } }, "request-rejected"],
     [{ runs: { "--dry-run": { code: 1, stdout: DRY_RUN_PROXY_RULE_REJECTED, stderr: "" } } }, "request-rejected"],
     [{ runs: { "--config-base64": { code: 1, stdout: "", stderr: "Access is denied." } } }, "powershell-start-failed"],
     [{ runs: { "--config-base64": new Error("spawn timeout") } }, "powershell-start-failed"],
     [{ sha256: async () => { throw new Error("EACCES"); } }, "probe-failed"],
   ])("reports %o as %s, never as available", async (override, reason) => {
     await expect(detectMxcSupport(deps(override))).resolves.toMatchObject({ state: "unavailable", reason });
+  });
+
+  it.each([[0, false], [1, false], [0, true]] as const)("reports an unserved request with the probe's error and container API fact (exit %i, API %s)", async (code, apiPresent) => {
+    const d = deps({ runs: { "--probe": { code, stdout: PROBE_NO_TIER(apiPresent), stderr: "" } } });
+    await expect(detectMxcPrerequisites(d)).resolves.toStrictEqual({
+      state: "unavailable", reason: "container-unavailable", windowsBuild: "10.0.26300",
+      detail: `the container backend is unavailable on this host (container API ${String(apiPresent)})`,
+      baseContainerApiPresent: apiPresent,
+    });
+    expect(d.calls.map((c) => c[0])).toEqual(["--probe"]);
+  });
+
+  it.each([
+    ["no error string", PROBE_NO_TIER(false, { code: "malformed_request" })],
+    ["no host facts or error string", JSON.stringify({ error: { code: "malformed_request", message: "failed to load probe config" } })],
+    ["a legacy tier name", PROBE_BASE_CONTAINER.replace("base-container", "appcontainer-dacl").replace('"baseContainerApiPresent": true', '"baseContainerApiPresent": false')],
+    ["a container that needs DACL changes", PROBE_BASE_CONTAINER.replace('"needsDaclAugmentation": false', '"needsDaclAugmentation": true')],
+  ])("reads a probe with %s as an unrecognised answer, with no host fact to excuse it", async (_name, stdout) => {
+    const d = deps({ runs: { "--probe": { code: 0, stdout, stderr: "" } } });
+    const result = await detectMxcPrerequisites(d);
+    expect(result).toMatchObject({ state: "unavailable", reason: "probe-failed" });
+    expect(result).not.toHaveProperty("baseContainerApiPresent");
+    expect(d.calls.map((c) => c[0])).toEqual(["--probe"]);
   });
 });
 
@@ -214,7 +275,7 @@ describe("rankMxcFilesystem", () => {
   const exists = (path: string): boolean => !path.toLowerCase().includes("missing");
 
   it("maps grants, keeps a credential path inside the workspace denied, and omits ancestor denies", () => {
-    const grants = rankMxcFilesystem({
+    const grants = rankMxcLists({
       allowWrite: [repo, sandboxHome],
       allowRead: [repo, "C:\\Program Files\\Git"],
       denyRead: [home, "C:\\Users\\u\\AppData\\Roaming\\Ave\\sandbox-homes", `${repo}\\.env`],
@@ -229,7 +290,7 @@ describe("rankMxcFilesystem", () => {
   });
 
   it("drops a grant beneath the protected floor and demotes a write grant beneath a write deny", () => {
-    const grants = rankMxcFilesystem({
+    const grants = rankMxcLists({
       allowWrite: ["C:\\Users\\u\\.ssh\\work", "C:\\Users\\u\\.config\\fish"],
       allowRead: ["C:\\Users\\u\\.ssh"],
       denyRead: [],
@@ -242,7 +303,7 @@ describe("rankMxcFilesystem", () => {
   it("keeps the saved-session grant that deliberately pierces the floor, with its nested denies", () => {
     const userData = "C:\\Users\\u\\AppData\\Roaming\\Ave";
     const sessions = `${userData}\\sessions`;
-    const grants = rankMxcFilesystem({
+    const grants = rankMxcLists({
       allowWrite: [repo],
       allowRead: [repo, sessions],
       denyRead: [`${sessions}\\secrets`],
@@ -260,7 +321,7 @@ describe("rankMxcFilesystem", () => {
     const project = "C:\\Users\\u\\work";
     const aveHomeRoot = `${project}\\ave`;
     const hooks = `${project}\\.git\\hooks`;
-    const grants = rankMxcFilesystem({
+    const grants = rankMxcLists({
       allowWrite: [project],
       allowRead: [project],
       denyRead: [`${aveHomeRoot}\\`, `${aveHomeRoot}\\secrets\\`, `${aveHomeRoot}\\browser-downloads\\`],
@@ -277,7 +338,7 @@ describe("rankMxcFilesystem", () => {
     const project = "C:\\Users\\u\\work";
     const aveHomeRoot = `${project}\\ave`;
     const own = `${aveHomeRoot}\\workspace\\repo`;
-    const grants = rankMxcFilesystem({
+    const grants = rankMxcLists({
       allowWrite: [project, own],
       allowRead: [],
       denyRead: [`${aveHomeRoot}\\`],
@@ -289,7 +350,7 @@ describe("rankMxcFilesystem", () => {
   });
 
   it("drops grants that do not exist and de-duplicates case variants", () => {
-    const grants = rankMxcFilesystem({
+    const grants = rankMxcLists({
       allowWrite: [repo, repo.toUpperCase(), "C:\\missing-dir"],
       allowRead: [],
       denyRead: [],
