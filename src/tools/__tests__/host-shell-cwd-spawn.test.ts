@@ -307,10 +307,15 @@ describe.runIf(process.platform === "win32")("Windows host cwd hold at launch", 
     }));
   };
 
-  it("refuses the spawn when the directory cannot be held", async () => {
+  it.each([
+    ["the directory cannot be held", () => { spawnBoundary.helperArgs = ["--hold", "relative"]; }],
+    ["the helper exits before its reply", () => { spawnBoundary.onHelper = helper => { helper.kill(); }; }],
+    ["the helper reply is malformed", () => { spawnBoundary.onHelper = helper => { queueMicrotask(() => helper.stdout?.emit("data", Buffer.from("not a facts row\n"))); }; }],
+    ["the helper output stream fails", () => { spawnBoundary.onHelper = helper => { helper.stdout?.destroy(new Error("pipe broke")); }; }],
+  ])("refuses the spawn when %s", async (_name, arrange) => {
     mkdirSync(join(directory, "current"));
     const { input, context } = await authorizedContext("current");
-    spawnBoundary.helperArgs = ["--hold", "relative"];
+    arrange();
     const result = await new BashTool().execute(input, context);
     expect(result.isError).toBe(true);
     expect(result.output).toContain(HOST_SHELL_DIRECTORY_HOLD_ERROR);

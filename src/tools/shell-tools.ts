@@ -2582,7 +2582,8 @@ export async function spawnWithSandbox(
   let cwdHold: HostShellSpawnDirectoryHold | undefined;
   try {
   signal?.throwIfAborted();
-  const directoryHold = await holdHostShellSpawnDirectory(spawnAuthorization);
+  const directoryHold = await holdHostShellSpawnDirectory(spawnAuthorization).catch(directoryHoldRefusal);
+  if (directoryHold instanceof HostShellDirectoryHoldError) return { output: `spawn failed: ${directoryHold.message}`, isError: true, metadata: {} };
   cwdHold = directoryHold;
   const { shell, homePath, hostHome: home } = preparedShellCommand(prepared);
   if (!homePath) throw new Error("Sandbox shell preparation has no owned HOME");
@@ -4297,7 +4298,7 @@ async function spawnPowerShellInMxc(
       });
       cwdHold.bind(child);
     } catch (error) {
-      throw launcherError(error);
+      throw error instanceof HostShellDirectoryHoldError ? error : launcherError(error);
     }
   } catch (error) {
     lifecycle.revoke();
@@ -4310,6 +4311,7 @@ async function spawnPowerShellInMxc(
     if (signal?.aborted === true && error === signal.reason) {
       return withContainedReleaseFailures({ output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } }, released);
     }
+    if (error instanceof HostShellDirectoryHoldError) return withContainedReleaseFailures(mxcSpawnFailure(`${failurePrefix}${error.message}`), released);
     // Pre-spawn steps run host helpers (path facts, the policy pipe) whose system errors name their install paths.
     shellTaskLog.error({ label: MXC_SHELL_LABEL, err: shellFailureText([error]) }, "contained shell failed before its job started");
     return withContainedReleaseFailures(mxcSpawnFailure(`${failurePrefix}${shellFailureText([error], "code")}`), released);
