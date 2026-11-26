@@ -1052,6 +1052,21 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Build Windows development desktop
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        timeout-minutes: 8
+        env:
+          AVE_BUILD_MINIFIER: esbuild
+        run: node .github/scripts/run-in-job.mjs bun run build
+      - name: Smoke test Windows development boot
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        timeout-minutes: 3
+        env:
+          AVE_CI_REQUIRE_EMPTY_JOB: '1'
+        run: node .github/scripts/run-in-job.mjs node scripts/smoke-windows-dev-boot.mjs
+
       # Only the default branch writes this cache. PR merge-ref caches cannot
       # cross into the base branch. Release tags build without this cache.
       - name: Seal Windows preparation outputs

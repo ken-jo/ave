@@ -17,11 +17,11 @@ const fixture = join(directory, "child fixture.cjs");
 writeFileSync(fixture, `const {spawn}=require('node:child_process');
 if(process.argv[2]==='leaf'){console.log(process.pid);setInterval(()=>{},1000)}
 else {const child=spawn(process.execPath,[__filename,'leaf'],{stdio:['ignore','pipe','inherit']});
-child.stdout.once('data',data=>{process.stdout.write(data); if(process.argv[2]==='root-exit') process.exit(23)});
+child.stdout.once('data',data=>{process.stdout.write(data); if(process.argv[2]==='root-exit') process.exit(23); if(process.argv[2]==='root-exit-zero') process.exit(0)});
 setInterval(()=>{},1000)}`);
-function launch(exe, args, binary = helper, receipt) {
+function launch(exe, args, binary = helper, receipt, env = process.env) {
   const prefix = receipt === undefined ? [] : ['--receipt', receipt];
-  const child = spawn(binary, [...prefix, exe, ...args], { cwd: directory, stdio: ['pipe','pipe','pipe'], windowsHide:true });
+  const child = spawn(binary, [...prefix, exe, ...args], { cwd: directory, env, stdio: ['pipe','pipe','pipe'], windowsHide:true });
   track(child);
   let stdout='', stderr='';
   child.stdout.on('data', data=>{stdout+=data}); child.stderr.on('data',data=>{stderr+=data});
@@ -124,6 +124,22 @@ try {
     assert.throws(()=>process.kill(pid,0),{code:'ESRCH'});
     console.log(`PASS ${mode} receipt proves the closed job is empty`);
   }
+  const strictEnv = { ...process.env, AVE_CI_REQUIRE_EMPTY_JOB: '1' };
+  const cleanReceipt = join(directory, 'clean-exit.receipt');
+  writeFileSync(cleanReceipt, registered);
+  result = await deadline(launch(process.execPath, ['-e', ''], helper, cleanReceipt, strictEnv).done);
+  assert.equal(result.code, 0);
+  assert.equal(readFileSync(cleanReceipt, 'utf8'), `${registered}0`);
+  const leftoverReceipt = join(directory, 'leftover.receipt');
+  writeFileSync(leftoverReceipt, registered);
+  run = launch(process.execPath, [fixture, 'root-exit-zero'], helper, leftoverReceipt, strictEnv);
+  const [leftoverOutput] = await deadline(once(run.child.stdout, 'data'));
+  result = await deadline(run.done);
+  assert.equal(result.code, 125);
+  assert.match(result.stderr, /job processes did not exit/);
+  await gone(Number(leftoverOutput.toString().trim()));
+  assert.equal(readFileSync(leftoverReceipt, 'utf8'), `${registered}0`);
+  console.log('PASS strict receipt requires natural exit and proves cleanup on failure');
   assert.ok(existsSync(queryFailureHelper),'Build -QueryFailureFixture before running this suite');
   const unqueried=join(directory,'unqueried.receipt');
   writeFileSync(unqueried,registered);
