@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { extractFile, statFile } from "@electron/asar";
+import { readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { extractFile, listPackage, statFile } from "@electron/asar";
 import { windowsPeImageDigest } from "./windows-path-kind-image-digest.mjs";
 
 // The before-pack build of each package, held in the packager's memory for its later hooks.
@@ -26,9 +26,20 @@ function recordedBuild(appOutDir, arch) {
   return build;
 }
 
-/** before-pack: the fresh build must be the image the main bundle pins. */
-export function recordWindowsPathKindPackageBuild({ appOutDir, arch, manifest, build, bundleDir }) {
-  const pin = manifest?.windowsPathKind;
+function isWithin(parent, file) {
+  const nested = relative(parent, file);
+  return !isAbsolute(nested) && nested !== ".." && !nested.startsWith(`..${sep}`);
+}
+
+/** before-pack: the fresh build must be the image pinned by the producer. */
+export function recordWindowsPathKindPackageBuild({ appOutDir, arch, receiptPath, build, bundleDir }) {
+  if (!receiptPath || !isAbsolute(receiptPath)) throw new Error("Missing absolute Windows main bundle build receipt path");
+  const staging = resolve(bundleDir, "../..");
+  const receipt = realpathSync(receiptPath);
+  if (isWithin(staging, receiptPath) || isWithin(realpathSync(staging), receipt)) {
+    throw new Error("The Windows main bundle receipt must be outside the staging directory");
+  }
+  const pin = JSON.parse(readFileSync(receipt, "utf8"));
   if (pin?.arch !== arch || pin.imageSha256 !== build.imageSha256) {
     throw new Error(`The main bundle does not pin this ${arch} Windows path helper build. Rebuild the bundle for ${arch}.`);
   }
@@ -59,6 +70,17 @@ export function assertPackagedWindowsPathKind(appOutDir, arch) {
   const previousNoAsar = process.noAsar;
   process.noAsar = true;
   try {
+    const root = join("dist", "src", "main");
+    const expected = new Set(bundle.map(([file]) => join(root, file)));
+    const metadata = new Set(["bundle-manifest.json", "headless-manifest.json"].map(file => join(root, file)));
+    for (const archived of listPackage(archive)) {
+      const entry = archived.slice(1);
+      if (!entry.startsWith(root + sep) || expected.delete(entry)) continue;
+      if (entry === join(root, "chunks") && "files" in statFile(archive, entry, false)) continue;
+      if (metadata.has(entry) && "offset" in statFile(archive, entry, false)) continue;
+      throw new Error("The archived main bundle contains a file missing from the producing build inventory");
+    }
+    if (expected.size > 0) throw new Error("The archived main bundle is missing files from the producing build inventory");
     for (const [file, digest] of bundle) {
       const entry = join("dist", "src", "main", file);
       const info = statFile(archive, entry, false);

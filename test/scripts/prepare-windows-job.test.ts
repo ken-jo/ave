@@ -589,7 +589,7 @@ describe("Windows job launcher preparation wiring", () => {
 describe("Windows path helper packaging", () => {
   // Hooks run in one packager process; a child keeps the hooks and their recorded build in one module graph.
   const PACKAGING = [
-    "const [lib, digest, hooks, root, bundlePin, archivePin, step] = process.argv.slice(1);",
+    "const [lib, digest, hooks, root, bundlePin, archivePin, step, change] = process.argv.slice(1);",
     "const { mkdirSync, readFileSync, writeFileSync } = await import('node:fs');",
     "const { join } = await import('node:path');",
     "const { transformSync } = await import('esbuild');",
@@ -604,16 +604,26 @@ describe("Windows path helper packaging", () => {
     "const compile = pin => transformSync('export const runtimePin = __AVE_WINDOWS_PATH_KIND_SHA256__;', { " +
       "format: 'esm', minify: true, define: { __AVE_WINDOWS_PATH_KIND_SHA256__: '__aveWindowsPathKindPin' }, " +
       "banner: 'const __aveWindowsPathKindPin = ' + JSON.stringify(pin) + ';' }).code;",
-    "const bundleDir = join(root, 'bundle');",
-    "const bundled = compile(bundlePin);",
-    "mkdirSync(bundleDir); writeFileSync(join(bundleDir, 'main.js'), bundled);",
-    "const manifest = { windowsPathKind: { arch: 'x64', imageSha256: windowsPeImageDigest(readFileSync(join(root, 'pin.exe'))), " +
-      "bundleSha256: { 'main.js': createHash('sha256').update(bundled).digest('hex') } } };",
-    "packaging.recordWindowsPathKindPackageBuild({ appOutDir, arch: 'x64', manifest, build, bundleDir });",
+    "const bundleDir = join(root, 'dist/src/main');",
+    "const bundled = compile(bundlePin); const chunk = compile(bundlePin);",
+    "const sha256 = text => createHash('sha256').update(text).digest('hex');",
+    "const changeBytes = text => change === 'alter-staging' ? text + '\\nexport const fixture = true;\\n' : text;",
+    "const inventory = main => ({ 'main.js': sha256(main), " +
+      "...(change === 'omit-chunk' ? {} : { 'chunks/chunk-ABC.js': sha256(chunk) }) });",
+    "const pin = { arch: 'x64', imageSha256: windowsPeImageDigest(readFileSync(join(root, 'pin.exe'))) };",
+    "const receiptPath = join(root, 'receipt.json');",
+    "writeFileSync(receiptPath, JSON.stringify({ ...pin, bundleSha256: inventory(bundled) }));",
+    "mkdirSync(join(bundleDir, 'chunks'), { recursive: true });",
+    "writeFileSync(join(bundleDir, 'main.js'), changeBytes(bundled));",
+    "writeFileSync(join(bundleDir, 'chunks/chunk-ABC.js'), chunk);",
+    "const manifest = { windowsPathKind: { ...pin, bundleSha256: inventory(changeBytes(bundled)) } };",
+    "writeFileSync(join(bundleDir, 'bundle-manifest.json'), JSON.stringify(manifest));",
+    "packaging.recordWindowsPathKindPackageBuild({ appOutDir, arch: 'x64', manifest, receiptPath, build, bundleDir });",
     "const archiveInput = join(root, 'asar-input');",
     "const archiveBundle = join(archiveInput, 'dist/src/main');",
-    "mkdirSync(archiveBundle, { recursive: true });",
-    "writeFileSync(join(archiveBundle, 'main.js'), compile(archivePin));",
+    "mkdirSync(join(archiveBundle, 'chunks'), { recursive: true });",
+    "writeFileSync(join(archiveBundle, 'main.js'), changeBytes(compile(archivePin)));",
+    "writeFileSync(join(archiveBundle, 'chunks/chunk-ABC.js'), chunk);",
     "process.noAsar = true;",
     "await createPackage(archiveInput, join(appOutDir, 'resources', 'app.asar'));",
     "const context = { electronPlatformName: 'win32', arch: 1, appOutDir, packager: { appInfo: { productFilename: 'Ave' } } };",
@@ -631,8 +641,8 @@ describe("Windows path helper packaging", () => {
   }
 
   function packaging(step: string, {
-    packaged, built = pathKindPe(), pin = built, bundlePin = pin, archivePin = bundlePin,
-  }: { packaged: Buffer; built?: Buffer; pin?: Buffer; bundlePin?: Buffer; archivePin?: Buffer }) {
+    packaged, built = pathKindPe(), pin = built, bundlePin = pin, archivePin = bundlePin, change = "",
+  }: { packaged: Buffer; built?: Buffer; pin?: Buffer; bundlePin?: Buffer; archivePin?: Buffer; change?: string }) {
     const root = mkdtempSync(join(tmpdir(), "ave-path-kind-package-"));
     roots.push(root);
     const appOutDir = join(root, "win-unpacked");
@@ -646,7 +656,7 @@ describe("Windows path helper packaging", () => {
       pathToFileURL(resolve("scripts/lib/windows-path-kind-package.mjs")).href,
       pathToFileURL(resolve("scripts/lib/windows-path-kind-image-digest.mjs")).href,
       pathToFileURL(resolve("scripts/package.json")).href,
-      root, windowsPeImageDigest(bundlePin), windowsPeImageDigest(archivePin), step,
+      root, windowsPeImageDigest(bundlePin), windowsPeImageDigest(archivePin), step, change,
     ], { encoding: "utf8", windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
   }
 
@@ -700,12 +710,24 @@ describe("Windows path helper packaging", () => {
     expect(result.status).not.toBe(0);
   });
 
-  it("wires the packaging hooks to the before-pack build and the bundle pin", () => {
+  it("refuses staged bundle bytes even when their staged manifest agrees", () => {
+    const result = packaging("pack", { packaged: pathKindPe(), change: "alter-staging" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("The main bundle bytes do not match the producing build");
+  });
+
+  it("refuses an archived executable chunk outside the producing build inventory", () => {
+    const result = packaging("pack", { packaged: pathKindPe(), change: "omit-chunk" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("The archived main bundle contains a file missing from the producing build inventory");
+  });
+
+  it("wires the packaging hooks to the before-pack build and the producer receipt", () => {
     const beforePack = readFileSync(resolve("scripts/electron-before-pack.cjs"), "utf8");
     expect(beforePack).toContain("const pathKind = buildWindowsPathKind({ root: context.packager.projectDir, arch });");
-    expect(beforePack).toContain("recordWindowsPathKindPackageBuild({ appOutDir: context.appOutDir, arch, manifest, build: pathKind, bundleDir });");
+    expect(beforePack).toContain("receiptPath: process.env.AVE_WINDOWS_PATH_KIND_BUNDLE_RECEIPT");
     expect(readFileSync(resolve("scripts/build-main-esbuild.mjs"), "utf8"))
-      .toContain("bundleManifest.windowsPathKind = pathKindSha256 === null ? null : { arch: process.arch, imageSha256: pathKindSha256, bundleSha256 };");
+      .toContain('writeFileSync(receipt, JSON.stringify({ arch: process.arch, imageSha256: pathKindSha256, bundleSha256 }), { flag: "wx", mode: 0o600 });');
   });
 });
 

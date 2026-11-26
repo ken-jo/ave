@@ -34,7 +34,10 @@ module.exports = async function beforePack(context) {
   const pathKind = buildWindowsPathKind({ root: context.packager.projectDir, arch });
   // The later hooks check the packaged and signed copies against this build.
   const { recordWindowsPathKindPackageBuild } = await import("./lib/windows-path-kind-package.mjs");
-  recordWindowsPathKindPackageBuild({ appOutDir: context.appOutDir, arch, manifest, build: pathKind, bundleDir });
+  recordWindowsPathKindPackageBuild({
+    appOutDir: context.appOutDir, arch, build: pathKind, bundleDir,
+    receiptPath: process.env.AVE_WINDOWS_PATH_KIND_BUNDLE_RECEIPT,
+  });
   const { stageMxcSdkAddon, stageMxcLauncher } = await import(pathToFileURL(join(context.packager.projectDir, "scripts", "fetch-mxc.mjs")).href);
   await stageMxcSdkAddon({ arch, projectRoot: context.packager.projectDir });
   const { verifyMxcSdkSource } = await import("./lib/mxc-sdk-integrity.mjs");
