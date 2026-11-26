@@ -1,3 +1,4 @@
+import { endianness } from "node:os";
 import { crc32 } from "node:zlib";
 import type { Sharp } from "sharp";
 import { BROWSER_CAPTURE_LIMITS, type BrowserCaptureScroll, type BrowserViewportImage } from "../../shared/browser-capture.js";
@@ -7,6 +8,7 @@ import { captureScrollContext, scrollBrowserCapture } from "./browser-capture-sc
 const PNG_COLOR_CHUNKS = new Set(["cHRM", "cICP", "gAMA", "iCCP", "sRGB"]);
 const PNG_HEADER_BYTES = 33;
 const CAPTURE_DECODE_PIXELS = BROWSER_CAPTURE_LIMITS.pixels / 2;
+const LITTLE_ENDIAN = endianness() === "LE";
 
 function captureColorChunks(png: Buffer, keepPrefix = false): { color: Buffer; prefix: Buffer[]; imageOffset: number } {
   const color: Buffer[] = [];
@@ -46,6 +48,36 @@ function repeatedSourceRow(pixels: Buffer, start: number, end: number, stride: n
   return row;
 }
 
+function copyAlignedAreaRow(
+  target: Buffer, output: number, pixels: Uint32Array, firstRow: number, stride: number,
+  width: number, columns: number, rows: number,
+): void {
+  const area = columns * rows;
+  const endRow = firstRow + rows * stride;
+  for (let x = 0; x < width; x += 1, output += 4) {
+    let red = 0, green = 0, blue = 0, opacity = 0;
+    const left = x * columns;
+    for (let row = firstRow; row < endRow; row += stride) {
+      let source = row + left;
+      const end = source + columns;
+      for (; source < end; source += 1) {
+        const rgba = pixels[source];
+        if (rgba === undefined) continue;
+        const alpha = rgba >>> 24;
+        red += (rgba & 255) * alpha;
+        green += ((rgba >>> 8) & 255) * alpha;
+        blue += ((rgba >>> 16) & 255) * alpha;
+        opacity += alpha;
+      }
+    }
+    const divisor = opacity || 1;
+    target[output] = Math.round(red / divisor);
+    target[output + 1] = Math.round(green / divisor);
+    target[output + 2] = Math.round(blue / divisor);
+    target[output + 3] = Math.round(opacity / area);
+  }
+}
+
 function copyCaptureTile(
   target: Buffer, pixels: Buffer, pixelWidth: number, channels: 3 | 4,
   sourceTop: number, stepX: number, stepY: number, width: number, copied: number, rows: number,
@@ -54,6 +86,10 @@ function copyCaptureTile(
   const hasAlpha = channels === 4;
   const stride = pixelWidth * channels;
   const outputStride = width * 4;
+  const alignedRgba = hasAlpha && LITTLE_ENDIAN && pixels.byteOffset % 4 === 0
+    && stepX >= 1 && stepY >= 1 && Number.isInteger(stepX) && Number.isInteger(stepY) && Number.isInteger(sourceTop)
+    ? new Uint32Array(pixels.buffer, pixels.byteOffset, pixels.byteLength / 4)
+    : undefined;
   let previousRepeat: Buffer | undefined;
   let previousOutput = 0;
   for (let y = 0; y < rows; y += 1) {
@@ -87,6 +123,10 @@ function copyCaptureTile(
     previousOutput = outputRow;
     const sampleEndY = repeat ? firstY + 1 : endY;
     const spanY = repeat ? 1 : bottom - top;
+    if (alignedRgba) {
+      copyAlignedAreaRow(target, outputRow, alignedRgba, (firstY - sectionTop) * pixelWidth, pixelWidth, width, stepX, spanY);
+      continue;
+    }
     for (let x = 0; x < width; x += 1) {
       const left = footprintStart(0, stepX, x, pixelWidth);
       const right = footprintEnd(0, stepX, x, pixelWidth, left);
