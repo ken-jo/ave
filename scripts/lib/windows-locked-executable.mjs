@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { promisify } from "node:util";
 
 const FILE_LIST_DIRECTORY = 1;
 const GENERIC_READ = 0x80000000;
@@ -32,42 +33,39 @@ function windowsFiles() {
   return api;
 }
 
-function checkedOpen(api, path, access, sharing, flags) {
-  const handle = api.open(path, access, sharing, null, OPEN_EXISTING, flags, null);
+function* checkedOpen(api, path, access, sharing, flags) {
+  const handle = yield [api.open, path, access, sharing, null, OPEN_EXISTING, flags, null];
   if (handle === -1 || handle === -1n) throw new Error("Could not hold the Windows executable path");
   return handle;
 }
 
-function volumePath(api, executable) {
-  const handle = checkedOpen(api, executable, 0, FILE_SHARE_ALL, 0);
+function* volumePath(api, executable) {
+  const handle = yield* checkedOpen(api, executable, 0, FILE_SHARE_ALL, 0);
   try {
     const buffer = Buffer.alloc(MAX_PATH_CHARS * 2);
-    const length = api.finalPath(handle, buffer, MAX_PATH_CHARS, VOLUME_NAME_NT);
+    const length = yield [api.finalPath, handle, buffer, MAX_PATH_CHARS, VOLUME_NAME_NT];
     if (length === 0 || length >= MAX_PATH_CHARS) throw new Error("Could not resolve the Windows executable volume");
     return GLOBAL_ROOT + buffer.toString("utf16le", 0, length * 2);
   } finally {
-    api.close(handle);
+    yield [api.close, handle];
   }
 }
 
-function readImage(api, handle) {
+function* readImage(api, handle) {
   const size = Buffer.alloc(8);
-  if (!api.size(handle, size)) throw new Error("Could not measure the Windows executable");
+  if (!(yield [api.size, handle, size])) throw new Error("Could not measure the Windows executable");
   const length = Number(size.readBigInt64LE());
   if (length <= 0 || length > MAX_IMAGE_BYTES) throw new Error("Invalid Windows executable size");
   const bytes = Buffer.alloc(length);
   const count = Buffer.alloc(4);
-  if (!api.read(handle, bytes, length, count, null) || count.readUInt32LE() !== length) {
+  if (!(yield [api.read, handle, bytes, length, count, null]) || count.readUInt32LE() !== length) {
     throw new Error("Could not read the Windows executable");
   }
   return bytes;
 }
 
-/** Hold the resolved image and directory entries across the synchronous process creation call. */
-export function lockWindowsExecutable(executable) {
-  if (process.platform !== "win32") throw new Error("Executable locking requires Windows");
-  const api = windowsFiles();
-  const path = volumePath(api, executable);
+function* holdExecutable(api, executable) {
+  const path = yield* volumePath(api, executable);
   const volume = /^\\Device\\HarddiskVolume[0-9]+\\/iu.exec(path.slice(GLOBAL_ROOT.length))?.[0];
   const root = volume === undefined ? undefined : GLOBAL_ROOT + volume;
   if (!root || path === root) throw new Error("Expected an executable on a local Windows volume");
@@ -85,10 +83,10 @@ export function lockWindowsExecutable(executable) {
     for (const [index, part] of parts.entries()) {
       const directory = index < parts.length - 1;
       entry += part;
-      const handle = checkedOpen(api, entry, directory ? FILE_LIST_DIRECTORY : GENERIC_READ,
+      const handle = yield* checkedOpen(api, entry, directory ? FILE_LIST_DIRECTORY : GENERIC_READ,
         FILE_SHARE_READ, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
       handles.push(handle);
-      if (!api.attributes(handle, FILE_ATTRIBUTE_TAG_INFO, info, info.length)) {
+      if (!(yield [api.attributes, handle, FILE_ATTRIBUTE_TAG_INFO, info, info.length])) {
         throw new Error("Could not inspect the Windows executable path");
       }
       const attributes = info.readUInt32LE();
@@ -97,11 +95,51 @@ export function lockWindowsExecutable(executable) {
       }
       entry += "\\";
     }
-    return { path, bytes: readImage(api, handles.at(-1)), close };
+    return { path, bytes: yield* readImage(api, handles.at(-1)), close };
   } catch (error) {
-    close();
+    while (handles.length > 0) yield [api.close, handles.pop()];
     throw error;
   }
+}
+
+/** Hold the resolved image and directory entries across the synchronous process creation call. */
+export function lockWindowsExecutable(executable) {
+  if (process.platform !== "win32") throw new Error("Executable locking requires Windows");
+  const operations = holdExecutable(windowsFiles(), executable);
+  let step = operations.next();
+  while (!step.done) {
+    const [call, ...args] = step.value;
+    let value;
+    try {
+      value = call(...args);
+    } catch (error) {
+      step = operations.throw(error);
+      continue;
+    }
+    step = operations.next(value);
+  }
+  return step.value;
+}
+
+export async function lockWindowsExecutableAsync(executable, checkDeadline) {
+  if (process.platform !== "win32") throw new Error("Executable locking requires Windows");
+  checkDeadline();
+  const api = windowsFiles();
+  const operations = holdExecutable(api, executable);
+  let step = operations.next();
+  while (!step.done) {
+    const [call, ...args] = step.value;
+    let value;
+    try {
+      if (call !== api.close) checkDeadline();
+      value = await promisify(call.async)(...args);
+    } catch (error) {
+      step = operations.throw(error);
+      continue;
+    }
+    step = operations.next(value);
+  }
+  return step.value;
 }
 
 export function withVerifiedWindowsExecutable(executable, expectedSha256, launch) {

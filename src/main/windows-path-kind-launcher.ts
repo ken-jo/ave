@@ -2,7 +2,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { dirname, join, win32 } from "node:path";
-import { lockWindowsExecutable } from "../../scripts/lib/windows-locked-executable.mjs";
+import { lockWindowsExecutable, lockWindowsExecutableAsync } from "../../scripts/lib/windows-locked-executable.mjs";
 import { windowsPeImageDigest } from "../../scripts/lib/windows-path-kind-image-digest.mjs";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
@@ -176,15 +176,21 @@ export async function queryDosDevice(drive: string): Promise<string | null> {
 export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT_POLICY.globalCeilingMs, deadline?: number): Promise<string> {
   if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
   const { resourcePath } = getHostResources();
-  const launch = (helper: string) => new Promise<string>((resolve, reject) => {
-    const options = windowsSystemDirectorySpawnOptions(helper);
-    const remaining = deadline === undefined ? timeout : Math.min(timeout, deadline - performance.now());
-    if (deadline !== undefined && remaining <= 0) {
-      reject(new DOMException("Windows system directory query timed out", "TimeoutError"));
-      return;
-    }
+  const isPinned = pinned();
+  const timeoutAt = isPinned ? performance.now() + timeout : Infinity;
+  const expiresAt = Math.min(timeoutAt, deadline ?? Infinity);
+  const expired = () => deadline !== undefined && deadline <= timeoutAt
+    ? new DOMException("Windows system directory query timed out", "TimeoutError")
+    : helperTimeout("The Windows system directory query", timeout);
+  const remaining = () => {
+    const ms = Math.min(timeout, expiresAt - performance.now());
+    if (ms <= 0) throw expired();
+    return Math.ceil(ms);
+  };
+  const budget = remaining();
+  const launch = (helper: string, childTimeout: number) => new Promise<string>((resolve, reject) => {
     execFile(helper, ["--system-directory"], {
-      ...options, timeout: Math.ceil(remaining), encoding: "buffer",
+      ...windowsSystemDirectorySpawnOptions(helper), timeout: childTimeout, encoding: "buffer",
     }, (error, stdout, stderr) => {
       if (error && isWindowsPathKindHelperTimeout(error)) {
         reject(helperTimeout("The Windows system directory query", timeout));
@@ -201,14 +207,48 @@ export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT
       }
     });
   });
-  if (pinned()) return withWindowsPathKindHelper(launch, resourcePath);
   const helper = windowsPathKindHelperIn(resourcePath);
+  if (isPinned) {
+    const cancellation = new AbortController();
+    const checkDeadline = () => {
+      cancellation.signal.throwIfAborted();
+      return remaining();
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const preparationTimeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const error = expired();
+        cancellation.abort(error);
+        reject(error);
+      }, budget);
+    });
+    const prepareAndLaunch = async () => {
+      const executable = await lockWindowsExecutableAsync(helper, checkDeadline).catch(() => {
+        checkDeadline();
+        throw missingWindowsPathKindHelper();
+      });
+      try {
+        checkDeadline();
+        assertBuiltHelper(executable.bytes);
+        const spawnTimeout = checkDeadline();
+        clearTimeout(timer);
+        return launch(executable.path, spawnTimeout);
+      } finally {
+        executable.close();
+      }
+    };
+    try {
+      return await Promise.race([prepareAndLaunch(), preparationTimeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   try {
     await access(helper);
   } catch {
     throw missingWindowsPathKindHelper();
   }
-  return launch(helper);
+  return launch(helper, remaining());
 }
 
 export function queryWindowsSystemDirectorySync(): string {

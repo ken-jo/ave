@@ -2,12 +2,15 @@ import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
 
-const mocks = vi.hoisted(() => ({ execFile: vi.fn(), execFileSync: vi.fn(), existsSync: vi.fn(), access: vi.fn(), readFileSync: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  execFile: vi.fn(), execFileSync: vi.fn(), existsSync: vi.fn(), access: vi.fn(), readFileSync: vi.fn(), lockWindowsExecutableAsync: vi.fn(),
+}));
 vi.mock("node:child_process", () => ({ execFile: mocks.execFile, execFileSync: mocks.execFileSync }));
 vi.mock("node:fs", () => ({ existsSync: mocks.existsSync, readFileSync: mocks.readFileSync }));
 vi.mock("node:fs/promises", () => ({ access: mocks.access }));
 vi.mock("../../../scripts/lib/windows-locked-executable.mjs", () => ({
   lockWindowsExecutable: (path: string) => ({ path, bytes: mocks.readFileSync(path), close: vi.fn() }),
+  lockWindowsExecutableAsync: mocks.lockWindowsExecutableAsync,
 }));
 vi.mock("../../shared/tool-timeout-policy.js", async original => {
   const actual = await original<typeof import("../../shared/tool-timeout-policy.js")>();
@@ -72,6 +75,7 @@ describe("Windows folder classifier launcher", () => {
     configureHostResources({ resourcePath: "/trusted/resources", isPackaged: true });
     mocks.execFile.mockReset();
     mocks.existsSync.mockReset().mockReturnValue(true);
+    mocks.lockWindowsExecutableAsync.mockReset().mockImplementation(async (path: string) => ({ path, bytes: mocks.readFileSync(path), close: vi.fn() }));
     vi.stubGlobal("process", { ...process, platform: "win32", arch: "x64" });
   });
 
@@ -233,6 +237,8 @@ describe("native system directory launcher", () => {
     configureHostResources({ resourcePath: "/trusted/resources", isPackaged: true });
     mocks.execFile.mockReset();
     mocks.access.mockReset().mockResolvedValue(undefined);
+    mocks.readFileSync.mockReset();
+    mocks.lockWindowsExecutableAsync.mockReset();
     vi.stubGlobal("process", { ...process, platform: "win32", arch: "x64" });
   });
   afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
@@ -254,6 +260,49 @@ describe("native system directory launcher", () => {
         await expect(pending).resolves.toBe("D:\\OperatingSystem\\System32");
         expect(mocks.execFile).toHaveBeenCalledWith(expect.any(String), ["--system-directory"], expect.objectContaining({ timeout: 3 }), expect.any(Function));
       }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects an expired deadline before opening the pinned helper", async () => {
+    const image = helperImage("built output");
+    vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", windowsPeImageDigest(image));
+    mocks.readFileSync.mockReturnValue(image);
+    await expect(queryWindowsSystemDirectory(10, performance.now())).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(mocks.readFileSync).not.toHaveBeenCalled();
+    expect(mocks.lockWindowsExecutableAsync).not.toHaveBeenCalled();
+    expect(mocks.execFile).not.toHaveBeenCalled();
+  });
+
+  it("lets the host run and refuses to spawn when pinned preparation outlasts the deadline", async () => {
+    const bytes = helperImage("built output");
+    const close = vi.fn();
+    const prepare = deferred<{ path: string; bytes: Buffer; close: () => void }>();
+    vi.stubGlobal("__AVE_WINDOWS_PATH_KIND_SHA256__", windowsPeImageDigest(bytes));
+    mocks.lockWindowsExecutableAsync.mockReturnValueOnce(prepare.promise);
+    mocks.execFile.mockImplementation(helperReply("D:\\OperatingSystem\\System32\n"));
+    mocks.readFileSync.mockReturnValueOnce(bytes);
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
+    try {
+      const hostTurn = vi.fn();
+      setTimeout(hostTurn, 1);
+      const pending = queryWindowsSystemDirectory(10, performance.now() + 10);
+      const result = pending.catch((error: unknown) => error);
+      expect(mocks.readFileSync).not.toHaveBeenCalled();
+      expect(mocks.lockWindowsExecutableAsync).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(hostTurn).toHaveBeenCalledOnce();
+      expect(mocks.execFile).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(9);
+      expect(await result).toMatchObject({ name: "TimeoutError" });
+      const checkDeadline = mocks.lockWindowsExecutableAsync.mock.calls[0]?.[1];
+      expect(checkDeadline).toThrow(expect.objectContaining({ name: "TimeoutError" }));
+
+      prepare.resolve({ path: "held.exe", bytes, close });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(close).toHaveBeenCalledOnce();
+      expect(mocks.execFile).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
