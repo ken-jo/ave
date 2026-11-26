@@ -1,8 +1,9 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolve, win32 } from "node:path";
 import { aveHome } from "../../shared/ave-home.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { setProcessPlatform } from "../../__tests__/test-helpers.js";
+import { stubSimulatedWindowsStateEnvironment } from "../../__tests__/support/simulated-win32-drive.js";
 import { admitMxcExtensionFilesystem, assertExtensionStartAllowed } from "../asrt-sandbox.js";
 import { MxcExtensionReadinessRefusedError, MxcProcessContractError } from "../mxc-extension-errors.js";
 import {
@@ -15,6 +16,7 @@ import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 
 // Admission projects the Ave home boundary, which pins a profile-child home natively.
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
 const identity = vi.hoisted(() => ({ valid: true }));
 vi.mock("../windows-stamp-targets.js", async original => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();
@@ -49,6 +51,11 @@ afterEach(() => {
 });
 
 describe("holder filesystem admission", () => {
+  beforeEach(() => {
+    stubSimulatedWindowsStateEnvironment();
+    return () => vi.unstubAllEnvs();
+  });
+
   it("requires the native platform and explicit holder roots", () => {
     setProcessPlatform("darwin");
     expect(() => admitMxcExtensionFilesystem({ allowRead: [], allowWrite: [] })).toThrow(/requires win32/);
@@ -75,6 +82,14 @@ describe("holder filesystem admission", () => {
     const admitted = admitMxcExtensionFilesystem({ allowRead: ["C:\\holder\\data"], allowWrite: ["C:\\holder\\data"], denyRead: [deny] }, HOLDER_OWNERSHIP);
     expect(mxcPolicyRows(admitted.model).protectedFloor).toContain(deny);
     expect(rankMxcFilesystem(admitted.model, () => true)).toMatchObject({ readwrite: [], readonly: [] });
+  });
+
+  it("refuses a holder write when the host state environment is missing", () => {
+    setProcessPlatform("win32");
+    vi.stubEnv("LOCALAPPDATA", undefined);
+    vi.stubEnv("ProgramData", undefined);
+    expect(() => admitMxcExtensionFilesystem({ allowRead: [], allowWrite: HOLDER_OWNERSHIP.writeRoots }, HOLDER_OWNERSHIP))
+      .toThrow(expect.objectContaining({ code: "confinement-state-write-grant", path: undefined }));
   });
 
   it("binds every write grant to the host-captured write roots, inside or outside plugin namespaces", () => {
