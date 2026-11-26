@@ -112,21 +112,25 @@ static DWORD WINAPI enforceDeadline(void* context) {
 static const char kLost[] = "AVJ1 lost\n";
 static const char kUnconfirmed[] = "AVJ1 unconfirmed\n";
 // Members still running when the root exits, other than console hosts the system attaches.
-static bool jobHasDescendants(HANDLE job, DWORD root) {
+static bool jobHasLiveDescendants(HANDLE job, DWORD root) {
   std::vector<unsigned char> buffer(sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + 1024 * sizeof(ULONG_PTR));
   auto* list = reinterpret_cast<JOBOBJECT_BASIC_PROCESS_ID_LIST*>(buffer.data());
-  if (!QueryInformationJobObject(job, JobObjectBasicProcessIdList, list, static_cast<DWORD>(buffer.size()), nullptr)) return true;
+  if (!QueryInformationJobObject(job, JobObjectBasicProcessIdList, list, static_cast<DWORD>(buffer.size()), nullptr)) return false;
   for (DWORD index = 0; index < list->NumberOfProcessIdsInList; ++index) {
     // The exited root can still be listed while the system retires it.
     if (list->ProcessIdList[index] == root) continue;
-    HANDLE member = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(list->ProcessIdList[index]));
-    if (!member) return true;
+    // The snapshot can contain a process that exited or whose id was reused before we opened it.
+    HANDLE member = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, static_cast<DWORD>(list->ProcessIdList[index]));
+    if (!member) continue;
     wchar_t image[MAX_PATH + 1]{};
     DWORD size = MAX_PATH;
-    const bool named = QueryFullProcessImageNameW(member, 0, image, &size) != FALSE;
+    BOOL belongsToJob = FALSE;
+    const bool liveDescendant = IsProcessInJob(member, job, &belongsToJob) && belongsToJob &&
+        QueryFullProcessImageNameW(member, 0, image, &size) && WaitForSingleObject(member, 0) == WAIT_TIMEOUT;
     CloseHandle(member);
+    if (!liveDescendant) continue;
     const std::wstring path(image, size);
-    if (!named || path.size() < 12 || _wcsicmp(path.c_str() + path.size() - 12, L"\\conhost.exe") != 0) return true;
+    if (path.size() < 12 || _wcsicmp(path.c_str() + path.size() - 12, L"\\conhost.exe") != 0) return true;
   }
   return false;
 }
@@ -299,7 +303,7 @@ int wmain(int argc, wchar_t** argv) {
     // Teardown is bounded as a whole; a stalled helper or job query ends the run unconfirmed.
     static Deadline teardown{CreateEventW(nullptr, TRUE, FALSE, nullptr), 10000, kUnconfirmed};
     if (!teardown.met || !CreateThread(nullptr, 0, enforceDeadline, &teardown, 0, nullptr)) endHeld(kUnconfirmed, 125);
-    const bool stopped = result == WAIT_OBJECT_0 && jobHasDescendants(job, child.dwProcessId);
+    const bool stopped = result == WAIT_OBJECT_0 && jobHasLiveDescendants(job, child.dwProcessId);
     // Every process the command started is in this job, so its emptiness is the whole reap.
     if (result > WAIT_OBJECT_0 + 1 || emptyJob(job, false) == JobCleanup::Failed) endHeld(kUnconfirmed, 125);
     const char pinned = holdAsk(hold, 0x51485641, 0);
