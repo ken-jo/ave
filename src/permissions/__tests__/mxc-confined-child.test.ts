@@ -19,6 +19,7 @@ const state = vi.hoisted(() => ({
   plan: { selectedBackend: "mxc", readiness: "ready" },
   realPlan: false,
   executableStamp: 1n,
+  onExecutableStat: undefined as (() => void) | undefined,
   executableMtime: 1n,
   // Synthetic junctions (lexical prefix -> target) and not-yet-created paths for canonical spelling.
   junctions: new Map<string, string>(),
@@ -76,6 +77,7 @@ vi.mock("node:fs", async (original) => {
   const lstatSync = (path: string) => {
     canonical(path);
     const directory = !path.endsWith(".exe");
+    if (!directory) state.onExecutableStat?.();
     return { isDirectory: () => directory, isFile: () => !directory, isSymbolicLink: () => false,
       size: 8n, mtimeNs: state.executableMtime, birthtimeNs: 1n };
   };
@@ -112,8 +114,9 @@ import { liveMxcHolderWritableRoots, spawnConfinedChild, spawnMxcConfinedChild, 
 import { MxcProcessContractError } from "../mxc-extension-errors.js";
 import { __resetWindowsSandboxSubstrateForTest, setWindowsSandboxSubstrate } from "../sandbox-capability.js";
 import { mxcShellCapability, windowsSubstrateFor, type WindowsSandboxPlanInputs } from "../../boot/steps/windows-sandbox-plan.js";
+import * as quarantine from "../sandbox-quarantine.js";
 import * as watchedRows from "../windows-watched-rows.js";
-import { sweepWatchedRows, WatchedQuarantineError, watchedProtectedRows } from "../windows-watched-rows.js";
+import { hasWatchedWork, sweepWatchedRows, WatchedQuarantineError, watchedProtectedRows } from "../windows-watched-rows.js";
 
 function spec(): MxcConfinedChildSpec {
   return { label: "worker:sample", command: "C:\\runtime\\runtime.exe", args: ["D:\\work\\entry.js"],
@@ -158,6 +161,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.realPlan = false;
   state.executableStamp = 1n;
+  state.onExecutableStat = undefined;
   state.executableMtime = 1n;
   state.junctions.clear();
   state.missing.clear();
@@ -736,6 +740,43 @@ describe("co-holder nesting and executable identity", () => {
     });
     await expect(spawnMxcConfinedChild(spec())).rejects.toThrow("[fixture] native creation failed");
     expect(claimed()).toEqual([]);
+  });
+
+  it.runIf(process.platform === "win32").each(["absent", "present"] as const)("leaves no watched claim on a pre-authorization failure with protected names %s", async (presence) => {
+    const carrier = "D:\\work\\.ave";
+    const children = ["commands", "hooks"].map(name => win32.join(carrier, name));
+    state.missing.add(carrier);
+    state.admit.mockReturnValueOnce({ model: mxcPolicyModel({ allowRead: ["C:\\runtime", "C:\\Windows"],
+      allowWrite: ["D:\\work"], denyRead: [], denyWrite: children, requiredWriteDenies: children, protectedFloor: [] }), assertStillValid: state.validate });
+    const makeQuarantine = vi.spyOn(quarantine, "createSandboxQuarantine").mockRejectedValue(new Error("fixture quarantine"));
+    const measure = vi.fn(() => {
+      if (presence === "present") state.missing.delete(carrier);
+      return watchedProtectedRows();
+    });
+    let duringAuthorization: readonly string[] | undefined;
+    state.spawn.mockImplementationOnce(async (request, options) => {
+      const child = { id: 47, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+        completion: new Promise(() => {}), startEvidence: started(request), dispose: vi.fn().mockResolvedValue(undefined) };
+      options.onOwned(child);
+      state.executableStamp = 2n;
+      state.onExecutableStat = () => {
+        state.onExecutableStat = undefined;
+        duringAuthorization = measure();
+      };
+      options.beforeSpawn();
+      return child;
+    });
+    try {
+      await expect(spawnMxcConfinedChild(spec())).rejects.toThrow(/does not match/);
+      expect(measure).toHaveBeenCalledOnce();
+      expect({ duringAuthorization, afterRelease: watchedProtectedRows(), pending: hasWatchedWork(), quarantineCalls: makeQuarantine.mock.calls.length })
+        .toEqual({ duringAuthorization: [], afterRelease: [], pending: false, quarantineCalls: 0 });
+    } finally {
+      state.missing.add(carrier);
+      watchedRows.pruneWatchedRows([]);
+      await sweepWatchedRows({ commandId: "fixture-cleanup" });
+      makeQuarantine.mockRestore();
+    }
   });
 
   it.runIf(process.platform === "win32").each(["receipt", "failure"] as const)("hands a holder's quarantine %s to the next sandboxed command result", async (kind) => {

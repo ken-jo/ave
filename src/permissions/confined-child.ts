@@ -439,9 +439,9 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
           assertManagedChildProcessAdmissionOpen(spec.label);
           if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before native creation");
           assertNesting();
-          // The last synchronous check before native creation: a watched name that appeared since ranking refuses the start.
-          watchedClaim?.start();
           consumeMxcExtensionAdmission(admission, { ...admissionInput, executableIdentity: measureExecutableIdentity(spec.command) });
+          // Register only after the receipt is spent. A name that appeared since ranking still refuses the start.
+          watchedClaim?.start();
         },
       });
       return child.startEvidence;
