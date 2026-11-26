@@ -329,7 +329,8 @@ export function windowsPathKindReceipt(root, arch, build, binary) {
   return { identity, invocation, targetDir, sourceSha256: windowsPathKindSourceDigest(root), binarySha256: sha256(binary) };
 }
 
-export function verifyWindowsPathKindBuild(root, arch) {
+// Checks the receipt against its files. Callers establish build provenance.
+export function verifyWindowsPathKindReceipt(root, arch) {
   const binary = readFileSync(join(root, windowsPathKindPath(arch)));
   const receipt = JSON.parse(readFileSync(join(root, windowsPathKindReceiptPath(arch)), "utf8"));
   const pinned = windowsPathKindToolchain(root);

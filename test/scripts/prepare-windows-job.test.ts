@@ -16,7 +16,7 @@ import {
 import {
   WINDOWS_PATH_KIND_PROFILE, WINDOWS_PATH_KIND_PROFILE_SETTINGS, windowsPathKindCompilerCommand,
   windowsPathKindPath, windowsPathKindReceipt, windowsPathKindReceiptPath, windowsPathKindRustflags, windowsPathKindToolPaths,
-  verifyWindowsPathKindBuild,
+  verifyWindowsPathKindReceipt,
 } from "../../scripts/lib/windows-path-kind-build.mjs";
 
 const roots: string[] = [];
@@ -111,8 +111,7 @@ function fixtureRoot({ launcher, pathKind = true }: { launcher?: Date; pathKind?
 function buildStub(root: string, calls: string[][]) {
   return (command: string, args: string[]) => {
     calls.push([command, ...args]);
-    if (args.includes("build:windows-path-kind")) stagePathKind(root);
-    else write(root, LAUNCHER, new Date());
+    write(root, LAUNCHER, new Date());
     return { status: 0 };
   };
 }
@@ -130,14 +129,20 @@ function pathKindBuildFixture() {
   }
   const buildTemp = mkdtempSync(join(tmpdir(), "ave cargo temp-"));
   roots.push(buildTemp);
-  const builder = pathToFileURL(resolve("scripts/build-windows-path-kind.mjs")).href;
-  const runBuild = (overrides: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [
-    "--input-type=module", "--eval",
-    'const {buildWindowsPathKind} = await import(process.argv[1]); buildWindowsPathKind({root: process.argv[2], arch: process.arch});',
-    builder, root,
-  ], { encoding: "utf8", windowsHide: true, env: { ...process.env, TMP: buildTemp, TEMP: buildTemp, TMPDIR: buildTemp, ...overrides, ELECTRON_RUN_AS_NODE: "1" } });
+  const runScript = (script: string, code: string, overrides: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [
+    "--input-type=module", "--eval", code, pathToFileURL(resolve(script)).href, root,
+  ], {
+    encoding: "utf8", windowsHide: true,
+    env: {
+      ...process.env, TMP: buildTemp, TEMP: buildTemp, TMPDIR: buildTemp, AVE_TEST_TMP_ROOT: buildTemp,
+      ...overrides, ELECTRON_RUN_AS_NODE: "1",
+    },
+  });
+  const runBuild = (overrides?: NodeJS.ProcessEnv) => runScript("scripts/build-windows-path-kind.mjs",
+    'const {buildWindowsPathKind} = await import(process.argv[1]); buildWindowsPathKind({root: process.argv[2]});',
+    overrides);
   const receiptPath = join(root, windowsPathKindReceiptPath(process.arch));
-  return { root, crate, runBuild, receiptPath };
+  return { root, crate, runBuild, runScript, receiptPath, buildTemp };
 }
 
 describe("Windows path helper build", () => {
@@ -172,7 +177,7 @@ describe("Windows path helper build", () => {
       RUSTFLAGS: "--unexpected", CARGO_ENCODED_RUSTFLAGS: "--unexpected", LINK: "/unexpected", LIB: root,
     });
     expect(hostile.status, hostile.stderr).toBe(0);
-    verifyWindowsPathKindBuild(root, process.arch);
+    verifyWindowsPathKindReceipt(root, process.arch);
     const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
     expect(hostile.stderr.match(/^\s*Running `(.+)`\r?$/mu)?.[1]).toBe(receipt.invocation);
     expect(receipt.identity).toEqual(cleanReceipt.identity);
@@ -192,7 +197,7 @@ describe("Windows path helper build", () => {
     writeFileSync(manifest, originalManifest);
 
     writeFileSync(receiptPath, JSON.stringify({ ...receipt, invocation: `${receipt.invocation} -C link-arg=/unexpected` }));
-    expect(() => verifyWindowsPathKindBuild(root, process.arch)).toThrow("Unexpected Windows path helper compiler invocation");
+    expect(() => verifyWindowsPathKindReceipt(root, process.arch)).toThrow("Unexpected Windows path helper compiler invocation");
 
     const parent = join(root, "build parent");
     mkdirSync(join(parent, ".cargo"), { recursive: true });
@@ -220,7 +225,29 @@ describe("Windows path helper build", () => {
     expect(receipt.identity.inputs.libraries).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: expect.stringMatching(/libucrt\.lib$/iu), sha256: expect.stringMatching(/^[a-f0-9]{64}$/u) }),
     ]));
-    verifyWindowsPathKindBuild(root, process.arch);
+    verifyWindowsPathKindReceipt(root, process.arch);
+  }, 60_000);
+
+  it.skipIf(process.platform !== "win32")("replaces an independently supplied executable even with an authentic recorded command", () => {
+    const { root, runBuild, runScript, receiptPath, buildTemp } = pathKindBuildFixture();
+    write(root, windowsJobLauncherPath(process.arch), NEW);
+    const built = runBuild();
+    expect(built.status, built.stderr).toBe(0);
+    const executable = join(root, windowsPathKindPath(process.arch));
+    const original = readFileSync(executable);
+    const supplied = pathKindPe();
+    if (process.arch === "arm64") supplied.writeUInt16LE(0xaa64, 68);
+    const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+    writeFileSync(executable, supplied);
+    writeFileSync(receiptPath, JSON.stringify({ ...receipt, binarySha256: createHash("sha256").update(supplied).digest("hex") }));
+    verifyWindowsPathKindReceipt(root, process.arch);
+
+    const prepared = runScript("scripts/prepare-windows-job.mjs",
+      'const {prepareWindowsJob} = await import(process.argv[1]); prepareWindowsJob({root: process.argv[2]});');
+    expect(prepared.status, prepared.stderr).toBe(0);
+    expect(readFileSync(executable).equals(original)).toBe(true);
+    expect(readFileSync(join(buildTemp, "ave-path-pin-test.exe")).subarray(0, 2).toString()).toBe("MZ");
+    verifyWindowsPathKindReceipt(root, process.arch);
   }, 60_000);
 
   it.each([
@@ -240,7 +267,7 @@ describe("Windows path helper build", () => {
     receipt.binarySha256 = createHash("sha256").update(binary).digest("hex");
     writeFileSync(join(root, PATH_KIND), binary);
     writeFileSync(join(root, RECEIPT), JSON.stringify(receipt));
-    expect(() => verifyWindowsPathKindBuild(root, "x64")).toThrow(message);
+    expect(() => verifyWindowsPathKindReceipt(root, "x64")).toThrow(message);
   });
 });
 
@@ -281,11 +308,11 @@ describe("prepareWindowsJob", () => {
     const calls: string[][] = [];
     const lines: string[] = [];
     const found = prepareWindowsJob({
-      root, platform: "win32", arch: "x64", findBuildTools: () => true, runSync: buildStub(root, calls), log: (line) => lines.push(line),
+      root, platform: "win32", arch: "x64", findBuildTools: () => true, runSync: buildStub(root, calls), buildPathKind: () => stagePathKind(root), log: (line) => lines.push(line),
     });
     expect(found.state).toBe("missing");
     expect(calls).toEqual([["bun.exe", "run", "build:windows-job", "-Arch", "x64"]]);
-    expect(lines).toEqual([`[windows-job] building ${LAUNCHER} (missing)`, `[windows-path-kind] up to date: ${PATH_KIND}`]);
+    expect(lines).toEqual([`[windows-job] building ${LAUNCHER} (missing)`, `[windows-path-kind] building ${PATH_KIND} (fresh build)`]);
   });
 
   it("rebuilds a stale launcher and names the newer source", () => {
@@ -293,9 +320,9 @@ describe("prepareWindowsJob", () => {
     write(root, "native/windows-job/launcher.cpp", NEW);
     const calls: string[][] = [];
     const lines: string[] = [];
-    prepareWindowsJob({ root, platform: "win32", arch: "x64", findBuildTools: () => true, runSync: buildStub(root, calls), log: (line) => lines.push(line) });
+    prepareWindowsJob({ root, platform: "win32", arch: "x64", findBuildTools: () => true, runSync: buildStub(root, calls), buildPathKind: () => stagePathKind(root), log: (line) => lines.push(line) });
     expect(calls).toHaveLength(1);
-    expect(lines).toEqual([`[windows-job] building ${LAUNCHER} (older than ${join("native", "windows-job", "launcher.cpp")})`, `[windows-path-kind] up to date: ${PATH_KIND}`]);
+    expect(lines).toEqual([`[windows-job] building ${LAUNCHER} (older than ${join("native", "windows-job", "launcher.cpp")})`, `[windows-path-kind] building ${PATH_KIND} (fresh build)`]);
   });
 
   it("skips a fresh launcher without looking for the build tools", () => {
@@ -304,18 +331,18 @@ describe("prepareWindowsJob", () => {
     const lines: string[] = [];
     const found = prepareWindowsJob({
       root, platform: "win32", arch: "x64",
-      findBuildTools: () => { throw new Error("must not probe"); }, runSync: buildStub(root, calls), log: (line) => lines.push(line),
+      findBuildTools: () => { throw new Error("must not probe"); }, runSync: buildStub(root, calls), buildPathKind: () => stagePathKind(root), log: (line) => lines.push(line),
     });
     expect(found.state).toBe("fresh");
     expect(calls).toEqual([]);
-    expect(lines).toEqual([`[windows-job] up to date: ${LAUNCHER}`, `[windows-path-kind] up to date: ${PATH_KIND}`]);
+    expect(lines).toEqual([`[windows-job] up to date: ${LAUNCHER}`, `[windows-path-kind] building ${PATH_KIND} (fresh build)`]);
   });
 
   it("does nothing off Windows", () => {
     const root = fixtureRoot();
     const calls: string[][] = [];
     const lines: string[] = [];
-    expect(prepareWindowsJob({ root, platform: "darwin", arch: "arm64", runSync: buildStub(root, calls), log: (line) => lines.push(line) }).state).toBe("skip");
+    expect(prepareWindowsJob({ root, platform: "darwin", arch: "arm64", runSync: buildStub(root, calls), buildPathKind: () => stagePathKind(root), log: (line) => lines.push(line) }).state).toBe("skip");
     expect([calls, lines]).toEqual([[], []]);
   });
 
@@ -328,25 +355,27 @@ describe("prepareWindowsJob", () => {
     if (change === "lockfile") writeFileSync(join(root, "native/windows-path-kind/Cargo.lock"), "changed");
     if (change === "toolchain") writeFileSync(join(root, "rust-toolchain.toml"), 'channel = "1.92.1"\n');
     if (change === "wrong machine") stagePathKind(root, 0xaa64);
-    const calls: string[][] = [];
-    prepareWindowsJob({ root, platform: "win32", arch: "x64", findBuildTools: () => true, runSync: buildStub(root, calls), log: () => {} });
-    expect(calls).toEqual([["bun.exe", "run", "build:windows-path-kind", "--", "--arch", "x64", "--fixture"]]);
+    const builds: object[] = [];
+    prepareWindowsJob({
+      root, platform: "win32", arch: "x64", log: () => {},
+      runSync: () => { throw new Error("must not rebuild the job launcher"); },
+      buildPathKind: (options) => { builds.push(options); },
+    });
+    expect(builds).toEqual([{ root, arch: "x64", fixture: true }]);
   });
 
-  it("refuses a missing path classifier without build tools or a successful build", () => {
+  it("propagates failure to build the path classifier even with a fresh job launcher", () => {
     const root = fixtureRoot({ launcher: NEW });
     rmSync(join(root, PATH_KIND));
     const options = { root, platform: "win32" as const, arch: "x64", log: () => {} };
-    expect(() => prepareWindowsJob({ ...options, findBuildTools: () => false }))
-      .toThrow("run: bun run build:windows-path-kind");
-    expect(() => prepareWindowsJob({ ...options, findBuildTools: () => true, runSync: () => ({ status: 0 }) }))
-      .toThrow(`did not produce an up-to-date ${PATH_KIND}`);
+    expect(() => prepareWindowsJob({ ...options, buildPathKind: () => { throw new Error("link failed"); } }))
+      .toThrow(/link failed.*run: bun run build:windows-path-kind/u);
   });
 
   it("fails without the C++ build tools, naming the toolchain and the command, and does not build", () => {
     const root = fixtureRoot();
     const calls: string[][] = [];
-    const run = () => prepareWindowsJob({ root, platform: "win32", arch: "x64", findBuildTools: () => false, runSync: buildStub(root, calls), log: () => {} });
+    const run = () => prepareWindowsJob({ root, platform: "win32", arch: "x64", findBuildTools: () => false, runSync: buildStub(root, calls), buildPathKind: () => stagePathKind(root), log: () => {} });
     expect(run).toThrow(missingBuildToolsMessage(LAUNCHER));
     expect(missingBuildToolsMessage(LAUNCHER)).toContain("Visual Studio C++ build tools (MSVC");
     expect(missingBuildToolsMessage(LAUNCHER)).toMatch(/run: bun run build:windows-job$/);

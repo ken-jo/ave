@@ -4,7 +4,7 @@ import { appendFileSync, mkdirSync, readdirSync, renameSync, statSync, utimesSyn
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { verifyWindowsPathKindBuild, windowsPathKindPath, windowsPathKindReceiptPath } from "../../scripts/lib/windows-path-kind-build.mjs";
+import { verifyWindowsPathKindReceipt, windowsPathKindPath, windowsPathKindReceiptPath } from "../../scripts/lib/windows-path-kind-build.mjs";
 import { windowsJobLauncherPath } from "../../scripts/prepare-windows-job.mjs";
 
 const { RUNNER_TEMP: temp, GITHUB_ENV: env } = process.env;
@@ -28,7 +28,7 @@ for (const file of helpers) {
   // Replacing files breaks hardlinks to the package-manager archive cache.
   renameSync(source, file);
 }
-verifyWindowsPathKindBuild(process.cwd(), process.arch);
+verifyWindowsPathKindReceipt(process.cwd(), process.arch);
 const now = new Date();
 utimesSync(launcher, now, now);
 const mirror = join(temp, "python-release-mirror");

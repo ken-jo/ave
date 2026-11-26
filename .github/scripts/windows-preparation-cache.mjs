@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { verifyWindowsPathKindBuild, windowsPathKindCompiler } from "../../scripts/lib/windows-path-kind-build.mjs";
+import { verifyWindowsPathKindReceipt, windowsPathKindCompiler } from "../../scripts/lib/windows-path-kind-build.mjs";
 import {
   restoreWindowsPreparation, sealWindowsPreparation, verifyInstalledWindowsPreparation,
   verifySealedWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
@@ -95,7 +95,7 @@ async function main(operation, root, env) {
       if (!key || !isAbsolute(env.AVE_WINDOWS_PREP_STORE ?? "")) throw new Error("Missing restored helper cache identity");
       await verifyInstalledWindowsPreparation(env.AVE_WINDOWS_PREP_STORE, key, destinations, env.AVE_WINDOWS_PREP_RESTORED_DIGEST);
     }
-    verifyWindowsPathKindBuild(root, process.arch);
+    verifyWindowsPathKindReceipt(root, process.arch);
     return;
   }
   if (operation === "restore") {
@@ -137,7 +137,7 @@ async function main(operation, root, env) {
     return;
   }
   if (operation !== "seal") throw new Error("Unknown Windows preparation command");
-  verifyWindowsPathKindBuild(root, process.arch);
+  verifyWindowsPathKindReceipt(root, process.arch);
   for (const file of native) copyOutput(join(root, file), join(store, "native", file));
   copyOutput(join(tmpdir(), pinTest), join(store, "native", pinTest));
   const digest = await sealWindowsPreparation(store, key, required);

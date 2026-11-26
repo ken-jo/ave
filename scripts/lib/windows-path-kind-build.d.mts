@@ -64,4 +64,4 @@ export function windowsPathKindReceipt(root: string, arch: string, build: Window
   sourceSha256: string;
   binarySha256: string;
 };
-export function verifyWindowsPathKindBuild(root: string, arch: string): void;
+export function verifyWindowsPathKindReceipt(root: string, arch: string): void;

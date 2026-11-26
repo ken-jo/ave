@@ -3,7 +3,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { verifyWindowsPathKindBuild, windowsPathKindPath } from "./lib/windows-path-kind-build.mjs";
+import { buildWindowsPathKind } from "./build-windows-path-kind.mjs";
+import { windowsPathKindPath } from "./lib/windows-path-kind-build.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BUILD_COMMAND = "bun run build:windows-job";
@@ -53,13 +54,8 @@ export function hasCppBuildTools({
 }
 
 export function missingBuildToolsMessage(launcher) {
-  if (launcher.includes("windows-path-kind")) {
-    return "Windows path helper " + launcher + " needs building. Install the MSVC tools ("
-      + MSVC_COMPONENT + ") and the pinned Rust toolchain, then run: " + PATH_KIND_BUILD_COMMAND;
-  }
-  const command = BUILD_COMMAND;
   return `Windows job launcher ${launcher} needs building, but the Visual Studio C++ build tools (MSVC, ` +
-    `${MSVC_COMPONENT}) were not found. Install them, then run: ${command}`;
+    `${MSVC_COMPONENT}) were not found. Install them, then run: ${BUILD_COMMAND}`;
 }
 
 export function prepareWindowsJob({
@@ -68,40 +64,36 @@ export function prepareWindowsJob({
   arch = process.arch,
   findBuildTools = hasCppBuildTools,
   runSync = spawnSync,
+  buildPathKind = buildWindowsPathKind,
   log = (line) => console.log(line),
 } = {}) {
   const job = windowsJobLauncherState(root, { platform, arch });
   if (job.state === "skip") return job;
-  const prepare = (directory, launcher, reason, args, check) => {
-    const prefix = `[${directory}] `;
-    if (!reason) {
-      log(`${prefix}up to date: ${launcher}`);
-      return;
-    }
-    if (!findBuildTools()) throw new Error(missingBuildToolsMessage(launcher));
-    log(`${prefix}building ${launcher} (${reason})`);
-    const result = runSync("bun.exe", args, { cwd: root, shell: false, stdio: "inherit", windowsHide: true });
-    const command = ["bun", ...args].join(" ");
+  if (job.state === "fresh") {
+    log(`[windows-job] up to date: ${job.launcher}`);
+  } else {
+    if (!findBuildTools()) throw new Error(missingBuildToolsMessage(job.launcher));
+    const reason = job.state === "stale" ? `older than ${job.newer}` : "missing";
+    log(`[windows-job] building ${job.launcher} (${reason})`);
+    const command = `${BUILD_COMMAND} -Arch ${arch}`;
+    const result = runSync("bun.exe", ["run", "build:windows-job", "-Arch", arch],
+      { cwd: root, shell: false, stdio: "inherit", windowsHide: true });
     if (result.error || result.status !== 0) {
       throw new Error(`${command} failed (${result.error?.message ?? `exit ${result.status}`})`);
     }
-    if (!check()) throw new Error(`${command} did not produce an up-to-date ${launcher}`);
-  };
-  const jobReason = job.state === "stale" ? `older than ${job.newer}` : job.state === "missing" ? "missing" : "";
-  prepare("windows-job", job.launcher, jobReason, ["run", "build:windows-job", "-Arch", arch],
-    () => windowsJobLauncherState(root, { platform, arch }).state === "fresh");
+    if (windowsJobLauncherState(root, { platform, arch }).state !== "fresh") {
+      throw new Error(`${command} did not produce an up-to-date ${job.launcher}`);
+    }
+  }
 
   const launcher = windowsPathKindPath(arch);
-  const hasCurrentPathKind = () => {
-    try {
-      verifyWindowsPathKindBuild(root, arch);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  const reason = hasCurrentPathKind() ? "" : "missing or changed build inputs or executable";
-  prepare("windows-path-kind", launcher, reason, ["run", "build:windows-path-kind", "--", "--arch", arch, "--fixture"], hasCurrentPathKind);
+  log(`[windows-path-kind] building ${launcher} (fresh build)`);
+  try {
+    buildPathKind({ root, arch, fixture: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Windows path helper ${launcher} build failed: ${message}. To build manually, run: ${PATH_KIND_BUILD_COMMAND}`, { cause: error });
+  }
   return job;
 }
 
