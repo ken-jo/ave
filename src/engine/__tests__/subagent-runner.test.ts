@@ -70,6 +70,7 @@ import { authorizationRequiredStateForOutput } from "../../shared/authorization-
 import { SkillOverlay } from "../../main/skill-overlay.js";
 import { checkpointFileMutation, restoreCodeCheckpoint, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import type { LoadedSkill } from "../../main/skill-store.js";
+import { t } from "../../i18n/index.js";
 
 const SUBSCRIPTION_SELECTION = { kind: "subscription", provider: "codex" } as const;
 
@@ -307,6 +308,47 @@ describe("SubAgentRunner checkpoint child lifetime", () => {
 });
 
 describe("SubAgentRunner — authorization terminal propagation", () => {
+  it.each([
+    { name: "web_search", flags: { arbitraryEgress: true }, input: { query: "fixture" } },
+    { name: "mcp_resource_read", flags: { requiresMcpScope: true }, input: { serverId: "fixture", uri: "fixture://entry" } },
+    { name: "agent_send", flags: {}, input: { message: "fixture" } },
+  ])("a scheduled stage refuses an unadvertised $name call by name", async ({ name, flags, input }) => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-unattended-scope-"));
+    const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+    const registry = new ToolRegistry();
+    registry.register(new ReadFileTool());
+    const execute = vi.fn(async () => ({ output: "unexpected execution", isError: false }));
+    registry.register(createDynamicTool({
+      name, ...flags, description: "Instrumented effect", source: "builtin",
+      category: name === "agent_send" ? "meta" : "read",
+      ...(name === "agent_send" ? { decisionOverride: "always-allow-with-audit" as const } : {}),
+      jsonSchema: { type: "object" }, execute,
+    }));
+    const provider = new ScriptedProvider([
+      [{ type: "tool_call", id: "outside-scope", name, input }, { type: "message_complete", stopReason: "tool_use" }],
+      ...endTurnScript("Finished"),
+    ]);
+    const runner = new SubAgentRunner({
+      parentDeps: buildLoopDeps(registry, { permissionManager }), toolRegistry: registry, subAgentMemoryManager: fakeSubAgentMemoryManager(),
+    });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
+    try {
+      await runner.spawn({
+        title: "Scheduled report", instructions: "Read report input", toolScope: exactToolScope(["read_file", name]),
+        projectRoot: dir, originSessionId: workBoardOriginSessionId(97), unattendedStage: { runKey: "report-run", stageId: "read" },
+      });
+      expect(execute).not.toHaveBeenCalled();
+      expect(provider.observedToolNames[0]).toEqual(["read_file", "read_tool_result_chunk"]);
+      expect(provider.observedMessages[1]).toContainEqual(expect.objectContaining({
+        role: "tool_result", toolUseId: "outside-scope", content: t("be_executor.toolNotFound", { name }), isError: true,
+      }));
+    } finally {
+      hasProviderSpy.mockRestore();
+      refreshProviderSpy.mockRestore();
+      await cleanupTmpDir(dir);
+    }
+  });
+
   it("a scheduled stage denies a secret read without a card when its work item has an open local surface", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-unattended-stage-"));
     const contents = makeMockWebContents();

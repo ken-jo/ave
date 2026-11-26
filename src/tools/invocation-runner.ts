@@ -571,7 +571,9 @@ async function runToolInvocationAttempt(
     };
 
 
-    const tool = services.toolRegistry.findByName(toolUse.name);
+    const tool = opts.advertisedToolNames && !opts.advertisedToolNames.has(toolUse.name)
+      ? undefined
+      : services.toolRegistry.findByName(toolUse.name);
     if (!tool) {
       const durationMs = Date.now() - startTime;
       await auditCurrentToolCall(sessionId, toolUse.name, "builtin", "high", toolUse.input, t("be_executor.toolNotFoundAudit"), true, startTime, { decision: "deny", reason: t("be_executor.toolNotFoundAudit"), }, Infinity, permissionContext);

@@ -21,6 +21,7 @@ import {
   GUIDE_MAX_CHARS,
 } from "./turn/guidance-limits.js";
 import { createReadToolResultChunkTool } from "../tools/tool-result-chunk.js";
+import { isUnattendedReadTool } from "../tools/base.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { type MemoryManager } from "../memory/memory-manager.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -2335,8 +2336,8 @@ export class SubAgentRunner {
     // Build the sub-agent's tool surface. The blocklist (agent_spawn) is stripped on every branch, including `parent-all`, which starts from the full registry and
     // intersects with it. `agent_send` is dropped here and re-registered below, because it is the parent channel rather than a source tool: see SubAgentToolScope.
     const scope = args.toolScope;
-    const exposeAgentSend = args.includeAgentSend === true
-      || (scope.kind === "exactly" && scope.names.includes("agent_send"));
+    const exposeAgentSend = !args.unattendedStage && (args.includeAgentSend === true
+      || (scope.kind === "exactly" && scope.names.includes("agent_send")));
     const allowlist = scope.kind === "parent-all"
       ? null
       : scope.kind === "deny-all"
@@ -2349,9 +2350,15 @@ export class SubAgentRunner {
           .map((tool) => tool.name)
           .filter((name) =>
             !SUB_AGENT_TOOL_BLOCKLIST.has(name) && name !== "agent_send");
-    const scopedRegistry = this.deps.toolRegistry.createScopedView(baseToolNames);
+    const scopedRegistry = this.deps.toolRegistry.createScopedView(args.unattendedStage
+      ? baseToolNames.filter(name => {
+        const tool = this.deps.toolRegistry.findByName(name);
+        return tool !== undefined && isUnattendedReadTool(tool);
+      })
+      : baseToolNames);
     const recoveryTool = createReadToolResultChunkTool();
-    if (scopedRegistry.listAll().length > 0 && !scopedRegistry.findByName(recoveryTool.name)) scopedRegistry.register(recoveryTool);
+    if (scopedRegistry.size > 0 && !scopedRegistry.findByName(recoveryTool.name)
+      && (!args.unattendedStage || isUnattendedReadTool(recoveryTool))) scopedRegistry.register(recoveryTool);
     if (exposeAgentSend) {
       const agentSend = this.deps.toolRegistry.findByName("agent_send");
       if (agentSend) scopedRegistry.register({ ...agentSend, modelVisible: true });

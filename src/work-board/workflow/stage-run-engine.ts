@@ -27,6 +27,7 @@ import type {
   EnvelopeToolRef, RequestedOutput, RunAuthoritySource, StageEnvelope, TemplateScope, TemplateStage, TemplateVersion, UnattendedQualification,
   WorkItemStageRun,
 } from "../../shared/workflow-template-types.js";
+import { isUnattendedReadTool } from "../../tools/base.js";
 import { isAllReadOnlyVersion, WorkflowTemplateError } from "../template-graph.js";
 import type { AuthoriseRunSource, RunAuthorityVerdict } from "./run-authority.js";
 import type { LaneBlockCode, OutputExecution, RunPin, StageFailure } from "./shipped-shapes.js";
@@ -973,7 +974,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const profile = stage.agentName ? (await deps.getAgentProfile?.(stage.agentName)) ?? null : null;
       if (stage.agentName && !profile) throw new Error(`agent profile not found: ${stage.agentName}`);
       const readOnly = stage.toolScope === "read";
-      const readTools = readOnly ? runner.parentToolRegistry().listAll().filter(tool => requiredTier(tool.category) === "read" && (lane === "attended" || tool.source === "builtin")).map(tool => tool.name) : [];
+      const readTools = readOnly ? runner.parentToolRegistry().listAll()
+        .filter(lane === "unattended" ? isUnattendedReadTool : tool => requiredTier(tool.category) === "read")
+        .map(tool => tool.name) : [];
       const revision = run.gate?.type === "human" && run.gate.status === "changes_requested" && run.gate.note !== undefined && run.output !== undefined
         ? { priorOutput: run.output, note: run.gate.note, ...(run.taint ? { taint: run.taint } : {}) }
         : undefined;

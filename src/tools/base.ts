@@ -157,6 +157,14 @@ export function isModelExposedTool(tool: Pick<Tool, "modelVisible">): boolean {
   return tool.modelVisible !== false;
 }
 
+/** Only fixed-category local reads are visible and executable in an unattended stage. */
+export function isUnattendedReadTool(tool: Tool): boolean {
+  return tool.source === "builtin" && tool.category === "read" && isModelExposedTool(tool)
+    && !tool.arbitraryEgress && !tool.requiresMcpScope && !tool.appInvokable
+    && tool.categoryForInput === undefined && tool.decisionOverride === undefined
+    && tool.operationPolicy === undefined;
+}
+
 /** Ergonomic abstract base for hand-written tools backed by a Zod schema. Subclasses implement {@link executeTyped}; {@link execute} parses `rawInput` via the schema
  * first then dispatches typed. Override `source` / `category` with `override readonly` for plugin or dangerous tools; see {@link BashTool} for a complete example. */
 export abstract class ZodTool<TSchema extends z.ZodTypeAny = z.ZodTypeAny>

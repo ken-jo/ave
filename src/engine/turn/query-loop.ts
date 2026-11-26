@@ -1293,11 +1293,21 @@ export async function queryLoop(
         });
       }
 
-      const toolUses: ToolUseBlock[] = pendingToolCallsCapped
+      const advertisedToolNames = turnExtensionPolicyContext.getStore()?.unattendedStage
+        ? new Set(toolSchemas.map(tool => tool.name))
+        : undefined;
+      const parsedToolUses: ToolUseBlock[] = pendingToolCallsCapped
         .filter((tc) => !tc.invalidInput)
         .map((tc) => ({
           id: tc.id, name: tc.name, input: tc.input,
         }));
+      // Send unadvertised calls straight to the executor's refusal, including intercepted meta names.
+      const unadvertisedToolUses = advertisedToolNames
+        ? parsedToolUses.filter(toolUse => !advertisedToolNames.has(toolUse.name))
+        : [];
+      const toolUses = advertisedToolNames
+        ? parsedToolUses.filter(toolUse => advertisedToolNames.has(toolUse.name))
+        : parsedToolUses;
 
       const availableRationaleCoordinatorFactory =
         typeof self.deps.rationaleCoordinatorFactory === "function"
@@ -1471,7 +1481,7 @@ export async function queryLoop(
       });
       toolSearches = searchOutcome.nextTurnSearches;
       self.sessionToolSearches = searchOutcome.nextSessionSearches;
-      toolUsesForExecutor = [...searchOutcome.remaining, ...deferredOrderedToolUses];
+      toolUsesForExecutor = [...searchOutcome.remaining, ...deferredOrderedToolUses, ...unadvertisedToolUses];
       searchPromotedThisRound = searchOutcome.promotedToolNames.length > 0;
       promotedToolNamesForTurn.push(...searchOutcome.promotedToolNames);
 
@@ -1580,6 +1590,7 @@ export async function queryLoop(
       };
       let pendingToolResult = Promise.resolve();
       const executeOptions = {
+          ...(advertisedToolNames ? { advertisedToolNames } : {}),
           onToolResult: async (result) => {
             pendingToolResult = pendingToolResult.then(() => appendToolResult(result));
             await pendingToolResult;
@@ -1656,6 +1667,7 @@ export async function queryLoop(
       const orderedMetaToolHandler: InterceptedMetaToolHandler | undefined =
         rationaleOrchestrationEnabled
           ? async (toolUse) => {
+              if (advertisedToolNames && !advertisedToolNames.has(toolUse.name)) return null;
               const gated = await gateCrossAgentInterceptedMetaTools(
                 self,
                 [toolUse],
