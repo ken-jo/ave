@@ -83,6 +83,11 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
 });
 
 import { initSandboxGate } from "../steps/sandbox-init.js";
+import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
+import { createMemoryMapRuntime } from "../../ipc/domains/memory-map-runtime.js";
+import { rendererSettingsSnapshot } from "../../ipc/domains/settings.js";
+import type { IpcDeps } from "../../ipc/types.js";
+import { assertLocalEmbeddingRuntime } from "../../main/memory-map/local-runtime.js";
 import { registerMxcReleaseGateEvidence } from "../../permissions/mxc-extension-admission.js";
 import { areWindowsBackgroundSwitchesAvailable } from "../../permissions/windows-background-features.js";
 import { decidePermission } from "../../permissions/decision-pipeline.js";
@@ -111,6 +116,12 @@ const SRT_WIN_MISSING = { errors: ["no srt-win path configured"], warnings: [] }
 // Boot-path checks precede the shell start probe.
 const MXC_OK = { state: "available", windowsBuild: "10.0.26300.9711" };
 const MXC_OLD = { state: "unavailable", reason: "container-unavailable", windowsBuild: "10.0.22631.4317", detail: "no container API" };
+const NO_CONTAINER = { ...MXC_OLD, baseContainerApiPresent: false, containerBackendAbsent: true };
+const NO_ACCOUNT_BACKEND = { errors: [], warnings: [], accountBackendAbsent: true };
+const RELEASE_EVIDENCE = {
+  ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true,
+  forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true,
+};
 
 let harness: SandboxBootHarness;
 
@@ -235,14 +246,11 @@ describe("initSandboxGate — Windows sandbox HOME parent", () => {
 });
 
 it.each([false, true])("checks background feature availability with both tool scopes off only after release readiness (%s)", async released => {
-  const unregister = released ? registerMxcReleaseGateEvidence({
-    ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true,
-    forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true,
-  }) : undefined;
+  const unregister = released ? registerMxcReleaseGateEvidence(RELEASE_EVIDENCE) : undefined;
   try {
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
-    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
-    h.detectMxc.mockResolvedValue(MXC_OLD);
+    h.checkDeps.mockResolvedValue(NO_ACCOUNT_BACKEND);
+    h.detectMxc.mockResolvedValue(NO_CONTAINER);
     await initSandboxGate(harness.context(false, false));
     expect(h.detectMxc).toHaveBeenCalledTimes(released ? 1 : 0);
     expect(areWindowsBackgroundSwitchesAvailable()).toBe(released);
@@ -251,6 +259,51 @@ it.each([false, true])("checks background feature availability with both tool sc
     expect(getSandboxBootOutcome()).toMatchObject({ action: "skip", reason: "gate-off" });
   } finally {
     unregister?.();
+  }
+});
+
+it.each([
+  { label: "both backends absent", mxc: NO_CONTAINER, deps: NO_ACCOUNT_BACKEND, available: true },
+  { label: "container API present", mxc: { ...MXC_OLD, baseContainerApiPresent: true }, deps: NO_ACCOUNT_BACKEND },
+  { label: "container API fact missing", mxc: MXC_OLD, deps: NO_ACCOUNT_BACKEND },
+  { label: "contradictory container facts", mxc: { ...NO_CONTAINER, baseContainerApiPresent: true }, deps: NO_ACCOUNT_BACKEND },
+  { label: "launcher missing", mxc: { ...MXC_OLD, reason: "binary-missing" }, deps: NO_ACCOUNT_BACKEND },
+  { label: "launcher mismatched", mxc: { ...MXC_OLD, reason: "launcher-mismatch" }, deps: NO_ACCOUNT_BACKEND },
+  { label: "probe failed", mxc: { ...MXC_OLD, reason: "probe-failed" }, deps: NO_ACCOUNT_BACKEND },
+  { label: "runtime root unproved", mxc: NO_CONTAINER, deps: NO_ACCOUNT_BACKEND, rootFailed: true },
+  { label: "account dependency missing", mxc: NO_CONTAINER, deps: SRT_WIN_MISSING },
+  { label: "account dependency integrity failed", mxc: NO_CONTAINER, deps: {
+    errors: ["helper integrity check failed"], warnings: [], dependencyFailure: { code: "srt-win-integrity-mismatch" },
+  } },
+  { label: "account setup failed", mxc: NO_CONTAINER, deps: { errors: ["setup failed"], warnings: [] } },
+  { label: "contradictory account result", mxc: NO_CONTAINER, deps: { ...NO_ACCOUNT_BACKEND, errors: ["setup failed"] } },
+  { label: "backend ready", mxc: NO_CONTAINER, deps: { errors: [], warnings: [] } },
+])("projects settings and admits unconfined inference only with boot evidence: $label", async ({ mxc, deps, available, rootFailed }) => {
+  const unregister = registerMxcReleaseGateEvidence(RELEASE_EVIDENCE);
+  try {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: tmpdir(), sid: "S-1-5-21-1000" });
+    if (rootFailed) h.establishHomesError = new Error("root not private");
+    h.checkDeps.mockResolvedValue(deps);
+    h.detectMxc.mockResolvedValue(mxc);
+    await initSandboxGate(harness.context(false, false));
+
+    const settingsService = {
+      getAll: () => DEFAULT_SETTINGS,
+      get: (key: keyof typeof DEFAULT_SETTINGS) => DEFAULT_SETTINGS[key],
+      hasStoredSecret: async () => false,
+    };
+    const resolveScope = vi.fn(() => { throw new Error("unexpected local build"); });
+    const memoryMap = createMemoryMapRuntime({ settingsService, singleHopNetworkFetch: vi.fn() } as unknown as IpcDeps, resolveScope);
+    const generalSettings = await rendererSettingsSnapshot(settingsService as unknown as IpcDeps["settingsService"]);
+    const embeddingSettings = await memoryMap.settingsGet();
+    expect.soft(Object.hasOwn(generalSettings.features ?? {}, "sessionIndexingWithoutContainment")).toBe(Boolean(available));
+    expect.soft(Object.hasOwn(embeddingSettings, "localInferenceWithoutSandbox")).toBe(Boolean(available));
+    if (available) expect(assertLocalEmbeddingRuntime()).toBe("unconfined");
+    else await expect((async () => memoryMap.build(undefined, {} as Parameters<typeof memoryMap.build>[1]))())
+      .rejects.toMatchObject({ code: "local-runtime-unavailable" });
+    expect(resolveScope).not.toHaveBeenCalled();
+  } finally {
+    unregister();
   }
 });
 

@@ -335,11 +335,12 @@ export interface SandboxWindowsSubstrateInfo {
   readonly mxc:
     | { readonly state: "available" }
     | { readonly state: "checking" }
-    | { readonly state: "unavailable"; readonly reason: SandboxMxcUnavailableReason };
+    | { readonly state: "unavailable"; readonly reason: SandboxMxcUnavailableReason; readonly containerBackendAbsent?: true };
   /** `major.minor.build.ubr` of the host, for the reason text; null if unread. */
   readonly windowsBuild: string | null;
   /** Whether srt-win (the one-time administrator install) was ready at boot. */
   readonly srtWinReady: boolean;
+  readonly accountBackendAbsent?: true;
   /** Bash/PowerShell tool commands: each in its own MXC container (`mxc`), or; with srt-win active and no MXC; as
    * an ordinary process after a per-command approval (`approved-host`), or without the sandbox at all (`none`). */
   readonly shells: "mxc" | "approved-host" | "none";

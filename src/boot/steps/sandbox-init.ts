@@ -19,6 +19,8 @@ import {
   type WindowsSandboxPlanInputs,
 } from "./windows-sandbox-plan.js";
 import type { SandboxStartFailureCause } from "../../shared/sandbox-capability-info.js";
+import type { checkAsrtDependencies as checkSandboxDependencies } from "../../permissions/asrt-sandbox.js";
+import type { MxcSupport } from "../../permissions/mxc-windows.js";
 import { classifySandboxDependencyErrors } from "../../permissions/sandbox-start-failure.js";
 import { denyUnenforceableKind, isObligationRefusal, setWindowsDenyUnenforceableAtBoot } from "../../permissions/admitted-obligation.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -149,15 +151,19 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
 
     // Interlock warnings use actual activation so requested-but-degraded confinement cannot suppress them.
     let sandboxActive = false;
+    const checkBootDependencies = (): ReturnType<typeof checkSandboxDependencies> => checkAsrtDependencies().catch((error: unknown) => {
+      if (process.platform !== "win32") throw error;
+      return { errors: [errorMessage(error)], warnings: [], dependencyFailure: error };
+    });
 
     if (sandboxOptIn) {
-      const deps = await checkAsrtDependencies();
+      const deps = await checkBootDependencies();
       const dependencyCauses = deps.errors.length > 0
         ? classifySandboxDependencyErrors(process.platform, deps.errors, deps.dependencyFailure)
         : [];
       // Record every Windows substrate branch for Settings; available containers carry agent shells independently of the other runtime.
       const windowsInputs = process.platform === "win32"
-        ? await detectWindowsBootInputs(shellRequested, workerRequested, deps.errors.length === 0)
+        ? await detectWindowsBootInputs(shellRequested, workerRequested, deps)
         : undefined;
       const windowsPlan = windowsInputs === undefined ? undefined : planWindowsSandbox(windowsInputs);
       // Track proxy-only startup separately from the requested runtime plan.
@@ -204,7 +210,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
               settingOn,
               explicitEnv,
               platform: process.platform,
-              depsOk: deps.errors.length === 0,
+              depsOk: windowsInputs?.srtWinReady ?? deps.errors.length === 0,
             });
 
       const privacyFailure = getAveHomePrivacyFailure();
@@ -502,8 +508,8 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
       }
     } else {
       if (isWindowsBackgroundFeatureReleaseEnabled()) {
-        const dependencies = await checkAsrtDependencies();
-        const windowsInputs = await detectWindowsBootInputs(false, false, dependencies.errors.length === 0);
+        const dependencies = await checkBootDependencies();
+        const windowsInputs = await detectWindowsBootInputs(false, false, dependencies);
         setWindowsSandboxSubstrate(windowsSubstrateFor(windowsInputs, "none"));
       }
       if (process.platform === "darwin") {
@@ -677,22 +683,29 @@ export async function sweepStaleWindowsSandboxHomes(
 async function detectWindowsBootInputs(
   shellRequested: boolean,
   workerRequested: boolean,
-  srtWinReady: boolean,
+  dependencies: Awaited<ReturnType<typeof checkSandboxDependencies>>,
 ): Promise<WindowsSandboxPlanInputs> {
   const { detectHostMxcPrerequisites } = await import("../../permissions/mxc-windows.js");
-  const mxc = await detectHostMxcPrerequisites();
+  const mxc = await detectHostMxcPrerequisites().catch((error: unknown): MxcSupport => ({
+    state: "unavailable", reason: "probe-failed", windowsBuild: null, detail: errorMessage(error),
+  }));
+  const accountBackendAbsent = dependencies.accountBackendAbsent === true && dependencies.errors.length === 0
+    && dependencies.dependencyFailure === undefined;
   if (runtimeRootUnproved) logMxcUnavailable("runtime-root-unproved", mxc.windowsBuild, "the container runtime root was not proved at start-up");
   else if (mxc.state === "unavailable") logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
   return {
     shellRequested,
     workerRequested,
     mxc: runtimeRootUnproved ? { state: "unavailable", reason: "runtime-root-unproved" }
-      : mxc.state === "available" ? { state: "checking" } : { state: "unavailable", reason: mxc.reason },
+      : mxc.state === "available" ? { state: "checking" } : { state: "unavailable", reason: mxc.reason,
+        ...(mxc.containerBackendAbsent === true && mxc.baseContainerApiPresent === false
+          ? { containerBackendAbsent: true } : {}) },
     // Pinned until this installation carries a release-gate record (contract fields 8-13, gathered on the packaged build).
     // Neither shell startup nor a holder's own start evidence (fields 1-5, known only after a start) certifies that gate.
     extensionMxc: { state: "unavailable", reason: "native-validation-required" },
     windowsBuild: mxc.windowsBuild,
-    srtWinReady,
+    srtWinReady: dependencies.errors.length === 0 && !accountBackendAbsent,
+    ...(accountBackendAbsent ? { accountBackendAbsent: true } : {}),
   };
 }
 

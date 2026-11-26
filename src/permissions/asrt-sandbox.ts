@@ -3165,6 +3165,8 @@ export async function checkAsrtDependencies(): Promise<{
   errors: string[];
   warnings: string[];
   dependencyFailure?: unknown;
+  /** Affirmative Windows inventory evidence. Dependency and setup errors cannot supply it. */
+  accountBackendAbsent?: true;
   linuxWrapperPrograms?: LinuxWrapperPrograms;
 }> {
   if (process.platform === "win32") {

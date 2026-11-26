@@ -8,7 +8,7 @@ import { assertLocalEmbeddingRuntime, isLocalInferenceSwitchAvailable } from '..
 const state = vi.hoisted(() => ({
   confined: false, homeVerified: true,
   plan: undefined as Pick<SandboxWindowsExtensionPlan, 'selectedBackend' | 'readiness' | 'reason'> | undefined,
-  substrate: undefined as Pick<SandboxWindowsSubstrateInfo, 'mxc' | 'srtWinReady'> | undefined,
+  substrate: undefined as Pick<SandboxWindowsSubstrateInfo, 'mxc' | 'srtWinReady' | 'accountBackendAbsent'> | undefined,
 }));
 vi.mock('../../../permissions/asrt-sandbox.js', () => ({ isOfflineProcessConfinementActive: () => state.confined }));
 vi.mock('../../../permissions/sandbox-capability.js', () => ({
@@ -32,7 +32,8 @@ beforeEach(() => {
   state.confined = false;
   state.homeVerified = true;
   state.plan = { selectedBackend: 'none', readiness: 'unavailable', reason: 'container-unavailable' };
-  state.substrate = { mxc: { state: 'unavailable', reason: 'container-unavailable' }, srtWinReady: false };
+  state.substrate = { mxc: { state: 'unavailable', reason: 'container-unavailable', containerBackendAbsent: true },
+    srtWinReady: false, accountBackendAbsent: true };
 });
 afterEach(() => {
   unregister?.();

@@ -220,8 +220,21 @@ describe("detectMxcSupport", () => {
       state: "unavailable", reason: "container-unavailable", windowsBuild: "10.0.26300",
       detail: `the container backend is unavailable on this host (container API ${String(apiPresent)})`,
       baseContainerApiPresent: apiPresent,
+      ...(code === 0 && !apiPresent ? { containerBackendAbsent: true } : {}),
     });
     expect(d.calls.map((c) => c[0])).toEqual(["--probe"]);
+  });
+
+  it.each([
+    ["unknown API fact", JSON.stringify({ error: "unserved", probes: {} }), ""],
+    ["malformed tier", JSON.stringify({ tier: null, error: "unserved", probes: { baseContainerApiPresent: false } }), ""],
+    ["contradictory host facts", PROBE_NO_TIER(false).replace('"baseContainerSupportsDenyPaths":false', '"baseContainerSupportsDenyPaths":true'), ""],
+    ["contradictory request result", JSON.stringify({ needsDaclAugmentation: true, error: "unserved", probes: { baseContainerApiPresent: false } }), ""],
+    ["stderr error", PROBE_NO_TIER(false), "probe could not complete"],
+    ["empty error", PROBE_NO_TIER(false, ""), ""],
+  ])("does not attest container absence with %s", async (_name, stdout, stderr) => {
+    const d = deps({ runs: { "--probe": { code: 0, stdout, stderr } } });
+    await expect(detectMxcPrerequisites(d)).resolves.not.toHaveProperty("containerBackendAbsent");
   });
 
   it.each([

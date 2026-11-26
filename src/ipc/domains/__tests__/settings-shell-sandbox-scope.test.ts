@@ -31,7 +31,8 @@ vi.mock("../../../permissions/mxc-extension-admission.js", async (importOriginal
 vi.mock("../../../permissions/sandbox-capability.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../permissions/sandbox-capability.js")>(),
   getWindowsSandboxSubstrate: () => backgroundState.noBackend
-    ? { srtWinReady: false, mxc: { state: "unavailable", reason: "container-unavailable" } } : null,
+    ? { srtWinReady: false, accountBackendAbsent: true,
+      mxc: { state: "unavailable", reason: "container-unavailable", containerBackendAbsent: true } } : null,
   getWindowsExtensionBackendPlan: () => backgroundState.noBackend
     ? { selectedBackend: "none", readiness: "unavailable", reason: "container-unavailable" } : undefined,
 }));

@@ -39,6 +39,7 @@ export type MxcSupport =
       readonly detail: string;
       // The probe's host fact, set only with "container-unavailable".
       readonly baseContainerApiPresent?: boolean;
+      readonly containerBackendAbsent?: true;
     };
 
 // The architectures MXC ships `wxc-exec.exe` for.
@@ -63,6 +64,7 @@ export interface MxcProbeReport {
   // Given instead of a tier when the backend cannot serve the request, beside the host facts.
   readonly error: string | undefined;
   readonly baseContainerApiPresent: boolean | undefined;
+  readonly contradictsContainerAbsence?: true;
 }
 
 // Parse `wxc-exec --probe` stdout (one JSON object), or undefined when it is not one.
@@ -78,13 +80,20 @@ export function parseMxcProbeOutput(stdout: string): MxcProbeReport | undefined 
   }
   if (typeof parsed !== "object" || parsed === null) return undefined;
   const record = parsed as { tier?: unknown; needsDaclAugmentation?: unknown; error?: unknown; probes?: unknown };
-  const apiPresent = typeof record.probes === "object" && record.probes !== null
-    ? (record.probes as { baseContainerApiPresent?: unknown }).baseContainerApiPresent : undefined;
+  const probes = typeof record.probes === "object" && record.probes !== null
+    ? record.probes as { baseContainerApiPresent?: unknown; baseContainerSupportsDenyPaths?: unknown;
+      baseContainerSupportsIngressHostLoopbackAllow?: unknown } : undefined;
+  const apiPresent = probes?.baseContainerApiPresent;
+  const contradictsContainerAbsence = record.tier !== undefined
+    || (record.needsDaclAugmentation !== undefined && record.needsDaclAugmentation !== false)
+    || [probes?.baseContainerSupportsDenyPaths, probes?.baseContainerSupportsIngressHostLoopbackAllow]
+      .some(fact => fact !== undefined && fact !== false);
   return {
     tier: typeof record.tier === "string" ? record.tier : undefined,
     needsDaclAugmentation: typeof record.needsDaclAugmentation === "boolean" ? record.needsDaclAugmentation : undefined,
     error: typeof record.error === "string" ? record.error : undefined,
     baseContainerApiPresent: typeof apiPresent === "boolean" ? apiPresent : undefined,
+    ...(apiPresent === false && contradictsContainerAbsence ? { contradictsContainerAbsence: true } : {}),
   };
 }
 
@@ -210,9 +219,12 @@ export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promis
   }
   // The probe either serves the request (the container tier, no DACL changes) or omits the tier and gives an error with the host facts. Anything else is not an answer.
   if (report.tier === undefined && report.error !== undefined) {
+    const containerBackendAbsent = probe.code === 0 && probe.stderr.trim() === "" && report.error.trim() !== ""
+      && report.baseContainerApiPresent === false && !report.contradictsContainerAbsence;
     return {
       ...unavailable("container-unavailable", `${report.error.slice(0, 400)} (container API ${String(report.baseContainerApiPresent)})`),
       ...(report.baseContainerApiPresent === undefined ? {} : { baseContainerApiPresent: report.baseContainerApiPresent }),
+      ...(containerBackendAbsent ? { containerBackendAbsent: true } : {}),
     };
   }
   if (report.tier !== MXC_CONTAINER_TIER || report.needsDaclAugmentation !== false) {
