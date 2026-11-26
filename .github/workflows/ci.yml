@@ -928,7 +928,8 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/fetch-uv.mjs
-      - name: Install the pinned path helper toolchain
+      - &windows-path-kind-rust
+        name: Install the pinned path helper toolchain
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node .github/scripts/install-windows-path-kind-rust.mjs x64
@@ -1205,6 +1206,8 @@ jobs:
       - name: Run Windows regressions
         env:
           AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
+          AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
+          AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1297,6 +1300,8 @@ jobs:
       - name: Run Windows regressions
         env:
           AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
+          AVE_WINDOWS_PATH_KIND_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}
+          AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: ${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1407,6 +1412,7 @@ jobs:
       - *windows-download-mirror
       - *windows-restore-inputs
       - *windows-provision
+      - *windows-path-kind-rust
       - name: Build Windows development desktop
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave

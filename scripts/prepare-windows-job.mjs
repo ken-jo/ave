@@ -4,7 +4,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildWindowsPathKind } from "./build-windows-path-kind.mjs";
-import { windowsPathKindPath } from "./lib/windows-path-kind-build.mjs";
+import { assertWindowsPathKindArtifactDigests, verifyWindowsPathKindReceipt, windowsPathKindPath } from "./lib/windows-path-kind-build.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BUILD_COMMAND = "bun run build:windows-job";
@@ -62,6 +62,7 @@ export function prepareWindowsJob({
   root = PROJECT_ROOT,
   platform = process.platform,
   arch = process.arch,
+  env = {},
   findBuildTools = hasCppBuildTools,
   runSync = spawnSync,
   buildPathKind = buildWindowsPathKind,
@@ -87,6 +88,15 @@ export function prepareWindowsJob({
   }
 
   const launcher = windowsPathKindPath(arch);
+  if (env.AVE_WINDOWS_TEST_PLAN !== undefined) {
+    assertWindowsPathKindArtifactDigests(root, arch, {
+      binarySha256: env.AVE_WINDOWS_PATH_KIND_SHA256,
+      receiptSha256: env.AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256,
+    });
+    verifyWindowsPathKindReceipt(root, arch);
+    log(`[windows-path-kind] verified producing build: ${launcher}`);
+    return job;
+  }
   log(`[windows-path-kind] building ${launcher} (fresh build)`);
   try {
     buildPathKind({ root, arch, fixture: true });
@@ -99,7 +109,7 @@ export function prepareWindowsJob({
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    prepareWindowsJob();
+    prepareWindowsJob({ env: process.env });
   } catch (err) {
     console.error(`[windows-job] ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);

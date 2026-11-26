@@ -562,6 +562,13 @@ function checkValidationJobs(jobs, condition) {
       throw new Error(`${id}: Windows validation must finish with containment cleanup`);
     }
   }
+  const steps = jobs[DEV_BOOT_JOB].steps;
+  const install = steps.findIndex(step => step.run === X64_RUST_INSTALL);
+  const build = steps.findIndex(step => step.run === "node .github/scripts/run-in-job.mjs bun run build");
+  if (install < 0 || build <= install || steps[install].if !== REGRESSION_CONDITION
+    || steps[install]["working-directory"] !== "ave") {
+    throw new Error(`${DEV_BOOT_JOB}: must install the pinned path helper toolchain before building`);
+  }
 }
 
 export function checkWindowsWorkflow(workflow, inspect) {
@@ -612,6 +619,10 @@ export function checkWindowsWorkflow(workflow, inspect) {
     }
     if (step.env?.AVE_WINDOWS_TEST_PLAN !== WINDOWS_PLAN_PATH) {
       throw new Error(`${step.name}: Windows regression steps must use the matrix plan artifact`);
+    }
+    if (step.env.AVE_WINDOWS_PATH_KIND_SHA256 !== "${{ needs.windows-native-preparation.outputs.path_kind_sha256 }}"
+      || step.env.AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256 !== "${{ needs.windows-native-preparation.outputs.path_kind_receipt_sha256 }}") {
+      throw new Error(`${step.name}: Windows regression steps must use the producing build's path helper digests`);
     }
   }
   // Matrix copies share this exact template and receive distinct shard IDs.

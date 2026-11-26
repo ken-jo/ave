@@ -501,6 +501,34 @@ describe("prepareWindowsJob", () => {
     expect(lines).toEqual([`[windows-job] up to date: ${LAUNCHER}`, `[windows-path-kind] building ${PATH_KIND} (fresh build)`]);
   });
 
+  it.each(["valid", "missing digest", "substituted binary", "substituted receipt", "changed source"] as const)("prepares a shard with a %s path helper input", (input) => {
+    const root = fixtureRoot({ launcher: NEW });
+    const binary = readFileSync(join(root, PATH_KIND));
+    const receipt = readFileSync(join(root, RECEIPT));
+    const env = {
+      AVE_WINDOWS_TEST_PLAN: "windows-plan.json",
+      AVE_WINDOWS_PATH_KIND_SHA256: input === "missing digest" ? undefined : sha256(binary),
+      AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256: sha256(receipt),
+    };
+    if (input === "substituted binary") writeFileSync(join(root, PATH_KIND), Buffer.concat([binary, Buffer.from("changed")]));
+    if (input === "substituted receipt") writeFileSync(join(root, RECEIPT), Buffer.concat([receipt, Buffer.from("\n")]));
+    if (input === "changed source") write(root, "native/windows-path-kind/src/extra.rs", OLD);
+    const builds: object[] = [];
+    const prepare = () => prepareWindowsJob({
+      root, platform: "win32", arch: "x64", env, log: () => {},
+      buildPathKind: (options) => { builds.push(options); },
+    });
+    const failures = {
+      "missing digest": /Missing the producing build's digest/u,
+      "substituted binary": /is not the output of the producing build/u,
+      "substituted receipt": /is not the output of the producing build/u,
+      "changed source": /build inputs or binary changed/u,
+    };
+    if (input === "valid") expect(prepare().state).toBe("fresh");
+    else expect(prepare).toThrow(failures[input]);
+    expect(builds).toEqual([]);
+  });
+
   it("does nothing off Windows", () => {
     const root = fixtureRoot();
     const calls: string[][] = [];

@@ -2,12 +2,11 @@
 // from this checkout. The path helper must match the producing build's job
 // outputs before it is moved into place. Normalize times for the local
 // stale-build check.
-import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, utimesSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, renameSync, statSync, utimesSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { verifyWindowsPathKindReceipt, windowsPathKindPath, windowsPathKindReceiptPath } from "../../scripts/lib/windows-path-kind-build.mjs";
+import { assertWindowsPathKindArtifactDigests, verifyWindowsPathKindReceipt, windowsPathKindPath, windowsPathKindReceiptPath } from "../../scripts/lib/windows-path-kind-build.mjs";
 import { windowsJobLauncherPath } from "../../scripts/prepare-windows-job.mjs";
 
 const { RUNNER_TEMP: temp, GITHUB_ENV: env } = process.env;
@@ -23,14 +22,10 @@ const helpers = [
     .map(file => join(vendor, arch, file))),
   ...["js", "json"].map(extension => `src/permissions/generated/srt-win-build-receipts.${extension}`),
 ];
-for (const [file, expected] of [
-  [windowsPathKindPath(process.arch), process.env.AVE_WINDOWS_PATH_KIND_SHA256],
-  [windowsPathKindReceiptPath(process.arch), process.env.AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256],
-]) {
-  if (!/^[0-9a-f]{64}$/u.test(expected ?? "")) throw new Error(`Missing the producing build's digest for ${file}`);
-  const actual = createHash("sha256").update(readFileSync(join(".windows-native-inputs", file))).digest("hex");
-  if (actual !== expected) throw new Error(`${file} is not the output of the producing build`);
-}
+assertWindowsPathKindArtifactDigests(".windows-native-inputs", process.arch, {
+  binarySha256: process.env.AVE_WINDOWS_PATH_KIND_SHA256,
+  receiptSha256: process.env.AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256,
+});
 for (const file of helpers) {
   const source = join(".windows-native-inputs", file);
   const stat = statSync(source);

@@ -66,4 +66,8 @@ export function windowsPathKindReceipt(root: string, arch: string, build: Window
   sourceSha256: string;
   binarySha256: string;
 };
+export function assertWindowsPathKindArtifactDigests(root: string, arch: string, digests: {
+  binarySha256?: string;
+  receiptSha256?: string;
+}): void;
 export function verifyWindowsPathKindReceipt(root: string, arch: string): void;

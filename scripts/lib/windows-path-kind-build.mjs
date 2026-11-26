@@ -388,6 +388,13 @@ export function windowsPathKindReceipt(root, arch, build, binary) {
   return { identity, invocation, targetDir, sourceSha256: windowsPathKindSourceDigest(root), binarySha256: sha256(binary) };
 }
 
+export function assertWindowsPathKindArtifactDigests(root, arch, { binarySha256, receiptSha256 }) {
+  for (const [file, expected] of [[windowsPathKindPath(arch), binarySha256], [windowsPathKindReceiptPath(arch), receiptSha256]]) {
+    if (!/^[0-9a-f]{64}$/u.test(expected ?? "")) throw new Error(`Missing the producing build's digest for ${file}`);
+    if (sha256(readFileSync(join(root, file))) !== expected) throw new Error(`${file} is not the output of the producing build`);
+  }
+}
+
 // Checks the receipt against its files. Callers establish build provenance.
 export function verifyWindowsPathKindReceipt(root, arch) {
   const binary = readFileSync(join(root, windowsPathKindPath(arch)));

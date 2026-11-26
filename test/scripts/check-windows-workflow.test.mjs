@@ -623,6 +623,31 @@ for (const plan of [undefined, "config/alternate.json"]) {
   });
 }
 
+for (const job of ["windows-permission-tests", "windows-tier-tests"]) {
+  it(`${job} requires both path helper digests from the producing job`, () => {
+    for (const variable of ["AVE_WINDOWS_PATH_KIND_SHA256", "AVE_WINDOWS_PATH_KIND_RECEIPT_SHA256"]) {
+      const changed = changedWorkflow((_steps, get) => {
+        get("Run Windows regressions").env[variable] = "independent digest required";
+      }, job);
+      assert.throws(() => checkWindowsWorkflow(changed, parsedLines), /must use the producing build's path helper digests/);
+    }
+  });
+}
+
+it("requires the pinned path helper toolchain before building the Windows development desktop", () => {
+  const changed = changedWorkflow((steps, get) => {
+    const build = get("Build Windows development desktop");
+    const install = steps.findIndex(step => step.run === "node .github/scripts/install-windows-path-kind-rust.mjs x64");
+    if (install !== -1) steps.splice(install, 1);
+    steps.splice(steps.indexOf(build) + 1, 0, {
+      run: "node .github/scripts/install-windows-path-kind-rust.mjs x64",
+      if: CONDITION,
+      "working-directory": "ave",
+    });
+  }, "windows-dev-boot");
+  assert.throws(() => checkWindowsWorkflow(changed, parsedLines), /must install the pinned path helper toolchain before building/);
+});
+
 it("rejects a contained test step allowed to fail", () => {
   const changed = changedWorkflow((_steps, get) => {
     get("Run Windows regressions")["continue-on-error"] = true;
