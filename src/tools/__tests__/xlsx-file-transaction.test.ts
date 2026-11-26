@@ -181,37 +181,55 @@ describe("workbook file transaction", () => {
     expect(temporaryNames()).toEqual([]);
   });
 
-  it("refuses the recovery copy when access rules cannot be compared", async () => {
-    const { path, before, output } = await workbook(true);
-    const snapshot = readWorkbookSnapshot(path);
-    for (const readAccessRules of [() => { throw new Error("unavailable"); }, () => ["D:AI(A;ID;FA;;;SY)", "D:AI(A;ID;FA;;;BA)"], () => ["D:AI(A;ID;FA;;;SY)"]]) {
-      expect(() => publishWorkbookEdit(path, snapshot, output, 1, { readAccessRules })).toThrow("own access rules");
-      expect(existsSync(`${path}.ave-bak`)).toBe(false);
-      expect(readFileSync(path).equals(before)).toBe(true);
-    }
-    expect(temporaryNames()).toEqual([]);
-  });
-
   describe.runIf(process.platform === "win32")("Windows access rules", () => {
     const aces = (path: string) => {
       const list = readWindowsDacls([path])[0]?.dacl?.aces;
       if (!list?.length) throw new Error("No access list was read");
       return list.map(({ type, flags, mask, sid }) => ({ type, flags, mask, sid }));
     };
+    const grantOwnRule = (path: string) => {
+      execFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe"), [path, "/grant", "*S-1-1-0:(R)"], { stdio: "ignore" });
+    };
+    const unanswered = [() => { throw new Error("unavailable"); }, () => ["D:AI(A;ID;FA;;;SY)"], () => ["access", "denied"]];
     beforeEach(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
 
-    it("gives the recovery copy the workbook's inherited access list", async () => {
-      const { path, before, output } = await workbook(true);
-      publishWorkbookEdit(path, readWorkbookSnapshot(path), output, 1);
-      expect(readFileSync(`${path}.ave-bak`).equals(before)).toBe(true);
-      expect(aces(`${path}.ave-bak`)).toEqual(aces(path));
+    it.each([true, false])("refuses when access rules cannot be compared (large: %s)", async (large) => {
+      const { path, before, output } = await workbook(large);
+      const snapshot = readWorkbookSnapshot(path);
+      const scope = large ? "backup" : "workbook";
+      for (const readAccessRules of unanswered) {
+        expect(() => publishWorkbookEdit(path, snapshot, output, 1, { readAccessRules })).toThrow(`[${scope}-acl-unreadable]`);
+      }
+      expect(() => publishWorkbookEdit(path, snapshot, output, 1, { readAccessRules: () => ["D:AI(A;ID;FA;;;SY)", "D:AI(A;ID;FA;;;BA)"] }))
+        .toThrow(`[${scope}-acl-differs]`);
+      expect(existsSync(`${path}.ave-bak`)).toBe(false);
+      expect(readFileSync(path).equals(before)).toBe(true);
+      expect(temporaryNames()).toEqual([]);
     });
 
-    it("refuses the edit when the workbook has its own access rules", async () => {
+    it("gives the recovery copy and the edited workbook the inherited access list", async () => {
       const { path, before, output } = await workbook(true);
-      execFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe"), [path, "/grant", "*S-1-1-0:(R)"], { stdio: "ignore" });
+      const original = aces(path);
+      publishWorkbookEdit(path, readWorkbookSnapshot(path), output, 1);
+      expect(readFileSync(`${path}.ave-bak`).equals(before)).toBe(true);
+      expect(aces(`${path}.ave-bak`)).toEqual(original);
+      expect(aces(path)).toEqual(original);
+    });
+
+    it("keeps the inherited access list on a small edit", async () => {
+      const { path, output } = await workbook();
+      const original = aces(path);
+      publishWorkbookEdit(path, readWorkbookSnapshot(path), output, 1);
+      expect(readFileSync(path).equals(output)).toBe(true);
+      expect(aces(path)).toEqual(original);
+      expect(temporaryNames()).toEqual([]);
+    });
+
+    it.each([[true, "backup"], [false, "workbook"]])("refuses an edit of a workbook with its own access rules (large: %s)", async (large, scope) => {
+      const { path, before, output } = await workbook(large);
+      grantOwnRule(path);
       const snapshot = readWorkbookSnapshot(path);
-      expect(() => publishWorkbookEdit(path, snapshot, output, 1)).toThrow("own access rules");
+      expect(() => publishWorkbookEdit(path, snapshot, output, 1)).toThrow(`[${scope}-acl-differs]`);
       expect(existsSync(`${path}.ave-bak`)).toBe(false);
       expect(readFileSync(path).equals(before)).toBe(true);
       expect(temporaryNames()).toEqual([]);
