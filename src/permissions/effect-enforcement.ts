@@ -70,6 +70,9 @@ const authorizationRequiredLatch = new WeakMap<EffectGateContext, () => void>();
 const noApproverLatch = new WeakMap<EffectGateContext, () => void>();
 export type EffectApprovalRefusal = Extract<PendingAnswerVerdict, { kind: "recheck-failed" | "denied" }>;
 const approvalRefusalLatch = new WeakMap<EffectGateContext, (verdict: EffectApprovalRefusal) => void>();
+// The frame a plugin child named for a request the host cannot tell apart from a sibling call's.
+const unattributedFrames = new AsyncLocalStorage<EffectGateContext>();
+const UNATTRIBUTED_EFFECT_REASON = "another call of this plugin is active under the same permissions, so the host cannot tell which call asks; retry when one has finished";
 /** Frames whose invocation returned; work left running there keeps no once-grant. */
 const poppedFrames = new WeakSet<EffectGateContext>();
 
@@ -102,10 +105,20 @@ export function runWithEffectGateContext<T>(
   return Promise.resolve(result).finally(pop);
 }
 
+/** Run a child's request in `frame`, which the child named while another live call would authorize the effect alike. Its effects
+ * pass on a standing allow only: none asks, spends the frame's once-grants or ends the frame's call. */
+export function runUnattributedEffectRequest<R>(frame: EffectGateContext, fn: () => R): R {
+  return unattributedFrames.run(frame, fn);
+}
+
+function unattributed(frame: EffectGateContext): boolean {
+  return unattributedFrames.getStore() === frame;
+}
+
 /** Capture the host denial signal for a socket callback that outlives this async frame. */
 export function captureEffectNoApprover(): (() => void) | undefined {
   const frame = gateContextStorage.getStore();
-  return frame === undefined ? undefined : noApproverLatch.get(frame);
+  return frame === undefined || unattributed(frame) ? undefined : noApproverLatch.get(frame);
 }
 
 // Read the ambient effect-gate context, or `undefined` outside a gated invocation.
@@ -414,7 +427,8 @@ export async function gateMutatingEffect(params: {
     assertEffectPaths(paths);
     return;
   }
-  if (ctx.onceGrants.has(key) || remembered && remembered !== "deny-always") {
+  const attributed = !unattributed(ctx);
+  if (attributed && ctx.onceGrants.has(key) || remembered && remembered !== "deny-always") {
     permission = manager.resolveRememberedPermission(permission, "The user approved this exact effect.");
   }
   const effectInput = { pluginId: params.pluginId, methodPath: params.methodPath, effect: params.effect, target: params.target ?? null };
@@ -443,11 +457,14 @@ export async function gateMutatingEffect(params: {
   }
   if (permission.decision === "deny" || headless) {
     const absentApprover = permission.reasonCode === "no-approver";
-    if (absentApprover) noApproverLatch.get(ctx)?.();
-    if (absentApprover && !ctx.headless && ctx.approvalSurface === "unavailable") authorizationRequiredLatch.get(ctx)?.();
+    if (absentApprover && attributed) noApproverLatch.get(ctx)?.();
+    if (absentApprover && attributed && !ctx.headless && ctx.approvalSurface === "unavailable") authorizationRequiredLatch.get(ctx)?.();
     throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target,
       absentApprover ? ctx.headless ? "headless" : "approval-unavailable" : "denied", permission.reason);
   }
+
+  // An answer would settle the named frame's call, which may not be the one that asked.
+  if (!attributed) throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "denied", UNATTRIBUTED_EFFECT_REASON);
 
   // Foreground: ask at the effect boundary and await the user decision. The gate mints + verifies its own nonce+HMAC (confused-deputy defence) internally.
   const where = params.target

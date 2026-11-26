@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -10,9 +11,14 @@ import { terminateChildProcess } from "../../../tools/terminate-child-process.js
 import { frameMessage, StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { INVOCATION_META, RPC_METHOD_NOT_FOUND } from "../../../mcp/protocol-constants.js";
 import { evaluateHostFetch } from "../../../main/host-fetch-guard.js";
-import { currentEffectGateContext, GATED_EFFECT_PATHS, gateMutatingEffect, runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
+import { currentEffectGateContext, enforceMutatingEffects, GATED_EFFECT_PATHS, gateMutatingEffect, runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
 import { runWithInvocationOrigin } from "../../runtime/origin-chain.js";
-import type { ApprovalGate } from "../../../permissions/approval-gate.js";
+import { ApprovalGate, type ApprovalRequest } from "../../../permissions/approval-gate.js";
+import { AuditLogger } from "../../../audit/audit-logger.js";
+import { createDynamicTool } from "../../../tools/base.js";
+import { ToolExecutor } from "../../../tools/executor.js";
+import { ToolRegistry } from "../../../tools/registry.js";
+import { userPermissionContext } from "../../../tools/__tests__/tool-context-fixture.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { backgroundEffectSubject, PluginBackgroundEffectApprovals, withinBackgroundScope } from "../../plugin-background-effects.js";
 import type { PluginManifest, PluginRegistryTrust } from "../../types.js";
@@ -985,6 +991,129 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
     } finally {
       rig.transport.close("case over");
       await Promise.allSettled(replies);
+    }
+  });
+});
+
+// The child names the call a reverse request belongs to. Between two live calls the policy treats alike, the host cannot check
+// that claim, so the request must not open a card whose refusal would end the named call.
+describe("an effect refusal while two tool calls of one plugin are live", () => {
+  const PLUGIN = "overlapprobe";
+  const SESSION = "5e0f6f0e-3c53-4b63-9d6c-2f0c8a1b7d11";
+
+  async function overlap() {
+    const root = mkdtempSync(join(tmpdir(), "transport-overlap-"));
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    manager.setMode("default");
+    await manager.addAlwaysAllowedPersist("overlap_probe");
+    const audit = new AuditLogger(join(root, "audit"));
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    const cards: ApprovalRequest[] = [];
+    const desk = { isDestroyed: () => false, send: (channel: string, card: ApprovalRequest) => {
+      if (channel === "ave:approval:request") cards.push(card);
+    } };
+    const gate = new ApprovalGate(desk as never);
+    const write = vi.fn(async (_path: string, _contents: string) => undefined);
+    const api = enforceMutatingEffects({ storage: { write } }, {
+      pluginId: PLUGIN, approvalGate: gate, permissionManager: manager,
+      resolveStoragePath: (relativePath) => join(root, relativePath), assertActive: vi.fn(),
+    });
+    const rig = invocationRig({ pluginId: PLUGIN, table: {
+      raiseAlert: defineHostApiPath("raiseAlert", async () => {
+        await api.storage.write("overlap.txt", "effect");
+        return { status: "raised", alertId: "alert" } as never;
+      }),
+    } });
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({ name: "overlap_probe", source: "plugin", pluginId: PLUGIN,
+      description: "Speaks through the plugin child.", category: "write", pathFields: [], jsonSchema: { type: "object" },
+      execute: async () => {
+        await rig.transport.requestMcp("tools/call", { name: "speak", arguments: {} });
+        return { output: "spoke", isError: false };
+      } }));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
+    const pending: Promise<unknown>[] = [];
+    /** One executor invocation, parked on its tools/call to the child. */
+    const call = async (id: string) => {
+      const before = rig.sent.length;
+      const result = executor.executeAll([{ id, name: "overlap_probe", input: {} }], {
+        sessionId: SESSION, executionCwd: root, permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg" }),
+      });
+      pending.push(result.catch(() => undefined));
+      await vi.waitFor(() => expect(rig.sent.slice(before).filter((frame) => frame.method === "tools/call")).toHaveLength(1));
+      const frame = rig.sent.slice(before).find((candidate) => candidate.method === "tools/call")!;
+      return { result, token: tokenOf(frame), finish: () => rig.deliver({ jsonrpc: "2.0", id: frame.id as string, result: { content: [] } }) };
+    };
+    const effectFromChild = (id: string, token: string) => rig.deliver({ jsonrpc: "2.0", id, method: hostApiMethodOf("raiseAlert"),
+      params: { input: { kind: "reply", key: id }, _meta: { [INVOCATION_META]: token } } });
+    const replyTo = async (id: string) => {
+      await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === id)).toBe(true));
+      return rig.sent.find((frame) => frame.id === id)!;
+    };
+    const terminal = (id: string) => readFileSync(audit.getPermissionAuditLogFile(), "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.toolUseId === id && row.decision !== "ask");
+    const close = async () => {
+      gate.disposeAll();
+      rig.transport.close("case over");
+      await Promise.allSettled(pending);
+      await audit.close();
+      rmSync(root, { recursive: true, force: true });
+    };
+    return { manager, gate, desk, cards, write, call, effectFromChild, replyTo, terminal, close };
+  }
+
+  it("ends only the call whose effect was refused when the sibling starts after the card opened", async () => {
+    const t = await overlap();
+    try {
+      const a = await t.call("overlap-a");
+      t.effectFromChild("effect-a", a.token);
+      await vi.waitFor(() => expect(t.cards).toHaveLength(1));
+      const b = await t.call("overlap-b");
+      vi.spyOn(t.manager, "checkDetailed").mockImplementationOnce(() => { throw new Error("internal storage check detail"); });
+      const [card] = t.cards;
+      t.gate.resolveFromDesktopRenderer(card!.id, { requestId: card!.id, nonce: card!.nonce, hmac: card!.hmac, choice: "allow-once" }, t.desk as never);
+      expect((await t.replyTo("effect-a")).error).toBeDefined();
+      a.finish();
+      b.finish();
+      const [[resultA], [resultB]] = await Promise.all([a.result, b.result]);
+      expect(resultA).toMatchObject({ is_error: true, content: "Permission recheck failed during approval." });
+      expect(resultB).toMatchObject({ content: "spoke" });
+      expect(resultB!.is_error).not.toBe(true);
+      expect(t.terminal("overlap-a")).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
+      expect(t.terminal("overlap-b")).toEqual([expect.objectContaining({ decision: "allow" })]);
+      expect(t.write).not.toHaveBeenCalled();
+    } finally {
+      await t.close();
+    }
+  });
+
+  it("refuses an effect that would ask while a sibling is live, without a card, and leaves both calls their own outcome", async () => {
+    const t = await overlap();
+    try {
+      const a = await t.call("overlap-a");
+      const b = await t.call("overlap-b");
+      // Either call's code may send this; the token is the child's word.
+      t.effectFromChild("effect-b", b.token);
+      const reply = await t.replyTo("effect-b");
+      expect(reply.error).toMatchObject({ data: { code: "effect-boundary-denied" } });
+      expect(JSON.stringify(reply.error)).toContain("cannot tell which call asks");
+      expect(t.cards).toEqual([]);
+      a.finish();
+      b.finish();
+      for (const call of [a, b]) {
+        const [result] = await call.result;
+        expect(result).toMatchObject({ content: "spoke" });
+        expect(result!.is_error).not.toBe(true);
+      }
+      expect(t.terminal("overlap-a")).toEqual([expect.objectContaining({ decision: "allow" })]);
+      expect(t.terminal("overlap-b")).toEqual([expect.objectContaining({ decision: "allow" })]);
+      expect(t.write).not.toHaveBeenCalled();
+      // Alone again, the same request asks.
+      const c = await t.call("overlap-c");
+      t.effectFromChild("effect-c", c.token);
+      await vi.waitFor(() => expect(t.cards).toHaveLength(1));
+    } finally {
+      await t.close();
     }
   });
 });

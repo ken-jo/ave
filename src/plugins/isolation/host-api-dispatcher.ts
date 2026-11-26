@@ -16,6 +16,7 @@ import {
   GATED_EFFECT_PATHS,
   pathReadEffectPaths,
   runWithEffectGateContext,
+  runUnattributedEffectRequest,
   sameEffectAuthority,
 } from "../../permissions/effect-enforcement.js";
 import { ManifestIntegrityError } from "../../permissions/manifest-integrity.js";
@@ -1481,6 +1482,7 @@ export class HostApiDispatcher {
       // without a frame; app-only calls such as a panel's long poll are the usual case), so naming a gated call is never weaker than it;
       // naming the frameless call while a gated one is live still refuses, or the child could escape that call's gate.
       const named = invocation.run(currentEffectGateContext);
+      let sibling = false;
       for (const other of this.options.invocations?.live() ?? []) {
         const otherFrame = other(currentEffectGateContext);
         if (named !== undefined && otherFrame === undefined) continue;
@@ -1491,7 +1493,11 @@ export class HostApiDispatcher {
             { reason: AMBIGUOUS_INVOCATION_TOKEN },
           );
         }
+        sibling ||= otherFrame !== named;
       }
+      // Equal authority decides whether the effect may run, not whose call it is: with a gated sibling live the request is
+      // unattributed, so it neither asks nor ends the named call.
+      if (named !== undefined && sibling) return invocation.run(() => runUnattributedEffectRequest(named, invoke));
     }
     return invocation.run(invoke);
   }
