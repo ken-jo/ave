@@ -142,9 +142,10 @@ function present(paths: readonly string[]): void {
   }
 }
 
-function pinWorkerRoot(root: string): string[] {
-  // The pinned root is a directory, so the stamp-time presence recheck must find it too.
-  presentTargets.add(win32.resolve(root).toLowerCase());
+function pinWorkerRoot(root: string, directory = true): string[] {
+  // A pinned directory root must pass the stamp-time presence recheck too; a file root exists on disk and has no named entries.
+  if (directory) presentTargets.add(win32.resolve(root).toLowerCase());
+  else { mkdirSync(win32.dirname(root), { recursive: true }); writeFileSync(root, ""); }
   const pin = facts.pinWindowsPaths;
   vi.spyOn(facts, "pinWindowsPaths").mockImplementation(requests => {
     // The other rows are pinned natively in one helper run, as the producer batches them.
@@ -152,8 +153,8 @@ function pinWorkerRoot(root: string): string[] {
     const native = others.length === 0 ? [] : [...pin(others)];
     return requests.map(path => {
       if (path === root) return { exists: true, canonical: root, volumeSerial: "volume", fileId: "worker-root",
-        volumeSerialNumber: null, fileIndex: null, changeTime: null, attributes: 16, reparseTag: 0,
-        directory: true, reparseTarget: null, ancestors: [] };
+        volumeSerialNumber: null, fileIndex: null, changeTime: null, attributes: directory ? 16 : 32, reparseTag: 0,
+        directory, reparseTarget: null, ancestors: [] };
       const response = native.shift();
       if (response === undefined) throw new Error("Missing path facts for the worker fixture");
       return response;
@@ -164,7 +165,7 @@ function pinWorkerRoot(root: string): string[] {
   vi.spyOn(stampTargets, "pinWindowsFilesystemConfig").mockImplementation(config =>
     [...(config?.allowRead ?? []), ...(config?.allowWrite ?? [])].some(entry => (typeof entry === "string" ? entry : entry.path) === root)
       ? config : pinConfig(config));
-  return presentRequired(root);
+  return directory ? presentRequired(root) : [];
 }
 
 beforeEach(() => {
@@ -378,6 +379,32 @@ describe("background session isolation", () => {
         .then(held => { held.release(); return held; });
       await expect(grant).rejects.toThrow(/obligation|glob|changed/i);
       expect(read.mock.calls.map(([targets]) => targets)).toEqual([required]);
+      expect(nativeWorker.grantWindowsAcl).not.toHaveBeenCalled();
+      expect(stampWindowsAclAsync).not.toHaveBeenCalled();
+    } finally {
+      await wrapping;
+    }
+  });
+
+  it.each(WIN32_WRAPPERS)("refuses a worker file grant when a %s wrap adds a glob deny while every reached row is watched", async (_name, wrap) => {
+    const root = win32.join(fixtureRoot, "worker.log");
+    // A deny beneath a file grant can never exist, so it is watched rather than stamped.
+    await initializeAsrtSandbox({ denyRead: [win32.join(root, "initial")] });
+    expect(pinWorkerRoot(root, false)).toEqual([]);
+    let wrapping: Promise<void> | undefined;
+    const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => {
+      wrapping ??= expect(wrap("echo late", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [win32.join(root, "*.secret")] } }))
+        .resolves.toMatchObject({ argv: ["confined"] });
+      return requests.map(() => ({
+        denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40, directory: false,
+      }));
+    });
+    try {
+      const grant = grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [root] })
+        .then(held => { held.release(); return held; });
+      await expect(grant).rejects.toThrow(/obligation|glob|changed/i);
+      // The readback still runs on an empty stamp set, so the race is seen before any holder grant.
+      expect(read.mock.calls.map(([targets]) => targets)).toEqual([[]]);
       expect(nativeWorker.grantWindowsAcl).not.toHaveBeenCalled();
       expect(stampWindowsAclAsync).not.toHaveBeenCalled();
     } finally {
