@@ -245,6 +245,20 @@ describe.each(INTERRUPTIONS)("builtin cancellation settlement after %s", (reason
     expect(invocation.terminalAudits()[0].output?.length).toBeLessThanOrEqual(1024);
   });
 
+  it("keeps a settled result's notice after the cut, inside the same bound", async () => {
+    const invocation = await startInvocation();
+    await invocation.interrupt(reason);
+    const notice = "cwd-pin-unconfirmed: the run is treated as failed";
+    invocation.task.resolve({ output: `${"x".repeat(TOOL_RESULT_READ_MAX_CHARS * 2)}\n${notice}`, isError: true, notice });
+    const [result] = await invocation.execution;
+    const prefix = `${interruptionText(reason)}\n\n[Tool result after interruption]\n`;
+    expect(result.content.length - prefix.length).toBe(TOOL_RESULT_READ_MAX_CHARS);
+    for (const surface of [result.content, invocation.onToolEnd.mock.calls[0]?.[1]]) {
+      expect(surface).toContain(`[Settled detail truncated]\n${notice}`);
+    }
+    if (reason !== "ceiling") expect(result.content.endsWith(notice)).toBe(true);
+  });
+
   it.each([
     ["result", false], ["result", true], ["error", false], ["error", true],
   ] as const)("masks settled %s detail for display and audit with PII policy %s", async (kind, pii) => {

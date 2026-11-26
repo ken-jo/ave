@@ -122,14 +122,18 @@ class HandlerApprovalRequiredError extends Error {
 
 type AuditToolCall = (...args: Parameters<AuditWriter["auditToolCall"]>) => Promise<void>;
 
-function boundInterruptionDetail(detail: string): string {
+const SETTLED_NOTICE_MAX_CHARS = 500;
+
+/** `notice`: the result's short host notice, restated after the cut so the limit never removes it. */
+function boundInterruptionDetail(detail: string, notice?: string): string {
   if (detail.length <= TOOL_RESULT_READ_MAX_CHARS) return detail;
-  const suffix = "\n[Settled detail truncated]";
+  const suffix = `\n[Settled detail truncated]${notice === undefined ? "" : `\n${notice.slice(0, SETTLED_NOTICE_MAX_CHARS)}`}`;
   return detail.slice(0, TOOL_RESULT_READ_MAX_CHARS - suffix.length) + suffix;
 }
 
 interface SettledToolDetail {
   raw: string;
+  notice?: string;
   start: number;
   boundedLength: number;
 }
@@ -142,7 +146,7 @@ function maskExecutionOutput(content: string, detail: SettledToolDetail | undefi
   const settled = maskSensitiveData(detail.raw, { pii });
   const suffix = maskSensitiveData(content.slice(detail.start + detail.boundedLength), { pii });
   return {
-    masked: prefix.masked + boundInterruptionDetail(settled.masked) + suffix.masked,
+    masked: prefix.masked + boundInterruptionDetail(settled.masked, detail.notice === undefined ? undefined : maskSensitiveData(detail.notice, { pii }).masked) + suffix.masked,
     detections: [...new Set([...prefix.detections, ...settled.detections, ...suffix.detections])],
   };
 }
@@ -1380,8 +1384,9 @@ export async function executeAuthorizedToolInvocation(
       const raw = cancellationSettlement.ok
         ? cancellationSettlement.value.output
         : settledTaskError ?? cancellationSettlement.error.message;
-      const bounded = boundInterruptionDetail(raw);
-      settledToolDetail = { raw, start: content.length, boundedLength: bounded.length };
+      const notice = cancellationSettlement.ok ? cancellationSettlement.value.notice : undefined;
+      const bounded = boundInterruptionDetail(raw, notice);
+      settledToolDetail = { raw, notice, start: content.length, boundedLength: bounded.length };
       content += bounded;
     }
     isError = true;
