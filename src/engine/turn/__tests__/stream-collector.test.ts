@@ -123,12 +123,30 @@ describe("provider completion boundary", () => {
       const onRequestStarted = vi.fn();
       await collectActiveRuntimeRoundStream({ provider, model: "test-model", systemPrompt: "system", messages: [],
         toolSchemas: [], llmSettings: LLM_SETTINGS, abortSignal: controller.signal, onRequestStarted },
-        state === "runtime-switched" ? { kind: "subscription", provider: "codex", model: "gpt-5.5-codex" } : undefined,
+        { activeChatRuntime: state === "runtime-switched"
+          ? { kind: "subscription", provider: "codex", model: "gpt-5.5-codex" }
+          : { kind: "api" } },
         () => {});
       expect(onRequestStarted).toHaveBeenCalledTimes(state === "started" ? 1 : 0);
       expect(provider.lastParams === null).toBe(state !== "started");
     },
   );
+
+  it("blocks a cached API provider when the saved route retires before dispatch", async () => {
+    const provider = new ScriptedProvider([{ type: "message_complete", stopReason: "end_turn" }]);
+    const onRuntimeMismatch = vi.fn();
+    const activeLlm = {
+      activeChatRuntime: { kind: "api" },
+      retiredProvider: { vendor: "openai", model: "test-model", reason: "unlisted" },
+    } as const;
+    const result = await collectActiveRuntimeRoundStream({
+      provider, model: "test-model", systemPrompt: "system", messages: [],
+      toolSchemas: [], llmSettings: LLM_SETTINGS,
+    }, activeLlm, onRuntimeMismatch);
+    expect(result.kind).toBe("interrupted");
+    expect(onRuntimeMismatch).toHaveBeenCalledOnce();
+    expect(provider.lastParams).toBeNull();
+  });
 
   it.each<{ label: string; events: StreamEvent[] }>([
     { label: "empty stream", events: [] },

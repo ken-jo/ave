@@ -585,8 +585,10 @@ two-tier); nothing else puts it there, and the host keeps no list of retired mod
   normalizer drops the flag when it truncates. A failed, partial or absent listing — and
   every cache entry written before the flag existed — proves nothing: unknown, not
   retired. Neither does a stale one: a listing taken before the end of the period the
-  catalog says the model was released in — the day, or the whole month for a date given
-  only as `YYYY-MM` — (or whose time cannot be read) cannot prove that model gone.
+  catalog says the model was released in cannot prove that model gone. The release
+  period ends at the first instant after the stated UTC day, month (`YYYY-MM`), or
+  year (`YYYY`). An absent or malformed release date or listing timestamp leaves
+  insufficient evidence to prove retirement.
 - **Deprecated (`"catalog-deprecated"`) — the catalog.** The active catalog marks the
   model `status: "deprecated"`. Judged only where the route itself establishes the model
   (`catalogModelFor` without a named entry, §4): a user's `catalogModel` declaration
@@ -596,34 +598,38 @@ two-tier); nothing else puts it there, and the host keeps no list of retired mod
   "announced, still served", so this tier never blocks.
 
 The listing outranks the catalog: a deprecated model the complete listing also dropped is
-retired. `resolveModelRetirement` is the one rule; the settings pickers, the composer's
-model card, the window notice and the settings load call it. A model in **either** tier
+retired. Settings, the settings pickers, the composer's model card, and the fallback
+walk use `resolveModelRetirement`. A model in **either** tier
 is not offered in the model picker, the fallback picker or the composer card.
 
 A **saved selection** in the **retired** tier reuses the unresolved-choice flow #2658
 built for removed vendors: the same `llm.retiredProvider` marker, which now holds either
 the removed vendor id (a string, unchanged) or `{ vendor, model, reason: "unlisted" }`.
-Every gate of that flow applies as is: API-key chat and host credentials are withheld
-(the route reads as not configured), the window notice shows (`app.retiredModelNotice*`,
-naming the model), the chooser shows no selection and does not offer the retired model,
-an ordinary save preserves the marker, and an explicit pick clears it. The settings load
-sets it and judges afresh on every launch, so a model that comes back is released and a
-stored marker for a model the profile no longer names is dropped; a retired vendor wins
-over a retired model. The marker is not derived on patch: a listing that lands
-mid-session hides the model from the pickers at once but marks the saved selection at the
-next launch.
+API-key chat and host credentials are withheld, the window notice names the retired
+model, and the chooser omits it. Settings reconcile the marker on load and on LLM
+settings writes. The host saves each successful discovery for the route it queried.
+A complete listing that lands mid-session blocks the saved selection as soon as the
+host applies it.
+Choosing an available route or receiving a listing that includes the model
+releases the marker. A removed vendor marker takes precedence and still requires an
+explicit provider selection.
 
 A saved selection in the **deprecated** tier sets no marker. Chat keeps working and host
-credentials are released as for any model. The renderer derives the tier from each
-settings snapshot (`deprecatedLlmModel` in `use-settings.ts`, against the same catalog
-main installed) and the window shows a non-blocking status notice
+credentials are released as for any model. The renderer uses the installed catalog
+and settings snapshot to show a non-blocking notice
 (`DeprecatedModelNotice`, `app.deprecatedModelNotice*`: "scheduled for retirement — pick
-another model"), dismissible for that model until the next launch; the chooser's trigger
-names the model and its tier instead of a selection.
+another model"). Settings persist dismissal for the saved model id and the resolved
+catalog entry and release date. A changed identity or a later deprecation after an
+observed return to active status can show the notice again. The chooser's trigger
+names the model and its tier.
 
 A saved fallback in either tier is kept as saved; its picker shows no selection and
 names the tier ("… is retired — choose a model" / "… is scheduled for retirement —
-choose a model"), and the engine's fallback walk is unchanged.
+choose a model"). The fallback walk skips entries proven retired by the current listing
+for their route. A catalog-only deprecation keeps a saved fallback eligible.
+
+If a refreshed catalog deprecates a shipped default, the next launch hides it from
+the choices and shows the non-blocking warning if it is still the saved selection.
 
 Shipped defaults and curated options the bundled catalog deprecates were replaced so a
 fresh profile is never born retired or deprecated (a test holds every vendor's default

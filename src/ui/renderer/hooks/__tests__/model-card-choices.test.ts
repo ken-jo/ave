@@ -53,6 +53,23 @@ describe("modelCardChoices", () => {
     expect(choices.map((c) => c.modelId)).toEqual(["gpt-5.4-mini", "gpt-5.4"]);
   });
 
+  it("checks a pinned model on the configured route even if an old endpoint still lists it", () => {
+    const choices = modelCardChoices(llm({
+      pinnedModels: ["gpt-4o"],
+      modelListCache: {
+        "openai\n\n": {
+          vendor: "openai", endpoint: "https://api.openai.com/v1/models",
+          models: ["gpt-5.4"], complete: true, fetchedAt: "2026-11-01T00:00:00Z",
+        },
+        "openai\nhttps://gateway.invalid/v1\n": {
+          vendor: "openai", baseUrl: "https://gateway.invalid/v1", endpoint: "https://gateway.invalid/v1/models",
+          models: ["gpt-4o"], fetchedAt: "2026-11-01T00:00:00Z",
+        },
+      },
+    }));
+    expect(choices).toEqual([expect.objectContaining({ modelId: "gpt-5.4", current: true })]);
+  });
+
   it("leads with the current model when it is not pinned — even one no catalogue offers", () => {
     const choices = modelCardChoices(llm({ pinnedModels: ["gpt-5.4-mini"] }));
     expect(choices.map((c) => [c.modelId, c.current])).toEqual([["gpt-5.4", true], ["gpt-5.4-mini", false]]);

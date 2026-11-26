@@ -53,6 +53,7 @@ import { isProcessingDisplayLevel } from "../shared/processing-display-level.js"
 import { isSidebarState } from "../shared/sidebar-state.js";
 import { isInlineViewKey } from "../shared/view-key.js";
 import { normalizeSettingsTab } from "../shared/settings-tabs.js";
+import { isCurrentModelDeprecation, modelDeprecationKey, type ModelDeprecation } from "../shared/model-deprecation.js";
 import {
   MAX_CACHED_LLM_MODEL_ID_LENGTH,
   MAX_CACHED_LLM_MODEL_IDS,
@@ -169,6 +170,26 @@ function normalizePinnedModels(input: unknown): string[] {
     if (out.length >= MAX_PINNED_MODELS) break;
   }
   return out;
+}
+
+/** Merge individual dismissals so simultaneous windows can acknowledge different notices. */
+function mergeModelDeprecationDismissals(
+  base: readonly ModelDeprecation[] | undefined,
+  update: unknown,
+): ModelDeprecation[] {
+  const dismissals = new Map<string, ModelDeprecation>();
+  for (const input of [base, update]) {
+    if (!Array.isArray(input)) continue;
+    for (const value of input) {
+      if (!isRecord(value)) continue;
+      const model = normalizeModelId(value.model);
+      const { catalogEntry, releaseDate } = value;
+      if (!model || typeof catalogEntry !== "string" || (releaseDate !== undefined && typeof releaseDate !== "string")) continue;
+      const dismissal = { model, catalogEntry, ...(releaseDate !== undefined ? { releaseDate } : {}) };
+      if (isCurrentModelDeprecation(dismissal)) dismissals.set(modelDeprecationKey(dismissal), dismissal);
+    }
+  }
+  return [...dismissals.values()];
 }
 
 /** Auto or absent enables refresh; off disables it. */
@@ -403,9 +424,7 @@ function normalizeLlmModelListCache(
       if (marketplaceProviderPresetUsesSeededModelOptions(scopedPresetId, installedProviderPresets)) continue;
       credentialScope = scopedPresetId;
     }
-    const fetchedAt = typeof entry.fetchedAt === "string" && entry.fetchedAt.trim()
-      ? entry.fetchedAt.trim()
-      : new Date(0).toISOString();
+    const fetchedAt = typeof entry.fetchedAt === "string" ? entry.fetchedAt.trim() : "";
     const key = llmModelListCacheKey(entry.vendor, baseUrl, credentialScope);
     result[key] = {
       vendor: entry.vendor,
@@ -414,8 +433,8 @@ function normalizeLlmModelListCache(
       endpoint: entry.endpoint.trim(),
       models,
       ...(modelEntries ? { modelEntries } : {}),
-      ...(entry.complete === true && models.length < MAX_CACHED_LLM_MODEL_IDS ? { complete: true } : {}),
-      fetchedAt,
+      ...(entry.complete === true && fetchedAt && models.length < MAX_CACHED_LLM_MODEL_IDS ? { complete: true } : {}),
+      fetchedAt: fetchedAt || new Date(0).toISOString(),
     };
     if (Object.keys(result).length >= MAX_LLM_MODEL_LIST_CACHE_ENTRIES) break;
   }
@@ -497,6 +516,7 @@ export function mergeLlmPatch(
     "modelListCache" in partial ? partial.modelListCache : base.modelListCache,
     installedProviderPresets,
   );
+  const dismissedModelDeprecations = mergeModelDeprecationDismissals(base.dismissedModelDeprecations, partial.dismissedModelDeprecations);
   const normalized: LLMSettings = {
     activeChatRuntime,
     provider: activeProvider,
@@ -507,6 +527,7 @@ export function mergeLlmPatch(
     compactionModelRoute: normalizeCompactionModelRoute("compactionModelRoute" in partial ? partial.compactionModelRoute : base.compactionModelRoute),
     fallbackChain,
     modelListCache,
+    ...(dismissedModelDeprecations.length > 0 ? { dismissedModelDeprecations } : {}),
     pricingOverrides: normalizePricingOverrides(
       "pricingOverrides" in partial ? partial.pricingOverrides : base.pricingOverrides,
     ),

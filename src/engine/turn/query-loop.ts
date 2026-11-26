@@ -877,8 +877,8 @@ export async function queryLoop(
             },
           }),
         },
-        self.deps.settingsService.get("llm").activeChatRuntime,
-        () => self.abortCurrentTurn(new Error("active chat runtime changed")),
+        self.deps.settingsService.get("llm"),
+        () => self.abortCurrentTurn(new Error("active chat route became unavailable")),
       );
       // Consume prefill once; the continuation branch re-arms it only if the chain extends.
       continuationPrefillText = undefined;

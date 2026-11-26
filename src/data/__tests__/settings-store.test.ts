@@ -31,6 +31,7 @@ import { DEFAULT_SETTINGS } from "../settings-defaults.js";
 import { compactionModelSelection } from "../../shared/compaction-model.js";
 import { systemSubagentRouteIdentity } from "../../shared/system-subagent-model.js";
 import { normalizeMarketplace } from "../settings-normalization.js";
+import { activeModelCatalog, installModelCatalog } from "../../shared/model-catalog/active.js";
 import {
   LOG_RETENTION_DAYS,
   LOG_RETENTION_MIN_DAYS,
@@ -40,12 +41,15 @@ import { DEFAULT_APPEARANCE } from "../../shared/appearance-settings.js";
 import { SIDE_PANEL_MIN_RESERVE } from "../../shared/side-panel.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { requiredFixture } from "../../__tests__/support/required-fixture.js";
 import {
   DEFAULT_LLM_VENDOR,
   freshAllVendorBlocks,
   getLlmVendorSettings,
   llmImageInputKey,
+  OPENAI_COMPATIBLE_VENDOR_PRESETS,
 } from "../../shared/llm-vendor-defaults.js";
+import { modelDeprecationForRoute } from "../../shared/model-deprecation.js";
 import { llmModelListCacheKey, MAX_CACHED_LLM_MODEL_IDS } from "../../shared/llm-model-list.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
 import { MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH } from "../../shared/subscription-runtime.js";
@@ -3979,6 +3983,28 @@ describe("retired model profile (design model-capability-catalog §6.1)", () => 
     expect(llm.retiredProvider).toBeUndefined();
   });
 
+  it("keeps an explicitly picked shipped default when a later catalog deprecates it", async () => {
+    const catalog = activeModelCatalog();
+    const model = OPENAI_COMPATIBLE_VENDOR_PRESETS.deepseek.defaultModel;
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(getLlmVendorSettings(service.get("llm").vendors, "deepseek").model).toBe("");
+    await service.patch({ llm: { provider: "deepseek", vendors: { deepseek: { model } } } });
+    expect(modelDeprecationForRoute(service.get("llm"))).toBeUndefined();
+    try {
+      const models = requiredFixture(catalog.providers.deepseek).models;
+      const selected = requiredFixture(models[model]);
+      installModelCatalog({ ...catalog, providers: {
+        ...catalog.providers, deepseek: { models: { ...models, [model]: { ...selected, status: "deprecated" } } },
+      } });
+      const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm");
+      expect(getLlmVendorSettings(reloaded.vendors, "deepseek").model).toBe(model);
+      expect(reloaded.retiredProvider).toBeUndefined();
+      expect(modelDeprecationForRoute(reloaded)).toMatchObject({ model });
+    } finally {
+      installModelCatalog(catalog);
+    }
+  });
+
   it("keeps the host's API credentials for a deprecated model", async () => {
     writeProfile({ provider: "openai", vendors: { openai: { model: "o4-mini" } } });
     writePlainSecrets(join(userDataPath, "ave-secrets.json"), { "llm.apiKey.openai": "credential-marker" });
@@ -4052,6 +4078,64 @@ describe("retired model profile (design model-capability-catalog §6.1)", () => 
     expect(reloaded.get("llm").retiredProvider).toBeUndefined();
   });
 
+  it("blocks the selected model when a complete listing lands mid-session", async () => {
+    writeProfile({ provider: "openai", vendors: { openai: { model: "gpt-4o" } } });
+    writePlainSecrets(join(userDataPath, "ave-secrets.json"), { "llm.apiKey.openai": "credential-marker" });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
+    const missing = listingWithout(["gpt-5.4"]);
+    const marker = { vendor: "openai", model: "gpt-4o", reason: "unlisted" };
+    const retirementChanges: unknown[] = [];
+    service.onChanged("llm", () => retirementChanges.push(JSON.parse(readFileSync(settingsPath, "utf8")).llm.retiredProvider));
+    const background = { notifyLlmListeners: true };
+    await service.patch({ llm: { modelListCache: { x: { ...missing.x, complete: false } } } } as never, background);
+    expect(service.get("llm").retiredProvider).toBeUndefined();
+    expect(await service.getSecret("llm.apiKey.openai")).toBe("credential-marker");
+
+    const updated = await service.patch({ llm: { modelListCache: missing } } as never, background);
+    expect(updated.llm.retiredProvider).toEqual(marker);
+    expect(await service.getSecret("llm.apiKey.openai")).toBeNull();
+    expect(JSON.parse(readFileSync(settingsPath, "utf8")).llm.retiredProvider).toEqual(marker);
+
+    await service.patch({ llm: { provider: "openai" } });
+    expect(service.get("llm").retiredProvider).toEqual(marker);
+    await service.patch({ llm: { modelListCache: listingWithout(["gpt-4o", "gpt-5.4"]) } } as never, background);
+    expect(service.get("llm").retiredProvider).toBeUndefined();
+    expect(await service.getSecret("llm.apiKey.openai")).toBe("credential-marker");
+    expect(retirementChanges).toEqual([undefined, marker, undefined]);
+  });
+
+  it("persists deprecation dismissals for individual models across settings reloads", async () => {
+    writeProfile({ provider: "openai", vendors: { openai: { model: "o4-mini" } } });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const revision = service.getProviderConfigRevision();
+    const dismissals = [
+      { model: "o4-mini", catalogEntry: "openai/o4-mini", releaseDate: "2025-04-16" },
+      { model: "gpt-4", catalogEntry: "openai/gpt-4", releaseDate: "2023-11-06" },
+    ];
+    await Promise.all(dismissals.map((dismissal) =>
+      service.patch({ llm: { dismissedModelDeprecations: [dismissal] } }),
+    ));
+    expect(service.getProviderConfigRevision()).toBe(revision);
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("llm")).toMatchObject({ dismissedModelDeprecations: dismissals });
+
+    const catalog = activeModelCatalog();
+    try {
+      const models = requiredFixture(catalog.providers.openai).models;
+      const { status: _status, ...active } = requiredFixture(models["o4-mini"]);
+      installModelCatalog({ ...catalog, providers: {
+        ...catalog.providers, openai: { models: { ...models, "o4-mini": active } },
+      } });
+      const reactivated = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      expect(reactivated.get("llm").dismissedModelDeprecations).toEqual([dismissals[1]]);
+      installModelCatalog(catalog);
+      const deprecatedAgain = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      expect(deprecatedAgain.get("llm").dismissedModelDeprecations).toEqual([dismissals[1]]);
+    } finally {
+      installModelCatalog(catalog);
+    }
+  });
+
   it("withholds the host's API credentials while a retired model is unresolved", async () => {
     writeProfile({ provider: "openai", vendors: { openai: { model: "gpt-4o" } }, modelListCache: listingWithout(["gpt-5.4"]) });
     writePlainSecrets(join(userDataPath, "ave-secrets.json"), { "llm.apiKey.openai": "credential-marker" });
@@ -4068,6 +4152,10 @@ describe("retired model profile (design model-capability-catalog §6.1)", () => 
     writeProfile({ provider: "openai", vendors: { openai: { model: "gpt-5.4" } }, modelListCache: { a: entry(["gpt-5.4"]) } });
     const kept = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm").modelListCache ?? {};
     expect(Object.values(kept)[0]).toHaveProperty("complete", true);
+    writeProfile({ provider: "openai", vendors: { openai: { model: "gpt-5.4" } }, modelListCache: { a: { ...entry(["gpt-4o"]), fetchedAt: "" } } });
+    const undated = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm");
+    expect(Object.values(undated.modelListCache)[0]).not.toHaveProperty("complete");
+    expect(undated.retiredProvider).toBeUndefined();
     const many = Array.from({ length: MAX_CACHED_LLM_MODEL_IDS + 1 }, (_, index) => `fixture-${index}`);
     writeProfile({ provider: "openai", vendors: { openai: { model: "gpt-5.4" } }, modelListCache: { a: entry(many) } });
     const cut = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm");

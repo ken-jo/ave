@@ -154,6 +154,19 @@ function configuredModelListBaseUrl(
   return vendorModelListBaseUrl(settingsService.get("llm").vendors, vendor);
 }
 
+/** Capture the cache coordinates before discovery can yield to another settings write. */
+export function modelListCacheAddress(
+  settingsService: SettingsService,
+  vendor: LLMVendor,
+  request: Pick<LlmModelListRequest, "baseUrl" | "credentialScope">,
+): LlmRouteCatalogAddress {
+  const credentialScope = vendor === "openai-compatible" ? request.credentialScope?.trim() : undefined;
+  const baseUrl = request.baseUrl?.trim() || (credentialScope
+    ? configuredModelListBaseUrl(settingsService, vendor, credentialScope)
+    : getLlmVendorSettings(settingsService.get("llm").vendors, vendor).baseUrl?.trim());
+  return { vendor, ...(baseUrl ? { baseUrl } : {}), ...(credentialScope ? { credentialScope } : {}) };
+}
+
 type ModelListVendorBlocks = Readonly<Partial<Record<LLMVendor, { readonly baseUrl?: string }>>>;
 
 // Stored blank baseUrl overrides the vendor default and falls through to the standard catalog address.
@@ -885,6 +898,42 @@ function modelListEntryIsFresh(
   return now - fetchedAt < MODEL_LIST_REFRESH_TTL_MS;
 }
 
+/** Persist one host discovery under the route it actually queried. */
+export async function persistRouteModelList(
+  settingsService: SettingsService,
+  address: LlmRouteCatalogAddress,
+  result: Extract<LlmModelListResult, { ok: true }>,
+  options?: Parameters<SettingsService["patch"]>[1],
+): Promise<boolean> {
+  const { vendor, baseUrl, credentialScope } = address;
+  const expectedBaseUrl = baseUrl || STANDARD_MODEL_LIST_BASE_URLS[vendor];
+  if (result.vendor !== vendor || !result.models.length || !expectedBaseUrl || !sameModelListEndpoint(result.endpoint, expectedBaseUrl)) {
+    return false;
+  }
+  const key = llmModelListCacheKey(vendor, baseUrl, credentialScope);
+  // Merge at write time so another route's discovery is never replaced by a stale snapshot.
+  const { [key]: previous, ...otherEntries } = settingsService.get("llm").modelListCache ?? {};
+  if (previous && Date.parse(previous.fetchedAt) > Date.parse(result.fetchedAt)) return false;
+  await settingsService.patch({
+    llm: {
+      modelListCache: {
+        [key]: {
+          vendor,
+          ...(baseUrl ? { baseUrl } : {}),
+          ...(credentialScope ? { credentialScope } : {}),
+          endpoint: result.endpoint,
+          models: result.models,
+          ...(result.modelEntries ? { modelEntries: result.modelEntries } : {}),
+          ...(result.complete ? { complete: true } : {}),
+          fetchedAt: result.fetchedAt,
+        },
+        ...otherEntries,
+      },
+    },
+  }, options);
+  return true;
+}
+
 /** Refresh capacity from the active endpoint without requiring a settings window.
  * Unreachable endpoints retain existing knowledge and never throw from this probe. */
 export async function refreshRouteModelList(params: {
@@ -921,24 +970,5 @@ export async function refreshRouteModelList(params: {
     log.info(`model list: ${address.vendor} did not answer (${result.error})`);
     return false;
   }
-  // Re-read after network I/O so a shallow patch cannot erase concurrent cache updates.
-  const cache = settingsService.get("llm").modelListCache ?? {};
-  await settingsService.patch({
-    llm: {
-      modelListCache: {
-        ...cache,
-        [key]: {
-          vendor: result.vendor,
-          ...(address.baseUrl ? { baseUrl: address.baseUrl } : {}),
-          ...(address.credentialScope ? { credentialScope: address.credentialScope } : {}),
-          endpoint: result.endpoint,
-          models: result.models,
-          ...(result.modelEntries ? { modelEntries: result.modelEntries } : {}),
-          ...(result.complete ? { complete: true } : {}),
-          fetchedAt: result.fetchedAt,
-        },
-      },
-    },
-  });
-  return true;
+  return persistRouteModelList(settingsService, address, result, { notifyLlmListeners: true });
 }

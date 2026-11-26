@@ -9,9 +9,9 @@ import {
 } from "../llm/provider-error-diagnostics.js";
 import { t } from "../../i18n/index.js";
 import { isValidToolUseId } from "../../shared/tool-use-id.js";
+import type { LLMSettings } from "../../data/settings-store.js";
 import {
   normalizeSubscriptionUsageTelemetry,
-  type ActiveChatRuntime,
   type SubscriptionUsageTelemetry,
 } from "../../shared/subscription-runtime.js";
 import { providerMatchesActiveChatRuntime } from "./provider.js";
@@ -67,13 +67,13 @@ export type StreamCollectResult =
       providerError: ProviderErrorDiagnostics;
     };
 
-// Recheck authentication beside dispatch to cover independently constructed or stale loops.
+// Recheck the active route beside dispatch to cover independently constructed or stale loops.
 export function collectActiveRuntimeRoundStream(
   params: StreamCollectParams,
-  activeChatRuntime: ActiveChatRuntime | undefined,
+  activeLlm: Pick<LLMSettings, "activeChatRuntime" | "retiredProvider">,
   onRuntimeMismatch: () => void,
 ): Promise<StreamCollectResult> {
-  if (!providerMatchesActiveChatRuntime(params.provider, activeChatRuntime)) {
+  if (!providerMatchesActiveChatRuntime(params.provider, activeLlm)) {
     onRuntimeMismatch();
     return Promise.resolve({ kind: "interrupted", text: "" });
   }

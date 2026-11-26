@@ -1,10 +1,10 @@
 import { useBannerNotice } from "../context/NotificationHistoryContext.js";
 // Removed routes block API chat until reconfigured; deprecated models remain usable and show a dismissible catalog notice.
 
-import { useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { isRetiredLlmModelMarker, type LlmRouteRetirement } from "../../../shared/llm-vendor-defaults.js";
+import { modelDeprecationKey, type ModelDeprecation } from "../../../shared/model-deprecation.js";
 
 export function RetiredProviderNotice({
   retiredProvider,
@@ -53,20 +53,22 @@ export function RetiredProviderNotice({
 }
 
 export function DeprecatedModelNotice({
-  model,
+  deprecation,
   onChooseModel,
+  onDismiss,
 }: {
-  model: string | null;
+  deprecation: ModelDeprecation | null;
   onChooseModel: () => void;
+  onDismiss: () => void;
 }) {
   const { t } = useTranslation();
-  // Dismissal is per model: choosing another deprecated model tells again.
-  const [dismissed, setDismissed] = useState<string | null>(null);
-  const announcedByHistory = useBannerNotice(`banner:deprecated-model:${model}`, model && dismissed !== model ? {
+  const model = deprecation?.model;
+  const bannerId = deprecation ? `banner:deprecated-model:${modelDeprecationKey(deprecation)}` : "banner:deprecated-model";
+  const announcedByHistory = useBannerNotice(bannerId, model ? {
     severity: "info", message: `${t("app.deprecatedModelNoticeTitle", { model })} ${t("app.deprecatedModelNoticeBody")}`,
     actions: [{ label: t("app.retiredModelNoticeAction"), run: onChooseModel }],
   } : null);
-  if (!model || dismissed === model) return null;
+  if (!model) return null;
   return (
     <div
       role={announcedByHistory ? undefined : "status"}
@@ -95,7 +97,7 @@ export function DeprecatedModelNotice({
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => setDismissed(model)}
+          onClick={onDismiss}
           aria-label={t("app.deprecatedModelNoticeDismiss")}
           className="h-auto p-1"
           data-testid="deprecated-model-notice-dismiss"

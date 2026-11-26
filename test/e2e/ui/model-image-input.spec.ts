@@ -11,7 +11,15 @@ const IMAGE = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AA
 
 for (const locale of ["en", "ko"] as const) {
   test.describe(`custom model image declaration (${locale})`, () => {
-    test.use({ seedLocale: locale });
+    test.use({
+      seedLocale: locale,
+      seedLlmProvider: "openai-compatible",
+      seedLlmVendors: { "openai-compatible": { model: MODEL, baseUrl: ENDPOINT } },
+      seedLlmModelListCache: { [llmModelListCacheKey("openai-compatible", ENDPOINT)]: {
+        vendor: "openai-compatible", baseUrl: ENDPOINT, endpoint: `${ENDPOINT}/models`,
+        models: [MODEL], modelEntries: [{ id: MODEL }], fetchedAt: new Date(0).toISOString(),
+      } },
+    });
 
     test("names the setting in the refusal, persists support and restores the conservative default", async ({ app, mainWindow, t }, testInfo) => {
       await app.evaluate(({ ipcMain }, channels) => {
@@ -20,13 +28,6 @@ for (const locale of ["en", "ko"] as const) {
         ipcMain.removeHandler(channels.listLlmModels);
         ipcMain.handle(channels.listLlmModels, () => ({ ok: false, error: "model-list-fetch-failed", message: "No remote catalog in this fixture" }));
       }, { hasApiKey: CHANNELS.settings.hasApiKey, listLlmModels: CHANNELS.settings.listLlmModels });
-      await mainWindow.evaluate(async ({ model, endpoint, key }) => {
-        await window.aveApi.updateSettings({ llm: {
-          provider: "openai-compatible",
-          vendors: { "openai-compatible": { model, baseUrl: endpoint } },
-          modelListCache: { [key]: { vendor: "openai-compatible", baseUrl: endpoint, endpoint: `${endpoint}/models`, models: [model], modelEntries: [{ id: model }], fetchedAt: new Date().toISOString() } },
-        } });
-      }, { model: MODEL, endpoint: ENDPOINT, key: llmModelListCacheKey("openai-compatible", ENDPOINT, "") });
 
       const textarea = mainWindow.getByTestId(TEST_IDS.composerTextarea);
       await expect(textarea).toBeEnabled();

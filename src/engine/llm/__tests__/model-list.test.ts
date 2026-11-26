@@ -1232,6 +1232,7 @@ describe("refreshRouteModelList — the catalogue a headless run can reach", () 
 
     expect(stored).toBe(true);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(patch).toHaveBeenCalledWith(expect.anything(), { notifyLlmListeners: true });
     const written = patch.mock.calls[0][0];
     const key = llmModelListCacheKey("openai-compatible", "https://models.invalid/v1", "");
     expect(written.llm.modelListCache[key]?.modelEntries?.[0]?.contextLength).toBe(229_376);

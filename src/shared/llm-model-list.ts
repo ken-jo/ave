@@ -122,6 +122,8 @@ export type LlmModelListResult =
       /** See {@link LlmModelListCacheEntry.complete}. */
       complete?: true;
       fetchedAt: string;
+      /** Discovery succeeded, but its report did not reach durable settings. */
+      cacheSaveFailed?: true;
     }
   | {
       ok: false;

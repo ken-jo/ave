@@ -264,8 +264,8 @@ async function runTurnInSpan(
         await raceWithAbort(self.whenProviderReady(), turnSignal);
         turnSignal.throwIfAborted();
       }
-      let activeChatRuntime = self.deps.settingsService.get("llm").activeChatRuntime;
-      if (!providerMatchesActiveChatRuntime(self.provider, activeChatRuntime)) {
+      let activeLlm = self.deps.settingsService.get("llm");
+      if (!providerMatchesActiveChatRuntime(self.provider, activeLlm)) {
         try {
           // Revalidate provider posture at execution for stale loops missed by settings refresh.
           await raceWithAbort(self.refreshProvider(), turnSignal);
@@ -273,9 +273,9 @@ async function runTurnInSpan(
           // A failed rebuild clears the client and records its kind; the route stays unconfigured.
         }
         turnSignal.throwIfAborted();
-        activeChatRuntime = self.deps.settingsService.get("llm").activeChatRuntime;
+        activeLlm = self.deps.settingsService.get("llm");
       }
-      if (!providerMatchesActiveChatRuntime(self.provider, activeChatRuntime)) {
+      if (!providerMatchesActiveChatRuntime(self.provider, activeLlm)) {
         const buildError = self.providerBuildError;
         const err = t("be_conversationLoop.llmProviderNotConfigured") + (buildError ? ` (${buildError})` : "");
         callbacks?.onError?.(err);

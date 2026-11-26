@@ -8,12 +8,13 @@ import {
   activeLlmRouteModel,
 } from "../../shared/llm-vendor-defaults.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
+import { resolveModelRetirement } from "../../shared/context-budget.js";
+import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import { selectProviderRuntimeFetch } from "../llm/marketplace-provider-fetch.js";
 import type { ConversationLoopDeps } from "./types.js";
 import {
   MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH,
   subscriptionAcceptsModelOverride,
-  type ActiveChatRuntime,
   type SubscriptionChatRuntimeSelection,
 } from "../../shared/subscription-runtime.js";
 import { stripSuggestedReplies } from "../suggested-replies.js";
@@ -78,11 +79,12 @@ function selectionWithModelOverride(
 /** Match the active authentication boundary, not model equality; stale API-key transports are forbidden. */
 export function providerMatchesActiveChatRuntime(
   provider: LLMProvider | null,
-  activeChatRuntime: ActiveChatRuntime | undefined,
+  llm: Pick<LLMSettings, "activeChatRuntime" | "retiredProvider">,
 ): boolean {
   if (!provider) return false;
+  const { activeChatRuntime, retiredProvider } = llm;
   if (activeChatRuntime?.kind !== "subscription") {
-    return provider.subscriptionRuntime === undefined;
+    return !retiredProvider && provider.subscriptionRuntime === undefined;
   }
   return provider.subscriptionRuntime?.provider === activeChatRuntime.provider;
 }
@@ -212,6 +214,15 @@ export async function buildProvider(
         chain,
         async (v) => (await deps.settingsService.getSecret(secretKeyFor(v))) ?? "",
         createLoopProvider,
+        ({ provider, model, baseUrl }) => {
+          const cache = deps.settingsService.get("llm").modelListCache;
+          return resolveModelRetirement({
+            vendor: provider,
+            model,
+            baseUrl,
+            listing: cache?.[llmModelListCacheKey(provider, baseUrl)],
+          }) === "unlisted";
+        },
       );
     } catch {
       return null;
@@ -247,7 +258,7 @@ export async function generateTextForRoute(
     const model = provider?.subscriptionRuntime
       ? provider.subscriptionRuntime.model ?? "default"
       : activeLlmRouteModel(llm, cleanModelOverride(options?.modelOverride));
-    if (!provider || !model || !providerMatchesActiveChatRuntime(provider, llm.activeChatRuntime)) {
+    if (!provider || !model || !providerMatchesActiveChatRuntime(provider, llm)) {
       throw new Error("LLM provider not configured");
     }
     if (abortSignal?.aborted) throw new Error("LLM generation aborted");

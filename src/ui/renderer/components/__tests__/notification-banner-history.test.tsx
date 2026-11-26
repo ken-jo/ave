@@ -114,8 +114,9 @@ describe("banner notification history", () => {
   it("mirrors a deprecated-model banner and keeps its history after dismissal", () => {
     const history = createNotificationHistory();
     const onChooseModel = vi.fn();
-    render(<NotificationHistoryContext.Provider value={history}>
-      <DeprecatedModelNotice model="retiring-model" onChooseModel={onChooseModel} />
+    const onDismiss = vi.fn();
+    const { rerender } = render(<NotificationHistoryContext.Provider value={history}>
+      <DeprecatedModelNotice deprecation={{ model: "retiring-model", catalogEntry: "fixture/retiring-model" }} onChooseModel={onChooseModel} onDismiss={onDismiss} />
     </NotificationHistoryContext.Provider>);
     const banner = screen.getByTestId("deprecated-model-notice");
     const record = required(history.getSnapshot()[0]);
@@ -130,6 +131,10 @@ describe("banner notification history", () => {
     act(() => required(record.actions?.[0]).run());
     expect(onChooseModel).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByTestId("deprecated-model-notice-dismiss"));
+    expect(onDismiss).toHaveBeenCalledOnce();
+    rerender(<NotificationHistoryContext.Provider value={history}>
+      <DeprecatedModelNotice deprecation={null} onChooseModel={onChooseModel} onDismiss={onDismiss} />
+    </NotificationHistoryContext.Provider>);
     expect(screen.queryByTestId("deprecated-model-notice")).toBeNull();
     expect(history.getSnapshot()[0]).toMatchObject({ id: record.id, message: record.message, actions: [] });
     act(() => required(record.actions?.[0]).run());

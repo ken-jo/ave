@@ -16,7 +16,21 @@ const CASE_MODELS = [
 
 for (const locale of ["en", "ko"] as const) {
   test.describe(`model capability reports (${locale})`, () => {
-    test.use({ seedLocale: locale });
+    test.use({
+      seedLocale: locale,
+      seedLlmProvider: "openai",
+      seedLlmVendors: { openai: { model: "tExT-eMbEdDiNg-3-sMaLl" } },
+      seedLlmModelListCache: { [llmModelListCacheKey("openai")]: {
+        vendor: "openai", endpoint: "https://models.e2e.invalid/v1/models",
+        models: ["Text-Embedding-3-Small", "text-embedding-3-small", "gpt-5.1-codex"],
+        modelEntries: [
+          { id: "Text-Embedding-3-Small", inputModalities: ["text", "image"], supportedParameters: ["tools"] },
+          { id: "text-embedding-3-small", inputModalities: ["text"], supportedParameters: ["temperature"] },
+          { id: "gpt-5.1-codex", inputModalities: ["text"], supportedParameters: ["tools"] },
+        ],
+        fetchedAt: new Date(0).toISOString(),
+      } },
+    });
 
     test("keeps case-distinct badges and selected model ids separate", async ({ app, mainWindow, t }, testInfo) => {
       await app.evaluate(({ ipcMain }, channels) => {
@@ -25,22 +39,6 @@ for (const locale of ["en", "ko"] as const) {
         ipcMain.removeHandler(channels.listLlmModels);
         ipcMain.handle(channels.listLlmModels, () => ({ ok: false, error: "model-list-fetch-failed", message: "No remote catalog in this fixture" }));
       }, { hasApiKey: CHANNELS.settings.hasApiKey, listLlmModels: CHANNELS.settings.listLlmModels });
-      await mainWindow.evaluate(async (cacheKey) => {
-        await window.aveApi.updateSettings({ llm: {
-          provider: "openai",
-          vendors: { openai: { model: "tExT-eMbEdDiNg-3-sMaLl" } },
-          modelListCache: { [cacheKey]: {
-            vendor: "openai", endpoint: "https://models.e2e.invalid/v1/models",
-            models: ["Text-Embedding-3-Small", "text-embedding-3-small", "gpt-5.1-codex"],
-            modelEntries: [
-              { id: "Text-Embedding-3-Small", inputModalities: ["text", "image"], supportedParameters: ["tools"] },
-              { id: "text-embedding-3-small", inputModalities: ["text"], supportedParameters: ["temperature"] },
-              { id: "gpt-5.1-codex", inputModalities: ["text"], supportedParameters: ["tools"] },
-            ],
-            fetchedAt: new Date(0).toISOString(),
-          } },
-        } });
-      }, llmModelListCacheKey("openai"));
 
       const settings = await openInlineSettings(app, mainWindow, "llm");
       const chooser = settings.getByTestId(TEST_IDS.llmModelSelect);

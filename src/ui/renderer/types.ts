@@ -467,7 +467,9 @@ export type AvePreloadApi = {
   getSettingsDefaults: () => Promise<AppSettings>;
   openSettingsFile: () => Promise<{ ok: true } | { ok: false; error: string }>;
   pickSettingsDirectory: () => Promise<{ ok: true; path: string | null } | { ok: false; error: string }>;
-  updateSettings: (patch: DeepPartial<AppSettings>) => Promise<SettingsUpdateResult>;
+  updateSettings: (patch: DeepPartial<Omit<AppSettings, "llm"> & {
+    llm: Omit<AppSettings["llm"], "modelListCache">;
+  }>) => Promise<SettingsUpdateResult>;
   /** Settings paths the boot environment is forcing ON; presence only, never values. */
   envForcedSettings: () => Promise<readonly string[]>;
   /** Hosts `telemetry.endpoint` may point at. Read-only: the bound, not a setting. */

@@ -66,7 +66,7 @@ describe("DeprecatedModelNotice (the deprecated tier, design model-capability-ca
     setLocale(locale);
     try {
       const onChooseModel = vi.fn();
-      render(<DeprecatedModelNotice model="o4-mini" onChooseModel={onChooseModel} />);
+      render(<DeprecatedModelNotice deprecation={{ model: "o4-mini", catalogEntry: "openai/o4-mini" }} onChooseModel={onChooseModel} onDismiss={vi.fn()} />);
       const notice = screen.getByTestId("deprecated-model-notice");
       // Non-blocking: a status line, not an alert.
       expect(notice).toHaveAttribute("role", "status");
@@ -82,13 +82,16 @@ describe("DeprecatedModelNotice (the deprecated tier, design model-capability-ca
     }
   });
 
-  it("can be dismissed for the model it names, and tells again for another deprecated model", () => {
-    const { rerender } = render(<DeprecatedModelNotice model="o4-mini" onChooseModel={vi.fn()} />);
+  it("requests dismissal and hides after the settings snapshot acknowledges it", () => {
+    const onDismiss = vi.fn();
+    const onChooseModel = vi.fn();
+    const { rerender } = render(<DeprecatedModelNotice deprecation={{ model: "o4-mini", catalogEntry: "openai/o4-mini" }} onChooseModel={onChooseModel} onDismiss={onDismiss} />);
     fireEvent.click(screen.getByRole("button", { name: t("app.deprecatedModelNoticeDismiss") }));
+    expect(onDismiss).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("deprecated-model-notice")).toBeVisible();
+    rerender(<DeprecatedModelNotice deprecation={null} onChooseModel={onChooseModel} onDismiss={onDismiss} />);
     expect(screen.queryByTestId("deprecated-model-notice")).toBeNull();
-    rerender(<DeprecatedModelNotice model="o3-mini" onChooseModel={vi.fn()} />);
+    rerender(<DeprecatedModelNotice deprecation={{ model: "o3-mini", catalogEntry: "openai/o3-mini" }} onChooseModel={onChooseModel} onDismiss={onDismiss} />);
     expect(screen.getByTestId("deprecated-model-notice")).toHaveAttribute("data-deprecated-model", "o3-mini");
-    rerender(<DeprecatedModelNotice model={null} onChooseModel={vi.fn()} />);
-    expect(screen.queryByTestId("deprecated-model-notice")).toBeNull();
   });
 });

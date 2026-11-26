@@ -80,7 +80,9 @@ import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
 import { isValidFontFamilyOverride } from "../../shared/appearance-font.js";
 import { parseMainLayout } from "../../shared/main-layout.js";
 import { applyShortcutBindingsPatch, ShortcutBindingsPatchError, shortcutPlatformOf } from "../../shared/shortcuts.js";
+import { createLogger } from "../../lib/logger.js";
 
+const log = createLogger("settings-ipc");
 let subscriptionRuntimeStatusRevision = 0;
 
 function normalizeSubscriptionLoginMethod(value: unknown): SubscriptionLoginMethod | null {
@@ -719,6 +721,15 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         error: "active-chat-runtime-requires-subscription-selection",
       };
     }
+    if (llmPatch && Object.hasOwn(llmPatch, "modelListCache")) {
+      return { ok: false, error: "model-list-cache-main-owned" };
+    }
+    if (llmPatch && Object.hasOwn(llmPatch, "dismissedModelDeprecations")
+      && Object.keys(llmPatch).length === 1 && Object.keys(partial).length === 1) {
+      const result = await settingsService.patch(partial);
+      await broadcastSettingsSnapshot(deps);
+      return rendererSettingsSnapshot(settingsService, result);
+    }
     // LOW: validate vendors["azure-foundry"].baseUrl at write time so an invalid Foundry endpoint is rejected before it reaches the settings store.
     const foundryVendorPatch = (llmPatch?.vendors as Record<string, unknown> | undefined)
       ?.["azure-foundry"] as Record<string, unknown> | undefined;
@@ -933,18 +944,49 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       vendor,
       credentialScope,
     );
-    const { listLlmModelsFromSettings } = await import("../../engine/llm/model-list.js");
-    return listLlmModelsFromSettings(settingsService, {
+    const { listLlmModelsFromSettings, modelListCacheAddress, persistRouteModelList } = await import("../../engine/llm/model-list.js");
+    const hostRequest = {
       vendor,
       baseUrl,
       ...(request?.wire !== undefined ? { wire: customProviderWire(request.wire) } : {}),
       credentialScope,
       ...(modelDiscoveryPolicy ? { modelDiscoveryPolicy } : {}),
-    }, {
+    };
+    const address = modelListCacheAddress(settingsService, vendor, hostRequest);
+    const result = await listLlmModelsFromSettings(settingsService, hostRequest, {
       // Main owns Electron, so main supplies the transport. On Node's `fetch` this request ignores the machine's proxy configuration and goes direct;
       // `deps.singleHopNetworkFetch` is Chromium's stack, which follows it. It returns a 3xx rather than chasing it, so the SSRF guard still gets to re-validate every hop.
       fetchImpl: deps.singleHopNetworkFetch,
     });
+    if (!result.ok) return result;
+
+    const previous = settingsService.get("llm");
+    const presets = settingsService.get("marketplace").installedProviderPresets;
+    try {
+      if (!await persistRouteModelList(settingsService, address, result)) return result;
+    } catch (err) {
+      log.warn({ err }, "could not save model listing");
+      return { ...result, cacheSaveFailed: true as const };
+    }
+
+    const current = settingsService.get("llm");
+    try {
+      if (deps.rewireReviewerAgent && activeLlmIdentity(previous, presets) !== activeLlmIdentity(current, presets)) {
+        await deps.rewireReviewerAgent();
+      }
+    } catch (err) {
+      log.warn({ err }, "could not refresh the reviewer after model discovery");
+    }
+    if (canonicalStringify(previous.retiredProvider ?? null) !== canonicalStringify(current.retiredProvider ?? null)) {
+      try {
+        await refreshChatRuntimeProviders(deps);
+      } catch (err) {
+        log.warn({ err }, "could not refresh chat providers after model discovery");
+      }
+      deps.refreshActiveLlmWildcard?.();
+    }
+    await broadcastSettingsSnapshot(deps);
+    return result;
   });
 
   // All providers pass through this host-only boundary. The renderer can name only a static provider
