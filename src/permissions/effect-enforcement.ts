@@ -5,7 +5,7 @@ import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession
 import { errorMessage } from "../shared/error-message.js";
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { ApprovalGate, ApprovalChoice } from "./approval-gate.js";
+import type { ApprovalGate, ApprovalChoice, AnsweredRecord } from "./approval-gate.js";
 import type { PermissionCheckContext, PermissionCheckResult, PermissionManager } from "./permission-manager.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
@@ -505,9 +505,14 @@ export async function gateMutatingEffect(params: {
     ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
     ...(permission.reviewer?.verdict ? { reviewerVerdict: permission.reviewer.verdict } : {}),
   }, card));
+  let admitted: AnsweredRecord | undefined;
+  let expired = false;
+  let cancelled = false;
   try {
-    const { admitApprovalAnswer } = await import("./approval-gate.js");
-    admitApprovalAnswer(decision, { requestId, toolName: ctx.toolName, toolUseId: undefined });
+    const { admitApprovalAnswer, isHostApprovalTimeoutDecision, isHostApprovalCancelledDecision } = await import("./approval-gate.js");
+    admitted = admitApprovalAnswer(decision, { requestId, toolName: ctx.toolName, toolUseId: undefined });
+    expired = isHostApprovalTimeoutDecision(decision);
+    cancelled = isHostApprovalCancelledDecision(decision);
   } catch (error) {
     approvalRefusalLatch.get(ctx)?.({ kind: "recheck-failed", reason: errorMessage(error) });
     throw error;
@@ -529,7 +534,12 @@ export async function gateMutatingEffect(params: {
     noApproverLatch.get(ctx)?.();
     throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "approval-unavailable", NO_APPROVER_MESSAGE);
   }
-  switch (decision.choice) {
+  if (admitted === undefined) {
+    throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "denied",
+      cancelled ? "the effect approval request was cancelled"
+        : expired ? "the effect approval request expired" : "the host refused the effect approval");
+  }
+  switch (admitted.choice) {
     case "allow-once":
     case "allow-session":
     case "allow-always": {

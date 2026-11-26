@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { PermissionManager, type PermissionCheckResult, type ReviewerDispatchResult } from "../permission-manager.js";
 let permissionManager: PermissionManager;
 
-import type { ApprovalChoice, ApprovalDecision, ApprovalGate, ApprovalRequest, ApprovalRequestInput,
+import { ApprovalGate, type ApprovalChoice, type ApprovalDecision, type ApprovalRequest, type ApprovalRequestInput,
 } from "../approval-gate.js";
 import {
   enforceMutatingEffects,
@@ -598,13 +598,29 @@ describe("enforceMutatingEffects — dedup (one grant ends repeats, never widene
     const { gate, requests } = makeGate("deny-always");
     const api = enforceMutatingEffects(makeApi(log), deps(gate));
     await runWithEffectGateContext({ headless: false, toolName: "t" }, async () => {
-      await expect(api.storage.write("a.txt", "1")).rejects.toBeInstanceOf(EffectBoundaryDeniedError,
-        );
-      await expect(api.storage.write("a.txt", "1")).rejects.toBeInstanceOf(EffectBoundaryDeniedError,
-        );
+      await expect(api.storage.write("a.txt", "1")).rejects.toThrow("the user denied the effect approval");
+      await expect(api.storage.write("a.txt", "1")).rejects.toThrow("The user denied this exact effect.");
     },
     );
     expect(requests).toHaveLength(1); // remembered the deny, did not re-ask
+    expect(log).toEqual([]);
+  });
+
+  it.each(["deny-once", "deny-always"] as const)("refuses a recordless %s without attributing or remembering it", async (choice) => {
+    const log: string[] = [];
+    const requestAndWait = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice }));
+    const gate = { requestAndWait } as unknown as ApprovalGate;
+    const api = enforceMutatingEffects(makeApi(log), deps(gate));
+    const write = (sessionId: string) => runWithEffectGateContext({ headless: false, toolName: "t", sessionId },
+      () => api.storage.write("a.txt", "1"));
+
+    const first = await write("first-session").catch((error: unknown) => error);
+    const second = await write("second-session").catch((error: unknown) => error);
+    expect(requestAndWait).toHaveBeenCalledTimes(2);
+    for (const error of [first, second]) {
+      expect(error).toBeInstanceOf(EffectBoundaryDeniedError);
+      expect(error).toHaveProperty("message", expect.stringContaining("the host refused the effect approval"));
+    }
     expect(log).toEqual([]);
   });
 });
@@ -1639,6 +1655,21 @@ describe("configuration control effects", () => {
 });
 
 describe("human fallback termination", () => {
+  it("reports a real approval timeout without attributing a denial", async () => {
+    const win = { isDestroyed: () => false, send: vi.fn() };
+    const gate = new ApprovalGate(win as never, undefined, 1);
+    const log: string[] = [];
+    const api = enforceMutatingEffects(makeApi(log), deps(gate));
+    try {
+      await expect(runWithEffectGateContext({ headless: false, toolName: "outer" },
+        () => api.callLlm("hello"))).rejects.toThrow("the effect approval request expired");
+      expect(win.send).toHaveBeenCalledWith("ave:approval:request", expect.anything());
+      expect(log).toEqual([]);
+    } finally {
+      gate.disposeAll();
+    }
+  });
+
   it("preserves the no-retry result when the approval surface disappears or owner-away skips", async () => {
     const gate = { requestAndWait: vi.fn(async (request: ApprovalRequest) => ({ requestId: request.id, choice: "deny-once", rememberPattern: "Nobody can approve this request; do not retry." })) } as unknown as ApprovalGate;
     const log: string[] = [];
