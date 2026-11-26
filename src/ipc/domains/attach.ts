@@ -73,12 +73,13 @@ function unauthorizePath(p: string): void {
   CHOSEN_FILES.delete(p);
 }
 
-function authorizePath(p: string): void {
+/** Authorize `p`. Its chosen-file key is computed before anything changes, so a failed lookup leaves no authority. */
+function authorizePath(p: string, key: string = chosenFileKey(p)): void {
   const held = ATTACH_PATH_ALLOWLIST.get(p) ?? 0;
   // Re-inserted so the map's order stays oldest-authorization-first for the bound below.
   ATTACH_PATH_ALLOWLIST.delete(p);
   ATTACH_PATH_ALLOWLIST.set(p, held + 1);
-  CHOSEN_FILES.set(p, chosenFileKey(p));
+  CHOSEN_FILES.set(p, key);
   while (ATTACH_PATH_ALLOWLIST.size > ATTACH_ALLOWLIST_MAX) {
     const oldest = ATTACH_PATH_ALLOWLIST.keys().next().value;
     if (oldest === undefined) break;
@@ -565,9 +566,9 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         return { ok: false, error: "drop-token-invalid" };
       }
       if (Date.now() > pending.expires) return { ok: false, error: "drop-token-expired" };
-      withLocalityDecision(() => {
-        for (const file of pending.files) authorizePath(file.path);
-      });
+      // Every key first, in one decision; the batch is authorized only when all of them are known.
+      const keys = withLocalityDecision(() => pending.files.map((file) => chosenFileKey(file.path)));
+      pending.files.forEach((file, index) => authorizePath(file.path, keys[index]));
       return { ok: true, files: pending.files };
     },
   );
