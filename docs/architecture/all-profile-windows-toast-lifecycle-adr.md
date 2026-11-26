@@ -147,7 +147,8 @@ Residual limits:
   later.
 - The lock ends when cleanup exits. A launch after that and before the
   installer removes the executable can provision again. The installer's
-  running-application check owns that window.
+  running-application check runs before cleanup, so nothing excludes that
+  launch.
 - An unattributable quarantine entry can be an owned shortcut that could not
   be read. The legacy CLSID values it names then stay.
 - Every packaged Windows start depends on the probe. An error other than a
