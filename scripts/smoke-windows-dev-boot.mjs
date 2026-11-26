@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, writeSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -10,12 +10,18 @@ import {
 
 const INSPECTOR_LINE = /^Debugger listening on (ws:\/\/127\.0\.0\.1:(?!9222\/)[1-9]\d*\/[\da-f-]+)$/u;
 const REPOSITORY = fileURLToPath(new URL("..", import.meta.url));
+const MXC_REASONS = new Set([
+  "binary-missing", "container-unavailable", "launcher-mismatch", "not-windows", "powershell-start-failed",
+  "probe-failed", "request-rejected", "runtime-root-unproved", "unsupported-arch", "unverified-session",
+]);
+
+class DevBootFailure extends Error {}
 
 async function withDeadline(promise, timeoutMs, message) {
   let timer;
   try {
     return await Promise.race([promise, new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      timer = setTimeout(() => reject(new DevBootFailure(message)), timeoutMs);
     })]);
   } finally {
     clearTimeout(timer);
@@ -34,6 +40,7 @@ export async function checkDevBoot(child, requestQuit, {
   bootTimeoutMs = 90_000,
   quitTimeoutMs = 30_000,
   onLine = () => {},
+  onRawLine = () => {},
 } = {}) {
   const boot = Promise.withResolvers();
   const closed = Promise.withResolvers();
@@ -43,30 +50,35 @@ export async function checkDevBoot(child, requestQuit, {
   let inspectorUrl;
   let quitting = false;
   let mxcRuntimeRoot = "unknown (no boot status reported)";
-  const outputs = [child.stdout, child.stderr].map((input) => {
-    const output = createInterface({ input, crlfDelay: Infinity });
+  const outputs = ["stdout", "stderr"].map((stream) => {
+    const output = createInterface({ input: child[stream], crlfDelay: Infinity });
     output.on("line", (line) => {
-      const endpoint = input === child.stderr && INSPECTOR_LINE.exec(line);
+      try {
+        onRawLine(stream, line);
+      } catch (error) {
+        failed.reject(error);
+        return;
+      }
+      const endpoint = stream === "stderr" && INSPECTOR_LINE.exec(line);
       if (endpoint) {
         inspectorUrl = endpoint[1];
       } else {
-        onLine(line);
         const record = parseLog(line);
         if (record?.mxcState === "available") {
           mxcRuntimeRoot = "available";
-        } else if (record?.mxcState === "unavailable" && typeof record.mxcReason === "string"
-          && /^[a-z][a-z0-9-]*$/u.test(record.mxcReason) && typeof record.mxcDetail === "string") {
-          const detail = record.mxcDetail.replace(/[\r\n\u2028\u2029]+/gu, " ").trim();
-          mxcRuntimeRoot = `unavailable (${record.mxcReason}: ${detail})`;
+        } else if (record?.mxcState === "unavailable" && MXC_REASONS.has(record.mxcReason)) {
+          mxcRuntimeRoot = `unavailable (${record.mxcReason})`;
         }
         if (record?.msg === "main interface loaded" && record.reason === "bootstrap-complete") {
+          if (!interfaceLoaded) onLine("main interface loaded (bootstrap-complete)");
           interfaceLoaded = true;
         }
         const message = record?.msg;
-        if (typeof message === "string" && (message === "bootstrap failed" || message === "shutdown cleanup timed out"
-          || message.startsWith("before-quit: shutdown cleanup failed:")
-          || (message === "failed to load index.html" && record.reason === "bootstrap-complete"))) {
-          failed.reject(new Error(message));
+        if (message === "bootstrap failed" || message === "shutdown cleanup timed out"
+          || (message === "failed to load index.html" && record.reason === "bootstrap-complete")) {
+          failed.reject(new DevBootFailure(message));
+        } else if (typeof message === "string" && message.startsWith("before-quit: shutdown cleanup failed:")) {
+          failed.reject(new DevBootFailure("before-quit: shutdown cleanup failed"));
         }
       }
       if (interfaceLoaded && inspectorUrl) boot.resolve(inspectorUrl);
@@ -78,8 +90,8 @@ export async function checkDevBoot(child, requestQuit, {
   child.once("close", closed.resolve);
   child.once("exit", (code, signal) => {
     const status = signal ? `signal ${signal}` : `code ${code}`;
-    if (!quitting) failed.reject(new Error(`Development desktop exited before quit (${status})`));
-    else if (code !== 0 || signal) failed.reject(new Error(`Development desktop quit with ${status}`));
+    if (!quitting) failed.reject(new DevBootFailure(`Development desktop exited before quit (${status})`));
+    else if (code !== 0 || signal) failed.reject(new DevBootFailure(`Development desktop quit with ${status}`));
   });
 
   try {
@@ -92,6 +104,9 @@ export async function checkDevBoot(child, requestQuit, {
     };
     await withDeadline(Promise.race([quitAndExit(), failed.promise]),
       quitTimeoutMs, "Timed out waiting for development desktop to quit");
+  } catch (error) {
+    if (error instanceof DevBootFailure) onLine(error.message);
+    throw error;
   } finally {
     shutdown.abort();
     for (const output of outputs) output.close();
@@ -141,7 +156,7 @@ async function smokeWindowsDevBoot() {
   if (process.platform !== "win32" || process.env.AVE_CI_REQUIRE_EMPTY_JOB !== "1") {
     throw new Error("Development desktop smoke requires the isolated Windows CI job");
   }
-  const { home, profile } = createDevBootDirectories(process.env.AVE_CI_JOB_ROOT);
+  const { root, home, profile } = createDevBootDirectories(process.env.AVE_CI_JOB_ROOT);
   const env = prepareElectronLaunchEnv({
     ...process.env,
     AVE_HOME: home,
@@ -154,20 +169,35 @@ async function smokeWindowsDevBoot() {
     join(REPOSITORY, "dist/src/main/main.js"),
     `--user-data-dir=${profile}`,
   ], env);
-  const { default: executable } = await import("electron");
-  const child = spawn(executable, args, { cwd: REPOSITORY, env, stdio: ["ignore", "pipe", "pipe"] });
-
+  const log = openSync(join(root, "app.log"), "wx");
+  let child;
   try {
-    await checkDevBoot(child, requestInspectorQuit, { onLine: (line) => console.log(line) });
+    const { default: executable } = await import("electron");
+    child = spawn(executable, args, { cwd: REPOSITORY, env, stdio: ["ignore", "pipe", "pipe"] });
+    await checkDevBoot(child, requestInspectorQuit, {
+      onLine: (line) => console.log(line),
+      onRawLine: (stream, line) => writeSync(log, `${stream}: ${line}\n`),
+    });
     console.log("Development desktop loaded its main interface and exited with code 0.");
+  } catch (error) {
+    writeSync(log, `${error}\n`);
+    throw error;
   } finally {
     // The enclosing job reaps the process tree if the launch or clean quit fails.
-    child.stdout.destroy();
-    child.stderr.destroy();
-    if (child.exitCode === null && child.signalCode === null) child.kill();
+    if (child) {
+      child.stdout.destroy();
+      child.stderr.destroy();
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+    }
+    closeSync(log);
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  await smokeWindowsDevBoot();
+  try {
+    await smokeWindowsDevBoot();
+  } catch {
+    console.error("Development desktop smoke failed.");
+    process.exitCode = 1;
+  }
 }

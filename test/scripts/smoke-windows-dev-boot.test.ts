@@ -13,9 +13,10 @@ function fixture(bootTimeoutMs = 5_000, quitTimeoutMs = 5_000) {
   const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() });
   const requestQuit = vi.fn(async (_url: string, _signal: AbortSignal) => {});
   const onLine = vi.fn();
-  const result = checkDevBoot(child, requestQuit, { bootTimeoutMs, quitTimeoutMs, onLine });
+  const onRawLine = vi.fn();
+  const result = checkDevBoot(child, requestQuit, { bootTimeoutMs, quitTimeoutMs, onLine, onRawLine });
   return {
-    child, requestQuit, onLine, result,
+    child, requestQuit, onLine, onRawLine, result,
     mxcSummaries() {
       return onLine.mock.calls.map(([line]) => line).filter((line) => line.startsWith("mxc-runtime-root:"));
     },
@@ -89,7 +90,7 @@ it.each([
   child.stderr.write(`${JSON.stringify({ mxcState: "unavailable", mxcReason, mxcDetail })}\n`);
   exit(0);
   await expect(result).resolves.toBeUndefined();
-  expect(mxcSummaries()).toEqual([`mxc-runtime-root: unavailable (${mxcReason}: ${mxcDetail.replace("\r\n", " ")})`]);
+  expect(mxcSummaries()).toEqual([`mxc-runtime-root: unavailable (${mxcReason})`]);
 });
 
 it("reports a late MXC refusal in place of a successful startup check", async () => {
@@ -100,7 +101,45 @@ it("reports a late MXC refusal in place of a successful startup check", async ()
   child.stdout.write('{"mxcState":"unavailable","mxcReason":"powershell-start-failed","mxcDetail":"shell did not start"}\n');
   exit(0);
   await expect(result).resolves.toBeUndefined();
-  expect(mxcSummaries()).toEqual(["mxc-runtime-root: unavailable (powershell-start-failed: shell did not start)"]);
+  expect(mxcSummaries()).toEqual(["mxc-runtime-root: unavailable (powershell-start-failed)"]);
+});
+
+it("keeps diagnostics from both app streams in the isolated local log", async () => {
+  const { child, onLine, onRawLine, ready, requestQuit, result, exit } = fixture();
+  const path = "C:\\Users\\alice\\.ave";
+  const secret = "fixture-secret-sentinel";
+  const detail = [path, secret].join(" ");
+  const diagnostic = JSON.stringify({
+    msg: detail, mxcState: "unavailable", mxcReason: "runtime-root-unproved", mxcDetail: detail,
+  });
+  const spoofedReason = JSON.stringify({ mxcState: "unavailable", mxcReason: secret, mxcDetail: detail });
+  for (const stream of [child.stdout, child.stderr]) {
+    stream.write([diagnostic, detail, spoofedReason, ""].join("\n"));
+  }
+  ready();
+  await vi.waitFor(() => expect(requestQuit).toHaveBeenCalledOnce());
+  exit(0);
+  await expect(result).resolves.toBeUndefined();
+  for (const stream of ["stdout", "stderr"]) {
+    expect(onRawLine).toHaveBeenCalledWith(stream, diagnostic);
+    expect(onRawLine).toHaveBeenCalledWith(stream, detail);
+    expect(onRawLine).toHaveBeenCalledWith(stream, spoofedReason);
+  }
+  expect(onLine.mock.calls).toEqual([
+    ["main interface loaded (bootstrap-complete)"],
+    ["mxc-runtime-root: unavailable (runtime-root-unproved)"],
+  ]);
+});
+
+it("sanitizes app failure messages and rejects the boot", async () => {
+  const { child, onLine, result } = fixture();
+  const msg = "before-quit: shutdown cleanup failed: C:\\Users\\alice\\.ave fixture-secret-sentinel";
+  child.stderr.write(JSON.stringify({ msg }) + "\n");
+  await expect(result).rejects.toThrow(/^before-quit: shutdown cleanup failed$/u);
+  expect(onLine.mock.calls).toEqual([
+    ["before-quit: shutdown cleanup failed"],
+    ["mxc-runtime-root: unknown (no boot status reported)"],
+  ]);
 });
 
 it("reports a missing MXC status when boot fails before any valid status record", async () => {
