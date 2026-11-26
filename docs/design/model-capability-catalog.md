@@ -633,6 +633,34 @@ saved route becomes blocked during the primary's retry wait, the turn reports
 retirement and stops API-key dispatch. A catalog-only deprecation keeps a saved
 fallback eligible.
 
+**No request after retirement** is enforced where a request leaves, not by whoever
+retries it. Every SDK model is built with one gated fetch
+(`gateModelFetch`, `src/engine/llm/model-wire-gate.ts`), and `ProviderConfig`
+requires the route's live evidence (`getRetiredModelId`). Each wire attempt rereads
+that evidence immediately before the network send and is refused with
+`RetiredModelError`:
+
+- The SDK keeps its own retries, so recovery from 408, 409, 429, 5xx, `Retry-After`
+  and network errors is unchanged. A retry that would follow a retirement is refused
+  by the same check, and the named error is unwrapped from the SDK's retry error.
+- A fetch that awaits before sending declares it (`declareDeferredSend`), and the check
+  moves inside: after address validation in the guarded provider fetch, and after the
+  token read on ChatGPT plan usage.
+- Chat, fallbacks, system subagents, the permission reviewer and judge get their
+  evidence from the route's listing and the saved-route marker. ChatGPT plan usage gets
+  it from the account's complete catalog: every slug whatever its visibility. A hidden
+  row is still served, and a list with an unreadable row, or an empty one, proves
+  nothing. Embeddings and a walk built without route evidence name
+  `noRetirementEvidence`.
+- The route walk treats the refusal as final for that route: the primary hands off or
+  reports retirement, and a refused fallback is skipped.
+
+A native subscription session sends from its own runtime process; the runtime service
+revalidates the selected model against the live catalog when the session opens.
+A structural test (`model-transport-structure.test.ts`) fails when a model SDK is
+imported outside the gated transport, an SDK factory is called without the gated
+fetch, or the evidence is replaced by a function that answers nothing.
+
 If a refreshed catalog deprecates a shipped default, the next launch hides it from
 the choices and shows the non-blocking warning if it is still the saved selection.
 

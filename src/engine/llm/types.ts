@@ -24,6 +24,7 @@ import type {
 } from "../../shared/subscription-runtime.js";
 import type { ToolCategory, ToolResultImage, ToolSource } from "../../tools/types.js";
 import type { ProviderErrorDiagnostics } from "./provider-error-diagnostics.js";
+import type { RetiredModelProbe } from "./model-wire-gate.js";
 import type { RiskLevel } from "../../shared/permission-review-status.js";
 export type { LLMVendor };
 export { isLLMVendor } from "../../shared/llm-vendor-defaults.js";
@@ -669,6 +670,11 @@ export interface ProviderConfig {
    * only for Azure Foundry private-endpoint host mappings.
    */
   fetch?: typeof fetch;
+  /**
+   * Live retirement evidence for this route, reread on every wire attempt. A route with no listing that could prove
+   * retirement passes `noRetirementEvidence` by name.
+   */
+  getRetiredModelId: RetiredModelProbe;
   /** Vertex AI — GCP project ID (required for vendor="vertex-ai"). */
   vertexProject?: string;
   /** Vertex AI — GCP region (default "us-central1"). */

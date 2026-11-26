@@ -3,11 +3,14 @@ import type { JudgeModelRef } from "../permissions/judge/judge-settings.js";
 import { judgeModelCatalogFrom } from "../permissions/judge/judge-model-catalog.js";
 import { getLlmVendorSettings, isLLMVendor, llmRouteModel, canUseLlmVendorWithoutApiKey, LLM_VENDORS } from "../shared/llm-vendor-defaults.js";
 import type { SubscriptionChatRuntimeSelection } from "../shared/subscription-runtime.js";
-import type { LlmRouteProviderPreset } from "../shared/context-budget.js";
+import { resolveModelRetirement, type LlmRouteProviderPreset } from "../shared/context-budget.js";
+import { llmModelListCacheKey } from "../shared/llm-model-list.js";
 import { sameSystemSubagentModel, sameSystemSubagentRouteIdentity, systemSubagentRouteIdentity, type SystemSubagentRouteIdentity } from "../shared/system-subagent-model.js";
 import { createProvider } from "./llm/provider-factory.js";
 import { selectProviderRuntimeFetch } from "./llm/marketplace-provider-fetch.js";
 import type { LLMProvider } from "./llm/types.js";
+import type { RetiredModelProbe } from "./llm/model-wire-gate.js";
+import { RetiredModelError } from "./llm/retired-model-error.js";
 import { FallbackProvider } from "./llm/vercel/fallback-chain.js";
 
 export interface SystemSubagentRouteDeps {
@@ -20,6 +23,8 @@ export interface SystemSubagentRouteDeps {
 export interface SystemSubagentProviderPlan {
   secretKey?: string;
   route?: SystemSubagentRouteIdentity;
+  /** Live retirement evidence for this destination; absent when a subscription runtime owns the request. */
+  getRetiredModelId?: RetiredModelProbe;
   isConnected(apiKey: string | null): boolean;
   build(apiKey: string | null): LLMProvider | null;
 }
@@ -75,9 +80,17 @@ export function createSystemSubagentProviderPlan(
   const canUseWithoutApiKey = preset ? preset.requiresApiKey === false : canUseLlmVendorWithoutApiKey(vendor, block);
   const isConnected = (apiKey: string | null): boolean => vendor === "vertex-ai"
     ? Boolean(route.vertexProject) : Boolean(apiKey) || canUseWithoutApiKey;
+  const getRetiredModelId: RetiredModelProbe = (modelId) => {
+    const currentLlm = settingsService.get("llm");
+    const blocked = currentLlm.retiredProvider;
+    // A destination that follows chat is fenced by the saved route's marker as well as by its own listing.
+    if (selectedModel === undefined && typeof blocked === "object" && blocked.vendor === vendor) return blocked.model;
+    return retiredSystemSubagentModel(currentLlm, { vendor, model: modelId, route })?.model;
+  };
   return {
     secretKey: route.credentialScope,
     route,
+    getRetiredModelId,
     isConnected,
     build: (apiKey) => {
       // Recheck identity after asynchronous credential reads before transmitting any input.
@@ -96,6 +109,7 @@ export function createSystemSubagentProviderPlan(
       });
       return createProvider({
         vendor, apiKey: apiKey ?? "", model: selectedModel ?? llmRouteModel(block, presetId),
+        getRetiredModelId,
         ...(providerFetch ? { fetch: providerFetch } : {}),
         ...(route.baseUrl ? { baseUrl: route.baseUrl } : {}),
         ...(route.wire ? { wire: route.wire } : {}),
@@ -136,19 +150,41 @@ export async function resolveSystemSubagentRoute(
   model: JudgeModelRef,
 ): Promise<{ provider: LLMProvider; llmSettings: LLMSettings; model: string }> {
   const plan = createSystemSubagentProviderPlan(deps, model.vendor, model.model, model.route);
-  const llmSettings = systemSubagentLlmSettings(deps.settingsService, model);
+  // Each await below can yield while a newer listing retires this destination.
+  const readAvailableRouteSettings = () => {
+    const llm = systemSubagentLlmSettings(deps.settingsService, model);
+    if (typeof llm.retiredProvider === "object") throw new RetiredModelError(llm.retiredProvider.model);
+    return llm;
+  };
+  readAvailableRouteSettings();
   const options = await systemSubagentModelOptions(deps.settingsService);
+  readAvailableRouteSettings();
   if (!plan || !options.some((option) => sameSystemSubagentModel(option, model))) {
     throw new Error(`System subagent model is unavailable: ${model.vendor}/${model.model}`);
   }
   const apiKey = plan.secretKey ? await deps.settingsService.getSecret(plan.secretKey) : null;
+  const llmSettings = readAvailableRouteSettings();
   const provider = plan.build(apiKey);
   if (!provider) throw new Error(`System subagent model is unavailable: ${model.vendor}/${model.model}`);
+  const { getRetiredModelId } = plan;
   return {
-    provider: new FallbackProvider(provider, [], () => ""),
+    provider: new FallbackProvider(provider, [], () => "", undefined, getRetiredModelId && {
+      getRetiredModelId: ({ model: modelId }) => getRetiredModelId(modelId),
+    }),
     model: model.model,
     llmSettings,
   };
+}
+
+/** This destination's own listing decides its retirement; the chat route's marker says nothing about it. */
+function retiredSystemSubagentModel(llm: LLMSettings, model: JudgeModelRef) {
+  const { vendor, model: modelId, route } = model;
+  if (!route) return undefined;
+  const { baseUrl, marketplaceProviderPresetId } = route;
+  const listing = llm.modelListCache[llmModelListCacheKey(vendor, baseUrl, marketplaceProviderPresetId)];
+  return resolveModelRetirement({ vendor, model: modelId, baseUrl, listing }) === "unlisted"
+    ? { vendor, model: modelId, reason: "unlisted" as const }
+    : undefined;
 }
 
 /** Project only the saved destination for context limits and request construction. */
@@ -174,6 +210,6 @@ export function systemSubagentLlmSettings(settingsService: SettingsService, mode
         ...(presetId ? { presetModels: { ...block.presetModels, [presetId]: model.model } } : {}),
       },
     },
-    retiredProvider: undefined,
+    retiredProvider: retiredSystemSubagentModel(llm, model),
   };
 }

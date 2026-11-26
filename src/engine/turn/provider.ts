@@ -1,6 +1,6 @@
 import { createProvider, secretKeyFor } from "../llm/provider-factory.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
-import type { LLMProvider, ProviderConfig } from "../llm/types.js";
+import type { LLMProvider, LLMVendor, ProviderConfig } from "../llm/types.js";
 import type { LLMSettings, SettingsService } from "../../data/settings-store.js";
 import {
   canUseLlmVendorWithoutApiKey,
@@ -179,9 +179,31 @@ export async function buildProvider(
         });
       };
 
+      const routeRetirement = {
+        primaryBaseUrl: effectiveBaseUrl,
+        primaryPresetId: marketplaceProviderPreset?.providerId,
+        // The saved-route marker fences API-key dispatch and credential access for the whole walk.
+        getBlockedModelId: (): string | undefined => {
+          const { retiredProvider } = deps.settingsService.get("llm");
+          return typeof retiredProvider === "object" ? retiredProvider.model : undefined;
+        },
+        getRetiredModelId: (route: { provider: LLMVendor; model: string; baseUrl?: string; presetId?: string }): string | undefined => {
+          const { modelListCache } = deps.settingsService.get("llm");
+          const retirement = resolveModelRetirement({
+            vendor: route.provider,
+            model: route.model,
+            baseUrl: route.baseUrl,
+            listing: modelListCache?.[llmModelListCacheKey(route.provider, route.baseUrl, route.presetId)],
+          });
+          return retirement === "unlisted" ? route.model : undefined;
+        },
+      };
       const primary = createLoopProvider({
         vendor,
         apiKey: providerApiKey,
+        getRetiredModelId: (model) => routeRetirement.getBlockedModelId() ?? routeRetirement.getRetiredModelId({
+          provider: vendor, model, baseUrl: effectiveBaseUrl, presetId: routeRetirement.primaryPresetId,
+        }),
         // Child model overrides take precedence; absent overrides retain the configured vendor model.
         model: effectiveModel,
         ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
@@ -214,21 +236,7 @@ export async function buildProvider(
         chain,
         async (v) => (await deps.settingsService.getSecret(secretKeyFor(v))) ?? "",
         createLoopProvider,
-        {
-          primaryBaseUrl: effectiveBaseUrl,
-          getRetiredModelId: ({ provider, model, baseUrl }) => {
-            const { modelListCache, retiredProvider } = deps.settingsService.get("llm");
-            // The saved-route marker fences API-key dispatch and credential access for the whole walk.
-            if (typeof retiredProvider === "object") return retiredProvider.model;
-            const retirement = resolveModelRetirement({
-              vendor: provider,
-              model,
-              baseUrl,
-              listing: modelListCache?.[llmModelListCacheKey(provider, baseUrl)],
-            });
-            return retirement === "unlisted" ? model : undefined;
-          },
-        },
+        routeRetirement,
       );
     } catch {
       return null;

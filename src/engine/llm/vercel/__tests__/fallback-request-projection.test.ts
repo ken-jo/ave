@@ -10,6 +10,7 @@ import type {
   StreamTurnParams,
 } from "../../types.js";
 import { genericToModelMessages } from "../adapter.js";
+import { noRetirementEvidence } from "../../model-wire-gate.js";
 import { FallbackProvider } from "../fallback-chain.js";
 import type { FallbackChainEntry } from "../fallback-chain.js";
 import { collectStreamEvents } from "./test-helpers.js";
@@ -77,7 +78,9 @@ describe("fallback request projection", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(await pending).toEqual([{ type: "message_complete", stopReason: "end_turn" }]);
     expect(primary.streamTurn).toHaveBeenCalledTimes(5);
-    expect(factory).toHaveBeenCalledExactlyOnceWith({ vendor: "claude", apiKey: "fixture-key", model: "fallback-model" });
+    expect(factory).toHaveBeenCalledExactlyOnceWith({
+      vendor: "claude", apiKey: "fixture-key", model: "fallback-model", getRetiredModelId: noRetirementEvidence,
+    });
     expect(fallbackWire?.[0]).toMatchObject({
       role: "assistant",
       content: [

@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { StreamTurnParams } from "../types.js";
 import { collectAsyncIterable } from "../../../__tests__/test-helpers.js";
+import { noRetirementEvidence } from "../model-wire-gate.js";
 
 const TURN: StreamTurnParams = {
   model: "gpt-4",
@@ -23,7 +24,7 @@ describe("createProvider lazy adapter (PR #705)", () => {
     vi.doMock("../vercel/adapter.js", () => ({ VercelUnifiedProvider: ctor }));
 
     const { createProvider } = await import("../provider-factory.js");
-    const provider = createProvider({ vendor: "openai", apiKey: "k" });
+    const provider = createProvider({ getRetiredModelId: noRetirementEvidence, vendor: "openai", apiKey: "k" });
 
     expect(provider.vendor).toBe("openai");
     expect(provider.constructor.name).toBe("OpenAiProvider");
@@ -43,7 +44,7 @@ describe("createProvider lazy adapter (PR #705)", () => {
     vi.doMock("../vercel/adapter.js", () => ({ VercelUnifiedProvider: ctor }));
 
     const { createProvider } = await import("../provider-factory.js");
-    const provider = createProvider({ vendor: "openai", apiKey: "k" });
+    const provider = createProvider({ getRetiredModelId: noRetirementEvidence, vendor: "openai", apiKey: "k" });
 
     expect(ctor).not.toHaveBeenCalled();
 
@@ -71,6 +72,7 @@ describe("createProvider lazy adapter (PR #705)", () => {
 
     const { createProvider } = await import("../provider-factory.js");
     const provider = createProvider({
+      getRetiredModelId: noRetirementEvidence,
       vendor: "azure-foundry",
       apiKey: "k",
       baseUrl: "https://aif.example.openai.azure.com/openai/v1/",
@@ -88,6 +90,7 @@ describe("createProvider lazy adapter (PR #705)", () => {
       {
         vertexProject: undefined,
         vertexLocation: undefined,
+        getRetiredModelId: noRetirementEvidence,
       },
     );
   });
@@ -115,6 +118,7 @@ describe("createProvider lazy adapter (PR #705)", () => {
     };
     const { createProvider } = await import("../provider-factory.js");
     const provider = createProvider({
+      getRetiredModelId: noRetirementEvidence,
       vendor: "openai-compatible",
       apiKey: "",
       baseUrl: "https://stale.example/v1",
@@ -131,6 +135,7 @@ describe("createProvider lazy adapter (PR #705)", () => {
       {
         vertexProject: undefined,
         vertexLocation: undefined,
+        getRetiredModelId: noRetirementEvidence,
       },
       providerMetadata,
     );
@@ -150,7 +155,7 @@ describe("createProvider lazy adapter (PR #705)", () => {
     vi.doMock("../vercel/adapter.js", () => ({ VercelUnifiedProvider: ctor }));
 
     const { createProvider } = await import("../provider-factory.js");
-    const provider = createProvider({ vendor: "openai", apiKey: "k" });
+    const provider = createProvider({ getRetiredModelId: noRetirementEvidence, vendor: "openai", apiKey: "k" });
 
     await expect(collectAsyncIterable(provider.streamTurn(TURN))).rejects.toThrow(
       "first attempt fails",

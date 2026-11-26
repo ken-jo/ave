@@ -17,7 +17,7 @@ import {
 import { providerMatchesActiveChatRuntime } from "./provider.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { imageInputRecoveryMessage } from "../../shared/model-capability-settings.js";
-import { RetiredModelError } from "../llm/vercel/fallback-chain.js";
+import { RetiredModelError } from "../llm/retired-model-error.js";
 
 export interface ActiveRuntimeStreamGuard {
   getLlm: () => Pick<LLMSettings, "activeChatRuntime" | "retiredProvider">;

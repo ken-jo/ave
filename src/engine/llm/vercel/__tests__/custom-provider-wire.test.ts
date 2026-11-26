@@ -4,12 +4,13 @@ import type { ProviderConfig } from "../../types.js";
 import { collectStreamEvents } from "./test-helpers.js";
 import { createGuardedModelProviderFetch } from "../../marketplace-provider-fetch.js";
 import * as networkGuard from "../../../../core/network-guard.js";
+import { noRetirementEvidence } from "../../model-wire-gate.js";
 
 const WIRES = ["openai-chat", "openai-responses", "anthropic-messages", "google-gemini"] as const;
 
 async function request(wire: string, baseUrl: string, apiKey = "fixture-key") {
   const fetchImpl = vi.fn<typeof fetch>(async () => new Response("", { status: 200, headers: { "content-type": "text/event-stream" } }));
-  const provider = createProvider({ vendor: "openai-compatible", apiKey, baseUrl, wire, fetch: fetchImpl } as ProviderConfig);
+  const provider = createProvider({ getRetiredModelId: noRetirementEvidence, vendor: "openai-compatible", apiKey, baseUrl, wire, fetch: fetchImpl } as ProviderConfig);
   const events = await collectStreamEvents(provider.streamTurn({
     model: "fixture-model", systemPrompt: "Return a value.",
     messages: [{ role: "user", content: "Hello" }], tools: [],
@@ -52,7 +53,7 @@ describe("custom provider wire transport", () => {
     });
     try {
       const guardedFetch = createGuardedModelProviderFetch(baseUrl, transport);
-      const provider = createProvider({ vendor: "openai-compatible", apiKey: "fixture-key", baseUrl, wire, fetch: guardedFetch } as ProviderConfig);
+      const provider = createProvider({ getRetiredModelId: noRetirementEvidence, vendor: "openai-compatible", apiKey: "fixture-key", baseUrl, wire, fetch: guardedFetch } as ProviderConfig);
       await collectStreamEvents(provider.streamTurn({ model: "fixture-model", systemPrompt: "Hello", messages: [{ role: "user", content: "Hi" }], tools: [] }));
       expect(guard).toHaveBeenCalledTimes(1);
       expect(transport).toHaveBeenCalledTimes(1);

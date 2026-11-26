@@ -3,6 +3,7 @@ import { createProvider } from "../../provider-factory.js";
 import { collectAsyncIterable } from "../../../../__tests__/test-helpers.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../../../../tools/registry.js";
 import { OPENAI_RESPONSES_TOOL_SEARCH_ALIAS } from "../../../../shared/tool-name-aliases.js";
+import { noRetirementEvidence } from "../../model-wire-gate.js";
 
 describe("common provider API wire", () => {
   it.each([
@@ -15,7 +16,7 @@ describe("common provider API wire", () => {
     const wireFetch = vi.fn<typeof fetch>(async () => new Response(response.map((part) => `data: ${JSON.stringify(part)}\n\n`).join(""), {
       headers: { "content-type": "text/event-stream" },
     }));
-    const provider = createProvider({ vendor: "openai", apiKey: "fixture-key", fetch: wireFetch });
+    const provider = createProvider({ getRetiredModelId: noRetirementEvidence, vendor: "openai", apiKey: "fixture-key", fetch: wireFetch });
     const events = await collectAsyncIterable(provider.streamTurn({
       model, systemPrompt: `Use ${TOOL_SEARCH_TOOL_NAME}.`, outputTokenLimit: 3210,
       enableThinking: true, thinkingBudgetTokens: 14000,

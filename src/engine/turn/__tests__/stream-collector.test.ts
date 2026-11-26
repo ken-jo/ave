@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LLMProvider, StreamEvent, StreamTurnParams } from "../../llm/types.js";
 import { collectActiveRuntimeRoundStream, collectRoundStream } from "../stream-collector.js";
 import { VercelUnifiedProvider } from "../../llm/vercel/adapter.js";
-import { RetiredModelError } from "../../llm/vercel/fallback-chain.js";
+import { RetiredModelError } from "../../llm/retired-model-error.js";
 import { classifyProviderError } from "../../llm/error-classifier.js";
 import { getLocale, setLocale } from "../../../i18n/index.js";
 

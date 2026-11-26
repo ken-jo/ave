@@ -1263,7 +1263,9 @@ id the active catalog knows exactly under the vendor's mapped provider can be ju
 a fine-tune, an account-scoped deployment or a model newer than the snapshot never is. A saved
 selection sets the `llm.retiredProvider` marker when a listing proves it retired,
 including mid-session. The marker withholds API-key chat and credentials until the
-selection or listing resolves the retirement. **Deprecated:** the active catalog marks it `deprecated` where the route
+selection or listing resolves the retirement. Every model transport rereads its route's
+retirement evidence at the wire, immediately before each network attempt, so a transport's
+own retry cannot reach a model proven retired. **Deprecated:** the active catalog marks it `deprecated` where the route
 establishes its identity; no marker, chat and credentials keep working, and the window
 shows a non-blocking notice. The listing outranks the catalog. Both tiers are hidden from
 every picker; the host keeps no retired-name list. See [retired models](../design/model-capability-catalog.md#61-retired-models-slice-7-follow-up-owner-direction-2026-10-13).

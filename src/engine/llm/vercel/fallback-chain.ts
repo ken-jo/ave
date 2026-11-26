@@ -15,6 +15,8 @@ import { createLogger } from "../../../lib/logger.js";
 import { sleep } from "../../../shared/abortable-deadline.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { estimateRequestInputProjection } from "../../request-input-projection.js";
+import { noRetirementEvidence } from "../model-wire-gate.js";
+import { RetiredModelError } from "../retired-model-error.js";
 
 const log = createLogger("fallback-chain");
 
@@ -48,13 +50,6 @@ const MIN_RETRY_WINDOW_MS = 1_000;
 const MAX_ATTEMPTS_PER_PROVIDER = 5;
 
 type ErrorStreamEvent = Extract<StreamEvent, { type: "error" }>;
-
-export class RetiredModelError extends Error {
-  constructor(readonly model: string) {
-    super("The model is retired");
-    this.name = "RetiredModelError";
-  }
-}
 
 // Preserve structured subscription error events for bounded engine recovery after transient retries.
 class RetryableStreamEventError extends Error {
@@ -143,7 +138,8 @@ async function* attemptStreamWithRetries(
       return;
     } catch (err) {
       throwIfAborted(params.abortSignal);
-      if (isNonRetryable(err)) throw err;
+      // The wire refused a retired model: another attempt on this route can only be refused again.
+      if (err instanceof RetiredModelError || isNonRetryable(err)) throw err;
       lastErr = err;
       await waitForAttemptWindow(attemptStartedAt, err, params.abortSignal);
       // Check before announcing a retry or handing off to the next route.
@@ -193,7 +189,10 @@ export type ApiKeyGetter = (vendor: LLMVendor) => string | Promise<string>;
 export type ProviderFactory = (config: ProviderConfig) => LLMProvider;
 interface RouteRetirementCheck {
   primaryBaseUrl?: string;
-  getRetiredModelId: (route: Pick<FallbackChainEntry, "provider" | "model" | "baseUrl">) => string | undefined;
+  primaryPresetId?: string;
+  /** The saved route's blocking marker: it ends the whole walk with the retired reason. */
+  getBlockedModelId?: () => string | undefined;
+  getRetiredModelId: (route: Pick<FallbackChainEntry, "provider" | "model" | "baseUrl"> & { presetId?: string }) => string | undefined;
 }
 
 export class FallbackProvider implements LLMProvider {
@@ -300,6 +299,9 @@ export async function* streamWithFallback(
         ...(entry.wire ? { wire: entry.wire } : {}),
         ...(entry.vertexProject ? { vertexProject: entry.vertexProject } : {}),
         ...(entry.vertexLocation ? { vertexLocation: entry.vertexLocation } : {}),
+        getRetiredModelId: retirement
+          ? (model) => retirement.getBlockedModelId?.() ?? retirement.getRetiredModelId({ ...entry, model })
+          : noRetirementEvidence,
       }),
       label: `${entry.provider}/${entry.model}`,
       identity: { provider: entry.provider, model: entry.model },
@@ -312,10 +314,22 @@ export async function* streamWithFallback(
   };
 
   let previousFailure: { label: string; error: unknown } | undefined;
-  const primaryRoute = { provider: primary.vendor, model: params.model, baseUrl: retirement?.primaryBaseUrl };
+  const primaryRoute = {
+    provider: primary.vendor,
+    model: params.model,
+    baseUrl: retirement?.primaryBaseUrl,
+    presetId: retirement?.primaryPresetId,
+  };
+  const assertSavedRouteAvailable = () => {
+    const model = retirement?.getBlockedModelId?.();
+    if (model !== undefined) throw new RetiredModelError(model);
+  };
   for (const entry of [undefined, ...chain]) {
     throwIfAborted(params.abortSignal);
-    const getRetiredModelId = retirement ? () => retirement.getRetiredModelId(entry ?? primaryRoute) : undefined;
+    assertSavedRouteAvailable();
+    const getRetiredModelId = retirement
+      ? () => retirement.getBlockedModelId?.() ?? retirement.getRetiredModelId(entry ?? primaryRoute)
+      : undefined;
     const retiredModelId = getRetiredModelId?.();
     if (retiredModelId !== undefined) {
       if (!entry) {
@@ -329,6 +343,7 @@ export async function* streamWithFallback(
     const apiKey = entry ? await getApiKey(entry.provider) : "";
     throwIfAborted(params.abortSignal);
     // Credential lookup can yield while a newer listing is published.
+    assertSavedRouteAvailable();
     if (entry && getRetiredModelId?.() !== undefined) continue;
     const { provider, label, identity, attemptParams } = getAttempt(entry, apiKey);
     if (previousFailure) {
@@ -343,6 +358,9 @@ export async function* streamWithFallback(
       return;
     } catch (err) {
       throwIfAborted(params.abortSignal);
+      assertSavedRouteAvailable();
+      // A fallback refused at the wire is skipped like one found retired before selection.
+      if (entry && err instanceof RetiredModelError) continue;
       if (isNonRetryable(err)) throw err;
       const retiredModelId = entry ? undefined : getRetiredModelId?.();
       previousFailure = { label, error: retiredModelId === undefined ? err : new RetiredModelError(retiredModelId) };

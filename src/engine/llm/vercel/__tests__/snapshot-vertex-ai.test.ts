@@ -1,6 +1,7 @@
 // This route requires project/location and service-account credentials rather than an API key.
 import { describe, it, expect, vi } from "vitest";
 import { collectStreamEvents as collect } from "./test-helpers.js";
+import { noRetirementEvidence } from "../../model-wire-gate.js";
 
 describe("VercelUnifiedProvider vertex-ai", () => {
   it("creates the Vertex client with project + default location", async () => {
@@ -152,7 +153,7 @@ describe("VercelUnifiedProvider vertex-ai", () => {
   it("is vercel-routed via factory", async () => {
     vi.resetModules();
     const { createProvider } = await import("../../provider-factory.js");
-    const p = createProvider({ vendor: "vertex-ai", apiKey: "", vertexProject: "p" });
+    const p = createProvider({ getRetiredModelId: noRetirementEvidence, vendor: "vertex-ai", apiKey: "", vertexProject: "p" });
     // Expose vendor identity synchronously while deferring adapter loading until first stream.
     expect(p.constructor.name).toBe("LazyVercelProvider");
     expect(p.vendor).toBe("vertex-ai");

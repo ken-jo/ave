@@ -3,6 +3,7 @@ import { collectStreamEvents as collect } from "./test-helpers.js";
 import type { LLMProvider, StreamEvent } from "../../types.js";
 import { FallbackProvider, streamWithFallback } from "../fallback-chain.js";
 import type { FallbackChainEntry, ProviderFactory } from "../fallback-chain.js";
+import { noRetirementEvidence } from "../../model-wire-gate.js";
 
 function makeProvider(vendor: string, events: StreamEvent[]): LLMProvider {
   return {
@@ -198,6 +199,8 @@ describe("(b) primary transient error → fallback succeeds", () => {
       apiKey: "test-key",
       model: "gpt-5.4-nano",
       baseUrl: "https://example.openai.azure.com/openai/deployments/gpt/",
+      // A walk without route evidence still names its choice for the fallback wire.
+      getRetiredModelId: noRetirementEvidence,
     });
     expect(events).toEqual(GOOD_EVENTS);
   });

@@ -60,6 +60,8 @@ import {
   withProviderErrorClassification,
   type ProviderErrorDiagnostics,
 } from "../provider-error-diagnostics.js";
+import { findRetiredModelError } from "../retired-model-error.js";
+import { gateModelFetch, type RetiredModelProbe } from "../model-wire-gate.js";
 import { claudeBetaHeaders, claudeRequestShape } from "../../../shared/model-host-policy.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import {
@@ -295,6 +297,8 @@ export interface VercelProviderExtras {
    */
   openaiWire?: "responses";
   wire?: CustomProviderWire;
+  /** The route's live retirement evidence. `createProvider` requires it; only a directly constructed test wire omits it. */
+  getRetiredModelId?: RetiredModelProbe;
 }
 
 export class VercelUnifiedProvider implements LLMProvider {
@@ -678,6 +682,7 @@ export class VercelUnifiedProvider implements LLMProvider {
           Record<string, unknown> & { type: string }
         >;
       } catch (syncErr) {
+        throwRetiredModelRefusal(syncErr);
         if (params.abortSignal?.aborted) return;
         yield createProviderErrorEvent(syncErr);
         return;
@@ -706,6 +711,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         if (idleTimer) clearTimeout(idleTimer);
       }
     } catch (err) {
+      throwRetiredModelRefusal(err);
       if (params.abortSignal?.aborted) return;
       yield createProviderErrorEvent(err);
     }
@@ -723,12 +729,17 @@ export class VercelUnifiedProvider implements LLMProvider {
       || usesOpenAIResponsesWire(this.vendorSlot, modelId, reasoning, baseUrl);
   }
 
+  /** The only fetch an SDK model may be built with: every wire attempt rechecks this route's retirement evidence. */
+  private wireFetch(modelId: string): typeof fetch {
+    return gateModelFetch(this.customFetch, () => this.extras.getRetiredModelId?.(modelId));
+  }
+
   embeddingModel(modelId: string) {
     const slot = this.protocolVendor();
     const baseURL = this.providerMetadata?.baseUrl ?? this.baseUrl;
     if (!this.customFetch) throw new Error('Embedding transport is required');
     assertCredentialedBaseUrlUsesHttps(slot, baseURL, this.apiKey, this.customFetch);
-    const options = { apiKey: this.apiKey, fetch: this.customFetch, ...(baseURL ? { baseURL } : {}) };
+    const options = { apiKey: this.apiKey, fetch: this.wireFetch(modelId), ...(baseURL ? { baseURL } : {}) };
     if (slot === "openai") return createOpenAI(options).embeddingModel(modelId);
     if (slot === "gemini") return createGoogleGenerativeAI(options).embeddingModel(modelId);
     if (slot === "azure-foundry" && baseURL) return createAzure({ ...options, baseURL: normalizeAzureFoundryBaseURL(baseURL) }).embeddingModel(modelId);
@@ -750,17 +761,15 @@ export class VercelUnifiedProvider implements LLMProvider {
       slot, this.providerMetadata?.baseUrl ?? this.baseUrl, this.apiKey, this.customFetch,
     );
 
+    const wireFetch = this.wireFetch(modelId);
+
     if (slot === "claude") {
-      const nativeFetch = onRequestControls
-        ? observeRequestControls(this.customFetch ?? globalThis.fetch, onRequestControls)
-        : this.customFetch;
-      const fetchImpl = outputProjection
-        ? projectNativeOutput(nativeFetch ?? globalThis.fetch, outputProjection)
-        : nativeFetch;
+      const nativeFetch = onRequestControls ? observeRequestControls(wireFetch, onRequestControls) : wireFetch;
+      const fetchImpl = outputProjection ? projectNativeOutput(nativeFetch, outputProjection) : nativeFetch;
       const anthropic = createAnthropic({
         apiKey: this.apiKey,
         ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
-        ...(fetchImpl ? { fetch: fetchImpl } : {}),
+        fetch: fetchImpl,
       });
       return anthropic.languageModel(modelId);
     }
@@ -769,7 +778,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       const google = createGoogleGenerativeAI({
         apiKey: this.apiKey,
         ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
-        ...(this.customFetch ? { fetch: this.customFetch } : {}),
+        fetch: wireFetch,
       });
       return google(modelId);
     }
@@ -778,7 +787,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       const openai = createOpenAI({
         apiKey: this.apiKey,
         ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
-        ...(this.customFetch ? { fetch: this.customFetch } : {}),
+        fetch: wireFetch,
       });
       // Responses API for every model the catalog says reasons, or for every
       // model when the connection pins `openaiWire: "responses"`; Chat
@@ -806,7 +815,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         // fields below): `stream_options` is part of the OpenAI Chat
         // Completions schema itself, not a server extension.
         includeUsage: true,
-        ...(this.customFetch ? { fetch: this.customFetch } : {}),
+        fetch: wireFetch,
       });
       return compat(modelId);
     }
@@ -825,7 +834,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       const azure = createAzure({
         baseURL: normalizeAzureFoundryBaseURL(this.baseUrl),
         apiKey: this.apiKey,
-        ...(this.customFetch ? { fetch: this.customFetch } : {}),
+        fetch: wireFetch,
       });
       return azure.responses(modelId);
     }
@@ -848,7 +857,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       const vertex = createVertex({
         project,
         location,
-        ...(this.customFetch ? { fetch: this.customFetch } : {}),
+        fetch: wireFetch,
       });
       return vertex(modelId);
     }
@@ -1355,6 +1364,7 @@ export async function* fullStreamToStreamEvent(
       }
       case "error": {
         const err = (part as { error?: unknown }).error;
+        throwRetiredModelRefusal(err);
         const providerError = extractProviderErrorDiagnostics(err);
         yield {
           type: "error",
@@ -1426,6 +1436,12 @@ export function mapAiSdkErrorToAve(err: unknown): MappedError {
     rawError: raw,
     providerError: withProviderErrorClassification(diagnostics, classified.category),
   };
+}
+
+/** A retirement refusal leaves as the named error, never as a provider error event a caller could flatten or retry. */
+function throwRetiredModelRefusal(err: unknown): void {
+  const retired = findRetiredModelError(err);
+  if (retired) throw retired;
 }
 
 function createProviderErrorEvent(err: unknown): Extract<StreamEvent, { type: "error" }> {
